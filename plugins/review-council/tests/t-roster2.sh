@@ -13,9 +13,7 @@ test_roster2() {
     assert_grep "unreadable config is visible in the banner" "$B/brief" 'config unreadable'
     mkdir -p "$B/pdata"; printf '{"exclude":["gemini"]}\n' > "$B/pdata/config.json"
     ( unset REVIEW_COUNCIL_CONFIG; CLAUDE_PLUGIN_DATA="$B/pdata" "$SCRIPTS/roster.sh" > "$B/out2.json" ); roster_lines "$B/out2.json" "$B/lines2"
-    assert_grep "CLAUDE_PLUGIN_DATA config honoured" "$B/lines2" '^excluded gemini -> excluded by config$'
-    ( REVIEW_COUNCIL_CONFIG="$B/cfg.json" CLAUDE_PLUGIN_DATA="$B/pdata" "$SCRIPTS/roster.sh" > "$B/out3.json" ); roster_lines "$B/out3.json" "$B/lines3"
-    assert_grep "REVIEW_COUNCIL_CONFIG wins over CLAUDE_PLUGIN_DATA" "$B/lines3" '^seat gemini '
+    assert_grep "CLAUDE_PLUGIN_DATA is NOT a config source (it leaks across plugins)" "$B/lines2" '^seat gemini '
     # a wedged `codex login status` must not hang: 1s budget, shim sleeps 3s → sign-in check timed out, run continues
     printf '#!/bin/bash\n[ "$1" = login ] && { sleep 3; echo "Logged in using ChatGPT"; exit 0; }\nexec "%s/codex" "$@"\n' "$SHIMS" > "$B/codex"; chmod +x "$B/codex"
     local t0=$(date +%s); REVIEW_COUNCIL_LOGIN_TIMEOUT=1 "$SCRIPTS/roster.sh" > "$B/out4.json"; local rc=$? dt=$(( $(date +%s) - t0 )); roster_lines "$B/out4.json" "$B/lines4"

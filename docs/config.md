@@ -51,7 +51,8 @@ For anything with both a config key and an env var (`claude_seat`/`REVIEW_COUNCI
 ## Where the config file is looked up
 
 1. `$REVIEW_COUNCIL_CONFIG` if set.
-2. `$CLAUDE_PLUGIN_DATA/config.json` when Claude Code provides a plugin data directory.
-3. `~/.config/review-council/config.json`.
+2. `~/.config/review-council/config.json`.
+
+`CLAUDE_PLUGIN_DATA` is deliberately not consulted: Claude Code sets it per plugin and a shell can inherit another plugin's value.
 
 An unreadable file is reported in the session banner as `config unreadable (pins and exclusions ignored)`. Extras (`codex-review`, `grok-code-review`) can be excluded or pinned by seat name. `REVIEW_COUNCIL_LOGIN_TIMEOUT` (default 20 s) and `REVIEW_COUNCIL_PROBE_TIMEOUT` (default 60 s) bound the sign-in and probe calls.

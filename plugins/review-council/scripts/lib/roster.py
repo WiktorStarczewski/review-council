@@ -189,10 +189,9 @@ DETECT = {'codex': detect_codex, 'grok': detect_grok, 'gemini': detect_gemini, '
 
 def load_config():
     """→ (config, error) — an unreadable or non-object file yields ({}, 'config unreadable')."""
-    # REVIEW_COUNCIL_CONFIG wins; otherwise the plugin data dir Claude Code hands us; otherwise ~/.config.
-    path = (os.environ.get('REVIEW_COUNCIL_CONFIG')
-            or (os.path.join(os.environ['CLAUDE_PLUGIN_DATA'], 'config.json') if os.environ.get('CLAUDE_PLUGIN_DATA') else None)
-            or os.path.expanduser('~/.config/review-council/config.json'))
+    # REVIEW_COUNCIL_CONFIG wins, else ~/.config. CLAUDE_PLUGIN_DATA is deliberately NOT consulted: Claude Code
+    # sets it per plugin and a Bash tool call can inherit ANOTHER plugin's value (seen: the codex plugin's).
+    path = os.environ.get('REVIEW_COUNCIL_CONFIG') or os.path.expanduser('~/.config/review-council/config.json')
     if not os.path.exists(path):
         return {}, None
     try:

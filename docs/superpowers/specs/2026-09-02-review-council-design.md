@@ -62,7 +62,7 @@ Detection per adapter:
 | gemini | `command -v gemini` | `~/.gemini/oauth_creds.json` or `GEMINI_API_KEY` present | no list command: `REVIEW_COUNCIL_GEMINI_MODEL` (default `gemini-2.5-pro`); no effort knob |
 | agent | always (Claude Code) | always | `opus` at `max`; `REVIEW_COUNCIL_CLAUDE_SEAT=0` removes it |
 
-Rules (unchanged in spirit): top frontier per lab, never a mid tier, highest effort, ≥3 seats or the run refuses. `--probe` (used by preflight, not the hook) additionally sends a one-token "reply OK" to each CLI seat with a 60 s timeout and drops seats that fail, recording the reason. Overrides in `${CLAUDE_PLUGIN_DATA:-~/.config/review-council}/config.json`: `exclude: ["gemini"]`, `pin: {"codex-sol": {"effort": "ultra"}}`, `extras: false`, `claude_seat: false`.
+Rules (unchanged in spirit): top frontier per lab, never a mid tier, highest effort, ≥3 seats or the run refuses. `--probe` (used by preflight, not the hook) additionally sends a one-token "reply OK" to each CLI seat with a 60 s timeout and drops seats that fail, recording the reason. Overrides in `${REVIEW_COUNCIL_CONFIG:-~/.config/review-council/config.json}` (not `CLAUDE_PLUGIN_DATA`: it is per-plugin and leaks into shells): `exclude: ["gemini"]`, `pin: {"codex-sol": {"effort": "ultra"}}`, `extras: false`, `claude_seat: false`.
 
 ## 5. Adapters
 
