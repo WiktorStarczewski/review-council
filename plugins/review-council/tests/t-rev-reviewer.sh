@@ -12,7 +12,7 @@
 # `Bash(...)` rule anywhere in the frontmatter. Nothing here can prove harness
 # semantics at runtime — that is the live smoke the brief's Step 2 defers.
 test_rev_reviewer() {
-  local A="$HOME/.claude/agents/rev-reviewer.md"
+  local A="$SK/agents/rev-reviewer.md"
   if [ ! -f "$A" ]; then fail "agent file exists" "$A missing"; return; fi
   ok "agent file exists"
   assert_grep "name field" "$A" '^name: rev-reviewer$'

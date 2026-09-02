@@ -1,7 +1,9 @@
 #!/bin/bash
 # Portability helpers: source this file. macOS ships BSD stat/date; Linux ships GNU. Nothing else differs for us.
 rc_mtime() {  # rc_mtime <path> → epoch seconds, empty if missing
-  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null
+  # GNU first: on GNU coreutils `stat -f` means --file-system and would SUCCEED with a wrong number; BSD stat
+  # rejects -c, so the fallback order below is the only one that is correct on both.
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
 }
 rc_touch_ago() {  # rc_touch_ago <seconds> <path> → set <path>'s mtime to now-<seconds> (creates it)
   local ts

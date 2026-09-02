@@ -19,8 +19,8 @@ import sys
 from datetime import datetime, timezone
 
 EFFORTS = ('max', 'xhigh', 'high')   # highest first; a mid tier is never seated
-LOGIN_TIMEOUT = 20                   # a wedged status command must not hang session start
-PROBE_TIMEOUT = 60
+LOGIN_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_LOGIN_TIMEOUT', '20'))   # a wedged status command must not hang session start
+PROBE_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_PROBE_TIMEOUT', '60'))
 
 LABS = {'codex': 'openai', 'grok': 'xai', 'gemini': 'google', 'agent': 'anthropic'}
 # the name an adapter answers to in the --brief line, in `excluded[].cli` and in config `exclude`
@@ -189,7 +189,10 @@ DETECT = {'codex': detect_codex, 'grok': detect_grok, 'gemini': detect_gemini, '
 
 def load_config():
     """→ (config, error) — an unreadable or non-object file yields ({}, 'config unreadable')."""
-    path = env_path('REVIEW_COUNCIL_CONFIG', '~/.config/review-council/config.json')
+    # REVIEW_COUNCIL_CONFIG wins; otherwise the plugin data dir Claude Code hands us; otherwise ~/.config.
+    path = (os.environ.get('REVIEW_COUNCIL_CONFIG')
+            or (os.path.join(os.environ['CLAUDE_PLUGIN_DATA'], 'config.json') if os.environ.get('CLAUDE_PLUGIN_DATA') else None)
+            or os.path.expanduser('~/.config/review-council/config.json'))
     if not os.path.exists(path):
         return {}, None
     try:
@@ -250,6 +253,14 @@ def build(do_probe):
             excluded.append({'cli': name, 'reason': reason})
         seats.extend(found)
 
+    # Extras are built BEFORE exclusion and pins so config can address them by seat name
+    # (`exclude: ["codex-review"]`, `pin: {"grok-code-review": …}`), then follow their base lab through the probe.
+    if cfg.get('extras') is not False:
+        for adapter, name, mode, round_ in EXTRAS:
+            base = next((s for s in seats if s['adapter'] == adapter and not s['extra']), None)
+            if base:
+                seats.append(make_seat(name, adapter, base['model'], base['effort'], mode, round_))
+
     for s in seats:
         adapter_of[s['seat']] = s['adapter']
 
@@ -265,18 +276,14 @@ def build(do_probe):
     if do_probe:
         survivors = []
         for s in kept:
-            reason = probe_seat(s) if s['adapter'] in PROBE_CMD else None
+            reason = probe_seat(s) if (s['adapter'] in PROBE_CMD and not s['extra']) else None
             if reason:
                 excluded.append({'cli': s['seat'], 'reason': reason})
             else:
                 survivors.append(s)
         kept = survivors
-
-    if cfg.get('extras') is not False:
-        for adapter, name, mode, round_ in EXTRAS:
-            base = next((s for s in kept if s['adapter'] == adapter and not s['extra']), None)
-            if base:
-                kept.append(make_seat(name, adapter, base['model'], base['effort'], mode, round_))
+    # an extra rides on its lab: no surviving base seat → no extra
+    kept = [s for s in kept if not s['extra'] or any(b['adapter'] == s['adapter'] and not b['extra'] for b in kept)]
 
     roster = {'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
               'seats': kept, 'excluded': excluded}
@@ -299,6 +306,8 @@ def brief_line(roster, adapter_of):
                 (e['reason'] for e in roster['excluded'] if adapter_of.get(e['cli']) == adapter),
                 'unavailable')
             parts.append('%s ✗ %s' % (name, reason))
+    if any(e.get('reason') == 'config unreadable' for e in roster['excluded']):
+        parts.append('config unreadable (pins and exclusions ignored)')
     return 'review-council seats: ' + ' · '.join(parts)
 
 
