@@ -10,7 +10,7 @@ test_cxreview() {
     assert_grep "summary is first line" "$T/cx.json" '"summary": "The clamp implementation violates'
     printf 'Looks good. No issues found.\n' > "$T/clean.txt"; n=$(python3 "$C" "$T/clean.txt" "$T/clean.json"); assert_eq "clean review → 0 findings" "$n" "0"
     assert_exit "clean JSON validates" 0 python3 "$SCRIPTS/lib/validate-findings.py" "$T/clean.json"
-    local S="$T/cx-sess"; mkdir -p "$S"; echo "custom instructions (unused by exec review)" > "$S/p.md"
+    local S="$T/cx-sess"; seat_roster "$S"; echo "custom instructions (unused by exec review)" > "$S/p.md"
     SHIM_MODE=native "$SCRIPTS/rev-seat.sh" codex-review "$S" 2 "$S/p.md" --base abc123 > "$T/cx.out"; assert_eq "codex-review seat exit 0 on prose" "$?" 0
     assert_grep "seat summary counts converted findings" "$T/cx.out" '^seat=codex-review round=2 exit=0 findings=2$'
     assert_grep "native prose kept" "$S/r2-codex-review.native.txt" '^Full review comments:'

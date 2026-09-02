@@ -1,6 +1,6 @@
 # grok seat: an answer with zero tool calls is retried once, then fails — sourced by run-tests.sh
 test_grok_notools() {
-  ( seat_env; local S="$T/gnt"; mkdir -p "$S"; echo "review" > "$S/p.md"; rm -f "$T/args.grok-calls"
+  ( seat_env; local S="$T/gnt"; seat_roster "$S"; echo "review" > "$S/p.md"; rm -f "$T/args.grok-calls"
     SHIM_MODE=notools "$SCRIPTS/rev-seat.sh" grok "$S" 1 "$S/p.md" > "$T/gnt.out" 2>&1; assert_eq "no tool calls twice → exit 2 (no findings file)" "$?" 2
     assert_grep "log explains" "$S/r1-grok.log" 'answered without a single tool call \(attempt 2\)'
     assert_eq "no findings file left behind" "$(ls "$S/r1-grok.json" 2>/dev/null)" ""
