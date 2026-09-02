@@ -16,6 +16,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 
 EFFORTS = ('max', 'xhigh', 'high')   # highest first; a mid tier is never seated
@@ -57,6 +58,8 @@ def run(cmd, timeout):
     except OSError as exc:
         return 127, '', str(exc)
     dec = lambda b: (b or b'').decode('utf-8', 'replace')
+    if os.environ.get('REVIEW_COUNCIL_DEBUG'):
+        sys.stderr.write('roster debug: %s → rc=%s\n  stdout: %r\n  stderr: %r\n' % (' '.join(cmd), p.returncode, dec(p.stdout)[:400], dec(p.stderr)[:400]))
     return p.returncode, dec(p.stdout), dec(p.stderr)
 
 
@@ -129,14 +132,39 @@ def codex_suffix(slug):
     return slug[gen.end():] if gen else slug
 
 
+NEGATIVE = ('not logged in', 'not signed in', 'login required', 'please log in', 'run `codex login`', 'run codex login', 'run grok login')
+
+
+def status_check(cmd, positive):
+    """→ (ok, reason). A transient non-zero exit (no sign-out text) is retried once after 1 s and, if it
+    persists, reported as a failed check — never as a sign-out, which is a different message to the user."""
+    rc, out, err = run(cmd, LOGIN_TIMEOUT)
+    if rc is None:
+        return False, 'sign-in check timed out'
+    low = (out + err).lower()
+    if any(n in low for n in NEGATIVE):
+        return False, 'not signed in'
+    if rc != 0:
+        time.sleep(1)
+        rc, out, err = run(cmd, LOGIN_TIMEOUT)
+        if rc is None:
+            return False, 'sign-in check timed out'
+        low = (out + err).lower()
+        if any(n in low for n in NEGATIVE):
+            return False, 'not signed in'
+        if rc != 0:
+            return False, 'status check failed: %s' % (first_line(err) or first_line(out) or 'exit %s' % rc)
+    if positive.lower() not in low:
+        return False, 'not signed in'
+    return True, None
+
+
 def detect_codex(cfg):
     if shutil.which('codex') is None:
         return [], 'not installed'
-    rc, out, err = run(['codex', 'login', 'status'], LOGIN_TIMEOUT)
-    if rc is None:
-        return [], 'sign-in check timed out'
-    if rc != 0 or 'Logged in' not in (out + err):
-        return [], 'not signed in'
+    ok, reason = status_check(['codex', 'login', 'status'], 'logged in')
+    if not ok:
+        return [], reason
     cache = env_path('REVIEW_COUNCIL_CODEX_MODELS_CACHE', '~/.codex/models_cache.json')
     models = codex_models(cache)
     if not models:
@@ -151,14 +179,11 @@ def detect_codex(cfg):
 def detect_grok(cfg):
     if shutil.which('grok') is None:
         return [], 'not installed'
-    rc, out, err = run(['grok', 'models'], LOGIN_TIMEOUT)
-    if rc is None:
-        return [], 'sign-in check timed out'
-    text = (out + err)
-    low = text.lower()
-    # "logged in" is a substring of "not logged in": require the positive phrase AND the absence of the negative
-    if rc != 0 or 'logged in' not in low or 'not logged in' in low:
-        return [], 'not signed in'
+    ok, reason = status_check(['grok', 'models'], 'logged in')
+    if not ok:
+        return [], reason
+    rc, out, err = run(['grok', 'models'], LOGIN_TIMEOUT)   # the model list itself (cheap, cached by grok)
+    text = out + err
     versions = [(int(a), int(b)) for a, b in GROK_VER.findall(text)]
     if not versions:
         return [], 'no grok model listed'

@@ -23,3 +23,17 @@ test_roster2() {
     assert_nogrep "codex extra dropped with its lab" "$B/lines4" '^seat codex-review '
   )
 }
+test_roster_status_failed() {
+  ( local B="$T/roster-sf"; roster_env "$B" codex grok gemini; roster_creds
+    # a status command that fails for a reason other than sign-out (network blip, crash) is reported as such — and retried once
+    printf '#!/bin/bash\nif [ "$1" = models ]; then n=$(cat "%s/n" 2>/dev/null || echo 0); echo $((n+1)) > "%s/n"; echo "error: connection reset" >&2; exit 1; fi\nexec "%s/grok" "$@"\n' "$B" "$B" "$SHIMS" > "$B/grok"; chmod +x "$B/grok"
+    "$SCRIPTS/roster.sh" > "$B/out.json"; roster_lines "$B/out.json" "$B/lines"
+    assert_grep "failed status is not called a sign-out" "$B/lines" '^excluded grok -> status check failed: error: connection reset$'
+    assert_eq "the status command was retried once" "$(cat "$B/n")" "2"
+    # a real sign-out is still a sign-out (no retry)
+    rm -f "$B/n"; printf '#!/bin/bash\nif [ "$1" = models ]; then n=$(cat "%s/n" 2>/dev/null || echo 0); echo $((n+1)) > "%s/n"; echo "Not logged in. Run grok login."; exit 1; fi\nexec "%s/grok" "$@"\n' "$B" "$B" "$SHIMS" > "$B/grok"; chmod +x "$B/grok"
+    "$SCRIPTS/roster.sh" > "$B/out2.json"; roster_lines "$B/out2.json" "$B/lines2"
+    assert_grep "sign-out text wins" "$B/lines2" '^excluded grok -> not signed in$'
+    assert_eq "no retry on an explicit sign-out" "$(cat "$B/n")" "1"
+  )
+}
