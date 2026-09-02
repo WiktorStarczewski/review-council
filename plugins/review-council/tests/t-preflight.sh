@@ -1,23 +1,86 @@
-# tests for Task 5 — sourced by run-tests.sh
+# preflight + prompt — sourced by run-tests.sh
+# Seats no longer come from hardcoded `codex login status` / `grok models` checks: preflight asks
+# scripts/roster.sh. These tests drive that seam through a STUB roster.sh placed next to a symlink to the
+# real rev-preflight.sh, so `$HERE/roster.sh` resolves to the stub. The stub models the contract preflight
+# depends on (argv, exit 5 + JSON, --brief); roster.sh's own detection is covered by t-roster.sh.
+pf_bin() {  # pf_bin → prints a dir holding {roster.sh stub, rev-preflight.sh symlink}
+  local D="$T/pf-bin"
+  if [ ! -x "$D/roster.sh" ]; then
+    mkdir -p "$D"
+    cat > "$D/roster.sh" <<'STUB'
+#!/bin/bash
+# stub roster.sh: RSTUB_ARGS=<file> APPENDS every call's argv, RSTUB_EXIT sets the exit code,
+# RSTUB_JSON overrides the JSON, RSTUB_BRIEF the --brief line. Like the real roster.sh, --write always
+# stores the JSON and --brief only changes what goes to stdout; the exit code is the same either way.
+[ -n "${RSTUB_ARGS:-}" ] && printf '%s\n' "$@" >> "$RSTUB_ARGS"
+WRITE=""; BRIEF=0
+while [ $# -gt 0 ]; do
+  case "$1" in --write) WRITE=${2:-}; shift 2;; --brief) BRIEF=1; shift;; *) shift;; esac
+done
+JSON=${RSTUB_JSON:-}
+if [ -z "$JSON" ]; then
+  JSON=$(cat <<'J'
+{"generated_at": "2026-09-02T00:00:00Z", "seats": [
+ {"seat": "codex-sol", "lab": "openai", "adapter": "codex", "model": "gpt-5.6-sol", "effort": "max", "extra": false},
+ {"seat": "codex-terra", "lab": "openai", "adapter": "codex", "model": "gpt-5.6-terra", "effort": "xhigh", "extra": false},
+ {"seat": "grok", "lab": "xai", "adapter": "grok", "model": "grok-4.6", "effort": "xhigh", "extra": false},
+ {"seat": "opus", "lab": "anthropic", "adapter": "agent", "model": "opus", "effort": "max", "extra": false},
+ {"seat": "codex-review", "lab": "openai", "adapter": "codex", "mode": "review", "extra": true, "round": 2}],
+ "excluded": [{"cli": "gemini", "reason": "not installed"}]}
+J
+)
+fi
+[ -n "$WRITE" ] && printf '%s\n' "$JSON" > "$WRITE"
+if [ "$BRIEF" = 1 ]; then
+  printf '%s\n' "${RSTUB_BRIEF:-review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@xhigh) · grok ✓ (grok-4.6@xhigh) · gemini ✗ not installed · claude ✓ (opus@max)}"
+else
+  printf '%s\n' "$JSON"      # --json: preflight must keep this off its own stdout
+fi
+exit "${RSTUB_EXIT:-0}"
+STUB
+    chmod +x "$D/roster.sh"
+    ln -sf "$SCRIPTS/rev-preflight.sh" "$D/rev-preflight.sh"
+  fi
+  printf '%s' "$D"
+}
+pf_thin_roster() {  # two non-extra seats (one extra, which must not count) and two exclusions
+  cat <<'J'
+{"generated_at": "2026-09-02T00:00:00Z", "seats": [
+ {"seat": "grok", "lab": "xai", "adapter": "grok", "model": "grok-4.6", "effort": "xhigh", "extra": false},
+ {"seat": "opus", "lab": "anthropic", "adapter": "agent", "model": "opus", "effort": "max", "extra": false},
+ {"seat": "grok-code-review", "lab": "xai", "adapter": "grok", "mode": "code-review", "extra": true, "round": 3}],
+ "excluded": [{"cli": "codex", "reason": "not signed in"}, {"cli": "gemini", "reason": "not installed"}]}
+J
+}
+
 # No subshell: ok/fail must increment the runner's PASS/FAIL in the parent shell, so state is saved and restored by hand.
 test_preflight() {
   local old_pwd=$PWD old_path=$PATH
-  seat_env; local R="$T/pf"; mkrepo "$R"
+  seat_env; local PF; PF="$(pf_bin)/rev-preflight.sh"
+  export RSTUB_ARGS="$T/rstub.args"
+  local R="$T/pf"; mkrepo "$R"
   cd "$R" || { fail "preflight setup" "cannot cd to $R"; PATH=$old_path; return 1; }
   R=$(git rev-parse --show-toplevel)   # /tmp is a symlink on macOS; git reports the physical path
-  export REV_CODEX_MODELS_CACHE="$FX/codex-models-cache.json"
-  "$SCRIPTS/rev-preflight.sh" > "$T/pf.out" 2> "$T/pf.err"; assert_eq "main refused" "$?" 1
+  rm -f "$RSTUB_ARGS"
+  "$PF" > "$T/pf.out" 2> "$T/pf.err"; assert_eq "main refused" "$?" 1
   assert_grep "reason names branch" "$T/pf.err" "shared branch 'main'"
-  git checkout -qb feat; "$SCRIPTS/rev-preflight.sh" 2> "$T/pf.err"; assert_eq "empty scope refused" "$?" 1
+  assert_exit "roster is not consulted before the git checks" 1 test -e "$RSTUB_ARGS"
+  git checkout -qb feat; "$PF" 2> "$T/pf.err"; assert_eq "empty scope refused" "$?" 1
   assert_grep "reason says empty" "$T/pf.err" 'scope is empty'
   echo b > b.txt; git add b.txt; git commit -qm "feat: b"; echo c > c.txt
-  "$SCRIPTS/rev-preflight.sh" --write "$T/pf-sess" > "$T/pf.out" 2> "$T/pf.err"; assert_eq "feature branch ok" "$?" 0
+  rm -f "$T/args"                      # the shims record every call here; preflight must make none
+  "$PF" --write "$T/pf-sess" > "$T/pf.out" 2> "$T/pf.err"; assert_eq "feature branch ok" "$?" 0
   assert_grep "summary line" "$T/pf.out" "^base=$(git rev-parse main) branch=feat default=main root=$R scope=branch changed_files=2$"
-  assert_grep "sol seat with top effort" "$T/pf.out" '^  codex-sol@max$'
-  assert_grep "terra steps down when max absent" "$T/pf.out" '^  codex-terra@xhigh$'
-  assert_nogrep "luna never seated" "$T/pf.out" 'luna'
-  assert_grep "grok seat" "$T/pf.out" '^  grok@xhigh$'
-  assert_grep "opus seat" "$T/pf.out" '^  opus@max'
+  assert_grep "roster brief line follows it" "$T/pf.out" '^review-council seats: codex ✓'
+  assert_nogrep "roster JSON never reaches stdout" "$T/pf.out" '"seats"'
+  assert_grep "roster is probed" "$T/rstub.args" '^--probe$'
+  assert_grep "roster is written" "$T/rstub.args" '^--write$'
+  assert_grep "…into the session dir" "$T/rstub.args" "^$T/pf-sess/roster.json$"
+  # one call, not two: the printed line comes from the same probed roster the JSON was built from
+  assert_grep "the line is asked for in the same call" "$T/rstub.args" '^--brief$'
+  assert_eq "the roster is consulted exactly once" "$(wc -l < "$T/rstub.args" | tr -d ' ')" "4"
+  assert_grep "roster.json stored" "$T/pf-sess/roster.json" '"seat": "codex-sol"'
+  assert_exit "preflight calls no lab CLI itself" 1 test -e "$T/args"
   # values are single-quoted so `. scope.env` can never expand or execute one (see t-scopeenv.sh)
   assert_grep "scope.env base" "$T/pf-sess/scope.env" "^REV_BASE='$(git rev-parse main)'$"
   assert_grep "scope.env root" "$T/pf-sess/scope.env" "^REV_ROOT='$R'$"
@@ -26,34 +89,49 @@ test_preflight() {
   # untracked files are invisible to `git diff`: listed separately so the prompt can say "read them in full"
   assert_grep "untracked.txt lists the untracked file" "$T/pf-sess/untracked.txt" '^c.txt$'
   assert_nogrep "untracked.txt excludes tracked files" "$T/pf-sess/untracked.txt" '^b.txt$'
-  "$SCRIPTS/rev-preflight.sh" --scope uncommitted > "$T/pf.out"; assert_eq "uncommitted scope ok" "$?" 0
+  "$PF" --scope uncommitted > "$T/pf.out"; assert_eq "uncommitted scope ok" "$?" 0
   assert_grep "uncommitted base is HEAD" "$T/pf.out" "^base=$(git rev-parse HEAD) .* scope=uncommitted changed_files=1$"
-  "$SCRIPTS/rev-preflight.sh" --scope b.txt > "$T/pf.out"; assert_eq "path scope ok" "$?" 0
+  "$PF" --scope b.txt > "$T/pf.out"; assert_eq "path scope ok" "$?" 0
   assert_grep "path scope counts" "$T/pf.out" ' scope=b.txt changed_files=1$'
-  assert_exit "missing path refused" 1 "$SCRIPTS/rev-preflight.sh" --scope nope.txt
-  assert_exit "REV_ACTIVE refused" 1 env REV_ACTIVE=1 "$SCRIPTS/rev-preflight.sh"
-  SHIM_MODE=notauth "$SCRIPTS/rev-preflight.sh" 2> "$T/pf.err"; assert_eq "codex notauth refused" "$?" 1
-  assert_grep "names codex" "$T/pf.err" 'codex is not signed in'
+  assert_exit "missing path refused" 1 "$PF" --scope nope.txt
+  assert_exit "REV_ACTIVE refused" 1 env REV_ACTIVE=1 "$PF"
+  # without --write the roster JSON goes to a temp file that is cleaned up, never into the repo
+  rm -f "$RSTUB_ARGS"
+  "$PF" > "$T/pf.out" 2>&1
+  assert_grep "the roster is still probed" "$T/rstub.args" '^--probe$'
+  local tmpj; tmpj=$(grep -A1 -- '^--write$' "$T/rstub.args" | sed -n '2p')
+  [ -n "$tmpj" ] && ok "the JSON still lands on a file" || fail "the JSON still lands on a file" "no --write target recorded"
+  case "$tmpj" in "$R"/*) fail "…outside the repository" "$tmpj";; *) ok "…outside the repository";; esac
+  assert_exit "…and that temp file is removed" 1 test -e "$tmpj"
+  assert_exit "no roster.json left in the repo" 1 test -e "$R/roster.json"
+  # too few seats: refuse, with the count and every exclusion reason
+  rm -f "$RSTUB_ARGS"
+  RSTUB_EXIT=5 RSTUB_JSON="$(pf_thin_roster)" "$PF" > "$T/pf.out" 2> "$T/pf.err"; assert_eq "thin roster refused" "$?" 1
+  assert_grep "counts only non-extra seats" "$T/pf.err" '^preflight: only 2 seats available \(need 3\): '
+  assert_grep "names every exclusion" "$T/pf.err" 'codex: not signed in; gemini: not installed$'
+  assert_grep "the roster still ran with --probe" "$T/rstub.args" '^--probe$'
+  assert_nogrep "no summary line on a refusal" "$T/pf.out" '^base='
+  # a roster that is neither 0 nor 5 (missing script, crash) fails loudly instead of running seatless
+  RSTUB_EXIT=5 RSTUB_JSON='not json at all' "$PF" > /dev/null 2> "$T/pf.err"; assert_eq "unreadable roster refused" "$?" 1
+  assert_grep "says the JSON was unreadable" "$T/pf.err" 'roster JSON unreadable'
+  assert_nogrep "no traceback" "$T/pf.err" 'Traceback'
+  RSTUB_EXIT=7 "$PF" > /dev/null 2> "$T/pf.err"; assert_eq "roster crash refused" "$?" 1
+  assert_grep "names the roster exit code" "$T/pf.err" 'roster.sh failed \(exit 7\)'
+  local D2="$T/pf-bin-noroster"; mkdir -p "$D2"; ln -sf "$SCRIPTS/rev-preflight.sh" "$D2/rev-preflight.sh"
+  "$D2/rev-preflight.sh" > /dev/null 2> "$T/pf.err"; assert_eq "missing roster.sh refused" "$?" 1
+  assert_grep "blames the roster" "$T/pf.err" 'roster.sh failed'
   # paths with spaces: the pathspec and the changed-file list must not be word-split (git quotes such paths in porcelain v1)
   mkdir -p "my dir"; echo s > "my dir/a note.txt"; git add "my dir/a note.txt"; git commit -qm "feat: spaces"
   echo u > "untracked note.txt"
-  "$SCRIPTS/rev-preflight.sh" --write "$T/pf-sp" > "$T/pf.out" 2>&1; assert_eq "space paths ok" "$?" 0
+  "$PF" --write "$T/pf-sp" > "$T/pf.out" 2>&1; assert_eq "space paths ok" "$?" 0
   assert_grep "space path intact" "$T/pf-sp/files.txt" '^my dir/a note\.txt$'
   assert_grep "untracked space path intact" "$T/pf-sp/files.txt" '^untracked note\.txt$'
   assert_nogrep "no quote fragments" "$T/pf-sp/files.txt" '"'
-  "$SCRIPTS/rev-preflight.sh" --scope "my dir" > "$T/pf.out" 2>&1; assert_eq "scope with a space ok" "$?" 0
+  "$PF" --scope "my dir" > "$T/pf.out" 2>&1; assert_eq "scope with a space ok" "$?" 0
   assert_grep "space scope counts one file" "$T/pf.out" ' scope=my dir changed_files=1$'
-  # codex cache unusable → an explicit seat warning, never a silent two-seat run or a python traceback
-  REV_CODEX_MODELS_CACHE="$T/nope.json" "$SCRIPTS/rev-preflight.sh" > "$T/pf.out" 2> "$T/pf.err"; assert_eq "missing cache still exits 0" "$?" 0
-  assert_grep "warns about the cache" "$T/pf.out" '^  codex: no usable model in '
-  assert_nogrep "no traceback on stderr" "$T/pf.err" 'Traceback'
-  printf '%s' '{"models":[{"slug":"gpt-5.6-sol","supported_reasoning_levels":[{}]}]}' > "$T/bad-cache.json"
-  REV_CODEX_MODELS_CACHE="$T/bad-cache.json" "$SCRIPTS/rev-preflight.sh" > "$T/pf.out" 2> "$T/pf.err"; assert_eq "effort-less level survives" "$?" 0
-  assert_nogrep "no KeyError" "$T/pf.err" 'KeyError'
-  assert_grep "warns when no effort" "$T/pf.out" '^  codex: no usable model in '
-  cd "$T" && assert_exit "outside a repo refused" 1 "$SCRIPTS/rev-preflight.sh"
+  cd "$T" && assert_exit "outside a repo refused" 1 "$PF"
   cd "$old_pwd" 2>/dev/null || cd "$T" || return 1
-  PATH=$old_path; export PATH; unset REV_CODEX_MODELS_CACHE
+  PATH=$old_path; export PATH; unset RSTUB_ARGS
 }
 test_prompt() {
   local S="$T/pr-sess"; mkdir -p "$S"

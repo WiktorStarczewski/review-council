@@ -1,15 +1,17 @@
-# tests for Task 4 — sourced by run-tests.sh
+# rev-status.sh — the one-line status tick.
+# Ageing a file is BSD-only as `date -v`; it goes through compat.sh so this suite runs on Linux too.
+. "$SCRIPTS/lib/compat.sh"
 test_status() {
   local S="$T/status-sess"; mkdir -p "$S"
   "$SCRIPTS/rev-state.sh" "$S" round=2 min_rounds=7 phase=collect 'seats=["codex-sol","codex-terra","grok","opus"]' open.P0=0 open.P1=1 open.P2=3 fixed=4 'dropped=["codex-terra"]' >/dev/null
   # sol: done with 1 finding, started 9 minutes ago, finished 2 minutes ago
   cp "$FX/findings-valid.json" "$S/r2-codex-sol.json"; echo 0 > "$S/r2-codex-sol.exit"; : > "$S/r2-codex-sol.prompt.md"
-  touch -t "$(date -v-9M +%Y%m%d%H%M.%S)" "$S/r2-codex-sol.prompt.md"; touch -t "$(date -v-2M +%Y%m%d%H%M.%S)" "$S/r2-codex-sol.exit"
+  rc_touch_ago 540 "$S/r2-codex-sol.prompt.md"; rc_touch_ago 120 "$S/r2-codex-sol.exit"
   # grok: running, last action from the log
-  : > "$S/r2-grok.prompt.md"; touch -t "$(date -v-14M +%Y%m%d%H%M.%S)" "$S/r2-grok.prompt.md"
+  : > "$S/r2-grok.prompt.md"; rc_touch_ago 840 "$S/r2-grok.prompt.md"
   printf 'tool_call shell: git diff abc --stat\ntext: thinking\ntool_call shell: rg "retry" src/api\n' > "$S/r2-grok.log"
   # opus: running, transcript present
-  : > "$S/r2-opus.prompt.md"; touch -t "$(date -v-5M +%Y%m%d%H%M.%S)" "$S/r2-opus.prompt.md"
+  : > "$S/r2-opus.prompt.md"; rc_touch_ago 300 "$S/r2-opus.prompt.md"
   printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{}}]}}\n{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Grep","input":{}}]}}\n' > "$T/opus.jsonl"
   "$SCRIPTS/rev-state.sh" "$S" "opus_transcript=$T/opus.jsonl" >/dev/null
   local line; line=$("$SCRIPTS/rev-status.sh" "$S"); echo "    $line"
@@ -37,7 +39,7 @@ test_status_overflow() {
     open.P0=2 open.P1=3 open.P2=4 fixed=9 >/dev/null
   local seat
   for seat in codex-sol codex-terra grok opus grok-code-review; do
-    : > "$S/r3-$seat.prompt.md"; touch -t "$(date -v-11M +%Y%m%d%H%M.%S)" "$S/r3-$seat.prompt.md"
+    : > "$S/r3-$seat.prompt.md"; rc_touch_ago 660 "$S/r3-$seat.prompt.md"
     printf 'tool_call shell: rg "retry|timeout|backoff" src/api/handlers --stats\n' > "$S/r3-$seat.log"
   done
   local line; line=$("$SCRIPTS/rev-status.sh" "$S"); echo "    $line"
@@ -54,7 +56,7 @@ test_status_overflow() {
     open.P0=1 open.P1=2 open.P2=3 fixed=5 >/dev/null
   for seat in alpha bravo charlie delta echo foxtrot golf hotel; do
     : > "$W/r3-reviewer-seat-$seat.prompt.md"
-    touch -t "$(date -v-7M +%Y%m%d%H%M.%S)" "$W/r3-reviewer-seat-$seat.prompt.md"
+    rc_touch_ago 420 "$W/r3-reviewer-seat-$seat.prompt.md"
     printf 'tool_call shell: rg "retry|timeout|backoff" src/api/handlers --stats\n' > "$W/r3-reviewer-seat-$seat.log"
   done
   line=$("$SCRIPTS/rev-status.sh" "$W"); echo "    $line"; echo "$line" > "$T/hline"

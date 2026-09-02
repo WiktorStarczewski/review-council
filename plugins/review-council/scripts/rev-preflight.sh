@@ -1,10 +1,14 @@
 #!/bin/bash
 # rev-preflight.sh [--scope branch|uncommitted|<path>] [--write <session-dir>]
 # Refuse a bad start (exit 1 + one-line reason on stderr), or print the pinned scope and the usable seats.
-# --write stores scope.env (REV_BASE/REV_BRANCH/REV_DEFAULT/REV_ROOT/REV_SCOPE) + files.txt + untracked.txt in <session-dir>.
+# --write stores scope.env (REV_BASE/REV_BRANCH/REV_DEFAULT/REV_ROOT/REV_SCOPE) + files.txt + untracked.txt
+# + roster.json in <session-dir>.
 # scope.env values are SINGLE-QUOTED (with '\'' escaping) so `. scope.env` can never expand or execute a branch
 # name or a path: a branch called `x$(touch pwned)` is data, not a command.
+# The seats come from roster.sh, which owns detection, sign-in and the one-token probe — preflight never
+# calls a lab CLI itself.
 set -u
+HERE=$(cd "$(dirname "$0")" && pwd)
 SCOPE=branch; WRITE=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -43,44 +47,47 @@ else
   fi
   [ -n "$(git diff --stat "$BASE" ${PS[@]+"${PS[@]}"})$(git status --porcelain ${PS[@]+"${PS[@]}"})" ] || die "scope is empty — nothing differs from $BASE${PS[0]+ under $SCOPE}"
 fi
-CX=$(codex login status 2>&1) && printf '%s\n' "$CX" | grep -q "Logged in using" || die "codex is not signed in — run: codex login"
-# "logged in" as a substring also matches "Not logged in": require the positive phrase AND the absence of the negative.
-GM=$(grok models 2>&1) && printf '%s\n' "$GM" | grep -qi "you are logged in" \
-  && ! printf '%s\n' "$GM" | grep -qi "not logged in" || die "grok is not signed in — run: grok login"
+# --- seats -------------------------------------------------------------------------------------------
+# The roster is built AFTER the git checks: a run that is going to be refused for scope reasons must not
+# spend a probe. --probe costs one token per CLI seat and drops the ones that cannot answer.
+# ONE call does both jobs: --write stores the JSON the fan-out reads, --brief prints the human line from
+# the SAME probed roster (asking twice would probe twice and could print a seat the probe had just dropped).
+if [ -n "$WRITE" ]; then
+  mkdir -p "$WRITE" || die "cannot create session dir $WRITE"
+  RJSON="$WRITE/roster.json"
+else
+  RJSON=$(mktemp "${TMPDIR:-/tmp}/rev-roster.XXXXXX") || die "cannot create a temporary file for the roster"
+  trap 'rm -f "$RJSON"' EXIT
+fi
+BRIEF=$("$HERE/roster.sh" --probe --brief --write "$RJSON"); RC=$?
+if [ "$RC" = 5 ]; then
+  # roster.sh still emits JSON when it refuses: report the seat count and every exclusion reason.
+  NR=$(ROSTER_JSON="$RJSON" python3 - <<'PY'
+import json, os
+try:
+    with open(os.environ['ROSTER_JSON']) as f:
+        d = json.load(f)
+    if not isinstance(d, dict):
+        raise ValueError('not an object')
+    seats = [s for s in (d.get('seats') or []) if isinstance(s, dict) and not s.get('extra')]
+    ex = [e for e in (d.get('excluded') or []) if isinstance(e, dict)]
+    reasons = '; '.join(f"{e.get('cli', '?')}: {e.get('reason', '?')}" for e in ex) or 'no reason recorded'
+    print(f"{len(seats)}|{reasons}")
+except Exception:
+    print("0|roster JSON unreadable")
+PY
+)
+  die "only ${NR%%|*} seats available (need 3): ${NR#*|}"
+fi
+[ "$RC" = 0 ] || die "roster.sh failed (exit $RC) — run $HERE/roster.sh --json to see why"
 # -z + tr, never field-splitting: git quotes paths containing spaces in porcelain/diff output otherwise.
 UNTRACKED=$(git ls-files -z --others --exclude-standard ${PS[@]+"${PS[@]}"} | tr '\0' '\n' | grep .)
 FILES=$( { git diff --name-only -z "$BASE" ${PS[@]+"${PS[@]}"} | tr '\0' '\n'
            printf '%s\n' "$UNTRACKED"; } | sort -u | grep . )
 N=$(printf '%s\n' "$FILES" | grep -c .)
 echo "base=$BASE branch=$BRANCH default=$DEFAULT root=$ROOT scope=$SCOPE changed_files=$N"
-echo "seats:"
-REV_CODEX_MODELS_CACHE=${REV_CODEX_MODELS_CACHE:-$HOME/.codex/models_cache.json} python3 - <<'PY'
-import json, os
-path = os.environ['REV_CODEX_MODELS_CACHE']
-try:
-    with open(path) as f: d = json.load(f)
-except Exception:
-    d = {}
-if not isinstance(d, dict): d = {}
-models = d.get('models') or []
-seated = 0
-for m in models if isinstance(models, list) else []:
-    if not isinstance(m, dict) or m.get('slug') not in ('gpt-5.6-sol', 'gpt-5.6-terra'):
-        continue
-    levels = m.get('supported_reasoning_levels') or []
-    lv = [l.get('effort') for l in levels if isinstance(l, dict) and l.get('effort')]
-    top = next((e for e in ('max', 'xhigh', 'high') if e in lv), lv[-1] if lv else None)
-    if not top:
-        continue
-    print(f"  codex-{m['slug'].rsplit('-', 1)[1]}@{top}")
-    seated += 1
-if not seated:
-    print(f"  codex: no usable model in {path} — check codex login / models cache")
-PY
-if echo "$GM" | grep -q "grok-4.6"; then echo "  grok@xhigh"; else echo "  grok: grok-4.6 not listed — check 'grok models'"; fi
-echo "  opus@max (rev-reviewer agent)"
+[ -n "$BRIEF" ] && printf '%s\n' "$BRIEF"
 if [ -n "$WRITE" ]; then
-  mkdir -p "$WRITE" || die "cannot create session dir $WRITE"
   { printf 'REV_BASE=%s\n'    "$(q "$BASE")"
     printf 'REV_BRANCH=%s\n'  "$(q "$BRANCH")"
     printf 'REV_DEFAULT=%s\n' "$(q "$DEFAULT")"
@@ -92,3 +99,4 @@ if [ -n "$WRITE" ]; then
   if [ -n "$UNTRACKED" ]; then printf '%s\n' "$UNTRACKED" > "$WRITE/untracked.txt" || die "cannot write $WRITE/untracked.txt"
   else : > "$WRITE/untracked.txt" || die "cannot write $WRITE/untracked.txt"; fi
 fi
+exit 0

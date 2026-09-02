@@ -1,30 +1,67 @@
-# B7/B10/A8 — preflight edges: grok-only sign-out, a relative --write, a master-only repo, a deleted path scope.
+# preflight edges: a degraded-but-sufficient roster, a relative --write, a master-only repo, a deleted path scope.
 test_preflight_edges() {
-  ( seat_env; export REV_CODEX_MODELS_CACHE="$FX/codex-models-cache.json"
+  ( seat_env; local PF; PF="$(pf_bin)/rev-preflight.sh"
     local R="$T/pf2"; mkrepo "$R"; cd "$R" || { fail "pf2 setup" "cannot cd"; return 1; }
     git checkout -qb feat; echo b > b.txt; git add b.txt; git commit -qm "feat: b"
-    # "logged in" is a substring of "Not logged in": grok alone signed out must still refuse
-    SHIM_MODE=grok-notauth "$SCRIPTS/rev-preflight.sh" > /dev/null 2> "$T/pf2.err"
-    assert_eq "grok notauth refused" "$?" 1
-    assert_grep "names grok" "$T/pf2.err" 'grok is not signed in'
+    # a lab that is out but still leaves three seats is a warning on the roster line, not a refusal
+    RSTUB_BRIEF='review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@xhigh) · grok ✗ not signed in · gemini ✗ not installed · claude ✓ (opus@max)' \
+      "$PF" > "$T/pf2.out" 2> "$T/pf2.err"
+    assert_eq "a degraded but sufficient roster is accepted" "$?" 0
+    assert_grep "the roster line names the missing lab" "$T/pf2.out" 'grok ✗ not signed in'
+    assert_nogrep "and preflight adds no sign-in check of its own" "$T/pf2.err" 'not signed in'
     # --write is resolved against the CALLER's cwd, not the repo root it cds to
     mkdir -p "$R/sub"; cd "$R/sub" || { fail "pf2 setup" "cannot cd to sub"; return 1; }
-    "$SCRIPTS/rev-preflight.sh" --write sess > /dev/null 2>&1; assert_eq "relative --write ok" "$?" 0
+    "$PF" --write sess > /dev/null 2>&1; assert_eq "relative --write ok" "$?" 0
     assert_exit "relative --write lands under the cwd" 0 test -f "$R/sub/sess/scope.env"
+    assert_exit "roster.json lands beside scope.env" 0 test -f "$R/sub/sess/roster.json"
     assert_exit "…and not under the repo root" 1 test -f "$R/sess/scope.env"
     cd "$R" || return 1
     # a path the change DELETES is still a reviewable scope
     git rm -q a.txt; git commit -qm "feat: drop a"
-    "$SCRIPTS/rev-preflight.sh" --scope a.txt > "$T/pf2.out" 2>&1; assert_eq "deleted path scope ok" "$?" 0
+    "$PF" --scope a.txt > "$T/pf2.out" 2>&1; assert_eq "deleted path scope ok" "$?" 0
     assert_grep "deleted path counts one file" "$T/pf2.out" ' scope=a.txt changed_files=1$'
-    assert_exit "a path that never existed is still refused" 1 "$SCRIPTS/rev-preflight.sh" --scope nope.txt
+    assert_exit "a path that never existed is still refused" 1 "$PF" --scope nope.txt
     # default branch: origin/HEAD → main → master → refuse
     local M="$T/pf2-master"; mkrepo "$M"; cd "$M" || { fail "pf2 setup" "cannot cd to master repo"; return 1; }
     git branch -m master; git checkout -qb feat; echo m > m.txt; git add m.txt; git commit -qm "feat: m"
-    "$SCRIPTS/rev-preflight.sh" > "$T/pf2m.out" 2>&1; assert_eq "master-only repo ok" "$?" 0
+    "$PF" > "$T/pf2m.out" 2>&1; assert_eq "master-only repo ok" "$?" 0
     assert_grep "default is master" "$T/pf2m.out" ' default=master '
     git branch -m master trunk
-    "$SCRIPTS/rev-preflight.sh" > /dev/null 2> "$T/pf2n.err"; assert_eq "no base branch refused" "$?" 1
+    "$PF" > /dev/null 2> "$T/pf2n.err"; assert_eq "no base branch refused" "$?" 1
     assert_grep "says why" "$T/pf2n.err" 'cannot determine the default branch'
+  )
+}
+
+# …and the same seam against the REAL roster.sh, driven by the shims: preflight seats from it, refuses
+# under three seats, and never runs a sign-in check of its own. PATH holds only the shims plus the system
+# directories, so a real codex/grok/gemini on this machine can never be reached.
+test_preflight_roster() {
+  ( local B="$T/pfr-bin" R="$T/pfr"; mkdir -p "$B"; mkrepo "$R"
+    cp "$SHIMS/codex" "$SHIMS/grok" "$B/"; chmod +x "$B/codex" "$B/grok"
+    export PATH="$B:/usr/bin:/bin:/usr/sbin:/sbin"
+    export HOME="$T/pfr-home"; mkdir -p "$HOME"
+    export SHIM_FIXTURE_DIR="$FX"
+    export REVIEW_COUNCIL_CODEX_MODELS_CACHE="$FX/roster-codex-cache-full.json"
+    export REVIEW_COUNCIL_CONFIG="$HOME/no-such-config.json"
+    export REVIEW_COUNCIL_GEMINI_CREDS="$HOME/no-such-creds.json"
+    unset GEMINI_API_KEY REVIEW_COUNCIL_GEMINI_MODEL REVIEW_COUNCIL_CLAUDE_SEAT SHIM_MODE SHIM_ARGS_FILE
+    cd "$R" || { fail "pfr setup" "cannot cd to $R"; return 1; }
+    git checkout -qb feat; echo b > b.txt; git add b.txt; git commit -qm "feat: b"
+    "$SCRIPTS/rev-preflight.sh" --write "$T/pfr-sess" > "$T/pfr.out" 2> "$T/pfr.err"
+    assert_eq "real roster: four seats accepted" "$?" 0
+    assert_grep "base line first" "$T/pfr.out" '^base=[0-9a-f]{7,} branch=feat '
+    assert_grep "roster line second" "$T/pfr.out" '^review-council seats: codex ✓ \(gpt-5\.6-sol@max, gpt-5\.6-terra@max\) · grok ✓ \(grok-4\.6@xhigh\)'
+    assert_grep "an absent lab is reported, not fatal" "$T/pfr.out" 'gemini ✗ not installed'
+    assert_grep "roster.json holds the probed seats" "$T/pfr-sess/roster.json" '"seat": "codex-sol"'
+    assert_nogrep "an excluded lab is never seated" "$T/pfr-sess/roster.json" '"seat": "gemini"'
+    assert_exit "scope.env is written beside it" 0 test -f "$T/pfr-sess/scope.env"
+    # codex gone → grok + opus only: refused before a single prompt is rendered
+    rm -f "$B/codex"
+    "$SCRIPTS/rev-preflight.sh" --write "$T/pfr-sess2" > "$T/pfr.out" 2> "$T/pfr.err"
+    assert_eq "real roster: two seats refused" "$?" 1
+    assert_grep "the refusal counts the seats" "$T/pfr.err" '^preflight: only 2 seats available \(need 3\): '
+    assert_grep "…and names the reason" "$T/pfr.err" 'codex: not installed'
+    assert_nogrep "no base line on a refusal" "$T/pfr.out" '^base='
+    assert_exit "no scope.env from a refused run" 1 test -f "$T/pfr-sess2/scope.env"
   )
 }
