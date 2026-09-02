@@ -9,7 +9,7 @@ Package the multi-model review loop as a Claude Code plugin that installs in one
 
 ## 2. Distribution
 
-- Repo `zoroswap/review-council` (public) is both the **marketplace** and the **plugin**, in the layout OpenAI's codex plugin uses:
+- Repo `WiktorStarczewski/review-council` (public) is both the **marketplace** and the **plugin**, in the layout OpenAI's codex plugin uses:
   ```
   .claude-plugin/marketplace.json        name: review-council, plugins: [{ name: review-council, source: ./plugins/review-council }]
   plugins/review-council/
@@ -24,7 +24,7 @@ Package the multi-model review loop as a Claude Code plugin that installs in one
   install.sh                             curl-able one-liner: marketplace add + plugin install
   README.md  LICENSE (MIT)  .github/workflows/test.yml
   ```
-- Install: `claude plugin marketplace add zoroswap/review-council && claude plugin install review-council@review-council`, or `curl -fsSL https://raw.githubusercontent.com/zoroswap/review-council/main/install.sh | bash`. Update: `claude plugin update review-council`.
+- Install: `claude plugin marketplace add WiktorStarczewski/review-council && claude plugin install review-council@review-council`, or `curl -fsSL https://raw.githubusercontent.com/WiktorStarczewski/review-council/main/install.sh | bash`. Update: `claude plugin update review-council`.
 - No npm package: Claude Code plugins are delivered by marketplaces; Superpowers' `package.json` serves other harnesses. (An npm shim can be added later without changing anything here.)
 - Every path inside the plugin is `${CLAUDE_PLUGIN_ROOT}`-relative in skill text, hook commands and the agent's hook; scripts locate siblings via their own path.
 
@@ -106,7 +106,7 @@ After the plugin installs from GitHub and a live `/review-council:rev branch 2` 
 | L1 | `claude plugin marketplace add /Users/celrisen/review-council` + install; new session shows the bootstrap context and roster line | policy text + `codex ✓ … gemini ✗` visible |
 | L2 | `/review-council:rev branch 2` on a re-planted self-test branch | roster = codex×2 + grok + opus; plants found; loop terminates; squash; report |
 | L3 | one headless stack leg (`/review-council:stack`) | DONE with report.md, no false kill, orchestrator finish |
-| L4 | reinstall from GitHub (`marketplace add zoroswap/review-council`) | same as L1 |
+| L4 | reinstall from GitHub (`marketplace add WiktorStarczewski/review-council`) | same as L1 |
 | L5 | roster with gemini shim present | gemini seat appears with the configured model; adapter unit-tested against a fixture stream (no live Gemini on this box — documented) |
 
 ## 11. Non-goals

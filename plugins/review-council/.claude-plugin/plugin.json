@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "description": "Multi-model code review council: Codex, Grok, Gemini and Claude seats reviewing the same change, triaged and fixed in a loop, with a roster built at run time from the lab CLIs you have installed.",
   "author": { "name": "Wiktor Starczewski" },
-  "homepage": "https://github.com/zoroswap/review-council",
-  "repository": "https://github.com/zoroswap/review-council",
+  "homepage": "https://github.com/WiktorStarczewski/review-council",
+  "repository": "https://github.com/WiktorStarczewski/review-council",
   "license": "MIT",
   "keywords": ["review", "code-review", "multi-model", "codex", "grok", "gemini", "adversarial"]
 }

@@ -7,14 +7,14 @@ A Claude Code plugin that runs your code review through a panel instead of one m
 Marketplace:
 
 ```bash
-claude plugin marketplace add zoroswap/review-council
+claude plugin marketplace add WiktorStarczewski/review-council
 claude plugin install review-council@review-council
 ```
 
 One-liner:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zoroswap/review-council/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/WiktorStarczewski/review-council/main/install.sh | bash
 ```
 
 Update with `claude plugin update review-council`. Restart Claude Code (or `/reload-plugins`) after installing.
