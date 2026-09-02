@@ -1,0 +1,6 @@
+{
+  "exclude": [
+    "grok"
+  ],
+  "unknown_key": "ignored"
+}

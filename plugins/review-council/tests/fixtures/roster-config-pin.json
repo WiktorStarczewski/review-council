@@ -1,0 +1,10 @@
+{
+  "pin": {
+    "codex-sol": {
+      "effort": "ultra"
+    },
+    "grok": {
+      "model": "grok-4.7-fast"
+    }
+  }
+}
