@@ -21,5 +21,5 @@ case "${SHIM_MODE:-ok}" in
   # a failing run whose MODEL OUTPUT merely quotes a 401 (agent_message → `text:` in the log): must NOT read as auth
   noise401)   echo '{"type":"item.completed","item":{"id":"i9","type":"agent_message","text":"the endpoint answers 401 Unauthorized on expiry"}}'; echo '{"type":"turn.completed"}'; exit 1;;
   noise401exec) echo '{"type":"item.started","item":{"id":"i9","type":"command_execution","command":"rg -n \"401 unauthorized\" src"}}'; echo '{"type":"item.completed","item":{"id":"i9","type":"command_execution","command":"rg -n \"401 unauthorized\" src","exit_code":1}}'; echo '{"type":"turn.completed"}'; exit 1;;
-  *)          cat "$SHIM_FIXTURE_DIR/codex-stream.ndjson"; cp "$SHIM_FIXTURE_DIR/findings-valid.json" "$OUT"; exit 0;;
+  *)          cat "$SHIM_FIXTURE_DIR/codex-stream.ndjson"; { [ -z "$OUT" ] || cp "$SHIM_FIXTURE_DIR/findings-valid.json" "$OUT"; }; exit 0;;
 esac
