@@ -1,0 +1,70 @@
+#!/bin/bash
+# SessionStart hook: injects the review-council standing policy plus a cheap
+# roster line as additionalContext, so every session opens knowing the loop
+# exists and which lab seats are available -- the same bootstrap move
+# Superpowers uses for its own skills.
+#
+# Cheap detection only: this NEVER probes a CLI (no --probe) and must return
+# well under a second, so a plain `roster.sh --brief` call is capped with a
+# defensive timeout on top of whatever cap roster.py enforces internally.
+#
+# Contract: always exit 0 -- a hook that fails should not fail the session.
+# No external deps beyond bash/python3 (python3 does the JSON, via
+# json.dumps -- no hand escaping).
+set -u
+HERE=$(cd "$(dirname "$0")" && pwd)
+ROOT=$(cd "$HERE/.." && pwd)
+POLICY="$ROOT/skills/rev/POLICY.md"
+ROSTER="$ROOT/scripts/roster.sh"
+
+python3 - "$POLICY" "$ROSTER" <<'PY'
+import json
+import subprocess
+import sys
+
+policy_path, roster_path = sys.argv[1], sys.argv[2]
+
+policy_text = ""
+try:
+    with open(policy_path, encoding="utf-8") as f:
+        policy_text = f.read().strip("\n")
+except OSError:
+    policy_text = ""  # POLICY.md not present yet -- still emit a usable roster line
+
+def roster_line():
+    try:
+        r = subprocess.run(
+            [roster_path, "--brief"],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            stdin=subprocess.DEVNULL,
+        )
+    except FileNotFoundError:
+        return "review-council seats: roster unavailable (roster.sh not installed)"
+    except PermissionError:
+        return "review-council seats: roster unavailable (roster.sh not executable)"
+    except subprocess.TimeoutExpired:
+        return "review-council seats: roster unavailable (timed out)"
+    except OSError as e:
+        return "review-council seats: roster unavailable (%s)" % e
+    out = (r.stdout or "").strip()
+    if out:
+        return out  # pass through verbatim, even on roster.sh's exit 5 (<3 seats is real content, not a failure)
+    err = (r.stderr or "").strip().splitlines()
+    reason = err[0] if err else ("exit %d" % r.returncode)
+    return "review-council seats: roster unavailable (%s)" % reason
+
+line = roster_line()
+context = "%s\n\n%s" % (policy_text, line) if policy_text else line
+
+print(json.dumps({
+    "hookSpecificOutput": {
+        "hookEventName": "SessionStart",
+        "additionalContext": context,
+    }
+}))
+PY
+
+exit 0
