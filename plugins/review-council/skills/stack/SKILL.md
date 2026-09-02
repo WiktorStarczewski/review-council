@@ -1,17 +1,17 @@
 ---
-name: review-stack
-description: Run the /rev multi-model review across a STACK of related PRs in several repos — per-PR legs in dependency order, two passes, a cross-repo seam review, a completeness critic, stall recovery, and one squashed review commit per repo. Use when one change spans multiple repositories that must be reviewed together (a protocol change plus the SDK, client and app PRs that consume it), or when a review must run unattended for many hours. For a single PR or branch, use /rev directly.
+name: stack
+description: Run the /review-council:rev multi-model review across a STACK of related PRs in several repos — per-PR legs in dependency order, two passes, a cross-repo seam review, a completeness critic, stall recovery, and one squashed review commit per repo. Use when one change spans multiple repositories that must be reviewed together (a protocol change plus the SDK, client and app PRs that consume it), or when a review must run unattended for many hours. For a single PR or branch, use /review-council:rev directly.
 user_invocable: true
 ---
 
-# review-stack
+# stack — one review across a stack of PRs
 
-Wraps `rev` for the case it does not cover: **one change spread across several repos**,
+Wraps `/review-council:rev` for the case it does not cover: **one change spread across several repos**,
 each with its own PR, that only makes sense reviewed together — and a run long enough
 (10–20 h) that it must survive stalls and machine contention without supervision.
 
-`/rev` runs one loop in this session and waits. This skill runs many, in sequence, as
-headless `claude -p "/rev …"` legs, and keeps them alive.
+`/review-council:rev` runs one loop in this session and waits. This skill runs many, in
+sequence, as headless `claude -p "/review-council:rev …"` legs, and keeps them alive.
 
 ## When this is the right tool
 
@@ -21,11 +21,11 @@ Both must hold:
 - The review will outlast your attention: legs take 1–4 h each; two passes over six
   repos is most of a day.
 
-For one PR, one branch, or uncommitted work: `/rev`. Do not reach for this.
+For one PR, one branch, or uncommitted work: `/review-council:rev`. Do not reach for this.
 
 ## Shape of a run
 
-    PHASE 1  per-PR legs, PASS 1     one /rev loop per repo, in dependency order
+    PHASE 1  per-PR legs, PASS 1     one review loop per repo, in dependency order
     PHASE 1  per-PR legs, PASS 2     again — pass 1 reviewed a tree that has since changed, including by pass 1 itself
     PHASE 2  cross-repo seam review  the contracts BETWEEN the PRs
     PHASE 3  completeness critic     what did every pass miss
@@ -37,8 +37,8 @@ function it rerouted. Nothing in pass 1 could have seen it.
 
 ## Preflight
 
-Everything `/rev`'s preflight checks per leg (working branch, non-empty scope, codex
-and grok signed in), plus:
+Everything `/review-council:rev`'s preflight checks per leg (working branch, non-empty
+scope, a roster of at least three signed-in seats), plus:
 
 1. **Order the legs by dependency.** Review the thing others build on first; its
    findings change what the dependents should say.
@@ -50,11 +50,11 @@ and grok signed in), plus:
 
 ## Running it
 
-Copy `~/.claude/skills/rev/examples/stack.example.sh`, fill in `legs()` and the
+Copy `${CLAUDE_PLUGIN_ROOT}/scripts/stack.example.sh`, fill in `legs()` and the
 seam/critic repos, then — from a plain foreground `Bash` call:
 
 ```bash
-~/.claude/skills/review-stack/scripts/rev-stack.sh my-stack.sh
+${CLAUDE_PLUGIN_ROOT}/scripts/stack.sh my-stack.sh
 ```
 
 It **detaches itself** into a new session (nohup + setsid) and returns at once,
@@ -66,16 +66,16 @@ died. `REV_STACK_FOREGROUND=1` keeps it attached for tests or a terminal you wil
 keep open.
 
 Then arm ONE `Monitor` on the log so the user gets the 10-minute status line the
-`rev` skill promises:
+`/review-council:rev` skill promises:
 
 ```
-Monitor({ command: "tail -n0 -f /tmp/rev-stack.log | grep --line-buffered -E '^\\S+ \\S+ (\\[status\\]|===|!!!|#####|ALL )'",
-          description: "review-stack progress", persistent: true, timeout_ms: 3600000 })
+Monitor({ command: "tail -n0 -f <the log path it printed> | grep --line-buffered -E '^\\S+ \\S+ (\\[status\\]|===|!!!|#####|ALL )'",
+          description: "review-council stack progress", persistent: true, timeout_ms: 3600000 })
 ```
 
 Relay each event to the user as-is with at most one sentence of context. The
 Monitor has its own lifetime cap; re-arm it if it expires while the run is alive
-(`pgrep -f rev-stack.sh`), and never treat a quiet Monitor as a finished run —
+(`pgrep -f stack.sh`), and never treat a quiet Monitor as a finished run —
 the log is the record.
 
 Legs run with `REV_STACK_LEG=1`, so a leg never squashes or pushes; the orchestrator
@@ -90,7 +90,7 @@ the script header.
 
 ## Stalls and status — one detector, in the orchestrator
 
-A headless leg that hangs looks exactly like one that is working. `rev-stack.sh`
+A headless leg that hangs looks exactly like one that is working. `stack.sh`
 polls each leg and kills it only when **both** hold:
 
 - `run.log` (stream-json: one event per assistant message and tool call) **and** the
@@ -125,8 +125,8 @@ re-run it idle before touching code.
 
 ## Finishing: squash, push, then promote
 
-`rev` commits per round as crash recovery; the orchestrator collapses each repo's run
-with `rev-squash.sh --apply` and pushes once. Squash and push are **independent**: a
+Each leg commits per round as crash recovery; the orchestrator collapses each repo's run
+with `${CLAUDE_PLUGIN_ROOT}/scripts/rev-squash.sh --apply` and pushes once. Squash and push are **independent**: a
 refused squash is logged (`!!! squash refused for <repo>`) and the push still happens,
 because the round commits are real work that CI has to see. If a repo prints
 "refusing: … only N unpushed", something was pushed mid-run — leave that history alone.

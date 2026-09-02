@@ -33,4 +33,11 @@ test_guard() {
   echo 'not json' | python3 "$SCRIPTS/lib/readonly-bash-guard.py" >/dev/null 2>&1; assert_eq "non-JSON payload is not blocked" "$?" 0
   assert_grep "header documents Read/Grep/Glob first" "$SCRIPTS/lib/readonly-bash-guard.py" "Read, Grep and Glob are the reviewer's primary tools"
   assert_grep "header says ALLOWLIST" "$SCRIPTS/lib/readonly-bash-guard.py" 'ALLOWLIST'
+  # The rev-reviewer agent's PreToolUse hook names this file as the command with no interpreter in
+  # front of it, so the shebang and the exec bit ARE the fence: without them every Bash call from the
+  # seat fails the hook open (exit 126 is not 2) and an unscoped shell reaches the repo.
+  assert_grep "guard carries a python3 shebang" "$SCRIPTS/lib/readonly-bash-guard.py" '^#!/usr/bin/env python3$'
+  assert_eq "guard is executable (the agent hook calls it directly)" "$([ -x "$SCRIPTS/lib/readonly-bash-guard.py" ] && echo yes)" "yes"
+  printf '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}' | "$SCRIPTS/lib/readonly-bash-guard.py" >/dev/null 2>&1
+  assert_eq "guard blocks a write command when run as a bare command" "$?" 2
 }

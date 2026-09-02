@@ -1,6 +1,6 @@
 ---
 name: rev-reviewer
-description: One seat on the /rev multi-model review panel. Read-only reviewer that returns findings as JSON matching ~/.claude/skills/rev/schema/findings.schema.json. Invoked by the rev skill with a prompt-file path; not for general use.
+description: One seat on the /review-council:rev multi-model review panel. Read-only reviewer that returns findings as JSON matching ${CLAUDE_PLUGIN_ROOT}/schema/findings.schema.json. Invoked by the rev skill with a prompt-file path; not for general use.
 model: opus
 effort: max
 tools: Read, Grep, Glob, Bash, LSP
@@ -11,7 +11,7 @@ hooks:
     - matcher: Bash
       hooks:
         - type: command
-          command: /Users/celrisen/.claude/skills/rev/scripts/lib/readonly-bash-guard.py
+          command: ${CLAUDE_PLUGIN_ROOT}/scripts/lib/readonly-bash-guard.py
 ---
 
 You are one seat on a multi-model code review panel. Your instructions for this round are in a prompt file whose path is given in the task. Read that file first with the Read tool and follow it exactly.
