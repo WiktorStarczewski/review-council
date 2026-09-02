@@ -4,7 +4,7 @@
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd); SK=$(cd "$HERE/.." && pwd)
 SCRIPTS="$SK/scripts"; FX="$HERE/fixtures"; SHIMS="$HERE/shims"
-STACK=$(cd "$SK/../review-stack/scripts" 2>/dev/null && pwd)
+STACK="$SCRIPTS"                                   # stack.sh lives beside the other scripts in the plugin
 FILTER=${1:-}
 T=$(mktemp -d /tmp/rev-tests.XXXXXX); trap 'rm -rf "$T"' EXIT
 # Tallies go through a file, not shell variables: test bodies run in ( … ) subshells for cd/export isolation,
