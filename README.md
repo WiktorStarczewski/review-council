@@ -50,6 +50,25 @@ The loop, in five steps, repeated each round:
 
 The loop keeps going past the minimum while new P0/P1s are still surfacing, and stops once two consecutive rounds add nothing and every open issue is resolved. At the end it squashes the round commits, pushes once, and writes `report.md`.
 
+### Round plan
+
+Each round has a fixed emphasis; that is what makes seven rounds worth more than one round seven times. The lenses listed for a round are dealt round-robin over whatever seats the roster produced, offset by the round number, so a three-seat and a six-seat panel both cover the same ground and no seat keeps the same lens twice in a row. Every seat's prompt names its lens and the round's emphasis.
+
+| Round | Emphasis | Lenses | Extra seat |
+|---|---|---|---|
+| 1 | Correctness, edge cases, error handling | correctness, edge-cases, error-handling | — |
+| 2 | Security, data and state | security, data-state | `codex-review` — Codex's own review prompt |
+| 3 | Concurrency, resources, performance | concurrency, resources, performance | `grok-code-review` — Grok's maintainability skill |
+| 4 | API and contract, compatibility | api-contract, data-state, readability | — |
+| 5 | Tests, observability | tests, observability | — |
+| 6 | Red team: every seat argues the change is broken | red-team | — |
+| 7 | Regression: re-read the cumulative diff including all fixes | regression | — |
+| 8+ | Whatever is least covered or still open | the uncovered lenses, rotated | — |
+
+Whenever the diff touches tests, every prompt in every round also carries the vacuity check: for each new or changed assertion, name the production change that would make it fail, and report any that has none. It is the single most common defect a panel finds, and it finds it late.
+
+`rounds` is a minimum. The loop extends past it while the last round produced a new P0/P1, its fixes were more than trivial, a P0/P1 is still open, or a lens or major changed file has not been reviewed; it stops when the minimum has run, two consecutive rounds produced no new P0/P1, nothing P0/P1 is open, and the gates are at or above the baseline.
+
 ### The 10-minute status line
 
 While a run is active you get one line every ten minutes without asking, built only from files in the session directory:
