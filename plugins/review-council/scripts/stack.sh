@@ -1,11 +1,11 @@
 #!/bin/bash
-# rev-stack.sh <config.sh>
-# Run /rev across a STACK of repos, unattended: per-repo legs (PASSES passes), a cross-repo seam review, a
-# completeness critic, then one squash + push per repo. Legs are headless `claude -p "/rev …"` runs marked
-# REV_STACK_LEG=1, so they never squash or push themselves.
+# stack.sh <config.sh>
+# Run /review-council:rev across a STACK of repos, unattended: per-repo legs (PASSES passes), a cross-repo seam
+# review, a completeness critic, then one squash + push per repo. Legs are headless
+# `claude -p "/review-council:rev …"` runs marked REV_STACK_LEG=1, so they never squash or push themselves.
 #
 # The config defines legs() — run_leg calls in DEPENDENCY ORDER — and may set SEAM_REPO / CRITIC_REPO / premises.
-# See ~/.claude/skills/rev/examples/stack.example.sh.
+# See stack.example.sh next to this script.
 #
 # ONE stall detector, here, and nowhere else. A leg is killed only when (a) its run.log AND session dir have been
 # quiet for STALL_SECS and (b) its CPU time did not move across CPU_SAMPLE_SECS. stream-json makes run.log a real
@@ -16,13 +16,18 @@
 # grandchildren under claude and are where the CPU actually goes, so measuring the child alone reads "frozen"
 # while a seat is mid-run (a false kill) and killing the child alone orphans the seats (leaked usage quota).
 set -u
+HERE=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=lib/compat.sh
+# Guarded: without rc_mtime/rc_newest_mtime the stall detector loses the file-activity half of its
+# two-condition kill rule and silently kills healthy legs, so a missing compat.sh is fatal, not a warning.
+. "$HERE/lib/compat.sh" || { echo "stack: cannot load $HERE/lib/compat.sh" >&2; exit 1; }   # rc_mtime / rc_newest_mtime — BSD and GNU stat differ
 # PATH is APPENDED, never prepended: an operator's (or a test's) own claude/codex/grok must keep winning.
 export PATH="$PATH:$HOME/.nvm/versions/node/v22.22.0/bin:$HOME/.local/bin"
-[ -z "${REV_ACTIVE:-}${REV_STACK_LEG:-}" ] || { echo "rev-stack: refusing to nest (REV_ACTIVE or REV_STACK_LEG is set)" >&2; exit 1; }
-CONFIG=${1:?usage: rev-stack.sh <config.sh>   (template: ~/.claude/skills/rev/examples/stack.example.sh)}
-[ -f "$CONFIG" ] || { echo "rev-stack: config not found: $CONFIG" >&2; exit 1; }
-ROOT=${ROOT:-/tmp/rev-stack-$(date +%s)}
-LOG=${LOG:-/tmp/rev-stack.log}
+[ -z "${REV_ACTIVE:-}${REV_STACK_LEG:-}" ] || { echo "stack: refusing to nest (REV_ACTIVE or REV_STACK_LEG is set)" >&2; exit 1; }
+CONFIG=${1:?usage: stack.sh <config.sh>   (template: stack.example.sh next to this script)}
+[ -f "$CONFIG" ] || { echo "stack: config not found: $CONFIG" >&2; exit 1; }
+ROOT=${ROOT:-/tmp/review-council-stack-$(date +%s)}
+LOG=${LOG:-/tmp/review-council-stack.log}
 # DETACH BY DEFAULT. A run lasts hours; anything still inside the launching tool's process tree dies with it —
 # a Claude Code background Bash command was killed by the harness after ~56 min and took the leg (its whole
 # process group) down mid-round. So the orchestrator re-executes itself in a NEW SESSION with HUP ignored
@@ -32,7 +37,7 @@ if [ -z "${REV_STACK_FOREGROUND:-}" ] && [ -z "${REV_STACK_DETACHED:-}" ]; then
   mkdir -p "$ROOT"; OUTF="$ROOT/orchestrator.out"
   export REV_STACK_DETACHED=1 ROOT LOG
   nohup python3 -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' "$0" "$@" > "$OUTF" 2>&1 < /dev/null &
-  echo "rev-stack: detached (pid $!), session root $ROOT, log $LOG, orchestrator output $OUTF"
+  echo "stack: detached (pid $!), session root $ROOT, log $LOG, orchestrator output $OUTF"
   exit 0
 fi
 PASSES=${PASSES:-2}
@@ -47,7 +52,7 @@ INFRA_SLEEP_SECS=${INFRA_SLEEP_SECS:-300}
 AUTH_WAIT_TRIES=${AUTH_WAIT_TRIES:-60}
 AUTH_WAIT_SECS=${AUTH_WAIT_SECS:-60}
 NO_PUSH=${NO_PUSH:-0}
-REV_SCRIPTS=${REV_SCRIPTS:-$HOME/.claude/skills/rev/scripts}
+REV_SCRIPTS=${REV_SCRIPTS:-$HERE}   # roster.sh, rev-status.sh and rev-squash.sh live beside this script
 SEAM_REPO=${SEAM_REPO:-}
 SEAM_PREMISE=${SEAM_PREMISE:-"Review the SEAMS between the PRs in this stack, not the code again: what each PR promises the others, what each assumes of the others, and every claim that a sibling PR invalidates."}
 CRITIC_REPO=${CRITIC_REPO:-}
@@ -63,7 +68,6 @@ note_failure() {  # <label> <repo-dir> — a failed leg must not be reported as 
   FAILED_LABELS="$FAILED_LABELS $1"
   case " $FAILED_REPOS " in *" $2 "*) ;; *) FAILED_REPOS="$FAILED_REPOS $2";; esac
 }
-newest_mtime() { find "$1" -type f -exec stat -f %m {} + 2>/dev/null | sort -rn | head -1; }
 leg_group() {  # the leg's own process-group id, and only when it leads that group (see leg_tree)
   local g; g=$(ps -o pgid= -p "$1" 2>/dev/null | tr -d ' ')
   [ -n "$g" ] && [ "$g" = "$1" ] && echo "$g"
@@ -86,15 +90,20 @@ kill_leg() {  # TERM then KILL the whole tree; the group is resolved BEFORE the 
   sleep 3
   if [ -n "$g" ]; then kill -9 "-$g" 2>/dev/null; else kill -9 $pids 2>/dev/null; fi
 }
+last_activity() {  # <session-dir> → newest mtime of run.log or anything under it, 0 when nothing exists yet
+  local m1 m2
+  m1=$(rc_mtime "$1/run.log"); m1=${m1:-0}
+  m2=$(rc_newest_mtime "$1"); m2=${m2:-0}
+  [ "$m2" -gt "$m1" ] && m1=$m2
+  echo "$m1"
+}
 
 wait_for_auth() {
-  # "logged in" is a SUBSTRING of "Not logged in": require the CLI to exit 0 AND print the positive
-  # phrase AND not print the negative one. The old test passed while both tools were signed out.
-  local i cx gm
+  # The roster owns sign-in detection for every lab; the stack only asks whether enough seats are available.
+  # `roster.sh --brief` exits 0 with three or more seats and non-zero below that — that exit code is the gate.
+  local i
   for i in $(seq 1 "$AUTH_WAIT_TRIES"); do
-    if cx=$(codex login status 2>&1) && printf '%s\n' "$cx" | grep -q "Logged in using" \
-       && gm=$(grok models 2>&1) && printf '%s\n' "$gm" | grep -qi "you are logged in" \
-       && ! printf '%s\n' "$gm" | grep -qi "not logged in"; then return 0; fi
+    "$REV_SCRIPTS/roster.sh" --brief >/dev/null && return 0
     say "    auth not ready ($i/$AUTH_WAIT_TRIES)"; sleep "$AUTH_WAIT_SECS"
   done
   return 1
@@ -116,7 +125,7 @@ run_leg() {  # <repo-path> <rounds> <label> "<premise>"
 NOTE: an earlier pass of this review exists. Read $S/findings.md FIRST and do not re-raise what it fixed, rejected with sound reasoning, or deferred with a stated reason. Start from the current branch state."
     say "=== START $label pass${PASS} (attempt $attempt/$MAX_ATTEMPTS) rounds=$rounds"
     local t0; t0=$(date +%s)
-    local prompt="/rev branch $rounds — use $S as the session dir.
+    local prompt="/review-council:rev branch $rounds — use $S as the session dir.
 
 ${extra}
 
@@ -128,9 +137,8 @@ ${VACUITY}${resume}"
     last_seen=$(date +%s); last_status=$last_seen
     while kill -0 "$pid" 2>/dev/null; do
       sleep "$POLL"
-      local now m1 m2 m idle; now=$(date +%s)
-      m1=$(stat -f %m "$S/run.log" 2>/dev/null || echo 0); m2=$(newest_mtime "$S"); m2=${m2:-0}
-      m=$m1; [ "$m2" -gt "$m" ] && m=$m2
+      local now m idle; now=$(date +%s)
+      m=$(last_activity "$S")
       [ "$m" -gt "$last_seen" ] && last_seen=$m
       idle=$(( now - last_seen ))
       if [ $(( now - last_status )) -ge "$STATUS_EVERY" ]; then
@@ -146,8 +154,7 @@ ${VACUITY}${resume}"
         if ! kill -0 "$pid" 2>/dev/null; then
           say "    $label finished during the ${CPU_SAMPLE_SECS}s cpu sample — not killing"; break
         fi
-        m1=$(stat -f %m "$S/run.log" 2>/dev/null || echo 0); m2=$(newest_mtime "$S"); m2=${m2:-0}
-        m=$m1; [ "$m2" -gt "$m" ] && m=$m2
+        m=$(last_activity "$S")
         [ "$m" -gt "$last_seen" ] && last_seen=$m
         idle2=$(( $(date +%s) - last_seen ))
         if [ "$idle2" -lt "$STALL_SECS" ]; then
@@ -194,8 +201,8 @@ finish_repos() {
 
 # shellcheck disable=SC1090
 set +u; . "$CONFIG"; set -u   # a user's stack config stays forgiving; this script does not
-type legs >/dev/null 2>&1 || { echo "rev-stack: $CONFIG must define legs() containing run_leg calls in dependency order" >&2; exit 1; }
-say "########## rev-stack: session root $ROOT, log $LOG ##########"
+type legs >/dev/null 2>&1 || { echo "stack: $CONFIG must define legs() containing run_leg calls in dependency order" >&2; exit 1; }
+say "########## review-council stack: session root $ROOT, log $LOG ##########"
 for PASS in $(seq 1 "$PASSES"); do export PASS; say "########## PHASE 1 — PER-PR, PASS ${PASS}/${PASSES} ##########"; legs; done
 say "ALL PHASE 1 COMPLETE"
 if [ -n "$SEAM_REPO" ]; then PASS=seam; say "########## PHASE 2 — CROSS-REPO SEAMS ##########"; run_leg "$SEAM_REPO" 2 seams "$SEAM_PREMISE"; else say "PHASE 2 skipped (SEAM_REPO unset)"; fi
