@@ -52,13 +52,15 @@ The loop keeps going past the minimum while new P0/P1s are still surfacing, and 
 
 ### Round plan
 
-Each round has a fixed emphasis; that is what makes seven rounds worth more than one round seven times. The lenses listed for a round are dealt round-robin over whatever seats the roster produced, offset by the round number, so a three-seat and a six-seat panel both cover the same ground and no seat keeps the same lens twice in a row. Every seat's prompt names its lens and the round's emphasis.
+Each round has a fixed emphasis; that is what makes seven rounds worth more than one round seven times. **Every base seat reviews in every round** (on a typical machine: two Codex models, Grok, Gemini when installed, and the Opus subagent). The lenses listed for a round are dealt round-robin over those seats, offset by the round number, so a three-seat and a six-seat panel both cover the same ground and no seat keeps the same lens twice in a row. Every seat's prompt names its lens and the round's emphasis.
 
-| Round | Emphasis | Lenses | Extra seat |
+The last column is a **one-off additional reviewer** that joins that round on top of the base seats, the way Cursor's `bugbot` and `security-review` did: in round 2, `codex exec review` runs Codex's own built-in review prompt instead of ours; in round 3, Grok's bundled maintainability skill runs. Each fires once per run and only when its lab is seated.
+
+| Round | Emphasis | Lenses | One-off reviewer added this round |
 |---|---|---|---|
 | 1 | Correctness, edge cases, error handling | correctness, edge-cases, error-handling | — |
-| 2 | Security, data and state | security, data-state | `codex-review` — Codex's own review prompt |
-| 3 | Concurrency, resources, performance | concurrency, resources, performance | `grok-code-review` — Grok's maintainability skill |
+| 2 | Security, data and state | security, data-state | `codex-review` (Codex's own review prompt) |
+| 3 | Concurrency, resources, performance | concurrency, resources, performance | `grok-code-review` (Grok's maintainability skill) |
 | 4 | API and contract, compatibility | api-contract, data-state, readability | — |
 | 5 | Tests, observability | tests, observability | — |
 | 6 | Red team: every seat argues the change is broken | red-team | — |
