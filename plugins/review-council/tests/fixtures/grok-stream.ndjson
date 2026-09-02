@@ -1,0 +1,7 @@
+{"type":"available_commands","tools":[],"commands":[]}
+{"type":"thought","data":"Let me read the diff first."}
+{"type":"tool_call","toolCallId":"c1","title":"git diff abc123 --stat","kind":"execute","status":"pending","toolName":"shell"}
+{"type":"tool_call_update","toolCallId":"c1","status":"completed","content":[],"rawOutput":"","locations":[]}
+{"type":"text","data":"{\"summary\""}
+{"type":"text","data":":\"Planted off-by-one found.\"}"}
+{"type":"end","stopReason":"end_turn","sessionId":"s1","requestId":"r1","usage":{},"num_turns":2,"total_cost_usd":0.01,"structuredOutput":{"summary":"Planted off-by-one found.","findings":[{"severity":"P1","file":"src/x.ts","line_start":10,"line_end":12,"claim":"loop skips the last element","evidence":"`i < n - 1` at line 11","suggested_fix":"use `i < n`","confidence":0.9}]}}

@@ -1,0 +1,1 @@
+{"summary":"x","findings":[{"severity":"HIGH","file":"a","line_start":1,"line_end":1,"claim":"c","evidence":"e","suggested_fix":"f","confidence":0.5}]}

@@ -1,0 +1,7 @@
+{"type":"init","session_id":"s1","model":"gemini-2.5-pro"}
+{"type":"tool_use","tool_name":"run_shell_command","tool_id":"t1","parameters":{"command":"git diff abc123 --stat"}}
+{"type":"tool_result","tool_id":"t1","status":"success","output":" 2 files changed"}
+{"type":"tool_use","tool_name":"read_file","tool_id":"t2","parameters":{"path":"src/x.ts"}}
+{"type":"tool_result","tool_id":"t2","status":"success","output":"..."}
+{"type":"message","role":"assistant","content":"Here is my review.\n\n```json\n{\"summary\":\"Planted off-by-one found.\",\"findings\":[{\"severity\":\"P1\",\"file\":\"src/x.ts\",\"line_start\":10,\"line_end\":12,\"claim\":\"loop skips the last element\",\"evidence\":\"`i < n - 1` at line 11\",\"suggested_fix\":\"use `i < n`\",\"confidence\":0.9}]}\n```"}
+{"type":"result","status":"success","stats":{"input_tokens":1000,"output_tokens":200}}

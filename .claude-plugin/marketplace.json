@@ -1,0 +1,17 @@
+{
+  "name": "review-council",
+  "owner": { "name": "Wiktor Starczewski" },
+  "metadata": {
+    "description": "Multi-model code review council for Claude Code.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "review-council",
+      "description": "Codex, Grok, Gemini and Claude review the same change in rounds; findings are verified, fixed and committed; the roster is built from the lab CLIs installed on your machine.",
+      "version": "0.1.0",
+      "author": { "name": "Wiktor Starczewski" },
+      "source": "./plugins/review-council"
+    }
+  ]
+}

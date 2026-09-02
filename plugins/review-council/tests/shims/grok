@@ -1,0 +1,18 @@
+#!/bin/bash
+# Fake grok CLI for rev unit tests. Never call the network.
+# Records ENV and CWD next to argv (like the claude shim): REV_ACTIVE=1 must reach every seat.
+[ -n "${SHIM_ARGS_FILE:-}" ] && printf '%s\n' "$@" > "$SHIM_ARGS_FILE"
+[ -n "${SHIM_ARGS_FILE:-}" ] && printf 'REV_ACTIVE=%s\ncwd=%s\n' "${REV_ACTIVE:-unset}" "$PWD" >> "$SHIM_ARGS_FILE.env"
+if [ "${1:-}" = models ]; then
+  # grok-notauth: grok alone is signed out (codex stays fine), so preflight's grok branch is reachable
+  case "${SHIM_MODE:-ok}" in notauth|grok-notauth) echo "Not logged in. Run grok login."; exit 1;; esac
+  printf 'You are logged in with grok.com.\n\nDefault model: grok-4.6\n\nAvailable models:\n  * grok-4.6 (default)\n  - grok-4.5\n'; exit 0
+fi
+case "${SHIM_MODE:-ok}" in
+  notauth)   echo "error: not logged in" >&2; exit 1;;
+  ratelimit) echo '{"type":"error","message":"rate limit exceeded"}'; exit 1;;
+  empty)     echo '{"type":"end","stopReason":"end_turn","num_turns":1}'; exit 0;;
+  notools)   echo '{"type":"end","stopReason":"end_turn","num_turns":1,"structuredOutput":{"summary":"I will inspect the diff first.","findings":[]}}'; exit 0;;
+  notools_then_ok) if [ -f "$SHIM_ARGS_FILE.grok-calls" ]; then cat "$SHIM_FIXTURE_DIR/grok-stream.ndjson"; else touch "$SHIM_ARGS_FILE.grok-calls"; echo '{"type":"end","stopReason":"end_turn","num_turns":1,"structuredOutput":{"summary":"I will inspect the diff first.","findings":[]}}'; fi; exit 0;;
+  *)         cat "$SHIM_FIXTURE_DIR/grok-stream.ndjson"; exit 0;;
+esac

@@ -1,0 +1,1 @@
+{"summary":"One reachable off-by-one; otherwise sound.","findings":[{"severity":"P1","file":"src/x.ts","line_start":10,"line_end":12,"claim":"loop skips the last element","evidence":"`i < n - 1` at line 11 while `n` is the item count","suggested_fix":"use `i < n`","confidence":0.9}]}

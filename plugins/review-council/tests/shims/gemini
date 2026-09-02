@@ -1,0 +1,14 @@
+#!/bin/bash
+# Fake gemini CLI for unit tests. SHIM_MODE: ok | notauth | empty | badjson | notools | ratelimit
+# Records argv to $SHIM_ARGS_FILE and stdin to $SHIM_ARGS_FILE.stdin (the prompt travels on stdin).
+[ -n "${SHIM_ARGS_FILE:-}" ] && printf '%s\n' "$@" > "$SHIM_ARGS_FILE" && printf 'REV_ACTIVE=%s\ncwd=%s\n' "${REV_ACTIVE:-unset}" "$PWD" >> "$SHIM_ARGS_FILE.env"
+case "${1:-}" in --version|-v) echo "0.58.0"; exit 0;; esac
+STDIN=$(cat); [ -n "${SHIM_ARGS_FILE:-}" ] && printf '%s' "$STDIN" > "$SHIM_ARGS_FILE.stdin"
+case "${SHIM_MODE:-ok}" in
+  notauth)   echo 'Error: Please set an Auth method in your settings or run `gemini` to log in.' >&2; exit 1;;
+  ratelimit) echo '{"type":"error","message":"429 RESOURCE_EXHAUSTED: quota exceeded"}'; exit 1;;
+  empty)     echo '{"type":"result","status":"success"}'; exit 0;;
+  badjson)   echo '{"type":"message","role":"assistant","content":"not json at all"}'; echo '{"type":"result","status":"success"}'; exit 0;;
+  notools)   echo '{"type":"message","role":"assistant","content":"{\"summary\":\"I will read the diff first.\",\"findings\":[]}"}'; echo '{"type":"result","status":"success"}'; exit 0;;
+  *)         cat "$SHIM_FIXTURE_DIR/gemini-stream.ndjson"; exit 0;;
+esac

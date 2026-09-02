@@ -1,0 +1,10 @@
+# guard: bypasses found by the re-review, and read-only commands that must stay allowed — sourced by run-tests.sh
+g2() { printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1")" | python3 "$SCRIPTS/lib/readonly-bash-guard.py" >/dev/null 2>&1; }
+test_guard2() {
+  for c in "git grep -O'touch X #' pat" "git grep --open-files-in-pager=vi pat" "git -c diff.external='touch X #' diff HEAD" "git -c core.pager='touch X' log -1" "git -c alias.x='!touch X' x" "git -ccore.editor=vi log -1" "git diff --output=/tmp/x HEAD" "git show --output=/tmp/x HEAD" "git log --output=/tmp/x -1" "git remote add x y" "git remote set-url origin y" "git branch newbranch" "sed '1w /tmp/x' f" "sed -e '1w /tmp/x' f" "sed --in-place s/a/b/ f" "sed --in-place=.bak s/a/b/ f" "sed -f script.sed f" "sed 's/a/b/w out' f" "sed 's/a/b/e' f" "sed '1e touch X' f" "sed -n '1W /tmp/x' f" "npm run" "npx tsc" "npx prettier --write ." "npx prettier src" "npm run build" "yarn lint --fix" "bash tests/run-tests.sh" "./tests/run-tests.sh" "git diff; sed '1w /tmp/x' f"; do
+    g2 "$c"; assert_eq "blocks: $c" "$?" 2
+  done
+  for c in "git -c color.ui=never diff HEAD" "git -c core.pager=cat log -3" "git -c pager.log=false log -1" "git remote -v" "git remote show origin" "git remote get-url origin" "git branch --show-current" "git branch -a" "git branch --contains abc" "git ls-files -o --exclude-standard" "sed -n '1,20p' f" "sed -n '/foo/p' f" "sed 's/a/b/g' f" "sed -E 's/(a)/\\1/' f" "sed '3d' f" "sed -n '\$=' f" "sed -n '/start/,/end/p' f" "sed -e 's/a/b/' -e 's/c/d/' f" "sed 's#/usr#/opt#' f" "npm run lint" "yarn lint" "yarn typecheck" "npm test" "npx tsc --noEmit" "npx eslint src" "npx prettier --check src" "npx jest src/x" "for f in \$(git diff --name-only HEAD~1); do git blame -L 1,5 \"\$f\"; done" "if git diff --quiet; then echo clean; else echo dirty; fi" "while read -r f; do wc -l \"\$f\"; done < files.txt" "case x in y) echo 1;; esac" "! git diff --quiet" "{ git log -1; git status --short; }"; do
+    g2 "$c"; assert_eq "allows: $c" "$?" 0
+  done
+}

@@ -1,0 +1,10 @@
+The clamp implementation violates its documented inclusive-range behavior, and the added test is too weak to expose the defect.
+
+Full review comments:
+
+- [P2] Return `max` at the inclusive upper bound — /repo/src/lib/rev-selftest/clamp.ts:4-4
+  For every `value > max - 1`—including `value === max`—this returns `max - 1`. This violates the documented contract; compare against `max` and return `max` instead.
+
+- [P1] Verify the exact clamp results — /repo/src/lib/rev-selftest/clamp.test.ts:6-8
+  This assertion passes if `clamp` returns `0` for every input, so it cannot catch the upper-bound defect.
+  Assert that `out` equals `[1, 2, 3]` and add boundary cases.
