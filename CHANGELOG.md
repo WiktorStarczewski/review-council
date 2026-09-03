@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.3
+
+- Stack: a blank or failing status script is reported on the status line (`(status unavailable — see status.err)`) and its stderr is kept, instead of an empty field; `idle` can no longer print negative when a file mtime runs a second ahead of the clock.
+
 ## 0.1.2
 
 - Graceful degradation: a machine with fewer than three seats is no longer refused. The roster pads the panel up to three with Claude seats (`claude-1`, `claude-2`, … , each dealt its own lens) and marks itself `degraded` with a one-sentence reason, which the session banner, preflight's `WARNING` line and the report's `Degraded panel:` opener all carry. A Claude-Code-only machine can now use the plugin.

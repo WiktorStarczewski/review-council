@@ -147,7 +147,7 @@ ${VACUITY}${resume}"
       local now m idle; now=$(date +%s)
       m=$(last_activity "$S")
       [ "$m" -gt "$last_seen" ] && last_seen=$m
-      idle=$(( now - last_seen ))
+      idle=$(( now - last_seen )); [ "$idle" -lt 0 ] && idle=0   # an mtime a second ahead of the clock is not negative idleness
       if [ $(( now - last_status )) -ge "$STATUS_EVERY" ]; then
         local c mv n; c=$(cpu_of "$pid"); mv=frozen; [ "$c" != "$last_cpu" ] && mv=moving; last_cpu=$c
         n=$(cd "$dir" && git rev-list --count '@{u}..HEAD' 2>/dev/null || echo -)
