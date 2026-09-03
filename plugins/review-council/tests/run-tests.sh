@@ -10,6 +10,13 @@ T=$(mktemp -d /tmp/rev-tests.XXXXXX); trap 'rm -rf "$T"' EXIT
 # Tallies go through a file, not shell variables: test bodies run in ( … ) subshells for cd/export isolation,
 # and a subshell's PASS/FAIL increments never reach this process. (Proved: a FAIL inside ( … ) tallied as 0/0, exit 0.)
 RESULTS="$T/.results"; : > "$RESULTS"
+# Sandbox the whole run: any test that executes the real hook (t-hook.sh runs it from the real plugin
+# root) would otherwise reach the DEVELOPER's ~/.config/review-council/config.json, and with
+# check_updates on there would fetch the real URL and write ~/.cache -- in a suite whose contract is
+# "no network". These are defaults; the Task 10 suites override them per case.
+export REVIEW_COUNCIL_CONFIG="$T/no-such-config.json" \
+       REVIEW_COUNCIL_CACHE_DIR="$T/cache" \
+       REVIEW_COUNCIL_UPDATE_URL="file://$FX/plugin-same.json"
 ok()   { echo ok   >> "$RESULTS"; echo "  ok   $1"; }
 fail() { echo fail >> "$RESULTS"; echo "  FAIL $1${2:+ — $2}"; }
 assert_eq()     { [ "$2" = "$3" ] && ok "$1" || fail "$1" "expected '$3' got '$2'"; }

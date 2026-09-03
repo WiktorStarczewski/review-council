@@ -17,11 +17,17 @@ One-liner:
 curl -fsSL https://raw.githubusercontent.com/WiktorStarczewski/review-council/main/install.sh | bash
 ```
 
-Update with `claude plugin update review-council`. Restart Claude Code (or `/reload-plugins`) after installing.
+The one-liner also turns on auto-update for the marketplace it just added (Claude Code leaves auto-update off for third-party marketplaces, so a plugin installed from one never moves on its own). It is the only thing the installer writes outside Claude Code's own install: one `autoUpdate` flag under `extraKnownMarketplaces.review-council` in `~/.claude/settings.json`. The file is rewritten atomically (tmp file, then rename) at 2-space indent with every other setting preserved, keeping its existing mode — a `600` settings file stays `600`, and one created from scratch starts there — following a symlink rather than replacing it, and leaving anything it cannot parse untouched. Skip it with `--no-auto-update`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/WiktorStarczewski/review-council/main/install.sh | bash -s -- --no-auto-update
+```
+
+Update by hand any time with `claude plugin update review-council`; restart Claude Code (or `/reload-plugins`) after installing or updating. If you would rather be told than updated, set `check_updates: true` in the config and the session banner adds one line when a newer version is published (off by default, checked at most once a day, silent when the network is unreachable) — see [docs/config.md](docs/config.md).
 
 ## At session start
 
-A `SessionStart` hook runs on `startup`, `clear` and `compact`. It does two cheap things — no model calls, under a second:
+A `SessionStart` hook runs on `startup`, `clear` and `compact`. It does two cheap things — no model calls, under a second — and one optional third:
 
 1. Injects the standing review policy (`skills/rev/POLICY.md`): use `/review-council:rev` for review requests, reviewers never edit, apply actionable findings after a review, relay the round-status line, never substitute your own reading for the panel's.
 2. Injects one roster line from `scripts/roster.sh --brief`, e.g.:
@@ -30,7 +36,13 @@ A `SessionStart` hook runs on `startup`, `clear` and `compact`. It does two chea
    review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@max) · grok ✓ (grok-4.6@xhigh) · gemini ✗ not installed · claude ✓ (opus@max)
    ```
 
-If roster detection itself fails, the line says `review-council seats: roster unavailable (<reason>)` and the hook still exits 0 — a broken roster never blocks a session from starting.
+With `check_updates: true` in the config it adds a third line, and only when there is something to say:
+
+   ```
+   review-council 0.1.2 available: claude plugin update review-council
+   ```
+
+If roster detection itself fails, the line says `review-council seats: roster unavailable (<reason>)` and the hook still exits 0 — a broken roster never blocks a session from starting. The update check is held to the same bar and then some: it is off unless you turn it on, it asks the network at most once a day, it is capped at three seconds, and any failure means no line rather than a delay. The hook never updates the plugin itself — a plugin's own hook replacing the directory it is running from is how an install gets corrupted — so all it ever does is name the command.
 
 ## `/review-council:rev`
 

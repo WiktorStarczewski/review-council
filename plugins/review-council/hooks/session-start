@@ -8,6 +8,16 @@
 # well under a second, so a plain `roster.sh --brief` call is capped with a
 # defensive timeout on top of whatever cap roster.py enforces internally.
 #
+# A third line, the update notice, is appended only when the user opted in
+# (config check_updates) AND a newer version is published. It costs ~50ms to
+# ask when it is off, is capped at 3s when it is on, and never updates
+# anything -- a plugin's own hook must not replace the directory it runs from.
+#
+# Every path here is derived from $ROOT (this file's own directory), never from
+# $CLAUDE_PLUGIN_ROOT: a shell can inherit ANOTHER plugin's value -- the same
+# reason roster.py refuses to read $CLAUDE_PLUGIN_DATA -- and trusting it would
+# let a foreign directory decide which script this hook executes.
+#
 # Contract: always exit 0 -- a hook that fails should not fail the session.
 # No external deps beyond bash/python3 (python3 does the JSON, via
 # json.dumps -- no hand escaping).
@@ -16,13 +26,14 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
 POLICY="$ROOT/skills/rev/POLICY.md"
 ROSTER="$ROOT/scripts/roster.sh"
+UPDATE="$ROOT/scripts/lib/update-check.py"
 
-python3 - "$POLICY" "$ROSTER" <<'PY'
+python3 - "$POLICY" "$ROSTER" "$UPDATE" "$ROOT" <<'PY'
 import json
 import subprocess
 import sys
 
-policy_path, roster_path = sys.argv[1], sys.argv[2]
+policy_path, roster_path, update_path, plugin_root = sys.argv[1:5]
 
 policy_text = ""
 try:
@@ -56,8 +67,32 @@ def roster_line():
     reason = err[0] if err else ("exit %d" % r.returncode)
     return "review-council seats: roster unavailable (%s)" % reason
 
+def update_line():
+    """Opt-in update notice (config check_updates). Silent unless there is something to say.
+
+    update-check.py already swallows its own failures; the timeout here is the outer cap, so a
+    wedged interpreter or a hung fetch costs the session three seconds at worst, not a stall.
+    """
+    try:
+        r = subprocess.run(
+            [sys.executable or "python3", update_path, plugin_root],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=3,
+            stdin=subprocess.DEVNULL,
+        )
+    except Exception:
+        return ""
+    out = (r.stdout or "").strip()
+    return out.splitlines()[0] if out else ""
+
+
 line = roster_line()
 context = "%s\n\n%s" % (policy_text, line) if policy_text else line
+update = update_line()
+if update:
+    context = "%s\n%s" % (context, update)   # its own line, right under the seats line
 
 print(json.dumps({
     "hookSpecificOutput": {

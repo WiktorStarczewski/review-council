@@ -1,0 +1,6 @@
+{
+  "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
+  "name": "review-council",
+  "version": "0.9.9",
+  "description": "fixture: a published version newer than the installed one"
+}

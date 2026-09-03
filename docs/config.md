@@ -14,6 +14,7 @@ Read by `scripts/roster.sh` (via `scripts/lib/roster.py`) on every invocation. A
 | `pin` | object | `{}` | Per-seat override of the detected `model`/`effort`, e.g. `{"codex-sol": {"effort": "ultra"}}`. Only overrides the given field(s); anything omitted keeps its detected value. |
 | `extras` | boolean | `true` | `false` removes both extra seats (`codex-review`, `grok-code-review`) regardless of whether their base lab is seated. |
 | `claude_seat` | boolean | `true` | `false` removes the `opus` seat — equivalent to `REVIEW_COUNCIL_CLAUDE_SEAT=0`. |
+| `check_updates` | boolean | `false` | `true` adds one line to the session banner when a newer release is published: `review-council <version> available: claude plugin update review-council`. Nothing is ever installed by it. Off unless the value is literally `true`. |
 
 Example:
 
@@ -41,6 +42,12 @@ Environment variables take precedence over the config file, which takes preceden
 | `REV_GROK_EFFORT` | `rev-seat.sh` | Same, for the Grok seat. |
 | `REV_ACTIVE` | the loop | Set to `1` automatically inside every seat's environment once a review starts; a nested `/review-council:rev` refuses to start while it's set. Not meant to be set by hand. |
 | `REV_STACK_LEG` | `stack.sh` | Set to `1` automatically inside each stack leg so it skips the top-level squash/push and so a leg can never itself launch a stack. Not meant to be set by hand. |
+| `REVIEW_COUNCIL_UPDATE_URL` | `update-check.py` | Where the published `plugin.json` is read from, instead of this repo's `main`. |
+| `REVIEW_COUNCIL_UPDATE_TTL` | `update-check.py` | Seconds before the cached answer is refetched (default 86400 — once a day). |
+| `REVIEW_COUNCIL_CACHE_DIR` | `update-check.py` | Directory for `update-check.json`, instead of `${XDG_CACHE_HOME:-~/.cache}/review-council`. |
+| `XDG_CACHE_HOME` | `update-check.py` | The standard cache root, used when `REVIEW_COUNCIL_CACHE_DIR` is unset. |
+| `REVIEW_COUNCIL_SETTINGS` | `install.sh` | The `settings.json` whose `autoUpdate` flag the installer sets, instead of `~/.claude/settings.json`. |
+| `REVIEW_COUNCIL_NO_AUTO_UPDATE` | `install.sh` | `1` is the env form of `--no-auto-update`: the installer leaves `settings.json` alone. |
 | `CLAUDE_PLUGIN_ROOT` | set by Claude Code | The installed plugin's own directory; every skill, hook and agent path in this plugin is written relative to it. Not something you configure — set by the harness at plugin load. |
 
 ## Precedence in one line
@@ -56,3 +63,12 @@ For anything with both a config key and an env var (`claude_seat`/`REVIEW_COUNCI
 `CLAUDE_PLUGIN_DATA` is deliberately not consulted: Claude Code sets it per plugin and a shell can inherit another plugin's value.
 
 An unreadable file is reported in the session banner as `config unreadable (pins and exclusions ignored)`. Extras (`codex-review`, `grok-code-review`) can be excluded or pinned by seat name. `REVIEW_COUNCIL_LOGIN_TIMEOUT` (default 20 s) and `REVIEW_COUNCIL_PROBE_TIMEOUT` (default 60 s) bound the sign-in and probe calls.
+
+## Update notices and auto-update
+
+Two separate things, both off unless you ask for them:
+
+- **Auto-update** is Claude Code's own, per marketplace: `extraKnownMarketplaces.review-council.autoUpdate` in `~/.claude/settings.json`. It defaults to off for third-party marketplaces; `install.sh` turns it on unless you pass `--no-auto-update`, and `scripts/lib/set-auto-update.py <settings.json> review-council <true|false>` flips it afterwards without disturbing anything else in the file: the rewrite is atomic, keeps the file's mode (a `600` settings file stays `600`), follows a symlinked `settings.json` instead of replacing it, refuses to touch a file it cannot parse, and — when there is no entry for the marketplace yet — writes the `source` object alongside the flag so the entry is usable. Updates are gated on the plugin manifest's `version`, which is why the marketplace entry pins no version of its own — one there would silently override the manifest.
+- **The update notice** (`check_updates`) only tells you. `scripts/lib/update-check.py` compares the installed `plugin.json` version against the published one, caches the answer for a day under `~/.cache/review-council`, and prints a single line the `SessionStart` hook appends to the banner. It never updates anything: a plugin's own hook replacing the directory it runs from is how an install gets corrupted. Every failure — no network, unparseable JSON, unwritable cache — prints nothing and exits 0, and the hook caps the whole call at three seconds.
+
+With auto-update on there is normally nothing for the notice to report; it is there for people who turned auto-update off and still want to know.

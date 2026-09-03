@@ -1,41 +1,19 @@
-#!/bin/bash
-# One-line install for review-council:  curl -fsSL https://raw.githubusercontent.com/WiktorStarczewski/review-council/main/install.sh | bash
-#
-# Installs the plugin and turns auto-update ON for its marketplace. Claude Code defaults auto-update
-# OFF for third-party marketplaces, so without this the plugin would sit at whatever version you
-# first installed until you remembered to run `claude plugin update`. Opt out with --no-auto-update
-# (or REVIEW_COUNCIL_NO_AUTO_UPDATE=1) and nothing outside Claude Code's own install is touched.
-#
-# Env: REVIEW_COUNCIL_SETTINGS   settings.json to edit   (default ~/.claude/settings.json)
-#      REVIEW_COUNCIL_INSTALL_DRY=1  print the `claude plugin` commands instead of running them
-set -eu
+#!/usr/bin/env python3
+"""Turn Claude Code's per-marketplace auto-update on or off.
 
-AUTO_UPDATE=1
-if [ "${REVIEW_COUNCIL_NO_AUTO_UPDATE:-0}" = "1" ]; then AUTO_UPDATE=0; fi
-for arg in ${1+"$@"}; do
-  case "$arg" in
-    --no-auto-update) AUTO_UPDATE=0 ;;
-    -h|--help) echo "usage: install.sh [--no-auto-update]"; exit 0 ;;
-    *) echo "review-council: unknown option '$arg' (only --no-auto-update is understood)" >&2; exit 2 ;;
-  esac
-done
+    set-auto-update.py <settings.json> <marketplace-name> <true|false>
 
-SETTINGS="${REVIEW_COUNCIL_SETTINGS:-$HOME/.claude/settings.json}"
+Auto-update defaults to OFF for third-party marketplaces, so a plugin installed from one never
+moves until the user runs `claude plugin update`. This flips the one flag that changes that --
+`extraKnownMarketplaces.<name>.autoUpdate` in the user's settings.json -- and nothing else: the
+file is rewritten atomically at 2-space indent with every other key preserved, its mode is kept
+(a 600 settings.json stays 600), symlinks are followed rather than replaced, and a file that is
+unreadable or shaped wrong is left alone rather than overwritten. Standard library only.
 
-if [ "${REVIEW_COUNCIL_INSTALL_DRY:-0}" = "1" ]; then
-  echo "dry run: would run: claude plugin marketplace add WiktorStarczewski/review-council"
-  echo "dry run: would run: claude plugin install review-council@review-council"
-else
-  command -v claude >/dev/null 2>&1 || { echo "review-council: the claude CLI is not on PATH (install Claude Code first)" >&2; exit 1; }
-  claude plugin marketplace add WiktorStarczewski/review-council 2>/dev/null || claude plugin marketplace update review-council
-  claude plugin install review-council@review-council
-fi
+install.sh carries a byte-identical copy of the marked block below, because it runs from curl
+before this file exists on disk; tests/t-install.sh diffs the two so they cannot drift.
+"""
 
-if [ "$AUTO_UPDATE" = 1 ]; then
-  # This script runs from curl BEFORE the plugin exists on disk, so it cannot call the plugin's own
-  # scripts/lib/set-auto-update.py -- it carries a copy of that file's editing code instead. The
-  # marked block below must stay byte-identical with it; tests/t-install.sh diffs the two.
-  if ! python3 - "$SETTINGS" review-council true <<'PY'
 import json
 import os
 import sys
@@ -110,23 +88,12 @@ def set_auto_update(path, name, enabled):
 # --- end json-edit ---
 
 
-sys.exit(set_auto_update(sys.argv[1], sys.argv[2], sys.argv[3] == 'true'))
-PY
-  then
-    AUTO_UPDATE=failed
-  fi
-fi
+def main(argv):
+    if len(argv) != 4 or argv[3] not in ('true', 'false'):
+        sys.stderr.write('usage: set-auto-update.py <settings.json> <marketplace-name> <true|false>\n')
+        return 2
+    return set_auto_update(argv[1], argv[2], argv[3] == 'true')
 
-echo
-echo "review-council installed. Restart Claude Code (or run /reload-plugins), then use /review-council:rev."
-echo "Seats are built from the lab CLIs on this machine; the session banner shows which were detected."
-if [ "$AUTO_UPDATE" = 1 ]; then
-  echo "Auto-update is on for the review-council marketplace, so new releases install themselves."
-  echo "Turn it off from \`claude plugin marketplace\`, or rerun this installer with --no-auto-update."
-elif [ "$AUTO_UPDATE" = failed ]; then
-  echo "Auto-update could NOT be enabled (the reason is printed above) and $SETTINGS was left as it was."
-  echo "Turn it on from \`claude plugin marketplace\`, or fix that file and rerun this installer."
-else
-  echo "Auto-update is off; $SETTINGS was left alone. Update by hand with \`claude plugin update review-council\`,"
-  echo "or rerun this installer without --no-auto-update to have new releases install themselves."
-fi
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))
