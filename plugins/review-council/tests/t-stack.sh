@@ -164,3 +164,15 @@ RSEOF
     assert_grep "the sibling squash is the default" "$T/stack8.log" 'review commit\(s\) at tip'
   )
 }
+test_stack_status_never_blank() {
+  ( seat_env; export REV_STACK_FOREGROUND=1 SHIM_CLAUDE_ARGS_FILE="$T/claude-args-sb"
+    local R="$T/stk-sb"; mkrepo "$R"; git -C "$R" checkout -qb feat; echo w > "$R/w.txt"; git -C "$R" add w.txt; git -C "$R" commit -qm "feat: w"
+    # a rev-status.sh that prints nothing and fails must not blank the status line
+    local D="$T/scripts-sb"; mkdir -p "$D"; cp "$SCRIPTS"/*.sh "$D"/; cp -R "$SCRIPTS/lib" "$D"/; printf '#!/bin/bash\necho "boom" >&2; exit 1\n' > "$D/rev-status.sh"; chmod +x "$D/rev-status.sh"
+    printf 'legs() { run_leg "%s" 1 leg1 "premise"; }\n' "$R" > "$T/stack-sb.cfg"
+    export REV_SCRIPTS="$D" ROOT="$T/stack-root-sb" LOG="$T/stack-sb.log" POLL=1 STATUS_EVERY=1 STALL_SECS=30 CPU_SAMPLE_SECS=1 INFRA_SLEEP_SECS=1 FAST_FAIL_SECS=1 AUTH_WAIT_SECS=1 NO_PUSH=1 PASSES=1
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-sb.cfg" > /dev/null 2>&1
+    assert_grep "blank status is reported, not dropped" "$LOG" '\[status\] leg1 pass1 attempt1 \| \(status unavailable — see .*status.err\) \| idle='
+    assert_grep "rev-status stderr is kept" "$ROOT/status.err" '^boom$'
+  )
+}

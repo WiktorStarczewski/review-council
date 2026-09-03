@@ -98,6 +98,11 @@ last_activity() {  # <session-dir> → newest mtime of run.log or anything under
   echo "$m1"
 }
 
+status_of() {  # one status line, never empty: a blank or failing rev-status.sh is itself reported, its stderr kept in the orchestrator output
+  local line; line=$("$REV_SCRIPTS/rev-status.sh" "$1" 2>>"${ROOT}/status.err") || line=""
+  [ -n "$line" ] && printf '%s' "$line" || printf '(status unavailable — see %s/status.err)' "$ROOT"
+}
+
 wait_for_auth() {
   # The roster owns sign-in detection for every lab; the stack only asks whether it will seat a panel at all.
   # `roster.sh --brief` exits 0 whenever a panel exists — it pads a thin one with Claude seats and marks it
@@ -146,7 +151,7 @@ ${VACUITY}${resume}"
       if [ $(( now - last_status )) -ge "$STATUS_EVERY" ]; then
         local c mv n; c=$(cpu_of "$pid"); mv=frozen; [ "$c" != "$last_cpu" ] && mv=moving; last_cpu=$c
         n=$(cd "$dir" && git rev-list --count '@{u}..HEAD' 2>/dev/null || echo -)
-        say "[status] $label pass${PASS} attempt$attempt | $("$REV_SCRIPTS/rev-status.sh" "$S" 2>/dev/null) | idle=${idle}s cpu=${c:-none}($mv) commits=$n"
+        say "[status] $label pass${PASS} attempt$attempt | $(status_of "$S") | idle=${idle}s cpu=${c:-none}($mv) commits=$n"
         last_status=$now
       fi
       if [ "$idle" -ge "$STALL_SECS" ]; then
