@@ -6,7 +6,9 @@
 # scope.env values are SINGLE-QUOTED (with '\'' escaping) so `. scope.env` can never expand or execute a branch
 # name or a path: a branch called `x$(touch pwned)` is data, not a command.
 # The seats come from roster.sh, which owns detection, sign-in and the one-token probe — preflight never
-# calls a lab CLI itself.
+# calls a lab CLI itself. A thin roster is NOT a refusal: roster.sh pads the panel to three with Claude
+# seats and flags it `degraded`, and preflight relays that as a WARNING line under the roster line. The
+# only seat-shaped refusal left is strict mode (config `min_labs`), which roster.sh reports as exit 5.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 SCOPE=branch; WRITE=""
@@ -61,7 +63,9 @@ else
 fi
 BRIEF=$("$HERE/roster.sh" --probe --brief --write "$RJSON"); RC=$?
 if [ "$RC" = 5 ]; then
-  # roster.sh still emits JSON when it refuses: report the seat count and every exclusion reason.
+  # Exit 5 is strict mode (config min_labs): a thin panel is padded and run, never refused. roster.sh
+  # still emits JSON when it refuses, so lead with the strict reason it recorded and then name every
+  # exclusion, which is what tells the user which lab to install or sign in to.
   NR=$(ROSTER_JSON="$RJSON" python3 - <<'PY'
 import json, os
 try:
@@ -69,15 +73,16 @@ try:
         d = json.load(f)
     if not isinstance(d, dict):
         raise ValueError('not an object')
-    seats = [s for s in (d.get('seats') or []) if isinstance(s, dict) and not s.get('extra')]
     ex = [e for e in (d.get('excluded') or []) if isinstance(e, dict)]
+    strict = next((str(e.get('reason')) for e in ex if str(e.get('reason', '')).startswith('strict: ')), '')
     reasons = '; '.join(f"{e.get('cli', '?')}: {e.get('reason', '?')}" for e in ex) or 'no reason recorded'
-    print(f"{len(seats)}|{reasons}")
+    print(f"{strict}|{reasons}")
 except Exception:
-    print("0|roster JSON unreadable")
+    print("|roster JSON unreadable")
 PY
 )
-  die "only ${NR%%|*} seats available (need 3): ${NR#*|}"
+  STRICT=${NR%%|*}
+  die "${STRICT:-roster refused (exit 5)} — ${NR#*|}"
 fi
 [ "$RC" = 0 ] || die "roster.sh failed (exit $RC) — run $HERE/roster.sh --json to see why"
 # -z + tr, never field-splitting: git quotes paths containing spaces in porcelain/diff output otherwise.
@@ -87,6 +92,20 @@ FILES=$( { git diff --name-only -z "$BASE" ${PS[@]+"${PS[@]}"} | tr '\0' '\n'
 N=$(printf '%s\n' "$FILES" | grep -c .)
 echo "base=$BASE branch=$BRANCH default=$DEFAULT root=$ROOT scope=$SCOPE changed_files=$N"
 [ -n "$BRIEF" ] && printf '%s\n' "$BRIEF"
+# A degraded panel runs, loudly. The roster line already ends in `· DEGRADED: …`; this second line makes
+# it impossible to miss in a transcript, and the skill copies the sentence verbatim into the report.
+WARN=$(ROSTER_JSON="$RJSON" python3 - <<'PY'
+import json, os
+try:
+    with open(os.environ['ROSTER_JSON']) as f:
+        d = json.load(f)
+    if isinstance(d, dict) and d.get('degraded'):
+        print(d.get('degradation') or 'the panel is short of voices')
+except Exception:
+    pass
+PY
+)
+[ -z "$WARN" ] || printf 'preflight: WARNING — %s\n' "$WARN"
 if [ -n "$WRITE" ]; then
   { printf 'REV_BASE=%s\n'    "$(q "$BASE")"
     printf 'REV_BRANCH=%s\n'  "$(q "$BRANCH")"

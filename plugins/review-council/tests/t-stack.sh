@@ -132,8 +132,8 @@ RSEOF
     wait "$spid" 2>/dev/null; wait "$toucher" 2>/dev/null
     assert_grep "the quiet-but-active leg was watched" "$LOG" '=== START leg1 pass1'
     assert_nogrep "session-dir activity keeps a silent leg alive" "$LOG" 'STALLED'
-    # A8 — fewer than three seats: roster.sh --brief exits non-zero, so the leg never starts. The stack owns no
-    # sign-in logic of its own any more; the roster's exit code is the entire gate.
+    # A8 — a refusing roster (exit 5 — since Task 11, strict mode's `min_labs` floor) means the leg never
+    # starts. The stack owns no sign-in logic of its own; the roster's exit code is the entire gate.
     export ROOT="$T/stack-root6" LOG="$T/stack6.log" STALL_SECS=30 AUTH_WAIT_TRIES=2 AUTH_WAIT_SECS=0
     FAKE_ROSTER_RC=5 SHIM_MODE=ok "$STACK/stack.sh" "$T/stack.cfg" > "$T/stack6.out" 2>&1
     assert_eq "under-seated stack exits non-zero" "$?" 1

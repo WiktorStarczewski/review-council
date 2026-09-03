@@ -43,12 +43,26 @@ STUB
   fi
   printf '%s' "$D"
 }
-pf_thin_roster() {  # two non-extra seats (one extra, which must not count) and two exclusions
+pf_strict_roster() {  # a padded single-lab panel that a config min_labs floor refuses (roster exit 5)
+  cat <<'J'
+{"generated_at": "2026-09-02T00:00:00Z", "seats": [
+ {"seat": "opus", "lab": "anthropic", "adapter": "agent", "model": "opus", "effort": "max", "extra": false},
+ {"seat": "claude-1", "lab": "anthropic", "adapter": "agent", "model": "opus", "effort": "max", "extra": false, "padded": true},
+ {"seat": "claude-2", "lab": "anthropic", "adapter": "agent", "model": "opus", "effort": "max", "extra": false, "padded": true}],
+ "labs": ["anthropic"], "padded": 2, "degraded": true,
+ "degradation": "only Claude is available — 3 Claude seats, no cross-lab decorrelation",
+ "excluded": [{"cli": "codex", "reason": "not signed in"}, {"cli": "gemini", "reason": "not installed"},
+              {"cli": "min_labs", "reason": "strict: 1 lab(s) available, min_labs=2"}]}
+J
+}
+pf_degraded_roster() {  # a padded panel that is accepted — preflight warns, it does not refuse
   cat <<'J'
 {"generated_at": "2026-09-02T00:00:00Z", "seats": [
  {"seat": "grok", "lab": "xai", "adapter": "grok", "model": "grok-4.6", "effort": "xhigh", "extra": false},
  {"seat": "opus", "lab": "anthropic", "adapter": "agent", "model": "opus", "effort": "max", "extra": false},
- {"seat": "grok-code-review", "lab": "xai", "adapter": "grok", "mode": "code-review", "extra": true, "round": 3}],
+ {"seat": "claude-1", "lab": "anthropic", "adapter": "agent", "model": "opus", "effort": "max", "extra": false, "padded": true}],
+ "labs": ["xai", "anthropic"], "padded": 1, "degraded": true,
+ "degradation": "only xai, anthropic available — padded with 1 Claude seat",
  "excluded": [{"cli": "codex", "reason": "not signed in"}, {"cli": "gemini", "reason": "not installed"}]}
 J
 }
@@ -104,11 +118,25 @@ test_preflight() {
   case "$tmpj" in "$R"/*) fail "…outside the repository" "$tmpj";; *) ok "…outside the repository";; esac
   assert_exit "…and that temp file is removed" 1 test -e "$tmpj"
   assert_exit "no roster.json left in the repo" 1 test -e "$R/roster.json"
-  # too few seats: refuse, with the count and every exclusion reason
+  # a thin panel is no longer a refusal — it is a padded panel and a loud warning (Task 11)
   rm -f "$RSTUB_ARGS"
-  RSTUB_EXIT=5 RSTUB_JSON="$(pf_thin_roster)" "$PF" > "$T/pf.out" 2> "$T/pf.err"; assert_eq "thin roster refused" "$?" 1
-  assert_grep "counts only non-extra seats" "$T/pf.err" '^preflight: only 2 seats available \(need 3\): '
-  assert_grep "names every exclusion" "$T/pf.err" 'codex: not signed in; gemini: not installed$'
+  RSTUB_JSON="$(pf_degraded_roster)" \
+    RSTUB_BRIEF='review-council seats: codex ✗ not signed in · grok ✓ (grok-4.6@xhigh) · gemini ✗ not installed · claude ✓ (opus@max) · DEGRADED: only xai, anthropic available — padded with 1 Claude seat' \
+    "$PF" --write "$T/pf-deg" > "$T/pf.out" 2> "$T/pf.err"; assert_eq "a degraded roster is accepted" "$?" 0
+  assert_grep "the summary line is still printed" "$T/pf.out" '^base='
+  assert_grep "the roster line carries DEGRADED" "$T/pf.out" 'DEGRADED: only xai, anthropic available — padded with 1 Claude seat$'
+  assert_grep "…and a warning line of its own follows it" "$T/pf.out" \
+    '^preflight: WARNING — only xai, anthropic available — padded with 1 Claude seat$'
+  assert_exit "scope.env is written for a degraded run" 0 test -f "$T/pf-deg/scope.env"
+  assert_nogrep "nothing on stderr" "$T/pf.err" '.'
+  # a not-degraded roster gets no warning line at all
+  "$PF" > "$T/pf.out" 2>&1; assert_grep "still fine" "$T/pf.out" '^base='
+  assert_nogrep "no warning when the panel is whole" "$T/pf.out" 'WARNING'
+  # strict mode (config min_labs) is the one seat-shaped refusal left
+  rm -f "$RSTUB_ARGS"
+  RSTUB_EXIT=5 RSTUB_JSON="$(pf_strict_roster)" "$PF" > "$T/pf.out" 2> "$T/pf.err"; assert_eq "strict roster refused" "$?" 1
+  assert_grep "the strict reason is relayed" "$T/pf.err" '^preflight: strict: 1 lab\(s\) available, min_labs=2 — '
+  assert_grep "names every exclusion" "$T/pf.err" 'codex: not signed in; gemini: not installed'
   assert_grep "the roster still ran with --probe" "$T/rstub.args" '^--probe$'
   assert_nogrep "no summary line on a refusal" "$T/pf.out" '^base='
   # a roster that is neither 0 nor 5 (missing script, crash) fails loudly instead of running seatless

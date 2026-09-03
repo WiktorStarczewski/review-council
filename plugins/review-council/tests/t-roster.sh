@@ -101,29 +101,32 @@ test_roster_missing_and_signed_out() {
     assert_grep "4 seats + 1 extra"    "$B/lines" '^counts 4 5$'
   )
   # SHIM_MODE=notauth signs BOTH codex and grok out (the shims share one mode switch), so this case is
-  # also the "one CLI left" refusal: gemini + the agent seat is two, under the three a round needs.
+  # also the "one CLI left" one: gemini + the agent seat is two, and the third is padded in (Task 11).
   ( local B="$T/roster-codexnotauth"; roster_env "$B" codex grok gemini; roster_creds
-    SHIM_MODE=notauth "$SCRIPTS/roster.sh" > "$B/out.json"; assert_eq "two signed-out CLIs refuse the run" "$?" 5
+    SHIM_MODE=notauth "$SCRIPTS/roster.sh" > "$B/out.json"; assert_eq "two signed-out CLIs still run, padded" "$?" 0
     roster_lines "$B/out.json" "$B/lines" || { fail "roster_codexnotauth" "stdout is not JSON"; return 1; }
     assert_grep "codex excluded as not signed in" "$B/lines" '^excluded codex -> not signed in$'
     assert_grep "grok excluded as not signed in"  "$B/lines" '^excluded grok -> not signed in$'
     assert_nogrep "no codex seat"  "$B/lines" '^seat codex'
-    assert_grep "gemini and the agent seat remain" "$B/lines" '^counts 2 2$'
+    assert_grep "gemini, the agent seat and one padded seat" "$B/lines" '^counts 3 3$'
+    assert_grep "the padded seat is a Claude seat" "$B/lines" '^seat claude-1 anthropic agent opus max false'
     SHIM_MODE=notauth "$SCRIPTS/roster.sh" --brief > "$B/brief"
-    assert_eq "--brief carries the same refusal code" "$?" 5
+    assert_eq "--brief exits 0 as well" "$?" 0
     assert_grep "brief marks codex signed out" "$B/brief" 'codex ✗ not signed in'
+    assert_grep "brief says the panel is degraded" "$B/brief" 'DEGRADED: only google, anthropic available — padded with 1 Claude seat$'
   )
   ( local B="$T/roster-toofew"; roster_env "$B" codex   # codex alone, and its cache lists one model
     printf '%s' '{"models":[{"slug":"gpt-6.0-alpha","visibility":"list","priority":1,"supported_reasoning_levels":[{"effort":"high"},{"effort":"max"}]}]}' > "$B.home/one.json"
     REVIEW_COUNCIL_CODEX_MODELS_CACHE="$B.home/one.json" "$SCRIPTS/roster.sh" > "$B/out.json"
-    assert_eq "two seats refuse the run" "$?" 5
+    assert_eq "two seats are padded to three" "$?" 0
     roster_lines "$B/out.json" "$B/lines" || { fail "roster_toofew" "stdout is not JSON"; return 1; }
-    assert_grep "the JSON is still emitted" "$B/lines" '^counts 2 3$'
+    assert_grep "the JSON is still emitted" "$B/lines" '^counts 3 4$'
+    assert_grep "one seat padded in" "$B/lines" '^seat claude-1 anthropic agent opus max false'
     assert_grep "newest generation parsed"  "$B/lines" '^seat codex-alpha openai codex gpt-6\.0-alpha max false null null$'
     assert_grep "excluded says why (grok)"   "$B/lines" '^excluded grok -> not installed$'
     assert_grep "excluded says why (gemini)" "$B/lines" '^excluded gemini -> not installed$'
     REVIEW_COUNCIL_CODEX_MODELS_CACHE="$B.home/nope.json" "$SCRIPTS/roster.sh" > "$B/nc.json" 2> "$B/nc.err"
-    assert_eq "a missing cache leaves one seat" "$?" 5
+    assert_eq "a missing cache leaves one detected seat, padded to three" "$?" 0
     assert_nogrep "no traceback on stderr" "$B/nc.err" 'Traceback'
     roster_lines "$B/nc.json" "$B/nclines" || { fail "roster_toofew" "stdout is not JSON"; return 1; }
     assert_grep "cache failure is reported" "$B/nclines" '^excluded codex -> no usable model in '
@@ -183,7 +186,7 @@ test_roster_probe() {
   )
   ( local B="$T/roster-probe-fail"; roster_env "$B" codex grok gemini; roster_creds
     SHIM_MODE=ratelimit "$SCRIPTS/roster.sh" --probe > "$B/out.json" 2> "$B/err"
-    assert_eq "every CLI probe failing refuses the run" "$?" 5
+    assert_eq "every CLI probe failing still leaves a padded panel" "$?" 0
     roster_lines "$B/out.json" "$B/lines" || { fail "roster_probe_fail" "stdout is not JSON"; return 1; }
     assert_grep "codex-sol probe failure recorded"   "$B/lines" '^excluded codex-sol -> probe failed: '
     assert_grep "codex-terra probe failure recorded" "$B/lines" '^excluded codex-terra -> probe failed: '
@@ -191,11 +194,14 @@ test_roster_probe() {
     assert_grep "gemini probe failure recorded"      "$B/lines" '^excluded gemini -> probe failed: '
     assert_nogrep "no codex seat left"  "$B/lines" '^seat codex'
     assert_nogrep "no extras without their lab" "$B/lines" 'true review'
-    assert_grep "only the agent seat remains" "$B/lines" '^counts 1 1$'
+    # padding happens AFTER the probe: the seats a probe drops are replaced, never left short
+    assert_grep "the agent seat plus two padded seats" "$B/lines" '^counts 3 3$'
+    assert_grep "padded after the probe" "$B/lines" '^seat claude-2 anthropic agent opus max false'
     assert_nogrep "no traceback on stderr" "$B/err" 'Traceback'
     # a probe drop is recorded against the SEAT, so the brief line has to find it through the seat's adapter
     SHIM_MODE=ratelimit "$SCRIPTS/roster.sh" --probe --brief > "$B/brief" 2>&1
-    assert_eq "--brief refuses too" "$?" 5
+    assert_eq "--brief exits 0 too" "$?" 0
+    assert_grep "brief says the panel is degraded" "$B/brief" 'DEGRADED: only Claude is available'
     assert_grep "brief explains the codex drop" "$B/brief" 'codex ✗ probe failed'
     "$SCRIPTS/roster.sh" > "$B/cheap.json"; assert_eq "without --probe the seats stay" "$?" 0
     roster_lines "$B/cheap.json" "$B/cheaplines"; assert_grep "cheap detection never probes" "$B/cheaplines" '^counts 5 7$'

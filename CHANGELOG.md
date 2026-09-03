@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2
+
+- Graceful degradation: a machine with fewer than three seats is no longer refused. The roster pads the panel up to three with Claude seats (`claude-1`, `claude-2`, … , each dealt its own lens) and marks itself `degraded` with a one-sentence reason, which the session banner, preflight's `WARNING` line and the report's `Degraded panel:` opener all carry. A Claude-Code-only machine can now use the plugin.
+- `min_labs` (default 1) is the opt-in hard floor that brings the old refusal back: below it the roster exits 5 with `strict: <k> lab(s) available, min_labs=<N>` and preflight stops the run.
+- `roster.json` gains `labs`, `padded` and `degraded` (plus `degradation` when degraded), and padded seats carry `"padded": true`.
+
 ## 0.1.1
 
 - Installing through `install.sh` now turns on auto-update for the review-council marketplace, so new releases arrive on their own; `--no-auto-update` (or `REVIEW_COUNCIL_NO_AUTO_UPDATE=1`) opts out and leaves `settings.json` untouched.

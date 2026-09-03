@@ -25,6 +25,14 @@ actually installed and signed in on this machine and writes it to `$S/roster.jso
 every seat name in this document is an example from a typical roster. Read the roster,
 launch what it names, and never invent a seat, a model slug, or an effort tier.
 
+**A thin panel is padded, never refused.** With fewer than three seats detected, the
+roster appends Claude seats — `claude-1`, `claude-2`, … , adapter `agent`, marked
+`"padded": true` — until there are three, and sets `"degraded": true` with a
+one-sentence `degradation`. Those seats are full seats: they are dealt lenses like any
+other, so three Claude seats read the diff through three different lenses. What is lost
+is decorrelation, not coverage — and losing it is something you say out loud (see
+**Report**), never a reason to skip the loop or to read the diff yourself instead.
+
 ## Parse
 
 `/review-council:rev [scope] [rounds] [--read-only]`
@@ -57,9 +65,11 @@ launch what it names, and never invent a seat, a model slug, or an effort tier.
    ${CLAUDE_PLUGIN_ROOT}/scripts/rev-preflight.sh --scope <branch|uncommitted|path> --write $S
    ```
    Non-zero → stop and relay the one-line reason verbatim. Do not work around it: a
-   shared branch, an empty scope, or a roster with fewer than three usable seats each
-   means the review cannot run as asked. Zero → it printed `base=… branch=…
-   changed_files=…` and the roster line; `$S/scope.env`, `$S/files.txt`,
+   shared branch, an empty scope, or a `min_labs` floor this machine cannot meet each
+   means the review cannot run as asked. A thin roster is not one of those — it is
+   padded and run. Zero → it printed `base=… branch=… changed_files=…`, the roster
+   line, and, when the panel is degraded, a second line `preflight: WARNING — <sentence>`;
+   carry that sentence into the report. `$S/scope.env`, `$S/files.txt`,
    `$S/untracked.txt` and `$S/roster.json` now exist. Source `scope.env` for
    `REV_BASE`, `REV_ROOT`, `REV_SCOPE` — every value in it is single-quoted, so a
    branch name or path with shell metacharacters is inert data.
@@ -132,16 +142,24 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/rev-prompt.sh $S <N> <seat> <lens> "<round emphasi
 
 Then launch **every non-extra seat in ONE message**, plus any extra seat whose `round`
 is this round: one `Bash` call with `run_in_background: true` per seat whose adapter is
-an adapter script, and one `Agent` call for the seat whose adapter is `agent`.
+an adapter script, and one `Agent` call per seat whose adapter is `agent` — `opus`, and
+`claude-1`, `claude-2`, … when the roster padded the panel.
 
 ```
 Bash: ${CLAUDE_PLUGIN_ROOT}/scripts/rev-seat.sh <seat> $S <N> $S/r<N>-<seat>.prompt.md   (run_in_background)
       … one per adapter seat (codex, grok, gemini — whatever the roster lists) …
 Agent: { subagent_type: "review-council:rev-reviewer", description: "rev r<N> <seat> <lens>",
          prompt: "Your instructions are in $S/r<N>-<seat>.prompt.md. Read that file first with the Read tool, follow it exactly, and return ONLY the JSON object it asks for. You are one seat inside a review that is already running: never invoke /review-council:rev, /review-council:stack, or claude -p, and never start a review by any other means." }
+      … one per agent seat (opus, claude-1, … — whatever the roster lists) …
 ```
 
-The `agent` adapter is not a script: it is that `Agent` call. `rev-seat.sh` refuses it.
+Each agent seat gets its **own** `rev-prompt.sh` render and its own lens (`rev-prompt.sh
+$S <N> claude-1 <its lens> "<round emphasis>"`), and its `Agent` prompt names that file.
+A padded seat is a seat, not a copy of the first one: launching one Agent for all of
+them, or handing two of them the same prompt, throws away the only diversity a degraded
+panel has left.
+
+The `agent` adapter is not a script: it is those `Agent` calls. `rev-seat.sh` refuses it.
 
 **Extra seats** carry `"extra": true` and a `round` in the roster — typically
 `codex-review` in round 2 and `grok-code-review` in round 3. In their round, add them
@@ -168,7 +186,9 @@ prompt it is handed, to `$S/r<N>-<seat>.prompt.md` — the very path `rev-prompt
 renders to. Give it that path and it reads and rewrites one file without bound, so
 always pass the rendered prompt under a different name (`.src.md` above).
 
-Immediately after: `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=collect opus_transcript=<the Agent result's output_file path>`.
+Immediately after: `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=collect opus_transcript=<the Agent result's output_file path>`
+— the `opus` seat's, which is the only one the status line reads for a live action; padded seats
+show elapsed time without one.
 
 ### Lens assignment
 
@@ -192,6 +212,9 @@ Worked, round 3 (`lenses = [concurrency, resources, performance]`, `L = 3`, `N =
   agreement signal. Plus the round-3 extra `grok-code-review` at maintainability.
 - **6 seats** (`codex-sol, codex-terra, grok, gemini, opus, …`) → concurrency,
   resources, performance, concurrency, resources, performance — two seats per lens.
+- **3 padded seats** (`opus, claude-1, claude-2` on a Claude-only machine) → the same
+  three lenses, one each. Padded seats are dealt lenses exactly like detected ones;
+  never collapse them or give two of them the same lens.
 
 Worked, round 5 (`lenses = [tests, observability]`, `L = 2`, `N = 5`) with 4 seats →
 `(0+5)%2=1`, `(1+5)%2=0`, `(2+5)%2=1`, `(3+5)%2=0` → observability, tests,
@@ -216,7 +239,9 @@ Wait for all notifications. Do not edit the working tree while seats run.
 | `4` | drop the seat for the rest of the run: `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S 'dropped=[…]'`; name it in the report |
 
 A round needs **three or more** seats' output. With fewer, stop and say so. Never fall
-back to reviewing the diff yourself and calling it reviewed.
+back to reviewing the diff yourself and calling it reviewed. Padding guarantees three
+seats were *launched*, so this rule is now about seats that failed, not seats that were
+never there.
 
 ### Triage
 
@@ -370,9 +395,10 @@ to you *after* reporting, as its own separate change the user can see.
 1. `mkdir -p $S`; write the document paths, one per line, to `$S/docs.txt`.
    `export REV_REPO=<the repo root if the docs live in one, else their directory>`.
    There is no git scope here, so no `rev-preflight.sh`: build the roster yourself with
-   `${CLAUDE_PLUGIN_ROOT}/scripts/roster.sh --probe --write $S/roster.json` (it refuses with
-   exit 5 when fewer than three seats are usable — relay that and stop), and refuse the
-   run if `REV_ACTIVE` was set on entry. Then arm the guard as in setup: every seat runs
+   `${CLAUDE_PLUGIN_ROOT}/scripts/roster.sh --probe --write $S/roster.json` (it pads a thin
+   panel and exits 0; exit 5 means only a config `min_labs` floor it could not meet —
+   relay that and stop), relay its `degradation` sentence when the roster is degraded,
+   and refuse the run if `REV_ACTIVE` was set on entry. Then arm the guard as in setup: every seat runs
    with `REV_ACTIVE=1`, and the `Agent` seat carries the same no-nested-review clause.
 2. State as in setup (`seats` from the roster), arm the Monitor, then per round:
    `${CLAUDE_PLUGIN_ROOT}/scripts/rev-prompt.sh $S <N> <seat> <lens> "<emphasis>" --read-only $S/docs.txt`
@@ -389,6 +415,9 @@ to you *after* reporting, as its own separate change the user can see.
 ```
 r3/7 triage | sol: done 4f 9m | terra: done 2f 11m | grok: running 14m ← rg "retry" src/api | opus: done 3f 8m | open P0:0 P1:1 P2:3 fixed 6
 ```
+
+On a padded panel the seat columns read `opus`, `claude-1`, `claude-2` — three Claude
+seats on three different lenses, not one seat printed three times.
 
 When a Monitor event carries such a line, relay it to the user **as-is** plus at most
 one sentence saying what you are doing right now. Do this even mid-round; the user
@@ -425,11 +454,14 @@ in one of them; never drop one silently. Round blocks append after the entries.
 ## Report (`$S/report.md` and in chat)
 
 1. **Outcome**, in prose, first: what was wrong with the code and whether the change
-   is sound now.
+   is sound now. When `roster.json` has `"degraded": true`, open with `Degraded panel:`
+   and the roster's `degradation` sentence, before anything else — how much
+   decorrelation a verdict rests on is part of the verdict.
 2. **Findings table**: ID, severity, location, claim, resolution — sorted by severity.
 3. **Rejected** findings with reasons, so the user can overrule a judgment call.
 4. **Coverage**: rounds, seats and efforts, lenses, final gate status, any seat that
-   dropped and why.
+   dropped and why. On a degraded panel, state the roster's `degradation` sentence
+   verbatim and name every seat carrying `"padded": true`.
 5. **Commits**: one line per round commit; the squash commit; the push.
 6. **Residual risk**: deferred, untestable, worth a human look.
 

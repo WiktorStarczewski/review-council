@@ -226,7 +226,7 @@ PY
     assert_eq "the marketplace entry pins no version (the manifest silently wins over it)" "$entry_version" ""
     local pv; pv=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$PJ")
     assert_grep "plugin.json carries a dotted-integer version" "$PJ" '"version": "[0-9]+(\.[0-9]+)+"'
-    assert_eq "plugin.json is at the version this task ships" "$pv" "0.1.1"
+    assert_eq "plugin.json is at the version this task ships" "$pv" "0.1.2"
     assert_grep "CHANGELOG has a section for it" "$REPO/CHANGELOG.md" "^## $(echo "$pv" | sed 's/\./\\./g')\$"
   )
 }

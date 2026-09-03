@@ -205,5 +205,10 @@ test_hook_real_root_no_shims() {
     ctx=$(hook_ctx "$T/out.json") || { fail "real plugin root, no CLIs on PATH: valid JSON" ""; return; }
     printf '%s' "$ctx" > "$T/ctx.txt"
     assert_grep "real plugin root, no CLIs on PATH: reports not installed" "$T/ctx.txt" 'not installed'
+    # Task 11: with only the agent seat detected the panel is padded, and the banner has to say so —
+    # this is the line a Claude-Code-only machine sees at every session start.
+    assert_grep "real plugin root, no CLIs on PATH: the banner is marked DEGRADED" "$T/ctx.txt" \
+      'DEGRADED: only Claude is available — 3 Claude seats, no cross-lab decorrelation$'
+    assert_grep "…and still names the claude seat as present" "$T/ctx.txt" 'claude ✓ \(opus@max\)'
   )
 }

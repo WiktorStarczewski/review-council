@@ -1,6 +1,6 @@
 # review-council
 
-A Claude Code plugin that runs your code review through a panel instead of one model: Codex, Grok, Gemini and an Opus subagent each read the same diff independently, in read-only mode, and answer in a shared findings schema. The orchestrating Claude session merges their claims into a ledger, verifies every one against the source before acting on it, fixes what's real, re-runs your gates, and commits — round after round until the panel stops finding anything new. The panel is never hardcoded: at the start of every session the plugin checks which lab CLIs are actually installed and signed in on your machine, builds the seat roster from that (and probes each seat with a one-token call before a review starts), so the review always runs with whatever frontier models you have, and refuses outright rather than quietly reviewing with fewer voices than that implies.
+A Claude Code plugin that runs your code review through a panel instead of one model: Codex, Grok, Gemini and an Opus subagent each read the same diff independently, in read-only mode, and answer in a shared findings schema. The orchestrating Claude session merges their claims into a ledger, verifies every one against the source before acting on it, fixes what's real, re-runs your gates, and commits — round after round until the panel stops finding anything new. The panel is never hardcoded: at the start of every session the plugin checks which lab CLIs are actually installed and signed in on your machine, builds the seat roster from that (and probes each seat with a one-token call before a review starts), so the review always runs with whatever frontier models you have. A panel is three seats; if your machine has fewer, the review still runs — the roster pads the panel with extra Claude seats, each on its own lens, and then says so everywhere it can: the session banner, the preflight line and the final report all carry `DEGRADED` and one sentence naming what decorrelation was lost. Nothing is quietly downgraded, and nothing is refused for being short-handed. Teams that would rather not review at all than review single-lab set `min_labs` and get a hard floor back.
 
 ## Install
 
@@ -39,7 +39,7 @@ A `SessionStart` hook runs on `startup`, `clear` and `compact`. It does two chea
 With `check_updates: true` in the config it adds a third line, and only when there is something to say:
 
    ```
-   review-council 0.1.2 available: claude plugin update review-council
+   review-council 0.1.3 available: claude plugin update review-council
    ```
 
 If roster detection itself fails, the line says `review-council seats: roster unavailable (<reason>)` and the hook still exits 0 — a broken roster never blocks a session from starting. The update check is held to the same bar and then some: it is off unless you turn it on, it asks the network at most once a day, it is capped at three seconds, and any failure means no line rather than a delay. The hook never updates the plugin itself — a plugin's own hook replacing the directory it is running from is how an install gets corrupted — so all it ever does is name the command.
@@ -55,7 +55,7 @@ If roster detection itself fails, the line says `review-council seats: roster un
 The loop, in five steps, repeated each round:
 
 1. **Fan out** — every seat reviews the same pinned diff in parallel, each assigned a lens (correctness, security, concurrency, API contract, tests, red team, …) that rotates by round so every lens gets covered.
-2. **Collect** — wait for all seats; a failed seat retries once a step down its effort ladder; fewer than three seats reporting stops the run rather than reviewing short-handed.
+2. **Collect** — wait for all seats; a failed seat retries once a step down its effort ladder; fewer than three seats *reporting* stops the round rather than reviewing short-handed (three are always launched — the roster pads the panel if it has to).
 3. **Triage** — findings are deduplicated across seats and every claim is independently verified against the code before it's trusted; agreement across seats is signal, not proof.
 4. **Fix and verify** — real findings are fixed P0 first, gates (build/test/lint) are re-run against the pre-round baseline, and a fix that breaks something is repaired or reverted before moving on.
 5. **Commit and record** — the round's fixes are committed and the ledger (`findings.md`) is updated with what was found, fixed, or rejected and why.
@@ -120,6 +120,14 @@ The roster is rebuilt at run time, never hardcoded. Per lab: the CLI must be on 
 
 Two extra seats join later rounds when their lab is seated: `codex-review` (codex's own native review prompt, round 2) and `grok-code-review` (grok with its bundled `/code-review` skill, round 3). `extras: false` in config removes both.
 
+**With only Claude Code installed** — no `codex`, no `grok`, no `gemini` — the roster does not refuse. It pads the panel up to three seats with Claude seats (`opus`, `claude-1`, `claude-2`; adapter `agent`, `opus@max`, each marked `"padded": true`), deals them three different lenses like any other seats, and marks the whole roster `"degraded": true` with one sentence explaining what that costs:
+
+```
+review-council seats: codex ✗ not installed · grok ✗ not installed · gemini ✗ not installed · claude ✓ (opus@max) · DEGRADED: only Claude is available — 3 Claude seats, no cross-lab decorrelation
+```
+
+The same sentence comes back on preflight's own `preflight: WARNING — …` line and opens the final report as `Degraded panel: …`, so a verdict is never read without knowing how many independent voices produced it. Padding also applies part-way: one lab plus the Claude seat is two, so one seat is padded in and the banner reads `DEGRADED: only xai, anthropic available — padded with 1 Claude seat`. Three seats reviewed by one lab is still a worse review than three labs — it is just a much better one than none, and the loudness is the trade. Set `min_labs: 2` (or higher) in the config to turn that trade back into a refusal: below the floor the roster exits 5 and preflight stops the run with `strict: 1 lab(s) available, min_labs=2`.
+
 **Gemini caveat:** there was no Gemini CLI on the machine this was built on, so the adapter is written against the CLI's documented interface (`-p`, `--approval-mode plan`, `-o stream-json`) and fixture-tested against an assumed `stream-json` shape rather than a live response. The roster's cheap detection only checks for credentials; the `--probe` run at the start of a review does send Gemini a one-token call and drops the seat if it fails. Treat a Gemini finding with the same verification rigor as any other seat's, and expect to be the first to hit a shape mismatch if the CLI's output differs — `stream-summary.py`'s gemini branch and `tests/fixtures/gemini-stream.ndjson` are the two places to fix.
 
 Detection is always cheap (binary + sign-in check); `roster.sh --probe` additionally sends each CLI seat a one-token round trip with a 60-second timeout and drops any seat that fails or times out — used by preflight before a real run starts, never by the session-start hook.
@@ -135,7 +143,7 @@ Every reviewer runs in a mode that cannot write, independent of what it's asked 
 ## Requirements
 
 - `bash`, `python3` (stdlib only — no pip installs), `git`.
-- At least three seats detected and signed in, in any combination of the labs above; fewer than three and every entry point (roster, preflight, the loop's own collect step) refuses rather than reviewing short-handed.
+- Nothing beyond that: with no lab CLI at all the panel is padded to three Claude seats and runs degraded. Three or more seats across two or more labs is what the loop is designed for, and `min_labs` makes that a hard requirement if you want one.
 
 ## Development
 

@@ -55,6 +55,7 @@ test_skill_contract() {
   assert_grep "POLICY says apply actionable findings" "$POL" 'actionable'
   assert_grep "POLICY says relay the status line" "$POL" 'status line'
   assert_grep "POLICY forbids self-review as a substitute" "$POL" 'substitute'
+  assert_grep "POLICY says a degraded panel still runs, loudly" "$POL" 'degraded'
 
   # --- fan-out reads the roster ---------------------------------------------
   assert_grep "fan-out reads the session roster" "$K" '\$S/roster\.json'
@@ -67,6 +68,12 @@ test_skill_contract() {
   assert_grep "worked example for a 4-seat roster" "$K" '\*\*4 seats\*\*'
   assert_grep "worked example for a 6-seat roster" "$K" '\*\*6 seats\*\*'
   assert_grep "three-seat minimum survives the port" "$K" 'three or more'
+  # Task 11 — a degraded panel is run, not refused, and every launched agent seat gets its own call
+  assert_grep "padded Claude seats are named" "$K" '`claude-1`'
+  assert_grep "every agent-adapter seat is its own Agent call" "$K" 'one `Agent` call per seat whose adapter is `agent`'
+  assert_grep "padding is explained where the roster is introduced" "$K" 'padded'
+  assert_grep "the report opens with the degradation" "$K" 'Degraded panel:'
+  assert_grep "coverage quotes the roster sentence verbatim" "$K" '`degradation`'
 
   # B1 — a resumed leg's ledger must be read, never truncated
   assert_grep "findings.md created only if absent" "$K" '\[ -f \$S/findings\.md \] \|\| printf'

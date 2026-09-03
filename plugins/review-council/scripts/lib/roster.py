@@ -6,8 +6,13 @@
 Detection is CHEAP by default — a binary on PATH, one status command, a cache or credentials file —
 because session start prints the `--brief` line on every startup and must never call a model.
 `--probe` (preflight only) additionally sends a one-token "reply OK" to each CLI seat and drops the
-seats that fail. Exit 0 with >= 3 non-extra seats, exit 5 with fewer; the JSON is printed either way
-and `excluded[]` says why each CLI is missing. Standard library only.
+seats that fail.
+
+A panel is three seats. Fewer detected than that is never a refusal: Claude seats are padded in until
+there are three, the roster is marked `degraded` with a one-sentence reason, and every line the user
+sees carries it. Exit is 0 whenever a panel exists — which is always. Exit 5 is strict mode only:
+config `min_labs: N` (default 1) refuses when fewer than N distinct labs are seated. The JSON is
+printed either way and `excluded[]` says why each CLI is missing. Standard library only.
 """
 
 import json
@@ -20,6 +25,7 @@ import time
 from datetime import datetime, timezone
 
 EFFORTS = ('max', 'xhigh', 'high')   # highest first; a mid tier is never seated
+PANEL = 3                            # seats a round needs; a thinner roster is padded, never refused
 LOGIN_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_LOGIN_TIMEOUT', '20'))   # a wedged status command must not hang session start
 PROBE_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_PROBE_TIMEOUT', '60'))
 
@@ -257,6 +263,66 @@ def probe_seat(s):
     return 'probe failed: %s' % line if line else 'probe failed'
 
 
+def min_labs(cfg):
+    """The strict floor on distinct labs. Default 1 — which nothing can fail, so exit 5 stays opt-in."""
+    v = cfg.get('min_labs')
+    return v if isinstance(v, int) and not isinstance(v, bool) and v >= 1 else 1
+
+
+def pad(seats, excluded, cfg):
+    """Top the panel up to PANEL non-extra seats with Claude seats. → the number added.
+
+    A machine with only Claude Code installed still gets a panel; it gets a WORSE one, and saying so is
+    the whole point of the `degraded` flag. Padded seats are ordinary seats — dealt lenses like any
+    other — so three Claude seats read the diff through three different lenses. `claude_seat: false`
+    is overridden here rather than honoured into an empty panel: the config asks for one fewer voice,
+    not for no review at all, and the override is recorded in `excluded[]`.
+    """
+    missing = PANEL - len([s for s in seats if not s['extra']])
+    if missing <= 0:
+        return 0
+    # Whichever config turned the Claude lab off, padding overrides it — and says so. Silently
+    # obeying would leave an empty panel; silently overriding would hide that the config was ignored.
+    if cfg.get('claude_seat') is False or os.environ.get('REVIEW_COUNCIL_CLAUDE_SEAT') == '0':
+        off = 'claude_seat: false overridden'
+    elif {'claude', 'agent', 'anthropic'} & excluded_names(cfg):
+        off = 'claude excluded by config, overridden'
+    else:
+        off = None
+    if off:
+        excluded.append({'cli': 'padding', 'reason': '%s — a panel needs %d seats' % (off, PANEL)})
+    used = {s['seat'] for s in seats}
+    n = 0
+    for _ in range(missing):
+        n += 1
+        name = 'claude-%d' % n
+        while name in used:
+            n += 1
+            name = 'claude-%d' % n
+        used.add(name)
+        seat = make_seat(name, 'agent', 'opus', 'max')
+        seat['padded'] = True
+        seats.append(seat)
+    return missing
+
+
+def degradation(seats, padded):
+    """→ (labs, degraded, sentence). Degraded = padded at all, or only one lab left to disagree."""
+    labs = []
+    for s in seats:
+        if not s['extra'] and s['lab'] not in labs:
+            labs.append(s['lab'])
+    if padded <= 0 and len(labs) > 1:
+        return labs, False, None
+    if labs == ['anthropic']:
+        n = len([s for s in seats if not s['extra']])
+        return labs, True, ('only Claude is available — %d Claude seats, no cross-lab decorrelation' % n)
+    if padded:
+        return labs, True, ('only %s available — padded with %d Claude %s'
+                            % (', '.join(labs), padded, 'seat' if padded == 1 else 'seats'))
+    return labs, True, 'only %s available — no cross-lab decorrelation' % ', '.join(labs)
+
+
 # ---------------------------------------------------------------- assembly
 
 def build(do_probe):
@@ -309,9 +375,30 @@ def build(do_probe):
     # an extra rides on its lab: no surviving base seat → no extra
     kept = [s for s in kept if not s['extra'] or any(b['adapter'] == s['adapter'] and not b['extra'] for b in kept)]
 
+    # Padding comes LAST — after config, after exclusions, after the probe — so it replaces the seats
+    # those steps actually removed rather than a count taken before they ran.
+    padded = pad(kept, excluded, cfg)
+    labs, degraded, sentence = degradation(kept, padded)
+
+    # Strict mode counts the labs that were actually DETECTED. Padded Claude seats are not a second
+    # opinion, so they must not satisfy a floor whose whole purpose is to demand one — with
+    # `claude_seat: false` and one real lab, counting them would let `min_labs: 2` pass on one lab.
+    # `floor > 1` keeps the default of 1 unable to refuse anything: a bare machine with the Claude seat
+    # turned off has ZERO real labs and still gets a padded panel, which is the point of this task.
+    floor = min_labs(cfg)
+    real = [l for l in labs
+            if any(s['lab'] == l and not s['extra'] and not s.get('padded') for s in kept)]
+    strict = floor > 1 and len(real) < floor
+    if strict:
+        excluded.append({'cli': 'min_labs',
+                         'reason': 'strict: %d lab(s) available, min_labs=%d' % (len(real), floor)})
+
     roster = {'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-              'seats': kept, 'excluded': excluded}
-    return roster, adapter_of
+              'seats': kept, 'labs': labs, 'padded': padded, 'degraded': degraded}
+    if degraded:
+        roster['degradation'] = sentence
+    roster['excluded'] = excluded
+    return roster, adapter_of, strict
 
 
 def brief_line(roster, adapter_of):
@@ -321,7 +408,9 @@ def brief_line(roster, adapter_of):
     parts = []
     for adapter in ORDER:
         name = NAMES[adapter]
-        seated = [s for s in roster['seats'] if s['adapter'] == adapter and not s['extra']]
+        # padded seats are not something this lab was detected offering — they belong to the DEGRADED clause
+        seated = [s for s in roster['seats']
+                  if s['adapter'] == adapter and not s['extra'] and not s.get('padded')]
         if seated:
             models = ', '.join(s['model'] + ('@' + s['effort'] if s['effort'] else '') for s in seated)
             parts.append('%s ✓ (%s)' % (name, models))
@@ -329,10 +418,19 @@ def brief_line(roster, adapter_of):
             reason = by_cli.get(name) or next(
                 (e['reason'] for e in roster['excluded'] if adapter_of.get(e['cli']) == adapter),
                 'unavailable')
+            # `claude ✗ disabled` beside `DEGRADED: only Claude is available` reads as a contradiction:
+            # the detected seat IS off and padded seats of that lab are in the panel. Name them here.
+            n = len([s for s in roster['seats']
+                     if s['adapter'] == adapter and not s['extra'] and s.get('padded')])
+            if n:
+                reason += ' (%d padded seat%s)' % (n, '' if n == 1 else 's')
             parts.append('%s ✗ %s' % (name, reason))
     if any(e.get('reason') == 'config unreadable' for e in roster['excluded']):
         parts.append('config unreadable (pins and exclusions ignored)')
-    return 'review-council seats: ' + ' · '.join(parts)
+    line = 'review-council seats: ' + ' · '.join(parts)
+    if roster.get('degraded'):
+        line += ' · DEGRADED: ' + (roster.get('degradation') or 'the panel is short of voices')
+    return line
 
 
 def usage(message):
@@ -358,7 +456,7 @@ def main(argv):
         else:
             return usage('unknown argument %s' % a)
 
-    roster, adapter_of = build(do_probe)
+    roster, adapter_of, strict = build(do_probe)
     text = json.dumps(roster, indent=2, ensure_ascii=False) + '\n'
     if write:
         tmp = write + '.new'
@@ -370,7 +468,7 @@ def main(argv):
             sys.stderr.write('roster: cannot write %s: %s\n' % (write, exc))
             return 1
     sys.stdout.write(text if fmt == 'json' else brief_line(roster, adapter_of) + '\n')
-    return 0 if len([s for s in roster['seats'] if not s['extra']]) >= 3 else 5
+    return 5 if strict else 0   # a panel always exists (padding guarantees it); only min_labs refuses
 
 
 if __name__ == '__main__':

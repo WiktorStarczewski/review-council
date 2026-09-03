@@ -99,8 +99,10 @@ last_activity() {  # <session-dir> → newest mtime of run.log or anything under
 }
 
 wait_for_auth() {
-  # The roster owns sign-in detection for every lab; the stack only asks whether enough seats are available.
-  # `roster.sh --brief` exits 0 with three or more seats and non-zero below that — that exit code is the gate.
+  # The roster owns sign-in detection for every lab; the stack only asks whether it will seat a panel at all.
+  # `roster.sh --brief` exits 0 whenever a panel exists — it pads a thin one with Claude seats and marks it
+  # degraded rather than refusing — and non-zero only in strict mode (config `min_labs`). That exit code is
+  # the entire gate: a degraded panel is a panel, and the leg's own report says it was degraded.
   local i
   for i in $(seq 1 "$AUTH_WAIT_TRIES"); do
     "$REV_SCRIPTS/roster.sh" --brief >/dev/null && return 0

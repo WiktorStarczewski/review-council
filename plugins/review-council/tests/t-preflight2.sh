@@ -32,9 +32,9 @@ test_preflight_edges() {
   )
 }
 
-# …and the same seam against the REAL roster.sh, driven by the shims: preflight seats from it, refuses
-# under three seats, and never runs a sign-in check of its own. PATH holds only the shims plus the system
-# directories, so a real codex/grok/gemini on this machine can never be reached.
+# …and the same seam against the REAL roster.sh, driven by the shims: preflight seats from it, pads and
+# warns instead of refusing when a lab is missing, and never runs a sign-in check of its own. PATH holds
+# only the shims plus the system directories, so a real codex/grok/gemini can never be reached.
 test_preflight_roster() {
   ( local B="$T/pfr-bin" R="$T/pfr"; mkdir -p "$B"; mkrepo "$R"
     cp "$SHIMS/codex" "$SHIMS/grok" "$B/"; chmod +x "$B/codex" "$B/grok"
@@ -55,13 +55,26 @@ test_preflight_roster() {
     assert_grep "roster.json holds the probed seats" "$T/pfr-sess/roster.json" '"seat": "codex-sol"'
     assert_nogrep "an excluded lab is never seated" "$T/pfr-sess/roster.json" '"seat": "gemini"'
     assert_exit "scope.env is written beside it" 0 test -f "$T/pfr-sess/scope.env"
-    # codex gone → grok + opus only: refused before a single prompt is rendered
+    # codex gone → grok + opus only: the panel is padded to three and the run is warned about, not refused
     rm -f "$B/codex"
     "$SCRIPTS/rev-preflight.sh" --write "$T/pfr-sess2" > "$T/pfr.out" 2> "$T/pfr.err"
-    assert_eq "real roster: two seats refused" "$?" 1
-    assert_grep "the refusal counts the seats" "$T/pfr.err" '^preflight: only 2 seats available \(need 3\): '
-    assert_grep "…and names the reason" "$T/pfr.err" 'codex: not installed'
+    assert_eq "real roster: a two-lab machine still runs" "$?" 0
+    assert_grep "base line printed" "$T/pfr.out" '^base=[0-9a-f]{7,} branch=feat '
+    assert_grep "the roster line carries DEGRADED" "$T/pfr.out" \
+      'DEGRADED: only xai, anthropic available — padded with 1 Claude seat$'
+    assert_grep "…and preflight adds its own warning line" "$T/pfr.out" \
+      '^preflight: WARNING — only xai, anthropic available — padded with 1 Claude seat$'
+    assert_grep "the padded seat is in roster.json" "$T/pfr-sess2/roster.json" '"seat": "claude-1"'
+    assert_grep "…marked as padded" "$T/pfr-sess2/roster.json" '"padded": true'
+    assert_exit "scope.env is written for a degraded run" 0 test -f "$T/pfr-sess2/scope.env"
+    assert_nogrep "nothing on stderr" "$T/pfr.err" '.'
+    # min_labs is the hard floor for teams that would rather not review than review single-lab
+    printf '%s' '{"min_labs": 3}' > "$HOME/strict.json"
+    REVIEW_COUNCIL_CONFIG="$HOME/strict.json" "$SCRIPTS/rev-preflight.sh" --write "$T/pfr-sess3" \
+      > "$T/pfr.out" 2> "$T/pfr.err"
+    assert_eq "real roster: min_labs refuses" "$?" 1
+    assert_grep "the strict reason is relayed" "$T/pfr.err" '^preflight: strict: 2 lab\(s\) available, min_labs=3 — '
     assert_nogrep "no base line on a refusal" "$T/pfr.out" '^base='
-    assert_exit "no scope.env from a refused run" 1 test -f "$T/pfr-sess2/scope.env"
+    assert_exit "no scope.env from a refused run" 1 test -f "$T/pfr-sess3/scope.env"
   )
 }

@@ -10,10 +10,11 @@ Read by `scripts/roster.sh` (via `scripts/lib/roster.py`) on every invocation. A
 
 | Key | Type | Default | Effect |
 |---|---|---|---|
-| `exclude` | array of strings | `[]` | Lab or seat names to drop from the roster even if detected and signed in, e.g. `["gemini"]` or `["grok-code-review"]`. |
-| `pin` | object | `{}` | Per-seat override of the detected `model`/`effort`, e.g. `{"codex-sol": {"effort": "ultra"}}`. Only overrides the given field(s); anything omitted keeps its detected value. |
+| `exclude` | array of strings | `[]` | Lab or seat names to drop from the roster even if detected and signed in, e.g. `["gemini"]` or `["grok-code-review"]`. Applies to detected seats only: padded seats are added afterwards and cannot be excluded, because the three-seat floor is not something config is allowed to remove — excluding the Claude lab is instead recorded as overridden in `excluded[]`. |
+| `pin` | object | `{}` | Per-seat override of the detected `model`/`effort`, e.g. `{"codex-sol": {"effort": "ultra"}}`. Only overrides the given field(s); anything omitted keeps its detected value. Applies to detected seats only: padded seats are added afterwards and cannot be pinned — they are always `opus@max`. |
 | `extras` | boolean | `true` | `false` removes both extra seats (`codex-review`, `grok-code-review`) regardless of whether their base lab is seated. |
-| `claude_seat` | boolean | `true` | `false` removes the `opus` seat — equivalent to `REVIEW_COUNCIL_CLAUDE_SEAT=0`. |
+| `claude_seat` | boolean | `true` | `false` removes the `opus` seat — equivalent to `REVIEW_COUNCIL_CLAUDE_SEAT=0`. It cannot empty the panel: if fewer than three seats remain, Claude seats are padded back in and `excluded[]` records the override. |
+| `min_labs` | integer ≥ 1 | `1` | Hard floor on how many distinct labs must be **detected** — padded Claude seats never count towards it. Below it, `roster.sh` exits 5 with `excluded[]` reason `strict: <k> lab(s) available, min_labs=<N>` and preflight refuses the run. The default of `1` can never fail, which is what makes graceful degradation the default: the roster pads a thin panel to three Claude seats and runs it, marked `degraded`. Set `2` if a single-lab review should not happen at all. |
 | `check_updates` | boolean | `false` | `true` adds one line to the session banner when a newer release is published: `review-council <version> available: claude plugin update review-council`. Nothing is ever installed by it. Off unless the value is literally `true`. |
 
 Example:
@@ -49,6 +50,14 @@ Environment variables take precedence over the config file, which takes preceden
 | `REVIEW_COUNCIL_SETTINGS` | `install.sh` | The `settings.json` whose `autoUpdate` flag the installer sets, instead of `~/.claude/settings.json`. |
 | `REVIEW_COUNCIL_NO_AUTO_UPDATE` | `install.sh` | `1` is the env form of `--no-auto-update`: the installer leaves `settings.json` alone. |
 | `CLAUDE_PLUGIN_ROOT` | set by Claude Code | The installed plugin's own directory; every skill, hook and agent path in this plugin is written relative to it. Not something you configure — set by the harness at plugin load. |
+
+## Graceful degradation
+
+A panel is three seats. When detection finds fewer, `roster.sh` appends Claude seats (`claude-1`, `claude-2`, … — adapter `agent`, `opus@max`, `"padded": true`) until there are three, and the roster gains three top-level keys: `labs` (the distinct labs among the non-extra seats, in seat order), `padded` (how many seats were added), and `degraded` — true when anything was padded or only one lab is left — plus a one-sentence `degradation` when it is. Padded seats are dealt lenses like any other seat, so three Claude seats review through three different lenses.
+
+Padding runs last — after `exclude`, after `pin`, after the `--probe` round trip — so it replaces the seats those steps actually removed. The consequence is that `claude-1`, `claude-2`, … are not addressable by `exclude` or `pin`; that is deliberate, since a floor a config could delete would not be a floor. `min_labs` counts only the labs actually **detected**, so padded seats never satisfy it.
+
+Nothing about this is quiet: the `--brief` banner ends in ` · DEGRADED: <sentence>`, preflight prints `preflight: WARNING — <sentence>` under the roster line, and the skill opens its report with `Degraded panel: <sentence>`. `min_labs` above is the opt-in hard floor for anyone who wants the old refusal back.
 
 ## Precedence in one line
 
