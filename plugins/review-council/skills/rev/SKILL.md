@@ -67,7 +67,9 @@ is decorrelation, not coverage — and losing it is something you say out loud (
    Non-zero → stop and relay the one-line reason verbatim. Do not work around it: a
    shared branch, an empty scope, or a `min_labs` floor this machine cannot meet each
    means the review cannot run as asked. A thin roster is not one of those — it is
-   padded and run. Zero → it printed `base=… branch=… changed_files=…`, the roster
+   padded and run. Zero → it printed `base=… base_branch=… (how) branch=… changed_files=…` — check
+   `base_branch` (the open PR's base, else the nearest fork point) and re-run with `--base <ref>`
+   if it is wrong, since a wrong base reviews someone else's commits — the roster
    line, and, when the panel is degraded, a second line `preflight: WARNING — <sentence>`;
    carry that sentence into the report. `$S/scope.env`, `$S/files.txt`,
    `$S/untracked.txt` and `$S/roster.json` now exist. Source `scope.env` for

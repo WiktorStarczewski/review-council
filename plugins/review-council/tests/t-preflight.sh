@@ -84,7 +84,7 @@ test_preflight() {
   echo b > b.txt; git add b.txt; git commit -qm "feat: b"; echo c > c.txt
   rm -f "$T/args"                      # the shims record every call here; preflight must make none
   "$PF" --write "$T/pf-sess" > "$T/pf.out" 2> "$T/pf.err"; assert_eq "feature branch ok" "$?" 0
-  assert_grep "summary line" "$T/pf.out" "^base=$(git rev-parse main) branch=feat default=main root=$R scope=branch changed_files=2$"
+  assert_grep "summary line" "$T/pf.out" "^base=$(git rev-parse main) base_branch=main \(nearest fork point\) branch=feat default=main root=$R scope=branch changed_files=2$"
   assert_grep "roster brief line follows it" "$T/pf.out" '^review-council seats: codex ✓'
   assert_nogrep "roster JSON never reaches stdout" "$T/pf.out" '"seats"'
   assert_grep "roster is probed" "$T/rstub.args" '^--probe$'

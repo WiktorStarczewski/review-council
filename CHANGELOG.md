@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+- Preflight no longer assumes the change was cut from `origin/HEAD`: the base is `--base <ref>` (or `REV_BASE_REF`), else the open PR's base via `gh`, else the nearest fork point among the default branch, `next`, `develop`, `dev` and `release`. A branch cut from a `next` line was previously reviewed with everything `next` carried past `main`. `scope.env` gains `REV_BASE_BRANCH`, the preflight line prints `base_branch=<name> (<how>)`, and HEAD sitting on the chosen base is refused like any shared branch.
+
 ## 0.2.0
 
 - The fix-plan gate: triage now clusters accepted findings by root cause, and after round 1 (and any later round that accepts a P0/P1 or opens a new cluster) the orchestrator writes `fix-plan.md` — one rule per cluster with every site, branch, realm and doc copy enumerated by search, what it must not break, and the test that fails without it — and the same seats review the plan before any code is written. Fixes then land one cluster per commit with every listed site in it.

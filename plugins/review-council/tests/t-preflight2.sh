@@ -49,7 +49,7 @@ test_preflight_roster() {
     git checkout -qb feat; echo b > b.txt; git add b.txt; git commit -qm "feat: b"
     "$SCRIPTS/rev-preflight.sh" --write "$T/pfr-sess" > "$T/pfr.out" 2> "$T/pfr.err"
     assert_eq "real roster: four seats accepted" "$?" 0
-    assert_grep "base line first" "$T/pfr.out" '^base=[0-9a-f]{7,} branch=feat '
+    assert_grep "base line first" "$T/pfr.out" '^base=[0-9a-f]{7,} base_branch=main \(nearest fork point\) branch=feat '
     assert_grep "roster line second" "$T/pfr.out" '^review-council seats: codex ✓ \(gpt-5\.6-sol@max, gpt-5\.6-terra@max\) · grok ✓ \(grok-4\.6@xhigh\)'
     assert_grep "an absent lab is reported, not fatal" "$T/pfr.out" 'gemini ✗ not installed'
     assert_grep "roster.json holds the probed seats" "$T/pfr-sess/roster.json" '"seat": "codex-sol"'
@@ -59,7 +59,7 @@ test_preflight_roster() {
     rm -f "$B/codex"
     "$SCRIPTS/rev-preflight.sh" --write "$T/pfr-sess2" > "$T/pfr.out" 2> "$T/pfr.err"
     assert_eq "real roster: a two-lab machine still runs" "$?" 0
-    assert_grep "base line printed" "$T/pfr.out" '^base=[0-9a-f]{7,} branch=feat '
+    assert_grep "base line printed" "$T/pfr.out" '^base=[0-9a-f]{7,} base_branch=main \(nearest fork point\) branch=feat '
     assert_grep "the roster line carries DEGRADED" "$T/pfr.out" \
       'DEGRADED: only xai, anthropic available — padded with 1 Claude seat$'
     assert_grep "…and preflight adds its own warning line" "$T/pfr.out" \
@@ -76,5 +76,33 @@ test_preflight_roster() {
     assert_grep "the strict reason is relayed" "$T/pfr.err" '^preflight: strict: 2 lab\(s\) available, min_labs=3 — '
     assert_nogrep "no base line on a refusal" "$T/pfr.out" '^base='
     assert_exit "no scope.env from a refused run" 1 test -f "$T/pfr-sess3/scope.env"
+  )
+}
+
+# The base is the branch the change was cut from, not origin/HEAD: a feature branch off `next` must be
+# measured against next (74 commits of next-only history were once reviewed as the change). --base and
+# REV_BASE_REF override; the nearest fork point decides otherwise; HEAD on the chosen base is refused.
+test_preflight_base() {
+  ( seat_env; local PF; PF="$(pf_bin)/rev-preflight.sh"
+    local R="$T/pf-base"; mkrepo "$R"; cd "$R" || { fail "pf-base setup" "cannot cd"; return 1; }
+    git checkout -qb next; for i in 1 2 3; do echo "n$i" > "n$i.txt"; git add "n$i.txt"; git commit -qm "next: $i"; done
+    git checkout -qb feat-next; echo f > f.txt; git add f.txt; git commit -qm "feat: on next"
+    local mb_next mb_main; mb_next=$(git merge-base HEAD next); mb_main=$(git merge-base HEAD main)
+    "$PF" --write "$T/pfb-sess" > "$T/pfb.out" 2>&1; assert_eq "branch cut from next: preflight ok" "$?" 0
+    assert_grep "nearest fork point picks next" "$T/pfb.out" ' base_branch=next \(nearest fork point\) '
+    assert_grep "base is the merge-base with next" "$T/pfb.out" "^base=$mb_next "
+    assert_grep "only the branch's own file is in scope" "$T/pfb.out" ' changed_files=1$'
+    assert_grep "scope.env records the base branch" "$T/pfb-sess/scope.env" "^REV_BASE_BRANCH='next'$"
+    "$PF" --base main > "$T/pfb2.out" 2>&1; assert_eq "--base main accepted" "$?" 0
+    assert_grep "--base main is honoured" "$T/pfb2.out" "^base=$mb_main base_branch=main \(given\) "
+    assert_grep "…and widens the scope to next's files" "$T/pfb2.out" ' changed_files=4$'
+    REV_BASE_REF=main "$PF" > "$T/pfb3.out" 2>&1; assert_grep "REV_BASE_REF is honoured" "$T/pfb3.out" ' base_branch=main \(given\) '
+    "$PF" --base nosuch > /dev/null 2> "$T/pfb4.err"; assert_eq "unknown --base refused" "$?" 1
+    assert_grep "says why" "$T/pfb4.err" "base 'nosuch' is not a branch"
+    git checkout -qb feat-main main; echo g > g.txt; git add g.txt; git commit -qm "feat: on main"
+    "$PF" > "$T/pfb5.out" 2>&1; assert_grep "a branch cut from main still picks main" "$T/pfb5.out" ' base_branch=main \(nearest fork point\) '
+    git checkout -q next
+    "$PF" > /dev/null 2> "$T/pfb6.err"; assert_eq "HEAD on next is refused as shared" "$?" 1
+    assert_grep "says why" "$T/pfb6.err" "shared branch 'next'"
   )
 }

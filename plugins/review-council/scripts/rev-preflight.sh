@@ -1,5 +1,9 @@
 #!/bin/bash
-# rev-preflight.sh [--scope branch|uncommitted|<path>] [--write <session-dir>]
+# rev-preflight.sh [--scope branch|uncommitted|<path>] [--write <session-dir>] [--base <ref>]
+# The base branch is, in order: --base, $REV_BASE_REF, the open PR's base (gh, when installed and signed in),
+# the nearest fork point among the long-lived branches (origin/HEAD's, next, develop, dev, release), else
+# origin/HEAD's. origin/HEAD alone was wrong for every branch cut from a `next` line: the review then
+# included everything next carried past main (74 commits in one repo).
 # Refuse a bad start (exit 1 + one-line reason on stderr), or print the pinned scope and the usable seats.
 # --write stores scope.env (REV_BASE/REV_BRANCH/REV_DEFAULT/REV_ROOT/REV_SCOPE) + files.txt + untracked.txt
 # + roster.json in <session-dir>.
@@ -11,11 +15,12 @@
 # only seat-shaped refusal left is strict mode (config `min_labs`), which roster.sh reports as exit 5.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
-SCOPE=branch; WRITE=""
+SCOPE=branch; WRITE=""; BASEREF=${REV_BASE_REF:-}
 while [ $# -gt 0 ]; do
   case "$1" in
     --scope) SCOPE=${2:?}; shift 2;;
     --write) WRITE=${2:?}; shift 2;;
+    --base) BASEREF=${2:?}; shift 2;;
     *) echo "rev-preflight: unknown argument $1" >&2; exit 1;;
   esac
 done
@@ -33,14 +38,40 @@ if [ -z "$DEFAULT" ]; then
   for cand in main master; do git show-ref --verify -q "refs/heads/$cand" && { DEFAULT=$cand; break; }; done
 fi
 [ -n "$DEFAULT" ] || die "cannot determine the default branch (no origin/HEAD, no local main or master)"
-case "$BRANCH" in main|master|"$DEFAULT") die "HEAD is on shared branch '$BRANCH' — cut a working branch first";; esac
+# ref_for <name> → the ref to measure against: the remote-tracking branch when it exists, else the local one.
+ref_for() { git show-ref --verify -q "refs/remotes/origin/$1" && { echo "origin/$1"; return; }; git show-ref --verify -q "refs/heads/$1" && { echo "$1"; return; }; return 1; }
+BASE_BRANCH=""; BASE_HOW=""
+if [ -n "$BASEREF" ]; then
+  BASE_BRANCH=$BASEREF; BASE_HOW="given"
+  BASE_TARGET=$(ref_for "$BASEREF" || git rev-parse --verify -q "$BASEREF^{commit}") || die "base '$BASEREF' is not a branch, tag or commit here"
+else
+  if command -v gh >/dev/null 2>&1; then
+    prb=$(GH_PROMPT_DISABLED=1 gh pr view --json baseRefName -q .baseRefName 2>/dev/null || true)
+    [ -n "$prb" ] && ref_for "$prb" >/dev/null && { BASE_BRANCH=$prb; BASE_HOW="open PR"; }
+  fi
+  if [ -z "$BASE_BRANCH" ]; then
+    # nearest fork point: the candidate with the fewest commits between its merge-base and HEAD is the branch
+    # this one was cut from; ties go to the default branch (listed first).
+    bestn=""
+    for cand in "$DEFAULT" next develop dev release; do
+      r=$(ref_for "$cand") || continue
+      mb=$(git merge-base HEAD "$r" 2>/dev/null) || continue
+      n=$(git rev-list --count "$mb..HEAD")
+      if [ -z "$bestn" ] || [ "$n" -lt "$bestn" ]; then BASE_BRANCH=$cand; bestn=$n; fi
+    done
+    BASE_HOW="nearest fork point"
+  fi
+  [ -n "$BASE_BRANCH" ] || { BASE_BRANCH=$DEFAULT; BASE_HOW="default"; }
+  BASE_TARGET=$(ref_for "$BASE_BRANCH") || die "cannot resolve base branch $BASE_BRANCH"
+fi
+case "$BRANCH" in main|master|"$DEFAULT"|"$BASE_BRANCH") die "HEAD is on shared branch '$BRANCH' — cut a working branch first";; esac
 # Pathspec as an array so a scope path containing spaces survives; ${P[@]+…} keeps bash 3.2 + set -u happy on an empty array.
 PS=()
 if [ "$SCOPE" = uncommitted ]; then
   BASE=$(git rev-parse HEAD)
   [ -n "$(git status --porcelain)" ] || die "scope is empty — no uncommitted changes"
 else
-  BASE=$(git merge-base HEAD "origin/$DEFAULT" 2>/dev/null || git merge-base HEAD "$DEFAULT" 2>/dev/null) || die "cannot find the merge-base with $DEFAULT"
+  BASE=$(git merge-base HEAD "$BASE_TARGET" 2>/dev/null) || die "cannot find the merge-base with $BASE_TARGET"
   if [ "$SCOPE" != branch ]; then
     # A path the change DELETES is still a reviewable scope: accept it if it exists in the worktree OR at the base.
     [ -e "$SCOPE" ] || git cat-file -e "$BASE:$SCOPE" 2>/dev/null \
@@ -90,7 +121,7 @@ UNTRACKED=$(git ls-files -z --others --exclude-standard ${PS[@]+"${PS[@]}"} | tr
 FILES=$( { git diff --name-only -z "$BASE" ${PS[@]+"${PS[@]}"} | tr '\0' '\n'
            printf '%s\n' "$UNTRACKED"; } | sort -u | grep . )
 N=$(printf '%s\n' "$FILES" | grep -c .)
-echo "base=$BASE branch=$BRANCH default=$DEFAULT root=$ROOT scope=$SCOPE changed_files=$N"
+echo "base=$BASE base_branch=$BASE_BRANCH ($BASE_HOW) branch=$BRANCH default=$DEFAULT root=$ROOT scope=$SCOPE changed_files=$N"
 [ -n "$BRIEF" ] && printf '%s\n' "$BRIEF"
 # A degraded panel runs, loudly. The roster line already ends in `· DEGRADED: …`; this second line makes
 # it impossible to miss in a transcript, and the skill copies the sentence verbatim into the report.
@@ -110,6 +141,7 @@ if [ -n "$WRITE" ]; then
   { printf 'REV_BASE=%s\n'    "$(q "$BASE")"
     printf 'REV_BRANCH=%s\n'  "$(q "$BRANCH")"
     printf 'REV_DEFAULT=%s\n' "$(q "$DEFAULT")"
+    printf 'REV_BASE_BRANCH=%s\n' "$(q "$BASE_BRANCH")"
     printf 'REV_ROOT=%s\n'    "$(q "$ROOT")"
     printf 'REV_SCOPE=%s\n'   "$(q "$SCOPE")"
   } > "$WRITE/scope.env" || die "cannot write $WRITE/scope.env"

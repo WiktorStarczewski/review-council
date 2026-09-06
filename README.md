@@ -47,10 +47,10 @@ If roster detection itself fails, the line says `review-council seats: roster un
 ## `/review-council:rev`
 
 ```
-/review-council:rev [scope] [rounds] [--read-only]
+/review-council:rev [scope] [rounds] [--read-only] [--base <ref>]
 ```
 
-`scope` is `branch` (default), `uncommitted`, a path, a PR number/URL, or a branch name; `rounds` is a minimum round count (default 7); `--read-only` reports findings without fixing or committing, for plans and docs as well as code.
+`scope` is `branch` (default), `uncommitted`, a path, a PR number/URL, or a branch name; `rounds` is a minimum round count (default 7); `--read-only` reports findings without fixing or committing, for plans and docs as well as code; `--base` names the branch the change was cut from when the guess is wrong (the guess is the open PR's base, else the nearest fork point among `main`, `next`, `develop`, else `origin/HEAD`).
 
 The loop, in six steps, repeated each round:
 

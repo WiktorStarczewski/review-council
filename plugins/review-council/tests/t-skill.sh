@@ -47,6 +47,7 @@ test_skill_contract() {
   assert_grep "fix lands one cluster per commit" "$K" 'one\s*cluster per commit'
   assert_grep "plan round is not a round of its own" "$K" 'not a round of its own'
   assert_grep "evidence doc is referenced" "$K" 'churn-analysis-2026-09-06\.md'
+  assert_grep "rev skill documents --base" "$K" -- '--base <ref>'
   assert_grep "round 1 leads with simplicity" "$K" '\| 1 \|.*\| simplicity, correctness'
 
   # --- the agent and its read-only fence ------------------------------------
