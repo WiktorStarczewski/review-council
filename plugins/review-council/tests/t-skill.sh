@@ -37,6 +37,18 @@ test_skill_contract() {
     if [ -e "$SK/$rel" ]; then ok "referenced plugin file exists: $rel"; else fail "referenced plugin file exists: $rel" "$SK/$rel missing"; fi
   done < "$T/skill-paths"
 
+  # --- the fix-plan gate (0.2.0) ---------------------------------------------
+  assert_grep "loop header has the plan step" "$K" 'triage → plan → fix'
+  assert_grep "Plan section exists" "$K" '^### Plan'
+  assert_grep "plan is written to fix-plan.md" "$K" '\$S/fix-plan\.md'
+  assert_grep "plan prompts render with --plan" "$K" -- '--plan \$S/fix-plan\.md'
+  assert_grep "the four plan lenses are named" "$K" 'plan-completeness, plan-soundness,'
+  assert_grep "triage clusters by root cause" "$K" '\*\*Cluster\.\*\*'
+  assert_grep "fix lands one cluster per commit" "$K" 'one\s*cluster per commit'
+  assert_grep "plan round is not a round of its own" "$K" 'not a round of its own'
+  assert_grep "evidence doc is referenced" "$K" 'churn-analysis-2026-09-06\.md'
+  assert_grep "round 1 leads with simplicity" "$K" '\| 1 \|.*\| simplicity, correctness'
+
   # --- the agent and its read-only fence ------------------------------------
   if [ ! -f "$AG" ]; then fail "agent file exists" "$AG missing"; return; fi
   ok "agent file exists"

@@ -1,15 +1,16 @@
 #!/bin/bash
-# rev-prompt.sh <session-dir> <round> <seat> "<lens>" "<round emphasis>" [--vacuity] [--read-only <list-file>]
+# rev-prompt.sh <session-dir> <round> <seat> "<lens>" "<round emphasis>" [--vacuity] [--read-only <list-file>] [--plan <fix-plan-file>]
 # Render <session>/r<N>-<seat>.prompt.md from scope.env, files.txt, untracked.txt, baseline.md, rejected.md and the schema. Prints the path.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd); SCHEMA="$HERE/../schema/findings.schema.json"
-[ $# -ge 5 ] || { echo "usage: rev-prompt.sh <session> <round> <seat> <lens> <emphasis> [--vacuity] [--read-only <list-file>]" >&2; exit 1; }
+[ $# -ge 5 ] || { echo "usage: rev-prompt.sh <session> <round> <seat> <lens> <emphasis> [--vacuity] [--read-only <list-file>] [--plan <fix-plan-file>]" >&2; exit 1; }
 S=$1; N=$2; SEAT=$3; LENS=$4; EMPH=$5; shift 5
-VAC=0; RO=""
+VAC=0; RO=""; PLAN=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --vacuity) VAC=1; shift;;
     --read-only) RO=${2:?}; shift 2;;
+    --plan) PLAN=${2:?}; shift 2;;
     *) echo "rev-prompt: unknown argument $1" >&2; exit 1;;
   esac
 done
@@ -19,6 +20,7 @@ unq() {
   case "$s" in "'"*"'") s=${s#\'}; s=${s%\'}; s=${s//\'\\\'\'/\'};; esac
   printf '%s' "$s"
 }
+if [ -n "$PLAN" ] && [ ! -s "$PLAN" ]; then echo "rev-prompt: fix plan missing or empty: $PLAN" >&2; exit 1; fi
 if [ -n "$RO" ]; then
   [ -s "$RO" ] || { echo "rev-prompt: document list missing or empty: $RO" >&2; exit 1; }
 else
@@ -55,6 +57,11 @@ lens_text() {
     red-team)        echo "Assume the change is wrong and try to prove it. Adversarial reading: find the input, timing, or state that breaks it.";;
     regression)      echo "Re-review the fixes made in prior rounds and the cumulative diff as a whole; look for fixes that introduced new defects.";;
     maintainability) echo "Abstraction quality, file growth, spaghetti conditionals, logic in the wrong layer.";;
+    simplicity)      echo "Could this change be smaller? Before judging correctness, look for what already exists. (1) Every comment of the form \"done by hand because X\" or \"until upstream does Y\": open the pinned dependency source (cargo registry, node_modules .d.ts) and check whether X or Y still holds on the version this change pins — a dependency bumped in this same change or stack is the first place to look; diff its public API for the feature area. (2) Every new optional parameter, flag or config field: list every production caller; if they all pass the same value, it is not a parameter. (3) Every new wrapper, helper, trait or type: does it do more than forward to an existing one plus one injected argument? (4) Every new public API: who outside this repository calls it, and does it exist only to feed (2)? (5) Every test-matrix axis and every cross-implementation vector test: after the sibling changes, does the axis have more than one value, is there more than one implementation? (6) Every test of a race or divergence between two sources: can the two sources still differ in the new data flow? Name the existing symbol, its location and version for every reuse you propose. A scope cut is a finding too, marked as such — the author decides it.";;
+    plan-completeness) echo "The plan states rules. For each rule, verify its list of sites, arms, realms, callers and copies by searching the code yourself; list every one the plan misses, with file:line. An incomplete list is the defect this gate exists to catch.";;
+    plan-soundness)  echo "For each rule, find the case where applying it breaks behaviour or an invariant, and any two rules that interact or contradict. Read the code the rule touches, not just the plan.";;
+    plan-simplicity) echo "For each rule, look for a simpler fix: an existing helper, type, hook, or path in this repository that already does the job (name it with its location), a smaller change with the same effect, or two rules that should be one. Prefer reuse over new mechanism.";;
+    plan-tests)      echo "For each rule, decide whether the named test would fail without the fix and pass with it. If it would not, name the test that would. A rule with no failing test is unverified.";;
     *)               echo "$1";;
   esac
 }
@@ -84,6 +91,10 @@ lens_text() {
     fi
     echo
   fi
+  if [ -n "$PLAN" ]; then
+    echo "## Fix plan under review — nothing in it is implemented yet"
+    echo "Read $PLAN in full. It clusters the previous round's accepted findings into rules; per rule it lists the sites the rule applies to, what it must not break, and the test that fails without it. Your job is to attack the plan BEFORE code is written, so the fixes land once: verify every claim against the repository above. In findings, \`file\` is the plan path with its line numbers when the defect is in the plan, or a code path when the plan missed something in the code. A sound plan returns an empty findings array."; echo
+  fi
   echo "## Your lens this round: $LENS"; lens_text "$LENS"; echo; echo "Round emphasis: $EMPH"; echo
   if [ -f "$S/baseline.md" ]; then
     echo "## Baseline (before any review fix)"; cat "$S/baseline.md"; echo
@@ -106,6 +117,7 @@ Rules:
 - Every finding names a file and lines you opened yourself; `evidence` is what the code shows, not what a diff summary says.
 - One strong finding beats several weak ones. No style findings unless P3 and trivial.
 - `confidence` is your honest probability the finding is real after trying to refute it.
+- `suggested_fix` states the general rule, never a patch for the cited line alone: name every sibling site, branch, realm, or copy the rule applies to (search for them yourself) and the test that would fail without it. Half of all churn in this loop's history came from fixes that covered one instance of a class.
 - If the change is sound, return an empty `findings` array and say so in `summary`.
 EOR
 } > "$OUT" || { echo "rev-prompt: cannot write $OUT" >&2; exit 1; }

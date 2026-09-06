@@ -39,7 +39,7 @@ A `SessionStart` hook runs on `startup`, `clear` and `compact`. It does two chea
 With `check_updates: true` in the config it adds a third line, and only when there is something to say:
 
    ```
-   review-council 0.1.3 available: claude plugin update review-council
+   review-council 0.2.0 available: claude plugin update review-council
    ```
 
 If roster detection itself fails, the line says `review-council seats: roster unavailable (<reason>)` and the hook still exits 0 — a broken roster never blocks a session from starting. The update check is held to the same bar and then some: it is off unless you turn it on, it asks the network at most once a day, it is capped at three seconds, and any failure means no line rather than a delay. The hook never updates the plugin itself — a plugin's own hook replacing the directory it is running from is how an install gets corrupted — so all it ever does is name the command.
@@ -52,13 +52,14 @@ If roster detection itself fails, the line says `review-council seats: roster un
 
 `scope` is `branch` (default), `uncommitted`, a path, a PR number/URL, or a branch name; `rounds` is a minimum round count (default 7); `--read-only` reports findings without fixing or committing, for plans and docs as well as code.
 
-The loop, in five steps, repeated each round:
+The loop, in six steps, repeated each round:
 
 1. **Fan out** — every seat reviews the same pinned diff in parallel, each assigned a lens (correctness, security, concurrency, API contract, tests, red team, …) that rotates by round so every lens gets covered.
 2. **Collect** — wait for all seats; a failed seat retries once a step down its effort ladder; fewer than three seats *reporting* stops the round rather than reviewing short-handed (three are always launched — the roster pads the panel if it has to).
-3. **Triage** — findings are deduplicated across seats and every claim is independently verified against the code before it's trusted; agreement across seats is signal, not proof.
-4. **Fix and verify** — real findings are fixed P0 first, gates (build/test/lint) are re-run against the pre-round baseline, and a fix that breaks something is repaired or reverted before moving on.
-5. **Commit and record** — the round's fixes are committed and the ledger (`findings.md`) is updated with what was found, fixed, or rejected and why.
+3. **Triage** — findings are deduplicated across seats, every claim is independently verified against the code before it's trusted, and accepted findings are clustered by root cause; agreement across seats is signal, not proof.
+4. **Plan** — after round 1, and after any later round with a P0/P1 or a new cluster, the fix plan (one rule per cluster, every site enumerated) is reviewed by the panel before code is written.
+5. **Fix and verify** — real findings are fixed P0 first, gates (build/test/lint) are re-run against the pre-round baseline, and a fix that breaks something is repaired or reverted before moving on.
+6. **Commit and record** — the round's fixes are committed one cluster per commit and the ledger (`findings.md`) is updated with what was found, fixed, or rejected and why.
 
 The loop keeps going past the minimum while new P0/P1s are still surfacing, and stops once two consecutive rounds add nothing and every open issue is resolved. At the end it squashes the round commits, pushes once, and writes `report.md`.
 
@@ -70,7 +71,7 @@ The last column is a **one-off additional reviewer** that joins that round on to
 
 | Round | Emphasis | Lenses | One-off reviewer added this round |
 |---|---|---|---|
-| 1 | Correctness, edge cases, error handling | correctness, edge-cases, error-handling | — |
+| 1 | Simplicity first, then correctness, edge cases, error handling | simplicity, correctness, edge-cases, error-handling | — |
 | 2 | Security, data and state | security, data-state | `codex-review` (Codex's own review prompt) |
 | 3 | Concurrency, resources, performance | concurrency, resources, performance | `grok-code-review` (Grok's maintainability skill) |
 | 4 | API and contract, compatibility | api-contract, data-state, readability | — |
@@ -78,6 +79,16 @@ The last column is a **one-off additional reviewer** that joins that round on to
 | 6 | Red team: every seat argues the change is broken | red-team | — |
 | 7 | Regression: re-read the cumulative diff including all fixes | regression | — |
 | 8+ | Whatever is least covered or still open | the uncovered lenses, rotated | — |
+
+### Simplicity first
+
+Round 1 now leads with a `simplicity` lens: could the change be smaller because something already exists? It is a checklist, not a vibe — workarounds whose stated reason no longer holds on the pinned dependency (open the registry or `.d.ts` source), optional parameters every caller passes identically, wrappers that only forward, public APIs that exist only to feed such a parameter, test-matrix axes left with one value after a sibling change. Reuse findings are accepted only with the existing symbol named at a location and version; scope cuts are deferred to the author. It runs first because reviewing lines that should be deleted is the purest form of churn.
+
+### The fix-plan gate
+
+Between triage and fixing, after round 1 and after any later round that accepts a P0/P1 or opens a new root-cause cluster, the orchestrator writes `fix-plan.md`: one rule per cluster, with every site, branch, realm and doc copy the rule reaches enumerated by search, what it must not break, and the test that fails without it. The same seats then review the plan (lenses: completeness of the site list, soundness, a simpler fix by reuse, and whether the test can fail) before any code is written, and fixes land one cluster per commit with every listed site in it.
+
+The reason is measured, not felt: over 11 past runs, 56% of all findings were fixes of an earlier round's fix, 68% from round five on, and 55% of those were a rule applied to the one site a reviewer named while its siblings waited for the next round. Every seat's `suggested_fix` is now required to state the rule and its siblings, not a patch for the cited line. Details and numbers: [docs/churn-analysis-2026-09-06.md](docs/churn-analysis-2026-09-06.md).
 
 Whenever the diff touches tests, every prompt in every round also carries the vacuity check: for each new or changed assertion, name the production change that would make it fail, and report any that has none. It is the single most common defect a panel finds, and it finds it late.
 

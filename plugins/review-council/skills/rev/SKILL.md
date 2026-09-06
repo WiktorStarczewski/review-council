@@ -120,7 +120,7 @@ is decorrelation, not coverage — and losing it is something you say out loud (
 
 ## The loop — one round
 
-`fan out → collect → triage → fix → verify → commit → record`
+`fan out → collect → triage → plan → fix → verify → commit → record`
 
 ### Fan out
 
@@ -260,12 +260,64 @@ never there.
    `$S/rejected.md`: `- F-xxx REJECTED: <reason> (<file>:<line>)` — the next round's
    prompts carry it so seats do not resurface settled items.
 
+5. **Cluster.** Group the round's accepted findings by root cause: one cluster is one rule
+   that, applied everywhere it holds, closes every finding in it. Name it in each ledger entry
+   (`Cluster:  C-03 re-check hold ownership after every parking await`). A finding that is the
+   only member of its cluster is still a cluster.
+
 Update counts: `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S open.P0=<n> open.P1=<n> open.P2=<n> rejected=<n>`.
+
+### Plan — the fix-design gate
+
+`${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=plan`. Runs after round 1's triage
+always, and after any later round whose triage accepted a P0/P1 or opened a new cluster.
+Skip it only when everything accepted this round is a P3 or a one-line P2.
+
+Why: over 11 past runs, 56% of all findings (68% from round 5 on) were fixes of an
+earlier round's fix, and 55% of those were *incomplete* fixes — a rule applied to the one
+site a reviewer named while its siblings waited for the next round. The gate makes the
+rule explicit and lets the panel attack it before it becomes code. Evidence:
+`docs/churn-analysis-2026-09-06.md` in the plugin repository.
+
+1. Write `$S/fix-plan.md`, one section per cluster:
+
+   ```markdown
+   ## C-03 · re-check hold ownership after every parking await
+   Findings: F-012 (P1), F-019 (P2), F-023 (P3)
+   Rule:     an eviction abandons but does not cancel, so every WASM call that follows an
+             await which can park must re-check that it still owns the hold.
+   Sites:    src/lib/sync/useSyncTrigger.ts:141, :208; src/lib/miden/sdk/miden-client.ts:88;
+             worker realm: src/workers/sync.ts:60  (found by: rg -n 'await .*lock' src)
+   Must not: change the eviction timing; touch the SW driver (owned by C-04).
+   Test:     sync-lock.test.ts — evict mid-await, assert the late call is dropped (fails today).
+   Interacts with: C-04 (both touch the ceiling; C-04 lands first).
+   ```
+
+   `Sites` is the part that matters: enumerate by searching, not by memory, and list every
+   arm, realm, caller and copy (JSDoc, README, CHANGELOG, `.d.ts`) the rule reaches.
+2. Fan out a plan round with the same seats, launched exactly as in **Fan out**, with the
+   plan lenses dealt by the same rule (`lenses = [plan-completeness, plan-soundness,
+   plan-simplicity, plan-tests]`) and every prompt rendered with `--plan`:
+   ```bash
+   ${CLAUDE_PLUGIN_ROOT}/scripts/rev-prompt.sh $S <N> <seat> <plan-lens> "<round emphasis>" --plan $S/fix-plan.md
+   ```
+   Use the same round number `N` (the plan round is `N`'s second half, not a new round);
+   write its outputs as `r<N>p-<seat>.json`. Collect as usual.
+3. Triage the plan findings like any others (verify against the code; ledger entries carry
+   the `Cluster:` line). Amend `fix-plan.md` in place: add the sites the panel found, split
+   or merge rules, replace a mechanism with the reuse a seat named. A plan finding that
+   the panel got wrong is `REJECTED` like any other.
+4. Then, and only then, **Fix**.
+
+The plan round costs one seat round. A plan that survives review is what the fix
+commits implement — nothing outside it lands this round.
 
 ### Fix
 
-`${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=fix`. Fix P0 → P1 → P2, highest
-first. P3 only when trivial and safe. Match the surrounding style; do not reformat
+`${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=fix`. Implement `fix-plan.md`
+**one cluster per commit**, P0 clusters first: every enumerated site, arm, realm and copy in the
+same commit. A fix that covers the cited instance and leaves a listed sibling is not done —
+it is next round's finding. Within a cluster, P3 only when trivial and safe. P3 only when trivial and safe. Match the surrounding style; do not reformat
 untouched code. When two findings conflict, resolve it explicitly in the ledger. A
 finding that is right but out of scope is `DEFERRED (reason)`; wrong is `REJECTED
 (reason)`. Rejecting is a valid outcome — never fix what is not broken to satisfy a
@@ -286,10 +338,10 @@ add -A` blindly; the session dir is outside the repo). No push. Never `--amend`,
 `--no-verify`, never force. No AI attribution of any kind.
 
 ```
-fix(rev): round 3 — retry logic and leaked handles
+fix(rev): round 3 — C-03 re-check hold ownership after every parking await
 
-F-012 P1  retry loop re-sent 4xx requests, duplicating writes
-F-014 P2  file handle leaked on the error path
+F-012 P1  late call after eviction re-entered the client
+F-019 P2  worker realm had the same late call
 ```
 
 Then `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S last_commit=<sha> fixed=<total fixed so far>`.
@@ -309,7 +361,7 @@ things, and repeats within a round give agreement signal.
 
 | Round | Emphasis | Lenses, in order | Extra seat |
 |---|---|---|---|
-| 1 | Correctness, edge cases, error handling | correctness, edge-cases, error-handling | — |
+| 1 | Simplicity first, then correctness, edge cases, error handling | simplicity, correctness, edge-cases, error-handling | — |
 | 2 | Security, data & state | security, data-state | `codex-review` — security |
 | 3 | Concurrency, resources, performance | concurrency, resources, performance | `grok-code-review` — maintainability |
 | 4 | API & contract, compatibility | api-contract, data-state, readability | — |
@@ -318,10 +370,20 @@ things, and repeats within a round give agreement signal.
 | 7 | Regression + cumulative diff re-read | regression | — |
 | 8+ | Whatever is least covered or still open | the uncovered lenses, rotated off the previous pairing | — |
 
-Lens catalog (as `rev-prompt.sh` knows them): `correctness security edge-cases
-error-handling concurrency resources api-contract data-state performance tests
-observability readability red-team regression maintainability`. Every lens is
-covered at least once per run.
+Lens catalog (as `rev-prompt.sh` knows them): `simplicity correctness security
+edge-cases error-handling concurrency resources api-contract data-state performance
+tests observability readability red-team regression maintainability`. Every lens is
+covered at least once per run. Plan rounds use their own four: `plan-completeness
+plan-soundness plan-simplicity plan-tests` (see **Plan**).
+
+**Simplicity first.** Round 1 deals `simplicity` before the correctness lenses: a change
+that should shrink must shrink before anyone reviews the lines that will be deleted. The
+lens is a checklist (workarounds whose stated reason no longer holds on the pinned
+dependency; parameters every caller passes identically; wrappers that only forward; test
+axes with one value), drawn from a stack that a maintainer cut by two thirds after review —
+every cut was discoverable from the PR's own comments and the pinned dependency source.
+At triage, a reuse finding is accepted only with the existing symbol named at a location
+and version you have opened; a scope cut is `DEFERRED (scope decision)` for the user.
 
 **Vacuity.** Whenever the diff touches tests, every prompt carries `--vacuity`. It is
 empirically the most common defect a panel finds and it finds it late — a 12-leg
@@ -333,6 +395,8 @@ orchestrator's own.
 Keep going past the minimum while any hold: the last round produced a new P0/P1; the
 last round's fixes were more than trivial; any P0/P1 is open; a lens or a major
 changed file is unreviewed.
+
+A plan round is half of its review round, not a round of its own, for every count below.
 
 Stop when all hold: minimum rounds ran; two **consecutive** rounds produced no new
 P0/P1; no P0/P1 open; gates at or better than baseline. Stop early only on an empty
@@ -473,6 +537,7 @@ shallow review is the one failure this skill exists to prevent.
 ```
 scope.env  files.txt  untracked.txt  roster.json  00-baseline.patch  baseline.md  findings.md  rejected.md  state.json  report.md
 r<N>-<seat>.prompt.md   r<N>-<seat>.json   r<N>-<seat>.log   r<N>-<seat>.stream.ndjson   r<N>-<seat>.exit
+fix-plan.md   r<N>p-<seat>.prompt.md   r<N>p-<seat>.json   (the plan round of review round N)
 ```
 
 ## Tool notes (why the wrappers look the way they do)

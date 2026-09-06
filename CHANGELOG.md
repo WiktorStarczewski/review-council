@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0
+
+- The fix-plan gate: triage now clusters accepted findings by root cause, and after round 1 (and any later round that accepts a P0/P1 or opens a new cluster) the orchestrator writes `fix-plan.md` — one rule per cluster with every site, branch, realm and doc copy enumerated by search, what it must not break, and the test that fails without it — and the same seats review the plan before any code is written. Fixes then land one cluster per commit with every listed site in it.
+- `rev-prompt.sh --plan <file>` renders the plan-review prompt; four plan lenses (`plan-completeness`, `plan-soundness`, `plan-simplicity`, `plan-tests`) are dealt like any round's. Every seat's `suggested_fix` must now state the general rule and its sibling sites, not a patch for the cited line.
+- A `simplicity` lens leads round 1: a checklist for shrinking the change by reuse — workarounds whose stated reason no longer holds on the pinned dependency, parameters every caller passes identically, forwarding-only wrappers, single-value test axes — accepted at triage only with the existing symbol named at a location and version; scope cuts are deferred to the author.
+- Why: measured over 11 past runs, 56% of findings were fixes of an earlier round's fix (68% from round 5 on), 55% of them incomplete fixes. `docs/churn-analysis-2026-09-06.md` has the numbers and method.
+
 ## 0.1.3
 
 - Stack: a blank or failing status script is reported on the status line (`(status unavailable — see status.err)`) and its stderr is kept, instead of an empty field; `idle` can no longer print negative when a file mtime runs a second ahead of the clock.
