@@ -1,11 +1,12 @@
 #!/bin/bash
-# bench-case.sh <name> <clone-url> <review-head-sha> <base-sha> <out-dir> [lens]
+# bench-case.sh <name> <clone-url> <review-head-sha> <base-sha> <out-dir> [lenses] [owner/repo pr]
 # Blind held-out run of one PR at its review-time head: isolated checkout (head + ancestors only, no remote), preflight
 # with the given base, one prompt per roster seat with the lens (default: simplicity) and REV_SEAT_OFFLINE=1, the CLI
 # seats through rev-seat.sh and the Claude seat through `claude -p`, all in parallel. Writes <out-dir>/r1-<seat>.json.
 # Prints one line per seat (exit code, finding count) and nothing about the content.
 set -u
-NAME=$1; URL=$2; HEAD_SHA=$3; BASE_SHA=$4; OUT=$5; LENS=${6:-simplicity}
+NAME=$1; URL=$2; HEAD_SHA=$3; BASE_SHA=$4; OUT=$5; LENSES=${6:-simplicity}   # comma list, dealt like the skill: seat i gets lenses[(i+1) mod L]
+PR_REPO=${7:-}; PR_NUM=${8:-}   # when given, the PR title+body is fetched with gh and passed to every prompt (--pr)
 HERE=$(cd "$(dirname "$0")" && pwd); SCRIPTS="$HERE/../plugins/review-council/scripts"
 EMPH="Simplicity first, then correctness, edge cases, error handling"
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd); REPO="$OUT/repo"   # absolute: preflight resolves --write against its own cwd
@@ -18,7 +19,8 @@ fi
 S="$OUT/session"; mkdir -p "$S"
 ( cd "$REPO" && "$SCRIPTS/rev-preflight.sh" --scope branch --base "$BASE_SHA" --write "$S" ) > "$OUT/preflight.txt" 2>&1 || { echo "$NAME: preflight failed: $(tail -1 "$OUT/preflight.txt")"; exit 1; }
 SEATS=$(python3 -c "import json,sys; print(' '.join(s['seat'] for s in json.load(open(sys.argv[1]))['seats'] if not s.get('extra')))" "$S/roster.json")
-for seat in $SEATS; do REV_SEAT_OFFLINE=1 "$SCRIPTS/rev-prompt.sh" "$S" 1 "$seat" "$LENS" "$EMPH" >/dev/null || { echo "$NAME: render failed for $seat"; exit 1; }; done
+PRARGS=(); if [ -n "$PR_REPO" ] && [ -n "$PR_NUM" ]; then gh pr view "$PR_NUM" --repo "$PR_REPO" --json title,body --jq '"# " + .title + "\n\n" + .body' > "$S/pr.md" 2>/dev/null && [ -s "$S/pr.md" ] && PRARGS=(--pr "$S/pr.md"); fi
+i=0; for seat in $SEATS; do lens=$(python3 -c "import sys; L=sys.argv[1].split(','); print(L[(int(sys.argv[2])+1) % len(L)])" "$LENSES" "$i"); REV_SEAT_OFFLINE=1 "$SCRIPTS/rev-prompt.sh" "$S" 1 "$seat" "$lens" "$EMPH" ${PRARGS[@]+"${PRARGS[@]}"} >/dev/null || { echo "$NAME: render failed for $seat"; exit 1; }; echo "$seat $lens" >> "$S/lenses.txt"; i=$((i+1)); done
 pids=(); [ -n "$SEATS" ] || { echo "$NAME: no seats in roster"; exit 1; }
 for seat in $SEATS; do
   adapter=$(python3 -c "import json,sys; print(next(s['adapter'] for s in json.load(open(sys.argv[1]))['seats'] if s['seat']==sys.argv[2]))" "$S/roster.json" "$seat")

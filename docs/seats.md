@@ -14,7 +14,7 @@ A "seat" is one reviewer in the `/review-council:rev` panel: a lab (`openai`, `x
     { "seat": "grok",        "lab": "xai",       "adapter": "grok",   "model": "grok-4.6",      "effort": "xhigh", "extra": false },
     { "seat": "gemini",      "lab": "google",    "adapter": "gemini", "model": "gemini-2.5-pro","effort": null,    "extra": false },
     { "seat": "opus",        "lab": "anthropic", "adapter": "agent",  "model": "opus",          "effort": "max",   "extra": false },
-    { "seat": "codex-review","lab": "openai",    "adapter": "codex",  "mode": "review",         "extra": true, "round": 2 }
+    { "seat": "codex-review","lab": "openai",    "adapter": "codex",  "mode": "review",         "extra": true, "round": 3 }
   ],
   "excluded": [ { "cli": "gemini", "reason": "not installed" } ]
 }

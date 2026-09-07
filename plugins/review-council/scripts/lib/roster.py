@@ -34,7 +34,7 @@ LABS = {'codex': 'openai', 'grok': 'xai', 'gemini': 'google', 'agent': 'anthropi
 NAMES = {'codex': 'codex', 'grok': 'grok', 'gemini': 'gemini', 'agent': 'claude'}
 ORDER = ('codex', 'grok', 'gemini', 'agent')
 # (adapter, seat, mode, round) — an extra pass is seated whenever its lab has a seat
-EXTRAS = (('codex', 'codex-review', 'review', 2), ('grok', 'grok-code-review', 'code-review', 3))
+EXTRAS = (('codex', 'codex-review', 'review', 3), ('grok', 'grok-code-review', 'code-review', 4))
 
 GEN = re.compile(r'^gpt-(\d+)\.(\d+)(?:-|$)')     # gpt-5.6-sol → generation (5, 6), suffix "sol"
 GROK_VER = re.compile(r'grok-(\d+)\.(\d+)')

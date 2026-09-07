@@ -21,6 +21,9 @@ test_plan_prompt() {
   out=$("$SCRIPTS/rev-prompt.sh" "$S" 1 codex-sol simplicity "code round"); assert_grep "simplicity lens checks the pinned dependency" "$out" 'pinned dependency source'; assert_grep "simplicity lens asks who passes the parameter" "$out" 'list every production caller'
   out=$(REV_SEAT_OFFLINE=1 "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-sol simplicity "blind"); assert_grep "offline paragraph on request" "$out" '## Offline review'; assert_grep "offline forbids whole-registry searches" "$out" 'do not search the whole registry'
   out=$("$SCRIPTS/rev-prompt.sh" "$S" 1 codex-sol simplicity "code round"); assert_nogrep "no offline paragraph by default" "$out" '## Offline review'; assert_grep "simplicity lens carries proportionality" "$out" 'Proportionality'; assert_grep "simplicity lens rejects sibling-consistency as justification" "$out" 'Consistency with sibling code is not a justification'
+  printf '# Add an admin listing endpoint\n\nFor the browser dashboard demo.\n' > "$S/pr.md"
+  out=$("$SCRIPTS/rev-prompt.sh" "$S" 1 opus clean-room "round 1" --pr "$S/pr.md"); assert_grep "clean-room lens says not to read the diff first" "$out" 'Do NOT read the diff first'; assert_grep "PR description section rendered" "$out" '## Change description \(from the author\)'; assert_grep "PR body is included" "$out" 'browser dashboard demo'
+  out=$("$SCRIPTS/rev-prompt.sh" "$S" 1 opus simplicity "round 1"); assert_nogrep "no PR section without --pr" "$out" 'Change description'
   out=$("$SCRIPTS/rev-prompt.sh" "$S" 1 codex-sol correctness "code round"); assert_nogrep "a code prompt has no plan section" "$out" 'Fix plan under review'
   assert_grep "a code prompt still carries the rule-not-instance requirement" "$out" 'suggested_fix. states the general rule'
   assert_exit "missing plan file is refused" 1 "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-sol plan-completeness "x" --plan "$S/no-such-plan.md"
