@@ -90,3 +90,21 @@ The scorer phrased every miss as a general rule. Those rules, none naming either
 Both remaining misses are the same shape: the rule was in the lens, and a seat argued consistency with sibling code against it. 0.2.2 adds that consistency is not a justification and that when a generic is forced by one bound, the side no implementation varies is the one to collapse. Those two cases are no longer blind — the scorer's reports named their rows — so any further tuning on them is training, and the next validation must come from fresh PRs found the same blind way. The strict criterion (every load-bearing row plus half the structural rows) was not met on either held-out case; the lens is shipped because every change is general, recall improved on both cases without a single contradicted finding on the crypto case, and the alternative is a lens that only passes the case it was written from.
 
 Leak channels found, all now covered by the offline paragraph or the isolated checkout: worktrees sharing the full clone; later published versions of the crate under review in the cargo registry; whole-registry symbol searches that match them; shell network access to the PR page.
+
+## The benchmark (2026-09-07): eight post-cutoff held-out PRs, four configurations
+
+`eval/bench.sh` runs every case blind: an isolated single-lineage checkout, four seats, the lens under test, a headless truth builder (once per case) and a headless scorer that prints one summary line. Cases were found by an agent reporting identifiers only, filtered to PRs merged after June 2026 so that no model's training data can contain the merged result, and cleaned of PRs whose post-review reduction came from a sibling PR being rebased away. Eight survived: protocol #3766, node #2464, midenup #219, protocol #3500, miden-usdcx #67, miden-vm #3314, protocol #3299, protocol #3588. The lens author read no diff, no review, no truth file and no score beyond the summary line. Cells are load-bearing rows hit / structural rows hit; PASS needs every K row and at least half the S rows.
+
+| case | 0.2.2 (4× simplicity) | 0.3.0 (3× simplicity + clean-room on seat 3, PR body) | 0.3.1 (clean-room on the Claude seat, PR body) | 0.3.1 without PR body |
+|---|---|---|---|---|
+| protocol-3766 | 0/1, 1/6 | 0/1, 0/6 | | |
+| node-2464 | 1/1, 0/2 | 0/1, 0/2 | | |
+| midenup-219 | 1/1, 0/0 PASS | 0/1, 0/0 | | |
+| protocol-3500 | 1/1, 4/6 PASS | 1/1, 3/6 PASS | | |
+| miden-usdcx-67 | 0/1, 0/5 | 0/1, 1/5 | | |
+| miden-vm-3314 | 2/3, 4/4 | 2/3, 4/4 | | |
+| protocol-3299 | 1/1, 1/4 | 0/1, 1/4 | | |
+| protocol-3588 | 0/1, 0/5 | 1/1, 1/5 | | |
+| **totals** | **K 6/10, S 10/28, 2 pass** | **K 4/10, S 10/28, 1 pass** | | |
+
+Reading of the first two columns: the lens as shipped in 0.2.2 finds the load-bearing simplification on six of ten rows and passes two of eight cases; the misses are concentrated on the one design call per PR, as they were on the two earlier held-out cases. 0.3.0 changed two things at once — the author's PR description in every prompt, and a `clean-room` seat that under the dealing rule landed on the third roster position (grok) — and lost three load-bearing rows while gaining one. The two ablation columns separate those changes: 0.3.1 moves the clean-room lens to the Claude seat, and the last column removes the PR description. Two seat-level observations from the run logs: grok's first commands in every run execute in the harness's own working directory before it changes into the checkout (harmless, a different repository, but the scorer flags it), and codex-sol twice searched the whole cargo registry despite the offline paragraph, which is why 0.3.x builds a filtered per-case dependency view and names it as the only dependency source.
