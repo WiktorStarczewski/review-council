@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2
+
+- The `simplicity` lens is rewritten from a two-case held-out evaluation (`docs/simplicity-lens-eval-2026-09-06.md`): the burden of proof sits on each new mechanism; native engine or framework features over hand-rolled ones; proportionality to the named consumer; one value or one implementation means no parameter and no generic; migrations from schemas created on the same unreleased branch fold into the original; public surface follows the file's re-export convention; test axes, helpers and divergence tests must still have two sides; consistency with siblings is not a justification. Structural recall on the held-out cases went from 1/3 and 1/5 to 2/3 and 3/5 with no case-specific wording.
+- `REV_SEAT_OFFLINE=1` at prompt-render time adds an offline paragraph to every seat prompt for blind evaluations: no network, no other checkout, no published versions of the repository's own packages, no whole-registry searches.
+
 ## 0.2.1
 
 - Preflight no longer assumes the change was cut from `origin/HEAD`: the base is `--base <ref>` (or `REV_BASE_REF`), else the open PR's base via `gh`, else the nearest fork point among the default branch, `next`, `develop`, `dev` and `release`. A branch cut from a `next` line was previously reviewed with everything `next` carried past `main`. `scope.env` gains `REV_BASE_BRANCH`, the preflight line prints `base_branch=<name> (<how>)`, and HEAD sitting on the chosen base is refused like any shared branch.

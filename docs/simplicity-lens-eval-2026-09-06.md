@@ -57,3 +57,36 @@ Success criterion met again: 8/8 seats on the K rows, every S row by the union (
 - Seats also found things outside the maintainer's diff: an error module nothing constructs (the second reviewer's finding), and a coverage gap the replacement tests left, that nothing runs a builder's output through the VM with a non-zero fee.
 
 Method: worktrees at the pre-review heads with the stacked bases (`--base <previous PR head>`), `rev-prompt.sh … simplicity …` per seat, `rev-seat.sh` for the CLI seats and an Opus subagent for the fourth, findings scored by hand against the rows. Session directories `/tmp/rev-simp-*` and `/tmp/rev-simp2-*` hold every prompt, log and JSON.
+
+## Held-out cases (2026-09-07): the lens as shipped in 0.2.0 does not generalise
+
+The guardian case above is the one the lens was written from, so passing it proves the seats can execute the checklist, not that the checklist covers the next case. A separate agent searched 20 repositories (3,167 merged PRs) for PRs whose post-review commits removed a large share of what the PR had added, with the recipient of its report kept blind to the content; two clean cases came back, both in repositories nobody in this loop had reviewed: a 0xMiden/crypto PR (1,489 added lines at review, 855 merged) and a 0xMiden/node PR (1,216 at review, 651 merged). Each was checked out in an isolated repository containing the review-time head and its ancestors only — no remote, no later history — and reviewed by the same four seats with the generic lens. A different agent built the ground truth from the maintainers' actual post-review diffs, and a third scored the findings against it. The lens author read neither the diffs nor the truth until the scores were in.
+
+| | crypto | node |
+|---|---|---|
+| ground-truth rows (K/S/C) | 9 (3/3/3) | 11 (2/5/4) |
+| K rows hit by the union | 2 of 3 | 0 of 2 |
+| S rows hit by the union | 1 of 3 | 1 of 5 |
+| verdict | fail (near miss) | fail |
+| findings contradicted by the merged head | 0 | 4 |
+| real findings the maintainer did not ask for | 4 bugs, fixed differently upstream; 2 test gaps still open | 4 (error handling, secret residency, an unreachable arm) |
+
+What generalised: the reuse and dead-code rules. On the crypto case every seat found the re-implementation of an existing tree type, a duplicated index conversion, a cloned error enum and a write-only field, and all four found two real logic bugs the maintainer fixed another way. What did not: on the node case the maintainer replaced a typed RPC transport with two JSON routes because the only consumer was a browser, removed cursor pagination because every consumer reads the whole table, folded a migration into the initial schema because the table was created on the same unreleased branch, replaced a hand-rolled sequence with the engine's autoincrement, and deleted a strategy trait every call site passed the same value to. The lens asked "does something already exist to reuse", not "is this machinery proportionate to its named consumer", and two seats explicitly defended the mechanisms the maintainer removed. On the crypto case the miss was of the same family: an associated error type plus a marker trait that no implementation used, which the maintainer replaced with one concrete enum.
+
+Contamination: in the first held-out attempt the checkouts were worktrees sharing the full clone, and one seat cross-checked its findings against the merged commit; that run was discarded and the isolated checkouts built. In the isolated run one codex seat still opened the PR page through shell network access and another read a later published version of the crate under review from the cargo registry. Neither's findings show any trace of it, but both channels are now named in an offline paragraph that `REV_SEAT_OFFLINE=1` adds to every seat prompt, and the scorer checks the transcripts.
+
+The scorer phrased every miss as a general rule. Those rules, none naming either PR, became the lens in 0.2.2: the burden of proof is on each mechanism; native engine or framework features over hand-rolled ones; proportionality to the named consumer; one value or one implementation means no parameter and no generic; unreleased history folds into the original; surface follows the file's convention; test axes, helpers and divergence tests must still have two sides. Iteration 3 re-ran both held-out cases blind with that lens; results follow.
+
+### Iteration 3 (rewritten lens, both held-out cases blind again)
+
+| | crypto iter 2 → 3 | node iter 2 → 3 |
+|---|---|---|
+| K rows hit by the union | 2/3 → 2/3 | 0/2 → 1/2 |
+| S rows hit by the union | 1/3 → 2/3 | 1/5 → 3/5 |
+| newly hit | module exposed as a path against the file's re-export convention; the write-only version parameters | the migration folded into the initial schema (all four seats); the hand-rolled sequence replaced by the engine's autoincrement; the policy trait deleted; cursor pagination dropped |
+| still missed | the associated error type replaced by one concrete enum with a boxed catch-all | the typed RPC transport replaced by two JSON routes for a browser consumer |
+| contradicted findings | 0 → 0 | 4 → 1 |
+
+Both remaining misses are the same shape: the rule was in the lens, and a seat argued consistency with sibling code against it. 0.2.2 adds that consistency is not a justification and that when a generic is forced by one bound, the side no implementation varies is the one to collapse. Those two cases are no longer blind — the scorer's reports named their rows — so any further tuning on them is training, and the next validation must come from fresh PRs found the same blind way. The strict criterion (every load-bearing row plus half the structural rows) was not met on either held-out case; the lens is shipped because every change is general, recall improved on both cases without a single contradicted finding on the crypto case, and the alternative is a lens that only passes the case it was written from.
+
+Leak channels found, all now covered by the offline paragraph or the isolated checkout: worktrees sharing the full clone; later published versions of the crate under review in the cargo registry; whole-registry symbol searches that match them; shell network access to the PR page.
