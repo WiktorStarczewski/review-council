@@ -6,7 +6,7 @@ test_roster2() {
     REVIEW_COUNCIL_CONFIG="$B/cfg.json" "$SCRIPTS/roster.sh" > "$B/out.json"; roster_lines "$B/out.json" "$B/lines"
     assert_nogrep "excluded extra is not seated" "$B/lines" '^seat codex-review '
     assert_grep "excluded extra is reported" "$B/lines" '^excluded codex-review -> excluded by config$'
-    assert_grep "pinned extra takes the pin" "$B/lines" '^seat grok-code-review xai grok grok-4.6 high true code-review 3$'
+    assert_grep "pinned extra takes the pin" "$B/lines" '^seat grok-code-review xai grok grok-4.6 high true code-review 4$'
     assert_grep "base seats untouched" "$B/lines" '^seat codex-sol openai codex gpt-5.6-sol max false'
     printf '{not json' > "$B/bad.json"
     REVIEW_COUNCIL_CONFIG="$B/bad.json" "$SCRIPTS/roster.sh" --brief > "$B/brief"; assert_eq "unreadable config still exits 0" "$?" 0

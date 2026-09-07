@@ -50,7 +50,7 @@ If roster detection itself fails, the line says `review-council seats: roster un
 /review-council:rev [scope] [rounds] [--read-only] [--base <ref>]
 ```
 
-`scope` is `branch` (default), `uncommitted`, a path, a PR number/URL, or a branch name; `rounds` is a minimum round count (default 7); `--read-only` reports findings without fixing or committing, for plans and docs as well as code; `--base` names the branch the change was cut from when the guess is wrong (the guess is the open PR's base, else the nearest fork point among `main`, `next`, `develop`, else `origin/HEAD`).
+`scope` is `branch` (default), `uncommitted`, a path, a PR number/URL, or a branch name; `rounds` is a minimum round count (default 8); `--read-only` reports findings without fixing or committing, for plans and docs as well as code; `--base` names the branch the change was cut from when the guess is wrong (the guess is the open PR's base, else the nearest fork point among `main`, `next`, `develop`, else `origin/HEAD`).
 
 The loop, in six steps, repeated each round:
 
@@ -71,18 +71,19 @@ The last column is a **one-off additional reviewer** that joins that round on to
 
 | Round | Emphasis | Lenses | One-off reviewer added this round |
 |---|---|---|---|
-| 1 | Simplicity first, then correctness, edge cases, error handling | simplicity, correctness, edge-cases, error-handling | — |
-| 2 | Security, data and state | security, data-state | `codex-review` (Codex's own review prompt) |
-| 3 | Concurrency, resources, performance | concurrency, resources, performance | `grok-code-review` (Grok's maintainability skill) |
-| 4 | API and contract, compatibility | api-contract, data-state, readability | — |
-| 5 | Tests, observability | tests, observability | — |
-| 6 | Red team: every seat argues the change is broken | red-team | — |
-| 7 | Regression: re-read the cumulative diff including all fixes | regression | — |
-| 8+ | Whatever is least covered or still open | the uncovered lenses, rotated | — |
+| 1 | Simplicity: could this change be smaller? | simplicity ×3, clean-room ×1 | — |
+| 2 | Correctness, edge cases, error handling | correctness, edge-cases, error-handling | — |
+| 3 | Security, data and state | security, data-state | `codex-review` (Codex's own review prompt) |
+| 4 | Concurrency, resources, performance | concurrency, resources, performance | `grok-code-review` (Grok's maintainability skill) |
+| 5 | API and contract, compatibility | api-contract, data-state, readability | — |
+| 6 | Tests, observability | tests, observability | — |
+| 7 | Red team: every seat argues the change is broken | red-team | — |
+| 8 | Regression: re-read the cumulative diff including all fixes | regression | — |
+| 9+ | Whatever is least covered or still open | the uncovered lenses, rotated | — |
 
 ### Simplicity first
 
-Round 1 now leads with a `simplicity` lens: could the change be smaller because something already exists? It is a checklist, not a vibe — workarounds whose stated reason no longer holds on the pinned dependency (open the registry or `.d.ts` source), optional parameters every caller passes identically, wrappers that only forward, public APIs that exist only to feed such a parameter, test-matrix axes left with one value after a sibling change. Reuse findings are accepted only with the existing symbol named at a location and version; scope cuts are deferred to the author. It runs first because reviewing lines that should be deleted is the purest form of churn.
+Round 1 belongs entirely to one question: could the change be smaller? Three seats run the `simplicity` lens, a checklist for shrinking by reuse and proportionality — workarounds whose stated reason no longer holds on the pinned dependency (open the registry or `.d.ts` source), hand-rolled mechanisms the engine or framework provides, machinery sized for a consumer the PR names, parameters every caller passes identically, generics no implementation varies, migrations from schemas born on the same unreleased branch, test axes left with one value. The fourth seat runs `clean-room`: it writes the smallest design for the named consumer before reading the diff, then reports where the change exceeds it. All seats get the author's PR description, since proportionality is judged against the consumer the author names. Reuse findings are accepted only with the existing symbol named at a location and version; scope cuts are deferred to the author. Correctness starts in round 2, because reviewing lines that should be deleted is the purest form of churn. Why the whole round: measured on held-out PRs, one seat with the lens found about half of what four found together.
 
 ### The fix-plan gate
 
@@ -129,7 +130,7 @@ The roster is rebuilt at run time, never hardcoded. Per lab: the CLI must be on 
 | Google | `gemini` | `gemini-2.5-pro` (override via config/env) | none — Gemini has no effort knob | `GEMINI_API_KEY` set, or `~/.gemini/oauth_creds.json` exists |
 | Anthropic | — (Agent tool) | `opus` | `max` | always available; opt out with `claude_seat: false` |
 
-Two extra seats join later rounds when their lab is seated: `codex-review` (codex's own native review prompt, round 2) and `grok-code-review` (grok with its bundled `/code-review` skill, round 3). `extras: false` in config removes both.
+Two extra seats join later rounds when their lab is seated: `codex-review` (codex's own native review prompt, round 3) and `grok-code-review` (grok with its bundled `/code-review` skill, round 4). `extras: false` in config removes both.
 
 **With only Claude Code installed** — no `codex`, no `grok`, no `gemini` — the roster does not refuse. It pads the panel up to three seats with Claude seats (`opus`, `claude-1`, `claude-2`; adapter `agent`, `opus@max`, each marked `"padded": true`), deals them three different lenses like any other seats, and marks the whole roster `"degraded": true` with one sentence explaining what that costs:
 

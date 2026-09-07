@@ -40,7 +40,7 @@ is decorrelation, not coverage — and losing it is something you say out loud (
 | | values | default |
 |---|---|---|
 | scope | `branch`, `uncommitted`, a path, a PR number or URL, a branch name | `branch` |
-| rounds | integer minimum | `7` |
+| rounds | integer minimum | `8` |
 | `--read-only` | findings only — no fixes, no commits | off |
 
 "use S as the session dir" in the invocation names the session directory
@@ -59,7 +59,10 @@ is decorrelation, not coverage — and losing it is something you say out loud (
 
 ## Setup (once)
 
-1. Resolve the scope. PR number/URL: `gh pr checkout <n>`. Branch name: `git checkout
+1. Resolve the scope. PR number/URL: `gh pr checkout <n>`, then save the author's own
+   description for the seats: `gh pr view <n> --json title,body --jq '"# " + .title + "\n\n" + .body' > $S/pr.md`.
+   For a branch or path scope, try the same with `gh pr view` (no number) and ignore failure.
+   Whenever `$S/pr.md` exists, every `rev-prompt.sh` call in this run passes `--pr $S/pr.md`. Branch name: `git checkout
    <name>`. Then `mkdir -p $S` and:
    ```bash
    ${CLAUDE_PLUGIN_ROOT}/scripts/rev-preflight.sh --scope <branch|uncommitted|path> --write $S
@@ -164,13 +167,13 @@ panel has left.
 The `agent` adapter is not a script: it is those `Agent` calls. `rev-seat.sh` refuses it.
 
 **Extra seats** carry `"extra": true` and a `round` in the roster — typically
-`codex-review` in round 2 and `grok-code-review` in round 3. In their round, add them
+`codex-review` in round 3 and `grok-code-review` in round 4. In their round, add them
 to `seats` in state, render their prompts too, and launch them in the same message as
 the rest:
 
 ```bash
-${CLAUDE_PLUGIN_ROOT}/scripts/rev-prompt.sh $S 2 codex-review     security        "<round emphasis>" [--vacuity]   # round 2
-${CLAUDE_PLUGIN_ROOT}/scripts/rev-prompt.sh $S 3 grok-code-review maintainability "<round emphasis>" [--vacuity]   # round 3
+${CLAUDE_PLUGIN_ROOT}/scripts/rev-prompt.sh $S 3 codex-review     security        "<round emphasis>" [--vacuity]   # round 3
+${CLAUDE_PLUGIN_ROOT}/scripts/rev-prompt.sh $S 4 grok-code-review maintainability "<round emphasis>" [--vacuity]   # round 4
 ```
 
 `codex-review` never sees its prompt (`codex exec review --base` refuses custom
@@ -205,22 +208,22 @@ The `+ N` offset is what makes a small roster cover everything: without it a 2-l
 round would hand the same seat the same lens in every round it appears. Extra seats do
 not take part — each keeps the fixed lens the round plan names for it.
 
-Worked, round 3 (`lenses = [concurrency, resources, performance]`, `L = 3`, `N = 3`):
+Worked, round 4 (`lenses = [concurrency, resources, performance]`, `L = 3`, `N = 4`):
 
-- **3 seats** (`codex-sol, grok, opus`) → `(0+3)%3=0`, `(1+3)%3=1`, `(2+3)%3=2` →
-  concurrency, resources, performance. Every lens covered once.
-- **4 seats** (`codex-sol, codex-terra, grok, opus`) → concurrency, resources,
-  performance, concurrency. The repeat is deliberate: two models on one lens is the
-  agreement signal. Plus the round-3 extra `grok-code-review` at maintainability.
-- **6 seats** (`codex-sol, codex-terra, grok, gemini, opus, …`) → concurrency,
-  resources, performance, concurrency, resources, performance — two seats per lens.
+- **3 seats** (`codex-sol, grok, opus`) → `(0+4)%3=1`, `(1+4)%3=2`, `(2+4)%3=0` →
+  resources, performance, concurrency. Every lens covered once.
+- **4 seats** (`codex-sol, codex-terra, grok, opus`) → resources, performance,
+  concurrency, resources. The repeat is deliberate: two models on one lens is the
+  agreement signal. Plus the round-4 extra `grok-code-review` at maintainability.
+- **6 seats** (`codex-sol, codex-terra, grok, gemini, opus, …`) → resources,
+  performance, concurrency, resources, performance, concurrency — two seats per lens.
 - **3 padded seats** (`opus, claude-1, claude-2` on a Claude-only machine) → the same
   three lenses, one each. Padded seats are dealt lenses exactly like detected ones;
   never collapse them or give two of them the same lens.
 
-Worked, round 5 (`lenses = [tests, observability]`, `L = 2`, `N = 5`) with 4 seats →
-`(0+5)%2=1`, `(1+5)%2=0`, `(2+5)%2=1`, `(3+5)%2=0` → observability, tests,
-observability, tests. In round 6 the same seats would swap sides.
+Worked, round 6 (`lenses = [tests, observability]`, `L = 2`, `N = 6`) with 4 seats →
+`(0+6)%2=0`, `(1+6)%2=1`, `(2+6)%2=0`, `(3+6)%2=1` → tests, observability,
+tests, observability. In round 7 the same seats would swap sides.
 
 ### Collect
 
@@ -357,35 +360,39 @@ findings by severity, what was fixed, gate status, commit.
 
 ## Round plan
 
-Minimum seven rounds. The lens list is per round; the seats that get each lens come
+Minimum eight rounds. The lens list is per round; the seats that get each lens come
 from **Lens assignment** above. The same lens under a different model finds different
 things, and repeats within a round give agreement signal.
 
 | Round | Emphasis | Lenses, in order | Extra seat |
 |---|---|---|---|
-| 1 | Simplicity first, then correctness, edge cases, error handling | simplicity, correctness, edge-cases, error-handling | — |
-| 2 | Security, data & state | security, data-state | `codex-review` — security |
-| 3 | Concurrency, resources, performance | concurrency, resources, performance | `grok-code-review` — maintainability |
-| 4 | API & contract, compatibility | api-contract, data-state, readability | — |
-| 5 | Tests, observability | tests, observability | — |
-| 6 | Red team — argue the change is broken | red-team | — |
-| 7 | Regression + cumulative diff re-read | regression | — |
-| 8+ | Whatever is least covered or still open | the uncovered lenses, rotated off the previous pairing | — |
+| 1 | Simplicity — could this change be smaller? | simplicity, simplicity, simplicity, clean-room | — |
+| 2 | Correctness, edge cases, error handling | correctness, edge-cases, error-handling | — |
+| 3 | Security, data & state | security, data-state | `codex-review` — security |
+| 4 | Concurrency, resources, performance | concurrency, resources, performance | `grok-code-review` — maintainability |
+| 5 | API & contract, compatibility | api-contract, data-state, readability | — |
+| 6 | Tests, observability | tests, observability | — |
+| 7 | Red team — argue the change is broken | red-team | — |
+| 8 | Regression + cumulative diff re-read | regression | — |
+| 9+ | Whatever is least covered or still open | the uncovered lenses, rotated off the previous pairing | — |
 
-Lens catalog (as `rev-prompt.sh` knows them): `simplicity correctness security
+Lens catalog (as `rev-prompt.sh` knows them): `simplicity clean-room correctness security
 edge-cases error-handling concurrency resources api-contract data-state performance
 tests observability readability red-team regression maintainability`. Every lens is
 covered at least once per run. Plan rounds use their own four: `plan-completeness
 plan-soundness plan-simplicity plan-tests` (see **Plan**).
 
-**Simplicity first.** Round 1 deals `simplicity` before the correctness lenses: a change
-that should shrink must shrink before anyone reviews the lines that will be deleted. The
-lens is a checklist (workarounds whose stated reason no longer holds on the pinned
-dependency; parameters every caller passes identically; wrappers that only forward; test
-axes with one value), drawn from a stack that a maintainer cut by two thirds after review —
-every cut was discoverable from the PR's own comments and the pinned dependency source.
-At triage, a reuse finding is accepted only with the existing symbol named at a location
-and version you have opened; a scope cut is `DEFERRED (scope decision)` for the user.
+**Simplicity first.** Round 1 belongs entirely to the question "could this change be
+smaller?": every seat gets `simplicity` except one, which gets `clean-room` and writes the
+smallest design for the named consumer *before* reading the diff, then reports where the
+change exceeds it. Measured on held-out PRs, one seat with the lens found about half of what
+four seats found together, and the misses were judgment calls where a seat defended the
+design — a seat that has committed to a design of its own does not. The seats also get the
+author's PR description (`--pr`), because proportionality is judged against the consumer the
+author names. At triage, a reuse finding is accepted only with the existing symbol named at a
+location and version you have opened; a scope cut is `DEFERRED (scope decision)` for the user.
+Correctness lenses start in round 2: reviewing lines that should be deleted is the purest
+form of churn.
 
 **Vacuity.** Whenever the diff touches tests, every prompt carries `--vacuity`. It is
 empirically the most common defect a panel finds and it finds it late — a 12-leg

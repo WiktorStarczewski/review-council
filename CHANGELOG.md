@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+
+- Round 1 is simplicity for the whole panel: three seats run the `simplicity` lens and one runs the new `clean-room` lens, which writes the smallest design for the named consumer before reading the diff and reports where the change exceeds it. Correctness lenses move to round 2; the minimum is eight rounds; the extra seats join in rounds 3 and 4. Measured on held-out PRs, one seat with the lens found about half of what four found together.
+- Every prompt carries the author's PR description (`rev-prompt.sh --pr`, saved to `$S/pr.md` at setup), because proportionality is judged against the consumer the author names.
+- `eval/`: the blind held-out benchmark — isolated single-lineage checkouts, all seats including a headless Claude seat, a ground-truth builder and a scorer that prints only a summary line — with lens and PR-description options.
+
 ## 0.2.2
 
 - The `simplicity` lens is rewritten from a two-case held-out evaluation (`docs/simplicity-lens-eval-2026-09-06.md`): the burden of proof sits on each new mechanism; native engine or framework features over hand-rolled ones; proportionality to the named consumer; one value or one implementation means no parameter and no generic; migrations from schemas created on the same unreleased branch fold into the original; public surface follows the file's re-export convention; test axes, helpers and divergence tests must still have two sides; consistency with siblings is not a justification. Structural recall on the held-out cases went from 1/3 and 1/5 to 2/3 and 3/5 with no case-specific wording.
