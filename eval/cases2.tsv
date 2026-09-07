@@ -1,0 +1,5 @@
+# name	owner/repo	pr	clone-url	review-head	base	merged   (all merged 2026-07..08, after model cutoffs)
+miden-usdcx-67	0xMiden/miden-usdcx	67	https://github.com/0xMiden/miden-usdcx.git	0046b2fa77bbd96a123f26ea9869c1240e411dd8	c577c9c5ff9c9d2b80ee2160d96576621f4759e9	cf2b192b400afdc553e9267c9abd6b8027622daf
+miden-vm-3314	0xMiden/miden-vm	3314	https://github.com/0xMiden/miden-vm.git	8c2cd43794005ab93397dbace813bcdf634837d8	54c44d53227da6a4a7607b4603aef82d7349dd57	490fe64218a5d93729d375506558e2168228deca
+protocol-3299	0xMiden/protocol	3299	https://github.com/0xMiden/protocol.git	8298a2581708347fb90c02dc1cd124a707eb2dac	5738df600ac62b46f289ad814637838bcfa1d74c	ba47a22f06f889a01b2c4b9cdc2106e986ee0aed
+protocol-3588	0xMiden/protocol	3588	https://github.com/0xMiden/protocol.git	116b0dfb5dafe38a096a9fa71cf613e7f39c900c	a95dc00a307e24c86c0a4f38f914c3e948dcb8b3	e9a9365c2d05d67423795d55fa7a37a8f384ad11
