@@ -19,6 +19,32 @@ fi
 S="$OUT/session"; mkdir -p "$S"
 ( cd "$REPO" && "$SCRIPTS/rev-preflight.sh" --scope branch --base "$BASE_SHA" --write "$S" ) > "$OUT/preflight.txt" 2>&1 || { echo "$NAME: preflight failed: $(tail -1 "$OUT/preflight.txt")"; exit 1; }
 SEATS=$(python3 -c "import json,sys; print(' '.join(s['seat'] for s in json.load(open(sys.argv[1]))['seats'] if not s.get('extra')))" "$S/roster.json")
+# Filtered dependency view: every registry crate pinned in the checkout's Cargo.lock, minus any crate this repository
+# itself publishes (any [package] name under the checkout), linked from the real registry into $S/deps. Seats are told
+# this is the only dependency source; a whole-registry grep would otherwise return later versions of the repo's own crates.
+DEPS="$S/deps"; rm -rf "$DEPS"; mkdir -p "$DEPS"
+python3 - "$REPO" "$DEPS" <<'PY2'
+import re, sys, pathlib, os, glob
+repo, deps = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+own = set()
+for t in repo.rglob('Cargo.toml'):
+    if 'target' in t.parts: continue
+    m = re.search(r'^\[package\][^\[]*?^name\s*=\s*"([^"]+)"', t.read_text(errors='replace'), re.M | re.S)
+    if m: own.add(m.group(1))
+lock = repo / 'Cargo.lock'
+if not lock.exists(): sys.exit(0)
+pins = set(re.findall(r'^name = "([^"]+)"\nversion = "([^"]+)"\nsource = "registry', lock.read_text(errors='replace'), re.M))
+srcs = glob.glob(os.path.expanduser('~/.cargo/registry/src/*/'))
+n = 0
+for name, ver in pins:
+    if name in own: continue
+    for s in srcs:
+        d = pathlib.Path(s) / f"{name}-{ver}"
+        if d.is_dir():
+            (deps / f"{name}-{ver}").symlink_to(d); n += 1; break
+print(f"deps view: {n} crates linked, {len(own)} own crate names excluded")
+PY2
+export REV_DEPS_DIR="$DEPS"
 PRARGS=(); if [ -n "$PR_REPO" ] && [ -n "$PR_NUM" ]; then gh pr view "$PR_NUM" --repo "$PR_REPO" --json title,body --jq '"# " + .title + "\n\n" + .body' > "$S/pr.md" 2>/dev/null && [ -s "$S/pr.md" ] && PRARGS=(--pr "$S/pr.md"); fi
 i=0; for seat in $SEATS; do lens=$(python3 -c "import sys; L=sys.argv[1].split(','); print(L[(int(sys.argv[2])+1) % len(L)])" "$LENSES" "$i"); REV_SEAT_OFFLINE=1 "$SCRIPTS/rev-prompt.sh" "$S" 1 "$seat" "$lens" "$EMPH" ${PRARGS[@]+"${PRARGS[@]}"} >/dev/null || { echo "$NAME: render failed for $seat"; exit 1; }; echo "$seat $lens" >> "$S/lenses.txt"; i=$((i+1)); done
 pids=(); [ -n "$SEATS" ] || { echo "$NAME: no seats in roster"; exit 1; }

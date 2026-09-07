@@ -19,6 +19,7 @@ test_plan_prompt() {
   done
   out=$("$SCRIPTS/rev-prompt.sh" "$S" 1 grok plan-simplicity "plan round" --plan "$S/fix-plan.md"); assert_grep "plan-simplicity asks for reuse" "$out" 'existing helper, type, hook, or path'
   out=$("$SCRIPTS/rev-prompt.sh" "$S" 1 codex-sol simplicity "code round"); assert_grep "simplicity lens checks the pinned dependency" "$out" 'pinned dependency source'; assert_grep "simplicity lens asks who passes the parameter" "$out" 'list every production caller'
+  out=$(REV_SEAT_OFFLINE=1 REV_DEPS_DIR=/tmp/depsview "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-sol simplicity "blind"); assert_grep "offline paragraph names the deps view" "$out" 'linked under /tmp/depsview'; assert_nogrep "and does not name the registry as a source" "$out" 'the cargo registry, node_modules\)'
   out=$(REV_SEAT_OFFLINE=1 "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-sol simplicity "blind"); assert_grep "offline paragraph on request" "$out" '## Offline review'; assert_grep "offline forbids whole-registry searches" "$out" 'do not search the whole registry'
   out=$("$SCRIPTS/rev-prompt.sh" "$S" 1 codex-sol simplicity "code round"); assert_nogrep "no offline paragraph by default" "$out" '## Offline review'; assert_grep "simplicity lens carries proportionality" "$out" 'Proportionality'; assert_grep "simplicity lens rejects sibling-consistency as justification" "$out" 'Consistency with sibling code is not a justification'
   printf '# Add an admin listing endpoint\n\nFor the browser dashboard demo.\n' > "$S/pr.md"
