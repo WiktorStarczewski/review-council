@@ -1,0 +1,8 @@
+# name	owner/repo	pr	clone-url	review-head	base	merged
+protocol-3766	0xMiden/protocol	3766	https://github.com/0xMiden/protocol.git	ce3b4abb04aab33feba2dd8fb74f20e850e244ac	ae6feded311422edd9f5ae74d9e6e6f6a0763170	3d8dd10c47c73a0311a99f0dd672b3f90d67a65f
+node-2464	0xMiden/node	2464	https://github.com/0xMiden/node.git	c9744cb15b08186f9020bf83c5d6b28194e61b54	27102f107837e7300f300f2f74c14793485fd470	38ebe9785d3e7ec3b3e2e5af07456d580929eb67
+rust-sdk-2456	0xMiden/rust-sdk	2456	https://github.com/0xMiden/rust-sdk.git	08b784826a7a043441cf18435cd8974b10c7d161	f8462aad169acaaf1e38f934a1f7bf24bff0ee9c	f1d9ad13bf140a877343c7678fdc9d864957d75d
+rust-sdk-2163	0xMiden/rust-sdk	2163	https://github.com/0xMiden/rust-sdk.git	df1f52ec64714821189befc4d7cc60eed6cb3b4f	23f8e096af44163e5cbd5baa638d067548c9ae0b	316c2883b6f28d00a89545b7d151c12aeaeb97ff
+air-script-241	0xMiden/air-script	241	https://github.com/0xMiden/air-script.git	552a7c2805d9c3e8907a13e87087b87a931f0258	f2bcd6b45385d30e3a43173a09faf1cd9666c90e	4deb8af604a87227218521887ea21efd588ae0ef
+midenup-219	0xMiden/midenup	219	https://github.com/0xMiden/midenup.git	abd493f1c8460ee63b75bc51071d7966b95b2398	65911e6c42f6e42d382cdb0264d5093dbed4cbf8	324f33d6c43325bd1216f9db76b1b4df2b11f77f
+protocol-3500	0xMiden/protocol	3500	https://github.com/0xMiden/protocol.git	b7827b935cea55481776cbd5bc7f95baad27f467	bd52b310f9d0c3d147d8ed77fca80b4659ef208c	2925d0817df18c64972edb7d0f9694a6539d9181
