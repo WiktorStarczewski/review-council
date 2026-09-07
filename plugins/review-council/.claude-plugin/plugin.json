@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/plugin.schema.json",
   "name": "review-council",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Multi-model code review council: Codex, Grok, Gemini and Claude seats reviewing the same change, triaged and fixed in a loop, with a roster built at run time from the lab CLIs you have installed.",
   "author": {
     "name": "Wiktor Starczewski"

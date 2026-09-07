@@ -71,7 +71,7 @@ The last column is a **one-off additional reviewer** that joins that round on to
 
 | Round | Emphasis | Lenses | One-off reviewer added this round |
 |---|---|---|---|
-| 1 | Simplicity: could this change be smaller? | simplicity ×3, clean-room ×1 | — |
+| 1 | Simplicity: could this change be smaller? | clean-room ×1 (the Claude seat), simplicity ×3 | — |
 | 2 | Correctness, edge cases, error handling | correctness, edge-cases, error-handling | — |
 | 3 | Security, data and state | security, data-state | `codex-review` (Codex's own review prompt) |
 | 4 | Concurrency, resources, performance | concurrency, resources, performance | `grok-code-review` (Grok's maintainability skill) |
