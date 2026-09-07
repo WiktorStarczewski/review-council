@@ -48,9 +48,9 @@ test_skill_contract() {
   assert_grep "plan round is not a round of its own" "$K" 'not a round of its own'
   assert_grep "evidence doc is referenced" "$K" 'churn-analysis-2026-09-06\.md'
   assert_grep "rev skill documents --base" "$K" -- '--base <ref>'
-  assert_grep "round 1 is simplicity for every seat plus one clean-room" "$K" '\| 1 \|.*\| clean-room, simplicity, simplicity, simplicity'
+  assert_grep "round 1 is simplicity for every seat plus one clean-room" "$K" '\| 1 \|.*\| simplicity \|'
   assert_grep "minimum is eight rounds" "$K" 'Minimum eight rounds'
-  assert_grep "PR description is passed to every prompt" "$K" -- '--pr \$S/pr\.md'
+  assert_grep "PR description is not passed to seats by default" "$K" 'do \*\*not\*\* pass `--pr \$S/pr\.md`'
 
   # --- the agent and its read-only fence ------------------------------------
   if [ ! -f "$AG" ]; then fail "agent file exists" "$AG missing"; return; fi

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.2
+
+- Measured on the eight-case blind benchmark, the 0.3.0/0.3.1 defaults lost recall: the author's PR description in seat prompts cost more load-bearing rows than it gained (anchoring on the author's framing), and replacing one simplicity seat with the `clean-room` design seat lost rows outright. Round 1 is back to `simplicity` on every seat; `clean-room` stays available as an additional seat and `--pr` as an opt-in, neither a default. The eight-round plan and the benchmark tooling stay.
+
 ## 0.3.1
 
 - The `clean-room` lens is dealt to the Claude seat (listed first in the round-1 lens list, so the dealing rule lands it on the last roster position) instead of the third seat; on the benchmark it had landed on the weakest seat.

@@ -71,7 +71,7 @@ The last column is a **one-off additional reviewer** that joins that round on to
 
 | Round | Emphasis | Lenses | One-off reviewer added this round |
 |---|---|---|---|
-| 1 | Simplicity: could this change be smaller? | clean-room ×1 (the Claude seat), simplicity ×3 | — |
+| 1 | Simplicity: could this change be smaller? | simplicity (every seat) | — |
 | 2 | Correctness, edge cases, error handling | correctness, edge-cases, error-handling | — |
 | 3 | Security, data and state | security, data-state | `codex-review` (Codex's own review prompt) |
 | 4 | Concurrency, resources, performance | concurrency, resources, performance | `grok-code-review` (Grok's maintainability skill) |
@@ -83,7 +83,9 @@ The last column is a **one-off additional reviewer** that joins that round on to
 
 ### Simplicity first
 
-Round 1 belongs entirely to one question: could the change be smaller? Three seats run the `simplicity` lens, a checklist for shrinking by reuse and proportionality — workarounds whose stated reason no longer holds on the pinned dependency (open the registry or `.d.ts` source), hand-rolled mechanisms the engine or framework provides, machinery sized for a consumer the PR names, parameters every caller passes identically, generics no implementation varies, migrations from schemas born on the same unreleased branch, test axes left with one value. The fourth seat runs `clean-room`: it writes the smallest design for the named consumer before reading the diff, then reports where the change exceeds it. All seats get the author's PR description, since proportionality is judged against the consumer the author names. Reuse findings are accepted only with the existing symbol named at a location and version; scope cuts are deferred to the author. Correctness starts in round 2, because reviewing lines that should be deleted is the purest form of churn. Why the whole round: measured on held-out PRs, one seat with the lens found about half of what four found together.
+Round 1 belongs entirely to one question: could the change be smaller? Every seat runs the `simplicity` lens, a checklist for shrinking by reuse and proportionality — workarounds whose stated reason no longer holds on the pinned dependency (open the registry or `.d.ts` source), hand-rolled mechanisms the engine or framework provides, machinery sized for a consumer the PR names, parameters every caller passes identically, generics no implementation varies, migrations from schemas born on the same unreleased branch, test axes left with one value. Reuse findings are accepted only with the existing symbol named at a location and version; scope cuts are deferred to the author. Correctness starts in round 2, because reviewing lines that should be deleted is the purest form of churn.
+
+Why every seat, and why nothing else: measured blind on eight held-out PRs ([docs/simplicity-lens-eval-2026-09-06.md](docs/simplicity-lens-eval-2026-09-06.md)), four seats with the lens found the load-bearing simplification on 6 of 10 rows, one seat alone about half of that; replacing one seat with a `clean-room` design seat lost rows, and handing seats the author's PR description lost more than it gained. Both remain available as opt-ins (`clean-room` as a fifth seat; `rev-prompt.sh --pr`), neither is a default.
 
 ### The fix-plan gate
 

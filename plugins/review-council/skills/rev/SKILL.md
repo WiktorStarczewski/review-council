@@ -62,7 +62,9 @@ is decorrelation, not coverage — and losing it is something you say out loud (
 1. Resolve the scope. PR number/URL: `gh pr checkout <n>`, then save the author's own
    description for the seats: `gh pr view <n> --json title,body --jq '"# " + .title + "\n\n" + .body' > $S/pr.md`.
    For a branch or path scope, try the same with `gh pr view` (no number) and ignore failure.
-   Whenever `$S/pr.md` exists, every `rev-prompt.sh` call in this run passes `--pr $S/pr.md`. Branch name: `git checkout
+   `$S/pr.md` is for you (triage, scope decisions); do **not** pass `--pr $S/pr.md` to seat
+   prompts by default — measured, it anchors reviewers on the author's framing and loses
+   findings. Pass it only when the user asks for it. Branch name: `git checkout
    <name>`. Then `mkdir -p $S` and:
    ```bash
    ${CLAUDE_PLUGIN_ROOT}/scripts/rev-preflight.sh --scope <branch|uncommitted|path> --write $S
@@ -366,7 +368,7 @@ things, and repeats within a round give agreement signal.
 
 | Round | Emphasis | Lenses, in order | Extra seat |
 |---|---|---|---|
-| 1 | Simplicity — could this change be smaller? | clean-room, simplicity, simplicity, simplicity | — |
+| 1 | Simplicity — could this change be smaller? | simplicity | — |
 | 2 | Correctness, edge cases, error handling | correctness, edge-cases, error-handling | — |
 | 3 | Security, data & state | security, data-state | `codex-review` — security |
 | 4 | Concurrency, resources, performance | concurrency, resources, performance | `grok-code-review` — maintainability |
@@ -383,18 +385,17 @@ covered at least once per run. Plan rounds use their own four: `plan-completenes
 plan-soundness plan-simplicity plan-tests` (see **Plan**).
 
 **Simplicity first.** Round 1 belongs entirely to the question "could this change be
-smaller?": every seat gets `simplicity` except one, which gets `clean-room` and writes the
-smallest design for the named consumer *before* reading the diff, then reports where the
-change exceeds it. `clean-room` is listed first so that, under the dealing rule, it lands on
-the last roster seat — the Claude seat, the strongest reasoner on every measured run; a
-four-seat roster dealt `(i+1) mod 4` gives seat 3 lens 0. Measured on held-out PRs, one seat with the lens found about half of what
-four seats found together, and the misses were judgment calls where a seat defended the
-design — a seat that has committed to a design of its own does not. The seats also get the
-author's PR description (`--pr`), because proportionality is judged against the consumer the
-author names. At triage, a reuse finding is accepted only with the existing symbol named at a
-location and version you have opened; a scope cut is `DEFERRED (scope decision)` for the user.
-Correctness lenses start in round 2: reviewing lines that should be deleted is the purest
-form of churn.
+smaller?": every seat gets `simplicity`. Measured on eight held-out PRs (the plugin's
+`docs/simplicity-lens-eval-2026-09-06.md`), four seats with the lens found the load-bearing
+simplification on 6 of 10 rows; every variant that replaced one of them with a design seat
+(`clean-room`, which sketches the smallest design for the named consumer before reading the
+diff) found fewer, and giving the seats the author's PR description cost more load-bearing
+rows than it gained — reviewers anchor on the author's framing instead of attacking it. So
+neither is dealt by default: `clean-room` is available as an *additional* seat when the roster
+has five or more, and `--pr` is available but off. At triage, a reuse finding is accepted only
+with the existing symbol named at a location and version you have opened; a scope cut is
+`DEFERRED (scope decision)` for the user. Correctness lenses start in round 2: reviewing lines
+that should be deleted is the purest form of churn.
 
 **Vacuity.** Whenever the diff touches tests, every prompt carries `--vacuity`. It is
 empirically the most common defect a panel finds and it finds it late — a 12-leg
