@@ -366,7 +366,7 @@ things, and repeats within a round give agreement signal.
 
 | Round | Emphasis | Lenses, in order | Extra seat |
 |---|---|---|---|
-| 1 | Simplicity — could this change be smaller? | simplicity, simplicity, simplicity, clean-room | — |
+| 1 | Simplicity — could this change be smaller? | clean-room, simplicity, simplicity, simplicity | — |
 | 2 | Correctness, edge cases, error handling | correctness, edge-cases, error-handling | — |
 | 3 | Security, data & state | security, data-state | `codex-review` — security |
 | 4 | Concurrency, resources, performance | concurrency, resources, performance | `grok-code-review` — maintainability |
@@ -385,7 +385,9 @@ plan-soundness plan-simplicity plan-tests` (see **Plan**).
 **Simplicity first.** Round 1 belongs entirely to the question "could this change be
 smaller?": every seat gets `simplicity` except one, which gets `clean-room` and writes the
 smallest design for the named consumer *before* reading the diff, then reports where the
-change exceeds it. Measured on held-out PRs, one seat with the lens found about half of what
+change exceeds it. `clean-room` is listed first so that, under the dealing rule, it lands on
+the last roster seat — the Claude seat, the strongest reasoner on every measured run; a
+four-seat roster dealt `(i+1) mod 4` gives seat 3 lens 0. Measured on held-out PRs, one seat with the lens found about half of what
 four seats found together, and the misses were judgment calls where a seat defended the
 design — a seat that has committed to a design of its own does not. The seats also get the
 author's PR description (`--pr`), because proportionality is judged against the consumer the

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- The `clean-room` lens is dealt to the Claude seat (listed first in the round-1 lens list, so the dealing rule lands it on the last roster position) instead of the third seat; on the benchmark it had landed on the weakest seat.
+
 ## 0.3.0
 
 - Round 1 is simplicity for the whole panel: three seats run the `simplicity` lens and one runs the new `clean-room` lens, which writes the smallest design for the named consumer before reading the diff and reports where the change exceeds it. Correctness lenses move to round 2; the minimum is eight rounds; the extra seats join in rounds 3 and 4. Measured on held-out PRs, one seat with the lens found about half of what four found together.
