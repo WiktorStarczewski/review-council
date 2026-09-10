@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
 
 - Add a Codex plugin with native review and stack skills, a GitHub marketplace and curl installer, a guarded Claude CLI reviewer, provider-aware fallback panels, and Codex stack legs. Both plugins share the existing engine with separate skill and hook discovery. Detect integer-major Codex model names and respect `CODEX_HOME` for the model cache.
 
