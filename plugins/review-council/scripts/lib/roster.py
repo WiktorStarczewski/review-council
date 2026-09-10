@@ -29,18 +29,22 @@ PANEL = 3                            # seats a round needs; a thinner roster is 
 LOGIN_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_LOGIN_TIMEOUT', '20'))   # a wedged status command must not hang session start
 PROBE_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_PROBE_TIMEOUT', '60'))
 
-LABS = {'codex': 'openai', 'grok': 'xai', 'gemini': 'google', 'agent': 'anthropic'}
+CODEX_HOST = os.environ.get('REVIEW_COUNCIL_HOST') == 'codex'
+LABS = {'codex': 'openai', 'grok': 'xai', 'gemini': 'google', 'agent': 'anthropic', 'claude': 'anthropic'}
 # the name an adapter answers to in the --brief line, in `excluded[].cli` and in config `exclude`
-NAMES = {'codex': 'codex', 'grok': 'grok', 'gemini': 'gemini', 'agent': 'claude'}
-ORDER = ('codex', 'grok', 'gemini', 'agent')
+NAMES = {'codex': 'codex', 'grok': 'grok', 'gemini': 'gemini', 'agent': 'claude', 'claude': 'claude'}
+ORDER = ('codex', 'grok', 'gemini', 'claude' if CODEX_HOST else 'agent')
 # (adapter, seat, mode, round) — an extra pass is seated whenever its lab has a seat
 EXTRAS = (('codex', 'codex-review', 'review', 3), ('grok', 'grok-code-review', 'code-review', 4))
 
-GEN = re.compile(r'^gpt-(\d+)\.(\d+)(?:-|$)')     # gpt-5.6-sol → generation (5, 6), suffix "sol"
+GEN = re.compile(r'^gpt-(\d+)(?:\.(\d+))?(?:-|$)')  # gpt-6-astra and gpt-5.6-sol
 GROK_VER = re.compile(r'grok-(\d+)\.(\d+)')
 
 PROBE_CMD = {
-    'codex':  lambda m: ['codex', 'exec', '--ephemeral', '-s', 'read-only', '-m', m,
+    'claude': lambda m: ['claude', '-p', 'Reply with exactly OK', '--model', m,
+                         '--permission-mode', 'plan', '--tools', '', '--setting-sources', '',
+                         '--strict-mcp-config', '--no-session-persistence', '--max-turns', '1'],
+    'codex':  lambda m: ['codex', 'exec', '--ephemeral', '--skip-git-repo-check', '-s', 'read-only', '-m', m,
                          'Reply with exactly OK'],
     'grok':   lambda m: ['grok', '-p', 'Reply with exactly OK', '-m', m, '--permission-mode', 'plan',
                          '--output-format', 'json', '--max-turns', '1'],
@@ -115,7 +119,7 @@ def codex_models(path):
         slug = m.get('slug')
         gen = GEN.match(slug) if isinstance(slug, str) else None
         if gen:
-            listed.append(((int(gen.group(1)), int(gen.group(2))), m, slug))
+            listed.append(((int(gen.group(1)), int(gen.group(2) or 0)), m, slug))
     if not listed:
         return []
     newest = max(gen for gen, _, _ in listed)
@@ -171,7 +175,8 @@ def detect_codex(cfg):
     ok, reason = status_check(['codex', 'login', 'status'], 'logged in')
     if not ok:
         return [], reason
-    cache = env_path('REVIEW_COUNCIL_CODEX_MODELS_CACHE', '~/.codex/models_cache.json')
+    cache = env_path('REVIEW_COUNCIL_CODEX_MODELS_CACHE',
+                     os.path.join(env_path('CODEX_HOME', '~/.codex'), 'models_cache.json'))
     models = codex_models(cache)
     if not models:
         return [], 'no usable model in %s' % cache
@@ -213,7 +218,25 @@ def detect_agent(cfg):
     return [make_seat('opus', 'agent', 'opus', 'max')], None     # the in-harness rev-reviewer agent
 
 
-DETECT = {'codex': detect_codex, 'grok': detect_grok, 'gemini': detect_gemini, 'agent': detect_agent}
+def detect_claude(cfg):
+    if os.environ.get('REVIEW_COUNCIL_CLAUDE_SEAT') == '0' or cfg.get('claude_seat') is False:
+        return [], 'disabled'
+    if shutil.which('claude') is None:
+        return [], 'not installed'
+    rc, out, _ = run(['claude', 'auth', 'status', '--json'], LOGIN_TIMEOUT)
+    if rc is None:
+        return [], 'sign-in check timed out'
+    try:
+        status = json.loads(out)
+    except ValueError:
+        return [], 'sign-in check failed'
+    if rc != 0 or not isinstance(status, dict) or status.get('loggedIn') is not True:
+        return [], 'not signed in'
+    return [make_seat('opus', 'claude', 'opus', 'max')], None
+
+
+DETECT = {'codex': detect_codex, 'grok': detect_grok, 'gemini': detect_gemini,
+          'agent': detect_agent, 'claude': detect_claude}
 
 
 # ---------------------------------------------------------------- config
@@ -281,6 +304,23 @@ def pad(seats, excluded, cfg):
     missing = PANEL - len([s for s in seats if not s['extra']])
     if missing <= 0:
         return 0
+    if CODEX_HOST:
+        # Codex has no implicit Anthropic agent. Reuse only a real surviving CLI,
+        # after exclusions and probes; independent runs are not independent labs.
+        bases = [s for s in seats if not s['extra']]
+        if not bases:
+            return 0
+        used = {s['seat'] for s in seats} | excluded_names(cfg)
+        for i in range(missing):
+            base = bases[i % len(bases)]
+            n = 1
+            name = '%s-%d' % (base['seat'], n)
+            while name in used:
+                n += 1
+                name = '%s-%d' % (base['seat'], n)
+            used.add(name)
+            seats.append(dict(base, seat=name, padded=True))
+        return missing
     # Whichever config turned the Claude lab off, padding overrides it — and says so. Silently
     # obeying would leave an empty panel; silently overriding would hide that the config was ignored.
     if cfg.get('claude_seat') is False or os.environ.get('REVIEW_COUNCIL_CLAUDE_SEAT') == '0':
@@ -314,6 +354,11 @@ def degradation(seats, padded):
             labs.append(s['lab'])
     if padded <= 0 and len(labs) > 1:
         return labs, False, None
+    if CODEX_HOST:
+        if not labs:
+            return labs, True, 'no usable reviewer CLI - sign in to a supported provider'
+        detail = ('%d repeat CLI seats; ' % padded) if padded else ''
+        return labs, True, 'available labs: %s - %sreduced panel diversity' % (', '.join(labs), detail)
     if labs == ['anthropic']:
         n = len([s for s in seats if not s['extra']])
         return labs, True, ('only Claude is available — %d Claude seats, no cross-lab decorrelation' % n)
@@ -388,7 +433,7 @@ def build(do_probe):
     floor = min_labs(cfg)
     real = [l for l in labs
             if any(s['lab'] == l and not s['extra'] and not s.get('padded') for s in kept)]
-    strict = floor > 1 and len(real) < floor
+    strict = (floor > 1 or CODEX_HOST) and len(real) < floor
     if strict:
         excluded.append({'cli': 'min_labs',
                          'reason': 'strict: %d lab(s) available, min_labs=%d' % (len(real), floor)})

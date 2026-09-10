@@ -81,3 +81,22 @@ Two separate things, both off unless you ask for them:
 - **The update notice** (`check_updates`) only tells you. `scripts/lib/update-check.py` compares the installed `plugin.json` version against the published one, caches the answer for a day under `~/.cache/review-council`, and prints a single line the `SessionStart` hook appends to the banner. It never updates anything: a plugin's own hook replacing the directory it runs from is how an install gets corrupted. Every failure — no network, unparseable JSON, unwritable cache — prints nothing and exits 0, and the hook caps the whole call at three seconds.
 
 With auto-update on there is normally nothing for the notice to report; it is there for people who turned auto-update off and still want to know.
+
+## Codex host
+
+The generated Codex bundle selects `REVIEW_COUNCIL_HOST=codex` automatically in its
+roster and stack entrypoints. Set that variable explicitly when using shared source
+scripts. The same config file, exclusions, pins, and `min_labs` apply in both hosts.
+The differences are:
+
+- `opus` uses adapter `claude`: an installed CLI with positive `claude auth status`
+  is required. `claude_seat: false` and provider exclusions are honored.
+- Padding duplicates only surviving CLI seats after probing. Each gets a unique seat
+  name and `padded: true`; duplicates never count as another lab. No usable CLI exits
+  5 even with the default `min_labs: 1`.
+- Codex models are read from `$CODEX_HOME/models_cache.json` when `CODEX_HOME` is set,
+  otherwise `~/.codex/models_cache.json`. The explicit cache override still wins.
+- Codex stack defaults are `NO_PUSH=1` and `NO_SQUASH=1`. Existing shell stack configs
+  can override these, so inspect them before reusing a Claude stack configuration.
+- Claude session hooks, update notices, and auto-update settings are not installed
+  in Codex. Refresh the Git marketplace and reinstall, or rerun the curl installer, then start a new chat.

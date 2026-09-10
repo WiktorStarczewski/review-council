@@ -51,7 +51,13 @@ FAST_FAIL_SECS=${FAST_FAIL_SECS:-90}
 INFRA_SLEEP_SECS=${INFRA_SLEEP_SECS:-300}
 AUTH_WAIT_TRIES=${AUTH_WAIT_TRIES:-60}
 AUTH_WAIT_SECS=${AUTH_WAIT_SECS:-60}
-NO_PUSH=${NO_PUSH:-0}
+if [ "${REVIEW_COUNCIL_HOST:-claude}" = codex ]; then
+  NO_PUSH=${NO_PUSH:-1}
+  NO_SQUASH=${NO_SQUASH:-1}
+else
+  NO_PUSH=${NO_PUSH:-0}
+  NO_SQUASH=${NO_SQUASH:-0}
+fi
 REV_SCRIPTS=${REV_SCRIPTS:-$HERE}   # roster.sh, rev-status.sh and rev-squash.sh live beside this script
 SEAM_REPO=${SEAM_REPO:-}
 SEAM_PREMISE=${SEAM_PREMISE:-"Review the SEAMS between the PRs in this stack, not the code again: what each PR promises the others, what each assumes of the others, and every claim that a sibling PR invalidates."}
@@ -137,8 +143,29 @@ NOTE: an earlier pass of this review exists. Read $S/findings.md FIRST and do no
 ${extra}
 
 ${VACUITY}${resume}"
+    if [ "${REVIEW_COUNCIL_HOST:-claude}" = codex ]; then
+      local skill="$HERE/../codex-skills/rev/SKILL.md"
+      [ -f "$skill" ] || { say "!!! missing Codex rev skill: $skill"; note_failure "$label" "$dir"; return 1; }
+      prompt="Read and follow the Codex review-council skill at $skill.
+Review branch $rounds rounds; use $S as the session dir. This is a stack leg: do not squash or push.
+
+${extra}
+
+${VACUITY}${resume}"
+      # A previous pass's receipt cannot certify this attempt completed.
+      [ ! -f "$S/report.md" ] || mv "$S/report.md" "$S/report.previous.md"
+    fi
     set -m   # give the leg its own process group, so the CPU veto and the kill can address the whole tree
-    ( cd "$dir" && REV_STACK_LEG=1 claude -p "$prompt" --permission-mode bypassPermissions --effort max --output-format stream-json --verbose </dev/null > "$S/run.log" 2>&1 ) &
+    (
+      cd "$dir" || exit 1
+      export REV_STACK_LEG=1
+      if [ "${REVIEW_COUNCIL_HOST:-claude}" = codex ]; then
+        printf '%s\n' "$prompt" | codex exec --ephemeral -s workspace-write \
+          -c sandbox_workspace_write.network_access=true --add-dir "$ROOT" --json -
+      else
+        claude -p "$prompt" --permission-mode bypassPermissions --effort max --output-format stream-json --verbose </dev/null
+      fi
+    ) > "$S/run.log" 2>&1 &
     set +m
     local pid=$! last_seen last_cpu="" last_status stalled=0
     last_seen=$(date +%s); last_status=$last_seen
@@ -196,7 +223,7 @@ finish_repos() {
       say "--- skipping $(basename "$d") — a leg on it failed; its review is not complete"; continue;; esac
     say "--- finishing $(basename "$d")"
     set -o pipefail
-    ( cd "$d" && "$REV_SCRIPTS/rev-squash.sh" --apply ) 2>&1 | sed 's/^/    /' | tee -a "$LOG"
+    ( cd "$d" && if [ "$NO_SQUASH" = 1 ]; then echo "(NO_SQUASH=1: keeping review commits)"; else "$REV_SCRIPTS/rev-squash.sh" --apply; fi ) 2>&1 | sed 's/^/    /' | tee -a "$LOG"
     srq=$?
     set +o pipefail
     # A refused squash is not a reason to withhold the push: the round commits are real work and CI
