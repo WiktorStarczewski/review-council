@@ -1,8 +1,10 @@
 # review-council
 
-A Claude Code plugin that runs your code review through a panel instead of one model: Codex, Grok, Gemini and an Opus subagent each read the same diff independently, in read-only mode, and answer in a shared findings schema. The orchestrating Claude session merges their claims into a ledger, verifies every one against the source before acting on it, fixes what's real, re-runs your gates, and commits — round after round until the panel stops finding anything new. The panel is never hardcoded: at the start of every session the plugin checks which lab CLIs are actually installed and signed in on your machine, builds the seat roster from that (and probes each seat with a one-token call before a review starts), so the review always runs with whatever frontier models you have. A panel is three seats; if your machine has fewer, the review still runs — the roster pads the panel with extra Claude seats, each on its own lens, and then says so everywhere it can: the session banner, the preflight line and the final report all carry `DEGRADED` and one sentence naming what decorrelation was lost. Nothing is quietly downgraded, and nothing is refused for being short-handed. Teams that would rather not review at all than review single-lab set `min_labs` and get a hard floor back.
+A Claude Code plugin, now also available for Codex, that runs your code review through a panel instead of one model: Codex, Grok, Gemini and an Opus subagent each read the same diff independently, in read-only mode, and answer in a shared findings schema. The orchestrating Claude session merges their claims into a ledger, verifies every one against the source before acting on it, fixes what's real, re-runs your gates, and commits - round after round until the panel stops finding anything new. The panel is never hardcoded: at the start of every session the plugin checks which lab CLIs are actually installed and signed in on your machine, builds the seat roster from that (and probes each seat with a one-token call before a review starts), so the review always runs with whatever frontier models you have. A panel is three seats; if your machine has fewer, the review still runs - the roster pads the panel with extra Claude seats, each on its own lens, and then says so everywhere it can: the session banner, the preflight line and the final report all carry `DEGRADED` and one sentence naming what decorrelation was lost. Nothing is quietly downgraded, and nothing is refused for being short-handed. Teams that would rather not review at all than review single-lab set `min_labs` and get a hard floor back.
 
 ## Install
+
+### Claude Code
 
 Marketplace:
 
@@ -24,6 +26,29 @@ curl -fsSL https://raw.githubusercontent.com/WiktorStarczewski/review-council/ma
 ```
 
 Update by hand any time with `claude plugin update review-council`; restart Claude Code (or `/reload-plugins`) after installing or updating. If you would rather be told than updated, set `check_updates: true` in the config and the session banner adds one line when a newer version is published (off by default, checked at most once a day, silent when the network is unreachable) — see [docs/config.md](docs/config.md).
+
+### Codex
+
+Marketplace:
+
+```bash
+codex plugin marketplace add WiktorStarczewski/review-council
+codex plugin add review-council@review-council
+```
+
+One-liner:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/WiktorStarczewski/review-council/main/install-codex.sh | bash
+```
+
+Start a new Codex chat, then ask “Use review-council to review this branch.” The
+plugin includes native `rev` and `stack` skills and uses the provider CLIs installed
+and signed in on your machine. Codex requires its CLI with plugin support, Python 3,
+and Bash. See [Codex setup and behavior](docs/codex.md) for updates and local development.
+
+The remaining instructions below describe Claude Code. The Codex skills retain the
+review loop and findings format, with CLI-based Anthropic seats and Codex stack legs.
 
 ## At session start
 

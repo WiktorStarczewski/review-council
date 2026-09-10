@@ -104,7 +104,7 @@ while :; do
   attempt=$((attempt+1))
   "$ADAPTER_SH"; rc=$?
   case "$ADAPTER" in
-    grok|gemini)
+    grok|gemini|claude)
       if [ "$rc" -eq 0 ] && ! grep -q '^tool_call ' "$LOG"; then
         echo "$ADAPTER answered without a single tool call (attempt $attempt) — not a review" >> "$LOG"
         rm -f "$OUT"

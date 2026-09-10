@@ -74,6 +74,24 @@ for raw in sys.stdin:
             emit(f"end usage={json.dumps(e.get('usage', {}))}")
         elif t == 'error':
             emit(f"error: {clip(e.get('message', e))}")
+    elif kind == 'claude':
+        if t == 'assistant':
+            for block in (e.get('message') or {}).get('content', []):
+                if block.get('type') == 'tool_use' and block.get('name') in ('Read', 'Glob', 'Grep', 'Bash'):
+                    emit(f"tool_call {block.get('name', '')}: {clip(json.dumps(block.get('input', {})))}")
+                elif block.get('type') == 'text':
+                    emit(f"text: {clip(block.get('text', ''))}")
+        elif t == 'result':
+            if e.get('is_error'):
+                emit(f"error: {clip(e.get('errors') or e.get('result') or e.get('subtype'))}")
+            else:
+                obj = e.get('structured_output')
+                if isinstance(obj, dict):
+                    with open(out, 'w') as f:
+                        json.dump(obj, f)
+            emit(f"end status={e.get('subtype')} turns={e.get('num_turns')}")
+        elif t == 'error':
+            emit(f"error: {clip(e.get('message', e))}")
     elif kind == 'gemini':
         # Shape per the gemini CLI's documented `-o stream-json` NDJSON — assumed, not observed: there is
         # no gemini on the box this was written on. tests/fixtures/gemini-stream.ndjson is the reference:
