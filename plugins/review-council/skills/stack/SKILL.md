@@ -1,14 +1,14 @@
 ---
 name: stack
-description: Run the /review-council:rev multi-model review across a STACK of related PRs in several repos — per-PR legs in dependency order, two passes, a cross-repo seam review, a completeness critic, stall recovery, and one squashed review commit per repo. Use when one change spans multiple repositories that must be reviewed together (a protocol change plus the SDK, client and app PRs that consume it), or when a review must run unattended for many hours. For a single PR or branch, use /review-council:rev directly.
+description: Run the /review-council:rev multi-model review across a STACK of related PRs in several repos - per-PR legs in dependency order, two passes, a cross-repo seam review, a completeness critic, stall recovery, and one squashed review commit per repo. Use when one change spans multiple repositories that must be reviewed together (a protocol change plus the SDK, client and app PRs that consume it), or when a review must run unattended for many hours. For a single PR or branch, use /review-council:rev directly.
 user_invocable: true
 ---
 
-# stack — one review across a stack of PRs
+# stack - one review across a stack of PRs
 
 Wraps `/review-council:rev` for the case it does not cover: **one change spread across several repos**,
-each with its own PR, that only makes sense reviewed together — and a run long enough
-(10–20 h) that it must survive stalls and machine contention without supervision.
+each with its own PR, that only makes sense reviewed together - and a run long enough
+(10-20 h) that it must survive stalls and machine contention without supervision.
 
 `/review-council:rev` runs one loop in this session and waits. This skill runs many, in
 sequence, as headless `claude -p "/review-council:rev …"` legs, and keeps them alive.
@@ -18,7 +18,7 @@ sequence, as headless `claude -p "/review-council:rev …"` legs, and keeps them
 Both must hold:
 
 - The change spans 3+ repos whose PRs depend on each other.
-- The review will outlast your attention: legs take 1–4 h each; two passes over six
+- The review will outlast your attention: legs take 1-4 h each; two passes over six
   repos is most of a day.
 
 For one PR, one branch, or uncommitted work: `/review-council:rev`. Do not reach for this.
@@ -26,7 +26,7 @@ For one PR, one branch, or uncommitted work: `/review-council:rev`. Do not reach
 ## Shape of a run
 
     PHASE 1  per-PR legs, PASS 1     one review loop per repo, in dependency order
-    PHASE 1  per-PR legs, PASS 2     again — pass 1 reviewed a tree that has since changed, including by pass 1 itself
+    PHASE 1  per-PR legs, PASS 2     again - pass 1 reviewed a tree that has since changed, including by pass 1 itself
     PHASE 2  cross-repo seam review  the contracts BETWEEN the PRs
     PHASE 3  completeness critic     what did every pass miss
     FINISH   one squash + one push per repo (skipped for a repo whose leg failed)
@@ -43,7 +43,7 @@ scope, a roster of at least three signed-in seats), plus:
 1. **Order the legs by dependency.** Review the thing others build on first; its
    findings change what the dependents should say.
 2. **Give each leg a written premise.** A leg with no context "fixes" things that are
-   not broken — one reverted a deliberate version pin as a P0 overnight. Say what the PR
+   not broken - one reverted a deliberate version pin as a P0 overnight. Say what the PR
    claims, what is already known, and **name the claim you most want attacked**; that
    sentence produced the highest-value findings in the source run.
 3. **Nothing else heavy on the box** (below).
@@ -51,7 +51,16 @@ scope, a roster of at least three signed-in seats), plus:
 ## Running it
 
 Copy `${CLAUDE_PLUGIN_ROOT}/scripts/stack.example.sh`, fill in `legs()` and the
-seam/critic repos, then — from a plain foreground `Bash` call:
+seam/critic repos, then - from a plain foreground `Bash` call:
+
+The numeric round count in each existing `run_leg` explicitly selects the legacy
+numbered schedule. Numeric legs may continue past the requested minimum under the
+numeric completion rules in `rev`; plan panels do not count toward that minimum. It
+does not opt that leg into the direct adaptive default.
+
+Treat roster or preflight exit codes distinctly. Exit 5 is retryable: retain the
+session and let the bounded attempt loop retry it. Exit 6 is permanent: relay the
+one-line reason verbatim, fail that leg, and do not retry the same contract.
 
 ```bash
 ${CLAUDE_PLUGIN_ROOT}/scripts/stack.sh my-stack.sh
@@ -61,7 +70,7 @@ It **detaches itself** into a new session (nohup + setsid) and returns at once,
 printing the session root, the log path and the orchestrator's own output file.
 Do NOT launch it with `run_in_background`: a Claude Code background command is
 killed by the harness after roughly an hour, and the kill takes the leg's whole
-process group with it mid-round — that is exactly how the first live stack run
+process group with it mid-round - that is exactly how the first live stack run
 died. `REV_STACK_FOREGROUND=1` keeps it attached for tests or a terminal you will
 keep open.
 
@@ -75,7 +84,7 @@ Monitor({ command: "tail -n0 -f <the log path it printed> | grep --line-buffered
 
 Relay each event to the user as-is with at most one sentence of context. The
 Monitor has its own lifetime cap; re-arm it if it expires while the run is alive
-(`pgrep -f stack.sh`), and never treat a quiet Monitor as a finished run —
+(`pgrep -f stack.sh`), and never treat a quiet Monitor as a finished run -
 the log is the record.
 
 Legs run with `REV_STACK_LEG=1`, so a leg never squashes or pushes; the orchestrator
@@ -88,14 +97,14 @@ the script header.
 
 **Resume.** Re-running with the same `LOG` skips legs already marked `=== DONE`.
 
-## Stalls and status — one detector, in the orchestrator
+## Stalls and status - one detector, in the orchestrator
 
 A headless leg that hangs looks exactly like one that is working. `stack.sh`
 polls each leg and kills it only when **both** hold:
 
 - `run.log` (stream-json: one event per assistant message and tool call) **and** the
   leg's session dir have been quiet for `STALL_SECS` (default 30 min);
-- the leg's CPU time did not move across a 45 s sample — the veto that stops a long,
+- the leg's CPU time did not move across a 45 s sample - the veto that stops a long,
   silent compile from being mistaken for a hang.
 
 A killed leg is retried (4 attempts) with a resume note pointing at its own ledger. A
@@ -110,8 +119,8 @@ Every 10 minutes the log gets one line per running leg:
 Read `idle` and `cpu` together. A large `idle` with `cpu=…(moving)` is a leg mid-build;
 `idle` climbing past the limit with `cpu=…(frozen)` is what gets killed.
 
-**There is exactly one stall detector.** The previous version of this skill had two —
-an external guard script and one inside the orchestrator — and the one nobody had
+**There is exactly one stall detector.** The previous version of this skill had two -
+an external guard script and one inside the orchestrator - and the one nobody had
 hardened false-killed a working leg. Do not arm a second one. If you need a different
 threshold, set `STALL_SECS`; do not add a watcher.
 
@@ -129,12 +138,12 @@ Each leg commits per round as crash recovery; the orchestrator collapses each re
 with `${CLAUDE_PLUGIN_ROOT}/scripts/rev-squash.sh --apply` and pushes once. Squash and push are **independent**: a
 refused squash is logged (`!!! squash refused for <repo>`) and the push still happens,
 because the round commits are real work that CI has to see. If a repo prints
-"refusing: … only N unpushed", something was pushed mid-run — leave that history alone.
+"refusing: … only N unpushed", something was pushed mid-run - leave that history alone.
 
 A repo whose leg never completed is **not** finished: it is skipped (no squash, no
 push) and the run ends `COMPLETE WITH FAILURES: <labels>` with a non-zero exit instead
-of `ALL PHASES COMPLETE`. Re-run the stack — the resume check skips the legs already
-DONE for this session root — before touching those repos by hand.
+of `ALL PHASES COMPLETE`. Re-run the stack - the resume check skips the legs already
+DONE for this session root - before touching those repos by hand.
 
 **Promote out of draft LAST**, and by whether CI can go green, not by position in the
 stack:
@@ -142,7 +151,7 @@ stack:
 | State | Action |
 |---|---|
 | CI structurally cannot pass until the root ships | stay draft, say what it waits on |
-| CI can pass; only a merge gate is pending | promote — review starts while the gate waits |
+| CI can pass; only a merge gate is pending | promote - review starts while the gate waits |
 
 Check `mergeable`, not just `isDraft`: a long run gives the base branch time to move.
 Once the root PR needs a human reviewer it is the critical path; say so rather than
@@ -153,10 +162,10 @@ generating motion on the consumers.
 Each leg leaves `<ROOT>/<leg>/report.md` and `findings.md`. Findings cluster into
 shapes worth naming when you summarise:
 
-- **Tests that cannot fail** — assertions satisfied by the call under test, fixtures
+- **Tests that cannot fail** - assertions satisfied by the call under test, fixtures
   that only exercise the benign ordering. The single most common P1.
-- **Coverage that does not execute** — comparing hashes instead of running the thing.
+- **Coverage that does not execute** - comparing hashes instead of running the thing.
   Ask for mutation evidence: a test proven to fail when the code is broken.
-- **Docs contradicting their own code** — especially a stated precondition a later
+- **Docs contradicting their own code** - especially a stated precondition a later
   change invalidated.
-- **The same defect in N repos** — the seam finding; it usually has one upstream fix.
+- **The same defect in N repos** - the seam finding; it usually has one upstream fix.

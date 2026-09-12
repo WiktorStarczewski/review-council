@@ -4,7 +4,7 @@
 # review, a completeness critic, then one squash + push per repo. Legs are headless
 # `claude -p "/review-council:rev …"` runs marked REV_STACK_LEG=1, so they never squash or push themselves.
 #
-# The config defines legs() — run_leg calls in DEPENDENCY ORDER — and may set SEAM_REPO / CRITIC_REPO / premises.
+# The config defines legs() - run_leg calls in DEPENDENCY ORDER - and may set SEAM_REPO / CRITIC_REPO / premises.
 # See stack.example.sh next to this script.
 #
 # ONE stall detector, here, and nowhere else. A leg is killed only when (a) its run.log AND session dir have been
@@ -20,7 +20,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # shellcheck source=lib/compat.sh
 # Guarded: without rc_mtime/rc_newest_mtime the stall detector loses the file-activity half of its
 # two-condition kill rule and silently kills healthy legs, so a missing compat.sh is fatal, not a warning.
-. "$HERE/lib/compat.sh" || { echo "stack: cannot load $HERE/lib/compat.sh" >&2; exit 1; }   # rc_mtime / rc_newest_mtime — BSD and GNU stat differ
+. "$HERE/lib/compat.sh" || { echo "stack: cannot load $HERE/lib/compat.sh" >&2; exit 1; }   # rc_mtime / rc_newest_mtime - BSD and GNU stat differ
 # PATH is APPENDED, never prepended: an operator's (or a test's) own claude/codex/grok must keep winning.
 export PATH="$PATH:$HOME/.nvm/versions/node/v22.22.0/bin:$HOME/.local/bin"
 [ -z "${REV_ACTIVE:-}${REV_STACK_LEG:-}" ] || { echo "stack: refusing to nest (REV_ACTIVE or REV_STACK_LEG is set)" >&2; exit 1; }
@@ -28,7 +28,7 @@ CONFIG=${1:?usage: stack.sh <config.sh>   (template: stack.example.sh next to th
 [ -f "$CONFIG" ] || { echo "stack: config not found: $CONFIG" >&2; exit 1; }
 ROOT=${ROOT:-/tmp/review-council-stack-$(date +%s)}
 LOG=${LOG:-/tmp/review-council-stack.log}
-# DETACH BY DEFAULT. A run lasts hours; anything still inside the launching tool's process tree dies with it —
+# DETACH BY DEFAULT. A run lasts hours; anything still inside the launching tool's process tree dies with it -
 # a Claude Code background Bash command was killed by the harness after ~56 min and took the leg (its whole
 # process group) down mid-round. So the orchestrator re-executes itself in a NEW SESSION with HUP ignored
 # (nohup; setsid via python because macOS ships none), prints where it went, and returns. Tail $LOG to follow.
@@ -70,7 +70,7 @@ FAILED_REPOS=""       # …and the repos they belong to: those are NOT squashed 
 mkdir -p "$ROOT"
 
 say() { echo "$(date '+%m-%d %H:%M') $*" | tee -a "$LOG"; }
-note_failure() {  # <label> <repo-dir> — a failed leg must not be reported as a complete run
+note_failure() {  # <label> <repo-dir> - a failed leg must not be reported as a complete run
   FAILED_LABELS="$FAILED_LABELS $1"
   case " $FAILED_REPOS " in *" $2 "*) ;; *) FAILED_REPOS="$FAILED_REPOS $2";; esac
 }
@@ -84,7 +84,7 @@ leg_tree() {  # every pid in the leg's tree: its process group when it owns one,
   kill -0 "$1" 2>/dev/null && echo "$1"
   for c in $(pgrep -P "$1" 2>/dev/null); do leg_tree "$c"; done
 }
-cpu_of() {  # summed CPU seconds over the whole leg tree — the seat CLIs burn it, not the leg's own shell
+cpu_of() {  # summed CPU seconds over the whole leg tree - the seat CLIs burn it, not the leg's own shell
   local pids; pids=$(leg_tree "$1" | sort -un | tr '\n' ','); pids=${pids%,}
   [ -n "$pids" ] || return 0
   ps -o time= -p "$pids" 2>/dev/null |
@@ -106,39 +106,129 @@ last_activity() {  # <session-dir> → newest mtime of run.log or anything under
 
 status_of() {  # one status line, never empty: a blank or failing rev-status.sh is itself reported, its stderr kept in the orchestrator output
   local line; line=$("$REV_SCRIPTS/rev-status.sh" "$1" 2>>"${ROOT}/status.err") || line=""
-  [ -n "$line" ] && printf '%s' "$line" || printf '(status unavailable — see %s/status.err)' "$ROOT"
+  [ -n "$line" ] && printf '%s' "$line" || printf '(status unavailable - see %s/status.err)' "$ROOT"
 }
 
+state_signature() {  # stable identity for proving the current attempt refreshed state.json
+  python3 - "$1" <<'PY'
+import hashlib
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+try:
+    details = os.lstat(path)
+except FileNotFoundError:
+    print('absent')
+    raise SystemExit(0)
+if not stat.S_ISREG(details.st_mode) or stat.S_ISLNK(details.st_mode):
+    print('unsafe')
+    raise SystemExit(0)
+with open(path, 'rb') as source:
+    digest = hashlib.sha256(source.read()).hexdigest()
+print(f'{details.st_dev}:{details.st_ino}:{details.st_size}:{details.st_mtime_ns}:{details.st_ctime_ns}:{digest}')
+PY
+}
+
+completion_receipt_error() {  # <session-dir> <pre-attempt-state-signature>
+  python3 - "$1" "$2" <<'PY'
+import hashlib
+import json
+import os
+from pathlib import Path
+import stat
+import sys
+
+session = Path(sys.argv[1])
+before = sys.argv[2]
+
+def regular(path, nonempty=False):
+    try:
+        details = os.lstat(path)
+    except FileNotFoundError:
+        return None, f'{path.name} is missing'
+    if stat.S_ISLNK(details.st_mode):
+        return None, f'{path.name} is a symlink'
+    if not stat.S_ISREG(details.st_mode):
+        return None, f'{path.name} is not a regular file'
+    if nonempty and details.st_size == 0:
+        return None, f'{path.name} is empty'
+    return details, None
+
+report_details, error = regular(session / 'report.md', nonempty=True)
+if error:
+    print(error)
+    raise SystemExit(1)
+state_path = session / 'state.json'
+state_details, error = regular(state_path, nonempty=True)
+if error:
+    print(error)
+    raise SystemExit(1)
+try:
+    data = state_path.read_bytes()
+    state = json.loads(data)
+except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+    print(f'state.json is invalid: {exc}')
+    raise SystemExit(1)
+if not isinstance(state, dict) or state.get('phase') != 'done':
+    print('state.json does not record phase=done')
+    raise SystemExit(1)
+digest = hashlib.sha256(data).hexdigest()
+current = (f'{state_details.st_dev}:{state_details.st_ino}:{state_details.st_size}:'
+           f'{state_details.st_mtime_ns}:{state_details.st_ctime_ns}:{digest}')
+if current == before:
+    print('state.json was not refreshed by this attempt')
+    raise SystemExit(1)
+PY
+}
+
+ROSTER_BRIEF=""
 wait_for_auth() {
   # The roster owns sign-in detection for every lab; the stack only asks whether it will seat a panel at all.
-  # `roster.sh --brief` exits 0 whenever a panel exists — it pads a thin one with Claude seats and marks it
-  # degraded rather than refusing — and non-zero only in strict mode (config `min_labs`). That exit code is
-  # the entire gate: a degraded panel is a panel, and the leg's own report says it was degraded.
-  local i
+  # `roster.sh --brief` exits 0 whenever a panel exists - it pads a thin one with Claude seats and marks it
+  # degraded rather than refusing. Exit 5 can recover when providers return. Exit 6 is a permanent config
+  # error and must fail immediately. A degraded panel is a panel, and the leg's report says so.
+  local i rc
   for i in $(seq 1 "$AUTH_WAIT_TRIES"); do
-    "$REV_SCRIPTS/roster.sh" --brief >/dev/null && return 0
-    say "    auth not ready ($i/$AUTH_WAIT_TRIES)"; sleep "$AUTH_WAIT_SECS"
+    ROSTER_BRIEF=$("$REV_SCRIPTS/roster.sh" --brief 2>>"${ROOT}/roster.err")
+    rc=$?
+    case "$rc" in
+      0) return 0;;
+      5)
+        say "    reviewer availability not ready ($i/$AUTH_WAIT_TRIES): ${ROSTER_BRIEF:-no cause reported}"
+        [ "$i" -eq "$AUTH_WAIT_TRIES" ] || sleep "$AUTH_WAIT_SECS"
+        ;;
+      6) return 6;;
+      *) return "$rc";;
+    esac
   done
-  return 1
+  return 5
 }
 
 run_leg() {  # <repo-path> <rounds> <label> "<premise>"
   local dir="$1" rounds="$2" label="$3" extra="$4"
-  local S="$ROOT/$label" attempt=1 infra=0
+  local S="$ROOT/$label" attempt=1 infra=0 roster_rc
   case " $REPOS_SEEN " in *" $dir "*) ;; *) REPOS_SEEN="$REPOS_SEEN $dir";; esac
   # Resume keys on THIS run's session root as well as the label: a different stack sharing the default LOG must
   # never skip a leg it has not actually run (that would fall straight through to the squash + push phase).
   grep -qF "=== DONE $label pass${PASS} exit=0 root=$ROOT" "$LOG" 2>/dev/null && { say "=== SKIP $label pass${PASS} (already done in $LOG)"; return 0; }
   while [ "$attempt" -le "$MAX_ATTEMPTS" ]; do
     mkdir -p "$S"
-    wait_for_auth || { say "!!! $label: auth never came back; skipping"; note_failure "$label" "$dir"; return 1; }
+    wait_for_auth; roster_rc=$?
+    case "$roster_rc" in
+      0) ;;
+      5) say "!!! $label: reviewer availability never recovered; skipping: ${ROSTER_BRIEF:-no cause reported}"; note_failure "$label" "$dir"; return 1;;
+      6) say "!!! $label: roster configuration is invalid; skipping: ${ROSTER_BRIEF:-no cause reported}"; note_failure "$label" "$dir"; return 1;;
+      *) say "!!! $label: roster check failed (exit $roster_rc); skipping: ${ROSTER_BRIEF:-no cause reported}"; note_failure "$label" "$dir"; return 1;;
+    esac
     local resume=""
     [ -f "$S/findings.md" ] && resume="
 
 NOTE: an earlier pass of this review exists. Read $S/findings.md FIRST and do not re-raise what it fixed, rejected with sound reasoning, or deferred with a stated reason. Start from the current branch state."
     say "=== START $label pass${PASS} (attempt $attempt/$MAX_ATTEMPTS) rounds=$rounds"
     local t0; t0=$(date +%s)
-    local prompt="/review-council:rev branch $rounds — use $S as the session dir.
+    local prompt="/review-council:rev branch $rounds - use $S as the session dir.
 
 ${extra}
 
@@ -152,8 +242,20 @@ Review branch $rounds rounds; use $S as the session dir. This is a stack leg: do
 ${extra}
 
 ${VACUITY}${resume}"
-      # A previous pass's receipt cannot certify this attempt completed.
-      [ ! -f "$S/report.md" ] || mv "$S/report.md" "$S/report.previous.md"
+    fi
+    # A report certifies only the launch that created it. Archive any prior pass or
+    # failed attempt before both host paths start, then require a new report below.
+    local previous_report="$S/report.pass${PASS}.attempt${attempt}.previous.md"
+    if { [ -e "$S/report.md" ] || [ -L "$S/report.md" ]; } && ! mv "$S/report.md" "$previous_report"; then
+      say "!!! $label: could not archive the prior report; refusing to launch"
+      note_failure "$label" "$dir"
+      return 1
+    fi
+    local state_before; state_before=$(state_signature "$S/state.json")
+    if [ "$state_before" = unsafe ]; then
+      say "!!! $label: unsafe state.json; refusing to launch"
+      note_failure "$label" "$dir"
+      return 1
     fi
     set -m   # give the leg its own process group, so the CPU veto and the kill can address the whole tree
     (
@@ -186,30 +288,34 @@ ${VACUITY}${resume}"
         # The sample is a blind window: the leg can finish or come back to life inside it. Re-check
         # BOTH before killing, or a leg that completed normally is recorded as stalled and retried.
         if ! kill -0 "$pid" 2>/dev/null; then
-          say "    $label finished during the ${CPU_SAMPLE_SECS}s cpu sample — not killing"; break
+          say "    $label finished during the ${CPU_SAMPLE_SECS}s cpu sample - not killing"; break
         fi
         m=$(last_activity "$S")
         [ "$m" -gt "$last_seen" ] && last_seen=$m
         idle2=$(( $(date +%s) - last_seen ))
         if [ "$idle2" -lt "$STALL_SECS" ]; then
-          say "    $label spoke during the cpu sample (idle ${idle2}s) — not killing"; continue
+          say "    $label spoke during the cpu sample (idle ${idle2}s) - not killing"; continue
         fi
         if [ -n "$c2" ] && [ "$c1" != "$c2" ]; then
-          say "    $label quiet ${idle}s but cpu $c1 -> $c2 — working, not killing"; last_seen=$(date +%s); continue
+          say "    $label quiet ${idle}s but cpu $c1 -> $c2 - working, not killing"; last_seen=$(date +%s); continue
         fi
-        say "!!! $label STALLED (${idle2}s idle, cpu frozen at ${c1:-n/a}) — killing"; stalled=1
+        say "!!! $label STALLED (${idle2}s idle, cpu frozen at ${c1:-n/a}) - killing"; stalled=1
         kill_leg "$pid"; break
       fi
     done
     wait "$pid" 2>/dev/null; local rc=$? dur=$(( $(date +%s) - t0 ))
-    if [ "$rc" -eq 0 ] && [ "$stalled" = 0 ] && [ ! -f "$S/report.md" ]; then
-      # A headless leg that ends its turn waiting on a background task exits 0 with the loop unfinished (seen live:
-      # round 4 fixes uncommitted, no report). report.md is the leg's completion receipt; without it, retry with resume.
-      say "!!! $label exited 0 after ${dur}s but wrote no report.md — incomplete; retrying with resume"; rc=75
+    local receipt_error=""
+    if [ "$rc" -eq 0 ] && [ "$stalled" = 0 ]; then
+      receipt_error=$(completion_receipt_error "$S" "$state_before")
+      if [ "$?" -ne 0 ]; then
+        # A headless leg can exit 0 while its loop is unfinished. The report and
+        # terminal state together are the attempt-local completion receipt.
+        say "!!! $label exited 0 after ${dur}s with invalid completion receipt (${receipt_error}); retrying with resume"; rc=75
+      fi
     fi
     if [ "$rc" -eq 0 ] && [ "$stalled" = 0 ]; then say "=== DONE $label pass${PASS} exit=0 root=$ROOT (${dur}s)"; return 0; fi
     if [ "$stalled" = 0 ] && [ "$dur" -lt "$FAST_FAIL_SECS" ] && [ "$infra" -lt "$MAX_INFRA_RETRIES" ]; then
-      infra=$(( infra + 1 )); say "    $label failed in ${dur}s — infrastructure; sleeping ${INFRA_SLEEP_SECS}s"; sleep "$INFRA_SLEEP_SECS"; continue
+      infra=$(( infra + 1 )); say "    $label failed in ${dur}s - infrastructure; sleeping ${INFRA_SLEEP_SECS}s"; sleep "$INFRA_SLEEP_SECS"; continue
     fi
     say "=== $label ended rc=$rc after ${dur}s (attempt $attempt)"; attempt=$(( attempt + 1 ))
   done
@@ -220,7 +326,7 @@ finish_repos() {
   local d srq
   for d in $REPOS_SEEN; do
     case " $FAILED_REPOS " in *" $d "*)
-      say "--- skipping $(basename "$d") — a leg on it failed; its review is not complete"; continue;; esac
+      say "--- skipping $(basename "$d") - a leg on it failed; its review is not complete"; continue;; esac
     say "--- finishing $(basename "$d")"
     set -o pipefail
     ( cd "$d" && if [ "$NO_SQUASH" = 1 ]; then echo "(NO_SQUASH=1: keeping review commits)"; else "$REV_SCRIPTS/rev-squash.sh" --apply; fi ) 2>&1 | sed 's/^/    /' | tee -a "$LOG"
@@ -228,7 +334,7 @@ finish_repos() {
     set +o pipefail
     # A refused squash is not a reason to withhold the push: the round commits are real work and CI
     # must see them. Squash and push are therefore independent steps, not one && chain.
-    [ "$srq" -eq 0 ] || say "!!! squash refused for $(basename "$d") — pushing the un-collapsed review commits"
+    [ "$srq" -eq 0 ] || say "!!! squash refused for $(basename "$d") - pushing the un-collapsed review commits"
     ( cd "$d" && if [ "$NO_PUSH" = 1 ]; then echo "(NO_PUSH=1: not pushing)"; else git push; fi ) 2>&1 | sed 's/^/    /' | tee -a "$LOG"
   done
 }
@@ -237,10 +343,10 @@ finish_repos() {
 set +u; . "$CONFIG"; set -u   # a user's stack config stays forgiving; this script does not
 type legs >/dev/null 2>&1 || { echo "stack: $CONFIG must define legs() containing run_leg calls in dependency order" >&2; exit 1; }
 say "########## review-council stack: session root $ROOT, log $LOG ##########"
-for PASS in $(seq 1 "$PASSES"); do export PASS; say "########## PHASE 1 — PER-PR, PASS ${PASS}/${PASSES} ##########"; legs; done
+for PASS in $(seq 1 "$PASSES"); do export PASS; say "########## PHASE 1 - PER-PR, PASS ${PASS}/${PASSES} ##########"; legs; done
 say "ALL PHASE 1 COMPLETE"
-if [ -n "$SEAM_REPO" ]; then PASS=seam; say "########## PHASE 2 — CROSS-REPO SEAMS ##########"; run_leg "$SEAM_REPO" 2 seams "$SEAM_PREMISE"; else say "PHASE 2 skipped (SEAM_REPO unset)"; fi
-if [ -n "$CRITIC_REPO" ]; then PASS=critic; say "########## PHASE 3 — COMPLETENESS CRITIC ##########"; run_leg "$CRITIC_REPO" 1 critic "$CRITIC_PREMISE"; else say "PHASE 3 skipped (CRITIC_REPO unset)"; fi
-say "########## FINISH — squash + push per repo ##########"; finish_repos
+if [ -n "$SEAM_REPO" ]; then PASS=seam; say "########## PHASE 2 - CROSS-REPO SEAMS ##########"; run_leg "$SEAM_REPO" 2 seams "$SEAM_PREMISE"; else say "PHASE 2 skipped (SEAM_REPO unset)"; fi
+if [ -n "$CRITIC_REPO" ]; then PASS=critic; say "########## PHASE 3 - COMPLETENESS CRITIC ##########"; run_leg "$CRITIC_REPO" 1 critic "$CRITIC_PREMISE"; else say "PHASE 3 skipped (CRITIC_REPO unset)"; fi
+say "########## FINISH - squash + push per repo ##########"; finish_repos
 if [ -n "$FAILED_LABELS" ]; then say "COMPLETE WITH FAILURES:$FAILED_LABELS"; exit 1; fi
 say "ALL PHASES COMPLETE"

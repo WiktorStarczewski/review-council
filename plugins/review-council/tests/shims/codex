@@ -1,9 +1,12 @@
 #!/bin/bash
 # Fake codex CLI for rev unit tests. Never call the network.
 # Records ENV and CWD next to argv (like the claude shim): a seat must carry REV_ACTIVE=1 (the recursion
-# guard) and must run against the repo root — neither is visible in the arguments alone.
+# guard) and must run against the repo root - neither is visible in the arguments alone.
 [ -n "${SHIM_ARGS_FILE:-}" ] && printf '%s\n' "$@" > "$SHIM_ARGS_FILE"
-[ -n "${SHIM_ARGS_FILE:-}" ] && printf 'REV_ACTIVE=%s\ncwd=%s\n' "${REV_ACTIVE:-unset}" "$PWD" >> "$SHIM_ARGS_FILE.env"
+[ -z "${SHIM_CALLS_FILE:-}" ] || printf '%s\n' call >> "$SHIM_CALLS_FILE"
+[ -n "${SHIM_ARGS_FILE:-}" ] && printf 'REV_ACTIVE=%s\ncwd=%s\nHOME=%s\nCODEX_HOME=%s\nCODEX_AUTH_LINK=%s\n' \
+  "${REV_ACTIVE:-unset}" "$PWD" "$HOME" "${CODEX_HOME:-unset}" \
+  "$([ -L "${CODEX_HOME:-/missing}/auth.json" ] && echo yes || echo no)" >> "$SHIM_ARGS_FILE.env"
 if [ "${1:-}" = login ] && [ "${2:-}" = status ]; then
   [ "${SHIM_MODE:-ok}" = notauth ] && { echo "Not logged in"; exit 1; }
   echo "Logged in using ChatGPT"; exit 0
@@ -16,6 +19,8 @@ case "${SHIM_MODE:-ok}" in
   ratelimit)  echo '{"type":"error","message":"You have hit your usage limit (429)"}'; exit 1;;
   empty)      echo '{"type":"turn.completed"}'; exit 0;;
   badjson)    echo '{"type":"turn.completed"}'; echo 'not json' > "$OUT"; exit 0;;
+  notools)    echo '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"done"}}'; cp "$SHIM_FIXTURE_DIR/findings-valid.json" "$OUT"; exit 0;;
+  unbounded)  echo '{"type":"item.started","item":{"id":"bad","type":"command_execution","command":"cat src/x.ts"}}'; echo '{"type":"item.completed","item":{"id":"bad","type":"command_execution","command":"cat src/x.ts","aggregated_output":"source\n","exit_code":0}}'; cp "$SHIM_FIXTURE_DIR/findings-valid.json" "$OUT"; exit 0;;
   native)     cat "$SHIM_FIXTURE_DIR/codex-stream.ndjson"; cp "$SHIM_FIXTURE_DIR/codex-review-native.txt" "$OUT"; exit 0;;
   native_bad) cat "$SHIM_FIXTURE_DIR/codex-stream.ndjson"; cp "$SHIM_FIXTURE_DIR/codex-review-native-bad.txt" "$OUT"; exit 0;;
   # a failing run whose MODEL OUTPUT merely quotes a 401 (agent_message → `text:` in the log): must NOT read as auth

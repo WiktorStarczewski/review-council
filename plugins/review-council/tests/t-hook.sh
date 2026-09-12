@@ -1,7 +1,7 @@
-# tests for Task 6 — sourced by run-tests.sh
+# tests for Task 6 - sourced by run-tests.sh
 # session-start is self-locating (HERE=$(dirname "$0")), so most cases below build an isolated
 # probe plugin root (a fixture POLICY.md + a controlled roster.sh stub) and run the REAL
-# hooks/session-start script copied into it — this exercises the hook's own contract (policy
+# hooks/session-start script copied into it - this exercises the hook's own contract (policy
 # read, roster dispatch, timeout, fallback wording, JSON shape) without depending on Task 2's
 # roster.sh or Task 5's POLICY.md, which are owned by other in-flight tasks and may not exist
 # yet in this checkout. Two further cases run the unmodified script straight from the real
@@ -9,7 +9,7 @@
 # wording; they assert only what's true regardless of whether those dependencies have landed.
 HOOK_SRC="$SK/hooks/session-start"
 
-mk_hook_root() {  # mk_hook_root <dir> — copies the real session-start into an isolated probe root
+mk_hook_root() {  # mk_hook_root <dir> - copies the real session-start into an isolated probe root
   mkdir -p "$1/hooks" "$1/skills/rev" "$1/scripts"
   cp "$HOOK_SRC" "$1/hooks/session-start"
   chmod +x "$1/hooks/session-start"
@@ -71,12 +71,12 @@ test_hook_roster_not_executable() {
   )
 }
 
-test_hook_roster_nonzero_still_passed_through() {  # exit 5 (<3 seats) is real content, not a hook failure
+test_hook_roster_nonzero_still_passed_through() {  # strict roster output is real content, not a hook failure
   ( local R="$T/hook-exit5"; mk_hook_root "$R"
     printf 'p\n' > "$R/skills/rev/POLICY.md"
     cat > "$R/scripts/roster.sh" <<'SH'
 #!/bin/bash
-echo "review-council seats: codex ✗ not installed · grok ✗ not installed · claude ✓ (opus@max)"
+echo "review-council seats: codex x unavailable | STRICT availability: configured Codex seat did not survive probe"
 exit 5
 SH
     chmod +x "$R/scripts/roster.sh"
@@ -84,8 +84,24 @@ SH
     assert_eq "hook still exits 0 when roster.sh exits 5" "$rc" 0
     ctx=$(hook_ctx "$T/out.json") || { fail "valid JSON (roster exit 5)" ""; return; }
     printf '%s' "$ctx" > "$T/ctx.txt"
-    assert_grep "roster's own line passed through verbatim, not 'unavailable'" "$T/ctx.txt" '^review-council seats: codex ✗ not installed'
+    assert_grep "retryable cause passes through verbatim" "$T/ctx.txt" \
+      '^review-council seats: codex x unavailable \| STRICT availability: configured Codex seat did not survive probe$'
     assert_nogrep "not misreported as unavailable" "$T/ctx.txt" 'roster unavailable'
+  )
+  ( local R="$T/hook-exit6"; mk_hook_root "$R"
+    printf 'p\n' > "$R/skills/rev/POLICY.md"
+    cat > "$R/scripts/roster.sh" <<'SH'
+#!/bin/bash
+echo "review-council seats: codex x invalid | STRICT config: codex_models must be a list"
+exit 6
+SH
+    chmod +x "$R/scripts/roster.sh"
+    "$R/hooks/session-start" > "$T/out.json" 2>/dev/null; local rc=$?
+    assert_eq "hook still exits 0 when roster.sh exits 6" "$rc" 0
+    ctx=$(hook_ctx "$T/out.json") || { fail "valid JSON (roster exit 6)" ""; return; }
+    printf '%s' "$ctx" > "$T/ctx.txt"
+    assert_grep "permanent cause passes through verbatim" "$T/ctx.txt" \
+      '^review-council seats: codex x invalid \| STRICT config: codex_models must be a list$'
   )
 }
 
@@ -205,10 +221,10 @@ test_hook_real_root_no_shims() {
     ctx=$(hook_ctx "$T/out.json") || { fail "real plugin root, no CLIs on PATH: valid JSON" ""; return; }
     printf '%s' "$ctx" > "$T/ctx.txt"
     assert_grep "real plugin root, no CLIs on PATH: reports not installed" "$T/ctx.txt" 'not installed'
-    # Task 11: with only the agent seat detected the panel is padded, and the banner has to say so —
+    # Task 11: with only the agent seat detected the panel is padded, and the banner has to say so -
     # this is the line a Claude-Code-only machine sees at every session start.
     assert_grep "real plugin root, no CLIs on PATH: the banner is marked DEGRADED" "$T/ctx.txt" \
-      'DEGRADED: only Claude is available — 3 Claude seats, no cross-lab decorrelation$'
+      'DEGRADED: only Claude is available - 3 Claude seats, no cross-lab decorrelation$'
     assert_grep "…and still names the claude seat as present" "$T/ctx.txt" 'claude ✓ \(opus@max\)'
   )
 }

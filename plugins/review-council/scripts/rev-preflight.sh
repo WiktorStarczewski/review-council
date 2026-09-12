@@ -9,10 +9,10 @@
 # + roster.json in <session-dir>.
 # scope.env values are SINGLE-QUOTED (with '\'' escaping) so `. scope.env` can never expand or execute a branch
 # name or a path: a branch called `x$(touch pwned)` is data, not a command.
-# The seats come from roster.sh, which owns detection, sign-in and the one-token probe — preflight never
+# The seats come from roster.sh, which owns detection, sign-in and the one-token probe - preflight never
 # calls a lab CLI itself. A thin roster is NOT a refusal: roster.sh pads the panel to three with Claude
-# seats and flags it `degraded`, and preflight relays that as a WARNING line under the roster line. The
-# only seat-shaped refusal left is strict mode (config `min_labs`), which roster.sh reports as exit 5.
+# seats and flags it `degraded`, and preflight relays that as a WARNING line under the roster line.
+# Strict availability failures use exit 5. Permanent exact-setting conflicts use exit 6.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 SCOPE=branch; WRITE=""; BASEREF=${REV_BASE_REF:-}
@@ -26,7 +26,7 @@ while [ $# -gt 0 ]; do
 done
 die() { echo "preflight: $*" >&2; exit 1; }
 q() { local s=$1; s=${s//\'/\'\\\'\'}; printf "'%s'" "$s"; }   # shell-quote one value for scope.env
-[ -z "${REV_ACTIVE:-}" ] || die "REV_ACTIVE is set — a review is already running here; refusing to nest"
+[ -z "${REV_ACTIVE:-}" ] || die "REV_ACTIVE is set - a review is already running here; refusing to nest"
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "not inside a git repository"
 # --write is relative to the CALLER's cwd: resolve it before the cd to the repo root, or `--write sess`
 # from a subdirectory would silently land at <repo-root>/sess.
@@ -64,12 +64,12 @@ else
   [ -n "$BASE_BRANCH" ] || { BASE_BRANCH=$DEFAULT; BASE_HOW="default"; }
   BASE_TARGET=$(ref_for "$BASE_BRANCH") || die "cannot resolve base branch $BASE_BRANCH"
 fi
-case "$BRANCH" in main|master|"$DEFAULT"|"$BASE_BRANCH") die "HEAD is on shared branch '$BRANCH' — cut a working branch first";; esac
+case "$BRANCH" in main|master|"$DEFAULT"|"$BASE_BRANCH") die "HEAD is on shared branch '$BRANCH' - cut a working branch first";; esac
 # Pathspec as an array so a scope path containing spaces survives; ${P[@]+…} keeps bash 3.2 + set -u happy on an empty array.
 PS=()
 if [ "$SCOPE" = uncommitted ]; then
   BASE=$(git rev-parse HEAD)
-  [ -n "$(git status --porcelain)" ] || die "scope is empty — no uncommitted changes"
+  [ -n "$(git status --porcelain)" ] || die "scope is empty - no uncommitted changes"
 else
   BASE=$(git merge-base HEAD "$BASE_TARGET" 2>/dev/null) || die "cannot find the merge-base with $BASE_TARGET"
   if [ "$SCOPE" != branch ]; then
@@ -78,7 +78,7 @@ else
       || die "path '$SCOPE' does not exist in the worktree or at $BASE"
     PS=(-- "$SCOPE")
   fi
-  [ -n "$(git diff --stat "$BASE" ${PS[@]+"${PS[@]}"})$(git status --porcelain ${PS[@]+"${PS[@]}"})" ] || die "scope is empty — nothing differs from $BASE${PS[0]+ under $SCOPE}"
+  [ -n "$(git diff --stat "$BASE" ${PS[@]+"${PS[@]}"})$(git status --porcelain ${PS[@]+"${PS[@]}"})" ] || die "scope is empty - nothing differs from $BASE${PS[0]+ under $SCOPE}"
 fi
 # --- seats -------------------------------------------------------------------------------------------
 # The roster is built AFTER the git checks: a run that is going to be refused for scope reasons must not
@@ -89,33 +89,41 @@ if [ -n "$WRITE" ]; then
   mkdir -p "$WRITE" || die "cannot create session dir $WRITE"
   RJSON="$WRITE/roster.json"
 else
-  RJSON=$(mktemp "${TMPDIR:-/tmp}/rev-roster.XXXXXX") || die "cannot create a temporary file for the roster"
-  trap 'rm -f "$RJSON"' EXIT
+  SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/rev-preflight.XXXXXX") \
+    || die "cannot create a temporary directory for the roster"
+  RJSON="$SCRATCH/roster.json"
+  trap 'rm -rf -- "$SCRATCH"' EXIT
 fi
 BRIEF=$("$HERE/roster.sh" --probe --brief --write "$RJSON"); RC=$?
-if [ "$RC" = 5 ]; then
-  # Exit 5 is strict mode (config min_labs): a thin panel is padded and run, never refused. roster.sh
-  # still emits JSON when it refuses, so lead with the strict reason it recorded and then name every
-  # exclusion, which is what tells the user which lab to install or sign in to.
-  NR=$(ROSTER_JSON="$RJSON" python3 - <<'PY'
+if [ "$RC" = 5 ] || [ "$RC" = 6 ]; then
+  # Only the roster may assign a strict status. Preserve it after validating that the written
+  # object carries the matching class and a concrete one-line cause.
+  if [ "$RC" = 6 ]; then CLASS=config; KIND=permanent; else CLASS=availability; KIND=retryable; fi
+  REASON=$(ROSTER_JSON="$RJSON" EXPECTED_CLASS="$CLASS" python3 - <<'PY'
 import json, os
 try:
     with open(os.environ['ROSTER_JSON']) as f:
         d = json.load(f)
     if not isinstance(d, dict):
         raise ValueError('not an object')
-    ex = [e for e in (d.get('excluded') or []) if isinstance(e, dict)]
-    strict = next((str(e.get('reason')) for e in ex if str(e.get('reason', '')).startswith('strict: ')), '')
-    reasons = '; '.join(f"{e.get('cli', '?')}: {e.get('reason', '?')}" for e in ex) or 'no reason recorded'
-    print(f"{strict}|{reasons}")
+    if not isinstance(d.get('seats'), list) or not isinstance(d.get('excluded'), list):
+        raise ValueError('invalid roster shape')
+    reason = d.get('strict_reason')
+    if d.get('strict_class') != os.environ['EXPECTED_CLASS']:
+        raise ValueError('class mismatch')
+    if not isinstance(reason, str) or not reason.strip() or '\n' in reason or '\r' in reason:
+        raise ValueError('invalid reason')
+    print(reason)
 except Exception:
-    print("|roster JSON unreadable")
+    raise SystemExit(2)
 PY
-)
-  STRICT=${NR%%|*}
-  die "${STRICT:-roster refused (exit 5)} — ${NR#*|}"
+  ); META_RC=$?
+  [ "$META_RC" = 0 ] || die "roster.sh returned exit $RC without valid matching strict metadata"
+  [ -z "$BRIEF" ] || printf '%s\n' "$BRIEF" >&2
+  printf 'preflight: strict %s (%s): %s\n' "$CLASS" "$KIND" "$REASON" >&2
+  exit "$RC"
 fi
-[ "$RC" = 0 ] || die "roster.sh failed (exit $RC) — run $HERE/roster.sh --json to see why"
+[ "$RC" = 0 ] || die "roster.sh failed (exit $RC) - run $HERE/roster.sh --json to see why"
 # -z + tr, never field-splitting: git quotes paths containing spaces in porcelain/diff output otherwise.
 UNTRACKED=$(git ls-files -z --others --exclude-standard ${PS[@]+"${PS[@]}"} | tr '\0' '\n' | grep .)
 FILES=$( { git diff --name-only -z "$BASE" ${PS[@]+"${PS[@]}"} | tr '\0' '\n'
@@ -136,7 +144,7 @@ except Exception:
     pass
 PY
 )
-[ -z "$WARN" ] || printf 'preflight: WARNING — %s\n' "$WARN"
+[ -z "$WARN" ] || printf 'preflight: WARNING - %s\n' "$WARN"
 if [ -n "$WRITE" ]; then
   { printf 'REV_BASE=%s\n'    "$(q "$BASE")"
     printf 'REV_BRANCH=%s\n'  "$(q "$BRANCH")"

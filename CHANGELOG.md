@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1
+
+- Replace the fixed eight-round default with adaptive discovery, plan, and verification panels. A normal four-seat review plans 12 launches: four simplicity, four conditional plan, and four final verification launches. A large or high-risk review plans 16 by adding four risk-discovery launches. Explicit numeric rounds keep each host's legacy schedule and convergence rules.
+- Compact reviewer prompts, remove repeated schemas and cumulative ledgers, inline immutable plans, warn on oversized context, and bound evidence collection. Gemini now receives the rendered prompt unchanged.
+- Add `rev-profile.py` for completed, metered, and unmetered call counts, prompt size, provider usage, cost, and finding yield. Current sessions require schema-valid results with successful exit receipts; a valid versioned roster policy preserves exact hashed receiptless results from older sessions, while present invalid receipt metadata fails closed. Usage-bearing failed attempts remain metered. Retry streams are archived before each adapter attempt so usage is not overwritten.
+- Add hashed review snapshots, dependency-component routing, finding ownership, immutable coverage receipts, later-round semantic deltas, single-seat routing for mechanical files, and deterministic navigation. Every seat proves bounded coverage of its assigned patch. Large safe patches use ordered hash-bound chunks only when they save at least 10% of proof reads; exact reconstruction, provider-visible bytes, and read order are audited. Literal source packets carry exact declarations, callers, tests, and gates; oversized bodies require tree-bound, byte-verified integration reads. Every evidence error restores full scope. The profiler separates projected words, provider usage, cache metrics, and patch proof activity.
+- Narrow adaptive plan panels with an immutable all-cluster site and local-import closure for every specialist while retaining the full cumulative patch on the plan-completeness seat. Every seat sees the complete plan, runs each cluster's bounded repository-root sibling search, and proves its named source ranges. Search proof binds one `rg` or recursive `grep` engine and pattern rooted at literal `.`, requires 1-79 NUL-delimited, line-numbered path results that include each named site, and rejects engine substitutions, traversal filters, redirects, filename suppression, and producer errors. A non-persisting validator rejects stale or incomplete attempts without advancing code coverage; any failure reruns the whole plan panel at fresh full scope.
+- Honor exact `codex_models`, `claude_seats`, and `min_labs` settings before probes and launches, require explicitly counted Claude seats to remain Opus, ignore stale pins on inactive extras, refuse incomplete explicit counts before padding, propagate retryable versus permanent status with one canonical reason, and cache repeated adapter-model probes. Invalid or configuration-impossible lab floors exit 6 before probes; satisfiable availability shortfalls remain retryable exit 5.
+
 ## 0.4.0
 
 - Add a Codex plugin with native review and stack skills, a GitHub marketplace and curl installer, a guarded Claude CLI reviewer, provider-aware fallback panels, and Codex stack legs. Both plugins share the existing engine with separate skill and hook discovery. Detect integer-major Codex model names and respect `CODEX_HOME` for the model cache.
@@ -16,7 +25,7 @@
 
 - Round 1 is simplicity for the whole panel: three seats run the `simplicity` lens and one runs the new `clean-room` lens, which writes the smallest design for the named consumer before reading the diff and reports where the change exceeds it. Correctness lenses move to round 2; the minimum is eight rounds; the extra seats join in rounds 3 and 4. Measured on held-out PRs, one seat with the lens found about half of what four found together.
 - Every prompt carries the author's PR description (`rev-prompt.sh --pr`, saved to `$S/pr.md` at setup), because proportionality is judged against the consumer the author names.
-- `eval/`: the blind held-out benchmark — isolated single-lineage checkouts, all seats including a headless Claude seat, a ground-truth builder and a scorer that prints only a summary line — with lens and PR-description options.
+- `eval/`: the blind held-out benchmark - isolated single-lineage checkouts, all seats including a headless Claude seat, a ground-truth builder and a scorer that prints only a summary line - with lens and PR-description options.
 
 ## 0.2.2
 
@@ -29,14 +38,14 @@
 
 ## 0.2.0
 
-- The fix-plan gate: triage now clusters accepted findings by root cause, and after round 1 (and any later round that accepts a P0/P1 or opens a new cluster) the orchestrator writes `fix-plan.md` — one rule per cluster with every site, branch, realm and doc copy enumerated by search, what it must not break, and the test that fails without it — and the same seats review the plan before any code is written. Fixes then land one cluster per commit with every listed site in it.
+- The fix-plan gate: triage now clusters accepted findings by root cause, and after round 1 (and any later round that accepts a P0/P1 or opens a new cluster) the orchestrator writes `fix-plan.md` - one rule per cluster with every site, branch, realm and doc copy enumerated by search, what it must not break, and the test that fails without it - and the same seats review the plan before any code is written. Fixes then land one cluster per commit with every listed site in it.
 - `rev-prompt.sh --plan <file>` renders the plan-review prompt; four plan lenses (`plan-completeness`, `plan-soundness`, `plan-simplicity`, `plan-tests`) are dealt like any round's. Every seat's `suggested_fix` must now state the general rule and its sibling sites, not a patch for the cited line.
-- A `simplicity` lens leads round 1: a checklist for shrinking the change by reuse — workarounds whose stated reason no longer holds on the pinned dependency, parameters every caller passes identically, forwarding-only wrappers, single-value test axes — accepted at triage only with the existing symbol named at a location and version; scope cuts are deferred to the author.
+- A `simplicity` lens leads round 1: a checklist for shrinking the change by reuse - workarounds whose stated reason no longer holds on the pinned dependency, parameters every caller passes identically, forwarding-only wrappers, single-value test axes - accepted at triage only with the existing symbol named at a location and version; scope cuts are deferred to the author.
 - Why: measured over 11 past runs, 56% of findings were fixes of an earlier round's fix (68% from round 5 on), 55% of them incomplete fixes. `docs/churn-analysis-2026-09-06.md` has the numbers and method.
 
 ## 0.1.3
 
-- Stack: a blank or failing status script is reported on the status line (`(status unavailable — see status.err)`) and its stderr is kept, instead of an empty field; `idle` can no longer print negative when a file mtime runs a second ahead of the clock.
+- Stack: a blank or failing status script is reported on the status line (`(status unavailable - see status.err)`) and its stderr is kept, instead of an empty field; `idle` can no longer print negative when a file mtime runs a second ahead of the clock.
 
 ## 0.1.2
 

@@ -1,16 +1,18 @@
-# tests for Task 7 — sourced by run-tests.sh
+# tests for Task 7 - sourced by run-tests.sh
 # Static checks on the rev-reviewer agent file. They lock in the ONE frontmatter
 # shape this build's agent loader actually resolves the way the file's prose says
 # (traced in the shipped claude binary, see the Task 7 report, fix round 3):
-#   * `tools:` entries resolve by BARE tool name — rule content is kept only for
+#   * `tools:` entries resolve by BARE tool name - rule content is kept only for
 #     Agent(...), so `Bash(git diff:*)` grants the whole unscoped Bash tool.
 #   * every `disallowedTools` entry registers its BARE name in the deny set, and
 #     denies are applied to the pool BEFORE the allowlist is matched, so
 #     `Bash(git commit:*)` removes Bash entirely and the seat spawns shell-less
 #     and silent (the zero-tool guard only fires when NOTHING resolves).
-# Hence: bare `Bash` in tools:, bare write tools in disallowedTools, and no
-# `Bash(...)` rule anywhere in the frontmatter. Nothing here can prove harness
-# semantics at runtime — that is the live smoke the brief's Step 2 defers.
+#   * plugin subagents ignore agent-file hook frontmatter, so advertising the
+#     shell guard there would claim an enforcement boundary that does not run.
+# Hence: bare `Bash` in tools:, bare write tools in disallowedTools, no
+# `Bash(...)` rule, and no ignored `hooks:` block. Nothing here can prove harness
+# semantics at runtime - that is the live smoke the brief's Step 2 defers.
 test_rev_reviewer() {
   local A="$SK/agents/rev-reviewer.md"
   if [ ! -f "$A" ]; then fail "agent file exists" "$A missing"; return; fi
@@ -26,14 +28,14 @@ m = re.match(r'^---\n(.*?)\n---\n', open(sys.argv[1]).read(), re.S)
 print(",".join(l.split(":", 1)[0] for l in m.group(1).split("\n") if l and not l[0].isspace()) if m else "NO-FRONTMATTER")
 PY
   assert_eq "frontmatter keys, in spec order, nothing extra" "$(cat "$T/rr-keys")" \
-    "name,description,model,effort,tools,disallowedTools,maxTurns,hooks"
-  assert_grep "PreToolUse guard hook on Bash" "$A" 'readonly-bash-guard.py'
-  assert_grep "hook matcher is Bash" "$A" '^    - matcher: Bash$'
+    "name,description,model,effort,tools,disallowedTools,maxTurns"
+  assert_nogrep "agent does not advertise ignored hook frontmatter" "$A" '^hooks:'
+  assert_eq "the CLI guard remains executable" "$([ -x "$SK/scripts/lib/readonly-bash-guard.py" ] && echo yes)" "yes"
 
   grep '^tools:' "$A" > "$T/rr-tools.line"
   grep '^disallowedTools:' "$A" > "$T/rr-deny.line"
 
-  # the grant: spec-verbatim, and Bash must really be in it — rev-prompt.sh tells
+  # the grant: spec-verbatim, and Bash must really be in it - rev-prompt.sh tells
   # the seat to produce the diff itself with `git diff`, so a Bash-less seat is broken
   assert_grep "tools: is the spec line" "$T/rr-tools.line" '^tools: Read, Grep, Glob, Bash, LSP$'
   assert_grep "Bash granted (seat runs git diff)" "$T/rr-tools.line" '(: |, )Bash(,|$)'
@@ -42,7 +44,7 @@ PY
   assert_grep "Glob granted" "$T/rr-tools.line" '(: |, )Glob(,|$)'
   assert_grep "LSP granted" "$T/rr-tools.line" '(: |, )LSP(,|$)'
 
-  # the fence: bare write tools only. A Bash(...) rule on either line is a bug —
+  # the fence: bare write tools only. A Bash(...) rule on either line is a bug -
   # in tools: it silently grants unscoped Bash, in disallowedTools: it silently
   # takes Bash away entirely.
   assert_grep "disallowedTools is the spec line" "$T/rr-deny.line" '^disallowedTools: Write, Edit, NotebookEdit$'

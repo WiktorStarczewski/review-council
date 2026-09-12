@@ -53,6 +53,7 @@ test_preflight_roster() {
     assert_grep "roster line second" "$T/pfr.out" '^review-council seats: codex ✓ \(gpt-5\.6-sol@max, gpt-5\.6-terra@max\) · grok ✓ \(grok-4\.6@xhigh\)'
     assert_grep "an absent lab is reported, not fatal" "$T/pfr.out" 'gemini ✗ not installed'
     assert_grep "roster.json holds the probed seats" "$T/pfr-sess/roster.json" '"seat": "codex-sol"'
+    assert_grep "real roster marks current receipt policy" "$T/pfr-sess/roster.json" '"result_receipts"'
     assert_nogrep "an excluded lab is never seated" "$T/pfr-sess/roster.json" '"seat": "gemini"'
     assert_exit "scope.env is written beside it" 0 test -f "$T/pfr-sess/scope.env"
     # codex gone → grok + opus only: the panel is padded to three and the run is warned about, not refused
@@ -61,19 +62,48 @@ test_preflight_roster() {
     assert_eq "real roster: a two-lab machine still runs" "$?" 0
     assert_grep "base line printed" "$T/pfr.out" '^base=[0-9a-f]{7,} base_branch=main \(nearest fork point\) branch=feat '
     assert_grep "the roster line carries DEGRADED" "$T/pfr.out" \
-      'DEGRADED: only xai, anthropic available — padded with 1 Claude seat$'
+      'DEGRADED: only xai, anthropic available - padded with 1 Claude seat$'
     assert_grep "…and preflight adds its own warning line" "$T/pfr.out" \
-      '^preflight: WARNING — only xai, anthropic available — padded with 1 Claude seat$'
+      '^preflight: WARNING - only xai, anthropic available - padded with 1 Claude seat$'
     assert_grep "the padded seat is in roster.json" "$T/pfr-sess2/roster.json" '"seat": "claude-1"'
     assert_grep "…marked as padded" "$T/pfr-sess2/roster.json" '"padded": true'
     assert_exit "scope.env is written for a degraded run" 0 test -f "$T/pfr-sess2/scope.env"
     assert_nogrep "nothing on stderr" "$T/pfr.err" '.'
+    # An explicit roster contract refuses if a configured seat is absent, even when padding can build a panel.
+    printf '%s' '{"codex_models":["gpt-5.6-sol"],"claude_seats":1}' > "$HOME/exact.json"
+    REVIEW_COUNCIL_CONFIG="$HOME/exact.json" "$SCRIPTS/rev-preflight.sh" --write "$T/pfr-exact" \
+      > "$T/pfr.out" 2> "$T/pfr.err"
+    assert_eq "real roster: a missing exact Codex seat preserves exit 5" "$?" 5
+    assert_grep "real retryable refusal includes provider evidence" "$T/pfr.err" '^review-council seats:'
+    assert_grep "the exact strict reason is relayed" "$T/pfr.err" \
+      '^preflight: strict availability \(retryable\): codex_models requires 1 matching seat\(s\), 0 survived$'
+    assert_eq "real retryable canonical diagnostic is final" \
+      "$(awk 'NF { line=$0 } END { print line }' "$T/pfr.err")" \
+      'preflight: strict availability (retryable): codex_models requires 1 matching seat(s), 0 survived'
+    assert_nogrep "no base line for a refused exact roster" "$T/pfr.out" '^base='
+    assert_exit "no scope.env from an exact refusal" 1 test -f "$T/pfr-exact/scope.env"
+    printf '%s' '{"codex_models":"gpt-5.6-sol"}' > "$HOME/invalid.json"
+    REVIEW_COUNCIL_CONFIG="$HOME/invalid.json" "$SCRIPTS/rev-preflight.sh" --write "$T/pfr-invalid" \
+      > "$T/pfr.out" 2> "$T/pfr.err"
+    assert_eq "real roster: malformed exact config preserves exit 6" "$?" 6
+    assert_grep "real permanent refusal includes provider evidence" "$T/pfr.err" '^review-council seats:'
+    assert_grep "the permanent config reason is relayed" "$T/pfr.err" \
+      '^preflight: strict config \(permanent\): invalid codex_models:'
+    assert_eq "real permanent canonical diagnostic is final" \
+      "$(awk 'NF { line=$0 } END { print line }' "$T/pfr.err")" \
+      "$(grep '^preflight: strict config (permanent):' "$T/pfr.err")"
+    assert_exit "no scope.env from a config refusal" 1 test -f "$T/pfr-invalid/scope.env"
     # min_labs is the hard floor for teams that would rather not review than review single-lab
     printf '%s' '{"min_labs": 3}' > "$HOME/strict.json"
     REVIEW_COUNCIL_CONFIG="$HOME/strict.json" "$SCRIPTS/rev-preflight.sh" --write "$T/pfr-sess3" \
       > "$T/pfr.out" 2> "$T/pfr.err"
-    assert_eq "real roster: min_labs refuses" "$?" 1
-    assert_grep "the strict reason is relayed" "$T/pfr.err" '^preflight: strict: 2 lab\(s\) available, min_labs=3 — '
+    assert_eq "real roster: min_labs preserves exit 5" "$?" 5
+    assert_grep "real min_labs refusal includes provider evidence" "$T/pfr.err" '^review-council seats:'
+    assert_grep "the strict reason is relayed" "$T/pfr.err" \
+      '^preflight: strict availability \(retryable\): 2 lab\(s\) available, min_labs=3$'
+    assert_eq "real min_labs canonical diagnostic is final" \
+      "$(awk 'NF { line=$0 } END { print line }' "$T/pfr.err")" \
+      'preflight: strict availability (retryable): 2 lab(s) available, min_labs=3'
     assert_nogrep "no base line on a refusal" "$T/pfr.out" '^base='
     assert_exit "no scope.env from a refused run" 1 test -f "$T/pfr-sess3/scope.env"
   )

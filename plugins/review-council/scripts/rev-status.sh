@@ -44,14 +44,23 @@ def last_action(log):
     l = re.sub(r"^/bin/zsh -lc '?", '', l).rstrip("'")
     return l
 
-def opus_action():
-    tx = st.get('opus_transcript')
-    if not tx or not os.path.exists(tx): return ''
+def transcript_action(tx):
+    if not isinstance(tx, str) or not tx or not os.path.exists(tx): return ''
     try:
         out = subprocess.run(['sh', '-c', "grep -o '\"name\":\"[A-Za-z_]*\"' \"$1\" | tail -1", '_', tx],
                              capture_output=True, text=True, timeout=5).stdout.strip()
     except Exception: return ''
     return out.split(':')[-1].strip('"') if out else ''
+
+def seat_action(seat, log):
+    transcripts = st.get('agent_transcripts')
+    if isinstance(transcripts, dict) and seat in transcripts:
+        action = transcript_action(transcripts[seat])
+        if action: return action
+    if seat == 'opus' and st.get('opus_transcript'):
+        action = transcript_action(st['opus_transcript'])
+        if action: return action
+    return last_action(log)
 
 MAX = 220
 ACTION_MAX = 40
@@ -74,7 +83,7 @@ for seat in seats:
         continue
     if started is None:
         seats_out.append((f"{name}: pending", '')); continue
-    act = opus_action() if seat == 'opus' else last_action(lg)
+    act = seat_action(seat, lg)
     seats_out.append((f"{name}: running {minutes(started, now)}m", act))
 
 o = st.get('open') or {}

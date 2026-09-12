@@ -1,7 +1,7 @@
-# tests for Task 3 — sourced by run-tests.sh
+# tests for Task 3 - sourced by run-tests.sh
 # NB: the bodies run in the RUNNER's shell, not a subshell, so ok()/fail()'s PASS/FAIL increments
 # survive; seat_env's exports are undone at the end so later tests see a clean environment.
-seat_timeout() {  # seat_timeout <secs> <cmd...> — hard cap, so a runaway seat cannot hang the suite
+seat_timeout() {  # seat_timeout <secs> <cmd...> - hard cap, so a runaway seat cannot hang the suite
   local lim=$(( $1 * 10 )); shift
   "$@" >/dev/null 2>&1 &
   local pid=$! i=0
@@ -10,7 +10,7 @@ seat_timeout() {  # seat_timeout <secs> <cmd...> — hard cap, so a runaway seat
   wait "$pid"; return $?
 }
 seat_env_reset() { PATH="$1"; unset SHIM_FIXTURE_DIR SHIM_ARGS_FILE REV_REPO SHIM_MODE; }
-seat_roster() {  # seat_roster <session-dir> — the roster.json rev-preflight.sh leaves in the session dir.
+seat_roster() {  # seat_roster <session-dir> - the roster.json rev-preflight.sh leaves in the session dir.
   # Written by hand on purpose: these tests exercise rev-seat.sh's dispatch, not roster.sh's detection.
   mkdir -p "$1"
   cat > "$1/roster.json" <<'JSON'
@@ -56,6 +56,11 @@ test_seat_codex() {
   assert_exit "empty → 2" 2 env SHIM_MODE=empty "$SCRIPTS/rev-seat.sh" codex-sol "$S" 5 "$S/p.md"
   assert_exit "badjson → 2" 2 env SHIM_MODE=badjson "$SCRIPTS/rev-seat.sh" codex-sol "$S" 6 "$S/p.md"
   assert_grep "exit file records 2" "$S/r6-codex-sol.exit" '^2$'
+  : > "$T/codex-notools-calls"
+  SHIM_MODE=notools SHIM_CALLS_FILE="$T/codex-notools-calls" "$SCRIPTS/rev-seat.sh" codex-sol "$S" 6n "$S/p.md" > "$T/codex-notools.out" 2>&1
+  assert_eq "Codex no-tool review exits unusable" "$?" 2
+  assert_eq "Codex no-tool review retries once" "$(wc -l < "$T/codex-notools-calls" | tr -d ' ')" 2
+  assert_grep "Codex no-tool log explains the rejection" "$S/r6n-codex-sol.log" 'answered without a single tool call \(attempt 2\)'
   assert_exit "codex-review needs --base" 1 env SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-review "$S" 7 "$S/p.md"
   SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-review "$S" 7 "$S/p.md" --base abc123 >/dev/null
   assert_grep "codex-review uses review subcommand" "$T/args" '^review$'
@@ -81,14 +86,14 @@ JSON
   assert_exit "unreadable roster → 1" 1 env SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$B" 1 "$B/p.md"
   env SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$B" 1 "$B/p.md" 2> "$T/badroster.err"
   assert_grep "unreadable roster says run preflight first" "$T/badroster.err" 'run preflight first'
-  # the agent seat is launched by the skill through the Agent tool — there is no CLI to run here
+  # the agent seat is launched by the skill through the Agent tool - there is no CLI to run here
   assert_exit "agent seat → 1" 1 env SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" opus "$S" 1 "$S/p.md"
   "$SCRIPTS/rev-seat.sh" opus "$S" 1 "$S/p.md" 2> "$T/agent.err"
   assert_grep "agent seat explains itself" "$T/agent.err" 'Agent tool'
   # a failed run whose model stream merely quotes a 401 is "no output" (2), not "not signed in" (3)
   assert_exit "quoted 401 in stream → 2, not 3" 2 env SHIM_MODE=noise401 "$SCRIPTS/rev-seat.sh" codex-sol "$S" 10 "$S/p.md"
   assert_grep "the 401 really is in the raw stream" "$S/r10-codex-sol.stream.ndjson" '401 Unauthorized'
-  # …and it reaches the LOG too, as the model's own `text:` line — that is exactly the line classify_failure
+  # …and it reaches the LOG too, as the model's own `text:` line - that is exactly the line classify_failure
   # must ignore. Only CLI-originated lines decide sign-in and cap.
   assert_grep "the 401 is in the log as model text" "$S/r10-codex-sol.log" '^text: .*401 Unauthorized'
   assert_nogrep "no CLI-originated 401 line" "$S/r10-codex-sol.log" '^(error|exec|done): .*401'
@@ -127,6 +132,11 @@ test_seat_grok() {
   assert_grep "seat carries REV_ACTIVE=1" "$T/args.env" '^REV_ACTIVE=1$'
   assert_nogrep "no seat runs unguarded" "$T/args.env" '^REV_ACTIVE=unset$'
   assert_grep "grok gets the repo root with --cwd" "$T/args" "^$T$"
+  assert_exit "reviewer tool text cannot become an auth failure" 2 \
+    env SHIM_MODE=noise401tool "$SCRIPTS/rev-seat.sh" grok "$S" 1t "$S/p.md"
+  printf 'Evidence manifest SHA-256: %064d\nAssigned scope: semantic\n' 0 > "$S/audit.md"
+  assert_exit "wrapper audit rejection keeps its direct failure code" 2 \
+    env SHIM_MODE=auditnoise401 "$SCRIPTS/rev-seat.sh" grok "$S" 1a "$S/audit.md"
   REV_GROK_EFFORT=high SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" grok "$S" 9 "$S/p.md" >/dev/null
   assert_grep "REV_GROK_EFFORT overrides the roster" "$T/args" '^high$'
   SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" grok-code-review "$S" 2 "$S/p.md" >/dev/null

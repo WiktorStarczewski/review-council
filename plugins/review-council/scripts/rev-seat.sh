@@ -31,13 +31,13 @@ done
 
 # --- the roster decides the seat ------------------------------------------------------------------
 ROSTER="$SESSION/roster.json"
-[ -f "$ROSTER" ] || { echo "rev-seat: no roster at $ROSTER — run preflight first" >&2; exit 1; }
+[ -f "$ROSTER" ] || { echo "rev-seat: no roster at $ROSTER - run preflight first" >&2; exit 1; }
 SEATDEF=$(REV_ROSTER_FILE="$ROSTER" REV_SEAT="$SEAT" python3 - <<'PY'
 import json, os, sys
 try:
     with open(os.environ['REV_ROSTER_FILE']) as f:
         doc = json.load(f)
-except Exception as e:  # noqa: BLE001 — an unreadable roster is "no seat", the caller re-runs preflight
+except Exception as e:  # noqa: BLE001 - an unreadable roster is "no seat", the caller re-runs preflight
     print(f"unreadable roster: {e}", file=sys.stderr)
     sys.exit(1)
 for s in (doc.get('seats') or []) if isinstance(doc, dict) else []:
@@ -48,13 +48,13 @@ for s in (doc.get('seats') or []) if isinstance(doc, dict) else []:
         sys.exit(0)
 sys.exit(1)
 PY
-) || { echo "rev-seat: no seat '$SEAT' in $ROSTER — run preflight first" >&2; exit 1; }
+) || { echo "rev-seat: no seat '$SEAT' in $ROSTER - run preflight first" >&2; exit 1; }
 ADAPTER=$(printf '%s\n' "$SEATDEF" | sed -n 1p)
 MODEL=$(printf '%s\n' "$SEATDEF" | sed -n 2p)
 ROSTER_EFFORT=$(printf '%s\n' "$SEATDEF" | sed -n 3p)
 MODE=$(printf '%s\n' "$SEATDEF" | sed -n 4p)
-[ -n "$ADAPTER" ] && [ -n "$MODEL" ] || { echo "rev-seat: seat '$SEAT' has no adapter/model in $ROSTER — run preflight first" >&2; exit 1; }
-[ "$ADAPTER" != agent ] || { echo "rev-seat: seat '$SEAT' is the Agent tool seat — the skill launches it, rev-seat.sh cannot" >&2; exit 1; }
+[ -n "$ADAPTER" ] && [ -n "$MODEL" ] || { echo "rev-seat: seat '$SEAT' has no adapter/model in $ROSTER - run preflight first" >&2; exit 1; }
+[ "$ADAPTER" != agent ] || { echo "rev-seat: seat '$SEAT' is the Agent tool seat - the skill launches it, rev-seat.sh cannot" >&2; exit 1; }
 ADAPTER_SH="$HERE/seats.d/$ADAPTER.sh"
 [ -x "$ADAPTER_SH" ] || { echo "rev-seat: no adapter script for '$ADAPTER' (seat '$SEAT')" >&2; exit 1; }
 
@@ -72,11 +72,12 @@ mkdir -p "$SESSION"
 ROOT=${REV_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}
 BASEN="$SESSION/r${ROUND}-${SEAT}"
 OUT="$BASEN.json"; LOG="$BASEN.log"; RAW="$BASEN.stream.ndjson"; EXITF="$BASEN.exit"
-rm -f "$OUT" "$EXITF"; : > "$LOG"
+AUDITF="$BASEN.read-audit.json"
+rm -f "$OUT" "$EXITF" "$AUDITF"; : > "$LOG"
 export REV_ACTIVE=1
 export SEAT MODEL EFFORT MODE ROOT PROMPT SCHEMA OUT LOG RAW BASE
 
-finish() {  # <code> — validate on 0, record, print the one-line summary, exit
+finish() {  # <code> - validate on 0, record, print the one-line summary, exit
   local code=$1 n="-"
   if [ "$code" = 0 ]; then n=$(python3 "$VALIDATE" "$OUT" 2>>"$LOG") || { code=2; n="-"; }; fi
   echo "$code" > "$EXITF"
@@ -88,11 +89,27 @@ classify_failure() {  # after a non-zero rc or missing output: 3 auth, 4 cap, 2 
   # nothing but the model stream, so a review whose findings quote "401", "unauthorized" or "rate limit"
   # from the code under review would otherwise stop the whole run (exit 3) or drop the seat (exit 4).
   # The CLIs report their own failures as `error: …` lines (codex) or on stderr (grok, gemini), which stay.
-  local cli; cli=$(grep -v -E '^(text|exec|done): ' "$LOG" 2>/dev/null)
+  local cli; cli=$(grep -v -E '^(text|exec|done): |^tool_call ' "$LOG" 2>/dev/null)
   if printf '%s\n' "$cli" | grep -qiE "not logged in|login required|please (log|sign) in|run (codex|grok) login|to log in|auth method|[^0-9]401[^0-9]|unauthori[sz]ed"; then echo 3
   elif printf '%s\n' "$cli" | grep -qiE "usage limit|rate limit|too many requests|[^0-9]429[^0-9]|quota exceeded"; then echo 4
   elif [ ! -s "$OUT" ]; then echo 2
   else echo 1; fi
+}
+archive_raw() {
+  [ -s "$RAW" ] || return 0
+  local n=1 archived
+  while :; do
+    archived="${RAW%.ndjson}.attempt${n}.ndjson"
+    [ -e "$archived" ] || break
+    n=$((n+1))
+  done
+  mv "$RAW" "$archived"
+}
+has_tool_call() {
+  case "$ADAPTER" in
+    codex) grep -q '^exec: ' "$LOG";;
+    *) grep -q '^tool_call ' "$LOG";;
+  esac
 }
 
 # Under a schema (grok) or a "answer with only JSON" instruction (gemini) a model sometimes answers on turn
@@ -102,11 +119,12 @@ classify_failure() {  # after a non-zero rc or missing output: 3 auth, 4 cap, 2 
 attempt=0
 while :; do
   attempt=$((attempt+1))
+  archive_raw || { echo "cannot archive prior stream before attempt $attempt" >> "$LOG"; finish 1; }
   "$ADAPTER_SH"; rc=$?
   case "$ADAPTER" in
-    grok|gemini|claude)
-      if [ "$rc" -eq 0 ] && ! grep -q '^tool_call ' "$LOG"; then
-        echo "$ADAPTER answered without a single tool call (attempt $attempt) — not a review" >> "$LOG"
+    codex|grok|gemini|claude)
+      if [ "$rc" -eq 0 ] && ! has_tool_call; then
+        echo "$ADAPTER answered without a single tool call (attempt $attempt) - not a review" >> "$LOG"
         rm -f "$OUT"
         if [ "$attempt" -lt 2 ]; then continue; fi
         rc=1
@@ -119,6 +137,26 @@ if [ "$ADAPTER" = codex ] && [ "$MODE" = review ] && [ -s "$OUT" ] && ! python3 
   # `codex exec review` ignores --output-schema and answers in prose; keep the prose and convert it.
   cp "$OUT" "$BASEN.native.txt"
   python3 "$HERE/lib/codex-review-to-findings.py" "$BASEN.native.txt" "$OUT" --root "$ROOT" >>"$LOG" 2>&1 || true
+fi
+
+if [ "$rc" -eq 0 ] && [ -s "$OUT" ]; then
+  AUDIT_ARGS=(audit --adapter "$ADAPTER" --raw "$RAW" --prompt "$PROMPT" --root "$ROOT" --session "$SESSION" --out "$AUDITF")
+  [ -z "${REV_DEPS_DIR:-}" ] || AUDIT_ARGS+=(--deps "$REV_DEPS_DIR")
+  python3 "$HERE/lib/review-read-audit.py" "${AUDIT_ARGS[@]}" >>"$LOG" 2>&1
+  AUDIT_RC=$?
+  if [ "$AUDIT_RC" -ne 0 ]; then
+    if grep -q '^Evidence manifest SHA-256: [0-9a-f]\{64\}$' "$PROMPT"; then
+      if grep -qx 'Assigned scope: full' "$PROMPT"; then
+        echo "bounded-read audit rejected full-scope evidence review; rerun this full-scope seat after correcting its evidence reads" >> "$LOG"
+      else
+        echo "bounded-read audit rejected narrowed review; rerun the whole panel at full scope" >> "$LOG"
+      fi
+      rm -f "$OUT"
+      finish 2
+    else
+      echo "bounded-read audit found violations in a legacy review; result retained as advisory" >> "$LOG"
+    fi
+  fi
 fi
 
 if [ "$rc" -ne 0 ] || [ ! -s "$OUT" ]; then finish "$(classify_failure)"; fi

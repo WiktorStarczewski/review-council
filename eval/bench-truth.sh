@@ -7,6 +7,33 @@ NAME=$1; REPO=$2; PR=$3; HEAD_SHA=$4; BASE_SHA=$5; MERGED=$6; OUT=$7
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd); FULL="$OUT/full"   # absolute: the headless call runs inside the clone
 [ -d "$FULL/.git" ] || git clone -q "https://github.com/$REPO.git" "$FULL" || { echo "$NAME: clone failed"; exit 1; }
 git -C "$FULL" fetch -q origin "$HEAD_SHA" "$MERGED" 2>/dev/null || true
-PROMPT="Read-only task; use git show/diff/log and gh only, check nothing out. Build the ground truth for scoring a code-review lens on $REPO pull request #$PR. Review-time head $HEAD_SHA, base (merge-base or parent PR head) $BASE_SHA, merged head $MERGED; the full clone is at $FULL (fetch shas from origin if missing). The review-time head may not be an ancestor of the merged head (force-push after review): compare the two trees directly and each against the base. Read every review comment, inline comment and issue comment on the PR via gh api. Produce ROWS, one per distinct simplification or removal that happened after review — a construct, abstraction, parameter, helper, test, doc or capability the review-time head had and the merged head does not, with what replaced it (an existing symbol reused, an inline expression, nothing, or a scope cut). Separately list post-review changes that were NOT simplifications (bug fixes, additions). For each row: id (A1, A2, …), weight (K = load-bearing, the change everything else followed from; S = structural, its own decision; C = consequential of another row), what the review-time head had (file and lines at the review-time head), what the merged head has instead, the reviewer comment that triggered it paraphrased with NO names or handles, and a one-line hint on how an outsider could have found it from the review-time tree alone. Write the result to $OUT/truth.md. Your final message must be exactly one line: 'ROWS K=<n> S=<n> C=<n> NONSIMPL=<n>' and nothing else."
+TRUTH="$OUT/truth.md"; COMPLETE="$OUT/truth.complete"
+TMP_TRUTH=; TMP_COMPLETE=; truth_published=0
+cleanup_truth() {
+  [ -z "$TMP_TRUTH" ] || rm -f "$TMP_TRUTH"
+  [ -z "$TMP_COMPLETE" ] || rm -f "$TMP_COMPLETE"
+  [ "$truth_published" -eq 1 ] || rm -f "$TRUTH" "$COMPLETE"
+}
+trap cleanup_truth EXIT
+rm -f "$TRUTH" "$COMPLETE"
+TMP_TRUTH=$(mktemp "$OUT/.truth.XXXXXX") || { echo "$NAME truth: FAILED (cannot create temporary file)"; exit 1; }
+TMP_COMPLETE=$(mktemp "$OUT/.truth.complete.XXXXXX") || { echo "$NAME truth: FAILED (cannot create completion marker)"; exit 1; }
+PROMPT="Read-only task; use git show/diff/log and gh only, check nothing out. Build the ground truth for scoring a code-review lens on $REPO pull request #$PR. Review-time head $HEAD_SHA, base (merge-base or parent PR head) $BASE_SHA, merged head $MERGED; the full clone is at $FULL (fetch shas from origin if missing). The review-time head may not be an ancestor of the merged head (force-push after review): compare the two trees directly and each against the base. Read every review comment, inline comment and issue comment on the PR via gh api. Produce ROWS, one per distinct simplification or removal that happened after review - a construct, abstraction, parameter, helper, test, doc or capability the review-time head had and the merged head does not, with what replaced it (an existing symbol reused, an inline expression, nothing, or a scope cut). Separately list post-review changes that were NOT simplifications (bug fixes, additions). For each row: id (A1, A2, ...), weight (K = load-bearing, the change everything else followed from; S = structural, its own decision; C = consequential of another row), what the review-time head had (file and lines at the review-time head), what the merged head has instead, the reviewer comment that triggered it paraphrased with NO names or handles, and a one-line hint on how an outsider could have found it from the review-time tree alone. Write the result to $TMP_TRUTH. Your final message must be exactly one line: 'ROWS K=<n> S=<n> C=<n> NONSIMPL=<n>' and nothing else."
 ( cd "$FULL" && claude -p "$PROMPT" --model opus --permission-mode bypassPermissions --effort max --max-turns 150 --output-format text </dev/null > "$OUT/truth.out" 2> "$OUT/truth.log" )
-[ -s "$OUT/truth.md" ] && echo "$NAME truth: $(grep -oE 'ROWS K=[0-9]+ S=[0-9]+ C=[0-9]+ NONSIMPL=[0-9]+' "$OUT/truth.out" | tail -1)" || { echo "$NAME truth: FAILED (see $OUT/truth.log)"; exit 1; }
+truth_rc=$?
+line=$(tail -n 1 "$OUT/truth.out" 2>/dev/null)
+if [ "$truth_rc" -ne 0 ]; then
+  echo "$NAME truth: FAILED (see $OUT/truth.log)"
+  exit "$truth_rc"
+fi
+if [ ! -s "$TMP_TRUTH" ] || ! printf '%s\n' "$line" | grep -Eq '^ROWS K=[0-9]+ S=[0-9]+ C=[0-9]+ NONSIMPL=[0-9]+$'; then
+  echo "$NAME truth: FAILED (missing artifact or terminal summary; see $OUT/truth.log)"
+  exit 1
+fi
+printf '%s\n' "$line" > "$TMP_COMPLETE"
+if ! mv "$TMP_TRUTH" "$TRUTH" || ! mv "$TMP_COMPLETE" "$COMPLETE"; then
+  echo "$NAME truth: FAILED (cannot publish result)"
+  exit 1
+fi
+truth_published=1
+echo "$NAME truth: $line"

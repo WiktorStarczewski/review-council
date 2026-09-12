@@ -1,8 +1,8 @@
-# preflight + prompt — sourced by run-tests.sh
+# preflight + prompt - sourced by run-tests.sh
 # Seats no longer come from hardcoded `codex login status` / `grok models` checks: preflight asks
 # scripts/roster.sh. These tests drive that seam through a STUB roster.sh placed next to a symlink to the
 # real rev-preflight.sh, so `$HERE/roster.sh` resolves to the stub. The stub models the contract preflight
-# depends on (argv, exit 5 + JSON, --brief); roster.sh's own detection is covered by t-roster.sh.
+# depends on (argv, strict exits + JSON, --brief); roster.sh's own detection is covered by t-roster.sh.
 pf_bin() {  # pf_bin → prints a dir holding {roster.sh stub, rev-preflight.sh symlink}
   local D="$T/pf-bin"
   if [ ! -x "$D/roster.sh" ]; then
@@ -26,6 +26,7 @@ if [ -z "$JSON" ]; then
  {"seat": "grok", "lab": "xai", "adapter": "grok", "model": "grok-4.6", "effort": "xhigh", "extra": false},
  {"seat": "opus", "lab": "anthropic", "adapter": "agent", "model": "opus", "effort": "max", "extra": false},
  {"seat": "codex-review", "lab": "openai", "adapter": "codex", "mode": "review", "extra": true, "round": 2}],
+ "result_receipts": {"version": 1, "legacy_no_exit_sha256": {}},
  "excluded": [{"cli": "gemini", "reason": "not installed"}]}
 J
 )
@@ -50,19 +51,31 @@ pf_strict_roster() {  # a padded single-lab panel that a config min_labs floor r
  {"seat": "claude-1", "lab": "anthropic", "adapter": "agent", "model": "opus", "effort": "max", "extra": false, "padded": true},
  {"seat": "claude-2", "lab": "anthropic", "adapter": "agent", "model": "opus", "effort": "max", "extra": false, "padded": true}],
  "labs": ["anthropic"], "padded": 2, "degraded": true,
- "degradation": "only Claude is available — 3 Claude seats, no cross-lab decorrelation",
+ "degradation": "only Claude is available - 3 Claude seats, no cross-lab decorrelation", "strict_class": "availability",
+ "strict_reason": "1 lab(s) available, min_labs=2",
+ "result_receipts": {"version": 1, "legacy_no_exit_sha256": {}},
  "excluded": [{"cli": "codex", "reason": "not signed in"}, {"cli": "gemini", "reason": "not installed"},
               {"cli": "min_labs", "reason": "strict: 1 lab(s) available, min_labs=2"}]}
 J
 }
-pf_degraded_roster() {  # a padded panel that is accepted — preflight warns, it does not refuse
+pf_config_roster() {
+  cat <<'J'
+{"generated_at": "2026-09-02T00:00:00Z", "seats": [], "strict_class": "config",
+ "strict_reason": "invalid codex_models: expected a list",
+ "result_receipts": {"version": 1, "legacy_no_exit_sha256": {}},
+ "excluded": [{"cli": "codex", "reason": "invalid codex_models: expected a list"},
+              {"cli": "codex_models", "reason": "strict: invalid codex_models: expected a list"}]}
+J
+}
+pf_degraded_roster() {  # a padded panel that is accepted - preflight warns, it does not refuse
   cat <<'J'
 {"generated_at": "2026-09-02T00:00:00Z", "seats": [
  {"seat": "grok", "lab": "xai", "adapter": "grok", "model": "grok-4.6", "effort": "xhigh", "extra": false},
  {"seat": "opus", "lab": "anthropic", "adapter": "agent", "model": "opus", "effort": "max", "extra": false},
  {"seat": "claude-1", "lab": "anthropic", "adapter": "agent", "model": "opus", "effort": "max", "extra": false, "padded": true}],
  "labs": ["xai", "anthropic"], "padded": 1, "degraded": true,
- "degradation": "only xai, anthropic available — padded with 1 Claude seat",
+ "degradation": "only xai, anthropic available - padded with 1 Claude seat",
+ "result_receipts": {"version": 1, "legacy_no_exit_sha256": {}},
  "excluded": [{"cli": "codex", "reason": "not signed in"}, {"cli": "gemini", "reason": "not installed"}]}
 J
 }
@@ -94,6 +107,7 @@ test_preflight() {
   assert_grep "the line is asked for in the same call" "$T/rstub.args" '^--brief$'
   assert_eq "the roster is consulted exactly once" "$(wc -l < "$T/rstub.args" | tr -d ' ')" "4"
   assert_grep "roster.json stored" "$T/pf-sess/roster.json" '"seat": "codex-sol"'
+  assert_grep "new session records the receipt policy" "$T/pf-sess/roster.json" '"result_receipts"'
   assert_exit "preflight calls no lab CLI itself" 1 test -e "$T/args"
   # values are single-quoted so `. scope.env` can never expand or execute one (see t-scopeenv.sh)
   assert_grep "scope.env base" "$T/pf-sess/scope.env" "^REV_BASE='$(git rev-parse main)'$"
@@ -109,39 +123,84 @@ test_preflight() {
   assert_grep "path scope counts" "$T/pf.out" ' scope=b.txt changed_files=1$'
   assert_exit "missing path refused" 1 "$PF" --scope nope.txt
   assert_exit "REV_ACTIVE refused" 1 env REV_ACTIVE=1 "$PF"
-  # without --write the roster JSON goes to a temp file that is cleaned up, never into the repo
+  # without --write the roster JSON goes in a private temp directory that is cleaned up
   rm -f "$RSTUB_ARGS"
-  "$PF" > "$T/pf.out" 2>&1
+  local real_mktemp mktemp_bin scratch
+  real_mktemp=$(command -v mktemp); mktemp_bin="$T/mktemp-bin"; mkdir -p "$mktemp_bin"
+  cat > "$mktemp_bin/mktemp" <<'SH'
+#!/bin/bash
+printf '%s\n' "$*" >> "$MKTEMP_CALLS"
+out=$("$REAL_MKTEMP" "$@") || exit $?
+printf '%s\n' "$out" >> "$MKTEMP_OUTPUTS"
+printf '%s\n' "$out"
+SH
+  chmod +x "$mktemp_bin/mktemp"
+  MKTEMP_CALLS="$T/mktemp.calls" MKTEMP_OUTPUTS="$T/mktemp.outputs" REAL_MKTEMP="$real_mktemp" \
+    PATH="$mktemp_bin:$PATH" "$PF" > "$T/pf.out" 2>&1
   assert_grep "the roster is still probed" "$T/rstub.args" '^--probe$'
   local tmpj; tmpj=$(grep -A1 -- '^--write$' "$T/rstub.args" | sed -n '2p')
   [ -n "$tmpj" ] && ok "the JSON still lands on a file" || fail "the JSON still lands on a file" "no --write target recorded"
+  assert_grep "bare preflight requests a private temp directory" "$T/mktemp.calls" '^-d '
+  scratch=$(tail -n 1 "$T/mktemp.outputs")
+  assert_eq "roster file is inside the private temp directory" "$tmpj" "$scratch/roster.json"
   case "$tmpj" in "$R"/*) fail "…outside the repository" "$tmpj";; *) ok "…outside the repository";; esac
   assert_exit "…and that temp file is removed" 1 test -e "$tmpj"
+  assert_exit "the private temp directory is removed" 1 test -e "$scratch"
   assert_exit "no roster.json left in the repo" 1 test -e "$R/roster.json"
-  # a thin panel is no longer a refusal — it is a padded panel and a loud warning (Task 11)
+  # a thin panel is no longer a refusal - it is a padded panel and a loud warning (Task 11)
   rm -f "$RSTUB_ARGS"
   RSTUB_JSON="$(pf_degraded_roster)" \
-    RSTUB_BRIEF='review-council seats: codex ✗ not signed in · grok ✓ (grok-4.6@xhigh) · gemini ✗ not installed · claude ✓ (opus@max) · DEGRADED: only xai, anthropic available — padded with 1 Claude seat' \
+    RSTUB_BRIEF='review-council seats: codex ✗ not signed in · grok ✓ (grok-4.6@xhigh) · gemini ✗ not installed · claude ✓ (opus@max) · DEGRADED: only xai, anthropic available - padded with 1 Claude seat' \
     "$PF" --write "$T/pf-deg" > "$T/pf.out" 2> "$T/pf.err"; assert_eq "a degraded roster is accepted" "$?" 0
   assert_grep "the summary line is still printed" "$T/pf.out" '^base='
-  assert_grep "the roster line carries DEGRADED" "$T/pf.out" 'DEGRADED: only xai, anthropic available — padded with 1 Claude seat$'
+  assert_grep "the roster line carries DEGRADED" "$T/pf.out" 'DEGRADED: only xai, anthropic available - padded with 1 Claude seat$'
   assert_grep "…and a warning line of its own follows it" "$T/pf.out" \
-    '^preflight: WARNING — only xai, anthropic available — padded with 1 Claude seat$'
+    '^preflight: WARNING - only xai, anthropic available - padded with 1 Claude seat$'
   assert_exit "scope.env is written for a degraded run" 0 test -f "$T/pf-deg/scope.env"
   assert_nogrep "nothing on stderr" "$T/pf.err" '.'
   # a not-degraded roster gets no warning line at all
   "$PF" > "$T/pf.out" 2>&1; assert_grep "still fine" "$T/pf.out" '^base='
   assert_nogrep "no warning when the panel is whole" "$T/pf.out" 'WARNING'
-  # strict mode (config min_labs) is the one seat-shaped refusal left
+  # Retryable availability and permanent configuration refusals stay distinct.
   rm -f "$RSTUB_ARGS"
-  RSTUB_EXIT=5 RSTUB_JSON="$(pf_strict_roster)" "$PF" > "$T/pf.out" 2> "$T/pf.err"; assert_eq "strict roster refused" "$?" 1
-  assert_grep "the strict reason is relayed" "$T/pf.err" '^preflight: strict: 1 lab\(s\) available, min_labs=2 — '
-  assert_grep "names every exclusion" "$T/pf.err" 'codex: not signed in; gemini: not installed'
+  RSTUB_EXIT=5 RSTUB_JSON="$(pf_strict_roster)" RSTUB_BRIEF='provider availability: only anthropic survived' \
+    "$PF" > "$T/pf.out" 2> "$T/pf.err"; assert_eq "strict roster preserves retryable status" "$?" 5
+  assert_grep "retryable refusal includes provider evidence" "$T/pf.err" \
+    '^provider availability: only anthropic survived$'
+  assert_grep "retryable strict reason is relayed" "$T/pf.err" \
+    '^preflight: strict availability \(retryable\): 1 lab\(s\) available, min_labs=2$'
+  assert_eq "retryable canonical diagnostic is the final line" "$(awk 'NF { line=$0 } END { print line }' "$T/pf.err")" \
+    'preflight: strict availability (retryable): 1 lab(s) available, min_labs=2'
+  assert_eq "provider evidence precedes retryable diagnostic" \
+    "$(awk '/^provider availability:/{p=NR} /^preflight: strict availability/{s=NR} END {print ((p < s) ? "yes" : "no")}' "$T/pf.err")" yes
   assert_grep "the roster still ran with --probe" "$T/rstub.args" '^--probe$'
   assert_nogrep "no summary line on a refusal" "$T/pf.out" '^base='
-  # a roster that is neither 0 nor 5 (missing script, crash) fails loudly instead of running seatless
+  RSTUB_EXIT=6 RSTUB_JSON="$(pf_config_roster)" RSTUB_BRIEF='provider availability: configuration rejected before probes' \
+    "$PF" > "$T/pf.out" 2> "$T/pf.err"
+  assert_eq "permanent config roster preserves status" "$?" 6
+  assert_grep "permanent refusal includes provider evidence" "$T/pf.err" \
+    '^provider availability: configuration rejected before probes$'
+  assert_grep "permanent strict reason is relayed" "$T/pf.err" \
+    '^preflight: strict config \(permanent\): invalid codex_models: expected a list$'
+  assert_eq "permanent canonical diagnostic is the final line" "$(awk 'NF { line=$0 } END { print line }' "$T/pf.err")" \
+    'preflight: strict config (permanent): invalid codex_models: expected a list'
+  assert_eq "provider evidence precedes permanent diagnostic" \
+    "$(awk '/^provider availability:/{p=NR} /^preflight: strict config/{s=NR} END {print ((p < s) ? "yes" : "no")}' "$T/pf.err")" yes
+  assert_nogrep "no summary line on a permanent refusal" "$T/pf.out" '^base='
+  RSTUB_EXIT=5 RSTUB_JSON='{"strict_class":"config","strict_reason":"wrong class"}' \
+    "$PF" > /dev/null 2> "$T/pf.err"
+  assert_eq "mismatched strict metadata is a wrapper error" "$?" 1
+  assert_grep "mismatched strict metadata is explained" "$T/pf.err" 'valid matching strict metadata'
+  RSTUB_EXIT=6 RSTUB_JSON='{"strict_class":"config"}' "$PF" > /dev/null 2> "$T/pf.err"
+  assert_eq "missing strict reason is a wrapper error" "$?" 1
+  assert_grep "missing strict reason is explained" "$T/pf.err" 'valid matching strict metadata'
+  RSTUB_EXIT=5 RSTUB_JSON='{"strict_class":"availability","strict_reason":"provider unavailable"}' \
+    "$PF" > /dev/null 2> "$T/pf.err"
+  assert_eq "strict metadata without a roster shape is a wrapper error" "$?" 1
+  assert_grep "invalid roster shape is explained" "$T/pf.err" 'valid matching strict metadata'
+  # A roster crash outside the strict 5/6 contract fails loudly instead of running seatless.
   RSTUB_EXIT=5 RSTUB_JSON='not json at all' "$PF" > /dev/null 2> "$T/pf.err"; assert_eq "unreadable roster refused" "$?" 1
-  assert_grep "says the JSON was unreadable" "$T/pf.err" 'roster JSON unreadable'
+  assert_grep "says strict metadata could not be validated" "$T/pf.err" 'valid matching strict metadata'
   assert_nogrep "no traceback" "$T/pf.err" 'Traceback'
   RSTUB_EXIT=7 "$PF" > /dev/null 2> "$T/pf.err"; assert_eq "roster crash refused" "$?" 1
   assert_grep "names the roster exit code" "$T/pf.err" 'roster.sh failed \(exit 7\)'
@@ -165,9 +224,10 @@ test_prompt() {
   local S="$T/pr-sess"; mkdir -p "$S"
   printf 'REV_BASE=abc123\nREV_BRANCH=feat\nREV_DEFAULT=main\nREV_ROOT=/repo\nREV_SCOPE=branch\n' > "$S/scope.env"
   printf 'src/x.ts\nsrc/x.test.ts\n' > "$S/files.txt"; echo "build: pass; test: 2 pre-existing failures (a, b); lint: pass" > "$S/baseline.md"
+  printf '%s' '{"seats":[{"seat":"grok","adapter":"grok"},{"seat":"codex-sol","adapter":"codex"},{"seat":"codex-terra","adapter":"codex"}]}' > "$S/roster.json"
   local p; p=$("$SCRIPTS/rev-prompt.sh" "$S" 1 grok correctness "Correctness, edge cases, error handling")
   assert_eq "prints path" "$p" "$S/r1-grok.prompt.md"
-  assert_grep "grok tools-first" "$p" '^FIRST run your tools'
+  assert_grep "grok follows lens ordering before tools" "$p" '^Follow the lens ordering below before using tools\.'
   assert_grep "base sha" "$p" 'Base commit: abc123'
   assert_grep "diff command" "$p" 'git diff abc123'
   assert_grep "files listed" "$p" '^- src/x.test.ts$'
@@ -175,7 +235,7 @@ test_prompt() {
   assert_grep "emphasis" "$p" '^Round emphasis: Correctness, edge cases, error handling$'
   assert_grep "baseline included" "$p" 'pre-existing failures'
   assert_grep "rejected none" "$p" '\(none yet\)'
-  assert_grep "schema embedded" "$p" '"severity"'
+  assert_nogrep "native-provider schema is not embedded" "$p" '"severity"'
   assert_nogrep "no vacuity by default" "$p" 'VACUITY'
   p=$("$SCRIPTS/rev-prompt.sh" "$S" 2 codex-sol tests "Tests, observability" --vacuity)
   assert_nogrep "codex has no tools-first" "$p" '^FIRST run your tools'
@@ -187,10 +247,10 @@ test_prompt() {
   # untracked files are invisible to `git diff`: rev-preflight.sh lists them in untracked.txt and the
   # prompt marks them so a seat reads them in full instead of reporting an empty diff.
   p=$("$SCRIPTS/rev-prompt.sh" "$S" 5 grok correctness "Untracked")
-  assert_nogrep "no untracked note without untracked.txt" "$p" 'untracked'
+  assert_nogrep "no untracked note without untracked.txt" "$p" 'Files marked .untracked.'
   : > "$S/untracked.txt"
   p=$("$SCRIPTS/rev-prompt.sh" "$S" 5 grok correctness "Untracked")
-  assert_nogrep "empty untracked.txt renders nothing" "$p" 'untracked'
+  assert_nogrep "empty untracked.txt renders no file note" "$p" 'Files marked .untracked.'
   printf 'src/x.test.ts\n' > "$S/untracked.txt"
   p=$("$SCRIPTS/rev-prompt.sh" "$S" 5 grok correctness "Untracked")
   assert_grep "untracked file marked" "$p" '^- src/x.test.ts \(untracked\)$'

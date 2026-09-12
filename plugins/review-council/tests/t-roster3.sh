@@ -1,7 +1,7 @@
-# Task 11 — graceful degradation: never refuse a panel, pad it with Claude seats, and say so loudly.
+# Task 11 - graceful degradation: never refuse a panel, pad it with Claude seats, and say so loudly.
 # Reuses roster_env/roster_creds/roster_lines from t-roster.sh; roster_flags below flattens the new
 # top-level keys (labs, padded, degraded, degradation) and the per-seat `padded` marker.
-roster_flags() {  # roster_flags <json> <out> — the degradation keys as greppable lines
+roster_flags() {  # roster_flags <json> <out> - the degradation keys as greppable lines
   python3 -c '
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -34,11 +34,11 @@ test_roster_claude_only_is_padded() {
     assert_grep "…and so is the second"        "$B/flags" '^padseat claude-2 true$'
     assert_grep "the detected seat is not"     "$B/flags" '^padseat opus false$'
     assert_grep "the degradation sentence" "$B/flags" \
-      '^degradation only Claude is available — 3 Claude seats, no cross-lab decorrelation$'
+      '^degradation only Claude is available - 3 Claude seats, no cross-lab decorrelation$'
     "$SCRIPTS/roster.sh" --brief > "$B/brief" 2>&1; assert_eq "--brief exits 0 too" "$?" 0
     assert_eq "--brief is still one line" "$(wc -l < "$B/brief" | tr -d ' ')" 1
     assert_eq "--brief ends with the DEGRADED clause" "$(cat "$B/brief")" \
-      'review-council seats: codex ✗ not installed · grok ✗ not installed · gemini ✗ not installed · claude ✓ (opus@max) · DEGRADED: only Claude is available — 3 Claude seats, no cross-lab decorrelation'
+      'review-council seats: codex ✗ not installed · grok ✗ not installed · gemini ✗ not installed · claude ✓ (opus@max) · DEGRADED: only Claude is available - 3 Claude seats, no cross-lab decorrelation'
   )
 }
 
@@ -57,10 +57,10 @@ test_roster_pads_one_seat() {
     assert_grep "degraded"       "$B/flags" '^degraded true$'
     assert_grep "labs in seat order" "$B/flags" '^labs xai,anthropic$'
     assert_grep "the sentence names the labs and the padding" "$B/flags" \
-      '^degradation only xai, anthropic available — padded with 1 Claude seat$'
+      '^degradation only xai, anthropic available - padded with 1 Claude seat$'
     "$SCRIPTS/roster.sh" --brief > "$B/brief"
     assert_eq "--brief carries it" "$(cat "$B/brief")" \
-      'review-council seats: codex ✗ not installed · grok ✓ (grok-4.6@xhigh) · gemini ✗ not installed · claude ✓ (opus@max) · DEGRADED: only xai, anthropic available — padded with 1 Claude seat'
+      'review-council seats: codex ✗ not installed · grok ✓ (grok-4.6@xhigh) · gemini ✗ not installed · claude ✓ (opus@max) · DEGRADED: only xai, anthropic available - padded with 1 Claude seat'
   )
 }
 
@@ -114,10 +114,13 @@ test_roster_min_labs() {
     "$SCRIPTS/roster.sh" > /dev/null; assert_eq "a higher floor still refuses" "$?" 5
     printf '%s' '{}' > "$REVIEW_COUNCIL_CONFIG"
     rm -f "$B/codex"
-    "$SCRIPTS/roster.sh" > "$B/out3.json"; assert_eq "the default floor is 1 — never refuses" "$?" 0
+    "$SCRIPTS/roster.sh" > "$B/out3.json"; assert_eq "the default floor is 1 - never refuses" "$?" 0
     printf '%s' '{"min_labs": "two"}' > "$REVIEW_COUNCIL_CONFIG"
-    "$SCRIPTS/roster.sh" > /dev/null 2> "$B/err2"; assert_eq "a non-integer min_labs is ignored" "$?" 0
-    assert_nogrep "…without a traceback" "$B/err2" 'Traceback'
+    "$SCRIPTS/roster.sh" > "$B/invalid.json" 2> "$B/err2"; assert_eq "a non-integer min_labs is config strict" "$?" 6
+    roster_lines "$B/invalid.json" "$B/invalid-lines"
+    assert_grep "invalid min_labs names the canonical cause" "$B/invalid-lines" \
+      '^strict_reason invalid min_labs: expected an integer of at least 1$'
+    assert_nogrep "invalid min_labs has no traceback" "$B/err2" 'Traceback'
   )
 }
 
@@ -136,19 +139,46 @@ test_roster_padding_overrides_claude_seat_false() {
     assert_nogrep "the disabled seat never gets its own name" "$B/lines" '^seat opus '
     assert_grep "the config choice is still reported" "$B/lines" '^excluded claude -> disabled$'
     assert_grep "…and so is the override" "$B/lines" \
-      '^excluded padding -> claude_seat: false overridden — a panel needs 3 seats$'
+      '^excluded padding -> claude_seat: false overridden - a panel needs 3 seats$'
     assert_grep "all three are marked padded" "$B/flags" '^padseat claude-3 true$'
     assert_grep "padded count" "$B/flags" '^padded 3$'
     assert_grep "degraded" "$B/flags" '^degraded true$'
     assert_grep "the sentence" "$B/flags" \
-      '^degradation only Claude is available — 3 Claude seats, no cross-lab decorrelation$'
+      '^degradation only Claude is available - 3 Claude seats, no cross-lab decorrelation$'
+  )
+}
+
+test_roster_padding_records_claude_seats_zero() {
+  ( local B="$T/roster-no-claude-seats"; roster_env "$B"
+    export REVIEW_COUNCIL_CONFIG="$B.home/cfg.json"
+    printf '%s' '{"claude_seats":0}' > "$REVIEW_COUNCIL_CONFIG"
+    "$SCRIPTS/roster.sh" > "$B/out.json"; assert_eq "claude_seats zero still builds the floor" "$?" 0
+    roster_lines "$B/out.json" "$B/lines"
+    assert_grep "claude_seats zero override is named" "$B/lines" '^excluded padding -> claude_seats: 0 overridden '
+    assert_grep "claude_seats zero override explains the floor" "$B/lines" 'a panel needs 3 seats$'
+    assert_grep "the zero setting is still recorded as disabled" "$B/lines" '^excluded claude -> disabled$'
+    assert_grep "the replacement seats are visibly padded" "$B/lines" '^seat claude-3 anthropic agent opus max false'
+  )
+}
+
+test_roster_padding_records_claude_env_zero() {
+  ( local B="$T/roster-no-claude-env"; roster_env "$B"
+    export REVIEW_COUNCIL_CONFIG="$B.home/cfg.json"
+    printf '%s' '{"claude_seats":2}' > "$REVIEW_COUNCIL_CONFIG"
+    REVIEW_COUNCIL_CLAUDE_SEAT=0 "$SCRIPTS/roster.sh" > "$B/out.json"
+    assert_eq "the env override still builds a thin roster" "$?" 0
+    roster_lines "$B/out.json" "$B/lines"
+    assert_grep "the env override is named" "$B/lines" \
+      '^excluded padding -> REVIEW_COUNCIL_CLAUDE_SEAT=0 overridden .*a panel needs 3 seats$'
+    assert_grep "the env override pads three seats" "$B/lines" '^counts 3 3$'
+    assert_nogrep "a disabled default count is not strict" "$B/lines" '^excluded claude_seats -> strict:'
   )
 }
 
 # --- fix round 1 ---------------------------------------------------------------------------------
 
 # min_labs is a floor on REAL decorrelation: padded Claude seats are not a second opinion, so they must
-# not satisfy a floor that exists to demand one. The default floor of 1 still cannot refuse anything —
+# not satisfy a floor that exists to demand one. The default floor of 1 still cannot refuse anything -
 # a bare machine with `claude_seat: false` has zero real labs and must still get a panel.
 test_roster_min_labs_counts_real_labs_only() {
   ( local B="$T/roster-minlabs-real"; roster_env "$B" grok
@@ -178,7 +208,7 @@ test_roster_min_labs_counts_real_labs_only() {
 }
 
 # `exclude` removes the Claude lab the same way `claude_seat: false` does, and padding overrides it the
-# same way — so it gets the same note. Silently ignoring the config would be the failure mode.
+# same way - so it gets the same note. Silently ignoring the config would be the failure mode.
 test_roster_padding_notes_config_exclusion() {
   ( local B="$T/roster-excl-claude"; roster_env "$B"
     export REVIEW_COUNCIL_CONFIG="$B.home/cfg.json"
@@ -187,7 +217,7 @@ test_roster_padding_notes_config_exclusion() {
     roster_lines "$B/out.json" "$B/lines" || { fail "roster_excl_claude" "stdout is not JSON"; return 1; }
     assert_grep "the config choice is reported" "$B/lines" '^excluded claude -> excluded by config$'
     assert_grep "…and so is the override"      "$B/lines" \
-      '^excluded padding -> claude excluded by config, overridden — a panel needs 3 seats$'
+      '^excluded padding -> claude excluded by config, overridden - a panel needs 3 seats$'
     assert_grep "three padded seats" "$B/lines" '^counts 3 3$'
   )
   ( local B="$T/roster-excl-all"; roster_env "$B" codex grok gemini; roster_creds
@@ -197,12 +227,12 @@ test_roster_padding_notes_config_exclusion() {
     roster_lines "$B/out.json" "$B/lines"
     assert_grep "three padded seats" "$B/lines" '^counts 3 3$'
     assert_grep "the override is noted once" "$B/lines" \
-      '^excluded padding -> claude excluded by config, overridden — a panel needs 3 seats$'
+      '^excluded padding -> claude excluded by config, overridden - a panel needs 3 seats$'
     assert_eq "…exactly once" "$(grep -c '^excluded padding ' "$B/lines")" "1"
   )
 }
 
-# The banner must not read `claude ✗ disabled` beside `DEGRADED: only Claude is available` — the seat is
+# The banner must not read `claude ✗ disabled` beside `DEGRADED: only Claude is available` - the seat is
 # off, the padded seats are not, and one line has to say both without contradicting itself.
 test_roster_brief_names_padded_seats_on_a_disabled_lab() {
   ( local B="$T/roster-brief-disabled"; roster_env "$B"
@@ -210,7 +240,7 @@ test_roster_brief_names_padded_seats_on_a_disabled_lab() {
     printf '%s' '{"claude_seat": false}' > "$REVIEW_COUNCIL_CONFIG"
     "$SCRIPTS/roster.sh" --brief > "$B/brief"; assert_eq "exits 0" "$?" 0
     assert_eq "the disabled lab names its padded seats" "$(cat "$B/brief")" \
-      'review-council seats: codex ✗ not installed · grok ✗ not installed · gemini ✗ not installed · claude ✗ disabled (3 padded seats) · DEGRADED: only Claude is available — 3 Claude seats, no cross-lab decorrelation'
+      'review-council seats: codex ✗ not installed · grok ✗ not installed · gemini ✗ not installed · claude ✗ disabled (3 padded seats) · DEGRADED: only Claude is available - 3 Claude seats, no cross-lab decorrelation'
     printf '%s' '{"exclude": ["claude"]}' > "$REVIEW_COUNCIL_CONFIG"
     "$SCRIPTS/roster.sh" --brief > "$B/brief2"
     assert_grep "an excluded lab reads the same way" "$B/brief2" 'claude ✗ excluded by config \(3 padded seats\)'

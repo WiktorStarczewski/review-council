@@ -3,7 +3,7 @@
 # session dir named in the prompt, and exits 0. `hang` sleeps forever with no output (a frozen leg); `fail` exits 1 fast;
 # `slowstart` is silent for longer than STALL_SECS and THEN finishes normally (the check-then-kill race).
 # Records the ENV and CWD next to argv: a leg must be marked REV_STACK_LEG=1 (so it skips squash + push, the whole
-# point of rev-stack) and must run inside the repo it reviews — neither is visible in the arguments.
+# point of rev-stack) and must run inside the repo it reviews - neither is visible in the arguments.
 if [ -n "${SHIM_CLAUDE_ARGS_FILE:-}" ]; then
   printf '%s\n' "$@" >> "$SHIM_CLAUDE_ARGS_FILE"
   printf 'REV_STACK_LEG=%s\ncwd=%s\n' "${REV_STACK_LEG:-unset}" "$PWD" >> "$SHIM_CLAUDE_ARGS_FILE"
@@ -12,11 +12,15 @@ PROMPT=""; prev=""
 for a in "$@"; do [ "$prev" = "-p" ] && PROMPT=$a; prev=$a; done
 S=$(printf '%s\n' "$PROMPT" | sed -n 's/.*use \([^ ]*\) as the session dir.*/\1/p' | head -1)
 finish() { mkdir -p "$S"; echo "# report (pass ${PASS:-?})" > "$S/report.md"; echo "# ledger" > "$S/findings.md"
+           printf '%s\n' '{"phase":"done"}' > "$S/state.json"
            echo '{"type":"result","subtype":"success","is_error":false}'; exit 0; }
 case "${SHIM_MODE:-ok}" in
   hang) exec sleep 3599;;
   fail) echo '{"type":"result","subtype":"error","is_error":true}'; exit 1;;
   noreport) sleep 2; mkdir -p "$S"; echo '{"type":"result","subtype":"success","is_error":false}'; exit 0;;
+  emptyreport) sleep 2; mkdir -p "$S"; : > "$S/report.md"; printf '%s\n' '{"phase":"done"}' > "$S/state.json"; echo '{"type":"result","subtype":"success","is_error":false}'; exit 0;;
+  symlinkreport) sleep 2; mkdir -p "$S"; ln -s "$SHIM_REPORT_TARGET" "$S/report.md"; printf '%s\n' '{"phase":"done"}' > "$S/state.json"; echo '{"type":"result","subtype":"success","is_error":false}'; exit 0;;
+  nodonestate) sleep 2; mkdir -p "$S"; echo '# incomplete report' > "$S/report.md"; printf '%s\n' '{"phase":"collect"}' > "$S/state.json"; echo '{"type":"result","subtype":"success","is_error":false}'; exit 0;;
   slowstart)
     # quiet for longer than the stall threshold, then a normal completion: the detector must re-check
     # liveness AFTER its CPU sample instead of killing on evidence gathered before it.

@@ -62,7 +62,7 @@ def roster_line():
         return "review-council seats: roster unavailable (%s)" % e
     out = (r.stdout or "").strip()
     if out:
-        return out  # pass through verbatim, even on roster.sh's exit 5 (<3 seats is real content, not a failure)
+        return out  # pass through verbatim, including strict exit 5 or 6 roster diagnostics
     err = (r.stderr or "").strip().splitlines()
     reason = err[0] if err else ("exit %d" % r.returncode)
     return "review-council seats: roster unavailable (%s)" % reason

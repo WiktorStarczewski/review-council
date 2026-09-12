@@ -1,4 +1,5 @@
 """Codex port contracts. Isolated homes and CLI doubles; no model/network calls."""
+import hashlib
 import importlib.util
 import io
 import json
@@ -75,6 +76,535 @@ class CodexTests(unittest.TestCase):
             for name, priority in [('gpt-5.6-sol', 1), ('gpt-6-astra', 2)]]}))
         self.assertEqual(self.roster.codex_models(cache), [('gpt-6-astra', 'max')])
         self.assertEqual(self.roster.codex_suffix('gpt-6-astra'), 'astra')
+
+    def test_configured_codex_models_select_exact_slugs(self):
+        cache = self.root / 'cache.json'
+        cache.write_text(json.dumps({'models': [
+            {'slug': name, 'visibility': 'list', 'priority': priority,
+             'supported_reasoning_levels': [{'effort': 'max'}]}
+            for name, priority in [('gpt-5.6-sol', 1), ('gpt-5.6-terra', 2),
+                                   ('gpt-6-astra', 1)]]}))
+        self.assertEqual(
+            self.roster.codex_models(cache, ['gpt-5.6-sol']),
+            [('gpt-5.6-sol', 'max')],
+        )
+
+    def test_exact_panel_detects_sol_grok_and_two_opus_seats(self):
+        cache = self.root / 'cache.json'
+        cache.write_text(json.dumps({'models': [
+            {'slug': name, 'visibility': 'list', 'priority': priority,
+             'supported_reasoning_levels': [{'effort': 'max'}]}
+            for name, priority in [('gpt-5.6-sol', 1), ('gpt-5.6-terra', 2),
+                                   ('gpt-6-astra', 1)]]}))
+        cfg = {'codex_models': ['gpt-5.6-sol'], 'claude_seats': 2,
+               'exclude': ['gemini'], 'extras': False}
+
+        def fake_run(cmd, _timeout):
+            if cmd[:3] == ['codex', 'login', 'status']:
+                return 0, 'Logged in using ChatGPT', ''
+            if cmd[:2] == ['grok', 'models']:
+                return 0, 'You are logged in with grok.com.\nDefault model: grok-4.6', ''
+            if cmd[:4] == ['claude', 'auth', 'status', '--json']:
+                return 0, '{"loggedIn":true}', ''
+            self.fail('unexpected command: %r' % cmd)
+
+        env = dict(self.env, REVIEW_COUNCIL_CODEX_MODELS_CACHE=str(cache))
+        with patch.dict(os.environ, env), \
+             patch.object(self.roster, 'load_config', return_value=(cfg, None)), \
+             patch.object(self.roster.shutil, 'which', return_value='/fixture/cli'), \
+             patch.object(self.roster, 'run', side_effect=fake_run):
+            roster, _, failed = self.roster.build(False)
+        self.assertFalse(failed)
+        self.assertEqual(
+            [(seat['seat'], seat['adapter'], seat['model']) for seat in roster['seats']],
+            [('codex-sol', 'codex', 'gpt-5.6-sol'),
+             ('grok', 'grok', 'grok-4.6'),
+             ('opus', 'claude', 'opus'),
+             ('opus-2', 'claude', 'opus')],
+        )
+
+    def test_invalid_exact_settings_fail_closed(self):
+        invalid_codex = [
+            'gpt-5.6-sol', [],
+            ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-astra'],
+            ['gpt-5.6-sol', 3], ['gpt-5.6-sol', 'gpt-5.6-sol'],
+        ]
+        for value in invalid_codex:
+            with self.subTest(codex_models=value), \
+                 patch.object(self.roster.shutil, 'which', return_value=None):
+                seats, reason = self.roster.detect_codex({'codex_models': value})
+                self.assertEqual(seats, [])
+                self.assertIn('invalid codex_models', reason)
+        for value in ('2', True, -1, 5, 1.5):
+            with self.subTest(claude_seats=value), \
+                 patch.object(self.roster.shutil, 'which', return_value=None):
+                seats, reason = self.roster.detect_claude({'claude_seats': value})
+                self.assertEqual(seats, [])
+                self.assertIn('invalid claude_seats', reason)
+        for config in ({'codex_models': 'gpt-5.6-sol'}, {'claude_seats': '2'}):
+            with self.subTest(config=config):
+                roster, strict_class = self.build_roster({}, config)
+                self.assertEqual(strict_class, 'config')
+                self.assertEqual(roster['strict_class'], 'config')
+                self.assertTrue(any(entry['reason'].startswith('strict: invalid ')
+                                    for entry in roster['excluded']))
+
+    def test_permanent_config_wins_over_availability(self):
+        roster, strict_class = self.build_roster(
+            {}, {'codex_models': 'gpt-5.6-sol', 'min_labs': 3})
+        self.assertEqual(strict_class, 'config')
+        self.assertEqual(roster['strict_class'], 'config')
+        self.assertTrue(any(entry['cli'] == 'min_labs' for entry in roster['excluded']))
+        cases = (
+            {'codex_models': ['gpt-5.6-sol'],
+             'pin': {'codex-sol': {'model': 'gpt-6-astra'}}},
+            {'claude_seats': 2, 'exclude': ['opus-2']},
+        )
+        for config in cases:
+            with self.subTest(config=config):
+                roster, strict_class = self.build_roster({}, config)
+                self.assertEqual(strict_class, 'config')
+                self.assertEqual(roster['strict_class'], 'config')
+
+    def test_unknown_configured_codex_slug_fails_the_exact_selection(self):
+        cache = self.root / 'cache.json'
+        cache.write_text(json.dumps({'models': [
+            {'slug': 'gpt-5.6-sol', 'visibility': 'list', 'priority': 1,
+             'supported_reasoning_levels': [{'effort': 'max'}]},
+        ]}))
+        env = dict(self.env, REVIEW_COUNCIL_CODEX_MODELS_CACHE=str(cache))
+        with patch.dict(os.environ, env), \
+             patch.object(self.roster.shutil, 'which', return_value='/fixture/codex'), \
+             patch.object(self.roster, 'run', return_value=(0, 'Logged in using ChatGPT', '')):
+            seats, reason = self.roster.detect_codex(
+                {'codex_models': ['gpt-5.6-sol', 'gpt-9-unknown']})
+        self.assertEqual(seats, [])
+        self.assertIn('unknown Codex model slug', reason)
+        self.assertIn('gpt-9-unknown', reason)
+        with patch.dict(os.environ, env), \
+             patch.object(self.roster.shutil, 'which', return_value=None):
+            seats, reason = self.roster.detect_codex(
+                {'codex_models': ['gpt-9-unknown']})
+        self.assertEqual(seats, [])
+        self.assertIn('unknown Codex model slug', reason)
+
+    def test_configured_codex_cache_diagnostics_keep_the_cause(self):
+        missing = self.root / 'missing.json'
+        corrupt = self.root / 'corrupt.json'
+        unsupported = self.root / 'unsupported.json'
+        corrupt.write_text('{')
+        unsupported.write_text(json.dumps({'models': [{
+            'slug': 'gpt-5.6-sol', 'visibility': 'list', 'priority': 1,
+            'supported_reasoning_levels': [{'effort': 'medium'}],
+        }]}))
+        with patch.object(self.roster.shutil, 'which', return_value='/fixture/codex'), \
+             patch.object(self.roster, 'run', return_value=(0, 'Logged in using ChatGPT', '')):
+            for cache, expected in ((missing, 'model cache unavailable'),
+                                    (corrupt, 'model cache unreadable')):
+                with self.subTest(cache=cache), patch.dict(
+                        os.environ, dict(self.env, REVIEW_COUNCIL_CODEX_MODELS_CACHE=str(cache))):
+                    seats, reason = self.roster.detect_codex(
+                        {'codex_models': ['gpt-5.6-sol']})
+                    self.assertEqual(seats, [])
+                    self.assertIn(expected, reason)
+            with patch.dict(os.environ, dict(
+                    self.env, REVIEW_COUNCIL_CODEX_MODELS_CACHE=str(unsupported))):
+                seats, reason = self.roster.detect_codex(
+                    {'codex_models': ['gpt-5.6-sol']})
+                self.assertEqual(seats, [])
+                self.assertEqual(reason,
+                                 'configured Codex model has no supported high effort: gpt-5.6-sol')
+
+    def test_cross_generation_codex_suffixes_get_unique_seat_ids(self):
+        cache = self.root / 'cache.json'
+        cache.write_text(json.dumps({'models': [
+            {'slug': slug, 'visibility': 'list', 'priority': 1,
+             'supported_reasoning_levels': [{'effort': 'max'}]}
+            for slug in ('gpt-5.6-sol', 'gpt-6-sol')
+        ]}))
+        env = dict(self.env, REVIEW_COUNCIL_CODEX_MODELS_CACHE=str(cache))
+        with patch.dict(os.environ, env), \
+             patch.object(self.roster.shutil, 'which', return_value='/fixture/codex'), \
+             patch.object(self.roster, 'run', return_value=(0, 'Logged in using ChatGPT', '')):
+            seats, reason = self.roster.detect_codex(
+                {'codex_models': ['gpt-5.6-sol', 'gpt-6-sol']})
+        self.assertIsNone(reason)
+        self.assertEqual([seat['seat'] for seat in seats],
+                         ['codex-5-6-sol', 'codex-6-sol'])
+
+    def test_codex_model_pin_cannot_escape_exact_allowlist(self):
+        sol = self.roster.make_seat('codex-sol', 'codex', 'gpt-5.6-sol', 'max')
+        grok = self.roster.make_seat('grok', 'grok', 'grok-4.6', 'xhigh')
+        opus = self.roster.make_seat('opus', 'claude', 'opus', 'max')
+        config = {'codex_models': ['gpt-5.6-sol'], 'claude_seats': 1,
+                  'extras': False,
+                  'pin': {'codex-sol': {'model': 'gpt-6-astra'}}}
+        roster, failed = self.build_roster(
+            {'codex': [sol], 'grok': [grok], 'claude': [opus]}, config)
+        self.assertEqual(failed, 'config')
+        self.assertNotIn('gpt-6-astra', [seat['model'] for seat in roster['seats']])
+        self.assertIn(
+            {'cli': 'codex-sol',
+             'reason': 'pinned model gpt-6-astra is outside codex_models'},
+            roster['excluded'],
+        )
+        self.assertIn(
+            {'cli': 'codex_models',
+             'reason': 'strict: codex_models requires 1 matching seat(s), 0 survived'},
+            roster['excluded'],
+        )
+
+    def test_exact_extra_pins_apply_only_to_active_extras(self):
+        def seats(include_codex=True):
+            found = {
+                'grok': [self.roster.make_seat('grok', 'grok', 'grok-4.6', 'xhigh')],
+                'claude': [self.roster.make_seat('opus', 'claude', 'opus', 'max')],
+            }
+            if include_codex:
+                found['codex'] = [self.roster.make_seat(
+                    'codex-sol', 'codex', 'gpt-5.6-sol', 'max')]
+            return found
+
+        pin = {'codex-review': {'model': 'gpt-6-astra'}}
+        active, failed = self.build_roster(
+            seats(), {'codex_models': ['gpt-5.6-sol'], 'pin': pin})
+        self.assertEqual(failed, 'config')
+        self.assertEqual(active['strict_reason'],
+                         'codex-review: pinned model gpt-6-astra is outside codex_models')
+        self.assertEqual(sum(entry['reason'].startswith('strict: codex_models')
+                             for entry in active['excluded']), 1)
+
+        inactive_configs = (
+            {'codex_models': ['gpt-5.6-sol'], 'pin': pin, 'extras': False},
+            {'codex_models': ['gpt-5.6-sol'], 'pin': pin,
+             'exclude': ['codex-review']},
+        )
+        for config in inactive_configs:
+            with self.subTest(config=config):
+                roster, failed = self.build_roster(seats(), config)
+                self.assertFalse(failed)
+                self.assertNotIn('strict_class', roster)
+                self.assertFalse(any(entry['reason'].startswith('pinned model ')
+                                     for entry in roster['excluded']))
+
+        orphaned, failed = self.build_roster(
+            seats(include_codex=False),
+            {'codex_models': ['gpt-5.6-sol'], 'pin': pin},
+        )
+        self.assertEqual(failed, 'availability')
+        self.assertEqual(orphaned['strict_reason'],
+                         'codex_models requires 1 matching seat(s), 0 survived')
+        self.assertFalse(any(entry['reason'].startswith('pinned model ')
+                             for entry in orphaned['excluded']))
+
+    def test_explicit_claude_pins_must_remain_in_opus_family_on_both_hosts(self):
+        for codex_host, adapter in ((True, 'claude'), (False, 'agent')):
+            with self.subTest(codex_host=codex_host):
+                self.roster.CODEX_HOST = codex_host
+                self.roster.ORDER = (adapter,)
+                detected = [self.roster.make_seat(
+                    'opus' if index == 0 else 'opus-%d' % (index + 1),
+                    adapter, 'opus', 'max') for index in range(2)]
+                roster, failed = self.build_roster(
+                    {adapter: detected},
+                    {'claude_seats': 2, 'extras': False,
+                     'pin': {'opus-2': {'model': 'sonnet'}}},
+                )
+                self.assertEqual(failed, 'config')
+                self.assertEqual(
+                    roster['strict_reason'],
+                    'opus-2: pinned model sonnet is outside the Opus family',
+                )
+                self.assertEqual(sum(entry['reason'].startswith('strict: claude_seats')
+                                     for entry in roster['excluded']), 1)
+
+    def test_default_claude_pin_behavior_remains_non_exact(self):
+        detected = self.roster.make_seat('opus', 'claude', 'opus', 'max')
+        roster, failed = self.build_roster(
+            {'claude': [detected]},
+            {'extras': False, 'pin': {'opus': {'model': 'sonnet'}}},
+        )
+        self.assertFalse(failed)
+        self.assertNotIn('strict_class', roster)
+        self.assertEqual(next(seat for seat in roster['seats']
+                              if seat['seat'] == 'opus')['model'], 'sonnet')
+
+    def test_plural_unsupported_codex_models_are_permanent_config(self):
+        cache = self.root / 'unsupported.json'
+        models = ['gpt-5.6-sol', 'gpt-5.6-terra']
+        cache.write_text(json.dumps({'models': [
+            {'slug': slug, 'visibility': 'list', 'priority': index,
+             'supported_reasoning_levels': [{'effort': 'medium'}]}
+            for index, slug in enumerate(models, 1)
+        ]}))
+        self.roster.ORDER = ('codex',)
+        env = dict(self.env, REVIEW_COUNCIL_CODEX_MODELS_CACHE=str(cache))
+        with patch.dict(os.environ, env), \
+             patch.object(self.roster, 'DETECT', {'codex': self.roster.detect_codex}), \
+             patch.object(self.roster, 'load_config',
+                          return_value=({'codex_models': models, 'extras': False}, None)), \
+             patch.object(self.roster.shutil, 'which', return_value='/fixture/codex'), \
+             patch.object(self.roster, 'run', return_value=(0, 'Logged in using ChatGPT', '')):
+            roster, _, failed = self.roster.build(False)
+        self.assertEqual(failed, 'config')
+        self.assertEqual(
+            roster['strict_reason'],
+            'configured Codex models have no supported high effort: '
+            'gpt-5.6-sol, gpt-5.6-terra',
+        )
+
+    def test_permanent_exact_config_skips_probes_but_valid_control_probes(self):
+        def seats():
+            return {
+                'codex': [self.roster.make_seat(
+                    'codex-sol', 'codex', 'gpt-5.6-sol', 'max')],
+                'grok': [self.roster.make_seat('grok', 'grok', 'grok-4.6', 'xhigh')],
+                'claude': [self.roster.make_seat('opus', 'claude', 'opus', 'max')],
+            }
+
+        calls = []
+        invalid, failed = self.build_roster(
+            seats(),
+            {'codex_models': ['gpt-5.6-sol'],
+             'pin': {'codex-review': {'model': 'gpt-6-astra'}}},
+            probe=lambda seat: calls.append(seat['seat']),
+        )
+        self.assertEqual(failed, 'config')
+        self.assertEqual(calls, [])
+        self.assertEqual(sum(entry['reason'].startswith('strict: codex_models')
+                             for entry in invalid['excluded']), 1)
+
+        valid_calls = []
+        valid, failed = self.build_roster(
+            seats(),
+            {'codex_models': ['gpt-5.6-sol'], 'claude_seats': 1,
+             'extras': False},
+            probe=lambda seat: valid_calls.append(seat['seat']),
+        )
+        self.assertFalse(failed)
+        self.assertEqual(valid_calls, ['codex-sol', 'grok', 'opus'])
+        self.assertNotIn('strict_class', valid)
+
+    def test_exact_codex_count_rejects_padded_name_collision(self):
+        sol = self.roster.make_seat('codex-sol', 'codex', 'gpt-5.6-sol', 'max')
+        grok = self.roster.make_seat('grok', 'grok', 'grok-4.6', 'xhigh')
+        roster, failed = self.build_roster(
+            {'codex': [sol], 'grok': [grok]},
+            {'codex_models': ['gpt-5.6-sol', 'gpt-5.6-sol-1'], 'extras': False},
+        )
+        self.assertEqual(failed, 'availability')
+        self.assertEqual(roster['padded'], 1)
+        self.assertEqual(
+            [(seat['seat'], seat['model'], seat.get('padded'))
+             for seat in roster['seats'] if seat['adapter'] == 'codex'],
+            [('codex-sol', 'gpt-5.6-sol', None),
+             ('codex-sol-1', 'gpt-5.6-sol', True)],
+        )
+        self.assertIn(
+            {'cli': 'codex_models',
+             'reason': 'strict: codex_models requires 2 matching seat(s), 1 survived'},
+            roster['excluded'],
+        )
+
+    def test_exact_claude_count_is_checked_before_padding(self):
+        sol = self.roster.make_seat('codex-sol', 'codex', 'gpt-5.6-sol', 'max')
+        opus = self.roster.make_seat('opus', 'claude', 'opus', 'max')
+        roster, failed = self.build_roster(
+            {'codex': [sol], 'claude': [opus]},
+            {'claude_seats': 2, 'extras': False},
+        )
+        self.assertEqual(failed, 'availability')
+        self.assertEqual(roster['padded'], 1)
+        self.assertIn(
+            {'cli': 'claude_seats',
+             'reason': 'strict: claude_seats requires 2 matching seat(s), 1 survived'},
+            roster['excluded'],
+        )
+
+    def test_exact_probe_failure_refuses_even_after_padding(self):
+        sol = self.roster.make_seat('codex-sol', 'codex', 'gpt-5.6-sol', 'max')
+        opus = self.roster.make_seat('opus', 'claude', 'opus', 'max')
+        roster, failed = self.build_roster(
+            {'codex': [sol], 'claude': [opus]},
+            {'codex_models': ['gpt-5.6-sol'], 'claude_seats': 1, 'extras': False},
+            probe=lambda _seat: 'probe failed',
+        )
+        self.assertEqual(failed, 'availability')
+        self.assertEqual(roster['seats'], [])
+        strict = [entry['reason'] for entry in roster['excluded']
+                  if entry['reason'].startswith('strict: ')]
+        self.assertIn('strict: codex_models requires 1 matching seat(s), 0 survived', strict)
+        self.assertIn('strict: claude_seats requires 1 matching seat(s), 0 survived', strict)
+
+    def test_disabled_claude_count_is_not_an_exact_requirement(self):
+        self.roster.CODEX_HOST = False
+        self.roster.ORDER = ('agent',)
+        env = dict(self.env, REVIEW_COUNCIL_CLAUDE_SEAT='0')
+        with patch.dict(os.environ, env), \
+             patch.object(self.roster, 'DETECT', {'agent': self.roster.detect_agent}), \
+             patch.object(self.roster, 'load_config',
+                          return_value=({'claude_seats': 2, 'extras': False}, None)):
+            roster, _, failed = self.roster.build(False)
+        self.assertFalse(failed)
+        self.assertEqual(roster['padded'], 3)
+        self.assertFalse(any(entry['cli'] == 'claude_seats'
+                             for entry in roster['excluded']))
+
+    def test_result_receipt_policy_snapshots_and_preserves_legacy_results(self):
+        session = self.root / 'session'
+        session.mkdir()
+        missing_exit = session / 'r1-codex-sol.json'
+        plan_missing_exit = session / 'r2p-opus.json'
+        repair_missing_exit = session / 'r2x-grok.json'
+        with_exit = session / 'r1-grok.json'
+        missing_exit.write_bytes(b'{"one":1}\n')
+        plan_missing_exit.write_bytes(b'{"plan":1}\n')
+        repair_missing_exit.write_bytes(b'{"repair":1}\n')
+        with_exit.write_bytes(b'{"two":2}\n')
+        with_exit.with_suffix('.exit').write_text('0\n')
+        roster_path = session / 'roster.json'
+
+        policy = self.roster.result_receipt_policy(roster_path)
+        self.assertEqual(policy, {
+            'version': 1,
+            'legacy_no_exit_sha256': {
+                missing_exit.name: hashlib.sha256(missing_exit.read_bytes()).hexdigest(),
+                plan_missing_exit.name: hashlib.sha256(plan_missing_exit.read_bytes()).hexdigest(),
+                repair_missing_exit.name: hashlib.sha256(repair_missing_exit.read_bytes()).hexdigest(),
+            },
+        })
+
+        preserved = {
+            'version': 7,
+            'legacy_no_exit_sha256': {'old.json': 'a' * 64},
+        }
+        roster_path.write_text(json.dumps({'result_receipts': preserved}))
+        (session / 'r2-opus.json').write_text('{}')
+        self.assertEqual(self.roster.result_receipt_policy(roster_path), preserved)
+
+    def test_invalid_present_receipt_policy_never_snapshots_legacy_results(self):
+        session = self.root / 'invalid-receipts'
+        session.mkdir()
+        legacy = session / 'r1-opus.json'
+        legacy.write_text('{"summary":"legacy","findings":[]}')
+        roster_path = session / 'roster.json'
+        empty = {'version': 1, 'legacy_no_exit_sha256': {}}
+        invalid_documents = (
+            '{',
+            '[]',
+            json.dumps({'result_receipts': {'version': '1',
+                                                    'legacy_no_exit_sha256': {}}}),
+            json.dumps({'result_receipts': {'version': True,
+                                                    'legacy_no_exit_sha256': {}}}),
+            json.dumps({'result_receipts': {'version': 0,
+                                                    'legacy_no_exit_sha256': {}}}),
+            json.dumps({'result_receipts': {'version': 1,
+                                                    'legacy_no_exit_sha256': []}}),
+            json.dumps({'result_receipts': {'version': 1,
+                                                    'legacy_no_exit_sha256': {
+                                                        legacy.name: 'abc',
+                                                    }}}),
+        )
+        for document in invalid_documents:
+            with self.subTest(document=document):
+                roster_path.write_text(document)
+                self.assertEqual(self.roster.result_receipt_policy(roster_path), empty)
+
+        roster_path.unlink()
+        roster_path.mkdir()
+        self.assertEqual(self.roster.result_receipt_policy(roster_path), empty)
+
+    def test_min_labs_rejects_invalid_and_impossible_config_before_probes(self):
+        codex = self.roster.make_seat('codex-sol', 'codex', 'gpt-5.6-sol', 'max')
+        grok = self.roster.make_seat('grok', 'grok', 'grok-4.6', 'xhigh')
+        gemini = self.roster.make_seat('gemini', 'gemini', 'gemini-2.5-pro', None)
+        opus = self.roster.make_seat('opus', 'claude', 'opus', 'max')
+        seats = {'codex': [codex], 'grok': [grok], 'gemini': [gemini], 'claude': [opus]}
+        for value in ('two', True, 0, -1):
+            calls = []
+            with self.subTest(min_labs=value):
+                roster, failed = self.build_roster(
+                    seats, {'min_labs': value, 'extras': False},
+                    probe=lambda seat: calls.append(seat['seat']),
+                )
+                self.assertEqual(failed, 'config')
+                self.assertEqual(roster['strict_reason'],
+                                 'invalid min_labs: expected an integer of at least 1')
+                self.assertEqual(calls, [])
+
+        calls = []
+        roster, failed = self.build_roster(
+            seats,
+            {'min_labs': 3, 'exclude': ['grok', 'gemini'], 'extras': False},
+            probe=lambda seat: calls.append(seat['seat']),
+        )
+        self.assertEqual(failed, 'config')
+        self.assertEqual(roster['strict_reason'],
+                         'min_labs=3 exceeds 2 configured lab(s)')
+        self.assertEqual(calls, [])
+
+    def test_satisfiable_min_labs_availability_shortfall_remains_retryable(self):
+        codex = self.roster.make_seat('codex-sol', 'codex', 'gpt-5.6-sol', 'max')
+        grok = self.roster.make_seat('grok', 'grok', 'grok-4.6', 'xhigh')
+        opus = self.roster.make_seat('opus', 'claude', 'opus', 'max')
+        calls = []
+
+        def probe(seat):
+            calls.append(seat['seat'])
+            return 'probe failed' if seat['adapter'] == 'grok' else None
+
+        roster, failed = self.build_roster(
+            {'codex': [codex], 'grok': [grok], 'claude': [opus]},
+            {'min_labs': 3, 'exclude': ['gemini'], 'extras': False},
+            probe=probe,
+        )
+        self.assertEqual(failed, 'availability')
+        self.assertEqual(roster['strict_reason'], '2 lab(s) available, min_labs=3')
+        self.assertEqual(calls, ['codex-sol', 'grok', 'opus'])
+
+    def test_repeated_provider_model_probe_runs_once(self):
+        sol = self.roster.make_seat('codex-sol', 'codex', 'gpt-5.6-sol', 'max')
+        grok = self.roster.make_seat('grok', 'grok', 'grok-4.6', 'xhigh')
+        opus = self.roster.make_seat('opus', 'claude', 'opus', 'max')
+        opus2 = self.roster.make_seat('opus-2', 'claude', 'opus', 'max')
+        calls = []
+
+        def probe(seat):
+            calls.append((seat['adapter'], seat['model']))
+            return None
+
+        roster, failed = self.build_roster(
+            {'codex': [sol], 'grok': [grok], 'claude': [opus, opus2]},
+            {'codex_models': ['gpt-5.6-sol'], 'claude_seats': 2,
+             'extras': False}, probe)
+        self.assertFalse(failed)
+        self.assertEqual(len(roster['seats']), 4)
+        self.assertEqual(calls.count(('claude', 'opus')), 1)
+
+    def test_claude_seats_zero_padding_override_is_recorded(self):
+        self.roster.CODEX_HOST = False
+        self.roster.ORDER = ('agent',)
+        with patch.dict(os.environ, self.env), \
+             patch.object(self.roster, 'DETECT', {'agent': self.roster.detect_agent}), \
+             patch.object(self.roster, 'load_config',
+                          return_value=({'claude_seats': 0, 'extras': False}, None)):
+            roster, _, failed = self.roster.build(False)
+        self.assertFalse(failed)
+        self.assertEqual(roster['padded'], 3)
+        padding = [entry['reason'] for entry in roster['excluded']
+                   if entry['cli'] == 'padding']
+        self.assertEqual(len(padding), 1)
+        self.assertTrue(padding[0].startswith('claude_seats: 0 overridden'))
+        self.assertTrue(padding[0].endswith('a panel needs 3 seats'))
+
+    def test_claude_seats_configures_independent_opus_runs(self):
+        with patch.dict(os.environ, self.env), \
+             patch.object(self.roster.shutil, 'which', return_value='/bin/claude'), \
+             patch.object(self.roster, 'run', return_value=(0, '{"loggedIn":true}', '')):
+            seats, reason = self.roster.detect_claude({'claude_seats': 2})
+        self.assertIsNone(reason)
+        self.assertEqual([seat['seat'] for seat in seats], ['opus', 'opus-2'])
+        self.assertEqual({seat['model'] for seat in seats}, {'opus'})
 
     def test_claude_auth_requires_positive_json(self):
         for rc, payload, expected in [(0, '{"loggedIn":true}', True),
@@ -173,7 +703,7 @@ print(json.dumps({'type':'result','is_error':False,'subtype':'success',
         self.assertIn('findings', schema['properties'])
         settings = json.loads(args[args.index('--settings') + 1])
         command = settings['hooks']['PreToolUse'][0]['hooks'][0]['command']
-        for text, rc in [('git diff --stat', 0), ('git reset --hard', 2), ('echo bad > file', 2)]:
+        for text, rc in [('git diff --stat | head -20', 0), ('git reset --hard', 2), ('echo bad > file', 2)]:
             guarded = subprocess.run(command, shell=True, input=json.dumps({
                 'tool_name': 'Bash', 'tool_input': {'command': text}}), text=True, capture_output=True)
             self.assertEqual(guarded.returncode, rc, guarded.stderr)
@@ -244,6 +774,7 @@ session = Path(re.search(r'use (.+) as the session dir', prompt).group(1))
 (session/'findings.md').write_text('ledger')
 if not (os.environ.get('MISS_SECOND') == '1' and os.environ.get('PASS') == '2'):
     (session/'report.md').write_text('completed review')
+    (session/'state.json').write_text(json.dumps({'phase':'done'}))
 print('completed')
 ''')
         cli.chmod(0o755)
@@ -278,7 +809,7 @@ print('completed')
     def test_old_receipt_cannot_complete_new_stack_pass(self):
         proc, _ = self.run_stack(missing_second_receipt=True)
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-        self.assertIn('wrote no report.md', proc.stdout)
+        self.assertIn('invalid completion receipt (report.md is missing)', proc.stdout)
         self.assertIn('COMPLETE WITH FAILURES', proc.stdout)
 
 

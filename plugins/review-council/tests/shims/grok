@@ -2,7 +2,8 @@
 # Fake grok CLI for rev unit tests. Never call the network.
 # Records ENV and CWD next to argv (like the claude shim): REV_ACTIVE=1 must reach every seat.
 [ -n "${SHIM_ARGS_FILE:-}" ] && printf '%s\n' "$@" > "$SHIM_ARGS_FILE"
-[ -n "${SHIM_ARGS_FILE:-}" ] && printf 'REV_ACTIVE=%s\ncwd=%s\n' "${REV_ACTIVE:-unset}" "$PWD" >> "$SHIM_ARGS_FILE.env"
+[ -n "${SHIM_ARGS_FILE:-}" ] && printf 'REV_ACTIVE=%s\ncwd=%s\nHOME=%s\nGROK_HOME=%s\n' \
+  "${REV_ACTIVE:-unset}" "$PWD" "$HOME" "${GROK_HOME:-unset}" >> "$SHIM_ARGS_FILE.env"
 if [ "${1:-}" = models ]; then
   # grok-notauth: grok alone is signed out (codex stays fine), so preflight's grok branch is reachable
   case "${SHIM_MODE:-ok}" in notauth|grok-notauth) echo "Not logged in. Run grok login."; exit 1;; esac
@@ -13,6 +14,9 @@ case "${SHIM_MODE:-ok}" in
   ratelimit) echo '{"type":"error","message":"rate limit exceeded"}'; exit 1;;
   empty)     echo '{"type":"end","stopReason":"end_turn","num_turns":1}'; exit 0;;
   notools)   echo '{"type":"end","stopReason":"end_turn","num_turns":1,"structuredOutput":{"summary":"I will inspect the diff first.","findings":[]}}'; exit 0;;
+  noise401tool) echo '{"type":"tool_call","toolCallId":"c401","title":"rg -n unauthorized .","kind":"execute","status":"pending","toolName":"grep"}'; echo '{"type":"end","stopReason":"end_turn","num_turns":1}'; exit 0;;
+  auditnoise401) echo '{"type":"tool_call","toolCallId":"c401","title":"rg -n unauthorized .","kind":"execute","status":"pending","toolName":"grep"}'; echo '{"type":"tool_call_update","toolCallId":"c401","status":"completed","content":"src/x.ts:1:unauthorized","locations":[]}'; echo '{"type":"end","stopReason":"end_turn","num_turns":1,"structuredOutput":{"summary":"checked","findings":[]}}'; exit 0;;
   notools_then_ok) if [ -f "$SHIM_ARGS_FILE.grok-calls" ]; then cat "$SHIM_FIXTURE_DIR/grok-stream.ndjson"; else touch "$SHIM_ARGS_FILE.grok-calls"; echo '{"type":"end","stopReason":"end_turn","num_turns":1,"structuredOutput":{"summary":"I will inspect the diff first.","findings":[]}}'; fi; exit 0;;
+  metered_notools_then_ok) if [ -f "$SHIM_ARGS_FILE.grok-calls" ]; then cat "$SHIM_FIXTURE_DIR/grok-stream.ndjson"; else touch "$SHIM_ARGS_FILE.grok-calls"; echo '{"type":"end","stopReason":"end_turn","num_turns":1,"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12},"structuredOutput":{"summary":"I will inspect the diff first.","findings":[]}}'; fi; exit 0;;
   *)         cat "$SHIM_FIXTURE_DIR/grok-stream.ndjson"; exit 0;;
 esac

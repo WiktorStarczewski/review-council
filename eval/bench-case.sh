@@ -17,7 +17,12 @@ if [ ! -d "$REPO/.git" ]; then
   [ "$(git -C "$REPO" rev-list --all --not HEAD | wc -l | tr -d ' ')" = 0 ] || { echo "$NAME: history after HEAD present"; exit 1; }
 fi
 S="$OUT/session"; mkdir -p "$S"
-( cd "$REPO" && "$SCRIPTS/rev-preflight.sh" --scope branch --base "$BASE_SHA" --write "$S" ) > "$OUT/preflight.txt" 2>&1 || { echo "$NAME: preflight failed: $(tail -1 "$OUT/preflight.txt")"; exit 1; }
+( cd "$REPO" && "$SCRIPTS/rev-preflight.sh" --scope branch --base "$BASE_SHA" --write "$S" ) > "$OUT/preflight.txt" 2>&1
+preflight_rc=$?
+if [ "$preflight_rc" -ne 0 ]; then
+  echo "$NAME: preflight failed: $(tail -1 "$OUT/preflight.txt")"
+  exit "$preflight_rc"
+fi
 SEATS=$(python3 -c "import json,sys; print(' '.join(s['seat'] for s in json.load(open(sys.argv[1]))['seats'] if not s.get('extra')))" "$S/roster.json")
 # Filtered dependency view: every registry crate pinned in the checkout's Cargo.lock, minus any crate this repository
 # itself publishes (any [package] name under the checkout), linked from the real registry into $S/deps. Seats are told
@@ -44,6 +49,11 @@ for name, ver in pins:
             (deps / f"{name}-{ver}").symlink_to(d); n += 1; break
 print(f"deps view: {n} crates linked, {len(own)} own crate names excluded")
 PY2
+deps_rc=$?
+if [ "$deps_rc" -ne 0 ]; then
+  echo "$NAME: dependency view failed"
+  exit "$deps_rc"
+fi
 export REV_DEPS_DIR="$DEPS"
 PRARGS=(); if [ -n "$PR_REPO" ] && [ -n "$PR_NUM" ]; then gh pr view "$PR_NUM" --repo "$PR_REPO" --json title,body --jq '"# " + .title + "\n\n" + .body' > "$S/pr.md" 2>/dev/null && [ -s "$S/pr.md" ] && PRARGS=(--pr "$S/pr.md"); fi
 i=0; for seat in $SEATS; do lens=$(python3 -c "import sys; L=sys.argv[1].split(','); print(L[(int(sys.argv[2])+1) % len(L)])" "$LENSES" "$i"); REV_SEAT_OFFLINE=1 "$SCRIPTS/rev-prompt.sh" "$S" 1 "$seat" "$lens" "$EMPH" ${PRARGS[@]+"${PRARGS[@]}"} >/dev/null || { echo "$NAME: render failed for $seat"; exit 1; }; echo "$seat $lens" >> "$S/lenses.txt"; i=$((i+1)); done
@@ -51,9 +61,12 @@ pids=(); [ -n "$SEATS" ] || { echo "$NAME: no seats in roster"; exit 1; }
 for seat in $SEATS; do
   adapter=$(python3 -c "import json,sys; print(next(s['adapter'] for s in json.load(open(sys.argv[1]))['seats'] if s['seat']==sys.argv[2]))" "$S/roster.json" "$seat")
   if [ "$adapter" = agent ]; then
-    ( cd "$REPO" && claude -p "Your instructions are in $S/r1-$seat.prompt.md. Read that file first with the Read tool, follow it exactly, and return ONLY the JSON object it asks for. You are one seat inside a review that is already running: never invoke /review-council:rev, /review-council:stack, or claude -p, and never start a review by any other means. This review is read-only and offline: do not create, edit or delete any file, do not run any git command that changes state, do not fetch or use the network, and do not use any other checkout of this repository on this machine. The repository is at $REPO. Reason at maximum depth; there is no time or token budget." \
+    ( cd "$REPO" && claude -p "Your instructions are in $S/r1-$seat.prompt.md. Read that file first with the Read tool, follow it exactly, and return ONLY the JSON object it asks for. You are one seat inside a review that is already running: never invoke /review-council:rev, /review-council:stack, or claude -p, and never start a review by any other means. This review is read-only and offline: do not create, edit or delete any file, do not run any git command that changes state, do not fetch or use the network, and do not use any other checkout of this repository on this machine. The repository is at $REPO. Complete every assigned check and substantiate each finding from the assigned source." \
         --model opus --permission-mode bypassPermissions --effort max --max-turns 150 --output-format text </dev/null > "$S/r1-$seat.raw" 2> "$S/r1-$seat.log"
-      python3 - "$S/r1-$seat.raw" "$S/r1-$seat.json" <<'PY'
+      agent_rc=$?
+      rc=$agent_rc
+      if [ "$agent_rc" -eq 0 ]; then
+        python3 - "$S/r1-$seat.raw" "$S/r1-$seat.json" <<'PY'
 import sys, json, html
 t=open(sys.argv[1], errors='replace').read(); s=t[t.find('{'):t.rfind('}')+1]
 try: obj=json.loads(s)
@@ -64,14 +77,21 @@ obj.pop('$schema',None)
 for f in obj.get('findings',[]): f.pop('evidence_note',None)
 open(sys.argv[2],'w').write(json.dumps(obj,indent=1,ensure_ascii=False))
 PY
-      rc=$?; [ "$rc" = 0 ] && python3 "$SCRIPTS/lib/validate-findings.py" "$S/r1-$seat.json" >/dev/null 2>&1 || rc=2; echo "$rc" > "$S/r1-$seat.exit" ) &
+        rc=$?
+        [ "$rc" -eq 0 ] && python3 "$SCRIPTS/lib/validate-findings.py" "$S/r1-$seat.json" >/dev/null 2>&1 || rc=2
+      fi
+      echo "$rc" > "$S/r1-$seat.exit"; exit "$rc" ) &
   else
     ( "$SCRIPTS/rev-seat.sh" "$seat" "$S" 1 "$S/r1-$seat.prompt.md" > "$S/r1-$seat.seat.out" 2>&1 ) &
   fi
   pids+=($!)
 done
-wait "${pids[@]}"
+for pid in "${pids[@]}"; do wait "$pid" || :; done
+failed=0
 for seat in $SEATS; do
   n=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['findings']))" "$S/r1-$seat.json" 2>/dev/null || echo "?")
-  echo "$NAME seat=$seat exit=$(cat "$S/r1-$seat.exit" 2>/dev/null || echo ?) findings=$n"
+  seat_rc=$(cat "$S/r1-$seat.exit" 2>/dev/null || echo ?)
+  echo "$NAME seat=$seat exit=$seat_rc findings=$n"
+  [ "$seat_rc" = 0 ] || failed=1
 done
+exit "$failed"
