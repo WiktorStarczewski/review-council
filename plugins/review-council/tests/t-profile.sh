@@ -676,12 +676,38 @@ base={
 (s/'r1-sol.read-audit.json').write_text(json.dumps(base))
 PY
     "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile.json"
-    assert_grep "profile rejects a valid evidence audit with incomplete chunks" "$S/profile.json" \
-      '"invalid_audits": \['
+    python3 - "$S/profile.json" <<'PY'
+import json, sys
+d=json.load(open(sys.argv[1])); a=d['sessions'][0]['read_activity']
+assert a['audits']==0 and a['violating_audits']==0, a
+assert a['invalid_audits']==[{
+    'audit':'r1-sol.read-audit.json',
+    'reason':'invalid patch proof audit structure',
+}], a
+assert d['totals']['read_activity']['invalid_audits']==1, d
+PY
+    assert_eq "profile diagnoses an incomplete valid patch proof exactly" "$?" 0
+    python3 - "$S/r1-sol.read-audit.json" <<'PY'
+import json, sys
+p=sys.argv[1]; d=json.load(open(p)); d['opened_patch_chunks']=d['expected_patch_chunks']
+open(p,'w').write(json.dumps(d))
+PY
+    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-complete.json"
+    python3 - "$S/profile-complete.json" <<'PY'
+import json, sys
+d=json.load(open(sys.argv[1])); a=d['sessions'][0]['read_activity']
+assert a['audits']==1 and a['violating_audits']==0, a
+assert a['invalid_audits']==[], a
+assert a['expected_patch_chunks']==a['opened_patch_chunks']==2, a
+assert d['totals']['read_activity']['audits']==1, d
+assert d['totals']['read_activity']['invalid_audits']==0, d
+PY
+    assert_eq "profile counts one complete valid patch proof" "$?" 0
     python3 - "$S/r1-sol.read-audit.json" <<'PY'
 import json, sys
 p=sys.argv[1]; d=json.load(open(p)); d['status']='invalid'
 d['violations']=[{'code':'missing-assigned-patch-chunk','tool':'codex'}]
+d['opened_patch_chunks']=d['expected_patch_chunks']-1
 open(p,'w').write(json.dumps(d))
 PY
     "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-invalid.json"
