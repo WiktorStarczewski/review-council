@@ -174,6 +174,12 @@ test_skill_contract() {
       '[Mm]issing or invalid ownership data.*normal component routing'
     assert_grep "unprovable component coverage widens fully" "$H" \
       '[Cc]omponent coverage cannot be proved.*full cumulative patch'
+    assert_grep "benign non-delta verification keeps component routing" "$H" \
+      '[Nn]o usable delta.*cumulative semantic scope'
+    assert_grep "only delta verification binds prior coverage" "$H" \
+      '[Oo]nly.*delta scope.*predecessor'
+    assert_grep "invalid predecessor widens verification fully" "$H" \
+      '[Ii]nvalid predecessor.*every seat.*full cumulative patch'
     assert_grep "host treats source-context bytes as original source" "$H" \
       'literal source bytes with original'
     assert_grep "host bounds specialist packet shards" "$H" \

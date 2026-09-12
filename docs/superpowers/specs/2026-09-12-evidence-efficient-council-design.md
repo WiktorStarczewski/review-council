@@ -118,8 +118,14 @@ the current snapshot differs, the delta is nonempty, all changes are safely
 represented, the four bundles are assigned exactly once, and the delta plus evidence
 is smaller than the semantic cumulative view. The seat assigned
 `tests-observability-maintenance-regression` receives the full cumulative patch.
-Other seats receive the semantic delta. If there is no state change after discovery,
-all seats receive cumulative scope so the risk lenses still inspect the change.
+Other seats receive the semantic delta. If the head is absent, the snapshot is
+unchanged, the semantic delta is empty, or delta delivery is not smaller, safe current
+evidence keeps the integration seat on the full cumulative patch and routes cumulative
+semantic components to every specialist. This benign semantic mode can establish a new
+coverage receipt. Only delta mode stores a predecessor and reuses prior finding
+ownership. Invalid predecessor state, unsafe current evidence, incomplete bundle
+coverage, unknown reviewed refs, or absent cumulative semantic coverage assigns the
+full cumulative patch to every seat.
 
 Each coverage receipt records the stable identity and seat owner of every reported
 finding. On later verification, a changed component that contains a prior finding's

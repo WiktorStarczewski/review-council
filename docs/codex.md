@@ -82,11 +82,11 @@ declarations, callers, tests, and gates. Oversized omitted bodies become mandato
 integration-seat reads bound to the exact tree, blob, content hash, and returned
 bytes. These bodies are read from immutable session objects in ordered, gapless
 segments of at most 240 lines and 16 KiB predicted visible output, one segment per
-Codex turn. Later verification
-uses the semantic fix delta only when a valid receipt proves
-prior coverage and the delta plus its evidence is smaller. Any evidence error restores
-full cumulative scope for the whole panel. Numeric and document reviews keep full
-scope.
+Codex turn. Later verification uses the semantic fix delta only when a valid receipt proves
+prior coverage and the delta plus its evidence is smaller. Otherwise, safe cumulative
+evidence keeps one full integration seat and gives specialists semantic components.
+Invalid predecessor state or any current-evidence error restores full cumulative scope
+for the whole panel. Numeric and document reviews keep full scope.
 
 Adaptive plan panels hash-bind every parsed fix-plan cluster. The plan-completeness
 seat keeps the full cumulative patch; all other seats receive one identical closure of

@@ -1771,7 +1771,9 @@ def validate_components(session, manifest, evidence):
         basis = closure
         expected = plan_components_for(basis, edges, ordered, owner, manifest['plan']['clusters'])
     else:
-        basis = delta if adaptive and manifest['phase'] == 'verification' else semantic
+        verification_mode = (verification_specialist_mode(assigned, owner)
+                             if adaptive and manifest['phase'] == 'verification' else None)
+        basis = delta if verification_mode == 'delta' else semantic
         expected = components_for(basis, edges, ordered, owner)
     if len(components) != len(expected):
         raise ValueError('component count mismatch')
@@ -2298,7 +2300,7 @@ def _validated_manifest(path, fresh, seen, offline):
     else:
         if owner not in assigned:
             raise ValueError('missing full-state owner')
-        other = 'delta' if phase == 'verification' else 'semantic'
+        other = verification_specialist_mode(assigned, owner) if phase == 'verification' else 'semantic'
         if any(a['scope'] != ('full' if s == owner else other) for s, a in assigned.items()):
             raise ValueError('phase-inconsistent scope assignment')
     if manifest['snapshot_unsafe'] and not fallback:
@@ -2319,7 +2321,9 @@ def _validated_manifest(path, fresh, seen, offline):
         raise ValueError('manifest word counts mismatch')
     validate_components(session, manifest, evidence)
     validate_source_context(session, manifest, evidence)
-    if phase == 'verification' and not fallback:
+    verification_mode = (verification_specialist_mode(assigned, owner)
+                         if phase == 'verification' and not fallback else None)
+    if verification_mode == 'delta':
         if not isinstance(manifest['predecessor'], dict):
             raise ValueError('delta verification requires an explicit predecessor')
         reference = manifest['predecessor']
@@ -2332,9 +2336,10 @@ def _validated_manifest(path, fresh, seen, offline):
             raise ValueError('delta is unsafe, incomplete, empty, or not smaller')
         if not offline:
             repo = Repository(session)
-            previous, reason = prior_coverage(session, repo, manifest['base_tree'], manifest['predecessor'], seen)
-            if reason or previous['snapshot_tree'] == manifest['snapshot_tree']:
-                raise ValueError('invalid delta predecessor: ' + str(reason))
+            prior = prior_coverage(session, repo, manifest['base_tree'], manifest['predecessor'], seen)
+            previous = prior['coverage']
+            if prior['status'] != 'valid' or previous['snapshot_tree'] == manifest['snapshot_tree']:
+                raise ValueError('invalid delta predecessor: ' + str(prior['reason']))
             changes, _, categories, unsafe = repo.changes(previous['snapshot_tree'], manifest['snapshot_tree'])
             actual = b''.join(patch for name, patch in changes if categories[name] == 'semantic')
             if unsafe or delta != actual:
@@ -2615,9 +2620,27 @@ def validate_results(session, manifest, manifest_hash):
     return result_hashes
 
 
+def verification_specialist_mode(assignments, owner):
+    modes = {assignment['scope'] for seat, assignment in assignments.items() if seat != owner}
+    if len(modes) != 1 or not modes <= {'semantic', 'delta'}:
+        raise ValueError('verification specialists must use one authenticated scope')
+    return modes.pop()
+
+
 def prior_coverage(session, repo, base_tree, reference=None, seen=None):
     try:
-        head = read_json(session / 'coverage-head.json') if reference is None else reference
+        if reference is None:
+            head_path = session / 'coverage-head.json'
+            try:
+                metadata = head_path.lstat()
+            except FileNotFoundError:
+                return {'status': 'absent', 'coverage': None, 'reason': None}
+            if (stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_nlink != 1):
+                raise ValueError('invalid coverage head')
+            head = read_json(head_path)
+        else:
+            head = reference
         if not isinstance(head, dict) or set(head) != {'receipt', 'sha256'} or not isinstance(head['receipt'], str):
             raise ValueError('invalid coverage reference')
         name = head['receipt']
@@ -2639,9 +2662,10 @@ def prior_coverage(session, repo, base_tree, reference=None, seen=None):
             receipt['findings'] = []
             receipt['ownership_fallback_reason'] = 'missing or invalid prior finding ownership'
         repo.tree(receipt['snapshot_tree'])
-        return dict(receipt, coverage_reference=head), None
+        return {'status': 'valid', 'coverage': dict(receipt, coverage_reference=head), 'reason': None}
     except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError, RecursionError) as error:
-        return None, 'invalid coverage predecessor: ' + str(error)
+        return {'status': 'invalid', 'coverage': None,
+                'reason': 'invalid coverage predecessor: ' + str(error)}
 
 
 def prepare(args):
@@ -2717,7 +2741,10 @@ def prepare(args):
     full = b''.join(patch for _, patch in patches)
     semantic = b''.join(patch for path, patch in patches if categories[path] == 'semantic')
     packet = markdown(data, session / (prefix + '-evidence.json'))
-    previous, fallback = prior_coverage(session, repo, base_tree) if args.phase == 'verification' else (None, None)
+    prior = (prior_coverage(session, repo, base_tree) if args.phase == 'verification'
+             else {'status': 'absent', 'coverage': None, 'reason': None})
+    previous = prior['coverage']
+    fallback = prior['reason']
     delta = b''; delta_unsafe = []; delta_categories = {}; changes = []
     if previous and args.phase == 'verification':
         changes, _, delta_categories, delta_unsafe = repo.changes(previous['snapshot_tree'], snapshot)
@@ -2726,16 +2753,18 @@ def prepare(args):
     if args.phase == 'verification':
         if not bundle_coverage(chosen) or owner is None:
             fallback = 'missing bundle or full-state assignment'
+        elif prior['status'] == 'invalid':
+            fallback = prior['reason']
         elif not previous:
             pass
         elif previous['snapshot_tree'] == snapshot:
-            fallback = 'no snapshot change'
+            pass
         elif snapshot_unsafe or delta_unsafe:
             fallback = 'unsafe or opaque delta'
         elif not delta:
-            fallback = 'empty semantic delta'
+            pass
         elif len(delta.split()) + len(packet.split()) + len(instruction_packet.split()) >= len(semantic.split()):
-            fallback = 'delta plus evidence is not smaller'
+            pass
         else:
             fallback = None; use_delta = True
     else:
@@ -2778,7 +2807,9 @@ def prepare(args):
         if args.phase == 'plan':
             mode = 'full' if seat == owner else 'closure'
         if args.phase == 'verification':
-            mode = ('full' if seat == owner else 'delta') if use_delta else 'full'
+            mode = ('full' if seat == owner else 'delta' if use_delta else 'semantic')
+            if fallback:
+                mode = 'full'
         if fallback and args.phase != 'verification':
             mode = 'full'
         name = (f'{prefix}-full.patch' if mode == 'full' else

@@ -167,6 +167,9 @@ A changed component containing a prior finding returns to that finding owner.
 When the integration seat owns the finding, the component also goes to the least-loaded specialist.
 Missing or invalid ownership data restores normal component routing. If complete
 component coverage cannot be proved, every seat receives the full cumulative patch.
+No usable delta keeps specialists on cumulative semantic scope when current evidence is safe.
+Only delta scope binds a predecessor; it alone reuses prior finding ownership.
+An invalid predecessor sends every seat the full cumulative patch.
 
 For a large valid UTF-8 assigned patch, the manifest may replace 240-line proof
 windows with ordered immutable patch chunks. The canonical monolithic patch and its

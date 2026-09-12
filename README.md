@@ -130,9 +130,11 @@ plan evidence reruns every plan seat under a fresh legacy full-scope label.
 
 After a valid coverage receipt, verification seats start from the semantic fix delta
 only when that delta plus its evidence is smaller. The regression-bundle seat still
-reads the full cumulative patch. Missing, stale, malformed, unsafe, incomplete, or
-unrepresentable evidence sends every seat back to full cumulative scope. Explicit
-numeric and document reviews retain full scope. `rev-profile.py` labels planned word
+reads the full cumulative patch. Without a usable delta, safe current evidence keeps
+the regression-bundle seat on the full patch and routes cumulative semantic components
+to specialists. Invalid predecessor state, unsafe current evidence, incomplete bundle
+coverage, or an unknown reviewed ref sends every seat back to full cumulative scope.
+Explicit numeric and document reviews retain full scope. `rev-profile.py` labels planned word
 savings separately from actual provider usage and cache metrics, and reports patch
 proof calls, turns, visible bytes, chunks, and delivery modes.
 

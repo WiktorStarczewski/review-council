@@ -141,13 +141,15 @@ with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
     head = (session / 'coverage-head.json').read_bytes()
     args = [a for s, b in zip(seats, bundles) for a in ['--assignment', s + '=' + b]]
     nofix = prepare('2', 'verification', *args)
-    assert all(a['scope'] == 'full' for a in nofix['assignments'].values()), nofix
-    assert nofix['fallback_reason']
+    assert nofix['assignments']['opus-2']['scope'] == 'full', nofix
+    assert all(nofix['assignments'][seat]['scope'] == 'semantic' for seat in seats[:-1]), nofix
+    assert nofix['fallback_reason'] is None and nofix['predecessor'] is None
     write('main.py', (root / 'main.py').read_text().replace('return 2', 'return 3', 1))
     run('render', session / 'r2-evidence.manifest.json', 'sol', good=False)
     larger = prepare('2b', 'verification', *args)
-    assert all(a['scope'] == 'full' for a in larger['assignments'].values())
-    assert 'not smaller' in larger['fallback_reason']
+    assert larger['assignments']['opus-2']['scope'] == 'full', larger
+    assert all(larger['assignments'][seat]['scope'] == 'semantic' for seat in seats[:-1]), larger
+    assert larger['fallback_reason'] is None and larger['predecessor'] is None
     # Make the cumulative semantic patch much larger than the evidence packet.
     for i in range(8):
         write(f'src/unit{i}.py', f'def unit{i}():\n' + ''.join(f'    value_{j} = {j}\n' for j in range(400)))
@@ -478,6 +480,50 @@ def phase_and_predecessor_integrity():
         mpath.write_bytes(original); epath.write_bytes(original_evidence)
         prior = session / 'r1-coverage.receipt.json'; prior.write_text('{"manifest":null}')
         call('render', mpath, 'sol', good=False)
+
+def cumulative_verification_routing():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        semantic = prepare('semantic', 'verification', *assign)
+        assert semantic['assignments']['opus-2']['scope'] == 'full'
+        assert all(semantic['assignments'][seat]['scope'] == 'semantic' for seat in seats[:-1])
+        assert semantic['fallback_reason'] is None and semantic['predecessor'] is None
+        mpath = session / 'rsemantic-evidence.manifest.json'
+        epath = session / 'rsemantic-evidence.json'
+        original = mpath.read_bytes(); original_evidence = epath.read_bytes()
+        def replace(manifest, evidence):
+            raw = json.dumps(evidence).encode(); epath.write_bytes(raw)
+            manifest['artifacts'][epath.name]['sha256'] = hashlib.sha256(raw).hexdigest()
+            manifest['artifacts'][epath.name]['words'] = len(raw.split())
+            mpath.write_text(json.dumps(manifest))
+        bad = json.loads(original); evidence = json.loads(original_evidence)
+        bad['predecessor'] = {'receipt':'rprior-coverage.receipt.json','sha256':'0' * 64}
+        evidence['predecessor'] = bad['predecessor']; replace(bad, evidence)
+        call('render', mpath, 'sol', good=False)
+        mpath.write_bytes(original); epath.write_bytes(original_evidence)
+        bad = json.loads(original); evidence = json.loads(original_evidence)
+        assignment = bad['assignments']['sol']; owner = bad['assignments']['opus-2']
+        for key in ('scope', 'full_state', 'patch', 'patch_sha256', 'patch_bytes',
+                    'patch_lines', 'patch_set', 'patch_read_mode', 'components'):
+            assignment[key] = owner[key]
+        evidence['assignments'] = bad['assignments']; replace(bad, evidence)
+        call('render', mpath, 'sol', good=False)
+        mpath.write_bytes(original); epath.write_bytes(original_evidence)
+        finish('semantic')
+        first_head = json.loads((session / 'coverage-head.json').read_text())
+        same = prepare('same', 'verification', *assign)
+        assert same['assignments']['opus-2']['scope'] == 'full'
+        assert all(same['assignments'][seat]['scope'] == 'semantic' for seat in seats[:-1])
+        assert same['fallback_reason'] is None and same['predecessor'] is None
+        finish('same')
+        second_head = json.loads((session / 'coverage-head.json').read_text())
+        assert first_head != second_head and second_head['receipt'] == 'rsame-coverage.receipt.json'
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('main.py', 'def first():\n    return 1\n\ndef second():\n    return 1\n')
+        write('package-lock.json', '{}\n')
+        mechanical = prepare('mechanical', 'verification', *assign)
+        assert all(assignment['scope'] == 'full'
+                   for assignment in mechanical['assignments'].values())
+        assert mechanical['fallback_reason'] == 'no semantic components'
 
 def same_stat_and_index_flags():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -1342,6 +1388,11 @@ def offline_structure_and_predecessor_walk():
             (session/'coverage-head.json').write_text(json.dumps(bad))
             m=prepare('fallback','verification',*assign)
             assert 'invalid coverage predecessor:' in m['fallback_reason']
+        (session/'coverage-head.json').unlink()
+        (session/'coverage-head.json').symlink_to('missing-coverage-head.json')
+        m=prepare('dangling-head','verification',*assign)
+        assert all(row['scope'] == 'full' for row in m['assignments'].values())
+        assert 'invalid coverage predecessor:' in m['fallback_reason']
         old=module.Repository
         try:
             module.Repository=lambda *_: (_ for _ in ()).throw(AssertionError('offline used repository'))
@@ -1362,7 +1413,7 @@ def local_ignored_instructions():
         call('prepare',session,'unsafe-rules','--phase','discovery',good=False)
         assert not list(session.glob('runsafe-rules-*'))
 
-for test in (storage_redirects, quoted_paths, changed_symbols, conservative_mechanical_classification, bounded_navigation_markdown, opaque_transitions, opaque_mode_transition, invalid_manifests, phase_and_predecessor_integrity, same_stat_and_index_flags, cstyle_enclosing_bodies, wallet_scale, literal_scope_and_inventories, sparse_gitlink_and_special, roster_bundle_coverage, source_context_packets, complete_declaration_context, budget_omissions_are_not_mandatory_ranges, innermost_declarations_and_bounded_anchors, high_confidence_component_union, components_ownership_and_instructions, instruction_override_precedence, empty_source_context, bounded_work_and_memory, receipt_read_audits, narrow_agent_requires_proven_reads, full_agent_requires_proven_reads, scoped_names_and_gitlink_lifecycle, component_and_full_tampering, offline_structure_and_predecessor_walk, local_ignored_instructions):
+for test in (storage_redirects, quoted_paths, changed_symbols, conservative_mechanical_classification, bounded_navigation_markdown, opaque_transitions, opaque_mode_transition, invalid_manifests, phase_and_predecessor_integrity, cumulative_verification_routing, same_stat_and_index_flags, cstyle_enclosing_bodies, wallet_scale, literal_scope_and_inventories, sparse_gitlink_and_special, roster_bundle_coverage, source_context_packets, complete_declaration_context, budget_omissions_are_not_mandatory_ranges, innermost_declarations_and_bounded_anchors, high_confidence_component_union, components_ownership_and_instructions, instruction_override_precedence, empty_source_context, bounded_work_and_memory, receipt_read_audits, narrow_agent_requires_proven_reads, full_agent_requires_proven_reads, scoped_names_and_gitlink_lifecycle, component_and_full_tampering, offline_structure_and_predecessor_walk, local_ignored_instructions):
     try:
         test(); print('PASS', test.__name__)
     except Exception as error:
