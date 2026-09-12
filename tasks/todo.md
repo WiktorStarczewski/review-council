@@ -25,7 +25,8 @@
 - [x] Repair path-scope, snapshot fidelity, roster-size, stale-stack-report, profiler, and evidence-builder findings from the final panel.
 - [ ] Run held-out quality and token-efficiency evaluation for the added optimizations.
 - [ ] Complete the final four-bundle optimizer verification panel.
-- [ ] Commit and push the reviewed optimizer.
+- [x] Fold the completed optimizer work into release 0.4.1 and push checkpoint 4b7a275.
+- [ ] Commit and push the remaining reviewed optimizer fixes.
 - [ ] Resume PR #812 with the optimized council.
 
 ## Final control-panel repairs
@@ -67,6 +68,11 @@
 
 - [x] Prove from live traces that two-chunk Grok and Claude patch reads clear the 10 percent total-token threshold.
 - [x] Implement provider-specific patch batching with exact-byte, ordering, and 60 KiB fail-closed audits.
+- [x] Make evidence delivery adapter-specific, remove prompt-text control parsing, and keep experimental paths off pending certification.
+- [x] Segment oversized required source proofs within provider line and visible-byte limits.
+- [x] Preserve cumulative component routing when delta reuse is unavailable.
+- [x] Remove duplicated search parsing, unreleased manifest compatibility, and a dead model-selection wrapper.
+- [x] Make profiler patch-proof tests reject the exact malformed audit and accept a complete sibling proof.
 - [ ] Run a held-out exact-roster measurement of patch batching.
 - [x] Measure bounded inline component evidence at 13-17 percent across the full review schedule.
 - [ ] Implement inline component evidence only if batching's held-out council pass preserves review quality.
@@ -80,7 +86,7 @@
   high-risk schedule renders 16, a 3.63x-3.88x reduction in reviewer launches.
 - A matched PR #812 code plus plan cycle fell from 41,728 prompt words to
   20,237, a 2.06x reduction without removing the plan snapshot.
-- The final frozen tree passed 2,280 shell checks and 41 Python tests. Both Claude
+- The final frozen tree passed 2,333 shell checks and 41 Python tests. Both Claude
   plugin validators, the Codex marketplace validator, shell syntax, Python
   compilation, executable-bit checks, Unicode checks, and diff hygiene passed.
 - The generic plugin validator still rejects the existing Codex

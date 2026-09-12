@@ -74,3 +74,10 @@
 - Name the baseline and metric with every savings estimate. Reviewer-launch count,
   prompt words, and total provider-processed tokens are different denominators; a
   best-case launch ratio must never be reported as an end-to-end token reduction.
+- Treat a requested checkpoint push as an intermediate milestone when the user has
+  already authorized an autonomous continuation. Push the reviewable state, report
+  the exact commit, and resume the remaining loop without interpreting the push as
+  a stop condition.
+- Derive batching claims from transcript fields the real provider emits. A synthetic
+  turn identifier can make an over-batch test pass while the production audit cannot
+  observe the same boundary.
