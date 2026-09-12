@@ -74,7 +74,9 @@ class CodexTests(unittest.TestCase):
             {'slug': name, 'visibility': 'list', 'priority': priority,
              'supported_reasoning_levels': [{'effort': 'max'}]}
             for name, priority in [('gpt-5.6-sol', 1), ('gpt-6-astra', 2)]]}))
-        self.assertEqual(self.roster.codex_models(cache), [('gpt-6-astra', 'max')])
+        listed, reason = self.roster.codex_catalog(cache)
+        self.assertIsNone(reason)
+        self.assertEqual(self.roster.select_codex_models(listed), [('gpt-6-astra', 'max')])
         self.assertEqual(self.roster.codex_suffix('gpt-6-astra'), 'astra')
 
     def test_configured_codex_models_select_exact_slugs(self):
@@ -84,10 +86,10 @@ class CodexTests(unittest.TestCase):
              'supported_reasoning_levels': [{'effort': 'max'}]}
             for name, priority in [('gpt-5.6-sol', 1), ('gpt-5.6-terra', 2),
                                    ('gpt-6-astra', 1)]]}))
-        self.assertEqual(
-            self.roster.codex_models(cache, ['gpt-5.6-sol']),
-            [('gpt-5.6-sol', 'max')],
-        )
+        listed, reason = self.roster.codex_catalog(cache)
+        self.assertIsNone(reason)
+        self.assertEqual(self.roster.select_codex_models(listed, ['gpt-5.6-sol']),
+                         [('gpt-5.6-sol', 'max')])
 
     def test_exact_panel_detects_sol_grok_and_two_opus_seats(self):
         cache = self.root / 'cache.json'

@@ -2011,11 +2011,6 @@ def validate_source_context(session, manifest, evidence):
 
 
 def validate_patch_sets(session, manifest, expected_artifacts):
-    version = manifest['schema_version']
-    if version == 1:
-        if manifest.get('patch_sets') not in (None, {}):
-            raise ValueError('legacy manifest contains patch sets')
-        return
     sets = manifest.get('patch_sets')
     enabled = manifest.get('patch_chunks_enabled')
     if not isinstance(sets, dict) or type(enabled) is not bool:
@@ -2201,7 +2196,7 @@ def _validated_manifest(path, fresh, seen, offline):
             raise ValueError('invalid manifest string: ' + field)
     if manifest.get('fallback_reason') is not None and (not isinstance(manifest['fallback_reason'], str) or not manifest['fallback_reason']):
         raise ValueError('invalid fallback reason')
-    if type(manifest.get('schema_version')) is not int or manifest['schema_version'] not in (1, 2, 3) or manifest['session'] != str(session):
+    if type(manifest.get('schema_version')) is not int or manifest['schema_version'] not in (2, 3) or manifest['session'] != str(session):
         raise ValueError('invalid manifest session/version')
     if any(not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', manifest[key]) for key in ('snapshot_tree', 'base_tree')):
         raise ValueError('invalid manifest tree identifier')
@@ -2209,6 +2204,8 @@ def _validated_manifest(path, fresh, seen, offline):
         raise ValueError('invalid manifest label')
     if manifest['phase'] not in ('discovery', 'risk', 'verification', 'repair', 'plan'):
         raise ValueError('invalid manifest phase')
+    if (manifest['phase'] == 'plan') != (manifest['schema_version'] == 3):
+        raise ValueError('manifest phase/version mismatch')
     expected = {f"r{manifest['label']}-{suffix}" for suffix in
                 ('full.patch', 'semantic.patch', 'delta.patch', 'evidence.json', 'evidence.md', 'instructions.md')}
     if manifest['phase'] == 'plan':
@@ -2431,17 +2428,16 @@ def validate_results(session, manifest, manifest_hash):
                 or audit['assigned_patch_lines'] != assignment['patch_lines']
                 or audit['assigned_patch_bytes'] > audit['tool_output_bytes']):
             raise ValueError('invalid read audit counters: ' + seat)
-        if manifest['schema_version'] >= 2:
-            patch_counter_fields = (
-                'patch_proof_calls', 'patch_proof_turns', 'patch_proof_visible_bytes',
-                'expected_patch_chunks', 'opened_patch_chunks')
-            if (any(type(audit.get(key)) is not int or audit[key] < 0
-                    for key in patch_counter_fields)
-                    or audit.get('patch_proof_mode') != assignment['patch_read_mode']
-                    or audit['patch_proof_calls'] != audit['assigned_patch_reads']
-                    or audit['patch_proof_turns'] > audit['patch_proof_calls']
-                    or audit['patch_proof_visible_bytes'] > audit['tool_output_bytes']):
-                raise ValueError('invalid patch proof counters: ' + seat)
+        patch_counter_fields = (
+            'patch_proof_calls', 'patch_proof_turns', 'patch_proof_visible_bytes',
+            'expected_patch_chunks', 'opened_patch_chunks')
+        if (any(type(audit.get(key)) is not int or audit[key] < 0
+                for key in patch_counter_fields)
+                or audit.get('patch_proof_mode') != assignment['patch_read_mode']
+                or audit['patch_proof_calls'] != audit['assigned_patch_reads']
+                or audit['patch_proof_turns'] > audit['patch_proof_calls']
+                or audit['patch_proof_visible_bytes'] > audit['tool_output_bytes']):
+            raise ValueError('invalid patch proof counters: ' + seat)
         patch_ranges = audit.get('assigned_patch_ranges')
         if (not isinstance(patch_ranges, list)
                 or any(not isinstance(row, dict) or set(row) != {'line_start', 'line_end'}
@@ -2452,7 +2448,7 @@ def validate_results(session, manifest, manifest_hash):
                 or patch_ranges != sorted(patch_ranges, key=lambda row: (row['line_start'], row['line_end']))
                 or len({(row['line_start'], row['line_end']) for row in patch_ranges}) != len(patch_ranges)):
             raise ValueError('invalid assigned patch audit ranges: ' + seat)
-        if assignment.get('patch_read_mode', 'windows') == 'chunks':
+        if assignment['patch_read_mode'] == 'chunks':
             expected_chunks = len(manifest['patch_sets'][assignment['patch_set']]['chunks'])
             if (patch_ranges or audit['expected_patch_chunks'] != expected_chunks
                     or audit['opened_patch_chunks'] != expected_chunks
@@ -2919,7 +2915,7 @@ def render(args):
                         location += '-' + str(row['line_end'])
                 print('Required cluster source: ' + cluster['id'] + ' ' + location
                       + ' resolution ' + row['resolution'] + ' field ' + row['field'])
-    patch_mode = assignment.get('patch_read_mode', 'windows')
+    patch_mode = assignment['patch_read_mode']
     print('Assigned patch read mode: ' + patch_mode)
     if patch_mode == 'chunks':
         patch_set = manifest['patch_sets'][assignment['patch_set']]

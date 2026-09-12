@@ -473,13 +473,17 @@ PY
 
 test_plan_search_parser_rejects_ambiguous_commands() {
   python3 - "$SCRIPTS/rev-evidence.py" "$SCRIPTS/lib/review-read-audit.py" <<'PY'
-import ast, importlib.util, inspect, pathlib, random, shlex, sys
+import importlib.util, pathlib, random, sys
 def load(name, path):
     spec=importlib.util.spec_from_file_location(name, path)
     module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); return module
 evidence=load('evidence',sys.argv[1]); audit=load('audit',sys.argv[2])
-assert ast.dump(ast.parse(inspect.getsource(evidence.strict_search_words))) == \
-       ast.dump(ast.parse(inspect.getsource(audit.strict_search_words)))
+root=pathlib.Path('/repo')
+def prepare_contract(command):
+    return evidence.plan_search_contract('site (found by: '+command+')')
+def audit_contract(command):
+    return audit.repository_search_pattern(
+        'Bash', {'command':command+' | head -80'}, root)
 commands=[
     "rg -e one -e two .", "rg --ignore-file ignored pattern .", "rg -Z value pattern .",
     "rg -f patterns.txt bogus .", "rg --file=patterns.txt bogus .",
@@ -510,17 +514,16 @@ commands=[
 ]
 for command in commands:
     try:
-        evidence.plan_search_pattern('site (found by: '+command+')')
+        prepare_contract(command)
     except ValueError:
         pass
     else:
         raise AssertionError(command)
-    assert audit.search_pattern(shlex.split(command)) is None, command
+    assert audit_contract(command) is None, command
 positive=["rg --null -n value .", "grep --null -R -n value .",
           "grep --null -r -n value .", "grep --null -RH -n value ."]
 for command in positive:
-    expected=evidence.strict_search_words(shlex.split(command))
-    assert audit.strict_search_words(shlex.split(command)) == expected, command
+    assert audit_contract(command) == prepare_contract(command), command
 assert audit.repository_search_pattern(
     'Grep', {'pattern':'value','path':'.','head_limit':80}, pathlib.Path('/repo')) is None
 assert audit.repository_search_pattern(
@@ -541,15 +544,14 @@ tokens=['-n','-i','--fixed-strings','--glob','*.ts','--max-depth','2','--hidden'
         '--ignore-file','ignored','-R','-r','value','.','src']
 random.seed(812)
 for _ in range(400):
-    command=['grep' if random.randrange(2) else 'rg']
-    command.extend(random.choice(tokens) for _ in range(random.randrange(1,7)))
-    outcomes=[]
-    for parser in (evidence.strict_search_words,audit.strict_search_words):
-        try:
-            outcomes.append(('ok',parser(command)))
-        except (ValueError,UnicodeError) as error:
-            outcomes.append(('error',str(error)))
-    assert outcomes[0] == outcomes[1], (command,outcomes)
+    words=['grep' if random.randrange(2) else 'rg']
+    words.extend(random.choice(tokens) for _ in range(random.randrange(1,7)))
+    command=' '.join(words)
+    try:
+        expected=prepare_contract(command)
+    except (ValueError,UnicodeError):
+        expected=None
+    assert audit_contract(command) == expected, (command,expected,audit_contract(command))
 PY
   assert_eq "prepare and audit parsers reject ambiguous search commands identically" "$?" 0
 }

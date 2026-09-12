@@ -233,21 +233,39 @@ import json,sys
 print(json.load(open(sys.argv[1]))['assignments']['sol']['patch_read_mode'])
 PY
 )" windows
+    cp "$manifest" "$T/r22-evidence.manifest.valid.json"
+    python3 "$SCRIPTS/rev-evidence.py" verify "$manifest" >/dev/null 2>&1
+    assert_eq "schema 2 non-plan evidence remains valid" "$?" 0
     python3 - "$manifest" <<'PY'
-import hashlib, json, pathlib, sys
-path=pathlib.Path(sys.argv[1]); m=json.load(open(path)); session=path.parent
-evidence_path=session / 'r22-evidence.json'; evidence=json.load(open(evidence_path))
-for assignments in (m['assignments'], evidence['assignments']):
-    for assignment in assignments.values():
-        assignment.pop('patch_set'); assignment.pop('patch_read_mode')
-m['schema_version']=1; m.pop('patch_sets'); m.pop('patch_chunks_enabled')
-raw=(json.dumps(evidence, sort_keys=True, ensure_ascii=True, indent=2)+'\n').encode()
-evidence_path.write_bytes(raw)
-m['artifacts'][evidence_path.name]={'sha256':hashlib.sha256(raw).hexdigest(),'words':len(raw.split())}
+import json, pathlib, sys
+path=pathlib.Path(sys.argv[1]); m=json.load(open(path)); m['schema_version']=1
 path.write_text(json.dumps(m, sort_keys=True, ensure_ascii=True, indent=2)+'\n')
 PY
-    python3 "$SCRIPTS/rev-evidence.py" verify "$manifest" >/dev/null 2>&1
-    assert_eq "schema 1 evidence safely retains legacy window mode" "$?" 0
+    python3 "$SCRIPTS/rev-evidence.py" verify "$manifest" >/dev/null 2>"$T/schema1.err"
+    assert_eq "schema 1 non-plan evidence is rejected" "$?" 2
+    assert_grep "schema 1 rejection has a stable version error" "$T/schema1.err" \
+      'invalid manifest session/version'
+    cp "$T/r22-evidence.manifest.valid.json" "$manifest"
+    python3 - "$manifest" <<'PY'
+import json, pathlib, sys
+path=pathlib.Path(sys.argv[1]); m=json.load(open(path)); m['schema_version']=3
+path.write_text(json.dumps(m, sort_keys=True, ensure_ascii=True, indent=2)+'\n')
+PY
+    python3 "$SCRIPTS/rev-evidence.py" verify "$manifest" >/dev/null 2>"$T/schema3-nonplan.err"
+    assert_eq "schema 3 non-plan evidence is rejected" "$?" 2
+    assert_grep "schema 3 non-plan rejection names the phase mismatch" \
+      "$T/schema3-nonplan.err" 'manifest phase/version mismatch'
+    cp "$T/r22-evidence.manifest.valid.json" "$manifest"
+    python3 - "$manifest" <<'PY'
+import json, pathlib, sys
+path=pathlib.Path(sys.argv[1]); m=json.load(open(path)); m['phase']='plan'
+path.write_text(json.dumps(m, sort_keys=True, ensure_ascii=True, indent=2)+'\n')
+PY
+    python3 "$SCRIPTS/rev-evidence.py" verify "$manifest" >/dev/null 2>"$T/schema2-plan.err"
+    assert_eq "schema 2 plan evidence is rejected" "$?" 2
+    assert_grep "schema 2 plan rejection names the phase mismatch" \
+      "$T/schema2-plan.err" 'manifest phase/version mismatch'
+    cp "$T/r22-evidence.manifest.valid.json" "$manifest"
     disabled=$(REV_PATCH_CHUNKS=0 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 23 --phase discovery) || return
     assert_eq "REV_PATCH_CHUNKS disables chunk artifacts" \
       "$(python3 - "$disabled" <<'PY'

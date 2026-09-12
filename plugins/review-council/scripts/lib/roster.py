@@ -160,12 +160,6 @@ def select_codex_models(listed, allowed=None):
     return out
 
 
-def codex_models(path, allowed=None):
-    """Return selected (slug, effort) pairs, or an empty list for an unusable catalog."""
-    listed, reason = codex_catalog(path)
-    return [] if reason else select_codex_models(listed, allowed)
-
-
 def codex_suffix(slug):
     gen = GEN.match(slug)
     return slug[gen.end():] if gen else slug

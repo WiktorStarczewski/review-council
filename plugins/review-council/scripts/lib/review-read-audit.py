@@ -45,6 +45,20 @@ def load_readonly_policy():
 
 
 READONLY_POLICY = load_readonly_policy()
+_EVIDENCE_MODULE = None
+
+
+def _load_evidence_module():
+    global _EVIDENCE_MODULE
+    if _EVIDENCE_MODULE is None:
+        script = Path(__file__).resolve().parent.parent / 'rev-evidence.py'
+        spec = importlib.util.spec_from_file_location('review_council_audit_evidence', script)
+        if spec is None or spec.loader is None:
+            raise ValueError('evidence validator unavailable')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        _EVIDENCE_MODULE = module
+    return _EVIDENCE_MODULE
 
 
 def digest(path):
@@ -494,91 +508,7 @@ def repository_expansion_call(name, data, root, session):
 
 
 def strict_search_words(words):
-    """Parse one supported rg/grep expression without guessing option arity."""
-    tool = words[0] if words else ''
-    if tool not in ('rg', 'grep'):
-        raise ValueError('search must use rg or grep')
-    value_options = set()
-    boolean_options = {'--line-number', '--null', '--with-filename'}
-    boolean_short = set('Hn')
-    recursive = tool == 'rg'
-    line_number = False
-    null_output = False
-    if tool == 'grep':
-        boolean_options.add('--recursive')
-        boolean_short.update('rR')
-    short_value_options = tuple(option for option in value_options
-                                if option.startswith('-') and not option.startswith('--'))
-    expressions = []
-    operands = []
-    index = 1
-    while index < len(words):
-        word = words[index]
-        if word == '--':
-            operands.extend(words[index + 1:])
-            break
-        if word in ('-e', '--regexp'):
-            index += 1
-            if index >= len(words):
-                raise ValueError('search lacks a pattern')
-            expressions.append(words[index])
-            index += 1
-            continue
-        if word.startswith('--regexp='):
-            expressions.append(word.split('=', 1)[1])
-            index += 1
-            continue
-        if word in value_options:
-            if index + 1 >= len(words):
-                raise ValueError('search has an incomplete option')
-            index += 2
-            continue
-        if any(word.startswith(option + '=') for option in value_options
-               if option.startswith('--')):
-            index += 1
-            continue
-        if any(word.startswith(option) and word != option for option in short_value_options):
-            index += 1
-            continue
-        if word in boolean_options:
-            recursive = recursive or word == '--recursive'
-            line_number = line_number or word == '--line-number'
-            null_output = null_output or word == '--null'
-            index += 1
-            continue
-        if (word.startswith('-') and not word.startswith('--') and word != '-'
-                and set(word[1:]) <= boolean_short):
-            recursive = recursive or bool(set(word[1:]) & {'r', 'R'})
-            line_number = line_number or 'n' in word[1:]
-            index += 1
-            continue
-        if word.startswith('-'):
-            raise ValueError('search contains an unsupported option: ' + word)
-        operands.append(word)
-        index += 1
-    if len(expressions) > 1:
-        raise ValueError('search contains multiple expressions')
-    if expressions:
-        pattern = expressions[0]
-        paths = operands
-    else:
-        if not operands:
-            raise ValueError('search lacks a pattern')
-        pattern = operands[0]
-        paths = operands[1:]
-    if not pattern or len(pattern.encode()) > 1024 or '\0' in pattern:
-        raise ValueError('search has an invalid pattern')
-    if not recursive:
-        raise ValueError('grep search must be recursive')
-    if not line_number:
-        raise ValueError('search must include line numbers')
-    if not null_output:
-        raise ValueError('search must use NUL-delimited filenames')
-    if paths != ['.']:
-        raise ValueError('search must cover the exact repository root')
-    engine = 'rg' if tool == 'rg' else 'grep-bre'
-    domain = 'rg-default-worktree' if tool == 'rg' else 'grep-recursive-worktree'
-    return {'engine': engine, 'domain': domain, 'pattern': pattern}, paths
+    return _load_evidence_module().strict_search_words(words)
 
 
 def search_pattern(words):
@@ -888,12 +818,7 @@ def load_evidence_manifest(session, prompt_lines, prompt, root):
     if len(matches) != 1:
         raise ValueError('evidence manifest hash does not resolve uniquely')
     path = matches[0]
-    script = Path(__file__).resolve().parent.parent / 'rev-evidence.py'
-    spec = importlib.util.spec_from_file_location('review_council_audit_evidence', script)
-    if spec is None or spec.loader is None:
-        raise ValueError('evidence validator unavailable')
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _load_evidence_module()
     manifest, manifest_hash = module.validated_manifest(path)
     repository = module.Repository(session)
     if repository.root != root:
@@ -1424,7 +1349,7 @@ def audit(args):
                     or assigned_patch_bytes != assignment['patch_bytes']
                     or assigned_patch_lines != assignment['patch_lines']):
                 raise ValueError('assigned patch changed after manifest validation')
-            patch_proof_mode = assignment.get('patch_read_mode', 'windows')
+            patch_proof_mode = assignment['patch_read_mode']
             if patch_proof_mode == 'chunks':
                 patch_set = manifest['patch_sets'][assignment['patch_set']]
                 expected_chunks = patch_set['chunks']
