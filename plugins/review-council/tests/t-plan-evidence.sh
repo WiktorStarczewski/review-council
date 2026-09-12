@@ -71,7 +71,8 @@ EOF
       --assignment opus=plan-simplicity
       --assignment opus-2=plan-tests
     )
-    manifest=$(python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 1p --phase plan \
+    manifest=$(REV_PATCH_CHUNKS=1 REV_SOURCE_CONTEXT=1 \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 1p --phase plan \
       --plan "$S/fix-plan.md" --plan-sha256 "$plan_hash" --full-seat sol \
       "${assignments[@]}") || return
     assert_exit "plan evidence prompt requires the bound plan argument" 1 \

@@ -11,7 +11,7 @@ test_prompt_evidence_contract() {
     printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
       "$base" "$ROOT" > "$S/scope.env"
     printf 'a.txt\npackage-lock.json\n' > "$S/files.txt"
-    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"grok","adapter":"grok"},{"seat":"opus","adapter":"agent"},{"seat":"opus-2","adapter":"agent"}]}' > "$S/roster.json"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"grok","adapter":"grok"},{"seat":"opus","adapter":"claude"},{"seat":"opus-2","adapter":"gemini"}]}' > "$S/roster.json"
 
     local assignments=(
       --assignment sol=correctness-boundaries
@@ -20,7 +20,8 @@ test_prompt_evidence_contract() {
       --assignment opus-2=tests-observability-maintenance-regression
     )
     local manifest
-    manifest=$(python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 1 --phase risk "${assignments[@]}") || return
+    manifest=$(REV_PATCH_CHUNKS=1 REV_SOURCE_CONTEXT=1 \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 1 --phase risk "${assignments[@]}") || return
 
     local seat expected_bundle prompt fragment line
     for seat in sol grok opus opus-2; do
@@ -40,14 +41,36 @@ test_prompt_evidence_contract() {
       assert_grep "$seat prompt has bounded evidence steps" "$prompt" '^## Bounded evidence protocol$'
       assert_grep "$seat prompt reads its complete assigned patch" "$prompt" \
         'read every byte of the assigned patch.*window mode.*at most 240 lines'
-      assert_grep "$seat prompt makes the frozen patch the first evidence read" "$prompt" \
-        '^First evidence action after any required clean-room design: use your native file-read tool .* to read the exact frozen assigned patch '
+      case "$seat" in
+        sol)
+          assert_grep "$seat prompt uses a portable shell window recipe" "$prompt" \
+            "^First assigned-patch action: run .*sed -n '[0-9][0-9]*,[0-9][0-9]*p' .*r1-.*\\.patch"
+          assert_nogrep "$seat prompt never asks Codex for a native read tool" "$prompt" \
+            'First assigned-patch action:.*Read|First assigned-patch action:.*read_file'
+          ;;
+        grok)
+          assert_grep "$seat prompt uses Grok read_file" "$prompt" \
+            '^First assigned-patch action: use read_file with offset 1 and limit 240 '
+          ;;
+        opus)
+          assert_grep "$seat prompt uses Claude Read" "$prompt" \
+            '^First assigned-patch action: use Read with offset 1 and limit 240 '
+          ;;
+        opus-2)
+          assert_grep "$seat prompt uses Gemini read_file" "$prompt" \
+            '^First assigned-patch action: use read_file with offset 1 and limit 240 '
+          ;;
+      esac
       assert_nogrep "$seat prompt never asks for a live git diff" "$prompt" \
         'Produce the diff yourself|run `git diff|use `git diff'
       assert_grep "$seat prompt locates symbols before reading" "$prompt" 'Locate the enclosing symbol or named section'
       assert_grep "$seat prompt reads narrow windows" "$prompt" 'Read the smallest useful line window'
-      assert_grep "$seat prompt recommends byte-preserving source reads" "$prompt" \
+      assert_grep "$seat prompt recommends portable byte-preserving source reads" "$prompt" \
+        "sed -n 'START,ENDp' 'FILE'"
+      assert_nogrep "$seat prompt avoids BSD-incompatible sed separators" "$prompt" \
         "sed -n 'START,ENDp' -- FILE"
+      assert_grep "$seat prompt rejects shell interpolation in search patterns" "$prompt" \
+        'Never put backticks or command substitutions in shell search patterns'
       assert_grep "$seat prompt prohibits numbered source pipelines" "$prompt" \
         'Do not use `nl -ba \.\.\. \| sed`'
       assert_grep "$seat prompt expands only for a concrete question" "$prompt" 'concrete question that could prove or refute a finding'
@@ -70,7 +93,7 @@ test_prompt_evidence_contract() {
     assert_exit "evidence prompt rerender is byte-identical" 0 cmp -s "$frozen" "$first"
 
     local disabled_manifest disabled_prompt
-    disabled_manifest=$(REV_SOURCE_CONTEXT=0 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 12 \
+    disabled_manifest=$(REV_PATCH_CHUNKS=1 REV_SOURCE_CONTEXT=0 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 12 \
       --phase risk "${assignments[@]}") || return
     disabled_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 12 sol correctness-boundaries \
       verification --evidence "$disabled_manifest") || return
@@ -82,6 +105,20 @@ test_prompt_evidence_contract() {
       '^Source read required: true$'
     assert_grep "paired baseline keeps component-scoped assigned patch" "$disabled_prompt" \
       '^Read the entire assigned patch in bounded windows of at most 240 lines: '
+
+    local default_manifest
+    default_manifest=$(python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 13 \
+      --phase risk "${assignments[@]}") || return
+    python3 - "$default_manifest" "$S" <<'PY'
+import json, pathlib, sys
+m = json.load(open(sys.argv[1])); session = pathlib.Path(sys.argv[2])
+assert m['patch_chunks_enabled'] is False
+assert m['source_context']['enabled'] is False
+assert {row['patch_read_mode'] for row in m['assignments'].values()} == {'windows'}
+assert not list(session.glob('r13-patch-p*.txt'))
+assert not list(session.glob('r13-*-source-context-*.json'))
+PY
+    assert_eq "evidence features default off before held-out adoption" "$?" 0
 
     local clean
     clean=$("$SCRIPTS/rev-prompt.sh" "$S" 1 sol clean-room design --evidence "$manifest") || return
@@ -109,8 +146,14 @@ test_prompt_evidence_contract() {
     legacy=$("$SCRIPTS/rev-prompt.sh" "$S" 8 sol regression numeric) || return
     assert_grep "legacy prompt names its exact frozen patch" "$legacy" \
       "^Exact frozen assigned patch: $session_real/r8-full\\.patch$"
-    assert_grep "legacy prompt makes native patch read the first evidence action" "$legacy" \
-      '^First evidence action after any required clean-room design: use your native file-read tool .* to read the exact frozen assigned patch '
+    assert_grep "legacy Codex prompt makes a portable patch read the first evidence action" "$legacy" \
+      '^First evidence action after any required clean-room design: run portable bounded sed windows over '
+    local legacy_agent
+    printf '%s\n' '{"seats":[{"seat":"opus","adapter":"agent"}]}' > "$S/roster.json"
+    legacy_agent=$("$SCRIPTS/rev-prompt.sh" "$S" 8 opus regression numeric) || return
+    assert_grep "legacy Agent prompt uses the Claude Read tool" "$legacy_agent" \
+      '^First evidence action after any required clean-room design: use Read to read the exact frozen assigned patch '
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"grok","adapter":"grok"},{"seat":"opus","adapter":"claude"},{"seat":"opus-2","adapter":"gemini"}]}' > "$S/roster.json"
     assert_nogrep "legacy prompt never asks for a live git diff" "$legacy" \
       'Produce the diff yourself|run `git diff|use `git diff'
     assert_grep "legacy frozen patch includes tracked worktree changes" "$S/r8-full.patch" \
@@ -230,7 +273,8 @@ PY
     assert_exit "wrong-label evidence removes stale prompt" 1 test -e "$S/r2-sol.prompt.md"
 
     local manifest10
-    manifest10=$(python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 10 --phase risk "${assignments[@]}") || return
+    manifest10=$(REV_PATCH_CHUNKS=1 REV_SOURCE_CONTEXT=1 \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 10 --phase risk "${assignments[@]}") || return
     printf 'newer worktree state\n' > "$ROOT/a.txt"
     printf 'stale prompt\n' > "$S/r10-sol.prompt.md"
     "$SCRIPTS/rev-prompt.sh" "$S" 10 sol correctness invalid --evidence "$manifest10" \

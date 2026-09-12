@@ -2679,7 +2679,7 @@ def prepare(args):
                         'full_state': mode == 'full', 'adapter': adapters[seat], 'components': component_ids,
                         'patch': str(session / name), 'patch_sha256': digest(patch_body),
                         'patch_bytes': len(patch_body), 'patch_lines': len(patch_body.splitlines())}
-    chunk_flag = os.environ.get('REV_PATCH_CHUNKS', '1')
+    chunk_flag = os.environ.get('REV_PATCH_CHUNKS', '0')
     if chunk_flag not in ('0', '1'):
         raise ValueError('REV_PATCH_CHUNKS must be 0 or 1')
     patch_sets, patch_chunk_artifacts = patch_sets_for(
@@ -2697,7 +2697,7 @@ def prepare(args):
         data['plan'] = {'source': str(plan_source), 'source_sha256': args.plan_sha256,
                         'artifact': plan_name, 'sha256': digest(plan_raw), 'bytes': len(plan_raw),
                         'clusters': plan_clusters, 'closure_paths': closure_paths}
-    context_flag = os.environ.get('REV_SOURCE_CONTEXT', '1')
+    context_flag = os.environ.get('REV_SOURCE_CONTEXT', '0')
     if context_flag not in ('0', '1'):
         raise ValueError('REV_SOURCE_CONTEXT must be 0 or 1')
     data['source_context'], source_artifacts = source_context(
@@ -2747,6 +2747,13 @@ def render(args):
     assignment = manifest['assignments'].get(args.seat)
     if assignment is None:
         raise ValueError('seat not assigned')
+    expected_plan = (Path(manifest['session']) / manifest['plan']['artifact']
+                     if manifest['phase'] == 'plan' else None)
+    if expected_plan is None:
+        if args.plan_source:
+            raise ValueError('--plan-source belongs only to plan evidence')
+    elif not args.plan_source or Path(args.plan_source).resolve() != expected_plan:
+        raise ValueError('plan evidence requires its immutable plan snapshot')
     print('Evidence manifest SHA-256: ' + mh)
     print('Assigned scope: ' + assignment['scope'])
     print('Assigned risk bundle: ' + assignment['bundle'])
@@ -2781,9 +2788,28 @@ def render(args):
                   + str(Path(manifest['session']) / chunk['artifact']) + ' bytes '
                   + str(chunk['byte_start']) + '-' + str(chunk['byte_end']) + ' SHA-256 '
                   + chunk['sha256'])
+        first = str(Path(manifest['session']) / patch_set['chunks'][0]['artifact'])
+        if assignment['adapter'] == 'codex':
+            print('First assigned-patch action: run ' + shlex.join(['cat', '--', first])
+                  + '; then read one listed chunk per command in exact order.')
+        else:
+            tool = 'Read' if assignment['adapter'] in ('agent', 'claude') else 'read_file'
+            print('First assigned-patch action: use ' + tool + ' to read '
+                  + str(batch_limit) + ' consecutive listed chunk'
+                  + ('' if batch_limit == 1 else 's') + ' in full; continue in exact order.')
     else:
         print('Read the entire assigned patch in bounded windows of at most 240 lines: '
               + assignment['patch'])
+        if assignment['adapter'] == 'codex':
+            end = min(240, assignment['patch_lines'])
+            print("First assigned-patch action: run sed -n '1," + str(end) + "p' "
+                  + shlex.quote(assignment['patch'])
+                  + '; continue with consecutive windows of at most 240 lines.')
+        else:
+            tool = 'Read' if assignment['adapter'] in ('agent', 'claude') else 'read_file'
+            print('First assigned-patch action: use ' + tool
+                  + ' with offset 1 and limit 240 on ' + assignment['patch']
+                  + '; continue with consecutive windows.')
     print('Evidence navigation index: ' + str(Path(manifest['session']) / f"r{manifest['label']}-evidence.md"))
     print('Read applicable repository instructions: ' + str(Path(manifest['session']) / f"r{manifest['label']}-instructions.md"))
     context = manifest['source_context']['seats'][args.seat]
@@ -2855,6 +2881,7 @@ def main():
     prep.add_argument('--plan'); prep.add_argument('--plan-sha256')
     rend = commands.add_parser('render'); rend.add_argument('manifest'); rend.add_argument('seat')
     rend.add_argument('--offline', action='store_true')
+    rend.add_argument('--plan-source')
     check = commands.add_parser('verify'); check.add_argument('manifest')
     panel = commands.add_parser('verify-panel'); panel.add_argument('session'); panel.add_argument('label')
     rec = commands.add_parser('receipt'); rec.add_argument('session'); rec.add_argument('label')

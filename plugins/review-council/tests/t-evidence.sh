@@ -19,7 +19,8 @@ with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
     def write(path, data):
         p = root / path; p.parent.mkdir(parents=True, exist_ok=True); p.write_text(data)
     def run(*args, good=True):
-        p = subprocess.run([sys.executable, script, *map(str, args)], capture_output=True, text=True)
+        env = dict(os.environ, REV_PATCH_CHUNKS='1', REV_SOURCE_CONTEXT='1')
+        p = subprocess.run([sys.executable, script, *map(str, args)], capture_output=True, text=True, env=env)
         assert (p.returncode == 0) == good, (args, p.returncode, p.stdout, p.stderr)
         return p.stdout
     def prepare(label, phase='discovery', *extra):
@@ -318,7 +319,9 @@ def fixture(name='repo'):
         def write(name, text):
             p = root / name; p.parent.mkdir(parents=True, exist_ok=True); p.write_text(text)
         def call(*args, good=True, timeout=30, env=None):
-            p = subprocess.run([sys.executable, str(script), *map(str, args)], capture_output=True, text=True, timeout=timeout, env=env)
+            run_env = dict(os.environ, REV_PATCH_CHUNKS='1', REV_SOURCE_CONTEXT='1')
+            run_env.update(env or {})
+            p = subprocess.run([sys.executable, str(script), *map(str, args)], capture_output=True, text=True, timeout=timeout, env=run_env)
             assert 'Traceback' not in p.stderr, p.stderr
             assert (p.returncode == 0) == good, (p.returncode, p.stdout, p.stderr)
             return p.stdout

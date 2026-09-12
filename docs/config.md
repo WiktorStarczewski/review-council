@@ -48,8 +48,8 @@ Environment variables take precedence over the config file, which takes preceden
 | `REV_GROK_EFFORT` | `rev-seat.sh` | Same, for the Grok seat. |
 | `REV_ACTIVE` | the loop | Set to `1` automatically inside every seat's environment once a review starts; a nested `/review-council:rev` refuses to start while it's set. Not meant to be set by hand. |
 | `REV_STACK_LEG` | `stack.sh` | Set to `1` automatically inside each stack leg so it skips the top-level squash/push and so a leg can never itself launch a stack. Not meant to be set by hand. |
-| `REV_SOURCE_CONTEXT` | `rev-evidence.py` | Set to `0` to disable literal source-context packets for a controlled comparison. The default is `1`. |
-| `REV_PATCH_CHUNKS` | `rev-evidence.py` | Set to `0` to retain 240-line patch windows for a controlled comparison. The default is `1`; chunk mode activates only when it saves at least 10% of proof reads and satisfies every byte, line, and UTF-8 bound. |
+| `REV_SOURCE_CONTEXT` | `rev-evidence.py` | Set to `1` to enable literal source-context packets for the held-out adoption candidate. The default remains `0` until certification. |
+| `REV_PATCH_CHUNKS` | `rev-evidence.py` | Set to `1` to enable exact patch chunks for the held-out adoption candidate. The default remains `0` until certification; chunk mode also requires at least 10% fewer proof reads and every byte, line, and UTF-8 bound. |
 | `REVIEW_COUNCIL_UPDATE_URL` | `update-check.py` | Where the published `plugin.json` is read from, instead of this repo's `main`. |
 | `REVIEW_COUNCIL_UPDATE_TTL` | `update-check.py` | Seconds before the cached answer is refetched (default 86400 - once a day). |
 | `REVIEW_COUNCIL_CACHE_DIR` | `update-check.py` | Directory for `update-check.json`, instead of `${XDG_CACHE_HOME:-~/.cache}/review-council`. |

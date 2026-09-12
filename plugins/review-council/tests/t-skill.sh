@@ -181,9 +181,9 @@ test_skill_contract() {
     assert_grep "host bounds integration packet shards" "$H" \
       'integration seat receives at most three'
     assert_grep "host carries the paired source-context switch through prepare" "$H" \
-      'REV_SOURCE_CONTEXT=\$\{REV_SOURCE_CONTEXT:-1\} python3'
+      'REV_SOURCE_CONTEXT=\$\{REV_SOURCE_CONTEXT:-0\} python3'
     assert_grep "host carries the patch chunk switch through prepare" "$H" \
-      'REV_PATCH_CHUNKS=\$\{REV_PATCH_CHUNKS:-1\} REV_SOURCE_CONTEXT='
+      'REV_PATCH_CHUNKS=\$\{REV_PATCH_CHUNKS:-0\} REV_SOURCE_CONTEXT='
     assert_grep "host keeps the monolithic patch as chunk identity" "$H" \
       'SHA-256 remain the identity'
     assert_grep "host shares identical patch sets" "$H" \

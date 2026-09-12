@@ -210,17 +210,18 @@ and that repair seat as `--full-seat`. Then prepare once:
 
 ```bash
 MANIFEST=
-if CANDIDATE=$(REV_PATCH_CHUNKS=${REV_PATCH_CHUNKS:-1} REV_SOURCE_CONTEXT=${REV_SOURCE_CONTEXT:-1} python3 "$PLUGIN/scripts/rev-evidence.py" prepare "$S" "$PANEL_LABEL" --phase "$PANEL_PHASE" "${EVIDENCE_ARGS[@]}"); then
+if CANDIDATE=$(REV_PATCH_CHUNKS=${REV_PATCH_CHUNKS:-0} REV_SOURCE_CONTEXT=${REV_SOURCE_CONTEXT:-0} python3 "$PLUGIN/scripts/rev-evidence.py" prepare "$S" "$PANEL_LABEL" --phase "$PANEL_PHASE" "${EVIDENCE_ARGS[@]}"); then
   case "$CANDIDATE" in
     "$S/r$PANEL_LABEL-evidence.manifest.json") [ -r "$CANDIDATE" ] && MANIFEST=$CANDIDATE ;;
   esac
 fi
 ```
 
-`REV_SOURCE_CONTEXT=0` is reserved for paired adoption measurement. It keeps the
-same component assignments and patch narrowing while omitting source-context shards;
-the default is `1`. Baseline and candidate runs must otherwise use the same snapshot,
-roster, models, efforts, bundles, and host steps.
+`REV_PATCH_CHUNKS=1` and `REV_SOURCE_CONTEXT=1` enable the held-out adoption
+candidate. The defaults remain `0` until an exact-roster panel certifies the delivery
+path. Baseline and candidate runs must otherwise use the same snapshot, roster,
+models, efforts, bundles, and host steps.
+Both runs keep the same component assignments and patch narrowing.
 
 Build the optional flag once. Render every seat before any reviewer process starts,
 using the same flag array for the entire panel. Append `--vacuity` whenever tests are

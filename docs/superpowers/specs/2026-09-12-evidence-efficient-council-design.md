@@ -61,7 +61,7 @@ The script exposes five commands:
 rev-evidence.py prepare SESSION LABEL --phase discovery|risk|verification|repair|plan
   [--head REF] [--assignment SEAT=BUNDLE] [--full-seat SEAT]
   [--plan FILE --plan-sha256 SHA256]
-rev-evidence.py render MANIFEST SEAT
+rev-evidence.py render MANIFEST SEAT [--plan-source FILE]
 rev-evidence.py verify MANIFEST
 rev-evidence.py verify-panel SESSION LABEL
 rev-evidence.py receipt SESSION LABEL
@@ -82,8 +82,9 @@ rev-evidence.py receipt SESSION LABEL
 - `r<LABEL>-evidence.manifest.json`: hashes, snapshot tree, phase, assignments,
   fallback reason, word counts, patch-set identities, and chunk metadata.
 
-`render` validates the manifest, artifact hashes, snapshot freshness, and requested
-seat. It emits the prompt fragment that names the assigned patch and evidence index.
+`render` validates the manifest, artifact hashes, snapshot freshness, requested seat,
+and exact plan snapshot when `--plan-source` is present. It emits adapter-specific
+first-read instructions with the assigned patch and evidence index.
 A present invalid manifest is an error. An absent `--evidence` flag preserves legacy
 full-diff prompt behavior.
 
@@ -230,8 +231,8 @@ optional terminal newline before comparing delivered bytes, and counts chunks as
 proof only. They never establish original-source coverage or support a finding citation.
 Invalid encoding, NUL bytes, unsafe metadata, reconstruction failure, stale or redirected
 artifacts, missing, duplicate, reordered, partial, or oversized reads retain or restore
-window mode and whole-panel fail-full behavior. `REV_PATCH_CHUNKS=0` disables chunking
-for controlled comparisons.
+window mode and whole-panel fail-full behavior. `REV_PATCH_CHUNKS=1` enables the
+held-out adoption candidate; the default remains `0` until certification.
 
 ## Semantic components and cacheable prompts
 
@@ -258,6 +259,8 @@ snapshot. Excerpts keep their original path and one-based line numbers, merge ov
 ranges, preserve complete lines, and record the snapshot blob or tree identity and the
 reason each range was selected. Packet bytes are original source evidence rather than a
 summary. A reviewer may cite a packet line as the corresponding original file line.
+`REV_SOURCE_CONTEXT=1` enables the held-out adoption candidate; the default remains `0`
+until certification.
 
 Selection gives every changed symbol a declaration seed before adding one production
 caller per symbol, one related test per component, every detected gate, and then stable

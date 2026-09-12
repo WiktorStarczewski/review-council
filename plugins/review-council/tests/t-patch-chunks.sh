@@ -77,8 +77,9 @@ PY
     printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
       "$base" "$R" > "$S/scope.env"
     printf 'src/large.py\n' > "$S/files.txt"; printf 'src/large.py\n' > "$S/untracked.txt"
-    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"grok","adapter":"grok"},{"seat":"opus","adapter":"claude"},{"seat":"opus-2","adapter":"claude"}]}' > "$S/roster.json"
-    manifest=$(python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 21 --phase discovery) || return
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"grok","adapter":"grok"},{"seat":"opus","adapter":"claude"},{"seat":"opus-2","adapter":"gemini"}]}' > "$S/roster.json"
+    manifest=$(REV_PATCH_CHUNKS=1 REV_SOURCE_CONTEXT=1 \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 21 --phase discovery) || return
     python3 - "$manifest" <<'PY'
 import hashlib, json, pathlib, sys
 m = json.load(open(sys.argv[1])); session = pathlib.Path(sys.argv[1]).parent
@@ -113,13 +114,26 @@ PY
       '^Read the entire assigned patch in bounded windows'
     assert_grep "Codex keeps one patch chunk per turn" "$prompt" \
       '^Patch chunk batch limit: 1$'
-    local grok_prompt opus_prompt
+    assert_grep "Codex chunk prompt gives an exact shell recipe" "$prompt" \
+      '^First assigned-patch action: run cat -- '
+    assert_nogrep "Codex chunk prompt never requests a native read tool" "$prompt" \
+      '^First assigned-patch action:.*Read|^First assigned-patch action:.*read_file'
+    local grok_prompt opus_prompt gemini_prompt
     grok_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 grok correctness chunks --evidence "$manifest") || return
     opus_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 opus correctness chunks --evidence "$manifest") || return
+    gemini_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 opus-2 correctness chunks --evidence "$manifest") || return
     assert_grep "Grok batches two consecutive patch chunks" "$grok_prompt" \
       '^Patch chunk batch limit: 2$'
     assert_grep "Opus batches two consecutive patch chunks" "$opus_prompt" \
       '^Patch chunk batch limit: 2$'
+    assert_grep "Grok chunk prompt uses read_file" "$grok_prompt" \
+      '^First assigned-patch action: use read_file to read 2 consecutive listed chunks in full'
+    assert_grep "Opus chunk prompt uses Read" "$opus_prompt" \
+      '^First assigned-patch action: use Read to read 2 consecutive listed chunks in full'
+    assert_grep "Gemini keeps one patch chunk per turn" "$gemini_prompt" \
+      '^Patch chunk batch limit: 1$'
+    assert_grep "Gemini chunk prompt uses read_file" "$gemini_prompt" \
+      '^First assigned-patch action: use read_file to read 1 consecutive listed chunk in full'
     printf '1. Verify the large change.\n' > "$S/fix-plan.md"
     assert_exit "chunk prompt rejects a non-plan evidence manifest" 1 \
       "$SCRIPTS/rev-prompt.sh" "$S" 21 sol plan-tests chunks \
@@ -211,7 +225,8 @@ PY
       "$base" "$R" > "$S/scope.env"
     printf 'src/wide.py\n' > "$S/files.txt"; printf 'src/wide.py\n' > "$S/untracked.txt"
     printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"grok","adapter":"grok"},{"seat":"opus","adapter":"claude"},{"seat":"opus-2","adapter":"claude"}]}' > "$S/roster.json"
-    manifest=$(python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 22 --phase discovery) || return
+    manifest=$(REV_PATCH_CHUNKS=1 REV_SOURCE_CONTEXT=1 \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 22 --phase discovery) || return
     assert_eq "chunk mode declines when it saves less than ten percent of reads" \
       "$(python3 - "$manifest" <<'PY'
 import json,sys
@@ -244,7 +259,7 @@ PY
 }
 
 test_patch_chunk_audit_contract() {
-  ( local R="$T/patch-chunk-audit-root" S="$T/patch-chunk-audit-session"
+  ( local R="$T/patch-chunk-audit-root" S="$T/patch chunk audit session"
     mkrepo "$R"; mkdir -p "$R/src" "$S"
     python3 - "$R/src/large.py" <<'PY'
 import sys
@@ -258,13 +273,14 @@ PY
       "$base" "$R" > "$S/scope.env"
     printf 'src/large.py\n' > "$S/files.txt"; printf 'src/large.py\n' > "$S/untracked.txt"
     printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"grok","adapter":"grok"},{"seat":"opus","adapter":"claude"},{"seat":"opus-2","adapter":"claude"}]}' > "$S/roster.json"
-    manifest=$(python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 24 --phase discovery) || return
+    manifest=$(REV_PATCH_CHUNKS=1 REV_SOURCE_CONTEXT=1 \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 24 --phase discovery) || return
     prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 24 sol correctness chunk-audit --evidence "$manifest") || return
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r24-sol.json"
 
     write_transcript() {
       python3 - "$manifest" "$S/r24-sol.stream.ndjson" "$R" "$1" <<'PY'
-import json, pathlib, sys
+import json, pathlib, shlex, sys
 manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2])
 root = pathlib.Path(sys.argv[3]); mode = sys.argv[4]; session = pathlib.Path(sys.argv[1]).parent
 assignment = manifest['assignments']['sol']
@@ -298,14 +314,14 @@ for position, row in enumerate(chunks, 1):
         command('chunk-' + str(position), "sed -n '1,1p' '" + str(path) + "'",
                 content.splitlines(keepends=True)[0])
     else:
-        command('chunk-' + str(position), "cat '" + str(path) + "'", content)
+        command('chunk-' + str(position), 'cat -- ' + shlex.quote(str(path)), content)
 if mode == 'duplicate':
     row = chunks[0]; path = session / row['artifact']
-    command('chunk-copy', "cat '" + str(path) + "'", path.read_text())
+    command('chunk-copy', 'cat -- ' + shlex.quote(str(path)), path.read_text())
 if mode == 'unassigned':
     source = session / chunks[0]['artifact']; extra = session / 'r24-patch-p99-999.txt'
     extra.write_bytes(source.read_bytes())
-    command('chunk-unassigned', "cat '" + str(extra) + "'", extra.read_text())
+    command('chunk-unassigned', 'cat -- ' + shlex.quote(str(extra)), extra.read_text())
 if mode != 'packet-first':
     packets()
 source = root / 'src/large.py'

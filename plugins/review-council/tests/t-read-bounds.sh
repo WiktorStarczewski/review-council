@@ -83,7 +83,7 @@ PY
     printf 'oversized.py\n' > "$S/files.txt"; printf 'oversized.py\n' > "$S/untracked.txt"
     printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"grok","adapter":"grok"},{"seat":"opus","adapter":"claude"},{"seat":"opus-2","adapter":"claude"}]}' > "$S/roster.json"
     local manifest seat prompt
-    manifest=$(python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 10 --phase discovery) || return
+    manifest=$(REV_SOURCE_CONTEXT=1 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 10 --phase discovery) || return
     seat=$(python3 - "$manifest" <<'PY'
 import json, sys
 doc = json.load(open(sys.argv[1]))
@@ -334,7 +334,7 @@ test_read_audit_source_evidence_contract() {
     printf 'src/x.ts\n' > "$S/files.txt"; : > "$S/untracked.txt"
     printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"grok","adapter":"grok"},{"seat":"opus","adapter":"claude"},{"seat":"opus-2","adapter":"claude"}]}' > "$S/roster.json"
     local manifest prompt packet assigned_patch
-    manifest=$(python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 4 --phase discovery) || return
+    manifest=$(REV_SOURCE_CONTEXT=1 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 4 --phase discovery) || return
     prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 4 sol correctness source-evidence --evidence "$manifest") || return
     packet=$(python3 - "$manifest" <<'PY'
 import json, sys
@@ -614,7 +614,7 @@ PY
     printf 'oversized.py\n' > "$S/files.txt"; : > "$S/untracked.txt"
     printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"grok","adapter":"grok"},{"seat":"opus","adapter":"claude"},{"seat":"opus-2","adapter":"claude"}]}' > "$S/roster.json"
     local manifest prompt
-    manifest=$(python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 9 --head "$reviewed" --phase discovery) || return
+    manifest=$(REV_SOURCE_CONTEXT=1 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 9 --head "$reviewed" --phase discovery) || return
     prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 9 sol correctness required-source --evidence "$manifest") || return
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r9-sol.json"
 

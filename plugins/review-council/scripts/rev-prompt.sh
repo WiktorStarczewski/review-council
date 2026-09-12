@@ -99,7 +99,7 @@ if [ -n "$PRF" ] && [ -s "$PRF" ]; then SHOW_PR=1; fi
 if [ -z "$RO" ] && [ "$HAS_UNTRACKED" = 1 ] && [ -s "$S/untracked.txt" ]; then SHOW_UNTRACKED=1; fi
 if [ "$HAS_REJECTED" = 1 ] && [ -s "$S/rejected.md" ]; then SHOW_REJECTED=1; fi
 if [ "$HAS_CONTEXT" = 1 ] && [ -s "$S/context.md" ]; then SHOW_CONTEXT=1; fi
-INLINE_SCHEMA=1
+ADAPTER=agent; INLINE_SCHEMA=1
 if is_present "$S/roster.json"; then
   require_regular "$S/roster.json" "roster"
   ADAPTER=$(python3 - "$S/roster.json" "$SEAT" <<'PY' 2>/dev/null
@@ -137,62 +137,23 @@ fi
 [ "$INLINE_SCHEMA" = 0 ] || check_read "$SCHEMA" "findings schema"
 if [ -n "$EVIDENCE" ]; then
   EVIDENCE_TMP=$(mktemp "$S/.rev-evidence-fragment.XXXXXX") || die "cannot create evidence fragment in $S"
-  python3 "$HERE/rev-evidence.py" render "$EVIDENCE" "$SEAT" > "$EVIDENCE_TMP"
+  if [ -n "$PLAN" ]; then
+    python3 "$HERE/rev-evidence.py" render "$EVIDENCE" "$SEAT" \
+      --plan-source "$PLAN" > "$EVIDENCE_TMP"
+  else
+    python3 "$HERE/rev-evidence.py" render "$EVIDENCE" "$SEAT" > "$EVIDENCE_TMP"
+  fi
   EVIDENCE_RC=$?
   [ "$EVIDENCE_RC" = 0 ] || die "cannot render evidence for $SEAT from $EVIDENCE"
   [ -s "$EVIDENCE_TMP" ] || die "empty evidence fragment for $SEAT from $EVIDENCE"
-  EXPECTED_PLAN=$(sed -n 's/^Immutable plan snapshot: \(.*\) SHA-256 [0-9a-f]*$/\1/p' "$EVIDENCE_TMP")
-  EXPECTED_PLAN_HASH=$(sed -n 's/^Immutable plan snapshot: .* SHA-256 \([0-9a-f]*\)$/\1/p' "$EVIDENCE_TMP")
-  PLAN_DECLARATIONS=$(printf '%s\n' "$EXPECTED_PLAN" | grep -c .)
-  [ "$PLAN_DECLARATIONS" -le 1 ] \
-    || die "plan evidence names multiple immutable plan snapshots"
-  if [ "$PLAN_DECLARATIONS" = 1 ]; then
-    [ -n "$PLAN" ] || die "plan evidence requires --plan with its immutable plan snapshot"
-    [ "$PLAN" = "$EXPECTED_PLAN" ] || die "--plan does not match the evidence-bound plan snapshot"
-    ACTUAL_PLAN_HASH=$(python3 - "$PLAN" <<'PY'
-import hashlib, sys
-print(hashlib.sha256(open(sys.argv[1], 'rb').read()).hexdigest())
-PY
-    ) || die "cannot hash immutable plan snapshot"
-    [ "$ACTUAL_PLAN_HASH" = "$EXPECTED_PLAN_HASH" ] || die "immutable plan snapshot hash changed"
-  elif [ -n "$PLAN" ]; then
-    die "--plan requires a plan evidence manifest"
-  fi
   INSTRUCTIONS="$S/r${N}-instructions.md"
   require_regular "$INSTRUCTIONS" "repository instruction snapshot"
   check_read "$INSTRUCTIONS" "repository instruction snapshot"
 fi
-PATCH_ARTIFACT=""; PATCH_AVAILABLE=0; PATCH_READ_MODE=windows; PATCH_CHUNKS=""; PATCH_CHUNK_BATCH=1
+PATCH_ARTIFACT=""; PATCH_AVAILABLE=0
 if [ -z "$RO" ]; then
   SESSION_DIR=$(cd "$S" && pwd -P) || die "cannot resolve session directory: $S"
   if [ -n "$EVIDENCE" ]; then
-    PATCH_READ_MODE=$(sed -n 's/^Assigned patch read mode: //p' "$EVIDENCE_TMP")
-    [ "$PATCH_READ_MODE" = chunks ] || [ "$PATCH_READ_MODE" = windows ] \
-      || die "evidence fragment has an invalid assigned patch mode"
-    if [ "$PATCH_READ_MODE" = chunks ]; then
-      PATCH_CHUNK_BATCH=$(sed -n 's/^Patch chunk batch limit: //p' "$EVIDENCE_TMP")
-      [ "$PATCH_CHUNK_BATCH" = 1 ] || [ "$PATCH_CHUNK_BATCH" = 2 ] \
-        || die "evidence fragment has an invalid patch chunk batch limit"
-      PATCH_ARTIFACT=$(sed -n 's/^Canonical assigned patch: \(.*\) SHA-256 [0-9a-f]* bytes [0-9][0-9]*$/\1/p' "$EVIDENCE_TMP")
-      PATCH_CHUNKS=$(sed -n 's/^Assigned patch chunk [0-9][0-9]*\/[0-9][0-9]*: \(.*\) bytes [0-9][0-9]*-[0-9][0-9]* SHA-256 [0-9a-f]*$/\1/p' "$EVIDENCE_TMP")
-      [ -n "$PATCH_CHUNKS" ] || die "evidence fragment names no assigned patch chunks"
-    else
-      PATCH_ARTIFACT=$(sed -n 's/^Read the entire assigned patch in bounded windows of at most 240 lines: //p' "$EVIDENCE_TMP")
-    fi
-    [ "$(printf '%s\n' "$PATCH_ARTIFACT" | grep -c .)" = 1 ] \
-      || die "evidence fragment does not name exactly one assigned patch"
-    require_regular "$PATCH_ARTIFACT" "assigned patch"
-    [ ! -L "$PATCH_ARTIFACT" ] || die "assigned patch must not be a symlink: $PATCH_ARTIFACT"
-    check_read "$PATCH_ARTIFACT" "assigned patch"
-    if [ "$PATCH_READ_MODE" = chunks ]; then
-      while IFS= read -r patch_chunk; do
-        require_regular "$patch_chunk" "assigned patch chunk"
-        [ ! -L "$patch_chunk" ] || die "assigned patch chunk must not be a symlink: $patch_chunk"
-        check_read "$patch_chunk" "assigned patch chunk"
-      done <<EOF
-$PATCH_CHUNKS
-EOF
-    fi
     PATCH_AVAILABLE=1
   else
     PATCH_ARTIFACT="$SESSION_DIR/r${N}-full.patch"
@@ -345,7 +306,7 @@ You are one independent reviewer on a read-only multi-model code review panel. S
 1. After any required clean-room design, read every byte of the assigned patch using its rendered mode. In chunk mode, obey the rendered patch chunk batch limit, reading only consecutive chunks in exact order and in full. In window mode, use consecutive windows of at most 240 lines until coverage is complete. Then read every listed source-context packet in full before source expansion. Treat each packet entry as exact original source at its recorded path and one-based lines.
 2. Locate the enclosing symbol or named section, then search definitions, direct references, related tests, and config gates. When `Source read required` is true, resolve every relevant omission with a bounded original-source read.
 3. Read the smallest useful line window around each match. Every source Read call must set an explicit one-based `offset` and a `limit` of at most 240 lines. Every Grep or search call must set a result limit of at most 80. The rendered prompt, compact evidence index, assigned patch chunks, and listed source-context packets are the only full-read exceptions.
-4. Shell commands that print source, diffs, or logs must select at most 240 lines. Shell search commands must select at most 80 results. Use byte-preserving `sed -n 'START,ENDp' -- FILE` for source windows. Do not use `nl -ba ... | sed`; its added prefixes change the bytes, and a rejected call invalidates the audit.
+4. Shell commands that print source, diffs, or logs must select at most 240 lines. Shell search commands must select at most 80 results. Use portable byte-preserving `sed -n 'START,ENDp' 'FILE'` for source windows. Never put backticks or command substitutions in shell search patterns. Do not use `nl -ba ... | sed`; its added prefixes change the bytes, and a rejected call invalidates the audit.
 5. Batch independent bounded windows discovered from the evidence index into one tool turn, with a 32 KiB combined output ceiling. Claude can issue parallel Read or Grep calls; shell-based seats can combine independent bounded `sed` or `rg` queries.
 6. Expand to another bounded block, file, or pinned dependency only to answer a concrete question that could prove or refute a finding. Name the concrete symbol or invariant question first and record the next bounded window in the tool call.
 7. Stop that evidence path when the question is answered. Finish every assigned check and expand again when evidence is insufficient; never treat the navigation index or a summary as proof.
@@ -372,29 +333,25 @@ EOC
   else
     echo "Repository: $REV_ROOT"
     echo "Base commit: $REV_BASE (branch \`$REV_BRANCH\`, default branch \`$REV_DEFAULT\`)"
-    if [ "$PATCH_AVAILABLE" = 1 ]; then
-      if [ "$PATCH_READ_MODE" = chunks ]; then
-        echo "Exact frozen assigned patch identity: $PATCH_ARTIFACT"
-        if [ -n "$PLAN" ]; then
-          echo "Evidence order: study the full inline immutable plan snapshot first. Then use your native file-read tool (Read or read_file) to read at most $PATCH_CHUNK_BATCH consecutive assigned patch chunks per tool turn, once in the rendered order and in full, before source-context packets or source expansion."
-        else
-          echo "First evidence action after any required clean-room design: use your native file-read tool (Read or read_file) to read at most $PATCH_CHUNK_BATCH consecutive assigned patch chunks per tool turn, once in the rendered order and in full, before source-context packets or source expansion."
-        fi
-      else
-        echo "Exact frozen assigned patch: $PATCH_ARTIFACT"
-        if [ -n "$PLAN" ]; then
-          echo "Evidence order: study the full inline immutable plan snapshot first. Then use your native file-read tool (Read or read_file) to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most 240 lines before source expansion."
-        else
-          echo "First evidence action after any required clean-room design: use your native file-read tool (Read or read_file) to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most 240 lines, starting at line 1."
-        fi
-      fi
-      echo "Do not generate a live diff or use a shell command to produce the patch."
-    fi
     if [ -n "$EVIDENCE" ]; then
       echo "Prepared review scope:"
       cat "$EVIDENCE_TMP"
+      echo "Do not generate a live diff from the current worktree."
     else
       if [ "$PATCH_AVAILABLE" = 1 ]; then
+        echo "Exact frozen assigned patch: $PATCH_ARTIFACT"
+        case "$ADAPTER" in
+          codex)
+            echo "First evidence action after any required clean-room design: run portable bounded sed windows over $PATCH_ARTIFACT, starting at line 1."
+            ;;
+          agent|claude)
+            echo "First evidence action after any required clean-room design: use Read to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most 240 lines, starting at line 1."
+            ;;
+          *)
+            echo "First evidence action after any required clean-room design: use read_file to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most 240 lines, starting at line 1."
+            ;;
+        esac
+        echo "Do not generate a live diff from the current worktree."
         echo "The frozen patch contains committed, staged, unstaged, and listed untracked changes against the pinned base."
       else
         case "$REV_SCOPE" in
@@ -477,6 +434,10 @@ TMP=$(mktemp "$S/.rev-prompt.XXXXXX") || die "cannot create temporary prompt in 
 render_prompt > "$TMP"
 RENDER_RC=$?
 [ "$RENDER_RC" = 0 ] || die "cannot render prompt: $OUT"
+if [ -n "$EVIDENCE" ]; then
+  python3 "$HERE/rev-evidence.py" verify "$EVIDENCE" >/dev/null \
+    || die "evidence changed while rendering prompt: $EVIDENCE"
+fi
 WORDS=$(wc -w < "$TMP" | tr -d ' ') || die "cannot measure prompt: $OUT"
 if [ -n "$PLAN" ]; then KIND=plan; LIMIT=3000; else KIND=code; LIMIT=1800; fi
 if [ "$WORDS" -gt "$LIMIT" ]; then
