@@ -4,6 +4,7 @@ import argparse
 import ast
 from bisect import bisect_right
 from collections import Counter
+from difflib import SequenceMatcher
 import hashlib
 import json
 import os
@@ -30,6 +31,8 @@ PATCH_CHUNK_PREFIX_RESERVE = 8
 PLAN_MAX_BYTES = 256 * 1024
 PLAN_CLOSURE_MAX_BYTES = 8 * 1024 * 1024
 SOURCE_ANCHOR_RADIUS = 8
+DECLARATION_PAIR_LIMIT = 4096
+DECLARATION_PAIR_TOKEN_LIMIT = 1_000_000
 SOURCE_CONTEXT_REASONS = ('declaration', 'production-caller', 'related-test',
                           'gate', 'extra-caller', 'extra-test')
 NAVIGATION_ROW_LIMIT = 1024
@@ -55,6 +58,11 @@ def digest(data):
 
 def patch_display_lines(raw):
     return raw.count(b'\n') + (1 if raw and not raw.endswith(b'\n') else 0)
+
+
+def split_lf_lines(raw):
+    parts = raw.split(b'\n')
+    return [part + b'\n' for part in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
 
 
 def partition_patch_chunks(raw):
@@ -126,7 +134,13 @@ def patch_chunk_mode(raw, chunks, enabled):
         raw.decode('utf-8')
     except UnicodeDecodeError:
         return 'windows'
-    windows = max(1, (len(raw.splitlines()) + 239) // 240)
+    lines = split_lf_lines(raw)
+    windows = max(1, (len(lines) + 239) // 240)
+    for start in range(0, len(lines), 240):
+        window = lines[start:start + 240]
+        predicted_visible = sum(map(len, window)) + len(window) * PATCH_CHUNK_PREFIX_RESERVE
+        if predicted_visible > PATCH_CHUNK_VISIBLE_LIMIT:
+            return 'chunks' if chunks else 'windows'
     return 'chunks' if chunks and len(chunks) * 10 <= windows * 9 else 'windows'
 
 
@@ -182,14 +196,14 @@ def patch_sets_for(scopes, patch_bodies, prefix, enabled):
             sets[set_id] = {
                 'patch_sha256': identity,
                 'patch_bytes': len(raw),
-                'patch_lines': len(raw.splitlines()),
+                'patch_lines': len(split_lf_lines(raw)),
                 'read_mode': mode,
                 'chunks': rows,
             }
             identities[identity] = set_id
         set_id = identities[identity]
         patch_set = sets[set_id]
-        if (patch_set['patch_bytes'] != len(raw) or patch_set['patch_lines'] != len(raw.splitlines())
+        if (patch_set['patch_bytes'] != len(raw) or patch_set['patch_lines'] != len(split_lf_lines(raw))
                 or patch_set['patch_sha256'] != digest(raw)):
             raise ValueError('assigned patch hash collision')
         assignment['patch_set'] = set_id
@@ -326,40 +340,6 @@ class Repository:
                     raise ValueError('unsupported object storage entry: ' + name)
         self.env.update(GIT_OBJECT_DIRECTORY=str(self.objects),
                         GIT_ALTERNATE_OBJECT_DIRECTORIES=git_quote(str(objects)))
-        self.object_repository = session / 'evidence-repository'
-        for directory in (self.object_repository, self.object_repository / 'objects',
-                          self.object_repository / 'objects/info', self.object_repository / 'refs'):
-            if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
-                raise ValueError('redirected evidence object repository')
-            directory.mkdir(mode=0o700, exist_ok=True)
-        repository_files = {
-            self.object_repository / 'HEAD': b'ref: refs/heads/review-council\n',
-            self.object_repository / 'objects/info/alternates':
-                (str(self.objects) + '\n' + str(objects) + '\n').encode(),
-        }
-        for path, content in repository_files.items():
-            if path.exists():
-                metadata = path.lstat()
-                if path.is_symlink() or not path.is_file() or metadata.st_nlink != 1:
-                    raise ValueError('redirected evidence object repository file')
-                if path.read_bytes() != content:
-                    raise ValueError('changed evidence object repository file')
-            else:
-                path.write_bytes(content)
-        allowed = {
-            self.object_repository.resolve(),
-            (self.object_repository / 'objects').resolve(),
-            (self.object_repository / 'objects/info').resolve(),
-            (self.object_repository / 'refs').resolve(),
-            *(path.resolve() for path in repository_files),
-        }
-        for directory, dirs, files in os.walk(self.object_repository, followlinks=False):
-            for name in dirs + files:
-                path = Path(directory) / name
-                if (path.resolve() not in allowed or path.is_symlink()
-                        or (path.is_file() and path.stat().st_nlink != 1)
-                        or not (path.is_file() or path.is_dir())):
-                    raise ValueError('unsupported evidence object repository entry: ' + name)
         self.blob_cache = {}
 
     def scoped(self, path):
@@ -615,15 +595,35 @@ class Repository:
                 for i, match in enumerate(matches):
                     hbody = text[match.end():matches[i + 1].start() if i + 1 < len(matches) else len(text)]
                     atom = {'kind': kind, 'path': path, 'body': hbody}
-                    position = int(re.search(r'\+(\d+)', match.group()).group(1))
-                    changed_lines = []
-                    for line in hbody.splitlines():
+                    old_position = int(re.search(r'-(\d+)', match.group()).group(1))
+                    new_position = int(re.search(r'\+(\d+)', match.group()).group(1))
+                    changed_lines = []; base_changed_lines = []
+                    replacement_groups = []; group_base = []; group_added = []
+                    for line in hbody.split('\n'):
+                        if line.startswith(' ') and (group_base or group_added):
+                            if group_base:
+                                replacement_groups.append({'base_lines': group_base,
+                                                           'added_lines': group_added})
+                            group_base = []; group_added = []
                         if line.startswith(('+', '-')):
-                            changed_lines.append(position)
+                            changed_lines.append(old_position if kind == 'delete' else new_position)
+                        if line.startswith('-'):
+                            base_changed_lines.append(old_position)
+                            group_base.append(old_position)
+                        if line.startswith('+'):
+                            group_added.append(new_position)
+                        if line.startswith((' ', '-')):
+                            old_position += 1
                         if line.startswith((' ', '+')):
-                            position += 1
+                            new_position += 1
+                    if group_base:
+                        replacement_groups.append({'base_lines': group_base,
+                                                   'added_lines': group_added})
                     hunks.append({'path': path, 'kind': kind, 'sha256': digest(encoded(atom)),
-                                  'header': match.group().strip(), 'changed_lines': sorted(set(changed_lines))})
+                                  'header': match.group().strip(),
+                                  'changed_lines': sorted(set(changed_lines)),
+                                  'base_changed_lines': sorted(set(base_changed_lines)),
+                                  'replacement_groups': replacement_groups})
             patches.append((path, patch))
         return patches, hunks, categories, unsafe
 
@@ -795,28 +795,40 @@ def brace_spans(lines, extension):
     return [] if stack else spans
 
 
-def facts(repo, tree, hunks, categories):
-    texts = {}
+def facts(repo, tree, hunks, categories, base_tree=None):
     entries = {p: e for p, e in repo.entries(tree).items() if repo.scoped(p)}
+    base_entries = ({p: e for p, e in repo.entries(base_tree).items() if repo.scoped(p)}
+                    if base_tree else {})
     seed_paths = {h['path'] for h in hunks}
-    for path, raw in repo.iter_blobs({p: e for p, e in entries.items() if p in seed_paths}):
-        if entries[path][0] not in ('100644', '100755'):
+    texts = {}
+    for blob_tree, tree_entries in ((tree, entries), (base_tree, base_entries)):
+        if not blob_tree:
             continue
-        if raw is OVERSIZED_BLOB or b'\0' in raw:
-            continue
-        try:
-            texts[path] = raw.decode('utf-8').splitlines()
-        except UnicodeDecodeError:
-            continue
+        selected = {p: e for p, e in tree_entries.items() if p in seed_paths}
+        for path, raw in repo.iter_blobs(selected):
+            if selected[path][0] not in ('100644', '100755'):
+                continue
+            if raw is OVERSIZED_BLOB or b'\0' in raw:
+                continue
+            try:
+                texts[(path, blob_tree)] = raw.decode('utf-8').splitlines()
+            except UnicodeDecodeError:
+                continue
     symbols = []; seen = set()
     declaration = re.compile(r'^\s*(?:(?:export|pub|public|private|static|async)\s+)*(?:def|fn|function|class|struct|enum|interface|type|const|let|func)\s+([A-Za-z_$][\w$]*)')
     declarations = {}
-    seeds = {}
+    current_seeds = {}; base_seeds = {}
+    hunks_by_path = {}
     for hunk in hunks:
-        seeds.setdefault(hunk['path'], []).append(hunk.get('changed_lines') or [0])
-    for path, hunk_lines in sorted(seeds.items()):
-        lines = texts.get(path, [])
-        if path not in declarations:
+        hunks_by_path.setdefault(hunk['path'], []).append(hunk)
+        current_seeds.setdefault(hunk['path'], []).append(hunk.get('changed_lines') or [0])
+        if hunk.get('base_changed_lines'):
+            base_seeds.setdefault(hunk['path'], []).append(hunk['base_changed_lines'])
+
+    def selected_symbols(path, blob_tree, hunk_lines):
+        lines = texts.get((path, blob_tree), [])
+        declaration_key = (path, blob_tree)
+        if declaration_key not in declarations:
             rows = [(i, i, m.group(1)) for i, line in enumerate(lines, 1)
                     for m in [declaration.search(line)] if m]
             if Path(path).suffix == '.py':
@@ -828,8 +840,8 @@ def facts(repo, tree, hunks, categories):
                     pass
             elif Path(path).suffix in ('.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.rs', '.go', '.java', '.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx'):
                 rows.extend(brace_spans(lines, Path(path).suffix))
-            declarations[path] = sorted(rows)
-        candidates = declarations[path]
+            declarations[declaration_key] = sorted(rows)
+        candidates = declarations[declaration_key]
         selected = set()
         cursor = 0
         active = {}
@@ -858,12 +870,104 @@ def facts(repo, tree, hunks, categories):
                           min(next_start - 1, max(1, len(lines)), anchor + SOURCE_ANCHOR_RADIUS), None))
         if not selected:
             selected.add((1, min(max(1, len(lines)), 1 + SOURCE_ANCHOR_RADIUS), None))
+        return selected
+
+    for path, hunk_lines in sorted(current_seeds.items()):
+        blob_tree = tree if (path, tree) in texts else base_tree
+        if (path, blob_tree) not in texts:
+            continue
+        selected = selected_symbols(path, blob_tree, hunk_lines)
         for origin, end, name in sorted(selected, key=lambda item: (item[0], item[2] or '')):
-            key = (path, origin, end, name)
+            key = (path, origin, end, name, blob_tree)
+            if key not in seen:
+                seen.add(key)
+                symbols.append({'path': path, 'line': origin, 'line_end': end,
+                                'name': name,
+                                'kind': ('lexical declaration' if name else 'changed-line anchor')
+                                if blob_tree == tree else
+                                ('deleted lexical declaration' if name else
+                                 'deleted changed-line anchor'),
+                                'blob_tree': blob_tree})
+    for path, hunk_lines in sorted(base_seeds.items()):
+        if (path, base_tree) not in texts:
+            continue
+        removed_lines = {line for changed in hunk_lines for line in changed}
+        selected = selected_symbols(path, base_tree, hunk_lines)
+        base_candidates = sorted(set(declarations[(path, base_tree)]))
+        current_candidates = sorted(set(declarations.get((path, tree), [])))
+        replaced = set()
+        base_lines = texts[(path, base_tree)]
+        current_lines = texts.get((path, tree), [])
+        token_cache = {}
+
+        def declaration_tokens(lines, row):
+            cache_key = (id(lines), row)
+            if cache_key in token_cache:
+                return token_cache[cache_key]
+            start, end, _ = row
+            container = ''
+            for line in reversed(lines[max(0, start - 41):start - 1]):
+                if re.search(r'\b(?:class|struct|impl|interface|enum|namespace|module)\b', line):
+                    container = line
+                    break
+            source = '\n'.join([container, *lines[start - 1:end]])
+            token_cache[cache_key] = re.findall(
+                r'[A-Za-z_$][\w$]*|\d+|[^\s\w]', source)
+            return token_cache[cache_key]
+
+        for hunk in hunks_by_path[path]:
+            for group in hunk.get('replacement_groups', []):
+                old_rows = [row for row in base_candidates if row[0] in group['base_lines']]
+                new_rows = [row for row in current_candidates if row[0] in group['added_lines']]
+                names = sorted({row[2] for row in old_rows} & {row[2] for row in new_rows})
+                for name in names:
+                    old = {row for row in old_rows if row[2] == name}
+                    new = {row for row in new_rows if row[2] == name}
+                    if len(old) == len(new) == 1:
+                        replaced.update(old)
+                        continue
+                    if len(old) * len(new) > DECLARATION_PAIR_LIMIT:
+                        continue
+                    old_tokens = {row: declaration_tokens(base_lines, row) for row in old}
+                    new_tokens = {row: declaration_tokens(current_lines, row) for row in new}
+                    token_work = (sum(map(len, old_tokens.values())) * len(new)
+                                  + sum(map(len, new_tokens.values())) * len(old))
+                    if token_work > DECLARATION_PAIR_TOKEN_LIMIT:
+                        continue
+                    scores = {(old_row, new_row): SequenceMatcher(
+                        None, old_tokens[old_row], new_tokens[new_row]).ratio()
+                              for old_row in old for new_row in new}
+                    while old and new:
+                        old_best = {row: max(scores[(row, candidate)] for candidate in new)
+                                    for row in old}
+                        new_best = {row: max(scores[(candidate, row)] for candidate in old)
+                                    for row in new}
+                        choices = [
+                            (old_row, new_row) for old_row in old for new_row in new
+                            if scores[(old_row, new_row)] == old_best[old_row]
+                            and sum(scores[(old_row, candidate)] == old_best[old_row]
+                                    for candidate in new) == 1
+                            and scores[(old_row, new_row)] == new_best[new_row]
+                            and sum(scores[(candidate, new_row)] == new_best[new_row]
+                                    for candidate in old) == 1]
+                        if not choices:
+                            break
+                        for old_row, new_row in choices:
+                            replaced.add(old_row); old.remove(old_row); new.remove(new_row)
+        for origin, end, name in sorted(selected, key=lambda item: (item[0], item[2] or '')):
+            if name is None and path in entries:
+                continue
+            if name is not None:
+                if origin not in removed_lines:
+                    continue
+                if (origin, end, name) in replaced:
+                    continue
+            key = (path, origin, end, name, base_tree)
             if key not in seen:
                 seen.add(key); symbols.append({'path': path, 'line': origin, 'line_end': end,
-                                               'name': name, 'kind': 'lexical declaration'
-                                               if name else 'changed-line anchor'})
+                                               'name': name, 'kind': 'deleted lexical declaration'
+                                               if name else 'deleted changed-line anchor',
+                                               'blob_tree': base_tree})
     calls = []; tests = []; gates = []; dependencies = set()
     names = {s['name'] for s in symbols if s['name']}
     definitions = {}
@@ -1415,21 +1519,23 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
     for call in evidence['call_sites']:
         calls_by_name.setdefault(call['name'], []).append(call)
     tests_by_path = {test['path']: test for test in evidence['related_tests']}
-    result = {'schema_version': 1, 'enabled': enabled, 'snapshot_tree': snapshot, 'base_tree': base_tree,
-              'max_shard_bytes': SOURCE_CONTEXT_LIMIT,
-              'object_repository': str(repo.object_repository), 'seats': {}}
+    result = {'schema_version': 2, 'enabled': enabled, 'snapshot_tree': snapshot,
+              'base_tree': base_tree, 'max_shard_bytes': SOURCE_CONTEXT_LIMIT, 'seats': {}}
     artifacts = {}
 
     source_choice_cache = {}
-    def source_choice(path):
-        if path in source_choice_cache:
-            return source_choice_cache[path]
+    def source_choice(path, preferred_tree=None):
+        cache_key = (path, preferred_tree)
+        if cache_key in source_choice_cache:
+            return source_choice_cache[cache_key]
         choices = [(entries.get(path), snapshot), (base_entries.get(path), base_tree)]
+        if preferred_tree == base_tree:
+            choices.reverse()
         choices = [(entry, tree) for entry, tree in choices
                    if entry and entry[0] in ('100644', '100755')]
         if not choices:
-            source_choice_cache[path] = ('nontext', None)
-            return source_choice_cache[path]
+            source_choice_cache[cache_key] = ('nontext', None)
+            return source_choice_cache[cache_key]
         readable = []
         for entry, blob_tree in choices:
             raw = repo.blob(entry)
@@ -1441,8 +1547,8 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
                 continue
             readable.append((entry, raw.splitlines(keepends=True), blob_tree))
         choice = next((value for value in readable if value[1]), readable[0] if readable else None)
-        source_choice_cache[path] = ('source' if choice else 'unrepresentable', choice)
-        return source_choice_cache[path]
+        source_choice_cache[cache_key] = ('source' if choice else 'unrepresentable', choice)
+        return source_choice_cache[cache_key]
 
     for seat, assignment in assigned.items():
         component_ids = set(assignment['components'])
@@ -1469,13 +1575,15 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
             ids = {component['id'] for component in candidates}
             return [component for component in values if component['id'] in ids]
 
-        def add(kind, reason, path, line_start, line_end, mapped_components):
+        def add(kind, reason, path, line_start, line_end, mapped_components,
+                preferred_tree=None):
             ids = sorted(component['id'] for component in mapped_components)
             hashes = {value for component in mapped_components for changed in component['files']
                       for value in hunks_by_path.get(changed, [])}
             if ids and hashes:
                 tiers[kind].append({'path': path, 'line_start': line_start, 'line_end': line_end,
-                                    'reason': reason, 'component_ids': ids})
+                                    'reason': reason, 'component_ids': ids,
+                                    'preferred_tree': preferred_tree})
 
         for symbol in evidence['symbols']:
             symbol_components = mapped(symbol['path'])
@@ -1483,7 +1591,7 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
                 continue
             name = symbol['name'] or 'changed-line-anchor'
             add('declaration', 'declaration:' + name, symbol['path'], symbol['line'], symbol['line_end'],
-                symbol_components)
+                symbol_components, symbol.get('blob_tree'))
             if not symbol['name']:
                 continue
             calls = [call for call in calls_by_name.get(symbol['name'], [])
@@ -1523,7 +1631,8 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
         candidates = []
         for kind in SOURCE_CONTEXT_REASONS:
             for row in sorted(tiers[kind], key=lambda item: (item['path'], item['line_start'],
-                                                              item['line_end'], item['reason'])):
+                                                              item['line_end'], item['reason'],
+                                                              item['preferred_tree'] or '')):
                 row['priority'] = len(candidates)
                 candidates.append(row)
         omitted = {kind: 0 for kind in SOURCE_CONTEXT_REASONS}
@@ -1532,21 +1641,25 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
         nontext_paths = set()
         unrepresentable_paths = set()
         changed_paths = {path for component in relevant for path in component['files']}
-        for path in sorted({row['path'] for row in candidates} | changed_paths):
-            kind, choice = source_choice(path)
+        source_keys = {(row['path'], row['preferred_tree']) for row in candidates}
+        source_keys.update((path, None) for path in changed_paths)
+        for path, preferred_tree in sorted(source_keys, key=lambda item: (item[0], item[1] or '')):
+            kind, choice = source_choice(path, preferred_tree)
+            source_key = (path, preferred_tree)
             if kind == 'nontext':
-                nontext_paths.add(path)
+                nontext_paths.add(source_key)
                 continue
             if choice is not None:
-                source_rows[path] = choice
+                source_rows[source_key] = choice
             else:
-                unrepresentable_paths.add(path)
+                unrepresentable_paths.add(source_key)
 
         prepared = []
         for row in candidates:
-            source = source_rows.get(row['path'])
+            source_key = (row['path'], row['preferred_tree'])
+            source = source_rows.get(source_key)
             if not source:
-                if row['path'] in nontext_paths:
+                if source_key in nontext_paths:
                     continue
                 if seat == integration:
                     raise ValueError('required source range cannot be represented: ' + row['path'])
@@ -1556,15 +1669,17 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
             start = max(1, row['line_start']); end = min(len(lines), max(start, row['line_end']))
             if not lines or start > len(lines):
                 continue
-            prepared.append(dict(row, line_start=start, line_end=end, blob_mode=entry[0],
-                                 blob_oid=entry[1], blob_tree=blob_tree))
+            prepared.append(dict(
+                {key: value for key, value in row.items() if key != 'preferred_tree'},
+                line_start=start, line_end=end, blob_mode=entry[0], blob_oid=entry[1],
+                blob_tree=blob_tree))
 
         represented = {component['id'] for component in relevant for row in prepared
                        if row['path'] in component['files']
                        and component['id'] in row['component_ids']}
         required_components = {component['id'] for component in relevant
-                               if any(path in unrepresentable_paths
-                                      or (path in source_rows and source_rows[path][1])
+                               if any((path, None) in unrepresentable_paths
+                                      or ((path, None) in source_rows and source_rows[(path, None)][1])
                                       for path in component['files'])}
         missing = sorted(required_components - represented)
         if seat == integration and missing:
@@ -1575,9 +1690,9 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
 
         prepared_by_path = {}
         for row in prepared:
-            prepared_by_path.setdefault(row['path'], []).append(row)
+            prepared_by_path.setdefault((row['path'], row['blob_tree']), []).append(row)
         merged = []
-        for path, rows in sorted(prepared_by_path.items()):
+        for (path, blob_tree), rows in sorted(prepared_by_path.items()):
             target = None
             for row in sorted(rows, key=lambda value: (
                     value['line_start'], value['line_end'], value['priority'])):
@@ -1586,7 +1701,7 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
                               'reason_rows': [(row['priority'], row['reason'])],
                               'component_ids': set(row['component_ids']), 'priority': row['priority'],
                               'blob_mode': row['blob_mode'], 'blob_oid': row['blob_oid'],
-                              'blob_tree': row['blob_tree']}
+                              'blob_tree': blob_tree}
                     merged.append(target)
                     continue
                 target['line_end'] = max(target['line_end'], row['line_end'])
@@ -1596,7 +1711,7 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
 
         context_entries = []
         for row in sorted(merged, key=lambda value: value['priority']):
-            _, lines, _ = source_rows[row['path']]
+            _, lines, _ = source_choice(row['path'], row['blob_tree'])[1]
             content = b''.join(lines[row['line_start'] - 1:row['line_end']]).decode('utf-8')
             reason_priority = {}
             for priority, reason in row['reason_rows']:
@@ -1647,7 +1762,7 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
             if individually_oversized:
                 required = {key: value for key, value in row.items() if key != 'content'}
                 required['required_payload_bytes'] = single_payload_bytes
-                _, source_lines, _ = source_rows[row['path']]
+                _, source_lines, _ = source_choice(row['path'], row['blob_tree'])[1]
                 required['segments'] = partition_source_segments(
                     source_lines, row['line_start'], row['line_end'])
                 required_ranges.append(required)
@@ -1662,12 +1777,22 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
             ranges = [{key: value for key, value in row.items() if key != 'content'} for row in values]
             shard_rows.append({'artifact': name, 'sha256': digest(raw), 'bytes': len(raw),
                                'entries': len(values), 'ranges': ranges})
+        required_ranges = sorted(
+            required_ranges,
+            key=lambda row: (row['path'], row['blob_tree'], row['line_start'],
+                             row['line_end'], row['priority']))
+        for range_index, required in enumerate(required_ranges, 1):
+            _, source_lines, _ = source_choice(required['path'], required['blob_tree'])[1]
+            for segment in required['segments']:
+                name = (f'{prefix}-{seat}-source-segment-{range_index:03d}-'
+                        f"{segment['index']:03d}.txt")
+                raw = b''.join(source_lines[segment['line_start'] - 1:segment['line_end']])
+                segment['artifact'] = name
+                artifacts[name] = raw
         result['seats'][seat] = {'role': 'integration' if seat == integration else 'specialist',
                                  'components': sorted(component_ids), 'hunk_sha256': hunk_ids,
                                  'shards': shard_rows, 'omitted': omitted,
-                                 'required_source_ranges': sorted(
-                                     required_ranges,
-                                     key=lambda row: (row['path'], row['line_start'], row['line_end'], row['priority'])),
+                                 'required_source_ranges': required_ranges,
                                  'source_read_required': any(omitted.values()) or any(
                                      'declaration:changed-line-anchor' in row['reasons']
                                      for row in context_entries)}
@@ -1677,8 +1802,6 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
 def validate_source_context_snapshot(repo, session, manifest):
     """Bind recorded source packet ranges to their exact snapshot blobs."""
     context = manifest['source_context']
-    if context['object_repository'] != str(repo.object_repository):
-        raise ValueError('source context object storage mismatch')
     entries_by_tree = {}
     blob_lines = {}
 
@@ -1704,15 +1827,20 @@ def validate_source_context_snapshot(repo, session, manifest):
         for row in packet['required_source_ranges']:
             parent = expected_bytes(row)
             key = (row['blob_mode'], row['blob_oid'])
-            if row['segments'] != partition_source_segments(
-                    blob_lines[key], row['line_start'], row['line_end']):
+            canonical = partition_source_segments(
+                blob_lines[key], row['line_start'], row['line_end'])
+            recorded = [{key: value for key, value in segment.items() if key != 'artifact'}
+                        for segment in row['segments']]
+            if recorded != canonical:
                 raise ValueError('required source segments are not canonical: ' + row['path'])
             rebuilt = b''
             for segment in row['segments']:
                 part = expected_bytes(dict(row, line_start=segment['line_start'],
                                            line_end=segment['line_end']))
+                artifact = session / segment['artifact']
                 if (len(part) != segment['raw_bytes']
                         or digest(part) != segment['content_sha256']
+                        or artifact.read_bytes() != part
                         or len(part) + (segment['line_end'] - segment['line_start'] + 1) \
                         * SOURCE_SEGMENT_PREFIX_RESERVE != segment['predicted_visible_bytes']):
                     raise ValueError('required source segment does not match snapshot: ' + row['path'])
@@ -1827,14 +1955,13 @@ def validate_source_context(session, manifest, evidence):
     context = manifest.get('source_context')
     if evidence.get('source_context') != context or not isinstance(context, dict):
         raise ValueError('evidence/manifest mismatch: source_context')
-    if set(context) != {'schema_version', 'enabled', 'snapshot_tree', 'base_tree', 'max_shard_bytes',
-                        'object_repository', 'seats'}:
+    if set(context) != {'schema_version', 'enabled', 'snapshot_tree', 'base_tree',
+                        'max_shard_bytes', 'seats'}:
         raise ValueError('invalid source context structure')
-    if (context['schema_version'] != 1 or type(context['enabled']) is not bool
+    if (context['schema_version'] != 2 or type(context['enabled']) is not bool
             or context['snapshot_tree'] != manifest['snapshot_tree']
             or context['base_tree'] != manifest['base_tree']
             or context['max_shard_bytes'] != SOURCE_CONTEXT_LIMIT
-            or context['object_repository'] != str(session / 'evidence-repository')
             or not isinstance(context['seats'], dict)
             or set(context['seats']) != set(manifest['assignments'])):
         raise ValueError('invalid source context identity')
@@ -1924,7 +2051,7 @@ def validate_source_context(session, manifest, evidence):
                         or entry.get('hunk_binding_sha256') != binding_hash):
                     raise ValueError('invalid source context mapping: ' + name)
                 priorities.append(entry['priority'])
-                seen_ranges.setdefault((seat, entry['path']), []).append(
+                seen_ranges.setdefault((seat, entry['path'], entry['blob_tree']), []).append(
                     (entry['line_start'], entry['line_end']))
                 ranges.append({key: value for key, value in entry.items() if key != 'content'})
             if ranges != shard['ranges']:
@@ -1937,9 +2064,10 @@ def validate_source_context(session, manifest, evidence):
                       'required_payload_bytes', 'segments'}
         if (not isinstance(required, list)
                 or required != sorted(required, key=lambda row: (
-                    row.get('path', ''), row.get('line_start', 0), row.get('line_end', 0), row.get('priority', 0)))):
+                    row.get('path', ''), row.get('blob_tree', ''), row.get('line_start', 0),
+                    row.get('line_end', 0), row.get('priority', 0)))):
             raise ValueError('noncanonical required source ranges: ' + seat)
-        for row in required:
+        for range_index, row in enumerate(required, 1):
             component_ids = row.get('component_ids')
             binding_key = tuple(component_ids) if isinstance(component_ids, list) else None
             if (binding_key is not None and binding_key not in binding_cache
@@ -1967,7 +2095,7 @@ def validate_source_context(session, manifest, evidence):
                 raise ValueError('invalid required source range: ' + seat)
             segments = row['segments']
             segment_keys = {'index', 'line_start', 'line_end', 'raw_bytes',
-                            'predicted_visible_bytes', 'content_sha256'}
+                            'predicted_visible_bytes', 'content_sha256', 'artifact'}
             if (not isinstance(segments, list) or not segments
                     or [segment.get('index') for segment in segments] != list(range(1, len(segments) + 1))
                     or segments[0].get('line_start') != row['line_start']
@@ -1975,6 +2103,17 @@ def validate_source_context(session, manifest, evidence):
                 raise ValueError('invalid required source segments: ' + seat)
             cursor = row['line_start']
             for segment in segments:
+                expected_name = (f"r{manifest['label']}-{seat}-source-segment-{range_index:03d}-"
+                                 f"{segment.get('index', 0):03d}.txt")
+                artifact = session / expected_name
+                try:
+                    metadata = artifact.lstat()
+                    artifact_safe = (not artifact.is_symlink() and artifact.is_file()
+                                     and metadata.st_nlink == 1)
+                    raw = artifact.read_bytes() if artifact_safe else b''
+                except OSError:
+                    artifact_safe = False
+                    raw = b''
                 if (not isinstance(segment, dict) or set(segment) != segment_keys
                         or type(segment.get('line_start')) is not int
                         or type(segment.get('line_end')) is not int
@@ -1986,12 +2125,16 @@ def validate_source_context(session, manifest, evidence):
                         or segment['predicted_visible_bytes'] != segment['raw_bytes'] \
                         + (segment['line_end'] - segment['line_start'] + 1) * SOURCE_SEGMENT_PREFIX_RESERVE
                         or segment['predicted_visible_bytes'] > SOURCE_SEGMENT_VISIBLE_LIMIT
-                        or not re.fullmatch(r'[0-9a-f]{64}', str(segment.get('content_sha256')))):
+                        or not re.fullmatch(r'[0-9a-f]{64}', str(segment.get('content_sha256')))
+                        or segment.get('artifact') != expected_name or not artifact_safe
+                        or len(raw) != segment.get('raw_bytes')
+                        or digest(raw) != segment.get('content_sha256')):
                     raise ValueError('invalid required source segment: ' + seat)
                 cursor = segment['line_end'] + 1
             if cursor != row['line_end'] + 1:
                 raise ValueError('incomplete required source segments: ' + seat)
-            seen_ranges.setdefault((seat, row['path']), []).append((row['line_start'], row['line_end']))
+            seen_ranges.setdefault((seat, row['path'], row['blob_tree']), []).append(
+                (row['line_start'], row['line_end']))
         required_counts = Counter(reason.split(':', 1)[0] for row in required for reason in row['reasons'])
         if any(required_counts[key] > omitted[key] for key in SOURCE_CONTEXT_REASONS):
             raise ValueError('required source ranges exceed omitted identities')
@@ -2047,7 +2190,7 @@ def validate_patch_sets(session, manifest, expected_artifacts):
         if (patch_set['patch_sha256'] != digest(raw)
                 or type(patch_set['patch_bytes']) is not int or patch_set['patch_bytes'] != len(raw)
                 or type(patch_set['patch_lines']) is not int
-                or patch_set['patch_lines'] != len(raw.splitlines())
+                or patch_set['patch_lines'] != len(split_lf_lines(raw))
                 or patch_set['read_mode'] not in ('chunks', 'windows')
                 or not isinstance(patch_set['chunks'], list)):
             raise ValueError('invalid patch set identity: ' + set_id)
@@ -2231,13 +2374,16 @@ def _validated_manifest(path, fresh, seen, offline):
         if (assignment.get('patch_sha256') != digest(patch)
                 or type(assignment.get('patch_bytes')) is not int or assignment['patch_bytes'] != len(patch)
                 or type(assignment.get('patch_lines')) is not int
-                or assignment['patch_lines'] != len(patch.splitlines())):
+                or assignment['patch_lines'] != len(split_lf_lines(patch))):
             raise ValueError('assignment patch identity mismatch')
         if assignment.get('bundles') != assignment['bundle'].split('+') or len(set(assignment['bundles'])) != len(assignment['bundles']):
             raise ValueError('assignment bundle list mismatch')
     for packet in manifest['source_context'].get('seats', {}).values():
         for shard in packet.get('shards', []):
             expected.add(shard['artifact'])
+        for required in packet.get('required_source_ranges', []):
+            for segment in required.get('segments', []):
+                expected.add(segment['artifact'])
     validate_patch_sets(session, manifest, expected)
     if set(manifest['artifacts']) != expected or set(manifest['inputs']) != {'scope.env', 'roster.json', 'files.txt', 'untracked.txt'}:
         raise ValueError('invalid manifest artifact set')
@@ -2305,9 +2451,12 @@ def _validated_manifest(path, fresh, seen, offline):
     prefix = 'r' + manifest['label']
     words = {kind: len((session / f'{prefix}-{kind}.patch').read_bytes().split()) for kind in ('full', 'semantic', 'delta')}
     words['evidence'] = sum(len((session / f'{prefix}-{name}.md').read_bytes().split()) for name in ('evidence', 'instructions'))
-    words['source_context'] = sum(len((session / shard['artifact']).read_bytes().split())
-                                  for packet in manifest['source_context']['seats'].values()
-                                  for shard in packet['shards'])
+    words['source_context'] = sum(
+        len((session / artifact).read_bytes().split())
+        for packet in manifest['source_context']['seats'].values()
+        for artifact in ([shard['artifact'] for shard in packet['shards']]
+                         + [segment['artifact'] for required in packet['required_source_ranges']
+                            for segment in required['segments']]))
     words['assigned_patch'] = sum(len(Path(a['patch']).read_bytes().split()) for a in assigned.values())
     words['avoided'] = max(0, len(assigned) * words['full'] - words['assigned_patch']
                            - len(assigned) * words['evidence'] - words['source_context'])
@@ -2709,7 +2858,7 @@ def prepare(args):
         source = {'mode': 'worktree'}
         unknown_ref = True
     patches, hunks, categories, opaque = repo.changes(base_tree, snapshot)
-    data = facts(repo, snapshot, hunks, categories)
+    data = facts(repo, snapshot, hunks, categories, base_tree)
     plan_clusters = None
     if args.phase == 'plan':
         snapshot_entries = repo.entries(snapshot); base_entries = repo.entries(base_tree)
@@ -2819,7 +2968,7 @@ def prepare(args):
         scopes[seat] = {'bundle': bundle, 'bundles': bundle.split('+'), 'scope': mode,
                         'full_state': mode == 'full', 'adapter': adapters[seat], 'components': component_ids,
                         'patch': str(session / name), 'patch_sha256': digest(patch_body),
-                        'patch_bytes': len(patch_body), 'patch_lines': len(patch_body.splitlines())}
+                        'patch_bytes': len(patch_body), 'patch_lines': len(split_lf_lines(patch_body))}
     chunk_flag = os.environ.get('REV_PATCH_CHUNKS', '0')
     if chunk_flag not in ('0', '1'):
         raise ValueError('REV_PATCH_CHUNKS must be 0 or 1')
@@ -2965,12 +3114,14 @@ def render(args):
                   + row['content_sha256'] + ' reasons ' + json.dumps(row['reasons'], ensure_ascii=True))
             total = len(row['segments'])
             for segment in row['segments']:
-                command = ('git --git-dir=' + shlex.quote(
-                    manifest['source_context']['object_repository'])
-                           + " show '" + row['blob_oid'] + "' | sed -n '"
-                           + str(segment['line_start']) + ',' + str(segment['line_end']) + "p'")
+                path = str(Path(manifest['session']) / segment['artifact'])
+                if assignment['adapter'] == 'codex':
+                    action = 'run ' + shlex.join(['cat', '--', path])
+                else:
+                    tool = 'Read' if assignment['adapter'] in ('agent', 'claude') else 'read_file'
+                    action = 'use ' + tool + ' to read ' + path + ' in full'
                 print('Required source segment ' + str(segment['index']) + '/' + str(total)
-                      + ': run ' + command + ' raw bytes ' + str(segment['raw_bytes'])
+                      + ': ' + action + ' raw bytes ' + str(segment['raw_bytes'])
                       + ' visible bytes ' + str(segment['predicted_visible_bytes'])
                       + ' content SHA-256 ' + segment['content_sha256'])
             batch_limit = 2 if assignment['adapter'] in ('claude', 'grok') else 1

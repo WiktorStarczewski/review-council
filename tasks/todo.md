@@ -63,6 +63,10 @@
 - [x] Replace BSD-only plan-fixture edits with portable rewrites.
 - [x] Classify a wrapper-declared audit rejection directly instead of scanning reviewer-controlled text.
 - [x] Count well-formed invalid evidence audits in the profiler without requiring valid-audit citation equality.
+- [x] Deliver required source segments through adapter-native, hash-bound session artifacts.
+- [x] Select chunk proof when a long patch line cannot fit a bounded window read.
+- [x] Remove detached evidence repositories while preserving snapshot-bound source proof.
+- [x] Recover deleted declarations from the base snapshot for surviving-caller discovery.
 
 ## Final low-risk cost candidates
 
@@ -86,7 +90,7 @@
   high-risk schedule renders 16, a 3.63x-3.88x reduction in reviewer launches.
 - A matched PR #812 code plus plan cycle fell from 41,728 prompt words to
   20,237, a 2.06x reduction without removing the plan snapshot.
-- The final frozen tree passed 2,333 shell checks and 41 Python tests. Both Claude
+- The final frozen tree passed 2,349 shell checks and 41 Python tests. Both Claude
   plugin validators, the Codex marketplace validator, shell syntax, Python
   compilation, executable-bit checks, Unicode checks, and diff hygiene passed.
 - The generic plugin validator still rejects the existing Codex

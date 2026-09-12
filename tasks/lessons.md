@@ -81,3 +81,9 @@
 - Derive batching claims from transcript fields the real provider emits. A synthetic
   turn identifier can make an over-batch test pass while the production audit cannot
   observe the same boundary.
+- Render required proof with each adapter's native read mechanism. If an external guard
+  rejects an equivalent shell recipe, automatically switch to a hash-bound session
+  artifact and validate its bytes before spending another reviewer call.
+- Timestamp every savings estimate with its exact checkpoint and keep already-counted
+  projected gains separate from new measured progress. Correctness hardening can make an
+  optimization usable without increasing its headline reduction.

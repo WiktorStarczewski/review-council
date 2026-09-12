@@ -200,11 +200,13 @@ rendered fragment says `Source read required: true`, or a concrete control-flow 
 dispatch question extends outside a shard, the reviewer opens another bounded source
 range. Repository instructions remain in the separate manifest-bound instruction
 snapshot and are never copied into source-context shards.
-An oversized mandatory range remains one parent proof but is delivered through the
-rendered immutable-object recipes as ordered, gapless segments of at most 240 lines
-and 16 KiB predicted visible output. Claude and Grok may read two listed source
-segments per turn; Codex and Gemini read one.
-Every segment must be read once in order before the parent range earns a receipt.
+An oversized mandatory range remains one parent proof but is delivered through
+manifest-hashed, session-local source artifacts as ordered, gapless segments of at
+most 240 lines and 16 KiB predicted visible output. The renderer uses each adapter's
+native full-file action: shell `cat` for Codex, `Read` for Claude, and `read_file` for
+Grok and Gemini. Claude and Grok may read two listed source segments per turn; Codex
+and Gemini read one. Every segment must be read once in order before the parent range
+earns a receipt.
 
 Evidence preparation applies to adaptive code panels and accepted-fix plan panels.
 Explicit numeric panels use the full cumulative patch, omit evidence preparation,

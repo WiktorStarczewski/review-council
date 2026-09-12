@@ -12,6 +12,7 @@ test_read_bound_hook_contract() {
     printf 'one\ntwo\n' > "$R/src/x.ts"
     printf 'prompt\n' > "$S/r1-sol.prompt.md"
     printf 'index\n' > "$S/r1-evidence.md"
+    printf 'segment\n' > "$S/r1-sol-source-segment-001-001.txt"
     mkdir -p "$S/deps" "$T/pinned-crate"
     printf 'dependency\n' > "$T/pinned-crate/lib.rs"
     ln -s "$T/pinned-crate" "$S/deps/pinned-crate"
@@ -19,11 +20,13 @@ test_read_bound_hook_contract() {
     local source_ok='{"tool_name":"Read","tool_input":{"file_path":"src/x.ts","offset":1,"limit":200}}'
     local prompt_ok; prompt_ok=$(printf '{"tool_name":"Read","tool_input":{"file_path":"%s"}}' "$S/r1-sol.prompt.md")
     local index_ok; index_ok=$(printf '{"tool_name":"Read","tool_input":{"file_path":"%s"}}' "$S/r1-evidence.md")
+    local segment_ok; segment_ok=$(printf '{"tool_name":"Read","tool_input":{"file_path":"%s"}}' \
+      "$S/r1-sol-source-segment-001-001.txt")
     local grep_ok='{"tool_name":"Grep","tool_input":{"pattern":"retry","path":"src","head_limit":50}}'
     local shell_ok='{"tool_name":"Bash","tool_input":{"command":"git diff HEAD | sed -n '\''1,200p'\''"}}'
     local shell_search_ok='{"tool_name":"Bash","tool_input":{"command":"rg -n retry src | head -80"}}'
     local shell_log_ok='{"tool_name":"Bash","tool_input":{"command":"git log -n 240"}}'
-    for payload in "$source_ok" "$prompt_ok" "$index_ok" "$grep_ok" "$shell_ok" "$shell_search_ok" "$shell_log_ok"; do
+    for payload in "$source_ok" "$prompt_ok" "$index_ok" "$segment_ok" "$grep_ok" "$shell_ok" "$shell_search_ok" "$shell_log_ok"; do
       read_bound_hook "$R" "$S" "$payload"
       assert_eq "bounded hook allows $payload" "$?" 0
     done
@@ -66,7 +69,7 @@ PY
   )
 }
 
-test_specialist_required_range_uses_session_objects() {
+test_specialist_required_range_uses_session_artifacts() {
   ( local R="$T/specialist-source-root" S="$T/specialist-source-session"
     mkrepo "$R"; mkdir -p "$S"
     python3 - "$R/oversized.py" <<'PY'
@@ -99,7 +102,7 @@ PY
 
     write_specialist_transcript() {
       python3 - "$manifest" "$S/r10-$seat.stream.ndjson" "$seat" "$R" "$1" <<'PY'
-import json, pathlib, subprocess, sys
+import json, pathlib, sys
 manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2])
 seat, root, mode = sys.argv[3], pathlib.Path(sys.argv[4]), sys.argv[5]
 session = pathlib.Path(sys.argv[1]).parent; context = manifest['source_context']['seats'][seat]
@@ -121,16 +124,10 @@ if mode == 'unrelated':
     command('source-unrelated', "sed -n '1,1p' a.txt", (root / 'a.txt').read_text())
 else:
     required = context['required_source_ranges'][0]
-    source = subprocess.check_output(
-        ['git', '--git-dir=' + manifest['source_context']['object_repository'],
-         'cat-file', 'blob', required['blob_oid']])
-    lines = source.decode().splitlines(keepends=True)
-    prefix = "git --git-dir='" + manifest['source_context']['object_repository'] + "' "
     for segment in required['segments']:
-        start, end = segment['line_start'], segment['line_end']
-        command('source-required-' + str(start),
-                prefix + f"show '{required['blob_oid']}' | sed -n '{start},{end}p'",
-                ''.join(lines[start - 1:end]))
+        path = session / segment['artifact']
+        command('source-required-' + str(segment['index']), "cat '" + str(path) + "'",
+                path.read_text())
 with out.open('w') as stream:
     for event in events:
         stream.write(json.dumps(event) + '\n')
@@ -597,7 +594,10 @@ PY
 
 test_required_source_range_coverage() {
   ( local R="$T/required-source-root" S="$T/required-source-session"
-    mkrepo "$R"; mkdir -p "$S"
+    export GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1
+    [ -f "$T/gitconfig" ] || printf '[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n' > "$T/gitconfig"
+    mkdir -p "$R" "$S"; git -C "$R" init -q --object-format=sha256
+    printf 'a\n' > "$R/a.txt"; git -C "$R" add a.txt; git -C "$R" commit -qm init
     python3 - "$R/oversized.py" <<'PY'
 import sys
 with open(sys.argv[1], 'w') as stream:
@@ -627,7 +627,7 @@ PY
 
     write_required_transcript() {
       python3 - "$manifest" "$S/r9-sol.stream.ndjson" "$1" "$R" <<'PY'
-import json, pathlib, subprocess, sys
+import json, pathlib, sys
 manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2]); mode = sys.argv[3]
 complete = mode != 'partial'
 session = pathlib.Path(sys.argv[1]).parent; seat = 'sol'; context = manifest['source_context']['seats'][seat]
@@ -648,18 +648,25 @@ for start in range(1, len(patch_lines) + 1, 240):
     command('patch-' + str(start), f"sed -n '{start},{end}p' '{patch}'",
             ''.join(patch_lines[start - 1:end]))
 required = context['required_source_ranges'][0]
-blob = subprocess.check_output(
-    ['git', '--git-dir=' + manifest['source_context']['object_repository'],
-     'cat-file', 'blob', required['blob_oid']])
-source_lines = blob.decode().splitlines(keepends=True)
-prefix = "git --git-dir='" + manifest['source_context']['object_repository'] + "' "
 segments = required['segments']
 if not complete:
     segments = segments[:-1]
-for index, segment in enumerate(segments):
-    start, end = segment['line_start'], segment['line_end']
-    command('source-' + str(start), prefix + f"show '{required['blob_oid']}' | sed -n '{start},{end}p'",
-            ''.join(source_lines[start - 1:end]))
+for position, segment in enumerate(segments):
+    path = session / segment['artifact']
+    output = path.read_text()
+    if mode == 'bad-output' and position == 0:
+        output = ('X' if output[:1] != 'X' else 'Y') + output[1:]
+    if mode == 'partial' and position == 0:
+        output = output.splitlines(keepends=True)[0]
+        command('source-' + str(segment['index']), "sed -n '1,1p' '" + str(path) + "'", output)
+    else:
+        command('source-' + str(segment['index']), "cat '" + str(path) + "'", output)
+if mode == 'duplicate':
+    path = session / segments[0]['artifact']
+    command('source-duplicate', "cat '" + str(path) + "'", path.read_text())
+if mode == 'unassigned':
+    path = session / 'r9-sol-source-segment-999-999.txt'; path.write_text('unassigned\n')
+    command('source-unassigned', "cat '" + str(path) + "'", path.read_text())
 with out.open('w') as stream:
     for event in events:
         stream.write(json.dumps(event) + '\n')
@@ -675,8 +682,26 @@ PY
       "$S/r9-sol.read-audit.json" '"required_source_ranges_covered":1'
     assert_grep "required source proof records the exact manifest blob" \
       "$S/r9-sol.read-audit.json" '"required_source_range_proofs":\[\{"blob_oid":"[0-9a-f]+"'
+    assert_grep "SHA-256 required source proof retains a 64-digit blob" \
+      "$S/r9-sol.read-audit.json" '"required_source_range_proofs":\[\{"blob_oid":"[0-9a-f]{64}"'
     assert_grep "Codex keeps one required source segment per turn" "$prompt" \
       '^Required source segment batch limit: 1$'
+    assert_grep "Codex reads required source through a session artifact" "$prompt" \
+      '^Required source segment [0-9]+/[0-9]+: run cat -- .*-source-segment-[0-9]{3}-[0-9]{3}\.txt '
+    assert_nogrep "Codex prompt exposes no detached Git repository command" "$prompt" \
+      'git --git-dir=|evidence-repository'
+
+    local grok_prompt
+    grok_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 9 grok correctness required-source \
+      --evidence "$manifest") || return
+    assert_grep "Grok uses its native reader for required source" "$grok_prompt" \
+      '^Required source segment [0-9]+/[0-9]+: use read_file to read .*-source-segment-[0-9]{3}-[0-9]{3}\.txt in full '
+
+    local opus_prompt
+    opus_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 9 opus correctness required-source \
+      --evidence "$manifest") || return
+    assert_grep "Claude uses its native reader for required source" "$opus_prompt" \
+      '^Required source segment [0-9]+/[0-9]+: use Read to read .*-source-segment-[0-9]{3}-[0-9]{3}\.txt in full '
 
     cp "$S/roster.json" "$T/required-source-roster.json"
     python3 - "$S/roster.json" <<'PY'
@@ -693,23 +718,17 @@ PY
       '^Required source segment batch limit: 2$'
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r9c-sol.json"
     python3 - "$claude_manifest" "$S/r9c-sol.stream.ndjson" <<'PY'
-import json, pathlib, subprocess, sys
+import json, pathlib, sys
 manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2])
 required = manifest['source_context']['seats']['sol']['required_source_ranges'][0]
 assert len(required['segments']) >= 3
-blob = subprocess.check_output([
-    'git', '--git-dir=' + manifest['source_context']['object_repository'],
-    'cat-file', 'blob', required['blob_oid']])
-lines = blob.decode().splitlines(keepends=True)
 uses = []; results = []
 for segment in required['segments'][:3]:
-    start, end = segment['line_start'], segment['line_end']; call_id = 'source-' + str(start)
-    command = ("git --git-dir='" + manifest['source_context']['object_repository']
-               + "' show '" + required['blob_oid'] + "' | sed -n '"
-               + str(start) + ',' + str(end) + "p'")
-    uses.append({'type':'tool_use','id':call_id,'name':'Bash','input':{'command':command}})
+    path = pathlib.Path(sys.argv[1]).parent / segment['artifact']
+    call_id = 'source-' + str(segment['index'])
+    uses.append({'type':'tool_use','id':call_id,'name':'Read','input':{'file_path':str(path)}})
     results.append({'type':'tool_result','tool_use_id':call_id,
-                    'content':''.join(lines[start - 1:end])})
+                    'content':path.read_text()})
 events = [
     {'type':'assistant','message':{'id':'real-claude-turn','content':uses}},
     {'type':'user','message':{'content':results}},
@@ -724,6 +743,20 @@ PY
       '"code":"required-source-segment-batch-too-large"'
     cp "$T/required-source-roster.json" "$S/roster.json"
 
+    python3 - "$S/roster.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]); roster = json.loads(path.read_text())
+roster['seats'][0]['adapter'] = 'gemini'; path.write_text(json.dumps(roster))
+PY
+    local gemini_manifest gemini_prompt
+    gemini_manifest=$(REV_SOURCE_CONTEXT=1 python3 "$SCRIPTS/rev-evidence.py" prepare \
+      "$S" 9g --head "$reviewed" --phase discovery) || return
+    gemini_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 9g sol correctness required-source \
+      --evidence "$gemini_manifest") || return
+    assert_grep "Gemini uses its native reader for required source" "$gemini_prompt" \
+      '^Required source segment [0-9]+/[0-9]+: use read_file to read .*-source-segment-[0-9]{3}-[0-9]{3}\.txt in full '
+    cp "$T/required-source-roster.json" "$S/roster.json"
+
     write_required_transcript partial
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
       --raw "$S/r9-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
@@ -731,8 +764,26 @@ PY
     assert_eq "integration seat rejects a gap in required source range coverage" "$?" 2
     assert_grep "missing required source range has a stable violation" "$S/r9-sol.read-audit.json" \
       '"code":"missing-required-source-range"'
+    assert_grep "partial source artifact has a stable violation" "$S/r9-sol.read-audit.json" \
+      '"code":"partial-required-source-segment"'
     assert_grep "partial required source range is not counted as covered" "$S/r9-sol.read-audit.json" \
       '"required_source_ranges_covered":0'
+
+    local mode code
+    for mode in bad-output duplicate unassigned; do
+      write_required_transcript "$mode"
+      python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+        --raw "$S/r9-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
+        --out "$S/r9-sol.read-audit.json" >/dev/null 2>&1
+      assert_eq "$mode required source artifact is rejected" "$?" 2
+      case "$mode" in
+        bad-output) code=required-source-output-mismatch ;;
+        duplicate) code=duplicate-required-source-segment ;;
+        unassigned) code=unassigned-required-source-segment ;;
+      esac
+      assert_grep "$mode required source artifact has a stable violation" \
+        "$S/r9-sol.read-audit.json" "\"code\":\"$code\""
+    done
 
     python3 - "$manifest" "$S/r9-sol.stream.ndjson" "$R" <<'PY'
 import json, pathlib, sys
@@ -766,7 +817,7 @@ PY
       --out "$S/r9-sol.read-audit.json" >/dev/null 2>&1
     assert_eq "named-head review rejects matching path and lines from the wrong checked-out tree" "$?" 2
     assert_grep "wrong named-head tree has a stable provenance violation" "$S/r9-sol.read-audit.json" \
-      '"code":"required-source-output-mismatch"'
+      '"code":"missing-required-source-segment"'
     assert_grep "wrong named-head tree produces no exact blob proof" "$S/r9-sol.read-audit.json" \
       '"required_source_range_proofs":\[\]'
   )

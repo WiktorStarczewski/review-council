@@ -14,7 +14,7 @@ from pathlib import Path
 
 
 TERMINAL_TYPES = {"result", "turn.completed", "end"}
-REVIEW_ARTIFACT = re.compile(r"^r\d+[a-z]*-", re.IGNORECASE)
+REVIEW_ARTIFACT = re.compile(r"^r[A-Za-z0-9][A-Za-z0-9_.-]*-")
 VALIDATOR = Path(__file__).resolve().parent / "lib" / "validate-findings.py"
 EVIDENCE_SCRIPT = Path(__file__).resolve().parent / "rev-evidence.py"
 USAGE_FIELDS = (
@@ -467,8 +467,14 @@ def evidence_words(path, validate):
         raise ValueError("source context word count unavailable")
     source_context_words = 0
     for packet in source_context["seats"].values():
-        for shard in packet["shards"]:
-            artifact = session / shard["artifact"]
+        artifacts = [shard["artifact"] for shard in packet["shards"]]
+        artifacts.extend(
+            segment["artifact"]
+            for required in packet["required_source_ranges"]
+            for segment in required["segments"]
+        )
+        for name in artifacts:
+            artifact = session / name
             actual = len(artifact.read_bytes().split())
             if manifest["artifacts"][artifact.name].get("words") != actual:
                 raise ValueError("source context artifact word count mismatch")

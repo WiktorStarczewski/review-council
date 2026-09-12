@@ -24,6 +24,8 @@ SHELL_TOOLS = {'bash', 'shell', 'run_shell_command', 'run_terminal_command', 'co
 DISCOVERY_TOOLS = {'glob', 'list_directory'}
 RECOGNIZED_TOOLS = READ_TOOLS | SEARCH_TOOLS | SHELL_TOOLS | DISCOVERY_TOOLS
 SOURCE_PACKET_NAME = re.compile(r'^r[0-9A-Za-z._-]+-source-context-[1-9][0-9]*\.json$')
+SOURCE_SEGMENT_NAME = re.compile(
+    r'^r[0-9A-Za-z._-]+-[0-9A-Za-z._-]+-source-segment-[0-9]{3}-[0-9]{3}\.txt$')
 PATCH_CHUNK_NAME = re.compile(r'^r[0-9A-Za-z._-]+-patch-p[0-9]{2}-[0-9]{3}\.txt$')
 FULL_ARTIFACT = re.compile(r'^r[0-9A-Za-z._-]+(?:-[0-9A-Za-z._-]+)?\.prompt\.md$|^r[0-9A-Za-z._-]+-(?:evidence|instructions|plan)\.md$')
 SESSION_ARTIFACT = re.compile(r'^r[0-9A-Za-z._-]+(?:-[0-9A-Za-z._-]+)?(?:\.prompt\.md|\.patch)$|^r[0-9A-Za-z._-]+-(?:evidence|instructions|plan)\.(?:md|json)$')
@@ -87,14 +89,15 @@ def full_artifact(path, session):
 
 def complete_read_artifact(path, session):
     return full_artifact(path, session) or (
-        session is not None and PATCH_CHUNK_NAME.fullmatch(path.name) is not None
+        session is not None
+        and bool(PATCH_CHUNK_NAME.fullmatch(path.name) or SOURCE_SEGMENT_NAME.fullmatch(path.name))
         and path.parent == session)
 
 
 def session_artifact(path, session):
     return session is not None \
         and bool(SESSION_ARTIFACT.fullmatch(path.name) or SOURCE_PACKET_NAME.fullmatch(path.name)
-                 or PATCH_CHUNK_NAME.fullmatch(path.name)) \
+                 or PATCH_CHUNK_NAME.fullmatch(path.name) or SOURCE_SEGMENT_NAME.fullmatch(path.name)) \
         and path.parent == session
 
 
@@ -492,6 +495,8 @@ def repository_expansion_call(name, data, root, session):
     if any((path == root or root in path.parents) and not session_artifact(path, session)
            for path in opened):
         return True
+    if opened and all(session_artifact(path, session) for path in opened):
+        return False
     if normalized not in SHELL_TOOLS:
         return False
     command = data.get('command')
@@ -893,6 +898,11 @@ def byte_range(raw, start, end):
     return byte_range_lines(raw.splitlines(keepends=True), start, end)
 
 
+def split_lf_lines(raw):
+    parts = raw.split(b'\n')
+    return [part + b'\n' for part in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
+
+
 def byte_range_lines(lines, start, end):
     if end < start:
         return b''
@@ -951,31 +961,6 @@ def manifest_blob(repository, row, cache):
     raw = repository.git('cat-file', 'blob', oid)
     cache[key] = raw, raw.splitlines(keepends=True)
     return cache[key]
-
-
-def git_blob_read_range(name, data, row, total_lines, object_repository):
-    if name.lower() not in SHELL_TOOLS:
-        return None
-    command = data.get('command')
-    if not isinstance(command, str):
-        return None
-    try:
-        parts = split_shell(unwrap_shell(command))
-        if len(parts) != 2 or parts[0][1] != '|' or parts[1][1] != '':
-            return None
-        producer = command_words(parts[0][0])
-        limiter = command_words(parts[1][0])
-        expected = ['git', '--git-dir=' + object_repository, 'show', row['blob_oid']]
-        if producer != expected:
-            return None
-        selected = limiter_range(limiter, total_lines)
-        if selected is None:
-            return None
-        start, end = selected
-        end = min(end, total_lines)
-        return (start, end) if start <= end else None
-    except (TypeError, ValueError):
-        return None
 
 
 def target_file_candidates(words, target, root):
@@ -1304,6 +1289,11 @@ def audit(args):
             context = manifest['source_context']['seats'][seat]
             required_source_ranges = context.get('required_source_ranges', [])
             required_source_role = context.get('role')
+            required_segment_paths = {
+                session / segment['artifact']: (required_index, required, segment)
+                for required_index, required in enumerate(required_source_ranges)
+                for segment in required['segments']
+            }
             assigned = context['shards']
             assigned_paths = {session / shard['artifact']: shard for shard in assigned}
             opened_packets = set()
@@ -1341,7 +1331,7 @@ def audit(args):
             assignment = manifest['assignments'][seat]
             assigned_patch = Path(assignment['patch']).resolve(strict=True)
             assigned_patch_raw = assigned_patch.read_bytes()
-            assigned_patch_line_index = assigned_patch_raw.splitlines(keepends=True)
+            assigned_patch_line_index = split_lf_lines(assigned_patch_raw)
             assigned_patch_sha256 = hashlib.sha256(assigned_patch_raw).hexdigest()
             assigned_patch_bytes = len(assigned_patch_raw)
             assigned_patch_lines = len(assigned_patch_line_index)
@@ -1415,7 +1405,8 @@ def audit(args):
                     packet_calls = [
                         (call_positions[call_id], turn)
                         for call_id, (name, data, turn) in calls.items()
-                        if any(path in assigned_paths for path in paths_opened_by_call(name, data, root))
+                        if any(path in assigned_paths or path in required_segment_paths
+                               for path in paths_opened_by_call(name, data, root))
                     ]
                     if any(position < last_chunk_position or turn in final_chunk_turns
                            for position, turn in packet_calls):
@@ -1464,6 +1455,51 @@ def audit(args):
 
             observed_required_segments = []
             required_segment_calls = []
+            observed_by_required = {index: [] for index in range(len(required_source_ranges))}
+            seen_required_segments = set()
+            for call_id, (name, data, turn) in calls.items():
+                output = outputs.get(call_id)
+                if output is None or not output['success']:
+                    continue
+                for path in paths_opened_by_call(name, data, root):
+                    if path.parent != session or not SOURCE_SEGMENT_NAME.fullmatch(path.name):
+                        continue
+                    assigned_segment = required_segment_paths.get(path)
+                    if assigned_segment is None:
+                        failures.append(violation('unassigned-required-source-segment', name))
+                        continue
+                    required_index, required, segment = assigned_segment
+                    identity = (required_index, segment['index'])
+                    if identity in seen_required_segments:
+                        failures.append(violation('duplicate-required-source-segment', name))
+                        continue
+                    if not complete_packet_read(name, data, path, root):
+                        failures.append(violation('partial-required-source-segment', name))
+                        continue
+                    try:
+                        metadata = path.lstat()
+                        safe = (not path.is_symlink() and metadata.st_nlink == 1
+                                and path.is_file() and metadata.st_size == segment['raw_bytes'])
+                        raw = path.read_bytes() if safe else b''
+                    except OSError:
+                        safe = False
+                        raw = b''
+                    if not safe:
+                        failures.append(violation('redirected-required-source-segment', name))
+                        continue
+                    if (hashlib.sha256(raw).hexdigest() != segment['content_sha256']
+                            or not delivered_matches_bytes(
+                                args.adapter, name, output['value'], raw, 1)):
+                        failures.append(violation('required-source-output-mismatch', name))
+                        continue
+                    seen_required_segments.add(identity)
+                    observed_by_required[required_index].append(segment['index'])
+                    observed_required_segments.append(identity)
+                    required_segment_calls.append((call_id, turn))
+                    tool_ranges.append({'path': required['path'],
+                                        'line_start': segment['line_start'],
+                                        'line_end': segment['line_end'], 'origin': 'tool'})
+                    source_read_call_ids.add(call_id)
             for required_index, required in enumerate(required_source_ranges):
                 try:
                     blob, blob_line_index = manifest_blob(
@@ -1473,10 +1509,7 @@ def audit(args):
                     if hashlib.sha256(expected_required).hexdigest() != required['content_sha256']:
                         raise ValueError('required source content hash mismatch')
                     expected_segments = required['segments']
-                    expected_by_bounds = {
-                        (row['line_start'], row['line_end']): row for row in expected_segments}
-                    observed = []
-                    seen = set()
+                    observed = observed_by_required[required_index]
                     for call_id, (name, data, turn) in calls.items():
                         output = outputs.get(call_id)
                         if output is None or not output['success']:
@@ -1492,36 +1525,13 @@ def audit(args):
                             if not delivered_matches_bytes(
                                     args.adapter, name, output['value'], expected, row['line_start']):
                                 failures.append(violation('required-source-output-mismatch', name))
-                        blob_read = git_blob_read_range(
-                            name, data, required, len(blob_line_index),
-                            manifest['source_context']['object_repository'])
-                        if blob_read is None:
-                            continue
-                        segment = expected_by_bounds.get(blob_read)
-                        if segment is None:
-                            if not (blob_read[1] < required['line_start']
-                                    or blob_read[0] > required['line_end']):
-                                failures.append(violation('required-source-segment-bounds', name))
-                            continue
-                        identity = (required_index, segment['index'])
-                        if identity in seen:
-                            failures.append(violation('duplicate-required-source-segment', name))
-                            continue
-                        expected = byte_range_lines(blob_line_index, *blob_read)
+                    for segment in expected_segments:
+                        expected = byte_range_lines(
+                            blob_line_index, segment['line_start'], segment['line_end'])
                         if (len(expected) != segment['raw_bytes']
                                 or hashlib.sha256(expected).hexdigest() != segment['content_sha256']
-                                or not delivered_matches_bytes(
-                                    args.adapter, name, output['value'], expected, blob_read[0])):
-                            failures.append(violation('required-source-output-mismatch', name))
-                            continue
-                        seen.add(identity)
-                        observed.append(segment['index'])
-                        observed_required_segments.append(identity)
-                        required_segment_calls.append((call_id, turn))
-                        tool_ranges.append({'path': required['path'],
-                                            'line_start': blob_read[0], 'line_end': blob_read[1],
-                                            'origin': 'tool'})
-                        source_read_call_ids.add(call_id)
+                                or (session / segment['artifact']).read_bytes() != expected):
+                            raise ValueError('required source segment identity mismatch')
                     expected_order = [row['index'] for row in expected_segments]
                     if observed != sorted(observed):
                         failures.append(violation('reordered-required-source-segments', args.adapter))

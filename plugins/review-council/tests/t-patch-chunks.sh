@@ -37,6 +37,11 @@ assert len(long_chunks) >= 4
 assert b''.join(row['content'] for row in long_chunks) == long_line
 assert all(row['content'].decode('utf-8') for row in long_chunks)
 assert all(not row['content'].endswith(b'\n') for row in long_chunks)
+assert module.patch_chunk_mode(long_line, long_chunks, True) == 'chunks'
+
+carriage_line = b'+' + (b'x' * 99 + b'\r') * 400 + b'\n'
+carriage_chunks = module.partition_patch_chunks(carriage_line)
+assert module.patch_chunk_mode(carriage_line, carriage_chunks, True) == 'chunks'
 
 terminal = b'one\ntwo'
 terminal_chunks = module.partition_patch_chunks(terminal)

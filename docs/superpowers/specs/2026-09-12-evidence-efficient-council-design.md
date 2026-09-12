@@ -277,13 +277,14 @@ binary or special files, and control flow outside an excerpt always require a bo
 source expansion when relevant.
 
 An oversized mandatory range keeps one parent tree, blob, range, and content hash.
-Its delivery is partitioned into ordered, gapless child segments of at most 240 lines
-and 16 KiB predicted visible output, including an eight-byte reserve per line. The
-renderer supplies exact reads from the session's immutable Git object repository, and
-the audit permits two consecutive segments per turn for Claude and Grok and one for
-Codex and Gemini. Preparation fails closed
-when one source line cannot fit a segment. Parent receipts are issued only after every
-segment validates and reconstructs the parent's exact bytes.
+Its delivery is partitioned into ordered, gapless child artifacts of at most 240 lines
+and 16 KiB predicted visible output, including an eight-byte reserve per line. Each
+artifact is a regular, single-link file covered by the evidence manifest hash. The
+renderer supplies shell `cat` for Codex, `Read` for Claude, and `read_file` for Grok
+and Gemini. The audit permits two consecutive segments per turn for Claude and Grok
+and one for Codex and Gemini. Preparation fails closed when one source line cannot fit
+a segment. Parent receipts are issued only after every artifact validates against the
+pinned Git blob and the ordered sequence reconstructs the parent's exact bytes.
 
 Generation fails closed if a line differs from the manifest snapshot, a range escapes
 the seat scope, a component or hunk mapping is missing, a line is truncated, a shard

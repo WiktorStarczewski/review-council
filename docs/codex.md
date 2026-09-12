@@ -80,9 +80,9 @@ reconstruct the canonical patch exactly and remain under the audited provider-ou
 ceiling. Other patches use windows of at most 240 lines. Literal source packets contain exact enclosing
 declarations, callers, tests, and gates. Oversized omitted bodies become mandatory
 integration-seat reads bound to the exact tree, blob, content hash, and returned
-bytes. These bodies are read from immutable session objects in ordered, gapless
-segments of at most 240 lines and 16 KiB predicted visible output, one segment per
-Codex turn. Later verification uses the semantic fix delta only when a valid receipt proves
+bytes. These bodies are published as manifest-hashed session artifacts in ordered,
+gapless segments of at most 240 lines and 16 KiB predicted visible output, one segment
+per Codex turn. Later verification uses the semantic fix delta only when a valid receipt proves
 prior coverage and the delta plus its evidence is smaller. Otherwise, safe cumulative
 evidence keeps one full integration seat and gives specialists semantic components.
 Invalid predecessor state or any current-evidence error restores full cumulative scope

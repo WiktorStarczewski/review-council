@@ -270,6 +270,44 @@ PY
   )
 }
 
+test_profile_accepts_safe_nonnumeric_labels() {
+  ( local S="$T/profile-safe-label"; mkdir -p "$S"
+    cat > "$S/roster.json" <<'JSON'
+{"seats":[
+  {"seat":"codex-sol","adapter":"codex"},
+  {"seat":"grok","adapter":"grok"},
+  {"seat":"opus","adapter":"claude"},
+  {"seat":"opus-2","adapter":"claude"},
+  {"seat":"bad","adapter":"codex"}
+]}
+JSON
+    printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":10}}' \
+      > "$S/rv1-codex-sol.stream.ndjson"
+    printf '%s\n' '{"type":"end","usage":{"input_tokens":5,"cache_read_input_tokens":7,"output_tokens":3,"total_tokens":15,"cost_usd":0.5}}' \
+      > "$S/rv1-grok.stream.ndjson"
+    printf '%s\n' '{"type":"result","usage":{"input_tokens":10,"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"output_tokens":4},"total_cost_usd":1.5}' \
+      > "$S/rv1-opus.stream.ndjson"
+    printf '%s\n' '{"type":"result","usage":{"input_tokens":8,"cache_creation_input_tokens":0,"cache_read_input_tokens":12,"output_tokens":2},"total_cost_usd":0.1}' \
+      > "$S/rv1-opus-2.stream.ndjson"
+    printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":-1,"output_tokens":1}}' \
+      > "$S/rv1-bad.stream.ndjson"
+    for seat in codex-sol grok opus opus-2 bad; do printf '2\n' > "$S/rv1-$seat.exit"; done
+    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile.json"
+    python3 - "$S/profile.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); s = d['sessions'][0]; totals = d['totals']
+assert s['calls'] == {'completed': 0, 'metered': 4, 'unmetered': 0}, s
+assert totals['input_tokens'] == 192 and totals['output_tokens'] == 19, totals
+assert totals['processed_tokens'] == 211 and totals['cost_usd'] == 2.1, totals
+assert totals['cached_input_tokens'] == 20, totals
+assert totals['cache_write_input_tokens'] == 20, totals
+assert totals['cache_read_input_tokens'] == 49, totals
+assert len(s['invalid_usage']) == 1 and s['invalid_usage'][0]['stream'] == 'rv1-bad.stream.ndjson', s
+PY
+    assert_eq "profiler meters invalid attempts with safe nonnumeric labels" "$?" 0
+  )
+}
+
 # Invalid session arguments are rejected by argparse before any profile is aggregated.
 test_profile_invalid_sessions() {
   ( local V="$T/profile-valid" M="$T/profile-missing" F="$T/profile-file"
@@ -344,7 +382,9 @@ PY
 # Scope projections come only from intact evidence manifests, remain readable after the
 # repository is gone, and never alter metered usage.
 test_profile_evidence_scope() {
-  ( local S="$T/profile-evidence" R="$T/profile-evidence-repo"; mkrepo "$R"; mkdir -p "$S"
+  ( local S="$T/profile-evidence" R="$T/profile-evidence-repo"
+    export REV_SOURCE_CONTEXT=1 REV_PATCH_CHUNKS=1
+    mkrepo "$R"; mkdir -p "$S"
     printf 'Review repository instruction words.\n' > "$R/AGENTS.md"
     git -C "$R" add AGENTS.md && git -C "$R" commit -qm 'add instructions'
     local base; base=$(git -C "$R" rev-parse HEAD)
@@ -353,9 +393,12 @@ from pathlib import Path
 import sys
 root = Path(sys.argv[1])
 for file_number in range(3):
-    (root / f'source_{file_number}.py').write_text(
-        ''.join(f'value_{file_number}_{line} = {line}\n' for line in range(350))
-    )
+    lines = (['def source_0():\n']
+             + [f'    value_0_{line} = "{line:04d}-' + 'x' * 70 + '"\n'
+                for line in range(600)]
+             + ['    return value_0_599\n']) if file_number == 0 else [
+                 f'value_{file_number}_{line} = {line}\n' for line in range(350)]
+    (root / f'source_{file_number}.py').write_text(''.join(lines))
 PY
     printf "REV_ROOT='%s'\nREV_BASE='%s'\nREV_SCOPE='branch'\n" "$R" "$base" > "$S/scope.env"
     printf '%s\n' '{"seats":[{"seat":"sol","adapter":"agent"},{"seat":"grok","adapter":"agent"},{"seat":"opus","adapter":"agent"},{"seat":"opus-2","adapter":"agent"}]}' > "$S/roster.json"
@@ -407,17 +450,15 @@ for index, shard in enumerate(manifest['source_context']['seats'][seat]['shards'
             'type':'tool_result','tool_use_id':call_id,'content':path.read_text()}]}},
     ])
 for required in manifest['source_context']['seats'][seat]['required_source_ranges']:
-    source = pathlib.Path(source_path).parent / required['path']
-    lines = source.read_text().splitlines(keepends=True)
-    for start in range(required['line_start'], required['line_end'] + 1, 240):
-        end = min(start + 239, required['line_end']); call_id = 'source-' + str(start)
+    for segment in required['segments']:
+        source = session / segment['artifact']; call_id = 'source-' + str(segment['index'])
         events.extend([
             {'type':'assistant','message':{'id':call_id,'content':[{
                 'type':'tool_use','id':call_id,'name':'Read',
-                'input':{'file_path':str(source),'offset':start,'limit':end - start + 1}}]}},
+                'input':{'file_path':str(source)}}]}},
             {'type':'user','message':{'content':[{
                 'type':'tool_result','tool_use_id':call_id,
-                'content':''.join(lines[start - 1:end])}]}},
+                'content':source.read_text()}]}},
         ])
 if manifest['source_context']['seats'][seat]['source_read_required'] \
         and not manifest['source_context']['seats'][seat]['required_source_ranges']:
@@ -455,7 +496,7 @@ PY
 from pathlib import Path
 import sys
 path = Path(sys.argv[1])
-path.write_text(path.read_text().replace('value_0_0 = 0', 'value_0_0 = 999', 1))
+path.write_text(path.read_text().replace('value_0_0 = "0000-', 'value_0_0 = "changed-', 1))
 PY
     python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 7 --phase verification \
       --assignment sol=correctness-boundaries \
@@ -482,6 +523,8 @@ import json, sys
 d = json.load(open(sys.argv[1]))
 m = json.load(open(sys.argv[2]))
 s = d['sessions'][0]
+assert any(required['segments'] for packet in m['source_context']['seats'].values()
+           for required in packet['required_source_ranges']), m['source_context']
 assert s['usage']['processed_tokens'] == 15, s
 session = __import__('pathlib').Path(sys.argv[2]).parent
 evidence_words = len((session / 'r7-evidence.md').read_bytes().split())

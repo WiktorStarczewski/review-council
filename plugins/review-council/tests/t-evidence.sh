@@ -313,7 +313,7 @@ def write_agent_audit(session, label, seat):
     (session / f'r{label}-{seat}.read-audit.json').write_text(json.dumps(audit))
 
 @contextlib.contextmanager
-def fixture(name='repo'):
+def fixture(name='repo', object_format=None):
     with tempfile.TemporaryDirectory(prefix='evidence-hardening-') as tmp:
         root = Path(tmp) / name; root.mkdir(); session = Path(tmp) / 'session'; session.mkdir()
         def git(*args):
@@ -338,7 +338,8 @@ def fixture(name='repo'):
                 (session / f'r{label}-{seat}.exit').write_text('0\n')
                 write_agent_audit(session, label, seat)
             call('receipt', session, label)
-        git('init', '-q'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.invalid'); git('config', 'commit.gpgsign', 'false')
+        git('init', '-q', *(['--object-format=' + object_format] if object_format else []))
+        git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.invalid'); git('config', 'commit.gpgsign', 'false')
         write('main.py', 'def first():\n    return 1\n\ndef second():\n    return 1\n')
         write('test_calls.py', 'assert first() == 1\nassert second() == 1\n')
         write('package.json', '{"scripts":{"test":"pytest"}}\n')
@@ -360,13 +361,8 @@ def storage_redirects():
             call('prepare', session, '1', '--phase', 'discovery', good=False)
             assert before == {str(p): p.read_bytes() for p in target.rglob('*') if p.is_file()}
     with fixture() as (root, session, git, write, call, prepare, finish):
-        (session / 'evidence-repository').symlink_to(root / '.git', target_is_directory=True)
-        call('prepare', session, 'redirected-repository', '--phase', 'discovery', good=False)
-    with fixture() as (root, session, git, write, call, prepare, finish):
         prepare()
-        alternates = session / 'evidence-repository/objects/info/alternates'
-        alternates.write_text(str(session / 'evidence-objects') + '\n')
-        call('render', session / 'r1-evidence.manifest.json', 'sol', good=False)
+        assert not (session / 'evidence-repository').exists()
 
 def quoted_paths():
     with fixture('r\u00e9po space\'"colon:back\\slash') as (root, session, git, write, call, prepare, finish):
@@ -689,10 +685,15 @@ def source_context_packets():
         write('main.py', (root / 'main.py').read_text().replace('value + 1', 'value + 10')
               .replace('value + 2', 'value + 20').replace('value + 3', 'value + 30'))
         m = prepare(); context = m['source_context']
-        assert context['schema_version'] == 1 and context['enabled'] is True and context['snapshot_tree'] == m['snapshot_tree']
+        assert context['schema_version'] == 2 and context['enabled'] is True and context['snapshot_tree'] == m['snapshot_tree']
+        assert 'object_repository' not in context
         assert context['max_shard_bytes'] == 32768
-        context_words = sum(len((session / shard['artifact']).read_bytes().split())
-                            for packet in context['seats'].values() for shard in packet['shards'])
+        context_artifacts = [shard['artifact'] for packet in context['seats'].values()
+                             for shard in packet['shards']]
+        context_artifacts.extend(segment['artifact'] for packet in context['seats'].values()
+                                 for required in packet['required_source_ranges']
+                                 for segment in required['segments'])
+        context_words = sum(len((session / name).read_bytes().split()) for name in context_artifacts)
         assert m['word_counts']['source_context'] == context_words
         assert m['word_counts']['avoided'] == max(
             0, len(m['assignments']) * m['word_counts']['full']
@@ -842,6 +843,12 @@ def complete_declaration_context():
         assert packet['omitted']['declaration'] >= 1 and packet['source_read_required'] is True
         required = packet['required_source_ranges']
         declaration = next(row for row in required if 'declaration:oversized' in row['reasons'])
+        source_artifacts = [shard['artifact'] for value in manifest['source_context']['seats'].values()
+                            for shard in value['shards']]
+        source_artifacts.extend(segment['artifact'] for value in manifest['source_context']['seats'].values()
+                                for parent in value['required_source_ranges'] for segment in parent['segments'])
+        assert manifest['word_counts']['source_context'] == sum(
+            len((session / name).read_bytes().split()) for name in source_artifacts)
         assert declaration['path'] == 'main.py' and declaration['line_start'] == 1 and declaration['line_end'] == 6002
         assert declaration['blob_tree'] == manifest['snapshot_tree']
         assert declaration['blob_oid'] and declaration['content_sha256']
@@ -857,20 +864,29 @@ def complete_declaration_context():
                    and row['predicted_visible_bytes'] <= 32768 // 2
                    and row['raw_bytes'] > 0
                    and len(row['content_sha256']) == 64 for row in segments)
-        blob = subprocess.check_output(
-            ['git', '--git-dir=' + manifest['source_context']['object_repository'],
-             'cat-file', 'blob', declaration['blob_oid']])
+        blob = (root / declaration['path']).read_bytes()
         lines = blob.splitlines(keepends=True)
-        rebuilt = b''.join(b''.join(lines[row['line_start'] - 1:row['line_end']])
-                            for row in segments)
+        rebuilt = b''
+        for range_index, required in enumerate(packet['required_source_ranges'], 1):
+            for segment in required['segments']:
+                expected_name = (f'r1-{owner}-source-segment-{range_index:03d}-'
+                                 f"{segment['index']:03d}.txt")
+                assert segment['artifact'] == expected_name
+                artifact = session / expected_name
+                assert artifact.is_file() and not artifact.is_symlink() and artifact.stat().st_nlink == 1
+                raw = artifact.read_bytes()
+                expected = b''.join(lines[segment['line_start'] - 1:segment['line_end']])
+                assert raw == expected
+                assert manifest['artifacts'][expected_name]['sha256'] == hashlib.sha256(raw).hexdigest()
+                if required is declaration:
+                    rebuilt += raw
         assert hashlib.sha256(rebuilt).hexdigest() == declaration['content_sha256']
         rendered = call('render', session / 'r1-evidence.manifest.json', owner)
         assert 'Required source range: main.py:1-6002' in rendered
         for segment in segments:
-            command = ('git --git-dir=' + shlex.quote(manifest['source_context']['object_repository'])
-                       + " show '" + declaration['blob_oid'] + "' | sed -n '"
-                       + str(segment['line_start']) + ',' + str(segment['line_end']) + "p'")
-            assert command in rendered
+            assert ("use Read to read " + str(Path(manifest['session']) / segment['artifact'])
+                    + ' in full') in rendered
+        assert 'git --git-dir=' not in rendered and 'evidence-repository' not in rendered
         reasons = [reason for shard in packet['shards']
                    for entry in json.loads((session / shard['artifact']).read_text())['entries']
                    for reason in entry['reasons']]
@@ -909,6 +925,7 @@ def complete_declaration_context():
             lambda rows: rows.pop(),
             lambda rows: rows[1].update(line_start=rows[0]['line_end']),
             lambda rows: rows.reverse(),
+            lambda rows: rows[0].update(artifact='wrong-source-segment.txt'),
             lambda rows: rows[0].update(content_sha256='0' * 64),
             lambda rows: rows[0].update(raw_bytes=rows[0]['raw_bytes'] + 1),
             lambda rows: rows[0].update(predicted_visible_bytes=32768 // 2 + 1),
@@ -926,6 +943,15 @@ def complete_declaration_context():
             manifest_path.write_bytes(module.encoded(changed_manifest))
             call('render', manifest_path, owner, good=False)
         manifest_path.write_bytes(saved_manifest); evidence_path.write_bytes(saved_evidence)
+
+        segment_path = session / declaration['segments'][0]['artifact']
+        segment_raw = segment_path.read_bytes()
+        redirect = session / 'segment-redirect.txt'; redirect.write_bytes(segment_raw)
+        segment_path.unlink(); segment_path.symlink_to(redirect)
+        call('render', manifest_path, owner, good=False)
+        segment_path.unlink(); os.link(redirect, segment_path)
+        call('render', manifest_path, owner, good=False)
+        segment_path.unlink(); segment_path.write_bytes(segment_raw); redirect.unlink()
 
     with fixture() as (root, session, git, write, call, prepare, finish):
         base_body = ('def provenance():\n'
@@ -979,6 +1005,25 @@ def complete_declaration_context():
             for row in scope_text.splitlines()) + '\n')
         write('huge.py', body[:-2] + 'y"\n')
         call('prepare', session, 'unrepresentable', '--phase', 'discovery', good=False)
+
+    with fixture(object_format='sha256') as (root, session, git, write, call, prepare, finish):
+        body = ('def sha256_source():\n'
+                + ''.join(f'    value_{i} = "{i:04d}-' + 'x' * 80 + '"\n' for i in range(500))
+                + '    return value_499\n')
+        write('sha256.py', body); git('add', '.'); git('commit', '-qm', 'sha256 source base')
+        base = git('rev-parse', 'HEAD'); scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('sha256.py', body.replace('value_400 =', 'value_400_changed ='))
+        manifest = prepare('sha256'); owner = manifest['mechanical_owner']
+        required = manifest['source_context']['seats'][owner]['required_source_ranges'][0]
+        assert len(required['blob_oid']) == 64 and required['segments']
+        assert not (session / 'evidence-repository').exists()
+        rebuilt = b''.join((session / segment['artifact']).read_bytes()
+                           for segment in required['segments'])
+        assert hashlib.sha256(rebuilt).hexdigest() == required['content_sha256']
+        call('render', session / 'rsha256-evidence.manifest.json', owner)
 
     with fixture() as (root, session, git, write, call, prepare, finish):
         (root / 'unrepresentable.py').write_bytes(b'\0binary source')
