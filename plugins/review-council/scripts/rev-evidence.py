@@ -20,6 +20,9 @@ BUNDLES = ('correctness-boundaries', 'security-state-api',
            'concurrency-resources-performance', 'tests-observability-maintenance-regression')
 PLAN_BUNDLES = ('plan-completeness', 'plan-soundness', 'plan-simplicity', 'plan-tests')
 SOURCE_CONTEXT_LIMIT = 32768
+SOURCE_SEGMENT_VISIBLE_LIMIT = SOURCE_CONTEXT_LIMIT // 2
+SOURCE_SEGMENT_LINE_LIMIT = 240
+SOURCE_SEGMENT_PREFIX_RESERVE = 8
 PATCH_CHUNK_RAW_LIMIT = 24 * 1024
 PATCH_CHUNK_VISIBLE_LIMIT = 30 * 1024
 PATCH_CHUNK_LINE_LIMIT = 1000
@@ -125,6 +128,34 @@ def patch_chunk_mode(raw, chunks, enabled):
         return 'windows'
     windows = max(1, (len(raw.splitlines()) + 239) // 240)
     return 'chunks' if chunks and len(chunks) * 10 <= windows * 9 else 'windows'
+
+
+def partition_source_segments(lines, line_start, line_end):
+    """Partition one immutable source range into bounded, gapless line segments."""
+    segments = []
+    cursor = line_start
+    while cursor <= line_end:
+        segment_start = cursor
+        raw = b''
+        while cursor <= line_end and cursor - segment_start < SOURCE_SEGMENT_LINE_LIMIT:
+            candidate = raw + lines[cursor - 1]
+            line_count = cursor - segment_start + 1
+            predicted = len(candidate) + line_count * SOURCE_SEGMENT_PREFIX_RESERVE
+            if predicted > SOURCE_SEGMENT_VISIBLE_LIMIT:
+                break
+            raw = candidate
+            cursor += 1
+        if cursor == segment_start:
+            raise ValueError('required source line exceeds visible segment limit')
+        segments.append({
+            'index': len(segments) + 1,
+            'line_start': segment_start,
+            'line_end': cursor - 1,
+            'raw_bytes': len(raw),
+            'predicted_visible_bytes': len(raw) + (cursor - segment_start) * SOURCE_SEGMENT_PREFIX_RESERVE,
+            'content_sha256': digest(raw),
+        })
+    return segments
 
 
 def patch_sets_for(scopes, patch_bodies, prefix, enabled):
@@ -295,6 +326,40 @@ class Repository:
                     raise ValueError('unsupported object storage entry: ' + name)
         self.env.update(GIT_OBJECT_DIRECTORY=str(self.objects),
                         GIT_ALTERNATE_OBJECT_DIRECTORIES=git_quote(str(objects)))
+        self.object_repository = session / 'evidence-repository'
+        for directory in (self.object_repository, self.object_repository / 'objects',
+                          self.object_repository / 'objects/info', self.object_repository / 'refs'):
+            if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+                raise ValueError('redirected evidence object repository')
+            directory.mkdir(mode=0o700, exist_ok=True)
+        repository_files = {
+            self.object_repository / 'HEAD': b'ref: refs/heads/review-council\n',
+            self.object_repository / 'objects/info/alternates':
+                (str(self.objects) + '\n' + str(objects) + '\n').encode(),
+        }
+        for path, content in repository_files.items():
+            if path.exists():
+                metadata = path.lstat()
+                if path.is_symlink() or not path.is_file() or metadata.st_nlink != 1:
+                    raise ValueError('redirected evidence object repository file')
+                if path.read_bytes() != content:
+                    raise ValueError('changed evidence object repository file')
+            else:
+                path.write_bytes(content)
+        allowed = {
+            self.object_repository.resolve(),
+            (self.object_repository / 'objects').resolve(),
+            (self.object_repository / 'objects/info').resolve(),
+            (self.object_repository / 'refs').resolve(),
+            *(path.resolve() for path in repository_files),
+        }
+        for directory, dirs, files in os.walk(self.object_repository, followlinks=False):
+            for name in dirs + files:
+                path = Path(directory) / name
+                if (path.resolve() not in allowed or path.is_symlink()
+                        or (path.is_file() and path.stat().st_nlink != 1)
+                        or not (path.is_file() or path.is_dir())):
+                    raise ValueError('unsupported evidence object repository entry: ' + name)
         self.blob_cache = {}
 
     def scoped(self, path):
@@ -1351,7 +1416,8 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
         calls_by_name.setdefault(call['name'], []).append(call)
     tests_by_path = {test['path']: test for test in evidence['related_tests']}
     result = {'schema_version': 1, 'enabled': enabled, 'snapshot_tree': snapshot, 'base_tree': base_tree,
-              'max_shard_bytes': SOURCE_CONTEXT_LIMIT, 'seats': {}}
+              'max_shard_bytes': SOURCE_CONTEXT_LIMIT,
+              'object_repository': str(repo.object_repository), 'seats': {}}
     artifacts = {}
 
     source_choice_cache = {}
@@ -1581,6 +1647,9 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
             if individually_oversized:
                 required = {key: value for key, value in row.items() if key != 'content'}
                 required['required_payload_bytes'] = single_payload_bytes
+                _, source_lines, _ = source_rows[row['path']]
+                required['segments'] = partition_source_segments(
+                    source_lines, row['line_start'], row['line_end'])
                 required_ranges.append(required)
         if current:
             shards.append(current)
@@ -1608,6 +1677,8 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
 def validate_source_context_snapshot(repo, session, manifest):
     """Bind recorded source packet ranges to their exact snapshot blobs."""
     context = manifest['source_context']
+    if context['object_repository'] != str(repo.object_repository):
+        raise ValueError('source context object storage mismatch')
     entries_by_tree = {}
     blob_lines = {}
 
@@ -1631,7 +1702,22 @@ def validate_source_context_snapshot(repo, session, manifest):
                 if expected_bytes(row) != row['content'].encode():
                     raise ValueError('source context content does not match snapshot: ' + row['path'])
         for row in packet['required_source_ranges']:
-            if digest(expected_bytes(row)) != row['content_sha256']:
+            parent = expected_bytes(row)
+            key = (row['blob_mode'], row['blob_oid'])
+            if row['segments'] != partition_source_segments(
+                    blob_lines[key], row['line_start'], row['line_end']):
+                raise ValueError('required source segments are not canonical: ' + row['path'])
+            rebuilt = b''
+            for segment in row['segments']:
+                part = expected_bytes(dict(row, line_start=segment['line_start'],
+                                           line_end=segment['line_end']))
+                if (len(part) != segment['raw_bytes']
+                        or digest(part) != segment['content_sha256']
+                        or len(part) + (segment['line_end'] - segment['line_start'] + 1) \
+                        * SOURCE_SEGMENT_PREFIX_RESERVE != segment['predicted_visible_bytes']):
+                    raise ValueError('required source segment does not match snapshot: ' + row['path'])
+                rebuilt += part
+            if rebuilt != parent or digest(parent) != row['content_sha256']:
                 raise ValueError('required source content does not match snapshot: ' + row['path'])
 
 
@@ -1739,12 +1825,14 @@ def validate_source_context(session, manifest, evidence):
     context = manifest.get('source_context')
     if evidence.get('source_context') != context or not isinstance(context, dict):
         raise ValueError('evidence/manifest mismatch: source_context')
-    if set(context) != {'schema_version', 'enabled', 'snapshot_tree', 'base_tree', 'max_shard_bytes', 'seats'}:
+    if set(context) != {'schema_version', 'enabled', 'snapshot_tree', 'base_tree', 'max_shard_bytes',
+                        'object_repository', 'seats'}:
         raise ValueError('invalid source context structure')
     if (context['schema_version'] != 1 or type(context['enabled']) is not bool
             or context['snapshot_tree'] != manifest['snapshot_tree']
             or context['base_tree'] != manifest['base_tree']
             or context['max_shard_bytes'] != SOURCE_CONTEXT_LIMIT
+            or context['object_repository'] != str(session / 'evidence-repository')
             or not isinstance(context['seats'], dict)
             or set(context['seats']) != set(manifest['assignments'])):
         raise ValueError('invalid source context identity')
@@ -1844,7 +1932,7 @@ def validate_source_context(session, manifest, evidence):
         required = packet['required_source_ranges']
         range_keys = {'path', 'line_start', 'line_end', 'reasons', 'component_ids', 'hunk_binding_sha256',
                       'blob_oid', 'blob_mode', 'blob_tree', 'content_sha256', 'priority',
-                      'required_payload_bytes'}
+                      'required_payload_bytes', 'segments'}
         if (not isinstance(required, list)
                 or required != sorted(required, key=lambda row: (
                     row.get('path', ''), row.get('line_start', 0), row.get('line_end', 0), row.get('priority', 0)))):
@@ -1875,6 +1963,32 @@ def validate_source_context(session, manifest, evidence):
                     or not component_ids or not set(component_ids) <= set(expected_components)
                     or row.get('hunk_binding_sha256') != binding_hash):
                 raise ValueError('invalid required source range: ' + seat)
+            segments = row['segments']
+            segment_keys = {'index', 'line_start', 'line_end', 'raw_bytes',
+                            'predicted_visible_bytes', 'content_sha256'}
+            if (not isinstance(segments, list) or not segments
+                    or [segment.get('index') for segment in segments] != list(range(1, len(segments) + 1))
+                    or segments[0].get('line_start') != row['line_start']
+                    or segments[-1].get('line_end') != row['line_end']):
+                raise ValueError('invalid required source segments: ' + seat)
+            cursor = row['line_start']
+            for segment in segments:
+                if (not isinstance(segment, dict) or set(segment) != segment_keys
+                        or type(segment.get('line_start')) is not int
+                        or type(segment.get('line_end')) is not int
+                        or segment['line_start'] != cursor
+                        or segment['line_end'] < segment['line_start']
+                        or segment['line_end'] - segment['line_start'] + 1 > SOURCE_SEGMENT_LINE_LIMIT
+                        or type(segment.get('raw_bytes')) is not int or segment['raw_bytes'] < 1
+                        or type(segment.get('predicted_visible_bytes')) is not int
+                        or segment['predicted_visible_bytes'] != segment['raw_bytes'] \
+                        + (segment['line_end'] - segment['line_start'] + 1) * SOURCE_SEGMENT_PREFIX_RESERVE
+                        or segment['predicted_visible_bytes'] > SOURCE_SEGMENT_VISIBLE_LIMIT
+                        or not re.fullmatch(r'[0-9a-f]{64}', str(segment.get('content_sha256')))):
+                    raise ValueError('invalid required source segment: ' + seat)
+                cursor = segment['line_end'] + 1
+            if cursor != row['line_end'] + 1:
+                raise ValueError('incomplete required source segments: ' + seat)
             seen_ranges.setdefault((seat, row['path']), []).append((row['line_start'], row['line_end']))
         required_counts = Counter(reason.split(':', 1)[0] for row in required for reason in row['reasons'])
         if any(required_counts[key] > omitted[key] for key in SOURCE_CONTEXT_REASONS):
@@ -2822,6 +2936,18 @@ def render(args):
                   + str(row['line_end']) + ' tree ' + row['blob_tree'] + ' blob ' + row['blob_oid']
                   + ' content SHA-256 '
                   + row['content_sha256'] + ' reasons ' + json.dumps(row['reasons'], ensure_ascii=True))
+            total = len(row['segments'])
+            for segment in row['segments']:
+                command = ('git --git-dir=' + shlex.quote(
+                    manifest['source_context']['object_repository'])
+                           + " show '" + row['blob_oid'] + "' | sed -n '"
+                           + str(segment['line_start']) + ',' + str(segment['line_end']) + "p'")
+                print('Required source segment ' + str(segment['index']) + '/' + str(total)
+                      + ': run ' + command + ' raw bytes ' + str(segment['raw_bytes'])
+                      + ' visible bytes ' + str(segment['predicted_visible_bytes'])
+                      + ' content SHA-256 ' + segment['content_sha256'])
+            batch_limit = 2 if assignment['adapter'] in ('claude', 'grok') else 1
+            print('Required source segment batch limit: ' + str(batch_limit))
         print('Source read required: ' + str(context['source_read_required']).lower())
     else:
         print('Source read required: true')

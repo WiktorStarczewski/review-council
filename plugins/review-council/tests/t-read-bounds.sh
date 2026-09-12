@@ -99,7 +99,7 @@ PY
 
     write_specialist_transcript() {
       python3 - "$manifest" "$S/r10-$seat.stream.ndjson" "$seat" "$R" "$1" <<'PY'
-import json, pathlib, sys
+import json, pathlib, subprocess, sys
 manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2])
 seat, root, mode = sys.argv[3], pathlib.Path(sys.argv[4]), sys.argv[5]
 session = pathlib.Path(sys.argv[1]).parent; context = manifest['source_context']['seats'][seat]
@@ -121,10 +121,16 @@ if mode == 'unrelated':
     command('source-unrelated', "sed -n '1,1p' a.txt", (root / 'a.txt').read_text())
 else:
     required = context['required_source_ranges'][0]
-    start = required['line_start']; end = min(required['line_end'], start + 239)
-    source = (root / required['path']).read_text().splitlines(keepends=True)
-    command('source-required', f"sed -n '{start},{end}p' '{required['path']}'",
-            ''.join(source[start - 1:end]))
+    source = subprocess.check_output(
+        ['git', '--git-dir=' + manifest['source_context']['object_repository'],
+         'cat-file', 'blob', required['blob_oid']])
+    lines = source.decode().splitlines(keepends=True)
+    prefix = "git --git-dir='" + manifest['source_context']['object_repository'] + "' "
+    for segment in required['segments']:
+        start, end = segment['line_start'], segment['line_end']
+        command('source-required-' + str(start),
+                prefix + f"show '{required['blob_oid']}' | sed -n '{start},{end}p'",
+                ''.join(lines[start - 1:end]))
 with out.open('w') as stream:
     for event in events:
         stream.write(json.dumps(event) + '\n')
@@ -143,9 +149,10 @@ PY
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
       --raw "$S/r10-$seat.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
       --out "$S/r10-$seat.read-audit.json" >/dev/null 2>&1
-    assert_eq "specialist accepts one intersecting bounded range from an uncommitted snapshot" "$?" 0
-    assert_grep "specialist receipt keeps partial required coverage explicit" \
-      "$S/r10-$seat.read-audit.json" '"required_source_ranges_covered":0'
+    local audit_rc=$?
+    assert_eq "specialist accepts every exact required source segment" "$audit_rc" 0
+    assert_grep "specialist receipt binds the complete required parent range" \
+      "$S/r10-$seat.read-audit.json" '"required_source_ranges_covered":1'
   )
 }
 
@@ -621,7 +628,8 @@ PY
     write_required_transcript() {
       python3 - "$manifest" "$S/r9-sol.stream.ndjson" "$1" "$R" <<'PY'
 import json, pathlib, subprocess, sys
-manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2]); complete = sys.argv[3] == 'complete'
+manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2]); mode = sys.argv[3]
+complete = mode != 'partial'
 session = pathlib.Path(sys.argv[1]).parent; seat = 'sol'; context = manifest['source_context']['seats'][seat]
 assert context['role'] == 'integration' and len(context['required_source_ranges']) == 1
 events = []
@@ -640,14 +648,17 @@ for start in range(1, len(patch_lines) + 1, 240):
     command('patch-' + str(start), f"sed -n '{start},{end}p' '{patch}'",
             ''.join(patch_lines[start - 1:end]))
 required = context['required_source_ranges'][0]
-blob = subprocess.check_output(['git', '-C', sys.argv[4], 'cat-file', 'blob', required['blob_oid']])
+blob = subprocess.check_output(
+    ['git', '--git-dir=' + manifest['source_context']['object_repository'],
+     'cat-file', 'blob', required['blob_oid']])
 source_lines = blob.decode().splitlines(keepends=True)
-starts = list(range(required['line_start'], required['line_end'] + 1, 240))
+prefix = "git --git-dir='" + manifest['source_context']['object_repository'] + "' "
+segments = required['segments']
 if not complete:
-    starts = starts[:-1]
-for start in starts:
-    end = min(required['line_end'], start + 239)
-    command('source-' + str(start), f"git show '{required['blob_oid']}' | sed -n '{start},{end}p'",
+    segments = segments[:-1]
+for index, segment in enumerate(segments):
+    start, end = segment['line_start'], segment['line_end']
+    command('source-' + str(start), prefix + f"show '{required['blob_oid']}' | sed -n '{start},{end}p'",
             ''.join(source_lines[start - 1:end]))
 with out.open('w') as stream:
     for event in events:
@@ -664,6 +675,54 @@ PY
       "$S/r9-sol.read-audit.json" '"required_source_ranges_covered":1'
     assert_grep "required source proof records the exact manifest blob" \
       "$S/r9-sol.read-audit.json" '"required_source_range_proofs":\[\{"blob_oid":"[0-9a-f]+"'
+    assert_grep "Codex keeps one required source segment per turn" "$prompt" \
+      '^Required source segment batch limit: 1$'
+
+    cp "$S/roster.json" "$T/required-source-roster.json"
+    python3 - "$S/roster.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1]); roster = json.loads(path.read_text())
+roster['seats'][0]['adapter'] = 'claude'; path.write_text(json.dumps(roster))
+PY
+    local claude_manifest claude_prompt
+    claude_manifest=$(REV_SOURCE_CONTEXT=1 python3 "$SCRIPTS/rev-evidence.py" prepare \
+      "$S" 9c --head "$reviewed" --phase discovery) || return
+    claude_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 9c sol correctness required-source \
+      --evidence "$claude_manifest") || return
+    assert_grep "Claude may batch two required source segments" "$claude_prompt" \
+      '^Required source segment batch limit: 2$'
+    printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r9c-sol.json"
+    python3 - "$claude_manifest" "$S/r9c-sol.stream.ndjson" <<'PY'
+import json, pathlib, subprocess, sys
+manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2])
+required = manifest['source_context']['seats']['sol']['required_source_ranges'][0]
+assert len(required['segments']) >= 3
+blob = subprocess.check_output([
+    'git', '--git-dir=' + manifest['source_context']['object_repository'],
+    'cat-file', 'blob', required['blob_oid']])
+lines = blob.decode().splitlines(keepends=True)
+uses = []; results = []
+for segment in required['segments'][:3]:
+    start, end = segment['line_start'], segment['line_end']; call_id = 'source-' + str(start)
+    command = ("git --git-dir='" + manifest['source_context']['object_repository']
+               + "' show '" + required['blob_oid'] + "' | sed -n '"
+               + str(start) + ',' + str(end) + "p'")
+    uses.append({'type':'tool_use','id':call_id,'name':'Bash','input':{'command':command}})
+    results.append({'type':'tool_result','tool_use_id':call_id,
+                    'content':''.join(lines[start - 1:end])})
+events = [
+    {'type':'assistant','message':{'id':'real-claude-turn','content':uses}},
+    {'type':'user','message':{'content':results}},
+]
+out.write_text(''.join(json.dumps(row) + '\n' for row in events))
+PY
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter claude \
+      --raw "$S/r9c-sol.stream.ndjson" --prompt "$claude_prompt" --root "$R" --session "$S" \
+      --out "$S/r9c-sol.read-audit.json" >/dev/null 2>&1
+    assert_eq "Claude rejects three required source segments in one real message" "$?" 2
+    assert_grep "oversized Claude source batch has a stable violation" "$S/r9c-sol.read-audit.json" \
+      '"code":"required-source-segment-batch-too-large"'
+    cp "$T/required-source-roster.json" "$S/roster.json"
 
     write_required_transcript partial
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
@@ -694,8 +753,8 @@ for start in range(1, len(lines) + 1, 240):
     command('patch-' + str(start), f"sed -n '{start},{end}p' '{patch}'", ''.join(lines[start - 1:end]))
 required = context['required_source_ranges'][0]
 live = (root / required['path']).read_text().splitlines(keepends=True)
-for start in range(required['line_start'], required['line_end'] + 1, 240):
-    end = min(required['line_end'], start + 239)
+for segment in required['segments']:
+    start, end = segment['line_start'], segment['line_end']
     command('wrong-tree-' + str(start), f"sed -n '{start},{end}p' '{required['path']}'",
             ''.join(live[start - 1:end]))
 with out.open('w') as stream:
@@ -735,6 +794,24 @@ test_read_audit_shell_range_hardening() {
       read_bound_hook "$R" "$S" "$payload"
       assert_eq "range audit rejects unsafe or unparseable shell evidence: $payload" "$?" 2
     done
+    local ambiguous_overlong
+    ambiguous_overlong=$(python3 - <<'PY'
+import json
+print(json.dumps({'tool_name':'Bash','tool_input':{
+    'command':"rg '" + 'x' * 10000 + "' src | head -80"}}))
+PY
+)
+    read_bound_hook "$R" "$S" "$ambiguous_overlong"
+    assert_eq "ambiguous overlong search token is treated as a non-path" "$?" 0
+    local explicit_overlong
+    explicit_overlong=$(python3 - <<'PY'
+import json
+print(json.dumps({'tool_name':'Bash','tool_input':{
+    'command':"cat './" + 'x' * 10000 + "' | head -20"}}))
+PY
+)
+    read_bound_hook "$R" "$S" "$explicit_overlong"
+    assert_eq "explicit overlong path fails closed" "$?" 2
   )
 }
 

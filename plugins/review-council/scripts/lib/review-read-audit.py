@@ -56,6 +56,8 @@ def resolved(path, cwd):
     if re.search(r'\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]*\})', value):
         raise ValueError('unresolved path variable')
     item = Path(value)
+    if any(len(os.fsencode(part)) > 255 for part in item.parts):
+        raise OSError('path component exceeds portable filesystem limit')
     return (item if item.is_absolute() else Path(cwd) / item).resolve(strict=False)
 
 
@@ -247,7 +249,10 @@ def path_candidates(words, root):
             continue
         looks_like_path = value.startswith(('/', '~', './', '../', '$')) or '/' in value
         if not looks_like_path:
-            looks_like_path = (Path(root) / value).exists()
+            try:
+                looks_like_path = (Path(root) / value).exists()
+            except OSError:
+                looks_like_path = False
         if looks_like_path:
             candidates.append(value)
     return candidates
@@ -318,13 +323,16 @@ def file_line_count(path):
 def repository_file_candidates(words, root):
     found = []
     for candidate in path_candidates(words, root):
-        target = resolved(candidate, root)
         try:
+            target = resolved(candidate, root)
             target.relative_to(root)
-        except ValueError:
+        except (OSError, ValueError):
             continue
-        if target.is_file():
-            found.append(target)
+        try:
+            if target.is_file():
+                found.append(target)
+        except OSError:
+            continue
     return found
 
 
@@ -626,7 +634,7 @@ def shell_violations(command, roots, root, session):
         for candidate in path_candidates(words, root):
             try:
                 path = resolved(candidate, root)
-            except ValueError:
+            except (OSError, ValueError):
                 return [violation('unresolved-path-variable', tool)]
             if not inside(path, roots) and not session_artifact(path, session):
                 return [violation('path-outside-scope', tool)]
@@ -648,7 +656,10 @@ def shell_violations(command, roots, root, session):
             if name in ('head', 'tail', 'sed'):
                 is_source = not line_limiter(words)
             if name == 'cat':
-                operands = [resolved(value, root) for value in path_candidates(words, root)]
+                try:
+                    operands = [resolved(value, root) for value in path_candidates(words, root)]
+                except OSError:
+                    return [violation('unresolved-path-variable', tool)]
                 if operands and all(complete_read_artifact(path, session) for path in operands):
                     is_source = False
             maximum = SEARCH_RESULTS if shell_search_producer(words) else READ_LINES
@@ -666,14 +677,18 @@ def validate_call(name, data, roots, root, session):
     if path is not None:
         try:
             target = resolved(path, root)
-        except ValueError:
+        except (OSError, ValueError):
             return [violation('unresolved-path-variable', name)]
         if not inside(target, roots) and not session_artifact(target, session):
             return [violation('path-outside-scope', name)]
     if normalized in READ_TOOLS:
         if path is None:
             return [violation('missing-read-path', name)]
-        if complete_read_artifact(resolved(path, root), session):
+        try:
+            complete = complete_read_artifact(resolved(path, root), session)
+        except OSError:
+            return [violation('unresolved-path-variable', name)]
+        if complete:
             return []
         if not explicit_offset(data) or not positive_bound(data, ('limit', 'line_limit', 'max_lines'), READ_LINES):
             return [violation('unbounded-read', name)]
@@ -840,7 +855,7 @@ def byte_exempt(name, data, root, session):
     path = tool_path(data)
     try:
         return path is not None and full_artifact(resolved(path, root), session)
-    except ValueError:
+    except (OSError, ValueError):
         return False
 
 
@@ -910,7 +925,7 @@ def paths_opened_by_call(name, data, root):
     for value in raw:
         try:
             target = resolved(value, root)
-        except ValueError:
+        except (OSError, ValueError):
             continue
         if target not in paths:
             paths.append(target)
@@ -926,7 +941,7 @@ def complete_packet_read(name, data, packet, root):
             return False
         try:
             return resolved(raw_path, root) == packet
-        except ValueError:
+        except (OSError, ValueError):
             return False
     if normalized not in SHELL_TOOLS:
         return False
@@ -1013,7 +1028,7 @@ def manifest_blob(repository, row, cache):
     return cache[key]
 
 
-def git_blob_read_range(name, data, row, total_lines):
+def git_blob_read_range(name, data, row, total_lines, object_repository):
     if name.lower() not in SHELL_TOOLS:
         return None
     command = data.get('command')
@@ -1025,7 +1040,8 @@ def git_blob_read_range(name, data, row, total_lines):
             return None
         producer = command_words(parts[0][0])
         limiter = command_words(parts[1][0])
-        if producer != ['git', 'show', row['blob_oid']]:
+        expected = ['git', '--git-dir=' + object_repository, 'show', row['blob_oid']]
+        if producer != expected:
             return None
         selected = limiter_range(limiter, total_lines)
         if selected is None:
@@ -1042,7 +1058,7 @@ def target_file_candidates(words, target, root):
     for candidate in path_candidates(words, root):
         try:
             path = resolved(candidate, root)
-        except ValueError:
+        except (OSError, ValueError):
             continue
         if path == target:
             found.append(path)
@@ -1521,7 +1537,9 @@ def audit(args):
                 patch_proof_calls = len(proof_call_ids)
                 patch_proof_turns = len(proof_turns)
 
-            for required in required_source_ranges:
+            observed_required_segments = []
+            required_segment_calls = []
+            for required_index, required in enumerate(required_source_ranges):
                 try:
                     blob, blob_line_index = manifest_blob(
                         evidence_repository, required, manifest_blob_cache)
@@ -1529,38 +1547,62 @@ def audit(args):
                         blob_line_index, required['line_start'], required['line_end'])
                     if hashlib.sha256(expected_required).hexdigest() != required['content_sha256']:
                         raise ValueError('required source content hash mismatch')
-                    proven = []
-                    for call_id, (name, data, _) in calls.items():
+                    expected_segments = required['segments']
+                    expected_by_bounds = {
+                        (row['line_start'], row['line_end']): row for row in expected_segments}
+                    observed = []
+                    seen = set()
+                    for call_id, (name, data, turn) in calls.items():
                         output = outputs.get(call_id)
                         if output is None or not output['success']:
                             continue
-                        candidates = [
-                            (row['line_start'], row['line_end'], False)
-                            for row in verified_call_ranges.get(call_id, [])
-                            if row['path'] == required['path']
-                        ]
-                        blob_read = git_blob_read_range(name, data, required,
-                                                        len(blob_line_index))
-                        if blob_read is not None:
-                            candidates.append((blob_read[0], blob_read[1], True))
-                        for start, end, from_blob in candidates:
-                            if end < required['line_start'] or start > required['line_end']:
+                        live_candidates = [row for row in verified_call_ranges.get(call_id, [])
+                                           if row['path'] == required['path']]
+                        for row in live_candidates:
+                            if (row['line_end'] < required['line_start']
+                                    or row['line_start'] > required['line_end']):
                                 continue
-                            expected = byte_range_lines(blob_line_index, start, end)
-                            if delivered_matches_bytes(args.adapter, name, output['value'],
-                                                       expected, start):
-                                proven.append((max(start, required['line_start']),
-                                               min(end, required['line_end'])))
-                                if from_blob:
-                                    tool_ranges.append({'path': required['path'],
-                                                        'line_start': start, 'line_end': end,
-                                                        'origin': 'tool'})
-                                    source_read_call_ids.add(call_id)
-                            else:
+                            expected = byte_range_lines(
+                                blob_line_index, row['line_start'], row['line_end'])
+                            if not delivered_matches_bytes(
+                                    args.adapter, name, output['value'], expected, row['line_start']):
                                 failures.append(violation('required-source-output-mismatch', name))
-                    if required_range_covered(required, [
-                            {'path': required['path'], 'line_start': start, 'line_end': end}
-                            for start, end in proven]):
+                        blob_read = git_blob_read_range(
+                            name, data, required, len(blob_line_index),
+                            manifest['source_context']['object_repository'])
+                        if blob_read is None:
+                            continue
+                        segment = expected_by_bounds.get(blob_read)
+                        if segment is None:
+                            if not (blob_read[1] < required['line_start']
+                                    or blob_read[0] > required['line_end']):
+                                failures.append(violation('required-source-segment-bounds', name))
+                            continue
+                        identity = (required_index, segment['index'])
+                        if identity in seen:
+                            failures.append(violation('duplicate-required-source-segment', name))
+                            continue
+                        expected = byte_range_lines(blob_line_index, *blob_read)
+                        if (len(expected) != segment['raw_bytes']
+                                or hashlib.sha256(expected).hexdigest() != segment['content_sha256']
+                                or not delivered_matches_bytes(
+                                    args.adapter, name, output['value'], expected, blob_read[0])):
+                            failures.append(violation('required-source-output-mismatch', name))
+                            continue
+                        seen.add(identity)
+                        observed.append(segment['index'])
+                        observed_required_segments.append(identity)
+                        required_segment_calls.append((call_id, turn))
+                        tool_ranges.append({'path': required['path'],
+                                            'line_start': blob_read[0], 'line_end': blob_read[1],
+                                            'origin': 'tool'})
+                        source_read_call_ids.add(call_id)
+                    expected_order = [row['index'] for row in expected_segments]
+                    if observed != sorted(observed):
+                        failures.append(violation('reordered-required-source-segments', args.adapter))
+                    if observed != expected_order:
+                        failures.append(violation('missing-required-source-segment', args.adapter))
+                    if observed == expected_order:
                         required_source_range_proofs.append({
                             key: required[key] for key in (
                                 'path', 'line_start', 'line_end', 'blob_tree', 'blob_oid',
@@ -1568,6 +1610,13 @@ def audit(args):
                         })
                 except (KeyError, OSError, TypeError, ValueError, UnicodeError):
                     failures.append(violation('invalid-required-source-identity', args.adapter))
+            if observed_required_segments != sorted(observed_required_segments):
+                failures.append(violation('reordered-required-source-segments', args.adapter))
+            source_segment_batch_limit = 2 if assignment['adapter'] in ('claude', 'grok') else 1
+            for turn in {turn for _, turn in required_segment_calls}:
+                if (sum(call_turn == turn for _, call_turn in required_segment_calls)
+                        > source_segment_batch_limit):
+                    failures.append(violation('required-source-segment-batch-too-large', args.adapter))
             required_source_range_proofs.sort(key=lambda row: (
                 row['path'], row['line_start'], row['line_end'], row['blob_tree'],
                 row['blob_oid'], row['content_sha256']))

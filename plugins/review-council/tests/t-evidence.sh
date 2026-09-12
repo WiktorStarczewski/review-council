@@ -36,9 +36,9 @@ with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
                   for shard in packet['shards'] for row in shard['ranges']]
         tool_ranges = []
         for required in packet['required_source_ranges']:
-            tool_ranges.extend({'path': required['path'], 'line_start': start,
-                                'line_end': min(start + 239, required['line_end']), 'origin': 'tool'}
-                               for start in range(required['line_start'], required['line_end'] + 1, 240))
+            tool_ranges.extend({'path': required['path'], 'line_start': segment['line_start'],
+                                'line_end': segment['line_end'], 'origin': 'tool'}
+                               for segment in required['segments'])
         if packet['source_read_required'] and not tool_ranges:
             component = next(component for component in manifest['components']
                              if component['id'] == packet['components'][0])
@@ -265,9 +265,9 @@ def write_agent_audit(session, label, seat):
     tool_ranges = [{'path': finding['file'], 'line_start': finding['line_start'],
                     'line_end': finding['line_end'], 'origin': 'tool'} for finding in missing]
     for required in packet['required_source_ranges']:
-        tool_ranges.extend({'path': required['path'], 'line_start': start,
-                            'line_end': min(start + 239, required['line_end']), 'origin': 'tool'}
-                           for start in range(required['line_start'], required['line_end'] + 1, 240))
+        tool_ranges.extend({'path': required['path'], 'line_start': segment['line_start'],
+                            'line_end': segment['line_end'], 'origin': 'tool'}
+                           for segment in required['segments'])
     if packet['source_read_required'] and not tool_ranges:
         component = next(component for component in manifest['components']
                          if component['id'] == packet['components'][0])
@@ -357,6 +357,14 @@ def storage_redirects():
             before = {str(p): p.read_bytes() for p in target.rglob('*') if p.is_file()}
             call('prepare', session, '1', '--phase', 'discovery', good=False)
             assert before == {str(p): p.read_bytes() for p in target.rglob('*') if p.is_file()}
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        (session / 'evidence-repository').symlink_to(root / '.git', target_is_directory=True)
+        call('prepare', session, 'redirected-repository', '--phase', 'discovery', good=False)
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        prepare()
+        alternates = session / 'evidence-repository/objects/info/alternates'
+        alternates.write_text(str(session / 'evidence-objects') + '\n')
+        call('render', session / 'r1-evidence.manifest.json', 'sol', good=False)
 
 def quoted_paths():
     with fixture('r\u00e9po space\'"colon:back\\slash') as (root, session, git, write, call, prepare, finish):
@@ -384,7 +392,9 @@ def bounded_navigation_markdown():
     with fixture() as (root, session, git, write, call, prepare, finish):
         huge = 'x' * 100000
         write('package.json', '{"scripts":{"test":"' + huge + '"}}\n')
-        prepare(); packet = (session / 'r1-evidence.md').read_bytes()
+        call('prepare', session, '1', '--phase', 'discovery',
+             env=dict(os.environ, REV_SOURCE_CONTEXT='0'))
+        packet = (session / 'r1-evidence.md').read_bytes()
         assert len(packet) <= 16384
         assert huge.encode() not in packet
         assert b'complete list SHA-256:' in packet and b'Omitted:' in packet
@@ -790,8 +800,31 @@ def complete_declaration_context():
         assert declaration['blob_tree'] == manifest['snapshot_tree']
         assert declaration['blob_oid'] and declaration['content_sha256']
         assert declaration['required_payload_bytes'] > manifest['source_context']['max_shard_bytes']
+        segments = declaration['segments']
+        assert len(segments) > 1
+        assert [row['index'] for row in segments] == list(range(1, len(segments) + 1))
+        assert segments[0]['line_start'] == declaration['line_start']
+        assert segments[-1]['line_end'] == declaration['line_end']
+        assert all(right['line_start'] == left['line_end'] + 1
+                   for left, right in zip(segments, segments[1:]))
+        assert all(row['line_end'] - row['line_start'] + 1 <= 240
+                   and row['predicted_visible_bytes'] <= 32768 // 2
+                   and row['raw_bytes'] > 0
+                   and len(row['content_sha256']) == 64 for row in segments)
+        blob = subprocess.check_output(
+            ['git', '--git-dir=' + manifest['source_context']['object_repository'],
+             'cat-file', 'blob', declaration['blob_oid']])
+        lines = blob.splitlines(keepends=True)
+        rebuilt = b''.join(b''.join(lines[row['line_start'] - 1:row['line_end']])
+                            for row in segments)
+        assert hashlib.sha256(rebuilt).hexdigest() == declaration['content_sha256']
         rendered = call('render', session / 'r1-evidence.manifest.json', owner)
         assert 'Required source range: main.py:1-6002' in rendered
+        for segment in segments:
+            command = ('git --git-dir=' + shlex.quote(manifest['source_context']['object_repository'])
+                       + " show '" + declaration['blob_oid'] + "' | sed -n '"
+                       + str(segment['line_start']) + ',' + str(segment['line_end']) + "p'")
+            assert command in rendered
         reasons = [reason for shard in packet['shards']
                    for entry in json.loads((session / shard['artifact']).read_text())['entries']
                    for reason in entry['reasons']]
@@ -819,6 +852,26 @@ def complete_declaration_context():
             row = next(value for value in changed_manifest['source_context']['seats'][owner]['required_source_ranges']
                        if 'declaration:oversized' in value['reasons'])
             row[key] = bad
+            changed_evidence['source_context'] = changed_manifest['source_context']
+            evidence_path.write_bytes(module.encoded(changed_evidence))
+            changed_manifest['artifacts'][evidence_path.name] = {
+                'sha256': module.digest(evidence_path.read_bytes()),
+                'words': len(evidence_path.read_bytes().split())}
+            manifest_path.write_bytes(module.encoded(changed_manifest))
+            call('render', manifest_path, owner, good=False)
+        segment_mutations = [
+            lambda rows: rows.pop(),
+            lambda rows: rows[1].update(line_start=rows[0]['line_end']),
+            lambda rows: rows.reverse(),
+            lambda rows: rows[0].update(content_sha256='0' * 64),
+            lambda rows: rows[0].update(raw_bytes=rows[0]['raw_bytes'] + 1),
+            lambda rows: rows[0].update(predicted_visible_bytes=32768 // 2 + 1),
+        ]
+        for mutate in segment_mutations:
+            changed_manifest = json.loads(saved_manifest); changed_evidence = json.loads(saved_evidence)
+            row = next(value for value in changed_manifest['source_context']['seats'][owner]['required_source_ranges']
+                       if 'declaration:oversized' in value['reasons'])
+            mutate(row['segments'])
             changed_evidence['source_context'] = changed_manifest['source_context']
             evidence_path.write_bytes(module.encoded(changed_evidence))
             changed_manifest['artifacts'][evidence_path.name] = {
@@ -859,6 +912,17 @@ def complete_declaration_context():
                      content_sha256=module.digest(base_body.encode()))
         audit_path.write_text(json.dumps(audit))
         call('receipt', session, 'named', good=False)
+
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        body = ('def oversized_line():\n    value = "' + 'x' * 40000
+                + '"\n    return value\n')
+        write('wide.py', body); git('add', '.'); git('commit', '-qm', 'wide line base')
+        base = git('rev-parse', 'HEAD'); scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('wide.py', body.replace('return value', 'return value + "changed"'))
+        call('prepare', session, 'wide-line', '--phase', 'discovery', good=False)
 
     with fixture() as (root, session, git, write, call, prepare, finish):
         body = 'value = "' + 'x' * 2_000_010 + '"\n'
