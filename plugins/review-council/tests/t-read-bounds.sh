@@ -685,9 +685,11 @@ PY
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
       --raw "$S/r4-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
       --out "$S/r4-sol.read-audit.json" >/dev/null 2>&1
-    assert_eq "evidence-scoped audit rejects an omitted evidence index" "$?" 2
-    assert_grep "omitted evidence index has a stable violation" "$S/r4-sol.read-audit.json" \
-      '"code":"missing-evidence-index"'
+    assert_eq "complete evidence remains valid when the navigation index is omitted" "$?" 0
+    assert_grep "omitted evidence index is recorded as an advisory" "$S/r4-sol.read-audit.json" \
+      '"advisories":\[[^]]*"code":"missing-evidence-index"'
+    assert_grep "omitted evidence index does not discard substantive proof" \
+      "$S/r4-sol.read-audit.json" '"violations":\[\]'
     cp "$T/source-evidence-with-index.ndjson" "$S/r4-sol.stream.ndjson"
 
     printf 'live mutation\nchanged\nthree\n' > "$R/src/x.ts"
@@ -919,13 +921,76 @@ PY
     assert_grep "assigned patch receipt covers the second chunk" "$S/r8-sol.read-audit.json" \
       '"line_start":241'
 
+    write_claude_patch_overshoot() {
+      python3 - "$manifest" "$S/r8-sol.stream.ndjson" "$1" "$R" <<'PY'
+import json, pathlib, sys
+manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2]); mode = sys.argv[3]
+root = pathlib.Path(sys.argv[4]); session = pathlib.Path(sys.argv[1]).parent
+seat = 'sol'; assignment = manifest['assignments'][seat]
+events = []
+def read(call_id, path, output, offset=None, limit=None):
+    data = {'file_path': str(path)}
+    if offset is not None:
+        data.update(offset=offset, limit=limit)
+    events.extend([
+        {'type':'assistant','message':{'content':[{
+            'type':'tool_use','id':call_id,'name':'Read','input':data}]}},
+        {'type':'user','message':{'content':[{
+            'type':'tool_result','tool_use_id':call_id,'content':output}]}},
+    ])
+patch = pathlib.Path(assignment['patch']); lines = patch.read_text().splitlines(keepends=True)
+if mode == 'premature':
+    read('patch-extra', patch,
+         '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>',
+         999999, 240)
+read('patch-1', patch, ''.join(lines[:240]), 1, 240)
+read('patch-2', patch, ''.join(lines[240:480]), 241, 240)
+if mode == 'complete':
+    read('patch-extra', patch,
+         '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>',
+         999999, 240)
+for index, shard in enumerate(manifest['source_context']['seats'][seat]['shards'], 1):
+    path = session / shard['artifact']
+    read('packet-' + str(index), path, path.read_text())
+index = session / f"r{manifest['label']}-evidence.md"
+read('evidence-index', index, index.read_text())
+if manifest['source_context']['seats'][seat]['source_read_required']:
+    source = root / 'src/large.py'
+    read('source', source, ''.join(source.read_text().splitlines(keepends=True)[:240]), 1, 240)
+with out.open('w') as stream:
+    for event in events:
+        stream.write(json.dumps(event) + '\n')
+PY
+    }
+
+    write_claude_patch_overshoot complete
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter claude \
+      --raw "$S/r8-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
+      --out "$S/r8-sol.read-audit.json" >/dev/null 2>&1
+    assert_eq "redundant Claude patch window after complete proof remains valid" "$?" 0
+    assert_grep "redundant final patch window is retained as an advisory" \
+      "$S/r8-sol.read-audit.json" \
+      '"advisories":\[[^]]*"code":"redundant-assigned-patch-read"'
+    assert_grep "redundant final patch window does not discard patch proof" \
+      "$S/r8-sol.read-audit.json" '"assigned_patch_reads":2'
+
+    write_claude_patch_overshoot premature
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter claude \
+      --raw "$S/r8-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
+      --out "$S/r8-sol.read-audit.json" >/dev/null 2>&1
+    assert_eq "out-of-range Claude patch window before complete proof fails closed" "$?" 2
+    assert_grep "premature out-of-range patch window remains a fatal violation" \
+      "$S/r8-sol.read-audit.json" '"status":"invalid"'
+
     write_patch_transcript reversed
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
       --raw "$S/r8-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
       --out "$S/r8-sol.read-audit.json" >/dev/null 2>&1
-    assert_eq "window patch ranges reject reversed read order" "$?" 2
-    assert_grep "reversed window patch ranges have the shared ordering violation" \
-      "$S/r8-sol.read-audit.json" '"code":"evidence-read-order"'
+    assert_eq "complete window patch ranges survive reversed read order" "$?" 0
+    assert_grep "reversed window patch ranges retain an ordering advisory" \
+      "$S/r8-sol.read-audit.json" '"advisories":\[[^]]*"code":"evidence-read-order"'
+    assert_grep "reversed complete patch proof has no fatal violation" \
+      "$S/r8-sol.read-audit.json" '"violations":\[\]'
 
     write_patch_transcript partial
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
@@ -1008,9 +1073,13 @@ for position, segment in enumerate(segments):
         command('source-' + str(segment['index']), "sed -n '1,1p' '" + str(path) + "'", output)
     else:
         command('source-' + str(segment['index']), "cat '" + str(path) + "'", output)
-if mode == 'duplicate':
+if mode in ('duplicate', 'duplicate-partial'):
     path = session / segments[0]['artifact']
-    command('source-duplicate', "cat '" + str(path) + "'", path.read_text())
+    if mode == 'duplicate-partial':
+        command('source-duplicate', "sed -n '1,1p' '" + str(path) + "'",
+                path.read_text().splitlines(keepends=True)[0])
+    else:
+        command('source-duplicate', "cat '" + str(path) + "'", path.read_text())
 if mode == 'unassigned':
     path = session / 'r9-sol-source-segment-999-999.txt'; path.write_text('unassigned\n')
     command('source-unassigned', "cat '" + str(path) + "'", path.read_text())
@@ -1141,15 +1210,24 @@ PY
       '"required_source_ranges_covered":0'
 
     local mode code
-    for mode in bad-output duplicate unassigned; do
+    for mode in bad-output duplicate duplicate-partial unassigned; do
       write_required_transcript "$mode"
       python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
         --raw "$S/r9-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
         --out "$S/r9-sol.read-audit.json" >/dev/null 2>&1
-      assert_eq "$mode required source artifact is rejected" "$?" 2
+      local audit_rc=$?
+      if [ "$mode" = duplicate ]; then
+        assert_eq "duplicate completed required source read is advisory" "$audit_rc" 0
+        assert_grep "duplicate completed required source read has a stable advisory" \
+          "$S/r9-sol.read-audit.json" '"advisories":\[{"code":"duplicate-required-source-segment"'
+        assert_nogrep "duplicate completed required source read is not a violation" \
+          "$S/r9-sol.read-audit.json" '"violations":\[{"code":"duplicate-required-source-segment"'
+        continue
+      fi
+      assert_eq "$mode required source artifact is rejected" "$audit_rc" 2
       case "$mode" in
         bad-output) code=required-source-output-mismatch ;;
-        duplicate) code=duplicate-required-source-segment ;;
+        duplicate-partial) code=partial-required-source-segment ;;
         unassigned) code=unassigned-required-source-segment ;;
       esac
       assert_grep "$mode required source artifact has a stable violation" \
@@ -2106,13 +2184,40 @@ test_narrow_seat_refuses_invalid_audit() {
 Evidence manifest SHA-256: 0000000000000000000000000000000000000000000000000000000000000000
 Assigned scope: semantic
 EOF
-    SHIM_MODE=unbounded "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" > "$T/narrow-refusal.out" 2>&1
+    SHIM_MODE=unbounded SHIM_CALLS_FILE="$T/narrow-refusal.calls" \
+      "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" > "$T/narrow-refusal.out" 2>&1
     assert_eq "invalid narrowed seat exits as unusable" "$?" 2
     assert_exit "invalid narrowed seat removes findings" 1 test -e "$S/r1-codex-sol.json"
+    assert_exit "invalid narrowed seat preserves findings for diagnosis" 0 \
+      test -s "$S/r1-codex-sol.audit-invalid.json"
     assert_grep "invalid narrowed audit remains reviewable" "$S/r1-codex-sol.read-audit.json" '"status":"invalid"'
     assert_grep "narrowed audit declares narrow validity" "$S/r1-codex-sol.read-audit.json" '"narrow":true'
-    assert_grep "seat log requests exact-assignment retry" "$S/r1-codex-sol.log" \
-      'retry this seat with the exact assignment'
+    assert_grep "seat log stops before another paid launch" "$S/r1-codex-sol.log" \
+      'stop the panel before another reviewer launch'
+    assert_nogrep "seat log does not request an audit retry" "$S/r1-codex-sol.log" 'retry|rerun'
+    local invalid_hash audit_hash
+    invalid_hash=$(shasum -a 256 "$S/r1-codex-sol.audit-invalid.json" | awk '{print $1}')
+    audit_hash=$(shasum -a 256 "$S/r1-codex-sol.read-audit.json" | awk '{print $1}')
+    SHIM_MODE=ok SHIM_CALLS_FILE="$T/narrow-refusal.calls" \
+      "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" > "$T/narrow-relaunch.out" 2>&1
+    assert_eq "hard-audit marker refuses a same-generation relaunch" "$?" 2
+    assert_eq "hard-audit relaunch refusal makes no second provider call" \
+      "$(wc -l < "$T/narrow-refusal.calls" | tr -d ' ')" 1
+    assert_eq "hard-audit relaunch refusal preserves the diagnostic result" \
+      "$(shasum -a 256 "$S/r1-codex-sol.audit-invalid.json" | awk '{print $1}')" "$invalid_hash"
+    assert_eq "hard-audit relaunch refusal preserves the invalid audit" \
+      "$(shasum -a 256 "$S/r1-codex-sol.read-audit.json" | awk '{print $1}')" "$audit_hash"
+    assert_grep "hard-audit relaunch refusal names the existing marker" \
+      "$T/narrow-relaunch.out" 'prior hard audit failure.*fresh panel label'
+    SHIM_MODE=ok SHIM_CALLS_FILE="$T/narrow-refusal.calls" \
+      "$SCRIPTS/rev-seat.sh" codex-terra "$S" 1 "$S/p.md" > "$T/sibling-relaunch.out" 2>&1
+    assert_eq "hard-audit marker refuses a sibling under the same panel label" "$?" 2
+    assert_eq "sibling hard-audit refusal makes no provider call" \
+      "$(wc -l < "$T/narrow-refusal.calls" | tr -d ' ')" 1
+    assert_exit "sibling hard-audit refusal creates no attempt reservation" 1 \
+      grep -R -q -- '"seat":"codex-terra"' "$S/attempts"
+    assert_grep "sibling hard-audit refusal names the stopped panel" \
+      "$T/sibling-relaunch.out" 'prior hard audit failure.*fresh panel label'
   )
 }
 
@@ -2145,12 +2250,14 @@ EOF
       > "$T/full-evidence.out" 2>&1
     assert_eq "invalid full-scope evidence seat exits as unusable" "$?" 2
     assert_exit "invalid full-scope evidence seat removes findings" 1 test -e "$S/rfull-codex-sol.json"
+    assert_exit "invalid full-scope seat preserves findings for diagnosis" 0 \
+      test -s "$S/rfull-codex-sol.audit-invalid.json"
     assert_grep "full-scope audit is authoritatively evidence scoped" \
       "$S/rfull-codex-sol.read-audit.json" '"evidence_scoped":true'
-    assert_grep "full-scope evidence failure gets a full-scope message" "$S/rfull-codex-sol.log" \
-      'rejected full-scope evidence review'
-    assert_nogrep "full-scope evidence failure does not request a narrowed retry" \
-      "$S/rfull-codex-sol.log" 'retry this seat with the exact assignment'
+    assert_grep "full-scope evidence failure stops before another paid launch" \
+      "$S/rfull-codex-sol.log" 'stop the panel before another reviewer launch'
+    assert_nogrep "full-scope evidence failure does not request a retry" \
+      "$S/rfull-codex-sol.log" 'retry|rerun'
 
     printf 'Assigned scope: full\n' > "$S/legacy.md"
     SHIM_MODE=unbounded "$SCRIPTS/rev-seat.sh" codex-sol "$S" legacy "$S/legacy.md" \
@@ -2184,15 +2291,18 @@ SH
     chmod +x "$audit_python/python3"
     local audit_mode
     for audit_mode in missing malformed inconsistent; do
+      local audit_label="metadata-$audit_mode"
       PATH="$audit_python:$real_python" REAL_PYTHON_PATH="$real_python" \
         AUDIT_SCRIPT="$SCRIPTS/lib/review-read-audit.py" AUDIT_SHIM_MODE="$audit_mode" \
-        SHIM_MODE=unbounded "$SCRIPTS/rev-seat.sh" codex-sol "$S" "$audit_mode" \
+        SHIM_MODE=unbounded "$SCRIPTS/rev-seat.sh" codex-sol "$S" "$audit_label" \
         "$S/legacy.md" > "$T/audit-$audit_mode.out" 2>&1
       assert_eq "$audit_mode audit metadata fails closed" "$?" 2
       assert_exit "$audit_mode audit metadata removes findings" 1 \
-        test -e "$S/r$audit_mode-codex-sol.json"
+        test -e "$S/r$audit_label-codex-sol.json"
+      assert_exit "$audit_mode audit metadata preserves findings for diagnosis" 0 \
+        test -s "$S/r$audit_label-codex-sol.audit-invalid.json"
       assert_grep "$audit_mode audit metadata has one wrapper diagnostic" \
-        "$S/r$audit_mode-codex-sol.log" \
+        "$S/r$audit_label-codex-sol.log" \
         'bounded-read audit metadata is missing, malformed, or inconsistent'
     done
   )

@@ -32,8 +32,9 @@ from review_limits import (CLAUDE_MAX_TURNS, MANDATORY_REPOSITORY_READ_LIMIT,
 BUNDLES = ('correctness-boundaries', 'security-state-api',
            'concurrency-resources-performance', 'tests-observability-maintenance-regression')
 PLAN_BUNDLES = ('plan-completeness', 'plan-soundness', 'plan-simplicity', 'plan-tests')
-SOURCE_CONTEXT_LIMIT = 32768
-SOURCE_SEGMENT_VISIBLE_LIMIT = SOURCE_CONTEXT_LIMIT // 2
+SOURCE_CONTEXT_LIMIT = 16 * 1024
+SOURCE_SEGMENT_VISIBLE_LIMIT = 16 * 1024
+SOURCE_SEGMENT_SINGLE_LINE_VISIBLE_LIMIT = 32 * 1024
 SOURCE_SEGMENT_LINE_LIMIT = READ_LINES
 SOURCE_SEGMENT_PREFIX_RESERVE = 8
 PATCH_CHUNK_RAW_LIMIT = 24 * 1024
@@ -236,7 +237,7 @@ def partition_source_segments(lines, line_start, line_end):
             line_count = cursor - segment_start + 1
             predicted = len(candidate) + line_count * SOURCE_SEGMENT_PREFIX_RESERVE
             if predicted > SOURCE_SEGMENT_VISIBLE_LIMIT:
-                if not raw and predicted <= SOURCE_CONTEXT_LIMIT:
+                if not raw and predicted <= SOURCE_SEGMENT_SINGLE_LINE_VISIBLE_LIMIT:
                     raw = candidate
                     cursor += 1
                 break
@@ -3131,7 +3132,7 @@ def validate_source_context(session, manifest, evidence):
                         or segment['predicted_visible_bytes'] != segment['raw_bytes'] \
                         + (segment['line_end'] - segment['line_start'] + 1) * SOURCE_SEGMENT_PREFIX_RESERVE
                         or segment['predicted_visible_bytes'] > (
-                            SOURCE_CONTEXT_LIMIT
+                            SOURCE_SEGMENT_SINGLE_LINE_VISIBLE_LIMIT
                             if segment['line_start'] == segment['line_end']
                             else SOURCE_SEGMENT_VISIBLE_LIMIT)
                         or not re.fullmatch(r'[0-9a-f]{64}', str(segment.get('content_sha256')))
@@ -4635,19 +4636,6 @@ def render(args):
                   + 'listed packet per turn in exact order.')
         for shard in context['shards']:
             print('Source context packet: ' + str(Path(manifest['session']) / shard['artifact']))
-        omitted_ranges = context['omitted_source_ranges']
-        if omitted_ranges:
-            row = min(omitted_ranges, key=lambda value: (
-                value['priority'], value['path'], value['blob_tree'], value['line_start'],
-                value['line_end']))
-            print('Required omitted source direct-read target: ' + row['path'] + ':'
-                  + str(row['line_start']) + '-' + str(row['line_end']) + ' tree '
-                  + row['blob_tree'] + ' blob ' + row['blob_oid'] + ' content SHA-256 '
-                  + row['content_sha256'] + ' reasons '
-                  + json.dumps(row['reasons'], ensure_ascii=True))
-            print('Additional omitted source identities retained in manifest: '
-                  + str(len(omitted_ranges) - 1)
-                  + '. Read them only for a concrete question that could prove or refute a finding.')
         for row in context['required_source_ranges']:
             print('Required source range: ' + row['path'] + ':' + str(row['line_start']) + '-'
                   + str(row['line_end']) + ' tree ' + row['blob_tree'] + ' blob ' + row['blob_oid']
@@ -4673,6 +4661,20 @@ def render(args):
         print('Source read required: true')
     print('Evidence navigation index: '
           + str(Path(manifest['session']) / f"r{manifest['label']}-evidence.md"))
+    omitted_ranges = context['omitted_source_ranges'] if manifest['source_context']['enabled'] else []
+    if omitted_ranges:
+        row = min(omitted_ranges, key=lambda value: (
+            value['priority'], value['path'], value['blob_tree'], value['line_start'],
+            value['line_end']))
+        target_kind = 'Required' if context['source_read_required'] else 'Optional'
+        print(target_kind + ' post-index original-source target: ' + row['path'] + ':'
+              + str(row['line_start']) + '-' + str(row['line_end']) + ' tree '
+              + row['blob_tree'] + ' blob ' + row['blob_oid'] + ' content SHA-256 '
+              + row['content_sha256'] + ' reasons '
+              + json.dumps(row['reasons'], ensure_ascii=True))
+        print('Additional omitted source identities retained in manifest: '
+              + str(len(omitted_ranges) - 1)
+              + '. Read them only for a concrete question that could prove or refute a finding.')
     print('Mechanical owner: ' + str(manifest['mechanical_owner']))
     print('After completing the post-patch evidence order, open original source to prove each '
           + 'finding; expand beyond this index when needed.')
@@ -4681,6 +4683,30 @@ def render(args):
 def verify(args):
     manifest, mh = validated_manifest(args.manifest)
     print(str(Path(manifest['session']) / f"r{manifest['label']}-evidence.manifest.json") + ' ' + mh)
+
+
+def same_source(args):
+    def load(path):
+        value = json.loads(Path(path).read_text(encoding='utf-8'))
+        if (not isinstance(value, dict) or value.get('schema_version') not in (2, 3, 4)
+                or not isinstance(value.get('scope'), str)
+                or not isinstance(value.get('paths'), list)
+                or any(not isinstance(item, str) for item in value['paths'])
+                or not isinstance(value.get('source'), dict)
+                or not isinstance(value.get('snapshot_unsafe'), list)
+                or any(not isinstance(item, str) for item in value['snapshot_unsafe'])
+                or any(not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', value.get(field, ''))
+                       for field in ('snapshot_tree', 'base_tree'))):
+            raise ValueError('invalid source identity manifest')
+        return value
+
+    parent = load(args.parent)
+    candidate = load(args.candidate)
+    fields = ('snapshot_tree', 'base_tree', 'scope', 'paths', 'source', 'snapshot_unsafe')
+    changed = [field for field in fields if parent.get(field) != candidate.get(field)]
+    if changed:
+        raise ValueError('source identity changed: ' + ', '.join(changed))
+    print(parent['snapshot_tree'])
 
 
 def parse_replacements(values):
@@ -4756,12 +4782,24 @@ def verify_panel_data(session, label):
     return manifest, mh, results
 
 
+def selected_advisories(session, manifest, generations):
+    rows = {}
+    for seat in manifest['assignments']:
+        label = generations[seat]['label'] if generations is not None else manifest['label']
+        audit = read_json(session / f'r{label}-{seat}.read-audit.json')
+        advisories = audit.get('advisories', [])
+        if advisories:
+            rows[seat] = advisories
+    return rows
+
+
 def verify_panel(args):
     session = Path(args.session).resolve()
     manifest, mh, results, generations, replacements = verify_panel_selection(
         session, args.label, args.replacement)
     data = {'manifest': f'r{args.label}-evidence.manifest.json',
-            'manifest_sha256': mh, 'phase': manifest['phase'], 'results': results}
+            'manifest_sha256': mh, 'phase': manifest['phase'], 'results': results,
+            'advisories': selected_advisories(session, manifest, generations)}
     if generations is not None:
         data.update(replacements=replacements, selected_generations=generations)
     print(json.dumps(data, sort_keys=True, separators=(',', ':')))
@@ -4777,6 +4815,7 @@ def receipt(args):
     data = {'schema_version': 1, 'manifest': manifest_path.name, 'manifest_sha256': mh,
             'snapshot_tree': manifest['snapshot_tree'], 'base_tree': manifest['base_tree'],
             'phase': manifest['phase'], 'assignments': manifest['assignments'], 'results': results,
+            'advisories': selected_advisories(session, manifest, generations),
             'findings': finding_ownership(
                 session, manifest,
                 {seat: row['label'] for seat, row in generations.items()} if generations else None)}
@@ -4810,6 +4849,8 @@ def main():
     rend.add_argument('--offline', action='store_true')
     rend.add_argument('--plan-source')
     check = commands.add_parser('verify'); check.add_argument('manifest')
+    source = commands.add_parser('same-source')
+    source.add_argument('parent'); source.add_argument('candidate')
     panel = commands.add_parser('verify-panel'); panel.add_argument('session'); panel.add_argument('label')
     panel.add_argument('--replacement', action='append', default=[])
     rec = commands.add_parser('receipt'); rec.add_argument('session'); rec.add_argument('label')
@@ -4819,7 +4860,7 @@ def main():
         if hasattr(args, 'label') and not SAFE_NAME.fullmatch(args.label):
             raise ValueError('invalid label')
         with plan_search_signal_handlers():
-            {'prepare': prepare, 'render': render, 'verify': verify,
+            {'prepare': prepare, 'render': render, 'verify': verify, 'same-source': same_source,
              'verify-panel': verify_panel, 'receipt': receipt}[args.command](args)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError, RecursionError) as error:
         print('evidence: ' + str(error), file=sys.stderr)

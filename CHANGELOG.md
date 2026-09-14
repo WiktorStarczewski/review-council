@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.3
+
+- Make the host skill an explicit executable workflow contract in both the always-loaded Claude Code policy and the Claude and Codex skill bodies. Runs that omit an applicable step or an artifact required by their selected mode remain incomplete and cannot claim Review Council completion.
+- Preserve substantively complete reviews when only evidence read order, repository call budget, output overflow, navigation-index omission, or duplicate completed patch and required-source reads fail. These conditions remain receipt advisories, while incomplete patch, required-source, citation, result, or transcript proof still fails closed.
+- Stop the current panel after a hard evidence-audit failure instead of retrying the same prompt or widening into full-state repair. Preserve the rejected findings under a diagnostic filename, keep them outside receipt selection, block every seat under the failed label before another provider call, and direct the host to stop. Provider execution failures retain one exact seat-local retry, and receipt failures end the run before another reviewer launch.
+- Render required original-source expansion only after the evidence index, with one deterministic qualifying target. Quota fallback now uses a fresh sibling session, refuses to overwrite an initialized session, verifies content-addressed source identity, and permits at most one full-panel restart.
+- Keep source-context packets within the 16 KiB envelope observed across live reviewer transports while retaining 16 KiB required-source segments.
+
 ## 0.4.2
 
 - Add opt-in quota fallback that temporarily maps unavailable Claude seats to Terra and unavailable OpenAI seats to Sonnet, restarts a quota-failed panel from the same frozen source, records every substitution in roster profiles, and retries the preferred roster on the next review. Persistent local attempt exhaustion has its own exit code and cannot be mistaken for provider quota.

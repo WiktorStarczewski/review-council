@@ -9,3 +9,4 @@
 - Verify every finding against the source before acting on it. Rejecting a wrong finding is a valid outcome; record it with its reason.
 - While a review runs, relay each 10-minute status line to the user as-is, plus at most one sentence of context.
 - Preserve full discovery and verification panels at the configured effort. Bound cost with adaptive stopping, compact decision digests, and a usage report after every panel.
+- Treat `/review-council:rev` as an executable workflow contract: follow every applicable step in order, name why any step is inapplicable, and never claim council review without its required receipt.

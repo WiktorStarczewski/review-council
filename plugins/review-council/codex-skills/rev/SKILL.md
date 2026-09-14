@@ -5,6 +5,8 @@ description: Convene the Review Council for independent multi-model review, adve
 
 # Review Council for Codex
 
+This skill is an executable workflow contract. Follow every applicable step in its stated order. Do not cherry-pick, replace, or improvise around steps. Before omitting a step, record the exact reason it is inapplicable. A run missing any audit, receipt, or final report required by its selected mode is incomplete and must not be described as a Review Council review.
+
 You are the orchestrator. Independent CLI reviewers inspect the scope; you verify
 claims against evidence, fix actionable defects within the user's scope, and repeat.
 Agreement is a signal, never proof. Preserve the user's requested scope and prior
@@ -275,34 +277,44 @@ stale, partial, oversized, unassigned, or unparseable packet or source range inv
 the whole attempt. The same is true for unsupported provider transcript shapes and
 zero-tool answers. In chunk mode, the audit also requires every hash-bound chunk once
 in exact order before packet and source reads. Missing, reordered, truncated, replaced,
-duplicate, unassigned, redirected, or oversized chunks invalidate the attempt.
+unassigned, redirected, or oversized chunks invalidate the attempt.
+Read order, repository call count, output sentinel overflow, a missing navigation index, and duplicate completed reads are advisories when patch, required-source, citation, and result completeness all pass. These advisories remain visible in the receipt but never discard a substantively complete review.
 
-Retain one launch handle for every pending seat and inspect each terminal result as it
-arrives. Store every attached execution session identifier under its seat name. Treat
-a first exit 1 or 2 as seat-local. Retry only the failed seat once with its exact prompt,
-assignment, model, and effort while other seats continue. On an evidence audit
-rejection, rerender the failed seat's evidence fragment with the same plan argument;
-this calls the no-replay render path. Compare its first hash line with the exact prompt
-hash. If the rerender fails or the hashes differ, cancel every pending sibling because
-the failure is panel-global. Code panels then enter the fresh full-scope fallback;
-schema-4 plan panels fix the evidence or task compiler and prepare a fresh schema-4
-label. If the hashes match,
-keep the failure seat-local. Exit 3 or 4 must cancel every pending sibling. Exit 3 never enters quota fallback:
+Retain one launch handle for every pending seat and inspect each terminal result as it arrives. Store every attached execution session identifier under its seat name. A provider execution exit 1 or 2 with no invalid read audit is seat-local and may retry only the failed seat once with its exact prompt, assignment, model, and effort while other seats continue. A hard evidence-audit failure is a compiler or contract incident: stop the current panel without another paid retry and preserve every valid sibling and partial stream. Never widen an evidence-audit failure into a full-state repair.
+
+Exit 3 or 4 must cancel every pending sibling. Exit 3 never enters quota fallback:
 stop and name the tool that needs sign-in. On exit 4,
 stop unless the configuration sets `quota_fallback` to `true`. When it does, preserve
-the prior roster, streams, prompt identities, and scope identity, then run preflight again against the preserved session.
+the prior roster, streams, prompt identities, and scope identity, then run preflight again against a fresh sibling session.
 For an Agent seat, accept quota classification only from platform terminal metadata, never reviewer prose.
-Pass the failed seat into the rerun explicitly:
+Never run quota fallback preflight against the original session. Pass the failed seat into the rerun explicitly:
 
 ```bash
+PARENT_S=$S
+PARENT_MANIFEST=$MANIFEST
+FALLBACK_S=$(mktemp -d "$(dirname "$S")/$(basename "$S").quota.XXXXXX")
 REVIEW_COUNCIL_HOST=codex "$PLUGIN/scripts/rev-preflight.sh" --scope "$REV_SCOPE" \
-  --write "$S" --quota-failed-seat "$SEAT"
+  --write "$FALLBACK_S" --quota-failed-seat "$SEAT"
 ```
 
-Require the new preflight scope files to match
-the frozen source exactly and require the generated roster to identify every temporary
-substitution. Restart every assignment with that roster under a fresh full-panel label;
+Before switching the active session to `FALLBACK_S`, require its `scope.env`, `files.txt`, and `untracked.txt` to byte-match the files in `PARENT_S`. Require a nonempty parent evidence manifest and require the generated roster to identify every temporary
+substitution. Set `FALLBACK_LABEL` to a fresh label, rebuild `FALLBACK_EVIDENCE_ARGS` from that roster's assignments, build `FALLBACK_LAUNCHED_SEATS` from every seat in the fresh roster, and prepare its fresh full-panel evidence manifest without launching:
+
+```bash
+FALLBACK_MANIFEST=$(python3 "$PLUGIN/scripts/rev-evidence.py" prepare \
+  "$FALLBACK_S" "$FALLBACK_LABEL" --phase "$PANEL_PHASE" "${FALLBACK_EVIDENCE_ARGS[@]}")
+python3 "$PLUGIN/scripts/rev-evidence.py" same-source "$PARENT_MANIFEST" "$FALLBACK_MANIFEST"
+S=$FALLBACK_S
+PANEL_LABEL=$FALLBACK_LABEL
+MANIFEST=$FALLBACK_MANIFEST
+EVIDENCE_ARGS=("${FALLBACK_EVIDENCE_ARGS[@]}")
+EVIDENCE_PROMPT_ARGS=(--evidence "$MANIFEST")
+LAUNCHED_SEATS=$FALLBACK_LAUNCHED_SEATS
+```
+
+Run this comparison before rendering prompts, writing fan-out state, or launching a reviewer. It binds the base and snapshot trees, scope, and paths, including same-path tracked, staged, and untracked content. A failure stops fallback. Restart every assignment with that roster under a fresh full-panel label;
 discard every result from the quota-failed label even when it was valid. Never use a repair child for quota fallback.
+The quota fallback panel is the only permitted full-panel restart for this panel generation. If a hard audit failure occurs in the fallback panel, stop without a repair or another fallback.
 If the new roster cannot replace the quota-failed lab,
 if a fallback seat itself reports quota, or if any source identity changed, stop. The
 next review run probes the preferred providers again because fallback never mutates
@@ -310,41 +322,9 @@ configuration. Interrupt only pending sessions. Never cancel a completed valid s
 before its terminal state is preserved, and preserve every partial stream and log for
 diagnosis.
 
-Exit 7 is local attempt exhaustion, not provider quota. Preserve valid siblings. A
-code panel may create its normal bound full-scope repair child; a plan panel or explicit
-numeric panel is incomplete after the exhausted seat and stops without substitution.
+Exit 7 is local attempt exhaustion, not provider quota. Preserve valid siblings and stop the panel without substitution or a repair child.
 
-Retain each completed valid result. Triage completed valid results as they arrive, but
-do not edit until every assigned seat is valid and the receipt seals. If the same code
-seat fails twice, preserve every sibling and create a fresh full-scope repair child
-bound to the failed parent assignment. Render and launch only that seat, and collect one repeatable
-`--replacement "$SEAT=$CHILD_LABEL"` argument per child. Initialize
-`REPLACEMENT_ARGS=()` before collecting any child:
-
-```bash
-CHILD_MANIFEST=$(python3 "$PLUGIN/scripts/rev-evidence.py" prepare "$S" "$CHILD_LABEL" \
-  --phase repair --assignment "$SEAT=$BUNDLE" \
-  --parent-assignment "$PANEL_LABEL:$SEAT")
-"$PLUGIN/scripts/rev-prompt.sh" "$S" "$CHILD_LABEL" "$SEAT" "$LENS" \
-  "$EMPHASIS" --evidence "$CHILD_MANIFEST"
-REPLACEMENT_ARGS+=(--replacement "$SEAT=$CHILD_LABEL")
-python3 "$PLUGIN/scripts/rev-evidence.py" verify-panel "$S" "$PANEL_LABEL" \
-  "${REPLACEMENT_ARGS[@]}"
-```
-
-The repair child uses the same prelaunch identity gate after its prompt renders and
-before its reviewer launches. Run one ordinary verify for `CHILD_MANIFEST`, validate
-the 64-character hash, and require the child prompt's single hash line to match.
-
-The child automatically inherits the parent's worktree source or exact ref. Never
-reconstruct it with `--head`. After all assignments validate, pass the same replacement
-arguments to `receipt`. That schema-2 composite receipt selects one immutable generation
-per parent assignment and rejects changed snapshots, rosters, bundles, models, efforts,
-prompts, streams, results, or audits. Never combine result files by hand. Plan panels
-cannot use repair children and never use a full-scope specialist fallback. A
-panel-global code failure uses a fresh fallback label `<N>f`: clear `MANIFEST` and
-`EVIDENCE_PROMPT_ARGS`, then rerender and relaunch every seat with the full cumulative patch and no source-context packet. Never mix narrow and full results outside the
-validated composite receipt. Never create a coverage receipt for a failed attempt.
+Retain each completed valid result. Triage completed valid results as they arrive, but do not edit until the receipt seals. If a provider execution fails twice, preserve its siblings. With at least three valid reviewers, run at most the existing one-seat coverage repair for a missing semantic bundle; otherwise report the panel incomplete. Do not create a replacement generation for execution or audit compliance failures. A hard audit failure never enters coverage repair.
 
 After every assigned seat has a valid result, certify discovery after its complete simplicity panel.
 For risk and verification, certify only after the complete four-bundle panel is
@@ -355,10 +335,7 @@ python3 "$PLUGIN/scripts/rev-evidence.py" receipt "$S" "$PANEL_LABEL" \
   "${REPLACEMENT_ARGS[@]}"
 ```
 
-If receipt fails, the next adaptive panel must use the full cumulative patch.
-The failed receipt establishes no coverage. A standalone `<N>x` repair cannot advance the
-coverage head. Run the repair at full scope, then rerun a complete four-bundle panel
-under a fresh label before certification.
+If receipt fails, stop before another reviewer launch. The failed receipt establishes no coverage; diagnose and fix its provenance or contract error, then begin a new review run explicitly. Never turn receipt failure into an automatic full-panel rerun.
 
 ### Fan out
 
@@ -400,8 +377,9 @@ seats with `rev-state.sh "$S" phase=collect round=<N> "seats=$LAUNCHED_SEATS"`.
 
 Inspect each `.exit`, `.json`, and `.log` as soon as that seat finishes; accept only the
 exit created after the synchronous prelaunch removal for the current launch. Absence of
-findings is not success without a valid completed response. Exit 1/2: retry that seat
-once immediately with the same maximum effort while siblings continue. Exit 3 or 4:
+findings is not success without a valid completed response. Exit 1/2 with no invalid read audit: retry that seat
+once immediately with the same maximum effort while siblings continue. A hard audit marker stops the
+panel and blocks relaunch under that label. Exit 3 or 4:
 cancel every pending sibling, then stop and name the sign-in, usage, or rate-limit
 blocker.
 Never lower effort or drop a configured core seat. If fewer than three reviewers
@@ -486,9 +464,8 @@ python3 "$PLUGIN/scripts/rev-evidence.py" verify-panel "$S" "$PANEL_LABEL"
 This validation never writes a receipt or advances `coverage-head.json`. A manifest,
 snapshot, roster, render, or other panel-global failure discards the invalid generation;
 fix the evidence or task compiler and prepare a fresh schema-4 label before launching.
-An individual audit failure retains valid sibling results and retries only that seat
-once with the exact prompt, assignment, model, and effort. If a plan seat exhausts its
-exact retry, preserve every completed sibling and partial stream, then report the
+An individual provider execution failure with no invalid read audit retains valid sibling results and may retry only that seat once with the exact prompt, assignment, model, and effort. A hard plan read-audit failure stops the panel before another paid launch. If a plan seat exhausts its
+exact provider retry, preserve every completed sibling and partial stream, then report the
 configured plan panel incomplete. Do not broaden a specialist to full scope or replace
 the schema-4 task with a legacy prompt. Verify and address plan objections before
 editing. Keep one rule per root-cause cluster with a compact site table, invariants,

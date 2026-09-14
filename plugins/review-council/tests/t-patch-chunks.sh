@@ -62,7 +62,7 @@ wide_source_line = b's' * (20 * 1024) + b'\n'
 source_segments = module.partition_source_segments([wide_source_line], 1, 1)
 assert len(source_segments) == 1
 assert source_segments[0]['raw_bytes'] == len(wide_source_line)
-assert source_segments[0]['predicted_visible_bytes'] <= module.SOURCE_CONTEXT_LIMIT
+assert source_segments[0]['predicted_visible_bytes'] <= module.SOURCE_SEGMENT_SINGLE_LINE_VISIBLE_LIMIT
 
 try:
     module.partition_source_segments([b's' * (33 * 1024) + b'\n'], 1, 1)
@@ -565,9 +565,16 @@ for position, row in enumerate(chunks, 1):
                 content.splitlines(keepends=True)[0])
     else:
         command('chunk-' + str(position), 'cat -- ' + shlex.quote(str(path)), content)
-if mode == 'duplicate':
+if mode in ('duplicate', 'duplicate-truncate', 'duplicate-replace'):
     row = chunks[0]; path = session / row['artifact']
-    command('chunk-copy', 'cat -- ' + shlex.quote(str(path)), path.read_text())
+    duplicate = path.read_text()
+    if mode == 'duplicate-truncate':
+        command('chunk-copy', "sed -n '1,1p' " + shlex.quote(str(path)),
+                duplicate.splitlines(keepends=True)[0])
+    else:
+        if mode == 'duplicate-replace':
+            duplicate = ('X' if duplicate[:1] != 'X' else 'Y') + duplicate[1:]
+        command('chunk-copy', 'cat -- ' + shlex.quote(str(path)), duplicate)
 if mode == 'unassigned':
     source = session / chunks[0]['artifact']; extra = session / 'r24-patch-p99-999.txt'
     extra.write_bytes(source.read_bytes())
@@ -586,6 +593,9 @@ if mode == 'expansion-overflow':
 if mode == 'failed-expansion-overflow':
     for index in range(17):
         command('failed-search-' + str(index), "rg -n 'missing' . | head -80", '', 1)
+if mode == 'discovery-overflow':
+    command('discovery-overflow', "rg -n 'value' . | head -81",
+            ''.join('src/large.py:' + str(index) + ':value\n' for index in range(1, 82)))
 with out.open('w') as stream:
     for event in events:
         stream.write(json.dumps(event) + '\n')
@@ -627,13 +637,15 @@ PY
       "$S/r24-sol.read-audit.json" '"code":"patch-chunk-batch-too-large"'
 
     local mode code
-    for mode in missing reorder replace duplicate unassigned truncate oversized packet-first search-first \
-      search-before-final-packet expansion-overflow failed-expansion-overflow; do
+    for mode in missing reorder replace duplicate duplicate-truncate duplicate-replace unassigned truncate oversized packet-first search-first \
+      search-before-final-packet expansion-overflow failed-expansion-overflow discovery-overflow; do
       case "$mode" in
         missing) code=missing-assigned-patch-chunk;;
         reorder) code=reordered-patch-chunks;;
         replace) code=assigned-patch-output-mismatch;;
         duplicate) code=duplicate-patch-chunk;;
+        duplicate-truncate) code=partial-patch-chunk;;
+        duplicate-replace) code=assigned-patch-output-mismatch;;
         unassigned) code=unassigned-patch-chunk;;
         truncate) code=partial-patch-chunk;;
         oversized) code=tool-output-too-large;;
@@ -642,14 +654,24 @@ PY
         search-before-final-packet) code=evidence-read-order;;
         expansion-overflow) code=repository-expansion-call-limit;;
         failed-expansion-overflow) code=repository-expansion-call-limit;;
+        discovery-overflow) code=discovery-output-too-large;;
       esac
       write_transcript "$mode"
       python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
         --raw "$S/r24-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
         --out "$S/r24-sol.read-audit.json" >/dev/null 2>&1
-      assert_eq "$mode patch chunk transcript is rejected" "$?" 2
-      assert_grep "$mode patch chunk rejection is stable" "$S/r24-sol.read-audit.json" \
-        "\"code\":\"$code\""
+      case "$mode" in
+        duplicate|packet-first|search-first|search-before-final-packet|expansion-overflow|failed-expansion-overflow|discovery-overflow)
+          assert_eq "$mode complete patch chunk transcript remains valid" "$?" 0
+          assert_grep "$mode patch chunk advisory is stable" "$S/r24-sol.read-audit.json" \
+            "\"advisories\":\\[[^]]*\"code\":\"$code\""
+          ;;
+        *)
+          assert_eq "$mode patch chunk transcript is rejected" "$?" 2
+          assert_grep "$mode patch chunk rejection is stable" "$S/r24-sol.read-audit.json" \
+            "\"violations\":\\[[^]]*\"code\":\"$code\""
+          ;;
+      esac
     done
 
     local opus_prompt sonnet_prompt opus_bundle sonnet_bundle
@@ -704,17 +726,17 @@ PY
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter claude \
       --raw "$S/r24-opus.stream.ndjson" --prompt "$opus_prompt" --root "$R" --session "$S" \
       --out "$S/r24-opus.read-audit.json" >/dev/null 2>&1
-    assert_eq "Claude search parallel with the final chunk is rejected" "$?" 2
-    assert_grep "Claude final-chunk expansion has a stable evidence-order failure" \
-      "$S/r24-opus.read-audit.json" '"code":"evidence-read-order"'
+    assert_eq "Claude search parallel with the final chunk remains valid" "$?" 0
+    assert_grep "Claude final-chunk expansion has a stable evidence-order advisory" \
+      "$S/r24-opus.read-audit.json" '"advisories":\[[^]]*"code":"evidence-read-order"'
 
     write_claude_order_transcript final-packet-turn
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter claude \
       --raw "$S/r24-opus.stream.ndjson" --prompt "$opus_prompt" --root "$R" --session "$S" \
       --out "$S/r24-opus.read-audit.json" >/dev/null 2>&1
-    assert_eq "Claude search parallel with the final packet is rejected" "$?" 2
-    assert_grep "Claude final-packet expansion has a stable evidence-order failure" \
-      "$S/r24-opus.read-audit.json" '"code":"evidence-read-order"'
+    assert_eq "Claude search parallel with the final packet remains valid" "$?" 0
+    assert_grep "Claude final-packet expansion has a stable evidence-order advisory" \
+      "$S/r24-opus.read-audit.json" '"advisories":\[[^]]*"code":"evidence-read-order"'
 
     write_provider_batch() {
       python3 - "$manifest" "$S/r24-$1.stream.ndjson" "$R" "$1" "$2" <<'PY'

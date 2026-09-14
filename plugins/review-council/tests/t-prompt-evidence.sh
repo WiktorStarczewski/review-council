@@ -138,15 +138,24 @@ test_prompt_evidence_contract() {
             '^First source-context action: use Read to read .*source-context-1\.json in full as the only source-context packet read in this turn; continue with one listed packet per turn in exact order\.$'
           ;;
       esac
-      local packet_line index_line
+      local packet_line index_line omitted_line
       packet_line=$(grep -n '^Source context packet:' "$prompt" | cut -d: -f1 | head -1)
       index_line=$(grep -n '^Evidence navigation index:' "$prompt" | cut -d: -f1 | head -1)
+      omitted_line=$(grep -n '^Required post-index original-source target:' "$prompt" | cut -d: -f1 | head -1)
       if [ -n "$packet_line" ] && [ -n "$index_line" ] && [ "$packet_line" -lt "$index_line" ]; then
         ok "$seat prompt lists source context before the evidence index"
       else
         fail "$seat prompt lists source context before the evidence index" \
           "packet=$packet_line index=$index_line"
       fi
+      if [ -z "$omitted_line" ] || { [ -n "$index_line" ] && [ "$index_line" -lt "$omitted_line" ]; }; then
+        ok "$seat prompt lists required original-source expansion after the evidence index"
+      else
+        fail "$seat prompt lists required original-source expansion after the evidence index" \
+          "index=$index_line omitted=$omitted_line"
+      fi
+      assert_nogrep "$seat prompt has no pre-index direct-read target" "$prompt" \
+        '^Required omitted source direct-read target:'
       assert_nogrep "$seat prompt never asks for a live git diff" "$prompt" \
         'Produce the diff yourself|run `git diff|use `git diff'
       assert_grep "$seat prompt locates symbols before reading" "$prompt" 'Locate the enclosing symbol or named section'
@@ -238,10 +247,19 @@ PY
     fi
     large_prompt=$("$SCRIPTS/rev-prompt.sh" "$LARGE_S" many "$large_seat" "$large_bundle" \
       verification --evidence "$large_manifest") || return
-    assert_eq "large prompt renders one deterministic omitted-source direct-read target" \
-      "$(grep -c '^Required omitted source direct-read target:' "$large_prompt")" 1
+    assert_eq "large prompt renders one deterministic required post-index source target" \
+      "$(grep -c '^Required post-index original-source target:' "$large_prompt")" 1
     assert_grep "large prompt chooses the highest-priority omitted source identity" \
-      "$large_prompt" "^Required omitted source direct-read target: many\\.py:$target_line-$target_line "
+      "$large_prompt" "^Required post-index original-source target: many\\.py:$target_line-$target_line "
+    local large_index_line large_target_line
+    large_index_line=$(grep -n '^Evidence navigation index:' "$large_prompt" | cut -d: -f1)
+    large_target_line=$(grep -n '^Required post-index original-source target:' "$large_prompt" | cut -d: -f1)
+    if [ "$large_index_line" -lt "$large_target_line" ]; then
+      ok "large prompt puts required source expansion after the evidence index"
+    else
+      fail "large prompt puts required source expansion after the evidence index" \
+        "index=$large_index_line target=$large_target_line"
+    fi
     assert_nogrep "large prompt does not enumerate retained omitted source identities" \
       "$large_prompt" '^Omitted source range:'
     assert_grep "large prompt reports every additional retained omission without listing it" \

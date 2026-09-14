@@ -237,6 +237,95 @@ PY
   return "$rc"
 }
 
+test_evidence_source_identity_match() {
+  ( local R="$T/source-identity-repo" P="$T/source-identity-parent"
+    mkrepo "$R"; git -C "$R" checkout -qb feat
+    printf 'tracked-one\n' > "$R/a.txt"
+    printf 'staged-one\n' > "$R/staged.txt"; git -C "$R" add staged.txt
+    printf 'untracked-one\n' > "$R/untracked.txt"
+    local base; base=$(git -C "$R" rev-parse main)
+    make_session() {
+      local S=$1; mkdir -p "$S"
+      printf "REV_BASE='%s'\nREV_BRANCH='feat'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+        "$base" "$R" > "$S/scope.env"
+      printf 'a.txt\nstaged.txt\nuntracked.txt\n' > "$S/files.txt"
+      printf 'untracked.txt\n' > "$S/untracked.txt"
+      printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+    }
+    prepare_identity() {
+      local S=$1 label=$2; make_session "$S"
+      REV_SOURCE_CONTEXT=0 REV_PATCH_CHUNKS=0 \
+        python3 "$SCRIPTS/rev-evidence.py" prepare "$S" "$label" --phase verification >/dev/null || return
+    }
+    prepare_identity "$P" parent
+
+    local C="$T/source-identity-same"; prepare_identity "$C" same
+    python3 "$SCRIPTS/rev-evidence.py" same-source \
+      "$P/rparent-evidence.manifest.json" "$C/rsame-evidence.manifest.json" >/dev/null
+    assert_eq "byte-identical scope snapshots match across sessions" "$?" 0
+
+    cp "$P/rparent-evidence.manifest.json" "$C/malformed-parent.manifest.json"
+    cp "$C/rsame-evidence.manifest.json" "$C/malformed-candidate.manifest.json"
+    python3 - "$C/malformed-parent.manifest.json" "$C/malformed-candidate.manifest.json" <<'PY'
+import json, sys
+for path in sys.argv[1:]:
+    value = json.load(open(path))
+    value['snapshot_tree'] = 'not-a-tree'
+    open(path, 'w').write(json.dumps(value))
+PY
+    python3 "$SCRIPTS/rev-evidence.py" same-source \
+      "$C/malformed-parent.manifest.json" "$C/malformed-candidate.manifest.json" \
+      > /dev/null 2> "$C/malformed.err"
+    assert_eq "malformed fallback source identity fails closed" "$?" 2
+    assert_grep "malformed fallback names manifest validation" "$C/malformed.err" \
+      'invalid source identity manifest'
+
+    cp "$P/rparent-evidence.manifest.json" "$C/missing-parent.manifest.json"
+    cp "$C/rsame-evidence.manifest.json" "$C/missing-candidate.manifest.json"
+    python3 - "$C/missing-parent.manifest.json" "$C/missing-candidate.manifest.json" <<'PY'
+import json, sys
+for path in sys.argv[1:]:
+    value = json.load(open(path)); value.pop('source')
+    open(path, 'w').write(json.dumps(value))
+PY
+    python3 "$SCRIPTS/rev-evidence.py" same-source \
+      "$C/missing-parent.manifest.json" "$C/missing-candidate.manifest.json" \
+      > /dev/null 2> "$C/missing.err"
+    assert_eq "matching missing source identities fail closed" "$?" 2
+    assert_grep "missing source identity names manifest validation" "$C/missing.err" \
+      'invalid source identity manifest'
+
+    printf 'tracked-two\n' > "$R/a.txt"
+    C="$T/source-identity-tracked"; prepare_identity "$C" tracked
+    python3 "$SCRIPTS/rev-evidence.py" same-source \
+      "$P/rparent-evidence.manifest.json" "$C/rtracked-evidence.manifest.json" \
+      >/dev/null 2> "$C/changed.err"
+    assert_eq "same-path tracked content mutation changes source identity" "$?" 2
+    assert_grep "tracked mutation names the changed tree" "$C/changed.err" \
+      'source identity changed: snapshot_tree'
+    printf 'tracked-one\n' > "$R/a.txt"
+
+    printf 'staged-two\n' > "$R/staged.txt"; git -C "$R" add staged.txt
+    C="$T/source-identity-staged"; prepare_identity "$C" staged
+    python3 "$SCRIPTS/rev-evidence.py" same-source \
+      "$P/rparent-evidence.manifest.json" "$C/rstaged-evidence.manifest.json" \
+      >/dev/null 2> "$C/changed.err"
+    assert_eq "same-path staged content mutation changes source identity" "$?" 2
+    assert_grep "staged mutation names the changed tree" "$C/changed.err" \
+      'source identity changed: snapshot_tree'
+    printf 'staged-one\n' > "$R/staged.txt"; git -C "$R" add staged.txt
+
+    printf 'untracked-two\n' > "$R/untracked.txt"
+    C="$T/source-identity-untracked"; prepare_identity "$C" untracked
+    python3 "$SCRIPTS/rev-evidence.py" same-source \
+      "$P/rparent-evidence.manifest.json" "$C/runtracked-evidence.manifest.json" \
+      >/dev/null 2> "$C/changed.err"
+    assert_eq "same-path untracked content mutation changes source identity" "$?" 2
+    assert_grep "untracked mutation names the changed tree" "$C/changed.err" \
+      'source identity changed: snapshot_tree'
+  )
+}
+
 test_evidence_provider_contract_binding() {
   ( local R="$T/evidence-contract-root" S="$T/evidence-contract-session"
     mkrepo "$R"; mkdir -p "$R/plugins/review-council/.codex-plugin" \
@@ -872,7 +961,7 @@ def source_context_packets():
         m = prepare(); context = m['source_context']
         assert context['schema_version'] == 3 and context['enabled'] is True and context['snapshot_tree'] == m['snapshot_tree']
         assert 'object_repository' not in context
-        assert context['max_shard_bytes'] == 32768
+        assert context['max_shard_bytes'] == 16384
         context_artifacts = [shard['artifact'] for packet in context['seats'].values()
                              for shard in packet['shards']]
         context_artifacts.extend(segment['artifact'] for packet in context['seats'].values()
@@ -890,8 +979,8 @@ def source_context_packets():
             assert 0 < len(packet['shards']) <= (3 if seat == owner else 1)
             for shard in packet['shards']:
                 path = session / shard['artifact']; raw = path.read_bytes()
-                assert shard['bytes'] == len(raw) <= 32768
-                assert shard['predicted_visible_bytes'] == len(raw) + len(raw.splitlines()) * 8 <= 32768
+                assert shard['bytes'] == len(raw) <= 16384
+                assert shard['predicted_visible_bytes'] == len(raw) + len(raw.splitlines()) * 8 <= 16384
                 assert shard['sha256'] == hashlib.sha256(raw).hexdigest()
                 body = json.loads(raw)
                 assert body['snapshot_tree'] == m['snapshot_tree'] and body['seat'] == seat
@@ -1352,31 +1441,48 @@ def complete_declaration_context():
         (root / 'unrepresentable.py').write_bytes(b'\0binary source')
         call('prepare', session, 'binary', '--phase', 'discovery', good=False)
 
-def budget_omissions_are_not_mandatory_ranges():
+def budget_omissions_are_segmented_or_retained():
     with fixture() as (root, session, git, write, call, prepare, finish):
-        for unit in range(4):
+        for unit in range(9):
+            values = 260 if unit == 0 else 140
             body = (f'def unit_{unit}():\n'
                     + ''.join(f'    value_{index} = "{unit}-{index:04d}-' + 'x' * 55 + '"\n'
-                              for index in range(260))
-                    + '    return value_259\n')
+                              for index in range(values))
+                    + f'    return value_{values - 1}\n')
             write(f'unit_{unit}.py', body)
         manifest = prepare('budget-omissions')
         omitted = [packet for packet in manifest['source_context']['seats'].values()
                    if packet['omitted']['declaration']]
         assert omitted
-        assert all(packet['source_read_required'] and not packet['required_source_ranges']
-                   for packet in omitted)
-        assert all(packet['omitted_source_ranges'] for packet in omitted)
+        assert all(packet['source_read_required'] for packet in omitted)
+        assert any(packet['required_source_ranges'] for packet in omitted)
+        assert any(packet['omitted_source_ranges'] for packet in omitted)
         for packet in omitted:
-            for row in packet['omitted_source_ranges']:
+            required = packet['required_source_ranges']
+            retained = packet['omitted_source_ranges']
+            assert sum(len(row['reasons']) for row in [*required, *retained]) \
+                == sum(packet['omitted'].values())
+            required_ids = {(row['path'], row['line_start'], row['line_end']) for row in required}
+            retained_ids = {(row['path'], row['line_start'], row['line_end']) for row in retained}
+            assert not required_ids & retained_ids
+            for row in required:
+                assert row['path'] == 'unit_0.py' and row['line_start'] == 1
+                assert row['line_end'] == 262 and row['segments']
+                cursor = row['line_start']
+                for segment in row['segments']:
+                    assert segment['line_start'] == cursor
+                    assert segment['predicted_visible_bytes'] <= 16384
+                    cursor = segment['line_end'] + 1
+                assert cursor == row['line_end'] + 1
+            for row in retained:
                 assert row['path'].startswith('unit_') and row['line_start'] == 1
-                assert row['line_end'] == 262
+                assert row['path'] != 'unit_0.py' and row['line_end'] == 142
                 assert row['reasons'] and row['component_ids']
                 assert row['blob_tree'] == manifest['snapshot_tree']
                 assert len(row['blob_oid']) in (40, 64)
                 assert len(row['content_sha256']) == 64
                 assert 'content' not in row and 'segments' not in row
-        finish('budget-omissions')
+        call('verify', session / 'rbudget-omissions-evidence.manifest.json')
 
 def innermost_declarations_and_bounded_anchors():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -1407,16 +1513,18 @@ def innermost_declarations_and_bounded_anchors():
         assert len(anchors) == 1 and anchors[0]['line_end'] - anchors[0]['line'] + 1 <= 17
         owner = manifest['mechanical_owner']; packet = manifest['source_context']['seats'][owner]
         assert packet['source_read_required'] is True
-        assert not [row for row in packet['required_source_ranges'] if row['path'] == 'large.py']
+        required = [row for row in packet['required_source_ranges'] if row['path'] == 'large.py']
+        assert len(required) == 1 and 'declaration:changed_method' in required[0]['reasons']
+        assert all(segment['predicted_visible_bytes'] <= 16384 for segment in required[0]['segments'])
         entries = [entry for shard in packet['shards']
                    for entry in json.loads((session / shard['artifact']).read_text())['entries']]
-        assert any('declaration:changed_method' in row['reasons'] for row in entries)
+        assert not any('declaration:changed_method' in row['reasons'] for row in entries)
         assert any('declaration:changed-line-anchor' in row['reasons'] for row in entries)
         before_words = len(changed.split())
         after_words = sum(len((session / shard['artifact']).read_bytes().split())
                           for shard in packet['shards'])
-        print(f'ANCHOR before_mandatory=1 after_mandatory=0 before_words={before_words} '
-              f'packet_words={after_words}')
+        print(f'ANCHOR before_mandatory=1 direct_source_ranges={len(required)} '
+              f'before_words={before_words} packet_words={after_words}')
         finish('bounded-anchor')
 
 def high_confidence_component_union():
@@ -1491,9 +1599,15 @@ def components_ownership_and_instructions():
             (session / f'r1-{seat}.exit').write_text('0\n')
         for seat in m['assignments']:
             write_agent_audit(session, '1', seat)
+        advisory_path = session / f'r1-{finding_owner}.read-audit.json'
+        advisory_audit = json.loads(advisory_path.read_text())
+        advisory_audit['advisories'] = [{'code':'missing-evidence-index', 'tool':'Read'}]
+        advisory_path.write_text(json.dumps(advisory_audit))
         call('receipt', session, '1')
         receipt = json.loads((session / 'r1-coverage.receipt.json').read_text())
         assert receipt['findings'][0]['owners'] == [finding_owner] and len(receipt['findings'][0]['id']) == 64
+        assert receipt['advisories'] == {
+            finding_owner: [{'code':'missing-evidence-index', 'tool':'Read'}]}
         write('src/dep.ts', 'export function dependency() { return 2; }\n')
         later = prepare('2', 'verification', *assign)
         changed = next(c for c in later['components'] if 'src/dep.ts' in c['files'])
@@ -1964,7 +2078,7 @@ cases = (
     literal_scope_and_inventories, sparse_gitlink_and_special, roster_bundle_coverage,
     source_context_packets, provider_visible_source_packet_limit,
     source_context_prefers_named_production_and_maps_gates, complete_declaration_context,
-    budget_omissions_are_not_mandatory_ranges, innermost_declarations_and_bounded_anchors,
+    budget_omissions_are_segmented_or_retained, innermost_declarations_and_bounded_anchors,
     high_confidence_component_union, components_ownership_and_instructions,
     instruction_override_precedence, empty_source_context, bounded_work_and_memory,
     receipt_read_audits, seat_local_recovery, narrow_agent_requires_proven_reads,
@@ -1990,7 +2104,7 @@ groups = {
         cstyle_enclosing_bodies, source_context_packets,
         provider_visible_source_packet_limit,
         source_context_prefers_named_production_and_maps_gates,
-        complete_declaration_context, budget_omissions_are_not_mandatory_ranges,
+        complete_declaration_context, budget_omissions_are_segmented_or_retained,
         innermost_declarations_and_bounded_anchors, high_confidence_component_union,
         components_ownership_and_instructions, instruction_override_precedence,
         empty_source_context,

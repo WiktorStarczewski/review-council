@@ -29,6 +29,7 @@ DEFAULT_COMMANDS = [
     {"name": "codex-marketplace", "kind": "validator", "argv": ["python3", "tests/check-codex-marketplace.py"]},
 ]
 DEFAULT_INDIRECT_TOOLS = ("bash", "git", "node", "codex")
+TOOL_VERSION_TIMEOUT_SECONDS = 30
 SELECTOR_ENV = (
     "REVIEW_COUNCIL_TEST_TASK",
     "REVIEW_COUNCIL_TEST_RESULTS_FILE",
@@ -656,12 +657,12 @@ def tool_versions(commands, environment, root, supplemental=()):
                 if isinstance(root, OpenDirectory):
                     probe = run_in_directory(
                         root, arguments, env=environment, capture_output=True,
-                        text=True, timeout=10,
+                        text=True, timeout=TOOL_VERSION_TIMEOUT_SECONDS,
                     )
                 else:
                     probe = subprocess.run(
                         arguments, env=environment, capture_output=True,
-                        text=True, timeout=10,
+                        text=True, timeout=TOOL_VERSION_TIMEOUT_SECONDS,
                     )
             except (OSError, subprocess.SubprocessError) as error:
                 raise VerificationError("cannot read tool version: " + executable) from error

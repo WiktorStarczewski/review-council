@@ -21,7 +21,11 @@ SEARCH_RESULT_SENTINEL = SEARCH_RESULTS + 1
 OUTPUT_BYTES = 32 * 1024
 PATCH_TURN_OUTPUT_BYTES = 60 * 1024
 ADVISORY_CODES = {
-    'source-output-mismatch', 'unbounded-shell-output', 'unsupported-source-range',
+    'discovery-output-too-large', 'duplicate-patch-chunk', 'duplicate-required-source-segment',
+    'evidence-read-order',
+    'missing-evidence-index', 'repository-expansion-call-limit',
+    'redundant-assigned-patch-read', 'source-output-mismatch', 'unbounded-shell-output',
+    'unsupported-source-range',
 }
 CLAUDE_EMPTY_READ = '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>'
 READ_TOOLS = {'read', 'read_file'}
@@ -2201,10 +2205,7 @@ def audit(args):
                             if path not in chunk_by_path:
                                 failures.append(violation('unassigned-patch-chunk', name))
                                 continue
-                            if path in seen_chunk_paths:
-                                failures.append(violation('duplicate-patch-chunk', name))
-                                continue
-                            seen_chunk_paths.add(path)
+                            duplicate = path in seen_chunk_paths
                             row = chunk_by_path[path]
                             complete = complete_packet_read(name, data, path, root)
                             if not complete:
@@ -2223,6 +2224,10 @@ def audit(args):
                                     args.adapter, name, output['value'], path.read_bytes(), 1):
                                 failures.append(violation('assigned-patch-output-mismatch', name))
                                 continue
+                            if duplicate:
+                                failures.append(violation('duplicate-patch-chunk', name))
+                                continue
+                            seen_chunk_paths.add(path)
                             observed.append(row['index'])
                             exact_calls.append((call_id, turn, output['bytes']))
                             exact_patch_chunk_calls.add(call_id)
@@ -2254,6 +2259,10 @@ def audit(args):
                         failures.append(violation('ambiguous-assigned-patch-read', name))
                         continue
                     for start, end in requested:
+                        if end < start and ranges_cover_file(
+                                verified_patch_ranges, assigned_patch_lines):
+                            failures.append(violation('redundant-assigned-patch-read', name))
+                            continue
                         expected_patch = byte_range_lines(assigned_patch_line_index, start, end)
                         if delivered_matches_bytes(
                                 args.adapter, name, output['value'], expected_patch, start):
@@ -2292,9 +2301,7 @@ def audit(args):
                         continue
                     required_index, required, segment = assigned_segment
                     identity = (required_index, segment['index'])
-                    if identity in seen_required_segments:
-                        failures.append(violation('duplicate-required-source-segment', name))
-                        continue
+                    duplicate = identity in seen_required_segments
                     if not complete_packet_read(name, data, path, root):
                         failures.append(violation('partial-required-source-segment', name))
                         continue
@@ -2313,6 +2320,9 @@ def audit(args):
                             or not delivered_matches_bytes(
                                 args.adapter, name, output['value'], raw, 1)):
                         failures.append(violation('required-source-output-mismatch', name))
+                        continue
+                    if duplicate:
+                        failures.append(violation('duplicate-required-source-segment', name))
                         continue
                     seen_required_segments.add(identity)
                     observed_by_required[required_index].append(segment['index'])
