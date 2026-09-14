@@ -4,9 +4,9 @@
 # Launch ONE read-only reviewer seat and leave schema-valid findings at <session>/r<N>-<seat>.json.
 # The seat set is not hardcoded: <session>/roster.json (written by rev-preflight.sh) says which adapter,
 # model, effort and mode this seat has, and scripts/seats.d/<adapter>.sh owns the CLI invocation.
-# The `agent` adapter (the Opus seat) is launched by the skill through the Agent tool, not here.
+# The `agent` adapter is launched by the skill through the Agent tool, not here.
 # Also writes r<N>-<seat>.log (one summarised line per event), .stream.ndjson (raw), .exit (code).
-# Exit: 0 valid JSON | 2 missing/invalid JSON | 3 not signed in | 4 usage cap or rate limit | 1 other
+# Exit: 0 valid JSON | 2 missing/invalid JSON | 3 not signed in | 4 provider quota | 7 local attempt cap | 1 other
 #
 # This file keeps everything that is NOT CLI-specific: roster lookup, effort precedence, the
 # zero-tool-call retry, native-prose conversion, validation, classification and the summary line.
@@ -31,13 +31,13 @@ done
 
 # --- the roster decides the seat ------------------------------------------------------------------
 ROSTER="$SESSION/roster.json"
-[ -f "$ROSTER" ] || { echo "rev-seat: no roster at $ROSTER — run preflight first" >&2; exit 1; }
+[ -f "$ROSTER" ] || { echo "rev-seat: no roster at $ROSTER - run preflight first" >&2; exit 1; }
 SEATDEF=$(REV_ROSTER_FILE="$ROSTER" REV_SEAT="$SEAT" python3 - <<'PY'
 import json, os, sys
 try:
     with open(os.environ['REV_ROSTER_FILE']) as f:
         doc = json.load(f)
-except Exception as e:  # noqa: BLE001 — an unreadable roster is "no seat", the caller re-runs preflight
+except Exception as e:  # noqa: BLE001 - an unreadable roster is "no seat", the caller re-runs preflight
     print(f"unreadable roster: {e}", file=sys.stderr)
     sys.exit(1)
 for s in (doc.get('seats') or []) if isinstance(doc, dict) else []:
@@ -48,35 +48,46 @@ for s in (doc.get('seats') or []) if isinstance(doc, dict) else []:
         sys.exit(0)
 sys.exit(1)
 PY
-) || { echo "rev-seat: no seat '$SEAT' in $ROSTER — run preflight first" >&2; exit 1; }
+) || { echo "rev-seat: no seat '$SEAT' in $ROSTER - run preflight first" >&2; exit 1; }
 ADAPTER=$(printf '%s\n' "$SEATDEF" | sed -n 1p)
 MODEL=$(printf '%s\n' "$SEATDEF" | sed -n 2p)
 ROSTER_EFFORT=$(printf '%s\n' "$SEATDEF" | sed -n 3p)
 MODE=$(printf '%s\n' "$SEATDEF" | sed -n 4p)
-[ -n "$ADAPTER" ] && [ -n "$MODEL" ] || { echo "rev-seat: seat '$SEAT' has no adapter/model in $ROSTER — run preflight first" >&2; exit 1; }
-[ "$ADAPTER" != agent ] || { echo "rev-seat: seat '$SEAT' is the Agent tool seat — the skill launches it, rev-seat.sh cannot" >&2; exit 1; }
+[ -n "$ADAPTER" ] && [ -n "$MODEL" ] || { echo "rev-seat: seat '$SEAT' has no adapter/model in $ROSTER - run preflight first" >&2; exit 1; }
+case "$ADAPTER" in
+  agent) echo "rev-seat: seat '$SEAT' is the Agent tool seat - the skill launches it, rev-seat.sh cannot" >&2; exit 1;;
+  codex|gemini|claude) ;;
+  *) echo "rev-seat: unsupported or retired adapter '$ADAPTER' (seat '$SEAT')" >&2; exit 1;;
+esac
 ADAPTER_SH="$HERE/seats.d/$ADAPTER.sh"
 [ -x "$ADAPTER_SH" ] || { echo "rev-seat: no adapter script for '$ADAPTER' (seat '$SEAT')" >&2; exit 1; }
 
-# Effort precedence: --effort, then the per-CLI env override, then the roster's entry for this seat
-# (the roster read the models cache, so this script never guesses a level the model does not offer).
+# The roster is the probe, receipt, and launch authority. A matching legacy argument is accepted so
+# callers can migrate without changing command construction, but no later override may diverge.
 case "$ADAPTER" in
   codex) ENV_EFFORT=${REV_CODEX_EFFORT:-};;
-  grok)  ENV_EFFORT=${REV_GROK_EFFORT:-};;
   *)     ENV_EFFORT="";;
 esac
-EFFORT=${EFFORT:-${ENV_EFFORT:-$ROSTER_EFFORT}}
+REQUESTED_EFFORT=${EFFORT:-$ENV_EFFORT}
+if [ "$ADAPTER" = codex ] || [ "$ADAPTER" = claude ]; then
+  [ -n "$ROSTER_EFFORT" ] || { echo "rev-seat: seat '$SEAT' has no receipted effort" >&2; exit 1; }
+fi
+if [ -n "$REQUESTED_EFFORT" ] && [ "$REQUESTED_EFFORT" != "$ROSTER_EFFORT" ]; then
+  echo "rev-seat: requested effort '$REQUESTED_EFFORT' diverges from receipted effort '$ROSTER_EFFORT'" >&2
+  exit 1
+fi
+EFFORT=$ROSTER_EFFORT
 [ "$MODE" != review ] || [ -n "$BASE" ] || { echo "rev-seat: seat '$SEAT' (mode=review) needs --base <ref>" >&2; exit 1; }
 
 mkdir -p "$SESSION"
 ROOT=${REV_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}
 BASEN="$SESSION/r${ROUND}-${SEAT}"
 OUT="$BASEN.json"; LOG="$BASEN.log"; RAW="$BASEN.stream.ndjson"; EXITF="$BASEN.exit"
-rm -f "$OUT" "$EXITF"; : > "$LOG"
+AUDITF="$BASEN.read-audit.json"
 export REV_ACTIVE=1
 export SEAT MODEL EFFORT MODE ROOT PROMPT SCHEMA OUT LOG RAW BASE
 
-finish() {  # <code> — validate on 0, record, print the one-line summary, exit
+finish() {  # <code> - validate on 0, record, print the one-line summary, exit
   local code=$1 n="-"
   if [ "$code" = 0 ]; then n=$(python3 "$VALIDATE" "$OUT" 2>>"$LOG") || { code=2; n="-"; }; fi
   echo "$code" > "$EXITF"
@@ -84,31 +95,67 @@ finish() {  # <code> — validate on 0, record, print the one-line summary, exit
   exit "$code"
 }
 classify_failure() {  # after a non-zero rc or missing output: 3 auth, 4 cap, 2 no output, 1 other
-  # Classify from CLI-ORIGINATED lines only. The model's own words reach the log as `text: …` and $RAW is
-  # nothing but the model stream, so a review whose findings quote "401", "unauthorized" or "rate limit"
-  # from the code under review would otherwise stop the whole run (exit 3) or drop the seat (exit 4).
-  # The CLIs report their own failures as `error: …` lines (codex) or on stderr (grok, gemini), which stay.
-  local cli; cli=$(grep -v -E '^(text|exec|done): ' "$LOG" 2>/dev/null)
-  if printf '%s\n' "$cli" | grep -qiE "not logged in|login required|please (log|sign) in|run (codex|grok) login|to log in|auth method|[^0-9]401[^0-9]|unauthori[sz]ed"; then echo 3
-  elif printf '%s\n' "$cli" | grep -qiE "usage limit|rate limit|too many requests|[^0-9]429[^0-9]|quota exceeded"; then echo 4
-  elif [ ! -s "$OUT" ]; then echo 2
-  else echo 1; fi
+  local kind
+  kind=$(python3 "$HERE/lib/roster.py" --classify-log "$ADAPTER" "$LOG" 2>/dev/null) || kind=other
+  case "$kind" in
+    auth) echo 3;;
+    quota) echo 4;;
+    *) if [ ! -s "$OUT" ]; then echo 2; else echo 1; fi;;
+  esac
+}
+archive_raw() {
+  ARCHIVED_RAW=""
+  [ -s "$RAW" ] || return 0
+  local n=1 archived
+  while :; do
+    archived="${RAW%.ndjson}.attempt${n}.ndjson"
+    [ -e "$archived" ] || break
+    n=$((n+1))
+  done
+  mv "$RAW" "$archived" || return 1
+  ARCHIVED_RAW=$archived
+}
+restore_raw() {
+  [ -n "${ARCHIVED_RAW:-}" ] || return 0
+  mv "$ARCHIVED_RAW" "$RAW" || return 1
+  ARCHIVED_RAW=""
+}
+has_tool_call() {
+  case "$ADAPTER" in
+    codex) grep -q '^exec: ' "$LOG";;
+    *) grep -q '^tool_call ' "$LOG";;
+  esac
 }
 
-# Under a schema (grok) or a "answer with only JSON" instruction (gemini) a model sometimes answers on turn
+# Under an "answer with only JSON" instruction, a model can answer on turn
 # one WITHOUT reading anything, even when the prompt says to run tools first (seen live: summary "I'll
 # inspect the diff…", zero findings, zero tool calls). An answer with no tool calls is not a review: retry
 # once at the same effort, then fail the seat so the orchestrator's retry/skip rule applies.
+rm -f "$EXITF"
 attempt=0
 while :; do
   attempt=$((attempt+1))
+  archive_raw || { echo "cannot archive prior stream before attempt $attempt" >> "$LOG"; finish 1; }
+  reserve_error=$(python3 "$HERE/lib/rev-attempt.py" reserve "$SESSION" "$ROUND" "$SEAT" "$PROMPT" 2>&1)
+  reserve_rc=$?
+  if [ "$reserve_rc" -ne 0 ]; then
+    restore_raw || { echo "cannot restore prior stream after reservation refusal" >> "$LOG"; finish 1; }
+    [ -z "$reserve_error" ] || printf 'rev-seat: %s\n' "$reserve_error" >&2
+    if [ "$reserve_rc" -eq 7 ]; then
+      echo "persistent provider-call cap reached for this seat generation" >> "$LOG"
+      echo "rev-seat: persistent provider-call cap reached for this seat generation" >&2
+    fi
+    finish "$reserve_rc"
+  fi
+  rm -f "$OUT" "$AUDITF"
+  [ "$attempt" -ne 1 ] || : > "$LOG"
   "$ADAPTER_SH"; rc=$?
   case "$ADAPTER" in
-    grok|gemini|claude)
-      if [ "$rc" -eq 0 ] && ! grep -q '^tool_call ' "$LOG"; then
-        echo "$ADAPTER answered without a single tool call (attempt $attempt) — not a review" >> "$LOG"
-        rm -f "$OUT"
+    codex|gemini|claude)
+      if [ "$rc" -eq 0 ] && ! has_tool_call; then
+        echo "$ADAPTER answered without a single tool call (attempt $attempt) - not a review" >> "$LOG"
         if [ "$attempt" -lt 2 ]; then continue; fi
+        rm -f "$OUT"
         rc=1
       fi;;
   esac
@@ -119,6 +166,59 @@ if [ "$ADAPTER" = codex ] && [ "$MODE" = review ] && [ -s "$OUT" ] && ! python3 
   # `codex exec review` ignores --output-schema and answers in prose; keep the prose and convert it.
   cp "$OUT" "$BASEN.native.txt"
   python3 "$HERE/lib/codex-review-to-findings.py" "$BASEN.native.txt" "$OUT" --root "$ROOT" >>"$LOG" 2>&1 || true
+fi
+
+if [ "$rc" -eq 0 ] && [ -s "$OUT" ]; then
+  AUDIT_ARGS=(audit --adapter "$ADAPTER" --raw "$RAW" --prompt "$PROMPT" --root "$ROOT" --session "$SESSION" --out "$AUDITF")
+  [ -z "${REV_DEPS_DIR:-}" ] || AUDIT_ARGS+=(--deps "$REV_DEPS_DIR")
+  python3 "$HERE/lib/review-read-audit.py" "${AUDIT_ARGS[@]}" >>"$LOG" 2>&1
+  AUDIT_RC=$?
+  AUDIT_SCOPE=$(python3 - "$AUDITF" "$AUDIT_RC" 2>>"$LOG" <<'PY'
+import json
+import re
+import sys
+
+with open(sys.argv[1], encoding='utf-8') as stream:
+    audit = json.load(stream)
+status = audit.get('status')
+evidence_scoped = audit.get('evidence_scoped')
+narrow = audit.get('narrow')
+violations = audit.get('violations')
+exit_code = int(sys.argv[2])
+if (audit.get('schema_version') != 2 or status not in ('valid', 'invalid')
+        or type(evidence_scoped) is not bool or type(narrow) is not bool
+        or not isinstance(violations, list) or narrow and not evidence_scoped
+        or exit_code not in (0, 2) or (status == 'valid') != (exit_code == 0)
+        or (status == 'valid') != (not violations)):
+    raise ValueError('inconsistent bounded-read audit metadata')
+manifest_hash = audit.get('evidence_manifest_sha256')
+if ((not evidence_scoped and manifest_hash is not None)
+        or (status == 'valid' and evidence_scoped
+            and re.fullmatch(r'[0-9a-f]{64}', manifest_hash or '') is None)):
+    raise ValueError('inconsistent bounded-read audit evidence binding')
+print('narrow' if narrow else 'full' if evidence_scoped else 'legacy')
+PY
+  )
+  AUDIT_META_RC=$?
+  if [ "$AUDIT_META_RC" -ne 0 ]; then
+    echo "bounded-read audit metadata is missing, malformed, or inconsistent" >> "$LOG"
+    rm -f "$OUT"
+    finish 2
+  fi
+  if [ "$AUDIT_RC" -ne 0 ]; then
+    case "$AUDIT_SCOPE" in
+      full)
+        echo "bounded-read audit rejected full-scope evidence review; rerun this full-scope seat after correcting its evidence reads" >> "$LOG"
+        rm -f "$OUT"
+        finish 2;;
+      narrow)
+        echo "bounded-read audit rejected narrowed review; retry this seat with the exact assignment" >> "$LOG"
+        rm -f "$OUT"
+        finish 2;;
+      legacy)
+        echo "bounded-read audit found violations in a legacy review; result retained as advisory" >> "$LOG";;
+    esac
+  fi
 fi
 
 if [ "$rc" -ne 0 ] || [ ! -s "$OUT" ]; then finish "$(classify_failure)"; fi

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import selectors
+import signal
 import shutil
 import subprocess
 import sys
@@ -34,6 +35,55 @@ def run_json(command, env, cwd):
         ),
     )
     return json.loads(result.stdout)
+
+
+def process_group_alive(group):
+    try:
+        os.killpg(group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def stop_process_group(process, timeout=5):
+    """Close the app-server session and reap its direct child within a fixed bound."""
+    if process.stdin is not None and not process.stdin.closed:
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
+
+    group = process.pid
+    try:
+        os.killpg(group, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+    deadline = time.monotonic() + timeout
+    while process_group_alive(group) and time.monotonic() < deadline:
+        try:
+            process.wait(timeout=min(0.1, max(0.01, deadline - time.monotonic())))
+        except subprocess.TimeoutExpired:
+            continue
+        time.sleep(0.01)
+
+    if process_group_alive(group):
+        try:
+            os.killpg(group, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError('Codex app-server did not exit after process-group cleanup') from error
+
+    deadline = time.monotonic() + timeout
+    while process_group_alive(group) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    require(not process_group_alive(group), 'Codex app-server process group remains alive after cleanup')
 
 
 def discover(codex, env, cwd, marketplace):
@@ -68,6 +118,7 @@ def discover(codex, env, cwd, marketplace):
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=stderr,
+            start_new_session=True,
         )
         try:
             for request in requests:
@@ -96,14 +147,10 @@ def discover(codex, env, cwd, marketplace):
             diagnostics = stderr.read().decode(errors='replace')
             raise RuntimeError('{}\n{}'.format(error, diagnostics)) from error
         finally:
-            process.terminate()
             try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=5)
-            process.stdin.close()
-            process.stdout.close()
+                stop_process_group(process)
+            finally:
+                process.stdout.close()
     return responses[2]['plugin'], responses[3]['data']
 
 

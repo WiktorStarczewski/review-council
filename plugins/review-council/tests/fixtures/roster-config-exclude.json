@@ -1,6 +1,6 @@
 {
   "exclude": [
-    "grok"
+    "gemini"
   ],
   "unknown_key": "ignored"
 }

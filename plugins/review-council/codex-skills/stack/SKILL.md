@@ -18,12 +18,19 @@ stall, and resumes from the same session root and ledger.
    order. Use unique, simple labels and quote shell data properly. The config is an
    executable shell file: inspect it before sourcing it. Set `PASSES`, `SEAM_REPO`,
    and `CRITIC_REPO` to reflect the request. Omit optional phases only deliberately.
+   Existing numeric round counts explicitly select the legacy numbered schedule.
+   Numeric legs may continue past the requested minimum under the numeric completion
+   rules in `rev`; plan panels do not count toward that minimum. These counts do not
+   opt a leg into the direct adaptive default.
 3. Set `REVIEW_COUNCIL_HOST=codex`. Default `NO_PUSH=1 NO_SQUASH=1` keeps changes local
    and history intact. Set either to `0` only with the user's prior authorization.
    Existing Claude configs may set these explicitly, so inspect and adapt them.
    This skill does not grant publication or history-rewrite permission.
 4. Run `roster.sh --brief` under the Codex host and show any degradation. No usable
-   provider is a blocker. Each leg performs its own preflight and probes.
+   provider is a blocker. Exit 5 is retryable: retain the session and use the bounded
+   attempt loop. Exit 6 is permanent: relay the one-line reason verbatim, fail that
+   leg, and do not retry the same contract. Each leg performs its own preflight and
+   probes.
 5. Launch the runner with a unique root and log:
 
    ```bash

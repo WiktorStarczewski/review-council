@@ -30,6 +30,8 @@ UPDATE="$ROOT/scripts/lib/update-check.py"
 
 python3 - "$POLICY" "$ROSTER" "$UPDATE" "$ROOT" <<'PY'
 import json
+import os
+import signal
 import subprocess
 import sys
 
@@ -44,27 +46,42 @@ except OSError:
 
 def roster_line():
     try:
-        r = subprocess.run(
+        process = subprocess.Popen(
             [roster_path, "--brief"],
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=5,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8", errors="replace",
             stdin=subprocess.DEVNULL,
+            start_new_session=True,
         )
     except FileNotFoundError:
         return "review-council seats: roster unavailable (roster.sh not installed)"
     except PermissionError:
         return "review-council seats: roster unavailable (roster.sh not executable)"
-    except subprocess.TimeoutExpired:
-        return "review-council seats: roster unavailable (timed out)"
     except OSError as e:
         return "review-council seats: roster unavailable (%s)" % e
-    out = (r.stdout or "").strip()
+    try:
+        stdout, stderr = process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            process.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+        return "review-council seats: roster unavailable (timed out)"
+    out = (stdout or "").strip()
     if out:
-        return out  # pass through verbatim, even on roster.sh's exit 5 (<3 seats is real content, not a failure)
-    err = (r.stderr or "").strip().splitlines()
-    reason = err[0] if err else ("exit %d" % r.returncode)
+        return out  # pass through verbatim, including strict exit 5 or 6 roster diagnostics
+    err = (stderr or "").strip().splitlines()
+    reason = err[0] if err else ("exit %d" % process.returncode)
     return "review-council seats: roster unavailable (%s)" % reason
 
 def update_line():

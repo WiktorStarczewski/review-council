@@ -1,6 +1,6 @@
 {
   "name": "review-council",
-  "version": "0.4.0",
+  "version": "0.4.2",
   "description": "Independent multi-model reviews with verified findings, fix loops, and coordinated reviews across repositories.",
   "author": {
     "name": "Wiktor Starczewski"
@@ -8,7 +8,7 @@
   "skills": "./codex-skills/",
   "interface": {
     "displayName": "Review Council",
-    "shortDescription": "Review with Codex, Claude, Grok, and Gemini.",
+    "shortDescription": "Review with Codex, Claude, and Gemini.",
     "longDescription": "Convene independent reviewers, verify their findings, and iterate on fixes. Review branches, uncommitted changes, documents, or a stack of related repositories using your installed provider CLIs.",
     "developerName": "Wiktor Starczewski",
     "category": "Productivity",

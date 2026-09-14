@@ -4,10 +4,10 @@ test_preflight_edges() {
     local R="$T/pf2"; mkrepo "$R"; cd "$R" || { fail "pf2 setup" "cannot cd"; return 1; }
     git checkout -qb feat; echo b > b.txt; git add b.txt; git commit -qm "feat: b"
     # a lab that is out but still leaves three seats is a warning on the roster line, not a refusal
-    RSTUB_BRIEF='review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@xhigh) · grok ✗ not signed in · gemini ✗ not installed · claude ✓ (opus@max)' \
+    RSTUB_BRIEF='review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@max) · gemini ✓ (gemini-2.5-pro@high) · claude ✗ not signed in' \
       "$PF" > "$T/pf2.out" 2> "$T/pf2.err"
     assert_eq "a degraded but sufficient roster is accepted" "$?" 0
-    assert_grep "the roster line names the missing lab" "$T/pf2.out" 'grok ✗ not signed in'
+    assert_grep "the roster line names the missing lab" "$T/pf2.out" 'claude ✗ not signed in'
     assert_nogrep "and preflight adds no sign-in check of its own" "$T/pf2.err" 'not signed in'
     # --write is resolved against the CALLER's cwd, not the repo root it cds to
     mkdir -p "$R/sub"; cd "$R/sub" || { fail "pf2 setup" "cannot cd to sub"; return 1; }
@@ -34,15 +34,26 @@ test_preflight_edges() {
 
 # …and the same seam against the REAL roster.sh, driven by the shims: preflight seats from it, pads and
 # warns instead of refusing when a lab is missing, and never runs a sign-in check of its own. PATH holds
-# only the shims plus the system directories, so a real codex/grok/gemini can never be reached.
+# only the shims plus the system directories, so a real codex/claude/gemini can never be reached.
 test_preflight_roster() {
   ( local B="$T/pfr-bin" R="$T/pfr"; mkdir -p "$B"; mkrepo "$R"
-    cp "$SHIMS/codex" "$SHIMS/grok" "$B/"; chmod +x "$B/codex" "$B/grok"
+    cp "$SHIMS/codex" "$B/"; chmod +x "$B/codex"
+    cat > "$B/claude" <<'SH'
+#!/bin/bash
+if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
+  printf '%s\n' '{"loggedIn":true}'
+  exit 0
+fi
+exec "$PFR_CLAUDE_SHIM" "$@"
+SH
+    chmod +x "$B/claude"
     export PATH="$B:/usr/bin:/bin:/usr/sbin:/sbin"
     export HOME="$T/pfr-home"; mkdir -p "$HOME"
+    export PFR_CLAUDE_SHIM="$SHIMS/claude" REVIEW_COUNCIL_HOST=codex
     export SHIM_FIXTURE_DIR="$FX"
     export REVIEW_COUNCIL_CODEX_MODELS_CACHE="$FX/roster-codex-cache-full.json"
-    export REVIEW_COUNCIL_CONFIG="$HOME/no-such-config.json"
+    export REVIEW_COUNCIL_CONFIG="$HOME/exact-current.json"
+    printf '%s\n' '{"codex_models":["gpt-5.6-sol","gpt-5.6-terra"],"claude_models":["opus","sonnet"],"extras":false}' > "$REVIEW_COUNCIL_CONFIG"
     export REVIEW_COUNCIL_GEMINI_CREDS="$HOME/no-such-creds.json"
     unset GEMINI_API_KEY REVIEW_COUNCIL_GEMINI_MODEL REVIEW_COUNCIL_CLAUDE_SEAT SHIM_MODE SHIM_ARGS_FILE
     cd "$R" || { fail "pfr setup" "cannot cd to $R"; return 1; }
@@ -50,30 +61,63 @@ test_preflight_roster() {
     "$SCRIPTS/rev-preflight.sh" --write "$T/pfr-sess" > "$T/pfr.out" 2> "$T/pfr.err"
     assert_eq "real roster: four seats accepted" "$?" 0
     assert_grep "base line first" "$T/pfr.out" '^base=[0-9a-f]{7,} base_branch=main \(nearest fork point\) branch=feat '
-    assert_grep "roster line second" "$T/pfr.out" '^review-council seats: codex ✓ \(gpt-5\.6-sol@max, gpt-5\.6-terra@max\) · grok ✓ \(grok-4\.6@xhigh\)'
+    assert_grep "roster line second" "$T/pfr.out" '^review-council seats: codex ✓ \(gpt-5\.6-sol@max, gpt-5\.6-terra@max\)'
+    assert_grep "exact current Claude pair is seated" "$T/pfr.out" 'claude ✓ \(opus@max, sonnet@max\)'
     assert_grep "an absent lab is reported, not fatal" "$T/pfr.out" 'gemini ✗ not installed'
     assert_grep "roster.json holds the probed seats" "$T/pfr-sess/roster.json" '"seat": "codex-sol"'
+    assert_grep "real roster marks current receipt policy" "$T/pfr-sess/roster.json" '"result_receipts"'
     assert_nogrep "an excluded lab is never seated" "$T/pfr-sess/roster.json" '"seat": "gemini"'
     assert_exit "scope.env is written beside it" 0 test -f "$T/pfr-sess/scope.env"
-    # codex gone → grok + opus only: the panel is padded to three and the run is warned about, not refused
+    # With Codex gone, the public roster can reuse the surviving Claude CLI to keep a three-seat panel.
     rm -f "$B/codex"
+    export REVIEW_COUNCIL_CONFIG="$HOME/claude-only.json"
+    printf '%s\n' '{"claude_models":["opus","sonnet"],"extras":false}' > "$REVIEW_COUNCIL_CONFIG"
     "$SCRIPTS/rev-preflight.sh" --write "$T/pfr-sess2" > "$T/pfr.out" 2> "$T/pfr.err"
     assert_eq "real roster: a two-lab machine still runs" "$?" 0
     assert_grep "base line printed" "$T/pfr.out" '^base=[0-9a-f]{7,} base_branch=main \(nearest fork point\) branch=feat '
     assert_grep "the roster line carries DEGRADED" "$T/pfr.out" \
-      'DEGRADED: only xai, anthropic available — padded with 1 Claude seat$'
+      'DEGRADED: available labs: anthropic - 1 repeat CLI seats; reduced panel diversity$'
     assert_grep "…and preflight adds its own warning line" "$T/pfr.out" \
-      '^preflight: WARNING — only xai, anthropic available — padded with 1 Claude seat$'
-    assert_grep "the padded seat is in roster.json" "$T/pfr-sess2/roster.json" '"seat": "claude-1"'
+      '^preflight: WARNING - available labs: anthropic - 1 repeat CLI seats; reduced panel diversity$'
+    assert_grep "the padded seat is in roster.json" "$T/pfr-sess2/roster.json" '"seat": "opus-1"'
     assert_grep "…marked as padded" "$T/pfr-sess2/roster.json" '"padded": true'
     assert_exit "scope.env is written for a degraded run" 0 test -f "$T/pfr-sess2/scope.env"
     assert_nogrep "nothing on stderr" "$T/pfr.err" '.'
+    # An explicit roster contract refuses if a configured seat is absent, even when padding can build a panel.
+    printf '%s' '{"codex_models":["gpt-5.6-sol"],"claude_seats":1}' > "$HOME/exact.json"
+    REVIEW_COUNCIL_CONFIG="$HOME/exact.json" "$SCRIPTS/rev-preflight.sh" --write "$T/pfr-exact" \
+      > "$T/pfr.out" 2> "$T/pfr.err"
+    assert_eq "real roster: a missing exact Codex seat preserves exit 5" "$?" 5
+    assert_grep "real retryable refusal includes provider evidence" "$T/pfr.err" '^review-council seats:'
+    assert_grep "the exact strict reason is relayed" "$T/pfr.err" \
+      '^preflight: strict availability \(retryable\): codex_models requires 1 matching seat\(s\), 0 survived$'
+    assert_eq "real retryable canonical diagnostic is final" \
+      "$(awk 'NF { line=$0 } END { print line }' "$T/pfr.err")" \
+      'preflight: strict availability (retryable): codex_models requires 1 matching seat(s), 0 survived'
+    assert_nogrep "no base line for a refused exact roster" "$T/pfr.out" '^base='
+    assert_exit "no scope.env from an exact refusal" 1 test -f "$T/pfr-exact/scope.env"
+    printf '%s' '{"codex_models":"gpt-5.6-sol"}' > "$HOME/invalid.json"
+    REVIEW_COUNCIL_CONFIG="$HOME/invalid.json" "$SCRIPTS/rev-preflight.sh" --write "$T/pfr-invalid" \
+      > "$T/pfr.out" 2> "$T/pfr.err"
+    assert_eq "real roster: malformed exact config preserves exit 6" "$?" 6
+    assert_grep "real permanent refusal includes provider evidence" "$T/pfr.err" '^review-council seats:'
+    assert_grep "the permanent config reason is relayed" "$T/pfr.err" \
+      '^preflight: strict config \(permanent\): invalid codex_models:'
+    assert_eq "real permanent canonical diagnostic is final" \
+      "$(awk 'NF { line=$0 } END { print line }' "$T/pfr.err")" \
+      "$(grep '^preflight: strict config (permanent):' "$T/pfr.err")"
+    assert_exit "no scope.env from a config refusal" 1 test -f "$T/pfr-invalid/scope.env"
     # min_labs is the hard floor for teams that would rather not review than review single-lab
     printf '%s' '{"min_labs": 3}' > "$HOME/strict.json"
     REVIEW_COUNCIL_CONFIG="$HOME/strict.json" "$SCRIPTS/rev-preflight.sh" --write "$T/pfr-sess3" \
       > "$T/pfr.out" 2> "$T/pfr.err"
-    assert_eq "real roster: min_labs refuses" "$?" 1
-    assert_grep "the strict reason is relayed" "$T/pfr.err" '^preflight: strict: 2 lab\(s\) available, min_labs=3 — '
+    assert_eq "real roster: min_labs preserves exit 5" "$?" 5
+    assert_grep "real min_labs refusal includes provider evidence" "$T/pfr.err" '^review-council seats:'
+    assert_grep "the strict reason is relayed" "$T/pfr.err" \
+      '^preflight: strict availability \(retryable\): 1 lab\(s\) available, min_labs=3$'
+    assert_eq "real min_labs canonical diagnostic is final" \
+      "$(awk 'NF { line=$0 } END { print line }' "$T/pfr.err")" \
+      'preflight: strict availability (retryable): 1 lab(s) available, min_labs=3'
     assert_nogrep "no base line on a refusal" "$T/pfr.out" '^base='
     assert_exit "no scope.env from a refused run" 1 test -f "$T/pfr-sess3/scope.env"
   )
