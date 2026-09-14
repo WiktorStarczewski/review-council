@@ -207,3 +207,5 @@
   constrain any post-fix verification to the receipt-relative delta plus the one required full-state integration seat.
 - When CI fixtures execute a system binary, install that binary explicitly in every runner image. A developer-machine pass
   does not prove a clean hosted runner has the same tool inventory, so reproduce missing-tool failures in a clean container.
+- A fail-closed gate must still expose the failing shard in hosted CI. Print the bounded tail of nonzero private logs, and
+  avoid duplicate push and pull-request matrices for the same feature commit, so one failure produces one useful diagnosis.

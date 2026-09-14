@@ -1,5 +1,8 @@
 name: test
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
 jobs:
   verify:
     strategy:
@@ -19,4 +22,24 @@ jobs:
             brew install ripgrep
           fi
       - run: npm install -g @anthropic-ai/claude-code @openai/codex
-      - run: python3 scripts/verify-review-council.py
+      - name: Verify release tree
+        run: python3 scripts/verify-review-council.py
+      - name: Show failed verifier logs
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path.home() / ".cache/review-council/verification"
+          for path in sorted(root.glob("*/logs/*.log")):
+              text = path.read_text(errors="replace")
+              lines = text.splitlines()
+              try:
+                  result = json.loads(lines[-1])
+              except (IndexError, json.JSONDecodeError):
+                  result = {}
+              if result.get("exit_code") != 0:
+                  print("failed verifier log: " + path.name)
+                  print(text[-20000:])
+          PY
