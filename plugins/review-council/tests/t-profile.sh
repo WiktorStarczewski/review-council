@@ -1,6 +1,127 @@
 # shellcheck shell=bash
 # Usage profiling separates completed results from metered attempts and preserves provider detail.
+test_profile_labels_roster_comparability() {
+  # Frozen historical Grok rosters preserve the 0.4.0 measurement baseline.
+  ( local OLD="$T/profile-roster-old" NEW="$T/profile-roster-new" LEGACY="$T/profile-roster-legacy"
+    mkdir -p "$OLD" "$NEW" "$LEGACY"
+    cat > "$OLD/roster.json" <<'JSON'
+{"seats":[
+  {"seat":"codex-sol","adapter":"codex","model":"gpt-5.6-sol","effort":"max","extra":false},
+  {"seat":"grok","adapter":"grok","model":"grok-4.6","effort":"xhigh","extra":false},
+  {"seat":"opus","adapter":"claude","model":"opus","effort":"max","extra":false},
+  {"seat":"opus-2","adapter":"claude","model":"opus","effort":"max","extra":false},
+  {"seat":"codex-review","adapter":"codex","model":"gpt-5.6-sol","effort":"max","extra":true}
+]}
+JSON
+    cat > "$NEW/roster.json" <<'JSON'
+{"seats":[
+  {"seat":"codex-sol","adapter":"codex","model":"gpt-5.6-sol","effort":"max","extra":false},
+  {"seat":"grok","adapter":"grok","model":"grok-4.6","effort":"xhigh","extra":false},
+  {"seat":"opus","adapter":"claude","model":"opus","effort":"max","extra":false},
+  {"seat":"sonnet","adapter":"claude","model":"sonnet","effort":"max","extra":false}
+]}
+JSON
+    printf '%s\n' '{"seats":[{"seat":"opus","adapter":"claude"}]}' > "$LEGACY/roster.json"
+    printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":1}}' \
+      > "$OLD/r1-codex-sol.stream.ndjson"
+    printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":20,"output_tokens":2}}' \
+      > "$NEW/r1-codex-sol.stream.ndjson"
+    printf '%s\n' '{"type":"result","usage":{"input_tokens":3,"output_tokens":1}}' \
+      > "$LEGACY/r1-opus.stream.ndjson"
+
+    "$SCRIPTS/rev-profile.py" --json "$OLD" "$NEW" "$LEGACY" > "$T/profile-rosters.json"
+    python3 - "$T/profile-rosters.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+old, new, legacy = d['sessions']
+old_signature = ('codex-sol=codex:gpt-5.6-sol@max,'
+                 'grok=grok:grok-4.6@xhigh,'
+                 'opus=claude:opus@max,opus-2=claude:opus@max')
+new_signature = ('codex-sol=codex:gpt-5.6-sol@max,'
+                 'grok=grok:grok-4.6@xhigh,'
+                 'opus=claude:opus@max,sonnet=claude:sonnet@max')
+assert old['roster']['signature'] == old_signature, old
+assert old['roster']['complete'] is True, old
+assert new['roster']['signature'] == new_signature, new
+assert new['roster']['complete'] is True, new
+assert legacy['roster']['signature'] == 'opus=claude:?@?', legacy
+assert legacy['roster']['complete'] is False, legacy
+comparison = d['comparison']
+assert comparison['mixed_core_rosters'] is True, comparison
+assert comparison['roster_signatures'] == [
+    {'signature': old_signature, 'complete': True,
+     'sessions': ['profile-roster-old']},
+    {'signature': new_signature, 'complete': True,
+     'sessions': ['profile-roster-new']},
+    {'signature': 'opus=claude:?@?', 'complete': False,
+     'sessions': ['profile-roster-legacy']},
+], comparison
+assert d['totals']['calls'] == 3, d
+assert d['totals']['input_tokens'] == 33, d
+assert d['totals']['output_tokens'] == 4, d
+assert d['totals']['processed_tokens'] == 37, d
+PY
+    assert_eq "profile labels old, new, and historical rosters without changing totals" "$?" 0
+
+    "$SCRIPTS/rev-profile.py" "$OLD" "$NEW" "$LEGACY" > "$T/profile-rosters.txt"
+    assert_grep "text profile identifies the old two-Opus roster" "$T/profile-rosters.txt" \
+      'roster=codex-sol=codex:gpt-5\.6-sol@max,grok=grok:grok-4\.6@xhigh,opus=claude:opus@max,opus-2=claude:opus@max roster_complete=true'
+    assert_grep "text profile identifies the Opus and Sonnet roster" "$T/profile-rosters.txt" \
+      'roster=codex-sol=codex:gpt-5\.6-sol@max,grok=grok:grok-4\.6@xhigh,opus=claude:opus@max,sonnet=claude:sonnet@max roster_complete=true'
+    assert_grep "text profile marks historical roster identity incomplete" "$T/profile-rosters.txt" \
+      'roster=opus=claude:\?@\? roster_complete=false'
+    assert_grep "text profile warns that mixed roster totals need grouping" "$T/profile-rosters.txt" \
+      '^COMPARABILITY mixed_core_rosters=true roster_signatures=3$'
+  )
+}
+
+test_profile_discloses_quota_substitutions() {
+  ( local S="$T/profile-quota-fallback"; mkdir -p "$S"
+    cat > "$S/roster.json" <<'JSON'
+{"seats":[
+  {"seat":"opus","adapter":"claude","model":"opus","effort":"max","extra":false},
+  {"seat":"sonnet","adapter":"claude","model":"sonnet","effort":"max","extra":false},
+  {"seat":"claude-sonnet-fallback-1","adapter":"claude","model":"sonnet","effort":"max","extra":false,"padded":true,"substitutes_for":"codex-sol"}
+]}
+JSON
+    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile.json"
+    python3 - "$S/profile.json" <<'PY'
+import json, sys
+roster = json.load(open(sys.argv[1]))['sessions'][0]['roster']
+fallback = roster['core_seats'][2]
+assert fallback['substitutes_for'] == 'codex-sol', roster
+assert roster['signature'].endswith(
+    'claude-sonnet-fallback-1=claude:sonnet@max[for=codex-sol]'
+), roster
+PY
+    assert_eq "profile records the preferred seat behind a quota substitution" "$?" 0
+    "$SCRIPTS/rev-profile.py" "$S" > "$S/profile.txt"
+    assert_grep "text profile discloses the effective mixed roster" "$S/profile.txt" \
+      'claude-sonnet-fallback-1=claude:sonnet@max\[for=codex-sol\]'
+  )
+}
+
+test_profile_keeps_null_effort_complete_only_for_gemini() {
+  ( local GEMINI="$T/profile-gemini-effort" CODEX="$T/profile-codex-null-effort"
+    mkdir -p "$GEMINI" "$CODEX"
+    printf '%s\n' '{"seats":[{"seat":"gemini","adapter":"gemini","model":"gemini-2.5-pro","effort":null,"extra":false}]}' > "$GEMINI/roster.json"
+    printf '%s\n' '{"seats":[{"seat":"codex-sol","adapter":"codex","model":"gpt-5.6-sol","effort":null,"extra":false}]}' > "$CODEX/roster.json"
+    "$SCRIPTS/rev-profile.py" --json "$GEMINI" "$CODEX" > "$T/profile-null-effort.json"
+    python3 - "$T/profile-null-effort.json" <<'PY'
+import json, sys
+gemini, codex = json.load(open(sys.argv[1]))['sessions']
+assert gemini['roster']['signature'] == 'gemini=gemini:gemini-2.5-pro@none', gemini
+assert gemini['roster']['complete'] is True, gemini
+assert gemini['roster']['core_seats'][0]['effort'] == 'none', gemini
+assert codex['roster']['signature'] == 'codex-sol=codex:gpt-5.6-sol@?', codex
+assert codex['roster']['complete'] is False, codex
+PY
+    assert_eq "profile treats only Gemini null effort as a complete stable identity" "$?" 0
+  )
+}
+
 test_session_profile() {
+  # Historical mixed-provider streams keep Grok decoder compatibility measurable.
   ( local S="$T/profile-session" S2="$T/profile-session-2" S3="$T/profile-session-mixed" S4="$T/profile-session-malformed"; mkdir -p "$S" "$S2" "$S3" "$S4"
     cat > "$S/roster.json" <<'JSON'
 {"result_receipts":{"version":1,"legacy_no_exit_sha256":{}},"seats":[
@@ -52,6 +173,8 @@ for stem, (adapter, status, violations, calls, turns, output, maximum) in fixtur
         'prompt_sha256': hashlib.sha256(prompt.read_bytes()).hexdigest(),
         'stream_sha256': hashlib.sha256(stream.read_bytes()).hexdigest(),
         'violations': violations,
+        'advisories': ([{'code':'bounded-proof-advisory','tool':'Bash'}]
+                       if stem == 'r1x-codex-sol' else []),
         'tool_calls': calls,
         'tool_turns': turns,
         'tool_output_bytes': output,
@@ -123,6 +246,7 @@ assert d['totals']['unmetered_calls'] == 2, d
 assert d['totals']['read_activity'] == {
     'audits': 2,
     'violating_audits': 1,
+    'advisories': 1,
     'invalid_audits': 1,
     'tool_calls': 10,
     'tool_turns': 5,
@@ -130,6 +254,7 @@ assert d['totals']['read_activity'] == {
     'max_tool_output_bytes': 200,
     'recognized_tool_calls': 0,
     'source_read_calls': 0,
+    'source_read_batches': 0,
     'packet_shards': 0,
     'packet_bytes': 0,
     'packet_ranges': 0,
@@ -164,6 +289,7 @@ assert s['providers']['grok']['cache_read_input_tokens'] == 7, s
 assert s['read_activity'] == {
     'audits': 2,
     'violating_audits': 1,
+    'advisories': 1,
     'invalid_audits': [
         {'audit': 'r2-gemini.read-audit.json', 'reason': 'malformed read audit JSON'},
     ],
@@ -173,6 +299,7 @@ assert s['read_activity'] == {
     'max_tool_output_bytes': 200,
     'recognized_tool_calls': 0,
     'source_read_calls': 0,
+    'source_read_batches': 0,
     'packet_shards': 0,
     'packet_bytes': 0,
     'packet_ranges': 0,
@@ -201,7 +328,7 @@ PY
     assert_grep "text profile separates provider cache metrics" "$S/profile.txt" \
       'cached_input=20 cache_write_input=31 cache_read_input=37'
     assert_grep "text profile separates bounded-read activity" "$S/profile.txt" \
-      'read_activity=audits:2 violating:1 calls:10 turns:5 output_bytes:350 max_output_bytes:200 invalid:1'
+      'read_activity=audits:2 violating:1 advisories:1 calls:10 turns:5 output_bytes:350 max_output_bytes:200 invalid:1'
     assert_grep "text profile explains invalid read audits" "$S/profile.txt" \
       'r2-gemini\.read-audit\.json: malformed read audit JSON'
     printf 'mutated\n' >> "$S/r1x-codex-sol.prompt.md"
@@ -213,6 +340,7 @@ activity = d['sessions'][0]['read_activity']
 assert activity == {
     'audits': 1,
     'violating_audits': 1,
+    'advisories': 0,
     'invalid_audits': [
         {'audit': 'r1x-codex-sol.read-audit.json', 'reason': 'read audit prompt hash mismatch'},
         {'audit': 'r2-gemini.read-audit.json', 'reason': 'malformed read audit JSON'},
@@ -223,6 +351,7 @@ assert activity == {
     'max_tool_output_bytes': 200,
     'recognized_tool_calls': 0,
     'source_read_calls': 0,
+    'source_read_batches': 0,
     'packet_shards': 0,
     'packet_bytes': 0,
     'packet_ranges': 0,
@@ -242,24 +371,25 @@ PY
   )
 }
 
-# A no-tool retry and a later same-label launch must each retain every nonempty paid stream.
+# Repeated current-provider launches retain every nonempty paid stream.
 test_profile_retry_streams() {
   ( seat_env; local S="$T/profile-retries"; seat_roster "$S"; echo "review" > "$S/p.md"
-    rm -f "$T/args.grok-calls"
-    SHIM_MODE=metered_notools_then_ok "$SCRIPTS/rev-seat.sh" grok "$S" 1 "$S/p.md" >/dev/null
-    assert_eq "internal retry keeps one archived attempt" "$(find "$S" -maxdepth 1 -name 'r1-grok.stream.*.ndjson' | wc -l | tr -d ' ')" 1
+    rm -f "$T/args.codex-calls"
+    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-terra "$S" 1 "$S/p.md" >/dev/null
+    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-terra "$S" 1 "$S/p.md" >/dev/null
+    assert_eq "relaunch keeps one archived Terra attempt" "$(find "$S" -maxdepth 1 -name 'r1-codex-terra.stream.*.ndjson' | wc -l | tr -d ' ')" 1
     "$SCRIPTS/rev-profile.py" --json "$S" > "$S/internal.json"
     python3 - "$S/internal.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 assert d['totals']['calls'] == 2, d
-assert d['totals']['processed_tokens'] == 12, d
+assert d['totals']['processed_tokens'] == 2200, d
 PY
-    assert_eq "internal retry contributes both metered attempts" "$?" 0
+    assert_eq "Terra relaunch contributes both metered attempts" "$?" 0
 
-    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" grok "$S" 2 "$S/p.md" >/dev/null
-    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" grok "$S" 2 "$S/p.md" >/dev/null
-    assert_eq "same-label relaunch keeps one archived attempt" "$(find "$S" -maxdepth 1 -name 'r2-grok.stream.*.ndjson' | wc -l | tr -d ' ')" 1
+    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-terra "$S" 2 "$S/p.md" >/dev/null
+    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-terra "$S" 2 "$S/p.md" >/dev/null
+    assert_eq "same-label relaunch keeps one archived attempt" "$(find "$S" -maxdepth 1 -name 'r2-codex-terra.stream.*.ndjson' | wc -l | tr -d ' ')" 1
     "$SCRIPTS/rev-profile.py" --json "$S" > "$S/outer.json"
     python3 - "$S/outer.json" <<'PY'
 import json, sys
@@ -270,7 +400,8 @@ PY
   )
 }
 
-test_profile_accepts_safe_nonnumeric_labels() {
+# Historical Grok usage decoding remains readable for frozen provider artifacts.
+test_profile_accepts_historical_safe_nonnumeric_labels() {
   ( local S="$T/profile-safe-label"; mkdir -p "$S"
     cat > "$S/roster.json" <<'JSON'
 {"seats":[
@@ -401,15 +532,16 @@ for file_number in range(3):
     (root / f'source_{file_number}.py').write_text(''.join(lines))
 PY
     printf "REV_ROOT='%s'\nREV_BASE='%s'\nREV_SCOPE='branch'\n" "$R" "$base" > "$S/scope.env"
-    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"agent"},{"seat":"grok","adapter":"agent"},{"seat":"opus","adapter":"agent"},{"seat":"opus-2","adapter":"agent"}]}' > "$S/roster.json"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"agent"},{"seat":"terra","adapter":"agent"},{"seat":"opus","adapter":"agent"},{"seat":"sonnet","adapter":"agent"}]}' > "$S/roster.json"
     : > "$S/files.txt"; : > "$S/untracked.txt"
     python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 6 --phase discovery >/dev/null || {
       fail "profile fixture discovery prepares"; return;
     }
     local seat
-    for seat in sol grok opus opus-2; do
-      python3 "$SCRIPTS/rev-evidence.py" render "$S/r6-evidence.manifest.json" "$seat" \
-        > "$S/r6-$seat.prompt.md" || { fail "profile fixture discovery prompt renders"; return; }
+    for seat in sol terra opus sonnet; do
+      "$SCRIPTS/rev-prompt.sh" "$S" 6 "$seat" simplicity profile \
+        --evidence "$S/r6-evidence.manifest.json" >/dev/null \
+        || { fail "profile fixture discovery prompt renders"; return; }
       printf '%s' '{"summary":"checked","findings":[]}' > "$S/r6-$seat.json"
       printf '0\n' > "$S/r6-$seat.exit"
       python3 - "$S/r6-evidence.manifest.json" "$seat" "$S/r6-$seat.stream.ndjson" "$R/source_0.py" <<'PY'
@@ -460,6 +592,14 @@ for required in manifest['source_context']['seats'][seat]['required_source_range
                 'type':'tool_result','tool_use_id':call_id,
                 'content':source.read_text()}]}},
         ])
+index = session / f"r{manifest['label']}-evidence.md"
+events.extend([
+    {'type':'assistant','message':{'id':'evidence-index','content':[{
+        'type':'tool_use','id':'evidence-index','name':'Read',
+        'input':{'file_path':str(index)}}]}},
+    {'type':'user','message':{'content':[{
+        'type':'tool_result','tool_use_id':'evidence-index','content':index.read_text()}]}},
+])
 if manifest['source_context']['seats'][seat]['source_read_required'] \
         and not manifest['source_context']['seats'][seat]['required_source_ranges']:
     context = manifest['source_context']['seats'][seat]
@@ -489,6 +629,44 @@ PY
           fail "profile fixture Agent transcript audits"; return;
         }
     done
+    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-production-audits.json"
+    python3 - "$S/profile-production-audits.json" "$S" <<'PY'
+import json, pathlib, sys
+profile = json.load(open(sys.argv[1])); session = pathlib.Path(sys.argv[2])
+audits = [json.load(open(path)) for path in sorted(session.glob('r6-*.read-audit.json'))]
+activity = profile['sessions'][0]['read_activity']
+assert len(audits) == 4 and all(audit['schema_version'] == 2 for audit in audits), audits
+assert all(audit['status'] == 'valid' for audit in audits), audits
+assert activity['audits'] == 4 and activity['violating_audits'] == 0, activity
+assert activity['invalid_audits'] == [], activity
+assert profile['totals']['read_activity']['audits'] == 4, profile
+PY
+    assert_eq "profile accepts every schema-2 audit emitted by the production auditor" "$?" 0
+
+    cp "$S/r6-sol.stream.ndjson" "$S/r6-sol.stream.valid"
+    : > "$S/r6-sol.stream.ndjson"
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter agent \
+      --raw "$S/r6-sol.stream.ndjson" --prompt "$S/r6-sol.prompt.md" \
+      --root "$R" --session "$S" --out "$S/r6-sol.read-audit.json" >/dev/null 2>&1
+    assert_eq "production auditor emits an early invalid schema-2 audit" "$?" 2
+    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-production-invalid.json"
+    python3 - "$S/profile-production-invalid.json" "$S/r6-sol.read-audit.json" <<'PY'
+import json, sys
+profile = json.load(open(sys.argv[1])); audit = json.load(open(sys.argv[2]))
+activity = profile['sessions'][0]['read_activity']
+assert audit['schema_version'] == 2 and audit['status'] == 'invalid', audit
+assert {'code': 'no-recognized-review-tools', 'tool': 'agent'} in audit['violations'], audit
+assert activity['audits'] == 4 and activity['violating_audits'] == 1, activity
+assert activity['invalid_audits'] == [], activity
+assert profile['totals']['read_activity']['violating_audits'] == 1, profile
+PY
+    assert_eq "profile counts an early production audit rejection as violating" "$?" 0
+    mv "$S/r6-sol.stream.valid" "$S/r6-sol.stream.ndjson"
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter agent \
+      --raw "$S/r6-sol.stream.ndjson" --prompt "$S/r6-sol.prompt.md" \
+      --root "$R" --session "$S" --out "$S/r6-sol.read-audit.json" || {
+        fail "profile fixture Agent transcript restores"; return;
+      }
     python3 "$SCRIPTS/rev-evidence.py" receipt "$S" 6 >/dev/null || {
       fail "profile fixture discovery receipt completes"; return;
     }
@@ -500,15 +678,19 @@ path.write_text(path.read_text().replace('value_0_0 = "0000-', 'value_0_0 = "cha
 PY
     python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 7 --phase verification \
       --assignment sol=correctness-boundaries \
-      --assignment grok=security-state-api \
+      --assignment terra=security-state-api \
       --assignment opus=concurrency-resources-performance \
-      --assignment opus-2=tests-observability-maintenance-regression >/dev/null || {
+      --assignment sonnet=tests-observability-maintenance-regression >/dev/null || {
         fail "profile fixture verification prepares"; return;
       }
-    for seat in sol grok opus opus-2; do
-      python3 "$SCRIPTS/rev-evidence.py" render "$S/r7-evidence.manifest.json" "$seat" \
-        > "$S/r7-$seat.prompt.md" || { fail "profile fixture prompt renders"; return; }
-    done
+    "$SCRIPTS/rev-prompt.sh" "$S" 7 sol correctness-boundaries verification \
+      --evidence "$S/r7-evidence.manifest.json" >/dev/null || return
+    "$SCRIPTS/rev-prompt.sh" "$S" 7 terra security-state-api verification \
+      --evidence "$S/r7-evidence.manifest.json" >/dev/null || return
+    "$SCRIPTS/rev-prompt.sh" "$S" 7 opus concurrency-resources-performance verification \
+      --evidence "$S/r7-evidence.manifest.json" >/dev/null || return
+    "$SCRIPTS/rev-prompt.sh" "$S" 7 sonnet tests-observability-maintenance-regression verification \
+      --evidence "$S/r7-evidence.manifest.json" >/dev/null || return
     cp "$S/r7-evidence.manifest.json" "$S/expected-evidence.manifest.json"
     printf '{' > "$S/r8-evidence.manifest.json"
     cat > "$S/r7-sol.stream.ndjson" <<'EOF'
@@ -542,6 +724,10 @@ expected = {
     'avoided_words': m['word_counts']['avoided'],
     'plan_words': 0,
     'closure_words': 0,
+    'prepared_search_words': 0,
+    'plan_specialist_patch_words': 0,
+    'receipt_relative_plan_manifests': 0,
+    'cumulative_plan_manifests': 0,
 }
 
 assert s['scope_projection'] == expected, (s, expected)
@@ -559,6 +745,10 @@ assert d['totals']['scope_projection'] == {
     'avoided_words': expected['avoided_words'],
     'plan_words': 0,
     'closure_words': 0,
+    'prepared_search_words': 0,
+    'plan_specialist_patch_words': 0,
+    'receipt_relative_plan_manifests': 0,
+    'cumulative_plan_manifests': 0,
 }, d
 assert not __import__('pathlib').Path(sys.argv[3]).exists(), sys.argv[3]
 assert not __import__('pathlib').Path(sys.argv[4]).exists(), sys.argv[4]
@@ -600,6 +790,10 @@ assert scope == {
     'avoided_words': 0,
     'plan_words': 0,
     'closure_words': 0,
+    'prepared_search_words': 0,
+    'plan_specialist_patch_words': 0,
+    'receipt_relative_plan_manifests': 0,
+    'cumulative_plan_manifests': 0,
 }, scope
 PY
     assert_eq "manifest without every hashed prompt cannot claim projected savings" "$?" 0
@@ -627,7 +821,7 @@ audit = {
     'result_sha256': hashlib.sha256(result.read_bytes()).hexdigest(),
     'evidence_manifest_sha256': manifest_hash, 'violations': [],
     'tool_calls': 3, 'tool_turns': 2, 'tool_output_bytes': 1200, 'max_tool_output_bytes': 700,
-    'recognized_tool_calls': 3, 'source_read_calls': 1, 'packet_shards': 2,
+    'recognized_tool_calls': 3, 'source_read_calls': 1, 'source_read_batches': 1, 'packet_shards': 2,
     'packet_bytes': 900, 'packet_ranges': 4, 'opened_source_ranges': 1,
     'patch_proof_mode': 'chunks', 'patch_proof_calls': 2, 'patch_proof_turns': 2,
     'patch_proof_visible_bytes': 280, 'expected_patch_chunks': 2, 'opened_patch_chunks': 2,
@@ -649,6 +843,7 @@ d = json.load(open(sys.argv[1])); a = d['sessions'][0]['read_activity']
 assert a['packet_shards'] == 2 and a['packet_bytes'] == 900, a
 assert a['packet_ranges'] == 4 and a['opened_source_ranges'] == 1, a
 assert a['source_read_calls'] == 1 and a['recognized_tool_calls'] == 3, a
+assert a['source_read_batches'] == 1, a
 assert a['finding_citations'] == 0, a
 assert a['patch_proof_calls'] == 2 and a['patch_proof_turns'] == 2, a
 assert a['patch_proof_visible_bytes'] == 280, a
@@ -661,12 +856,21 @@ PY
     assert_eq "profile separates packet bytes and source-range activity from raw tokens" "$?" 0
     "$SCRIPTS/rev-profile.py" "$S" > "$S/profile.txt"
     assert_grep "text profile reports packet and source ranges separately" "$S/profile.txt" \
-      'packet_shards:2 packet_bytes:900 packet_ranges:4 source_reads:1 opened_ranges:1 finding_citations:0'
+      'packet_shards:2 packet_bytes:900 packet_ranges:4 source_reads:1 source_batches:1 opened_ranges:1 finding_citations:0'
     assert_grep "text profile reports patch proof activity separately" "$S/profile.txt" \
       'patch_proof_calls:2 patch_proof_turns:2 patch_proof_bytes:280 expected_chunks:2 opened_chunks:2 patch_modes:window:0,chunk:1'
+    python3 - "$S/r4-sol.read-audit.json" <<'PY'
+import json, sys
+path = sys.argv[1]; audit = json.load(open(path)); audit['source_read_batches'] = 2
+open(path, 'w').write(json.dumps(audit))
+PY
+    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-invalid-batches.json"
+    assert_grep "profile rejects more source batches than source read calls" \
+      "$S/profile-invalid-batches.json" 'invalid source evidence audit structure'
   )
 }
 
+# Historical Grok usage decoding rejects malformed frozen provider metrics.
 test_profile_rejects_invalid_usage_numbers() {
   ( local S="$T/profile-invalid-numbers"; mkdir -p "$S"
     printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"grok","adapter":"grok"}]}' > "$S/roster.json"

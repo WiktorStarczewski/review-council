@@ -16,41 +16,41 @@ test_prompt_inputs() {
     }
 
     mkdir -p "$S/plan-dir"; printf 'content\n' > "$S/plan-dir/item"
-    expect_prompt_failure "nonempty plan directory" "$S/r1-grok.prompt.md" \
-      "$SCRIPTS/rev-prompt.sh" "$S" 1 grok plan-tests plan --plan "$S/plan-dir"
+    expect_prompt_failure "nonempty plan directory" "$S/r1-codex-terra.prompt.md" \
+      "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-terra plan-tests plan --plan "$S/plan-dir"
 
     mkdir -p "$S/docs-dir"; printf 'content\n' > "$S/docs-dir/item"
-    expect_prompt_failure "nonempty document-list directory" "$S/r2-grok.prompt.md" \
-      "$SCRIPTS/rev-prompt.sh" "$S" 2 grok correctness docs --read-only "$S/docs-dir"
+    expect_prompt_failure "nonempty document-list directory" "$S/r2-codex-terra.prompt.md" \
+      "$SCRIPTS/rev-prompt.sh" "$S" 2 codex-terra correctness docs --read-only "$S/docs-dir"
 
     mv "$S/scope.env" "$S/scope.saved"; mkdir "$S/scope.env"; printf 'content\n' > "$S/scope.env/item"
-    expect_prompt_failure "scope directory" "$S/r3-grok.prompt.md" \
-      "$SCRIPTS/rev-prompt.sh" "$S" 3 grok correctness scope
+    expect_prompt_failure "scope directory" "$S/r3-codex-terra.prompt.md" \
+      "$SCRIPTS/rev-prompt.sh" "$S" 3 codex-terra correctness scope
     rm -rf "$S/scope.env"; mv "$S/scope.saved" "$S/scope.env"
 
     mv "$S/files.txt" "$S/files.saved"; mkdir "$S/files.txt"; printf 'content\n' > "$S/files.txt/item"
-    expect_prompt_failure "changed-file directory" "$S/r4-grok.prompt.md" \
-      "$SCRIPTS/rev-prompt.sh" "$S" 4 grok correctness files
+    expect_prompt_failure "changed-file directory" "$S/r4-codex-terra.prompt.md" \
+      "$SCRIPTS/rev-prompt.sh" "$S" 4 codex-terra correctness files
     rm -rf "$S/files.txt"; mv "$S/files.saved" "$S/files.txt"
 
     mkdir "$S/untracked.txt"; printf 'content\n' > "$S/untracked.txt/item"
-    expect_prompt_failure "untracked-file directory" "$S/r5-grok.prompt.md" \
-      "$SCRIPTS/rev-prompt.sh" "$S" 5 grok correctness untracked
+    expect_prompt_failure "untracked-file directory" "$S/r5-codex-terra.prompt.md" \
+      "$SCRIPTS/rev-prompt.sh" "$S" 5 codex-terra correctness untracked
     rm -rf "$S/untracked.txt"
 
-    expect_prompt_failure "missing selected PR description" "$S/r6-grok.prompt.md" \
-      "$SCRIPTS/rev-prompt.sh" "$S" 6 grok correctness pr --pr "$S/missing-pr.md"
+    expect_prompt_failure "missing selected PR description" "$S/r6-codex-terra.prompt.md" \
+      "$SCRIPTS/rev-prompt.sh" "$S" 6 codex-terra correctness pr --pr "$S/missing-pr.md"
 
     printf '{not json}\n' > "$S/roster.json"
-    expect_prompt_failure "malformed roster JSON" "$S/r7-grok.prompt.md" \
-      "$SCRIPTS/rev-prompt.sh" "$S" 7 grok correctness roster
+    expect_prompt_failure "malformed roster JSON" "$S/r7-codex-terra.prompt.md" \
+      "$SCRIPTS/rev-prompt.sh" "$S" 7 codex-terra correctness roster
     printf '%s\n' '{"seats":[{"seat":"opus","adapter":"agent"}]}' > "$S/roster.json"
-    expect_prompt_failure "roster without selected seat" "$S/r8-grok.prompt.md" \
-      "$SCRIPTS/rev-prompt.sh" "$S" 8 grok correctness roster
+    expect_prompt_failure "roster without selected seat" "$S/r8-codex-terra.prompt.md" \
+      "$SCRIPTS/rev-prompt.sh" "$S" 8 codex-terra correctness roster
 
     rm -f "$S/roster.json"; mkdir "$S/baseline.md"; printf 'content\n' > "$S/baseline.md/item"
-    expect_prompt_failure "optional baseline directory" "$S/r9-grok.prompt.md" \
-      "$SCRIPTS/rev-prompt.sh" "$S" 9 grok correctness baseline
+    expect_prompt_failure "optional baseline directory" "$S/r9-codex-terra.prompt.md" \
+      "$SCRIPTS/rev-prompt.sh" "$S" 9 codex-terra correctness baseline
     rm -rf "$S/baseline.md"
 
     local no_roster compatibility_seat
@@ -97,7 +97,7 @@ exit 24
 SH
     chmod +x "$FAILBIN/sed"
     rm -rf "$S/pr.md"; rm -f "$S/roster.json"
-    expect_prompt_failure "renderer read failure" "$S/r14-grok.prompt.md" \
-      env PATH="$FAILBIN:$PATH" "$SCRIPTS/rev-prompt.sh" "$S" 14 grok correctness render
+    expect_prompt_failure "renderer read failure" "$S/r14-codex-terra.prompt.md" \
+      env PATH="$FAILBIN:$PATH" "$SCRIPTS/rev-prompt.sh" "$S" 14 codex-terra correctness render
   )
 }

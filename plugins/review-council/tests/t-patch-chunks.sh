@@ -50,8 +50,26 @@ assert not terminal_chunks[-1]['content'].endswith(b'\n')
 
 assert module.patch_chunk_mode(b'one\n', module.partition_patch_chunks(b'one\n'), True) == 'windows'
 assert module.patch_chunk_mode(raw, chunks, False) == 'windows'
+assert module.patch_chunk_mode(raw, chunks, '1') == 'chunks'
+assert module.patch_chunk_mode(raw, chunks, '0') == 'windows'
 assert module.patch_chunk_mode(b'\xff\n', [], True) == 'windows'
 assert module.patch_chunk_mode(b'a\0b\n', [], True) == 'windows'
+assert module.merge_repository_windows([
+    ('src/a.py', 1, 10), ('src/a.py', 200, 220), ('src/a.py', 500, 800)]) == [
+        ('src/a.py', 1, 220), ('src/a.py', 500, 739), ('src/a.py', 740, 800)]
+
+wide_source_line = b's' * (20 * 1024) + b'\n'
+source_segments = module.partition_source_segments([wide_source_line], 1, 1)
+assert len(source_segments) == 1
+assert source_segments[0]['raw_bytes'] == len(wide_source_line)
+assert source_segments[0]['predicted_visible_bytes'] <= module.SOURCE_CONTEXT_LIMIT
+
+try:
+    module.partition_source_segments([b's' * (33 * 1024) + b'\n'], 1, 1)
+except ValueError as error:
+    assert str(error) == 'required source line exceeds visible segment limit'
+else:
+    raise AssertionError('a source line above the per-read ceiling was accepted')
 
 other = b'y' + raw[1:]
 scopes = {
@@ -63,9 +81,185 @@ sets, artifacts = module.patch_sets_for(scopes, {'a': raw, 'b': raw, 'c': other}
 assert scopes['a']['patch_set'] == scopes['b']['patch_set']
 assert scopes['c']['patch_set'] != scopes['a']['patch_set']
 assert len(sets) == 2 and artifacts
+
+assignment = {'opus': {'adapter':'claude', 'patch_set':'p01', 'patch_lines':75_400,
+                       'plan_clusters':[]}}
+context = {'seats': {'opus': {
+    'shards':[], 'required_source_ranges':[], 'omitted_source_ranges':[],
+    'source_read_required':False}}}
+window_sets = {'p01': {'read_mode':'windows', 'chunks':[]}}
+capacity = module.compile_task_capacity(assignment, window_sets, context)
+assert capacity['seats']['opus']['patch_proof_turns'] == 158
+assert capacity['seats']['opus']['projected_turns'] == 166
+assert module.task_capacity_errors(capacity) == ['task exceeds provider turn capacity: opus']
+chunk_sets = {'p01': {'read_mode':'chunks', 'chunks':[{}] * 300}}
+capacity = module.compile_task_capacity(assignment, chunk_sets, context)
+assert capacity['seats']['opus']['repository_refutation_turns'] == 4
+assert capacity['seats']['opus']['projected_turns'] == 158
+assert module.task_capacity_errors(capacity) == []
+
+chunk_sets = {'p01': {'read_mode':'chunks', 'chunks':[{}] * 304}}
+capacity = module.compile_task_capacity(assignment, chunk_sets, context)
+assert capacity['seats']['opus']['projected_turns'] == 160
+assert module.task_capacity_errors(capacity) == []
+context['seats']['opus'].update(
+    source_read_required=True,
+    omitted_source_ranges=[{'path':'src/value.py', 'line_start':1, 'line_end':1}],
+)
+capacity = module.compile_task_capacity(assignment, chunk_sets, context)
+assert capacity['seats']['opus']['mandatory_repository_reads'] == 1
+assert capacity['seats']['opus']['projected_turns'] == 161
+assert module.task_capacity_errors(capacity) == ['task exceeds provider turn capacity: opus']
+
+assignment = {'sol': {'adapter':'codex', 'patch_set':'p01', 'patch_lines':0,
+                      'plan_clusters':['C-01']}}
+context = {'seats': {'sol': {'shards':[], 'required_source_ranges':[]}}}
+cluster = {'id':'C-01', 'paths':[
+    {'path':f'src/{index}.py', 'line_start':1, 'line_end':1}
+    for index in range(13)]}
+capacity = module.compile_task_capacity(assignment, window_sets, context, [cluster])
+assert capacity['seats']['sol']['mandatory_repository_reads'] == 13
+assert module.task_capacity_errors(capacity) == [
+    'mandatory source reads exceed repository capacity: sol']
+
+pair = [
+    {'path':'src/pair.py', 'line_start':37, 'line_end':63,
+     'priority':0, 'blob_tree':'tree'},
+    {'path':'src/pair.py', 'line_start':64, 'line_end':73,
+     'priority':1, 'blob_tree':'tree'},
+]
+cluster['paths'] = [
+    {'path':f'src/{index}.py', 'line_start':1, 'line_end':1}
+    for index in range(12)
+] + [
+    {'path':'src/pair.py', 'line_start':37, 'line_end':63},
+    {'path':'src/pair.py', 'line_start':64, 'line_end':73},
+]
+selected = module.grouped_plan_source_promotions(
+    assignment['sol'], [cluster], [], pair, lambda _index, _row: 1)
+assert selected == [0, 1]
+delivered = [pair[index] for index in selected]
+assert len(module.mandatory_repository_windows(
+    assignment['sol'], [cluster], delivered)) == 12
 print('partition contract passes')
 PY
   assert_eq "patch chunks partition and reconstruct exact UTF-8 bytes" "$?" 0
+}
+
+test_wide_singleton_source_segment_manifest() {
+  ( local R="$T/wide-source-segment-root" S="$T/wide-source-segment-session"
+    mkrepo "$R"; mkdir -p "$R/src" "$S"
+    python3 - "$R/src/wide.py" <<'PY'
+import sys
+
+body = ('def wide_context():\n'
+        + '    payload = "' + 'x' * (20 * 1024) + '"\n'
+        + ''.join(f'    value_{index:03d} = "{index:03d}-' + 'y' * 52 + '"\n'
+                  for index in range(260))
+        + '    return payload\n')
+open(sys.argv[1], 'w').write(body)
+PY
+    git -C "$R" add src/wide.py && git -C "$R" commit -qm "wide source base"
+    local base manifest
+    base=$(git -C "$R" rev-parse HEAD)
+    python3 - "$R/src/wide.py" <<'PY'
+import pathlib, sys
+
+path = pathlib.Path(sys.argv[1])
+path.write_text(path.read_text().replace('return payload', 'return payload + "changed"'))
+PY
+    printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+      "$base" "$R" > "$S/scope.env"
+    printf 'src/wide.py\n' > "$S/files.txt"; : > "$S/untracked.txt"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+    manifest=$(REV_PATCH_CHUNKS=1 REV_SOURCE_CONTEXT=1 \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$S" wide --phase discovery) || return
+    python3 - "$manifest" <<'PY'
+import json, sys
+
+manifest = json.load(open(sys.argv[1]))
+packet = manifest['source_context']['seats'][manifest['mechanical_owner']]
+segments = [segment for required in packet['required_source_ranges']
+            for segment in required['segments']]
+wide = [segment for segment in segments
+        if segment['predicted_visible_bytes'] > 32768 // 2]
+assert len(wide) == 1
+assert wide[0]['line_start'] == wide[0]['line_end']
+assert wide[0]['predicted_visible_bytes'] <= 32768
+PY
+    assert_eq "prepare records one wide singleton source segment" "$?" 0
+    python3 "$SCRIPTS/rev-evidence.py" verify "$manifest" >/dev/null 2> "$S/wide-valid.err"
+    assert_eq "validator accepts a wide singleton source segment" "$?" 0
+
+    mutate_wide_segment() {
+      python3 - "$manifest" "$R" "$1" <<'PY'
+import hashlib, json, pathlib, sys
+
+manifest_path = pathlib.Path(sys.argv[1])
+session = manifest_path.parent
+root = pathlib.Path(sys.argv[2])
+mode = sys.argv[3]
+encode = lambda value: (json.dumps(value, sort_keys=True, ensure_ascii=True, indent=2) + '\n').encode()
+manifest = json.loads(manifest_path.read_text())
+owner = manifest['mechanical_owner']
+packet = manifest['source_context']['seats'][owner]
+required = next(row for row in packet['required_source_ranges']
+                if any(segment['predicted_visible_bytes'] > 32768 // 2
+                       for segment in row['segments']))
+segment = next(row for row in required['segments']
+               if row['predicted_visible_bytes'] > 32768 // 2)
+artifact = session / segment['artifact']
+raw = artifact.read_bytes()
+if mode == 'multiline':
+    raw += (root / required['path']).read_bytes().splitlines(keepends=True)[segment['line_end']]
+    segment['line_end'] += 1
+else:
+    assert mode == 'oversized'
+    assert raw.endswith(b'\n')
+    raw = raw[:-1] + b'z' * (13 * 1024) + b'\n'
+segment['raw_bytes'] = len(raw)
+segment['predicted_visible_bytes'] = len(raw) + (
+    segment['line_end'] - segment['line_start'] + 1) * 8
+segment['content_sha256'] = hashlib.sha256(raw).hexdigest()
+artifact.write_bytes(raw)
+manifest['artifacts'][artifact.name] = {
+    'sha256': hashlib.sha256(raw).hexdigest(), 'words': len(raw.split())}
+evidence_path = session / f"r{manifest['label']}-evidence.json"
+evidence = json.loads(evidence_path.read_text())
+evidence['source_context'] = manifest['source_context']
+evidence_raw = encode(evidence)
+evidence_path.write_bytes(evidence_raw)
+manifest['artifacts'][evidence_path.name] = {
+    'sha256': hashlib.sha256(evidence_raw).hexdigest(), 'words': len(evidence_raw.split())}
+source_words = sum(
+    len((session / name).read_bytes().split())
+    for value in manifest['source_context']['seats'].values()
+    for name in ([shard['artifact'] for shard in value['shards']]
+                 + [part['artifact'] for source_range in value['required_source_ranges']
+                    for part in source_range['segments']]))
+manifest['word_counts']['source_context'] = source_words
+words = manifest['word_counts']
+words['avoided'] = max(0, len(manifest['assignments']) * words['full']
+                       - words['assigned_patch'] - len(manifest['assignments']) * words['evidence']
+                       - source_words)
+manifest_path.write_bytes(encode(manifest))
+PY
+    }
+
+    mutate_wide_segment multiline
+    python3 "$SCRIPTS/rev-evidence.py" verify "$manifest" >/dev/null 2> "$S/wide-multiline.err"
+    assert_eq "validator rejects a wide multi-line source segment" "$?" 2
+    assert_grep "wide multi-line rejection names the source segment" "$S/wide-multiline.err" \
+      'invalid required source segment'
+
+    manifest=$(REV_PATCH_CHUNKS=1 REV_SOURCE_CONTEXT=1 \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$S" wide --phase discovery) || return
+    mutate_wide_segment oversized
+    python3 "$SCRIPTS/rev-evidence.py" verify "$manifest" >/dev/null 2> "$S/wide-oversized.err"
+    assert_eq "validator rejects a singleton source segment above 32 KiB" "$?" 2
+    assert_grep "oversized singleton rejection names the source segment" "$S/wide-oversized.err" \
+      'invalid required source segment'
+  )
 }
 
 test_patch_chunk_manifest_contract() {
@@ -82,7 +276,7 @@ PY
     printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
       "$base" "$R" > "$S/scope.env"
     printf 'src/large.py\n' > "$S/files.txt"; printf 'src/large.py\n' > "$S/untracked.txt"
-    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"grok","adapter":"grok"},{"seat":"opus","adapter":"claude"},{"seat":"opus-2","adapter":"gemini"}]}' > "$S/roster.json"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
     manifest=$(REV_PATCH_CHUNKS=1 REV_SOURCE_CONTEXT=1 \
       python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 21 --phase discovery) || return
     python3 - "$manifest" <<'PY'
@@ -105,8 +299,9 @@ assert len({row['artifact'] for row in chunks}) == len(chunks)
 PY
     assert_eq "identical assignments share one immutable patch chunk set" "$?" 0
 
-    local prompt
-    prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 sol correctness chunks --evidence "$manifest") || return
+    local prompt sol_bundle
+    sol_bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"]["sol"]["bundle"])' "$manifest") || return
+    prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 sol "$sol_bundle" chunks --evidence "$manifest") || return
     assert_grep "chunk prompt names chunk mode" "$prompt" '^Assigned patch read mode: chunks$'
     assert_eq "chunk prompt renders each artifact once" \
       "$(grep -c '^Assigned patch chunk [0-9]' "$prompt")" \
@@ -123,22 +318,25 @@ PY
       '^First assigned-patch action: run cat -- '
     assert_nogrep "Codex chunk prompt never requests a native read tool" "$prompt" \
       '^First assigned-patch action:.*Read|^First assigned-patch action:.*read_file'
-    local grok_prompt opus_prompt gemini_prompt
-    grok_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 grok correctness chunks --evidence "$manifest") || return
-    opus_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 opus correctness chunks --evidence "$manifest") || return
-    gemini_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 opus-2 correctness chunks --evidence "$manifest") || return
-    assert_grep "Grok batches two consecutive patch chunks" "$grok_prompt" \
-      '^Patch chunk batch limit: 2$'
+    local terra_prompt opus_prompt sonnet_prompt terra_bundle opus_bundle sonnet_bundle
+    terra_bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"]["terra"]["bundle"])' "$manifest") || return
+    opus_bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"]["opus"]["bundle"])' "$manifest") || return
+    sonnet_bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"]["sonnet"]["bundle"])' "$manifest") || return
+    terra_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 terra "$terra_bundle" chunks --evidence "$manifest") || return
+    opus_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 opus "$opus_bundle" chunks --evidence "$manifest") || return
+    sonnet_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 sonnet "$sonnet_bundle" chunks --evidence "$manifest") || return
+    assert_grep "Terra keeps one patch chunk per turn" "$terra_prompt" \
+      '^Patch chunk batch limit: 1$'
     assert_grep "Opus batches two consecutive patch chunks" "$opus_prompt" \
       '^Patch chunk batch limit: 2$'
-    assert_grep "Grok chunk prompt uses read_file" "$grok_prompt" \
-      '^First assigned-patch action: use read_file to read 2 consecutive listed chunks in full'
+    assert_grep "Terra chunk prompt gives an exact shell recipe" "$terra_prompt" \
+      '^First assigned-patch action: run cat -- '
     assert_grep "Opus chunk prompt uses Read" "$opus_prompt" \
       '^First assigned-patch action: use Read to read 2 consecutive listed chunks in full'
-    assert_grep "Gemini keeps one patch chunk per turn" "$gemini_prompt" \
-      '^Patch chunk batch limit: 1$'
-    assert_grep "Gemini chunk prompt uses read_file" "$gemini_prompt" \
-      '^First assigned-patch action: use read_file to read 1 consecutive listed chunk in full'
+    assert_grep "Sonnet batches two consecutive patch chunks" "$sonnet_prompt" \
+      '^Patch chunk batch limit: 2$'
+    assert_grep "Sonnet chunk prompt uses Read" "$sonnet_prompt" \
+      '^First assigned-patch action: use Read to read 2 consecutive listed chunks in full'
     printf '1. Verify the large change.\n' > "$S/fix-plan.md"
     assert_exit "chunk prompt rejects a non-plan evidence manifest" 1 \
       "$SCRIPTS/rev-prompt.sh" "$S" 21 sol plan-tests chunks \
@@ -187,13 +385,17 @@ for seat, assignment in m['assignments'].items():
     }
     (session / f'r21-{seat}.read-audit.json').write_text(json.dumps(audit))
 PY
+    python3 "$SCRIPTS/rev-evidence.py" receipt "$S" 21 >/dev/null 2> "$S/receipt-valid.err"
+    assert_eq "complete chunk proof passes before mutation" "$?" 0
     python3 - "$S/r21-sol.read-audit.json" <<'PY'
 import json, sys
 path=sys.argv[1]; audit=json.load(open(path)); audit['opened_patch_chunks']-=1
 json.dump(audit,open(path,'w'))
 PY
-    python3 "$SCRIPTS/rev-evidence.py" receipt "$S" 21 >/dev/null 2>&1
+    python3 "$SCRIPTS/rev-evidence.py" receipt "$S" 21 >/dev/null 2> "$S/receipt-incomplete.err"
     assert_eq "coverage receipt rejects an incomplete chunk proof" "$?" 2
+    assert_grep "incomplete chunk proof has a stable reason" "$S/receipt-incomplete.err" \
+      'assigned patch chunk audit is incomplete: sol'
 
     local saved_chunk
     saved_chunk=$(python3 - "$manifest" <<'PY'
@@ -229,8 +431,8 @@ PY
     printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
       "$base" "$R" > "$S/scope.env"
     printf 'src/wide.py\n' > "$S/files.txt"; printf 'src/wide.py\n' > "$S/untracked.txt"
-    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"grok","adapter":"grok"},{"seat":"opus","adapter":"claude"},{"seat":"opus-2","adapter":"claude"}]}' > "$S/roster.json"
-    manifest=$(REV_PATCH_CHUNKS=1 REV_SOURCE_CONTEXT=1 \
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+    manifest=$(REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 \
       python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 22 --phase discovery) || return
     assert_eq "chunk mode declines when it saves less than ten percent of reads" \
       "$(python3 - "$manifest" <<'PY'
@@ -238,6 +440,17 @@ import json,sys
 print(json.load(open(sys.argv[1]))['assignments']['sol']['patch_read_mode'])
 PY
 )" windows
+    local forced
+    forced=$(REV_PATCH_CHUNKS=1 REV_SOURCE_CONTEXT=1 \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 22-force --phase discovery) || return
+    assert_eq "REV_PATCH_CHUNKS=1 forces representable patches into chunks" \
+      "$(python3 - "$forced" <<'PY'
+import json,sys
+m=json.load(open(sys.argv[1]))
+print(m['patch_chunks_mode'], m['patch_chunks_effective_mode'],
+      ','.join(sorted({a['patch_read_mode'] for a in m['assignments'].values()})))
+PY
+)" '1 1 chunks'
     cp "$manifest" "$T/r22-evidence.manifest.valid.json"
     python3 "$SCRIPTS/rev-evidence.py" verify "$manifest" >/dev/null 2>&1
     assert_eq "schema 2 non-plan evidence remains valid" "$?" 0
@@ -278,6 +491,13 @@ import json,sys
 m=json.load(open(sys.argv[1])); print(','.join(sorted({a['patch_read_mode'] for a in m['assignments'].values()})), len(list(__import__('pathlib').Path(sys.argv[1]).parent.glob('r23-patch-*.txt'))))
 PY
 )" 'windows 0'
+    REV_PATCH_CHUNKS=enabled python3 "$SCRIPTS/rev-evidence.py" prepare "$S" bad-mode \
+      --phase discovery > "$T/bad-patch-mode.out" 2> "$T/bad-patch-mode.err"
+    assert_eq "unknown patch chunk mode fails before publication" "$?" 2
+    assert_grep "unknown patch chunk mode has a stable error" "$T/bad-patch-mode.err" \
+      'REV_PATCH_CHUNKS must be auto, 0, or 1'
+    assert_exit "unknown patch chunk mode publishes no manifest" 1 \
+      test -e "$S/rbad-mode-evidence.manifest.json"
   )
 }
 
@@ -295,10 +515,12 @@ PY
     printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
       "$base" "$R" > "$S/scope.env"
     printf 'src/large.py\n' > "$S/files.txt"; printf 'src/large.py\n' > "$S/untracked.txt"
-    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"grok","adapter":"grok"},{"seat":"opus","adapter":"claude"},{"seat":"opus-2","adapter":"claude"}]}' > "$S/roster.json"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
     manifest=$(REV_PATCH_CHUNKS=1 REV_SOURCE_CONTEXT=1 \
       python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 24 --phase discovery) || return
-    prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 24 sol correctness chunk-audit --evidence "$manifest") || return
+    local sol_bundle
+    sol_bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"]["sol"]["bundle"])' "$manifest") || return
+    prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 24 sol "$sol_bundle" chunk-audit --evidence "$manifest") || return
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r24-sol.json"
 
     write_transcript() {
@@ -313,14 +535,19 @@ if mode == 'reorder':
 elif mode == 'missing':
     chunks = chunks[:-1]
 events = []
-def command(call_id, command_text, output):
+def command(call_id, command_text, output, status=0):
     events.extend([
         {'type':'item.started','item':{'id':call_id,'type':'command_execution','command':command_text}},
         {'type':'item.completed','item':{'id':call_id,'type':'command_execution','command':command_text,
-                                         'aggregated_output':output,'exit_code':0}},
+                                         'aggregated_output':output,'exit_code':status}},
     ])
-def packets():
-    for row in manifest['source_context']['seats']['sol']['shards']:
+def packets(expand_before_last=False):
+    rows = manifest['source_context']['seats']['sol']['shards']
+    assert rows
+    for index, row in enumerate(rows):
+        if expand_before_last and index == len(rows) - 1:
+            command('search-before-final-packet', "rg -n 'value_1' . | head -80",
+                    'src/large.py:2:value_0001 = 0001\n')
         path = session / row['artifact']
         command('packet-' + str(row['artifact']), "cat '" + str(path) + "'", path.read_text())
 if mode == 'packet-first':
@@ -346,10 +573,19 @@ if mode == 'unassigned':
     extra.write_bytes(source.read_bytes())
     command('chunk-unassigned', 'cat -- ' + shlex.quote(str(extra)), extra.read_text())
 if mode != 'packet-first':
-    packets()
+    packets(mode == 'search-before-final-packet')
+index = session / f"r{manifest['label']}-evidence.md"
+command('evidence-index', 'cat -- ' + shlex.quote(str(index)), index.read_text())
 source = root / 'src/large.py'
 if manifest['source_context']['seats']['sol']['source_read_required']:
     command('source', "sed -n '1,1p' 'src/large.py'", source.read_text().splitlines(keepends=True)[0])
+if mode == 'expansion-overflow':
+    for index in range(17):
+        command('search-' + str(index), "rg -n 'value_1' . | head -80",
+                'src/large.py:2:value_0001 = 0001\n')
+if mode == 'failed-expansion-overflow':
+    for index in range(17):
+        command('failed-search-' + str(index), "rg -n 'missing' . | head -80", '', 1)
 with out.open('w') as stream:
     for event in events:
         stream.write(json.dumps(event) + '\n')
@@ -376,8 +612,23 @@ assert all(row['path'] not in chunk_artifacts for row in a['source_ranges'])
 PY
     assert_eq "chunk proof counters are internally consistent" "$?" 0
 
+    python3 - "$S/r24-sol.stream.ndjson" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+events = [json.loads(line) for line in path.read_text().splitlines()]
+events[:4] = [events[0], events[2], events[1], events[3]]
+path.write_text(''.join(json.dumps(event) + '\n' for event in events))
+PY
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+      --raw "$S/r24-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
+      --out "$S/r24-sol.read-audit.json" >/dev/null 2>&1
+    assert_eq "concurrent Codex patch reads above its batch limit are rejected" "$?" 2
+    assert_grep "concurrent Codex patch reads have a stable batch violation" \
+      "$S/r24-sol.read-audit.json" '"code":"patch-chunk-batch-too-large"'
+
     local mode code
-    for mode in missing reorder replace duplicate unassigned truncate oversized packet-first search-first; do
+    for mode in missing reorder replace duplicate unassigned truncate oversized packet-first search-first \
+      search-before-final-packet expansion-overflow failed-expansion-overflow; do
       case "$mode" in
         missing) code=missing-assigned-patch-chunk;;
         reorder) code=reordered-patch-chunks;;
@@ -386,8 +637,11 @@ PY
         unassigned) code=unassigned-patch-chunk;;
         truncate) code=partial-patch-chunk;;
         oversized) code=tool-output-too-large;;
-        packet-first) code=patch-chunk-read-order;;
-        search-first) code=patch-chunk-read-order;;
+        packet-first) code=evidence-read-order;;
+        search-first) code=evidence-read-order;;
+        search-before-final-packet) code=evidence-read-order;;
+        expansion-overflow) code=repository-expansion-call-limit;;
+        failed-expansion-overflow) code=repository-expansion-call-limit;;
       esac
       write_transcript "$mode"
       python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
@@ -398,15 +652,19 @@ PY
         "\"code\":\"$code\""
     done
 
-    local opus_prompt grok_prompt
-    opus_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 24 opus correctness chunk-audit \
+    local opus_prompt sonnet_prompt opus_bundle sonnet_bundle
+    opus_bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"]["opus"]["bundle"])' "$manifest") || return
+    sonnet_bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"]["sonnet"]["bundle"])' "$manifest") || return
+    opus_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 24 opus "$opus_bundle" chunk-audit \
       --evidence "$manifest") || return
-    grok_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 24 grok correctness chunk-audit \
+    sonnet_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 24 sonnet "$sonnet_bundle" chunk-audit \
       --evidence "$manifest") || return
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r24-opus.json"
-    python3 - "$manifest" "$S/r24-opus.stream.ndjson" "$R" <<'PY'
+    write_claude_order_transcript() {
+      python3 - "$manifest" "$S/r24-opus.stream.ndjson" "$R" "$1" <<'PY'
 import json, pathlib, sys
 m=json.load(open(sys.argv[1])); out=pathlib.Path(sys.argv[2]); root=pathlib.Path(sys.argv[3])
+mode=sys.argv[4]
 session=pathlib.Path(sys.argv[1]).parent; assignment=m['assignments']['opus']
 chunks=m['patch_sets'][assignment['patch_set']]['chunks']; events=[]
 def turn(identity, calls):
@@ -416,35 +674,54 @@ def turn(identity, calls):
     events.append({'type':'user','message':{'content':[
         {'type':'tool_result','tool_use_id':call_id,'content':output}
         for call_id,_,_,output in calls]}})
-for row in chunks[:-1]:
+for row in chunks:
     path=session/row['artifact']
-    turn('msg-'+str(row['index']), [('chunk-'+str(row['index']),'Read',{'file_path':str(path)},path.read_text())])
-last=chunks[-1]; last_path=session/last['artifact']
-turn('msg-final', [
-    ('chunk-'+str(last['index']),'Read',{'file_path':str(last_path)},last_path.read_text()),
-    ('search-same-turn','Bash',{'command':"rg -n 'value_1' . | head -80"},'src/large.py:2:value_0001 = 0001\n'),
-])
-for index,row in enumerate(m['source_context']['seats']['opus']['shards'],1):
-    path=session/row['artifact']; turn('packet-'+str(index),[
-        ('packet-call-'+str(index),'Read',{'file_path':str(path)},path.read_text())])
+    calls=[('chunk-'+str(row['index']),'Read',{'file_path':str(path)},path.read_text())]
+    if mode == 'final-chunk-turn' and row is chunks[-1]:
+        calls.append(('search-same-turn','Bash',{'command':"rg -n 'value_1' . | head -80"},
+                      'src/large.py:2:value_0001 = 0001\n'))
+    turn('msg-'+str(row['index']), calls)
+packets=m['source_context']['seats']['opus']['shards']
+assert packets
+for index,row in enumerate(packets,1):
+    path=session/row['artifact']
+    calls=[('packet-call-'+str(index),'Read',{'file_path':str(path)},path.read_text())]
+    if mode == 'final-packet-turn' and index == len(packets):
+        calls.append(('search-with-final-packet','Bash',
+                      {'command':"rg -n 'value_1' . | head -80"},
+                      'src/large.py:2:value_0001 = 0001\n'))
+    turn('packet-'+str(index), calls)
+index=session / f"r{m['label']}-evidence.md"
+turn('evidence-index', [('index-call','Read',{'file_path':str(index)},index.read_text())])
 if m['source_context']['seats']['opus']['source_read_required']:
     path=root/'src/large.py'; turn('source-later',[
         ('source-call','Read',{'file_path':str(path),'offset':1,'limit':1},path.read_text().splitlines(keepends=True)[0])])
 out.write_text(''.join(json.dumps(event)+'\n' for event in events))
 PY
+    }
+
+    write_claude_order_transcript final-chunk-turn
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter claude \
       --raw "$S/r24-opus.stream.ndjson" --prompt "$opus_prompt" --root "$R" --session "$S" \
       --out "$S/r24-opus.read-audit.json" >/dev/null 2>&1
     assert_eq "Claude search parallel with the final chunk is rejected" "$?" 2
-    assert_grep "Claude same-turn expansion has a stable chunk-order failure" \
-      "$S/r24-opus.read-audit.json" '"code":"patch-chunk-read-order"'
+    assert_grep "Claude final-chunk expansion has a stable evidence-order failure" \
+      "$S/r24-opus.read-audit.json" '"code":"evidence-read-order"'
+
+    write_claude_order_transcript final-packet-turn
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter claude \
+      --raw "$S/r24-opus.stream.ndjson" --prompt "$opus_prompt" --root "$R" --session "$S" \
+      --out "$S/r24-opus.read-audit.json" >/dev/null 2>&1
+    assert_eq "Claude search parallel with the final packet is rejected" "$?" 2
+    assert_grep "Claude final-packet expansion has a stable evidence-order failure" \
+      "$S/r24-opus.read-audit.json" '"code":"evidence-read-order"'
 
     write_provider_batch() {
       python3 - "$manifest" "$S/r24-$1.stream.ndjson" "$R" "$1" "$2" <<'PY'
 import json, pathlib, sys
 m=json.load(open(sys.argv[1])); out=pathlib.Path(sys.argv[2]); root=pathlib.Path(sys.argv[3])
 seat=sys.argv[4]; batch=int(sys.argv[5]); session=pathlib.Path(sys.argv[1]).parent
-adapter='claude' if seat == 'opus' else 'grok'
+adapter='claude'
 assignment=m['assignments'][seat]; chunks=m['patch_sets'][assignment['patch_set']]['chunks']; events=[]
 def emit(calls, identity):
     if adapter == 'claude':
@@ -454,36 +731,26 @@ def emit(calls, identity):
         events.append({'type':'user','message':{'content':[
             {'type':'tool_result','tool_use_id':call_id,'content':output}
             for call_id,_,_,output in calls]}})
-    else:
-        for call_id,name,data,_ in calls:
-            events.append({'type':'tool_call','toolCallId':call_id,'toolName':name,
-                           'rawInput':data})
-        for call_id,_,_,output in calls:
-            events.append({'type':'tool_call_update','toolCallId':call_id,'status':'completed',
-                           'rawOutput':output})
 for start in range(0, len(chunks), batch):
     calls=[]
     for row in chunks[start:start + batch]:
-        path=session/row['artifact']; data={'file_path':str(path)} if adapter == 'claude' else {'target_file':str(path)}
-        name='Read' if adapter == 'claude' else 'read_file'
+        path=session/row['artifact']; data={'file_path':str(path)}
+        name='Read'
         content=path.read_text()
-        if adapter == 'grok':
-            content='\n'.join(str(index) + '\u2192' + line for index,line in enumerate(content.splitlines(),1))
         calls.append(('chunk-'+str(row['index']),name,data,content))
     emit(calls, 'patch-'+str(start))
 context=m['source_context']['seats'][seat]
 for index,row in enumerate(context['shards'],1):
-    path=session/row['artifact']; data={'file_path':str(path)} if adapter == 'claude' else {'target_file':str(path)}
-    name='Read' if adapter == 'claude' else 'read_file'; content=path.read_text()
-    if adapter == 'grok':
-        content='\n'.join(str(line) + '\u2192' + value for line,value in enumerate(content.splitlines(),1))
+    path=session/row['artifact']; data={'file_path':str(path)}
+    name='Read'; content=path.read_text()
     emit([('packet-'+str(index),name,data,content)], 'packet-'+str(index))
+index=session / f"r{m['label']}-evidence.md"
+emit([('evidence-index','Read',{'file_path':str(index)},index.read_text())], 'evidence-index')
 if context['source_read_required']:
     path=root/'src/large.py'; raw=path.read_text().splitlines(keepends=True)[0]
-    data={'file_path':str(path),'offset':1,'limit':1} if adapter == 'claude' else {
-        'target_file':str(path),'offset':1,'limit':1}
-    content='1\u2192'+raw.rstrip('\n') if adapter == 'grok' else '1\t'+raw.rstrip('\n')
-    emit([('source', 'Read' if adapter == 'claude' else 'read_file', data, content)], 'source')
+    data={'file_path':str(path),'offset':1,'limit':1}
+    content='1\t'+raw.rstrip('\n')
+    emit([('source', 'Read', data, content)], 'source')
 out.write_text(''.join(json.dumps(event)+'\n' for event in events))
 PY
     }
@@ -501,13 +768,13 @@ print('yes' if turns == (calls + 1) // 2 and turns < calls else 'no')
 PY
 )
     assert_eq "Claude batching halves patch proof turns" "$actual" "yes"
-    write_provider_batch grok 2
-    printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r24-grok.json"
-    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter grok \
-      --raw "$S/r24-grok.stream.ndjson" --prompt "$grok_prompt" --root "$R" --session "$S" \
-      --out "$S/r24-grok.read-audit.json" >/dev/null 2>&1
-    assert_eq "Grok accepts two consecutive patch chunks in one turn" "$?" 0
-    actual=$(python3 - "$S/r24-grok.read-audit.json" <<'PY'
+    write_provider_batch sonnet 2
+    printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r24-sonnet.json"
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter claude \
+      --raw "$S/r24-sonnet.stream.ndjson" --prompt "$sonnet_prompt" --root "$R" --session "$S" \
+      --out "$S/r24-sonnet.read-audit.json" >/dev/null 2>&1
+    assert_eq "Sonnet accepts two consecutive patch chunks in one turn" "$?" 0
+    actual=$(python3 - "$S/r24-sonnet.read-audit.json" <<'PY'
 import json, sys
 row = json.load(open(sys.argv[1]))
 turns = row['patch_proof_turns']
@@ -515,7 +782,7 @@ calls = row['patch_proof_calls']
 print('yes' if turns == (calls + 1) // 2 and turns < calls else 'no')
 PY
 )
-    assert_eq "Grok batching halves patch proof turns" "$actual" "yes"
+    assert_eq "Sonnet batching halves patch proof turns" "$actual" "yes"
     write_provider_batch opus 3
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter claude \
       --raw "$S/r24-opus.stream.ndjson" --prompt "$opus_prompt" --root "$R" --session "$S" \
@@ -538,6 +805,7 @@ JSON
 }
 
 test_patch_chunk_native_prefix_normalization() {
+  # Historical Grok transcripts remain readable after Grok leaves the live roster.
   python3 - "$SCRIPTS/lib/review-read-audit.py" <<'PY'
 import importlib.util, sys
 spec=importlib.util.spec_from_file_location('audit', sys.argv[1])
@@ -546,10 +814,10 @@ expected=b'alpha\nbeta\n'
 assert module.delivered_matches_bytes('grok', 'read_file', '1\u2192alpha\n2\u2192beta', expected, 1)
 assert module.delivered_matches_bytes('claude', 'Read', '1\talpha\n2\tbeta', expected, 1)
 terminal_blank=b'alpha\n\n'
-assert module.delivered_matches_bytes('claude', 'Read', '1\talpha\n2\t', terminal_blank, 1)
+assert module.delivered_matches_bytes('claude', 'Read', '1\talpha\n2\t\n3\t', terminal_blank, 1)
 assert not module.delivered_matches_bytes('claude', 'Read', '1\talpha\n', terminal_blank, 1)
 assert not module.delivered_matches_bytes('grok', 'read_file', '1\u2192alpha\n3\u2192beta', expected, 1)
 assert not module.delivered_matches_bytes('claude', 'Read', '1\talpha\n2\tchanged', expected, 1)
 PY
-  assert_eq "native Claude and Grok prefixes preserve exact chunk bytes" "$?" 0
+  assert_eq "native Claude and historical Grok prefixes preserve exact chunk bytes" "$?" 0
 }

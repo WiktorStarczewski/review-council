@@ -59,9 +59,9 @@ with tempfile.TemporaryDirectory(prefix='deleted-symbol-') as tmp:
         f"REV_BASE='{base}'\nREV_ROOT='{root}'\nREV_SCOPE='branch'\n")
     (session / 'roster.json').write_text(json.dumps({'seats': [
         {'seat': 'sol', 'adapter': 'codex'},
-        {'seat': 'grok', 'adapter': 'grok'},
+        {'seat': 'terra', 'adapter': 'codex'},
         {'seat': 'opus', 'adapter': 'claude'},
-        {'seat': 'opus-2', 'adapter': 'claude'},
+        {'seat': 'sonnet', 'adapter': 'claude'},
     ]}))
     env = dict(git_env, REV_PATCH_CHUNKS='1', REV_SOURCE_CONTEXT='1')
     subprocess.run(

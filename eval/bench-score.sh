@@ -6,13 +6,15 @@ set -u
 NAME=$1; REPO=$2; PR=$3; HEAD_SHA=$4; MERGED=$5; RUN=$6; TRUTH=$7; FULL=$8
 RUN=$(cd "$RUN" && pwd); TRUTH=$(cd "$(dirname "$TRUTH")" && pwd)/$(basename "$TRUTH"); FULL=$(cd "$FULL" && pwd); S="$RUN/session"   # absolute: the headless call runs inside the clone
 SCORE="$RUN/score.md"
-TMP_SCORE=; score_published=0
+TMP_SCORE=; OLD_SCORE=; had_score=0; score_publish_started=0; score_published=0
 cleanup_score() {
   [ -z "$TMP_SCORE" ] || rm -f "$TMP_SCORE"
-  [ "$score_published" -eq 1 ] || rm -f "$SCORE"
+  if [ "$score_publish_started" -eq 1 ] && [ "$score_published" -eq 0 ]; then
+    if [ "$had_score" -eq 1 ]; then cp -p "$OLD_SCORE" "$SCORE"; else rm -f "$SCORE"; fi
+  fi
+  [ -z "$OLD_SCORE" ] || rm -f "$OLD_SCORE"
 }
 trap cleanup_score EXIT
-rm -f "$SCORE"
 TMP_SCORE=$(mktemp "$RUN/.score.XXXXXX") || { echo "$NAME score: FAILED (cannot create temporary file)"; exit 1; }
 PROMPT="Read-only scoring task for a blind code-review experiment. Four reviewer seats reviewed $REPO pull request #$PR at its review-time head ($HEAD_SHA) with a simplicity lens in an isolated checkout. Their findings are $S/r1-*.json (schema: summary + findings[] with severity, file, line_start, line_end, claim, evidence, suggested_fix, confidence). The ground truth is $TRUTH (rows with weights K/S/C plus the non-simplification post-review changes). The full repository with the merged head $MERGED is at $FULL (git show/diff only; check nothing out). Produce, and write to $TMP_SCORE: (1) a scoreboard, one row per truth row, one column per seat, cell = HIT (same construct AND same replacement or removal), PARTIAL (same construct, different or no replacement), or -, plus a UNION column; be strict, a generic remark is not a hit; where a seat offers the right removal as one of two explicit alternatives with exact sites count HIT; (2) every finding that hits no row classified as VALID-NOT-IN-TRUTH, ADDRESSED-DIFFERENTLY, CONTRADICTED by the merged head, or WRONG on the review-time tree, verifying against the merged head; (3) a contamination check over $S/r1-*.log and $S/r1-*.stream.ndjson: any fetch, network lookup of the PR, use of another clone, reads of published versions of this repository's own packages from a registry, or references to the merged sha - per seat clean or contaminated with the line; (4) the verdict: PASS if every K row is HIT in the union and at least half the S rows are, else FAIL; (5) for each K or S row the union missed, one sentence stating the general checklist rule that would have found it, without naming this PR's symbols. No person's name or handle anywhere. Your final message must be exactly one line: 'SUMMARY K=<hit>/<total> S=<hit>/<total> C=<hit>/<total> verdict=<PASS|FAIL> contradicted=<n> contaminated=<comma-separated seats or none>' and nothing else."
 ( cd "$FULL" && claude -p "$PROMPT" --model opus --permission-mode bypassPermissions --effort max --max-turns 120 --output-format text </dev/null > "$RUN/score.out" 2> "$RUN/score.log" )
@@ -26,9 +28,16 @@ if [ ! -s "$TMP_SCORE" ] || ! printf '%s\n' "$line" | grep -Eq '^SUMMARY K=[0-9]
   echo "$NAME score: FAILED (missing artifact or terminal summary; see $RUN/score.log)"
   exit 1
 fi
+if [ -e "$SCORE" ]; then
+  OLD_SCORE=$(mktemp "$RUN/.score.rollback.XXXXXX") || { echo "$NAME score: FAILED (cannot prepare publication)"; exit 1; }
+  cp -p "$SCORE" "$OLD_SCORE" || { echo "$NAME score: FAILED (cannot prepare publication)"; exit 1; }
+  had_score=1
+fi
+score_publish_started=1
 if ! mv "$TMP_SCORE" "$SCORE"; then
   echo "$NAME score: FAILED (cannot publish result)"
   exit 1
 fi
+TMP_SCORE=
 score_published=1
 echo "$NAME $line"

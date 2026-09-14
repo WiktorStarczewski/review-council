@@ -1,5 +1,5 @@
 # preflight + prompt - sourced by run-tests.sh
-# Seats no longer come from hardcoded `codex login status` / `grok models` checks: preflight asks
+# Seats no longer come from hardcoded provider checks: preflight asks
 # scripts/roster.sh. These tests drive that seam through a STUB roster.sh placed next to a symlink to the
 # real rev-preflight.sh, so `$HERE/roster.sh` resolves to the stub. The stub models the contract preflight
 # depends on (argv, strict exits + JSON, --brief); roster.sh's own detection is covered by t-roster.sh.
@@ -22,9 +22,9 @@ if [ -z "$JSON" ]; then
   JSON=$(cat <<'J'
 {"generated_at": "2026-09-02T00:00:00Z", "seats": [
  {"seat": "codex-sol", "lab": "openai", "adapter": "codex", "model": "gpt-5.6-sol", "effort": "max", "extra": false},
- {"seat": "codex-terra", "lab": "openai", "adapter": "codex", "model": "gpt-5.6-terra", "effort": "xhigh", "extra": false},
- {"seat": "grok", "lab": "xai", "adapter": "grok", "model": "grok-4.6", "effort": "xhigh", "extra": false},
- {"seat": "opus", "lab": "anthropic", "adapter": "agent", "model": "opus", "effort": "max", "extra": false},
+ {"seat": "codex-terra", "lab": "openai", "adapter": "codex", "model": "gpt-5.6-terra", "effort": "max", "extra": false},
+ {"seat": "opus", "lab": "anthropic", "adapter": "claude", "model": "opus", "effort": "max", "extra": false},
+ {"seat": "sonnet", "lab": "anthropic", "adapter": "claude", "model": "sonnet", "effort": "max", "extra": false},
  {"seat": "codex-review", "lab": "openai", "adapter": "codex", "mode": "review", "extra": true, "round": 2}],
  "result_receipts": {"version": 1, "legacy_no_exit_sha256": {}},
  "excluded": [{"cli": "gemini", "reason": "not installed"}]}
@@ -33,7 +33,7 @@ J
 fi
 [ -n "$WRITE" ] && printf '%s\n' "$JSON" > "$WRITE"
 if [ "$BRIEF" = 1 ]; then
-  printf '%s\n' "${RSTUB_BRIEF:-review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@xhigh) · grok ✓ (grok-4.6@xhigh) · gemini ✗ not installed · claude ✓ (opus@max)}"
+  printf '%s\n' "${RSTUB_BRIEF:-review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@max) · gemini ✗ not installed · claude ✓ (opus@max, sonnet@max)}"
 else
   printf '%s\n' "$JSON"      # --json: preflight must keep this off its own stdout
 fi
@@ -41,6 +41,7 @@ exit "${RSTUB_EXIT:-0}"
 STUB
     chmod +x "$D/roster.sh"
     ln -sf "$SCRIPTS/rev-preflight.sh" "$D/rev-preflight.sh"
+    ln -sf "$SCRIPTS/rev-contract-check.py" "$D/rev-contract-check.py"
   fi
   printf '%s' "$D"
 }
@@ -70,11 +71,11 @@ J
 pf_degraded_roster() {  # a padded panel that is accepted - preflight warns, it does not refuse
   cat <<'J'
 {"generated_at": "2026-09-02T00:00:00Z", "seats": [
- {"seat": "grok", "lab": "xai", "adapter": "grok", "model": "grok-4.6", "effort": "xhigh", "extra": false},
- {"seat": "opus", "lab": "anthropic", "adapter": "agent", "model": "opus", "effort": "max", "extra": false},
- {"seat": "claude-1", "lab": "anthropic", "adapter": "agent", "model": "opus", "effort": "max", "extra": false, "padded": true}],
- "labs": ["xai", "anthropic"], "padded": 1, "degraded": true,
- "degradation": "only xai, anthropic available - padded with 1 Claude seat",
+ {"seat": "codex-terra", "lab": "openai", "adapter": "codex", "model": "gpt-5.6-terra", "effort": "max", "extra": false},
+ {"seat": "opus", "lab": "anthropic", "adapter": "claude", "model": "opus", "effort": "max", "extra": false},
+ {"seat": "opus-1", "lab": "anthropic", "adapter": "claude", "model": "opus", "effort": "max", "extra": false, "padded": true}],
+ "labs": ["openai", "anthropic"], "padded": 1, "degraded": true,
+ "degradation": "available labs: openai, anthropic - 1 repeat CLI seats; reduced panel diversity",
  "result_receipts": {"version": 1, "legacy_no_exit_sha256": {}},
  "excluded": [{"cli": "codex", "reason": "not signed in"}, {"cli": "gemini", "reason": "not installed"}]}
 J
@@ -109,6 +110,79 @@ test_preflight() {
   assert_grep "roster.json stored" "$T/pf-sess/roster.json" '"seat": "codex-sol"'
   assert_grep "new session records the receipt policy" "$T/pf-sess/roster.json" '"result_receipts"'
   assert_exit "preflight calls no lab CLI itself" 1 test -e "$T/args"
+  local contract_runner="$T/contract-runner"
+  cat > "$contract_runner" <<'SH'
+#!/bin/bash
+printf '%s\n' "$1" >> "$CONTRACT_CALLS"
+exit "${CONTRACT_EXIT:-0}"
+SH
+  chmod +x "$contract_runner"
+  mkdir -p "$R/plugins/review-council/scripts" "$R/plugins/review-council/.codex-plugin"
+  printf '{}\n' > "$R/plugins/review-council/.codex-plugin/plugin.json"
+  printf 'changed boundary\n' > "$R/plugins/review-council/scripts/rev-prompt.sh"
+  REVIEW_COUNCIL_CONTRACT_RUNNER="$contract_runner" \
+    REVIEW_COUNCIL_CONTRACT_PROVIDER_VERSIONS='{"codex":"1","claude":"1"}' \
+  REVIEW_COUNCIL_CACHE_DIR="$T/contract-cache" CONTRACT_CALLS="$T/contract.calls" CONTRACT_EXIT=2 \
+    "$PF" --write "$T/pf-contract-fail" > "$T/pf.out" 2> "$T/pf.err"
+  assert_eq "failed provider replay blocks preflight" "$?" 1
+  assert_grep "failed provider replay is explained" "$T/pf.err" \
+    'provider contract replay failed after the roster probe'
+  assert_eq "provider replay runs after exactly one additional roster probe" \
+    "$(wc -l < "$RSTUB_ARGS" | tr -d ' ')" "8"
+  : > "$T/contract.calls"
+  REVIEW_COUNCIL_CONTRACT_RUNNER="$contract_runner" \
+    REVIEW_COUNCIL_CONTRACT_PROVIDER_VERSIONS='{"codex":"1","claude":"1"}' \
+    REVIEW_COUNCIL_CACHE_DIR="$T/contract-cache" CONTRACT_CALLS="$T/contract.calls" \
+    "$PF" --write "$T/pf-contract-pass" > "$T/pf.out" 2> "$T/pf.err"
+  assert_eq "passing provider replay allows preflight" "$?" 0
+  assert_eq "provider replay runs every contract group" \
+    "$(wc -l < "$T/contract.calls" | tr -d ' ')" "4"
+  assert_grep "provider replay includes preserved provider envelopes" \
+    "$T/contract.calls" '^provider_envelope_replay$'
+  assert_eq "provider replay writes one immutable keyed receipt" \
+    "$(find "$T/pf-contract-pass" -name 'contract-pass-*.json' | wc -l | tr -d ' ')" "1"
+  python3 - "$T/pf-contract-pass" <<'PY'
+import json, pathlib, sys
+session = pathlib.Path(sys.argv[1])
+receipt = json.loads(next(session.glob('contract-pass-*.json')).read_text())
+assert receipt['identity']['core_roster'][0] == {
+    'seat':'codex-sol','adapter':'codex','model':'gpt-5.6-sol','effort':'max'}
+assert receipt['identity']['executor']['plugin'] != str(pathlib.Path.cwd() / 'plugins/review-council')
+assert receipt['identity']['executor']['policy'] == 'external-override'
+assert receipt['identity']['executor']['runner_sha256']
+PY
+  assert_eq "preflight contract identity uses the probed roster" "$?" 0
+  REVIEW_COUNCIL_CONTRACT_RUNNER="$contract_runner" \
+    REVIEW_COUNCIL_CONTRACT_PROVIDER_VERSIONS='{"codex":"1","claude":"1"}' \
+    REVIEW_COUNCIL_CACHE_DIR="$T/contract-cache" CONTRACT_CALLS="$T/contract.calls" \
+    "$PF" --write "$T/pf-contract-cached" > "$T/pf.out" 2> "$T/pf.err"
+  assert_eq "matching provider contract receipt is reusable" "$?" 0
+  assert_eq "cached provider replay launches no contract group" \
+    "$(wc -l < "$T/contract.calls" | tr -d ' ')" "4"
+  rm "$R/plugins/review-council/scripts/rev-prompt.sh" \
+    "$R/plugins/review-council/.codex-plugin/plugin.json"
+  rmdir "$R/plugins/review-council/scripts" "$R/plugins/review-council/.codex-plugin" \
+    "$R/plugins/review-council" "$R/plugins"
+  : > "$RSTUB_ARGS"
+  "$PF" --quota-failed-seat opus --quota-failed-seat sonnet \
+    --write "$T/pf-quota-handoff" > "$T/pf.out" 2> "$T/pf.err"
+  assert_eq "preflight accepts classified quota handoffs" "$?" 0
+  cat > "$T/pf-quota-expected.args" <<EOF
+--probe
+--brief
+--write
+$T/pf-quota-handoff/roster.json
+--quota-failed-seat
+opus
+--quota-failed-seat
+sonnet
+EOF
+  assert_exit "preflight passes quota handoffs exactly once and in order" 0 \
+    cmp -s "$T/pf-quota-expected.args" "$RSTUB_ARGS"
+  : > "$RSTUB_ARGS"
+  "$PF" --quota-failed-seat > "$T/pf.out" 2> "$T/pf.err"
+  assert_eq "preflight refuses a missing quota handoff seat" "$?" 1
+  assert_exit "invalid handoff does not reach the roster" 0 test ! -s "$RSTUB_ARGS"
   # values are single-quoted so `. scope.env` can never expand or execute one (see t-scopeenv.sh)
   assert_grep "scope.env base" "$T/pf-sess/scope.env" "^REV_BASE='$(git rev-parse main)'$"
   assert_grep "scope.env root" "$T/pf-sess/scope.env" "^REV_ROOT='$R'$"
@@ -150,12 +224,12 @@ SH
   # a thin panel is no longer a refusal - it is a padded panel and a loud warning (Task 11)
   rm -f "$RSTUB_ARGS"
   RSTUB_JSON="$(pf_degraded_roster)" \
-    RSTUB_BRIEF='review-council seats: codex ✗ not signed in · grok ✓ (grok-4.6@xhigh) · gemini ✗ not installed · claude ✓ (opus@max) · DEGRADED: only xai, anthropic available - padded with 1 Claude seat' \
+    RSTUB_BRIEF='review-council seats: codex ✓ (gpt-5.6-terra@max) · gemini ✗ not installed · claude ✓ (opus@max) · DEGRADED: available labs: openai, anthropic - 1 repeat CLI seats; reduced panel diversity' \
     "$PF" --write "$T/pf-deg" > "$T/pf.out" 2> "$T/pf.err"; assert_eq "a degraded roster is accepted" "$?" 0
   assert_grep "the summary line is still printed" "$T/pf.out" '^base='
-  assert_grep "the roster line carries DEGRADED" "$T/pf.out" 'DEGRADED: only xai, anthropic available - padded with 1 Claude seat$'
+  assert_grep "the roster line carries DEGRADED" "$T/pf.out" 'DEGRADED: available labs: openai, anthropic - 1 repeat CLI seats; reduced panel diversity$'
   assert_grep "…and a warning line of its own follows it" "$T/pf.out" \
-    '^preflight: WARNING - only xai, anthropic available - padded with 1 Claude seat$'
+    '^preflight: WARNING - available labs: openai, anthropic - 1 repeat CLI seats; reduced panel diversity$'
   assert_exit "scope.env is written for a degraded run" 0 test -f "$T/pf-deg/scope.env"
   assert_nogrep "nothing on stderr" "$T/pf.err" '.'
   # a not-degraded roster gets no warning line at all
@@ -204,7 +278,9 @@ SH
   assert_nogrep "no traceback" "$T/pf.err" 'Traceback'
   RSTUB_EXIT=7 "$PF" > /dev/null 2> "$T/pf.err"; assert_eq "roster crash refused" "$?" 1
   assert_grep "names the roster exit code" "$T/pf.err" 'roster.sh failed \(exit 7\)'
-  local D2="$T/pf-bin-noroster"; mkdir -p "$D2"; ln -sf "$SCRIPTS/rev-preflight.sh" "$D2/rev-preflight.sh"
+  local D2="$T/pf-bin-noroster"; mkdir -p "$D2"
+  ln -sf "$SCRIPTS/rev-preflight.sh" "$D2/rev-preflight.sh"
+  ln -sf "$SCRIPTS/rev-contract-check.py" "$D2/rev-contract-check.py"
   "$D2/rev-preflight.sh" > /dev/null 2> "$T/pf.err"; assert_eq "missing roster.sh refused" "$?" 1
   assert_grep "blames the roster" "$T/pf.err" 'roster.sh failed'
   # paths with spaces: the pathspec and the changed-file list must not be word-split (git quotes such paths in porcelain v1)
@@ -224,10 +300,10 @@ test_prompt() {
   local S="$T/pr-sess"; mkdir -p "$S"
   printf 'REV_BASE=abc123\nREV_BRANCH=feat\nREV_DEFAULT=main\nREV_ROOT=/repo\nREV_SCOPE=branch\n' > "$S/scope.env"
   printf 'src/x.ts\nsrc/x.test.ts\n' > "$S/files.txt"; echo "build: pass; test: 2 pre-existing failures (a, b); lint: pass" > "$S/baseline.md"
-  printf '%s' '{"seats":[{"seat":"grok","adapter":"grok"},{"seat":"codex-sol","adapter":"codex"},{"seat":"codex-terra","adapter":"codex"}]}' > "$S/roster.json"
-  local p; p=$("$SCRIPTS/rev-prompt.sh" "$S" 1 grok correctness "Correctness, edge cases, error handling")
-  assert_eq "prints path" "$p" "$S/r1-grok.prompt.md"
-  assert_grep "grok follows lens ordering before tools" "$p" '^Follow the lens ordering below before using tools\.'
+  printf '%s' '{"seats":[{"seat":"codex-sol","adapter":"codex"},{"seat":"codex-terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+  local p; p=$("$SCRIPTS/rev-prompt.sh" "$S" 1 codex-terra correctness "Correctness, edge cases, error handling")
+  assert_eq "prints path" "$p" "$S/r1-codex-terra.prompt.md"
+  assert_grep "Terra begins with assigned-hunk discovery" "$p" 'begin with assigned-hunk discovery'
   assert_grep "base sha" "$p" 'Base commit: abc123'
   assert_grep "diff command" "$p" 'git diff abc123'
   assert_grep "files listed" "$p" '^- src/x.test.ts$'
@@ -246,37 +322,37 @@ test_prompt() {
   assert_grep "red-team lens" "$p" 'Assume the change is wrong'
   # untracked files are invisible to `git diff`: rev-preflight.sh lists them in untracked.txt and the
   # prompt marks them so a seat reads them in full instead of reporting an empty diff.
-  p=$("$SCRIPTS/rev-prompt.sh" "$S" 5 grok correctness "Untracked")
+  p=$("$SCRIPTS/rev-prompt.sh" "$S" 5 codex-terra correctness "Untracked")
   assert_nogrep "no untracked note without untracked.txt" "$p" 'Files marked .untracked.'
   : > "$S/untracked.txt"
-  p=$("$SCRIPTS/rev-prompt.sh" "$S" 5 grok correctness "Untracked")
+  p=$("$SCRIPTS/rev-prompt.sh" "$S" 5 codex-terra correctness "Untracked")
   assert_nogrep "empty untracked.txt renders no file note" "$p" 'Files marked .untracked.'
   printf 'src/x.test.ts\n' > "$S/untracked.txt"
-  p=$("$SCRIPTS/rev-prompt.sh" "$S" 5 grok correctness "Untracked")
+  p=$("$SCRIPTS/rev-prompt.sh" "$S" 5 codex-terra correctness "Untracked")
   assert_grep "untracked file marked" "$p" '^- src/x.test.ts \(untracked\)$'
   assert_grep "tracked file unmarked" "$p" '^- src/x.ts$'
   assert_grep "untracked note rendered" "$p" 'do not appear in .git diff.; read them in full'
   rm -f "$S/untracked.txt"
   printf '%s\n' "$S/plan.md" > "$S/docs.txt"; echo "# plan" > "$S/plan.md"
-  p=$("$SCRIPTS/rev-prompt.sh" "$S" 1 grok correctness "Prose review" --read-only "$S/docs.txt")
+  p=$("$SCRIPTS/rev-prompt.sh" "$S" 1 codex-terra correctness "Prose review" --read-only "$S/docs.txt")
   assert_grep "read-only lists docs" "$p" "^- $S/plan\.md$"
   assert_nogrep "read-only has no repo scope" "$p" '^Repository:'
   # scope.env is parsed, not sourced: a space in the root and metacharacters in the branch are inert data
   printf 'REV_BASE=abc123\nREV_BRANCH=x;touch %s/pwned\nREV_DEFAULT=main\nREV_ROOT=/my repo/w s\nREV_SCOPE=branch\n' "$S" > "$S/scope.env"
-  p=$("$SCRIPTS/rev-prompt.sh" "$S" 4 grok correctness "Injection") ; assert_eq "space/metachar scope.env ok" "$?" 0
+  p=$("$SCRIPTS/rev-prompt.sh" "$S" 4 codex-terra correctness "Injection") ; assert_eq "space/metachar scope.env ok" "$?" 0
   assert_grep "root with a space intact" "$p" '^Repository: /my repo/w s$'
   assert_grep "branch metachars are literal" "$p" 'branch .x;touch '
   assert_exit "no command ran from scope.env" 1 test -e "$S/pwned"
   printf 'REV_BASE=abc123\nREV_BRANCH=feat\nREV_DEFAULT=main\nREV_ROOT=/repo\nREV_SCOPE=branch\n' > "$S/scope.env"
   : > "$S/empty-docs.txt"
-  assert_exit "empty --read-only list → 1" 1 "$SCRIPTS/rev-prompt.sh" "$S" 1 grok correctness x --read-only "$S/empty-docs.txt"
-  assert_exit "missing --read-only list → 1" 1 "$SCRIPTS/rev-prompt.sh" "$S" 1 grok correctness x --read-only "$S/no-such-list.txt"
-  "$SCRIPTS/rev-prompt.sh" "$S" 1 grok correctness x --read-only "$S/empty-docs.txt" 2> "$T/ro.err"
+  assert_exit "empty --read-only list → 1" 1 "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-terra correctness x --read-only "$S/empty-docs.txt"
+  assert_exit "missing --read-only list → 1" 1 "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-terra correctness x --read-only "$S/no-such-list.txt"
+  "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-terra correctness x --read-only "$S/empty-docs.txt" 2> "$T/ro.err"
   assert_grep "names the missing list" "$T/ro.err" 'document list missing or empty'
-  assert_exit "unknown flag → 1" 1 "$SCRIPTS/rev-prompt.sh" "$S" 1 grok correctness x --bogus
+  assert_exit "unknown flag → 1" 1 "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-terra correctness x --bogus
   # unwritable output must fail loudly, not print a path for a file that was never written
-  assert_exit "unwritable OUT → 1" 1 "$SCRIPTS/rev-prompt.sh" "$T/no-such-session" 1 grok correctness x --read-only "$S/docs.txt"
+  assert_exit "unwritable OUT → 1" 1 "$SCRIPTS/rev-prompt.sh" "$T/no-such-session" 1 codex-terra correctness x --read-only "$S/docs.txt"
   printf 'REV_ROOT=/repo\n' > "$S/scope.env"
-  assert_exit "incomplete scope.env → 1" 1 "$SCRIPTS/rev-prompt.sh" "$S" 1 grok correctness x
-  rm "$S/scope.env"; assert_exit "missing scope.env → 1" 1 "$SCRIPTS/rev-prompt.sh" "$S" 1 grok correctness x
+  assert_exit "incomplete scope.env → 1" 1 "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-terra correctness x
+  rm "$S/scope.env"; assert_exit "missing scope.env → 1" 1 "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-terra correctness x
 }

@@ -19,7 +19,7 @@ with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
     def write(path, data):
         p = root / path; p.parent.mkdir(parents=True, exist_ok=True); p.write_text(data)
     def run(*args, good=True):
-        env = dict(os.environ, REV_PATCH_CHUNKS='1', REV_SOURCE_CONTEXT='1')
+        env = dict(os.environ, REV_PATCH_CHUNKS='auto', REV_SOURCE_CONTEXT='1')
         p = subprocess.run([sys.executable, script, *map(str, args)], capture_output=True, text=True, env=env)
         assert (p.returncode == 0) == good, (args, p.returncode, p.stdout, p.stderr)
         return p.stdout
@@ -40,10 +40,16 @@ with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
                                 'line_end': segment['line_end'], 'origin': 'tool'}
                                for segment in required['segments'])
         if packet['source_read_required'] and not tool_ranges:
-            component = next(component for component in manifest['components']
-                             if component['id'] == packet['components'][0])
-            tool_ranges.append({'path': component['boundary'][0], 'line_start': 1,
-                                'line_end': 1, 'origin': 'tool'})
+            if packet['omitted_source_ranges']:
+                omitted = packet['omitted_source_ranges'][0]
+                tool_ranges.append({'path': omitted['path'],
+                                    'line_start': omitted['line_start'],
+                                    'line_end': omitted['line_start'], 'origin': 'tool'})
+            else:
+                component = next(component for component in manifest['components']
+                                 if component['id'] == packet['components'][0])
+                tool_ranges.append({'path': component['boundary'][0], 'line_start': 1,
+                                    'line_end': 1, 'origin': 'tool'})
         ranges.extend(tool_ranges); source_calls = len(tool_ranges)
         ranges.sort(key=lambda row: (row['path'], row['line_start'], row['line_end'], row['origin']))
         stream = session / f'r{label}-{seat}.stream.ndjson'; stream.write_text('{}\n')
@@ -53,7 +59,7 @@ with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
         chunks = manifest['patch_sets'][assignment['patch_set']]['chunks'] if patch_mode == 'chunks' else []
         patch_ranges = [] if chunks else [{'line_start': start, 'line_end': min(start + 239, patch_lines)}
                                           for start in range(1, patch_lines + 1, 240)]
-        patch_reads = len(chunks) if chunks else max(1, len(patch_ranges))
+        patch_reads = 0 if not patch_raw else len(chunks) if chunks else max(1, len(patch_ranges))
         calls = max(1, len(packet['shards']) + source_calls + patch_reads)
         packet_bytes = sum(shard['bytes'] for shard in packet['shards'])
         audit = {'schema_version':2, 'status':'valid', 'narrow':assignment['scope'] != 'full', 'adapter':'agent',
@@ -108,7 +114,7 @@ with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
     write('image.bin', 'opaque extension with text content\n')
     (root / 'shortcut').symlink_to('main.py')
     (session / 'scope.env').write_text(f"REV_BASE='{base}'\nREV_ROOT='{root}'\nREV_SCOPE='branch'\n")
-    seats = ['sol', 'grok', 'opus', 'opus-2']
+    seats = ['sol', 'terra', 'opus', 'sonnet']
     bundles = ['correctness-boundaries', 'security-state-api', 'concurrency-resources-performance', 'tests-observability-maintenance-regression']
     (session / 'roster.json').write_text(json.dumps({'seats': [{'seat': s, 'extra': False, 'adapter': 'agent'} for s in seats]}))
     before = fingerprint(); first = prepare('1')
@@ -122,7 +128,7 @@ with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
     assert deleted_context and all(row['blob_tree'] == first['base_tree'] for row in deleted_context)
     assert first['mechanical_owner'] == 'sol'
     assert first['assignments']['sol']['scope'] == 'full'
-    assert first['assignments']['grok']['scope'] == 'semantic'
+    assert first['assignments']['terra']['scope'] == 'semantic'
     full = (session / 'r1-full.patch').read_text(); semantic = (session / 'r1-semantic.patch').read_text()
     for name in ['package-lock.json', 'generated/types.ts', '__snapshots__/one.snap', 'locales/fr.json']:
         assert name in full and name not in semantic, name
@@ -134,20 +140,20 @@ with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
     assert {'path': 'test_main.py', 'line': 2, 'name': 'calculate', 'kind': 'lexical name( match, not resolved dispatch'} in facts['call_sites']
     assert any(x['path'] == 'test_main.py' for x in facts['related_tests'])
     assert {'path': 'package.json', 'line': 1, 'command': '{"scripts":{"test":"pytest","lint":"ruff check ."}}', 'kind': 'lexical gate candidate'} in facts['gates']
-    assert run('render', session / 'r1-evidence.manifest.json', 'grok') == run('render', session / 'r1-evidence.manifest.json', 'grok')
+    assert run('render', session / 'r1-evidence.manifest.json', 'terra') == run('render', session / 'r1-evidence.manifest.json', 'terra')
     frozen = {p.name: p.read_bytes() for p in session.glob('r1-*')}; prepare('1')
     assert all((session / name).read_bytes() == data for name, data in frozen.items()), 'nondeterministic prepare'
     results('1'); run('receipt', session, '1')
     head = (session / 'coverage-head.json').read_bytes()
     args = [a for s, b in zip(seats, bundles) for a in ['--assignment', s + '=' + b]]
     nofix = prepare('2', 'verification', *args)
-    assert nofix['assignments']['opus-2']['scope'] == 'full', nofix
+    assert nofix['assignments']['sonnet']['scope'] == 'full', nofix
     assert all(nofix['assignments'][seat]['scope'] == 'semantic' for seat in seats[:-1]), nofix
     assert nofix['fallback_reason'] is None and nofix['predecessor'] is None
     write('main.py', (root / 'main.py').read_text().replace('return 2', 'return 3', 1))
     run('render', session / 'r2-evidence.manifest.json', 'sol', good=False)
     larger = prepare('2b', 'verification', *args)
-    assert larger['assignments']['opus-2']['scope'] == 'full', larger
+    assert larger['assignments']['sonnet']['scope'] == 'full', larger
     assert all(larger['assignments'][seat]['scope'] == 'semantic' for seat in seats[:-1]), larger
     assert larger['fallback_reason'] is None and larger['predecessor'] is None
     # Make the cumulative semantic patch much larger than the evidence packet.
@@ -157,7 +163,7 @@ with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
     oldfacts = json.loads((session / 'r3-evidence.json').read_text())
     write('main.py', (root / 'main.py').read_text().replace('return 3', 'return 4', 1))
     delta = prepare('4', 'verification', *args)
-    assert delta['assignments']['opus-2']['scope'] == 'full'
+    assert delta['assignments']['sonnet']['scope'] == 'full'
     assert delta['assignments']['sol']['scope'] == 'delta', delta['fallback_reason']
     patch = (session / 'r4-delta.patch').read_text()
     assert '-    return 3' in patch and '+    return 4' in patch
@@ -179,8 +185,8 @@ with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
     prepare('5', 'verification', *args); results('5')
     (session / 'r5-evidence.md').write_text('tampered')
     run('render', session / 'r5-evidence.manifest.json', 'sol', good=False)
-    repair = prepare('6', 'repair', '--assignment', 'grok=security-state-api')
-    assert list(repair['assignments']) == ['grok'] and repair['assignments']['grok']['scope'] == 'full'
+    repair = prepare('6', 'repair', '--assignment', 'terra=security-state-api')
+    assert list(repair['assignments']) == ['terra'] and repair['assignments']['terra']['scope'] == 'full'
     results('6'); run('receipt', session, '6', good=False)
     (session / 'coverage-head.json').write_text('{bad')
     missing = prepare('7', 'verification', *args)
@@ -190,6 +196,7 @@ with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
     unknown = prepare('9', 'verification', '--head', 'unknown-reviewed-ref', *args)
     assert all(a['scope'] == 'full' for a in unknown['assignments'].values())
     assert unknown['fallback_reason']
+    (session / 'coverage-head.json').unlink()
     seed = prepare('10', 'discovery', '--head', base)
     results('10'); run('receipt', session, '10')
     assert seed['snapshot_tree'] == git('rev-parse', base + '^{tree}')
@@ -202,9 +209,9 @@ with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
     saved_manifest = manifest_path.read_bytes()
     for key, value in [('patch', '/tmp/other.patch'), ('full_state', False)]:
         corrupt = json.loads(saved_manifest)
-        corrupt['assignments']['opus-2'][key] = value
+        corrupt['assignments']['sonnet'][key] = value
         manifest_path.write_text(json.dumps(corrupt))
-        run('render', manifest_path, 'opus-2', good=False)
+        run('render', manifest_path, 'sonnet', good=False)
     manifest_path.write_bytes(saved_manifest)
     write('nested/item.py', 'original\n')
     git('-c', 'filter.tripwire.clean=cat', 'add', 'nested/item.py')
@@ -230,7 +237,109 @@ PY
   return "$rc"
 }
 
-test_evidence_hardening() {
+test_evidence_provider_contract_binding() {
+  ( local R="$T/evidence-contract-root" S="$T/evidence-contract-session"
+    mkrepo "$R"; mkdir -p "$R/plugins/review-council/.codex-plugin" \
+      "$R/plugins/review-council/scripts" "$R/src" "$S"
+    printf '{}\n' > "$R/plugins/review-council/.codex-plugin/plugin.json"
+    printf 'provider boundary v1\n' > "$R/plugins/review-council/scripts/rev-prompt.sh"
+    printf 'value = 1\n' > "$R/src/value.py"
+    git -C "$R" add . && git -C "$R" commit -qm 'evidence contract base'
+    local base; base=$(git -C "$R" rev-parse HEAD)
+    printf 'value = 2\n' > "$R/src/value.py"
+    printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+      "$base" "$R" > "$S/scope.env"
+    printf 'src/value.py\n' > "$S/files.txt"; : > "$S/untracked.txt"
+    cat > "$S/roster.json" <<'JSON'
+{"seats":[
+ {"seat":"sol","adapter":"codex","model":"gpt-5.6-sol","effort":"max","extra":false},
+ {"seat":"terra","adapter":"codex","model":"gpt-5.6-terra","effort":"max","extra":false},
+ {"seat":"opus","adapter":"claude","model":"opus","effort":"max","extra":false},
+ {"seat":"sonnet","adapter":"claude","model":"sonnet","effort":"max","extra":false}]}
+JSON
+    local runner="$T/evidence-contract-runner" calls="$T/evidence-contract.calls"
+    cat > "$runner" <<'SH'
+#!/bin/bash
+printf '%s\n' "$1" >> "$CONTRACT_CALLS"
+SH
+    chmod +x "$runner"; : > "$calls"
+    local -a contract_env=(env REVIEW_COUNCIL_CONTRACT_RUNNER="$runner" CONTRACT_CALLS="$calls"
+      'REVIEW_COUNCIL_CONTRACT_PROVIDER_VERSIONS={"claude":"1","codex":"1"}'
+      REVIEW_COUNCIL_CACHE_DIR="$T/evidence-contract-cache")
+
+    local no_boundary
+    no_boundary=$("${contract_env[@]}" REV_SOURCE_CONTEXT=0 python3 "$SCRIPTS/rev-evidence.py" \
+      prepare "$S" no-boundary --phase discovery) || return
+    python3 - "$no_boundary" <<'PY'
+import json, sys
+manifest = json.load(open(sys.argv[1]))
+assert set(manifest['inputs']) == {'scope.env','roster.json','files.txt','untracked.txt'}
+PY
+    assert_eq "repository without a changed boundary needs no contract receipt" "$?" 0
+
+    printf 'provider boundary v2\n' > "$R/plugins/review-council/scripts/rev-prompt.sh"
+    printf '%s\n' src/value.py plugins/review-council/scripts/rev-prompt.sh > "$S/files.txt"
+    local receipt manifest receipt_name
+    receipt=$("${contract_env[@]}" python3 "$SCRIPTS/rev-contract-check.py" \
+      --root "$R" --session "$S" --base "$base" --roster "$S/roster.json") || return
+    manifest=$("${contract_env[@]}" REV_SOURCE_CONTEXT=0 python3 "$SCRIPTS/rev-evidence.py" \
+      prepare "$S" boundary --phase discovery) || return
+    receipt_name=$(basename "$receipt")
+    python3 - "$manifest" "$receipt_name" <<'PY'
+import hashlib, json, pathlib, sys
+manifest_path = pathlib.Path(sys.argv[1]); receipt_name = sys.argv[2]
+manifest = json.loads(manifest_path.read_text())
+assert set(manifest['inputs']) == {
+    'scope.env','roster.json','files.txt','untracked.txt',receipt_name}
+receipt = manifest_path.parent / receipt_name
+assert manifest['inputs'][receipt_name] == hashlib.sha256(receipt.read_bytes()).hexdigest()
+assert receipt_name == 'contract-pass-' + json.loads(receipt.read_text())['key'] + '.json'
+PY
+    assert_eq "boundary evidence binds the exact receipt name hash and key" "$?" 0
+
+    rm "$receipt"
+    assert_exit "fresh validation rejects a deleted bound receipt" 2 \
+      "${contract_env[@]}" python3 "$SCRIPTS/rev-evidence.py" verify "$manifest"
+    receipt=$("${contract_env[@]}" python3 "$SCRIPTS/rev-contract-check.py" \
+      --root "$R" --session "$S" --base "$base" --roster "$S/roster.json") || return
+    local saved; saved=$(cat "$receipt"); printf '{}\n' > "$receipt"
+    assert_exit "fresh validation rejects a corrupt bound receipt" 2 \
+      "${contract_env[@]}" python3 "$SCRIPTS/rev-evidence.py" verify "$manifest"
+    printf '%s\n' "$saved" > "$receipt"
+    assert_exit "restored exact receipt recovers fresh validation" 0 \
+      "${contract_env[@]}" python3 "$SCRIPTS/rev-evidence.py" verify "$manifest"
+
+    assert_exit "fresh validation rejects a provider version mismatch" 2 env \
+      REVIEW_COUNCIL_CONTRACT_RUNNER="$runner" CONTRACT_CALLS="$calls" \
+      'REVIEW_COUNCIL_CONTRACT_PROVIDER_VERSIONS={"claude":"2","codex":"1"}' \
+      REVIEW_COUNCIL_CACHE_DIR="$T/evidence-contract-cache" \
+      python3 "$SCRIPTS/rev-evidence.py" verify "$manifest"
+    cp "$S/roster.json" "$S/roster.saved.json"
+    sed 's/"model":"sonnet"/"model":"opus"/' "$S/roster.saved.json" > "$S/roster.json"
+    assert_exit "fresh validation rejects a core roster mismatch" 2 \
+      "${contract_env[@]}" python3 "$SCRIPTS/rev-evidence.py" verify "$manifest"
+    mv "$S/roster.saved.json" "$S/roster.json"
+
+    printf 'provider boundary v3\n' > "$R/plugins/review-council/scripts/rev-prompt.sh"
+    assert_exit "offline validation remains independent of live boundary state" 0 \
+      "${contract_env[@]}" python3 "$SCRIPTS/rev-evidence.py" render "$manifest" sol --offline
+    "${contract_env[@]}" python3 "$SCRIPTS/rev-evidence.py" verify "$manifest" \
+      > "$T/evidence-contract.out" 2> "$T/evidence-contract.err"
+    assert_eq "fresh validation rejects a boundary mutation" "$?" 2
+    assert_grep "boundary mutation reports a missing matching contract receipt" "$T/evidence-contract.err" \
+      'matching provider contract receipt is missing'
+    receipt=$("${contract_env[@]}" python3 "$SCRIPTS/rev-contract-check.py" \
+      --root "$R" --session "$S" --base "$base" --roster "$S/roster.json") || return
+    manifest=$("${contract_env[@]}" REV_SOURCE_CONTEXT=0 python3 "$SCRIPTS/rev-evidence.py" \
+      prepare "$S" recovered --phase discovery) || return
+    assert_exit "rerun receipt recovers preparation and fresh validation" 0 \
+      "${contract_env[@]}" python3 "$SCRIPTS/rev-evidence.py" verify "$manifest"
+    assert_eq "foreign target mutation reruns the trusted contract tests" \
+      "$(wc -l < "$calls" | tr -d ' ')" 8
+  )
+}
+
+evidence_hardening() {
   python3 - "$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" && pwd)/rev-evidence.py" <<'PY'
 import contextlib
 import hashlib
@@ -247,7 +356,7 @@ import time
 
 script = Path(sys.argv[1]); spec = importlib.util.spec_from_file_location('evidence', script)
 module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
-seats = ['sol', 'grok', 'opus', 'opus-2']
+seats = ['sol', 'terra', 'opus', 'sonnet']
 bundles = ['correctness-boundaries', 'security-state-api', 'concurrency-resources-performance', 'tests-observability-maintenance-regression']
 assign = [a for s, b in zip(seats, bundles) for a in ('--assignment', s + '=' + b)]
 
@@ -271,10 +380,15 @@ def write_agent_audit(session, label, seat):
                             'line_end': segment['line_end'], 'origin': 'tool'}
                            for segment in required['segments'])
     if packet['source_read_required'] and not tool_ranges:
-        component = next(component for component in manifest['components']
-                         if component['id'] == packet['components'][0])
-        tool_ranges.append({'path': component['boundary'][0], 'line_start': 1,
-                            'line_end': 1, 'origin': 'tool'})
+        if packet['omitted_source_ranges']:
+            omitted = packet['omitted_source_ranges'][0]
+            tool_ranges.append({'path': omitted['path'], 'line_start': omitted['line_start'],
+                                'line_end': omitted['line_start'], 'origin': 'tool'})
+        else:
+            component = next(component for component in manifest['components']
+                             if component['id'] == packet['components'][0])
+            tool_ranges.append({'path': component['boundary'][0], 'line_start': 1,
+                                'line_end': 1, 'origin': 'tool'})
     ranges.extend(tool_ranges)
     ranges = sorted({(row['path'], row['line_start'], row['line_end'], row['origin']) for row in ranges})
     ranges = [{'path': path, 'line_start': start, 'line_end': end, 'origin': origin}
@@ -287,7 +401,7 @@ def write_agent_audit(session, label, seat):
     chunks = manifest['patch_sets'][assignment['patch_set']]['chunks'] if patch_mode == 'chunks' else []
     patch_ranges = [] if chunks else [{'line_start': start, 'line_end': min(start + 239, patch_lines)}
                                       for start in range(1, patch_lines + 1, 240)]
-    patch_reads = len(chunks) if chunks else max(1, len(patch_ranges))
+    patch_reads = 0 if not patch_raw else len(chunks) if chunks else max(1, len(patch_ranges))
     calls = max(1, len(packet['shards']) + len(tool_ranges) + patch_reads)
     cited = sum(any(row['path'] == finding['file'] and row['line_start'] <= finding['line_end']
                     and finding['line_start'] <= row['line_end'] for row in ranges) for finding in findings)
@@ -320,12 +434,14 @@ def fixture(name='repo', object_format=None):
             return subprocess.check_output(['git', '-C', str(root), *args], stderr=subprocess.PIPE).decode().strip()
         def write(name, text):
             p = root / name; p.parent.mkdir(parents=True, exist_ok=True); p.write_text(text)
-        def call(*args, good=True, timeout=30, env=None):
-            run_env = dict(os.environ, REV_PATCH_CHUNKS='1', REV_SOURCE_CONTEXT='1')
+        def call(*args, good=True, timeout=30, env=None, error=None):
+            run_env = dict(os.environ, REV_PATCH_CHUNKS='auto', REV_SOURCE_CONTEXT='1')
             run_env.update(env or {})
             p = subprocess.run([sys.executable, str(script), *map(str, args)], capture_output=True, text=True, timeout=timeout, env=run_env)
             assert 'Traceback' not in p.stderr, p.stderr
             assert (p.returncode == 0) == good, (p.returncode, p.stdout, p.stderr)
+            if error is not None:
+                assert error in p.stderr, (error, p.stderr)
             return p.stdout
         def prepare(label='1', phase='discovery', *extra, **kw):
             call('prepare', session, label, '--phase', phase, *extra, **kw)
@@ -371,10 +487,29 @@ def quoted_paths():
 def changed_symbols():
     with fixture() as (root, session, git, write, call, prepare, finish):
         write('_locales/en/messages.json', '{"hello":{"message":"Hello"}}\n')
+        write('weird.py', 'prefix\rform\fstill one LF line\ndef target():\n    return 1\n')
         prepare(); facts = json.loads((session / 'r1-evidence.json').read_text())
         assert {s['name'] for s in facts['symbols'] if s['path'] == 'main.py'} == {'first', 'second'}
         assert {(c['name'], c['line']) for c in facts['call_sites'] if c['path'] == 'test_calls.py'} == {('first', 1), ('second', 2)}
+        assert any(symbol['path'] == 'weird.py' and symbol['name'] == 'target'
+                   and symbol['line'] == 2 for symbol in facts['symbols'])
         assert facts['mechanical']['_locales/en/messages.json'] == 'locale'
+
+def empty_patch_needs_no_fake_read():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('main.py', (root / 'main.py').read_text().replace('return 2', 'return 1'))
+        manifest = prepare('empty')
+        assert all(assignment['patch_bytes'] == 0 and assignment['patch_lines'] == 0
+                   for assignment in manifest['assignments'].values())
+        for seat in manifest['assignments']:
+            prompt = call('render', session / 'rempty-evidence.manifest.json', seat)
+            assert 'Assigned patch is empty; no assigned-patch read is required.' in prompt
+            assert "sed -n '1,0p'" not in prompt
+            (session / f'rempty-{seat}.prompt.md').write_text(prompt)
+            (session / f'rempty-{seat}.json').write_text('{"summary":"no changes","findings":[]}')
+            (session / f'rempty-{seat}.exit').write_text('0\n')
+            write_agent_audit(session, 'empty', seat)
+        call('receipt', session, 'empty')
 
 def conservative_mechanical_classification():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -421,7 +556,7 @@ def invalid_manifests():
         bad = json.loads(original)
         for seat in seats[1:]:
             bad['assignments'][seat].update(scope='delta', patch=str(session.resolve() / 'r1-delta.patch'), full_state=False)
-        mpath.write_text(json.dumps(bad)); call('render', mpath, 'grok', good=False)
+        mpath.write_text(json.dumps(bad)); call('render', mpath, 'terra', good=False)
         mpath.write_bytes(original)
         call('prepare', session, 'bad-owner', '--phase', 'verification', *assign, '--full-seat', 'sol', good=False)
         for key, value in [('source', None), ('assignments', []), ('artifacts', []), ('snapshot_unsafe', {}), ('word_counts', None)]:
@@ -480,7 +615,7 @@ def phase_and_predecessor_integrity():
 def cumulative_verification_routing():
     with fixture() as (root, session, git, write, call, prepare, finish):
         semantic = prepare('semantic', 'verification', *assign)
-        assert semantic['assignments']['opus-2']['scope'] == 'full'
+        assert semantic['assignments']['sonnet']['scope'] == 'full'
         assert all(semantic['assignments'][seat]['scope'] == 'semantic' for seat in seats[:-1])
         assert semantic['fallback_reason'] is None and semantic['predecessor'] is None
         mpath = session / 'rsemantic-evidence.manifest.json'
@@ -497,7 +632,7 @@ def cumulative_verification_routing():
         call('render', mpath, 'sol', good=False)
         mpath.write_bytes(original); epath.write_bytes(original_evidence)
         bad = json.loads(original); evidence = json.loads(original_evidence)
-        assignment = bad['assignments']['sol']; owner = bad['assignments']['opus-2']
+        assignment = bad['assignments']['sol']; owner = bad['assignments']['sonnet']
         for key in ('scope', 'full_state', 'patch', 'patch_sha256', 'patch_bytes',
                     'patch_lines', 'patch_set', 'patch_read_mode', 'components'):
             assignment[key] = owner[key]
@@ -507,7 +642,7 @@ def cumulative_verification_routing():
         finish('semantic')
         first_head = json.loads((session / 'coverage-head.json').read_text())
         same = prepare('same', 'verification', *assign)
-        assert same['assignments']['opus-2']['scope'] == 'full'
+        assert same['assignments']['sonnet']['scope'] == 'full'
         assert all(same['assignments'][seat]['scope'] == 'semantic' for seat in seats[:-1])
         assert same['fallback_reason'] is None and same['predecessor'] is None
         finish('same')
@@ -520,6 +655,56 @@ def cumulative_verification_routing():
         assert all(assignment['scope'] == 'full'
                    for assignment in mechanical['assignments'].values())
         assert mechanical['fallback_reason'] == 'no semantic components'
+
+def coverage_head_publication_is_monotonic():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        prepare('first'); finish('first')
+        first_reference = json.loads((session / 'coverage-head.json').read_text())
+        prepare('second'); finish('second')
+        head_path = session / 'coverage-head.json'
+        second_bytes = head_path.read_bytes()
+        assert json.loads(second_bytes.decode())['receipt'] == 'rsecond-coverage.receipt.json'
+        call('receipt', session, 'first')
+        assert head_path.read_bytes() == second_bytes
+        head_path.unlink()
+        call('receipt', session, 'first')
+        assert json.loads(head_path.read_text()) == first_reference
+
+        valid_receipt = session / 'rfirst-coverage.receipt.json'
+        valid_bytes = valid_receipt.read_bytes()
+        cases = []
+        head_path.write_text('{bad')
+        cases.append(('malformed', lambda: head_path.read_bytes()))
+        for name, before in cases:
+            call('receipt', session, 'first', good=False,
+                 error='invalid coverage head')
+            assert head_path.read_bytes() == before()
+
+        head_path.unlink()
+        head_path.symlink_to(valid_receipt.name)
+        target_before = valid_receipt.read_bytes()
+        call('receipt', session, 'first', good=False,
+             error='invalid coverage head')
+        assert head_path.is_symlink() and valid_receipt.read_bytes() == target_before
+
+        head_path.unlink()
+        os.link(valid_receipt, head_path)
+        inode = head_path.stat().st_ino
+        call('receipt', session, 'first', good=False,
+             error='invalid coverage head')
+        assert head_path.stat().st_ino == inode and valid_receipt.read_bytes() == valid_bytes
+
+        head_path.unlink()
+        head_path.write_bytes(second_bytes)
+        head_path.chmod(0)
+        inode = head_path.stat().st_ino
+        try:
+            call('receipt', session, 'first', good=False,
+                 error='invalid coverage head')
+            assert head_path.stat().st_ino == inode
+        finally:
+            head_path.chmod(0o600)
+        assert head_path.read_bytes() == second_bytes
 
 def same_stat_and_index_flags():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -642,7 +827,7 @@ def sparse_gitlink_and_special():
 def roster_bundle_coverage():
     for count in (3, 5):
         with fixture() as (root, session, git, write, call, prepare, finish):
-            panel = ['sol', 'grok', 'opus'] if count == 3 else seats + ['fifth']
+            panel = ['sol', 'terra', 'opus'] if count == 3 else seats + ['fifth']
             (session / 'roster.json').write_text(json.dumps({'seats': [{'seat': s, 'adapter': 'agent'} for s in panel]}))
             dealt = [bundles[0] + '+' + bundles[3], bundles[1], bundles[2]] if count == 3 else bundles + [bundles[0]]
             args = [part for seat, bundle in zip(panel, dealt) for part in ('--assignment', seat + '=' + bundle)]
@@ -685,7 +870,7 @@ def source_context_packets():
         write('main.py', (root / 'main.py').read_text().replace('value + 1', 'value + 10')
               .replace('value + 2', 'value + 20').replace('value + 3', 'value + 30'))
         m = prepare(); context = m['source_context']
-        assert context['schema_version'] == 2 and context['enabled'] is True and context['snapshot_tree'] == m['snapshot_tree']
+        assert context['schema_version'] == 3 and context['enabled'] is True and context['snapshot_tree'] == m['snapshot_tree']
         assert 'object_repository' not in context
         assert context['max_shard_bytes'] == 32768
         context_artifacts = [shard['artifact'] for packet in context['seats'].values()
@@ -706,6 +891,7 @@ def source_context_packets():
             for shard in packet['shards']:
                 path = session / shard['artifact']; raw = path.read_bytes()
                 assert shard['bytes'] == len(raw) <= 32768
+                assert shard['predicted_visible_bytes'] == len(raw) + len(raw.splitlines()) * 8 <= 32768
                 assert shard['sha256'] == hashlib.sha256(raw).hexdigest()
                 body = json.loads(raw)
                 assert body['snapshot_tree'] == m['snapshot_tree'] and body['seat'] == seat
@@ -752,12 +938,15 @@ def source_context_packets():
             manifest = json.loads(manifest_path.read_text()); evidence = json.loads(evidence_path.read_text())
             seat = owner; shard_meta = manifest['source_context']['seats'][seat]['shards'][0]
             artifact = session / shard_meta['artifact']; payload = json.loads(artifact.read_text())
-            transform(manifest, payload)
+            metadata_update = transform(manifest, payload) or {}
             artifact.write_bytes(module.encoded(payload))
             shard_meta = manifest['source_context']['seats'][seat]['shards'][0]
             shard_meta.update(sha256=module.digest(artifact.read_bytes()), bytes=len(artifact.read_bytes()),
+                              predicted_visible_bytes=(len(artifact.read_bytes())
+                                                       + len(artifact.read_bytes().splitlines()) * 8),
                               ranges=[{key: value for key, value in entry.items() if key != 'content'}
                                       for entry in payload['entries']], entries=len(payload['entries']))
+            shard_meta.update(metadata_update)
             evidence['source_context'] = manifest['source_context']
             evidence_path.write_bytes(module.encoded(evidence))
             manifest['artifacts'][artifact.name] = {'sha256': module.digest(artifact.read_bytes()),
@@ -773,6 +962,7 @@ def source_context_packets():
             entry.update(content=replacement, content_sha256=module.digest(replacement.encode()))
 
         mutations = [
+            lambda m, p: {'predicted_visible_bytes': 0},
             lambda m, p: p['entries'][0].update(path='../escape.py'),
             lambda m, p: p['entries'][0].update(line_start=p['entries'][0]['line_end'] + 1),
             lambda m, p: p['entries'][0].update(content=p['entries'][0]['content'][:-1]),
@@ -806,6 +996,136 @@ def source_context_packets():
         assert 'Source context packet:' not in prompt and 'Source read required: true' in prompt
         bad_env = dict(os.environ, REV_SOURCE_CONTEXT='maybe')
         call('prepare', session, 'badflag', '--phase', 'discovery', env=bad_env, good=False)
+
+def provider_visible_source_packet_limit():
+    class Repo:
+        def __init__(self, raw):
+            self.raw = raw
+        def entries(self, tree):
+            return {'main.py': ('100644', 'a' * 40)}
+        def blob(self, entry):
+            return self.raw
+
+    raw = ('def boundary():\n' + ''.join(
+        f'    value_{index} = "' + 'x' * 80 + '"\n' for index in range(313))).encode()
+    evidence = {
+        'hunks': [{'path': 'main.py', 'sha256': 'b' * 64}],
+        'symbols': [{'path': 'main.py', 'line': 1, 'line_end': 314,
+                     'name': 'boundary', 'blob_tree': '1' * 40}],
+        'call_sites': [], 'related_tests': [], 'gates': [],
+    }
+    components = [{'id': 'component', 'files': ['main.py'], 'boundary': ['main.py']}]
+    assignments = {'sol': {'components': ['component']}}
+    context, artifacts = module.source_context(
+        Repo(raw), '1' * 40, '2' * 40, evidence, components, assignments, 'sol', 'r1')
+    packet = context['seats']['sol']
+    assert not packet['shards']
+    required = packet['required_source_ranges']
+    assert len(required) == 1
+    required = required[0]
+    entry = {key: value for key, value in required.items()
+             if key not in ('required_payload_bytes', 'required_payload_predicted_visible_bytes',
+                            'segments')}
+    entry['content'] = raw.decode()
+    candidate = module.encoded({
+        'schema_version': 1, 'snapshot_tree': '1' * 40, 'base_tree': '2' * 40,
+        'seat': 'sol', 'shard_index': 1, 'shard_count': 3, 'entries': [entry],
+    })
+    rendered_bytes = len(candidate) + len(candidate.splitlines()) * 8
+    assert len(candidate) == required['required_payload_bytes'] <= 32768
+    assert rendered_bytes == required['required_payload_predicted_visible_bytes'] > 32768
+    assert b''.join(artifacts[segment['artifact']] for segment in required['segments']) == raw
+    with tempfile.TemporaryDirectory(prefix='provider-visible-packet-') as tmp:
+        session = Path(tmp)
+        for name, content in artifacts.items():
+            (session / name).write_bytes(content)
+        manifest = {
+            'source_context': context, 'snapshot_tree': '1' * 40, 'base_tree': '2' * 40,
+            'assignments': assignments, 'components': components, 'mechanical_owner': 'sol',
+            'label': '1', 'phase': 'discovery', 'scope': '.',
+        }
+        evidence['source_context'] = context
+        module.validate_source_context(session, manifest, evidence)
+        module.validate_source_context_snapshot(Repo(raw), session, manifest)
+
+def source_context_prefers_named_production_and_maps_gates():
+    class Repo:
+        def __init__(self, bodies):
+            self.bodies = bodies
+        def entries(self, tree):
+            return {path: ('100644', hashlib.sha1(body).hexdigest())
+                    for path, body in self.bodies.items()}
+        def blob(self, entry):
+            return next(body for body in self.bodies.values()
+                        if hashlib.sha1(body).hexdigest() == entry[1])
+
+    bodies = {
+        'docs/notes.md': (('background ' + 'x' * 70 + '\n') * 360).encode(),
+        'src/main.py': ('def important():\n' + ''.join(
+            f'    value_{index} = "' + 'x' * 70 + '"\n' for index in range(500))
+            + '    return value_499\n').encode(),
+        'src/caller.py': b'from main import important\n\ndef use():\n    return important()\n',
+        'tests/test_main.py': b'from main import important\n\ndef test_it():\n    assert important()\n',
+        'pyproject.toml': b'[tool.pytest.ini_options]\naddopts = "-q"\n',
+        'global.cfg': b'check = true\n',
+    }
+    evidence = {
+        'hunks': [
+            {'path': 'src/main.py', 'sha256': '1' * 64},
+            {'path': 'src/other.py', 'sha256': '2' * 64},
+        ],
+        'symbols': [
+            {'path': 'docs/notes.md', 'line': 1, 'line_end': 360, 'name': None,
+             'blob_tree': 'a' * 40},
+            {'path': 'src/main.py', 'line': 1, 'line_end': 502, 'name': 'important',
+             'blob_tree': 'a' * 40},
+        ],
+        'call_sites': [
+            {'path': 'src/caller.py', 'line': 4, 'name': 'important'},
+            {'path': 'tests/test_main.py', 'line': 4, 'name': 'important'},
+        ],
+        'related_tests': [{'path': 'tests/test_main.py'}],
+        'gates': [
+            {'path': 'pyproject.toml', 'line': 2},
+            {'path': 'global.cfg', 'line': 1},
+        ],
+    }
+    components = [
+        {'id': 'main', 'files': ['src/main.py'],
+         'boundary': ['docs/notes.md', 'src/main.py', 'src/caller.py',
+                      'tests/test_main.py', 'pyproject.toml']},
+        {'id': 'other', 'files': ['src/other.py'], 'boundary': ['src/other.py']},
+    ]
+    assignments = {
+        'owner': {'components': ['main', 'other']},
+        'specialist': {'components': ['main', 'other']},
+    }
+    with tempfile.TemporaryDirectory(prefix='source-ranking-') as tmp:
+        context, artifacts = module.source_context(
+            Repo(bodies), 'a' * 40, 'b' * 40, evidence, components,
+            assignments, 'owner', 'r1')
+        packet = context['seats']['specialist']
+        assert len(packet['shards']) == 1
+        artifact = artifacts[packet['shards'][0]['artifact']]
+        entries = json.loads(artifact)['entries']
+        reasons = [reason for entry in entries for reason in entry['reasons']]
+        assert 'production-caller:important' in reasons or any(
+            reason.startswith('related-test:') for reason in reasons), reasons
+        useful = min(index for index, reason in enumerate(reasons)
+                     if reason == 'production-caller:important'
+                     or reason.startswith('related-test:'))
+        assert 'declaration:changed-line-anchor' not in reasons[:useful], reasons
+        all_entries = []
+        for seat_packet in context['seats'].values():
+            for shard in seat_packet['shards']:
+                all_entries.extend(json.loads(artifacts[shard['artifact']])['entries'])
+            all_entries.extend(seat_packet['required_source_ranges'])
+        mapped = next(entry for entry in all_entries
+                      if 'gate:pyproject.toml:2' in entry['reasons'])
+        global_gate = next(entry for entry in all_entries
+                           if 'gate:global.cfg:1' in entry['reasons'])
+        assert mapped['component_ids'] == ['main'], mapped
+        assert global_gate['component_ids'] == ['main', 'other'], global_gate
 
 def complete_declaration_context():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -853,6 +1173,8 @@ def complete_declaration_context():
         assert declaration['blob_tree'] == manifest['snapshot_tree']
         assert declaration['blob_oid'] and declaration['content_sha256']
         assert declaration['required_payload_bytes'] > manifest['source_context']['max_shard_bytes']
+        assert (declaration['required_payload_predicted_visible_bytes']
+                > manifest['source_context']['max_shard_bytes'])
         segments = declaration['segments']
         assert len(segments) > 1
         assert [row['index'] for row in segments] == list(range(1, len(segments) + 1))
@@ -909,7 +1231,8 @@ def complete_declaration_context():
         manifest_path = session / 'r1-evidence.manifest.json'; evidence_path = session / 'r1-evidence.json'
         saved_manifest = manifest_path.read_bytes(); saved_evidence = evidence_path.read_bytes()
         for key, bad in [('line_end', 6001), ('blob_tree', manifest['base_tree']),
-                         ('content_sha256', '0' * 64), ('required_payload_bytes', 32768)]:
+                         ('content_sha256', '0' * 64), ('required_payload_bytes', 32768),
+                         ('required_payload_predicted_visible_bytes', 32768)]:
             changed_manifest = json.loads(saved_manifest); changed_evidence = json.loads(saved_evidence)
             row = next(value for value in changed_manifest['source_context']['seats'][owner]['required_source_ranges']
                        if 'declaration:oversized' in value['reasons'])
@@ -1043,6 +1366,16 @@ def budget_omissions_are_not_mandatory_ranges():
         assert omitted
         assert all(packet['source_read_required'] and not packet['required_source_ranges']
                    for packet in omitted)
+        assert all(packet['omitted_source_ranges'] for packet in omitted)
+        for packet in omitted:
+            for row in packet['omitted_source_ranges']:
+                assert row['path'].startswith('unit_') and row['line_start'] == 1
+                assert row['line_end'] == 262
+                assert row['reasons'] and row['component_ids']
+                assert row['blob_tree'] == manifest['snapshot_tree']
+                assert len(row['blob_oid']) in (40, 64)
+                assert len(row['content_sha256']) == 64
+                assert 'content' not in row and 'segments' not in row
         finish('budget-omissions')
 
 def innermost_declarations_and_bounded_anchors():
@@ -1123,7 +1456,9 @@ def high_confidence_component_union():
         repo = module.Repository(session.resolve()); snapshot, _ = repo.snapshot()
         changes, _, categories, _ = repo.changes(repo.tree(base), snapshot)
         patches = {path: patch for path, patch in changes if categories[path] == 'semantic'}
-        chosen = {seat: assignment['bundle'] for seat, assignment in manifest['assignments'].items()}
+        roster = json.loads((session / 'roster.json').read_text())
+        chosen = {row['seat']: manifest['assignments'][row['seat']]['bundle']
+                  for row in roster['seats']}
         assert components == module.components_for(
             patches, list(reversed(evidence['dependencies'])), chosen,
             manifest['mechanical_owner'])
@@ -1147,7 +1482,7 @@ def components_ownership_and_instructions():
         assert covered == set(m['semantic_paths'])
         assert (session / 'r1-instructions.md').read_text().count('Repository constraint.') == 1
         assert 'Source constraint.' in (session / 'r1-instructions.md').read_text()
-        assert any(p.endswith('-grok.patch') for p in m['artifacts'])
+        assert any(p.endswith('-terra.patch') for p in m['artifacts'])
         finding_owner = component['specialists'][0]
         finding = {'severity':'P2','file':'src/a.ts','line_start':2,'line_end':2,'claim':'Dependency result needs validation','evidence':'The result is returned directly.','suggested_fix':'Validate it.','confidence':0.9}
         for seat in m['assignments']:
@@ -1174,18 +1509,23 @@ def instruction_override_precedence():
     with fixture() as (root, session, git, write, call, prepare, finish):
         write('AGENTS.md', 'root ordinary\n'); write('AGENTS.override.md', 'root override\n')
         write('src/AGENTS.md', 'src ordinary\n'); write('src/AGENTS.override.md', 'src override\n')
-        write('src/deep/AGENTS.md', 'deep ordinary\n'); write('src/deep/main.py', 'value = 1\n')
+        write('src/deep/AGENTS.md', 'deep ordinary\n')
+        write('src/deep/main.py', 'def target():\n    return 1\n')
+        write('consumer/AGENTS.md', 'consumer rules\n')
+        write('consumer/use.py', 'from src.deep.main import target\nvalue = target()\n')
         git('add', '.'); git('commit', '-qm', 'instruction base')
         base = git('rev-parse', 'HEAD'); scope_text = (session / 'scope.env').read_text()
         (session / 'scope.env').write_text('\n'.join(
             'REV_BASE=' + base if row.startswith('REV_BASE=') else row
             for row in scope_text.splitlines()) + '\n')
-        write('src/deep/main.py', 'value = 2\n')
+        write('src/deep/main.py', 'def target():\n    return 2\n')
         worktree = prepare('override-worktree')
         assert [row['path'] for row in worktree['instructions']] == [
-            'AGENTS.override.md', 'src/AGENTS.override.md', 'src/deep/AGENTS.md']
+            'AGENTS.override.md', 'consumer/AGENTS.md', 'src/AGENTS.override.md',
+            'src/deep/AGENTS.md']
         packet = (session / 'roverride-worktree-instructions.md').read_text()
-        assert 'root override' in packet and 'src override' in packet and 'deep ordinary' in packet
+        assert all(value in packet for value in (
+            'root override', 'src override', 'deep ordinary', 'consumer rules'))
         assert 'root ordinary' not in packet and 'src ordinary' not in packet
 
         write('src/deep/AGENTS.override.md', 'deep snapshot override\n')
@@ -1193,7 +1533,8 @@ def instruction_override_precedence():
         git('checkout', '-q', base)
         named = prepare('override-ref', 'discovery', '--head', head)
         assert [row['path'] for row in named['instructions']] == [
-            'AGENTS.override.md', 'src/AGENTS.override.md', 'src/deep/AGENTS.override.md']
+            'AGENTS.override.md', 'consumer/AGENTS.md', 'src/AGENTS.override.md',
+            'src/deep/AGENTS.override.md']
         assert 'deep snapshot override' in (session / 'roverride-ref-instructions.md').read_text()
         manifest_path = session / 'roverride-ref-evidence.manifest.json'
         manifest = json.loads(manifest_path.read_text()); evidence_path = session / 'roverride-ref-evidence.json'
@@ -1286,31 +1627,185 @@ def receipt_read_audits():
                  'required_source_range_proofs':[],
                  'source_ranges':sorted(packet_ranges, key=lambda row: (row['path'], row['line_start'], row['line_end'], row['origin']))}
         path = session / 'r1-sol.read-audit.json'
-        for key, bad in [('status','invalid'), ('prompt_sha256','0'*64), ('stream_sha256','0'*64),
-                         ('result_sha256','0'*64), ('evidence_manifest_sha256','0'*64),
-                         ('adapter','agent'), ('narrow',True), ('violations',['outside']),
-                         ('tool_calls',None), ('recognized_tool_calls',0), ('packet_bytes',0),
-                         ('finding_citations',1), ('source_ranges',[])]:
-            path.write_text(json.dumps(dict(audit, **{key:bad}))); call('receipt', session, '1', good=False)
-        path.write_text(json.dumps(audit)); call('receipt', session, '1', good=False)
-        patch = Path(manifest['assignments']['sol']['patch']); patch_lines = len(patch.read_bytes().splitlines())
+        patch = Path(manifest['assignments']['sol']['patch'])
         assignment = manifest['assignments']['sol']; patch_mode = assignment['patch_read_mode']
         chunks = manifest['patch_sets'][assignment['patch_set']]['chunks'] if patch_mode == 'chunks' else []
         audit.update(assigned_patch_sha256=module.digest(patch.read_bytes()),
-                     assigned_patch_bytes=len(patch.read_bytes()), assigned_patch_lines=patch_lines,
-                     assigned_patch_reads=len(chunks) if chunks else max(1, (patch_lines + 239) // 240),
-                     assigned_patch_ranges=[] if chunks or patch_lines == 0 else [{'line_start':1, 'line_end':patch_lines}],
+                     assigned_patch_bytes=len(patch.read_bytes()), assigned_patch_lines=assignment['patch_lines'],
+                     assigned_patch_reads=len(chunks) if chunks else max(1, (assignment['patch_lines'] + 239) // 240),
+                     assigned_patch_ranges=[] if chunks or assignment['patch_lines'] == 0 else [{'line_start':1, 'line_end':assignment['patch_lines']}],
                      patch_proof_mode=patch_mode,
-                     patch_proof_calls=len(chunks) if chunks else max(1, (patch_lines + 239) // 240),
-                     patch_proof_turns=len(chunks) if chunks else max(1, (patch_lines + 239) // 240),
+                     patch_proof_calls=len(chunks) if chunks else max(1, (assignment['patch_lines'] + 239) // 240),
+                     patch_proof_turns=len(chunks) if chunks else max(1, (assignment['patch_lines'] + 239) // 240),
                      patch_proof_visible_bytes=len(patch.read_bytes()),
                      expected_patch_chunks=len(chunks), opened_patch_chunks=len(chunks))
+        audit['advisories'] = [{'code':'unbounded-shell-output','tool':'Bash'}]
+        path.write_text(json.dumps(audit))
+        call('receipt', session, '1')
+        cases = [
+            ('status','invalid','invalid or stale read audit'),
+            ('prompt_sha256','0'*64,'invalid or stale read audit'),
+            ('stream_sha256','0'*64,'invalid or stale read audit'),
+            ('result_sha256','0'*64,'invalid or stale read audit'),
+            ('evidence_manifest_sha256','0'*64,'invalid or stale read audit'),
+            ('adapter','agent','invalid or stale read audit'),
+            ('narrow',True,'invalid or stale read audit'),
+            ('violations',['outside'],'invalid or stale read audit'),
+            ('advisories',['outside'],'invalid or stale read audit'),
+            ('tool_calls',None,'invalid read audit counters'),
+            ('recognized_tool_calls',0,'invalid read audit counters'),
+            ('packet_bytes',0,'read audit evidence coverage mismatch'),
+            ('finding_citations',1,'read audit evidence coverage mismatch'),
+            ('source_ranges',[],'read audit did not open every assigned source context shard'),
+        ]
+        for key, bad, error in cases:
+            path.write_text(json.dumps(dict(audit, **{key:bad})))
+            call('receipt', session, '1', good=False, error=error)
         for key, bad in [('assigned_patch_sha256','0'*64), ('assigned_patch_bytes',0),
                          ('assigned_patch_lines',0), ('assigned_patch_reads',0),
-                         ('assigned_patch_ranges',[{'line_start':2,'line_end':patch_lines}])]:
+                         ('assigned_patch_ranges',[{'line_start':2,'line_end':assignment['patch_lines']}])]:
             path.write_text(json.dumps(dict(audit, **{key:bad}))); call('receipt', session, '1', good=False)
         path.write_text(json.dumps(audit)); call('receipt', session, '1')
-        stream.write_text('changed\n'); call('receipt', session, '1', good=False)
+        stream.write_text('changed\n'); call('receipt', session, '1', good=False, error='invalid or stale read audit')
+
+def seat_local_recovery():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        roster = {'seats': [
+            {'seat': seat, 'extra': False, 'adapter': 'agent',
+             'model': 'model-' + seat, 'effort': 'max'} for seat in seats]}
+        (session / 'roster.json').write_text(json.dumps(roster))
+        parent = prepare('parent', 'risk', *assign)
+        parent_path = session / 'rparent-evidence.manifest.json'
+        for seat in parent['assignments']:
+            (session / f'rparent-{seat}.prompt.md').write_text(call('render', parent_path, seat))
+            (session / f'rparent-{seat}.json').write_text('{"summary":"parent","findings":[]}')
+            (session / f'rparent-{seat}.exit').write_text('0\n')
+            write_agent_audit(session, 'parent', seat)
+        (session / 'rparent-terra.exit').write_text('1\n')
+        call('receipt', session, 'parent', good=False, error='seat failed: terra')
+        child_args = ('--assignment', 'terra=' + bundles[1],
+                      '--parent-assignment', 'parent:terra')
+        child = prepare('child', 'repair', *child_args)
+        binding = child['parent_assignment']
+        assert binding == {
+            'manifest': parent_path.name,
+            'manifest_sha256': module.digest(parent_path.read_bytes()),
+            'seat': 'terra', 'snapshot_tree': parent['snapshot_tree'],
+            'roster_sha256': parent['inputs']['roster.json'],
+            'assignment_sha256': module.digest(module.encoded(parent['assignments']['terra'])),
+            'bundle': bundles[1], 'adapter': 'agent',
+            'model': 'model-terra', 'effort': 'max',
+            'patch_chunks_mode': 'auto', 'source_context_enabled': True}
+        assert child['assignments']['terra']['scope'] == 'full'
+        assert child['patch_chunks_mode'] == parent['patch_chunks_mode'] == 'auto'
+        assert child['source_context']['enabled'] is parent['source_context']['enabled'] is True
+        call('prepare', session, 'child-chunk-conflict', '--phase', 'repair', *child_args,
+             good=False, env={'REV_PATCH_CHUNKS':'0'},
+             error='repair patch chunk setting conflicts with parent assignment')
+        call('prepare', session, 'child-source-conflict', '--phase', 'repair', *child_args,
+             good=False, env={'REV_SOURCE_CONTEXT':'0'},
+             error='repair source context setting conflicts with parent assignment')
+        call('prepare', session, 'child-worktree-conflict', '--phase', 'repair',
+             *child_args, '--head', git('rev-parse', 'HEAD'), good=False,
+             error='explicit source selector conflicts with parent assignment')
+        child_path = session / 'rchild-evidence.manifest.json'
+        (session / 'rchild-terra.prompt.md').write_text(call('render', child_path, 'terra'))
+        (session / 'rchild-terra.json').write_text('{"summary":"child","findings":[]}')
+        (session / 'rchild-terra.exit').write_text('0\n')
+        write_agent_audit(session, 'child', 'terra')
+        output = call('verify-panel', session, 'parent', '--replacement', 'terra=child')
+        verified = json.loads(output)
+        assert verified['replacements'] == {'terra': 'child'}
+        assert {seat: row['label'] for seat, row in verified['selected_generations'].items()} == {
+            'sol': 'parent', 'terra': 'child', 'opus': 'parent', 'sonnet': 'parent'}
+        call('receipt', session, 'parent', '--replacement', 'terra=child')
+        receipt = json.loads((session / 'rparent-coverage.receipt.json').read_text())
+        assert receipt['schema_version'] == 2
+        assert receipt['selected_generations'] == verified['selected_generations']
+        assert receipt['results'] == verified['results']
+        assert receipt['selected_generations']['sol']['result_sha256'] == module.digest(
+            (session / 'rparent-sol.json').read_bytes())
+        call('receipt', session, 'parent', '--replacement', 'terra=child')
+        follow = prepare('follow', 'verification', *assign)
+        assert follow['fallback_reason'] is None
+        call('verify-panel', session, 'parent', '--replacement', 'terra=child',
+             '--replacement', 'terra=child', good=False, error='duplicate replacement seat')
+        (session / 'rparent-terra.exit').write_text('0\n')
+        (session / 'rparent-opus.exit').write_text('1\n')
+        call('verify-panel', session, 'parent', '--replacement', 'opus=child',
+             good=False, error='replacement child is bound to another parent seat')
+        (session / 'rparent-terra.exit').write_text('1\n')
+        (session / 'rparent-opus.exit').write_text('0\n')
+
+        original_manifest = child_path.read_bytes()
+        original_evidence = (session / 'rchild-evidence.json').read_bytes()
+        for key, value in (
+                ('snapshot_tree', parent['base_tree']), ('roster_sha256', '0' * 64),
+                ('assignment_sha256', '0' * 64), ('bundle', bundles[0]),
+                ('adapter', 'other'), ('model', 'other'), ('effort', 'xhigh'),
+                ('patch_chunks_mode', '0'), ('source_context_enabled', False)):
+            changed = json.loads(original_manifest); evidence = json.loads(original_evidence)
+            changed['parent_assignment'][key] = value
+            evidence['parent_assignment'][key] = value
+            evidence_raw = module.encoded(evidence)
+            (session / 'rchild-evidence.json').write_bytes(evidence_raw)
+            changed['artifacts']['rchild-evidence.json'] = {
+                'sha256': module.digest(evidence_raw), 'words': len(evidence_raw.split())}
+            child_path.write_bytes(module.encoded(changed))
+            call('verify-panel', session, 'parent', '--replacement', 'terra=child', good=False)
+        child_path.write_bytes(original_manifest)
+        (session / 'rchild-evidence.json').write_bytes(original_evidence)
+        changed = json.loads(original_manifest)
+        changed['task_capacity']['seats']['terra']['projected_turns'] += 1
+        child_path.write_bytes(module.encoded(changed))
+        call('verify', child_path, good=False, error='invalid task capacity contract')
+        child_path.write_bytes(original_manifest)
+
+        sibling = prepare('sibling', 'repair', '--assignment', 'terra=' + bundles[1],
+                          '--parent-assignment', 'parent:terra')
+        sibling_path = session / 'rsibling-evidence.manifest.json'
+        (session / 'rsibling-terra.prompt.md').write_text(call('render', sibling_path, 'terra'))
+        (session / 'rsibling-terra.json').write_text('{"summary":"sibling","findings":[]}')
+        (session / 'rsibling-terra.exit').write_text('0\n')
+        write_agent_audit(session, 'sibling', 'terra')
+        sibling_stream = session / 'rsibling-terra.stream.ndjson'
+        sibling_stream.write_text('{"different":true}\n')
+        sibling_audit = json.loads((session / 'rsibling-terra.read-audit.json').read_text())
+        sibling_audit['stream_sha256'] = module.digest(sibling_stream.read_bytes())
+        (session / 'rsibling-terra.read-audit.json').write_text(json.dumps(sibling_audit))
+        for suffix in ('prompt.md', 'stream.ndjson', 'json', 'read-audit.json'):
+            target = session / ('rchild-terra.' + suffix); saved = target.read_bytes()
+            target.write_bytes((session / ('rsibling-terra.' + suffix)).read_bytes())
+            call('verify-panel', session, 'parent', '--replacement', 'terra=child', good=False)
+            target.write_bytes(saved)
+
+        git('add', 'main.py'); git('commit', '-qm', 'reviewed ref')
+        reviewed_ref = git('rev-parse', 'HEAD')
+        parent_ref = prepare('parent-ref', 'risk', '--head', reviewed_ref, *assign)
+        inherited = prepare('child-ref', 'repair', '--assignment', 'terra=' + bundles[1],
+                            '--parent-assignment', 'parent-ref:terra')
+        assert inherited['source'] == parent_ref['source'] == {
+            'mode': 'ref', 'ref': reviewed_ref}
+        assert inherited['snapshot_tree'] == parent_ref['snapshot_tree']
+        explicit = prepare('child-ref-explicit', 'repair', '--assignment', 'terra=' + bundles[1],
+                           '--parent-assignment', 'parent-ref:terra', '--head', reviewed_ref)
+        assert explicit['source'] == parent_ref['source']
+        call('prepare', session, 'child-ref-conflict', '--phase', 'repair',
+             '--assignment', 'terra=' + bundles[1],
+             '--parent-assignment', 'parent-ref:terra', '--head', git('rev-parse', 'HEAD^'),
+             good=False, error='explicit source selector conflicts with parent assignment')
+
+        ordinary = prepare('ordinary')
+        for seat in ordinary['assignments']:
+            path = session / 'rordinary-evidence.manifest.json'
+            (session / f'rordinary-{seat}.prompt.md').write_text(call('render', path, seat))
+            (session / f'rordinary-{seat}.json').write_text('{"summary":"ordinary","findings":[]}')
+            (session / f'rordinary-{seat}.exit').write_text('0\n')
+            write_agent_audit(session, 'ordinary', seat)
+        call('receipt', session, 'ordinary')
+        ordinary_receipt = json.loads((session / 'rordinary-coverage.receipt.json').read_text())
+        assert ordinary_receipt['schema_version'] == 1
+        assert 'selected_generations' not in ordinary_receipt and 'replacements' not in ordinary_receipt
 
 def narrow_agent_requires_proven_reads():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -1333,6 +1828,7 @@ def narrow_agent_requires_proven_reads():
             (session / f'rnarrow-corrupt-{seat}.json').write_text('{"summary":"checked","findings":[]}')
             (session / f'rnarrow-corrupt-{seat}.exit').write_text('0\n')
             write_agent_audit(session, 'narrow-corrupt', seat)
+        call('receipt', session, 'narrow-corrupt')
         seat = next(seat for seat, assignment in manifest['assignments'].items()
                     if assignment['scope'] != 'full')
         path = session / f'rnarrow-corrupt-{seat}.read-audit.json'; audit = json.loads(path.read_text())
@@ -1346,7 +1842,8 @@ def narrow_agent_requires_proven_reads():
         audit['source_read_calls'] = 1; audit['opened_source_ranges'] = 1
         audit['required_source_ranges_covered'] = 0; audit['required_source_range_proofs'] = []
         path.write_text(json.dumps(audit))
-        call('receipt', session, 'narrow-corrupt', good=False)
+        call('receipt', session, 'narrow-corrupt', good=False,
+             error='read audit evidence coverage mismatch')
 
 def full_agent_requires_proven_reads():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -1458,7 +1955,70 @@ def local_ignored_instructions():
         call('prepare',session,'unsafe-rules','--phase','discovery',good=False)
         assert not list(session.glob('runsafe-rules-*'))
 
-for test in (storage_redirects, quoted_paths, changed_symbols, conservative_mechanical_classification, bounded_navigation_markdown, opaque_transitions, opaque_mode_transition, invalid_manifests, phase_and_predecessor_integrity, cumulative_verification_routing, same_stat_and_index_flags, cstyle_enclosing_bodies, wallet_scale, literal_scope_and_inventories, sparse_gitlink_and_special, roster_bundle_coverage, source_context_packets, complete_declaration_context, budget_omissions_are_not_mandatory_ranges, innermost_declarations_and_bounded_anchors, high_confidence_component_union, components_ownership_and_instructions, instruction_override_precedence, empty_source_context, bounded_work_and_memory, receipt_read_audits, narrow_agent_requires_proven_reads, full_agent_requires_proven_reads, scoped_names_and_gitlink_lifecycle, component_and_full_tampering, offline_structure_and_predecessor_walk, local_ignored_instructions):
+cases = (
+    storage_redirects, quoted_paths, changed_symbols, empty_patch_needs_no_fake_read,
+    conservative_mechanical_classification, bounded_navigation_markdown, opaque_transitions,
+    opaque_mode_transition, invalid_manifests, phase_and_predecessor_integrity,
+    cumulative_verification_routing, coverage_head_publication_is_monotonic,
+    same_stat_and_index_flags, cstyle_enclosing_bodies, wallet_scale,
+    literal_scope_and_inventories, sparse_gitlink_and_special, roster_bundle_coverage,
+    source_context_packets, provider_visible_source_packet_limit,
+    source_context_prefers_named_production_and_maps_gates, complete_declaration_context,
+    budget_omissions_are_not_mandatory_ranges, innermost_declarations_and_bounded_anchors,
+    high_confidence_component_union, components_ownership_and_instructions,
+    instruction_override_precedence, empty_source_context, bounded_work_and_memory,
+    receipt_read_audits, seat_local_recovery, narrow_agent_requires_proven_reads,
+    full_agent_requires_proven_reads, scoped_names_and_gitlink_lifecycle,
+    component_and_full_tampering, offline_structure_and_predecessor_walk,
+    local_ignored_instructions,
+)
+groups = {
+    'structure': (
+        storage_redirects, quoted_paths, changed_symbols, empty_patch_needs_no_fake_read,
+        conservative_mechanical_classification, bounded_navigation_markdown,
+        opaque_transitions, opaque_mode_transition, invalid_manifests,
+        phase_and_predecessor_integrity,
+    ),
+    'routing': (
+        cumulative_verification_routing, coverage_head_publication_is_monotonic,
+        same_stat_and_index_flags, literal_scope_and_inventories,
+        sparse_gitlink_and_special, roster_bundle_coverage,
+        scoped_names_and_gitlink_lifecycle, component_and_full_tampering,
+        offline_structure_and_predecessor_walk, local_ignored_instructions,
+    ),
+    'context': (
+        cstyle_enclosing_bodies, source_context_packets,
+        provider_visible_source_packet_limit,
+        source_context_prefers_named_production_and_maps_gates,
+        complete_declaration_context, budget_omissions_are_not_mandatory_ranges,
+        innermost_declarations_and_bounded_anchors, high_confidence_component_union,
+        components_ownership_and_instructions, instruction_override_precedence,
+        empty_source_context,
+    ),
+    'scale_receipts': (
+        wallet_scale, bounded_work_and_memory, receipt_read_audits,
+        seat_local_recovery, narrow_agent_requires_proven_reads,
+        full_agent_requires_proven_reads,
+    ),
+}
+partition = tuple(test for group in groups.values() for test in group)
+assert len(partition) == len(set(partition)) and set(partition) == set(cases), \
+    'evidence hardening groups must partition the canonical cases exactly once'
+selected = os.environ.get('REV_EVIDENCE_CASE')
+selected_group = os.environ.get('REV_EVIDENCE_GROUP')
+assert not (selected and selected_group), 'select one evidence case or group'
+if selected_group:
+    assert selected_group in groups, 'unknown evidence hardening group: ' + selected_group
+    chosen = set(groups[selected_group])
+elif selected:
+    matches = [test for test in cases if test.__name__ == selected]
+    assert len(matches) == 1, 'unknown evidence hardening case: ' + selected
+    chosen = set(matches)
+else:
+    chosen = set(cases)
+for test in cases:
+    if test not in chosen:
+        continue
     try:
         test(); print('PASS', test.__name__)
     except Exception as error:
@@ -1472,6 +2032,27 @@ PY
   return "$rc"
 }
 
+test_evidence_hardening_structure() {
+  REV_EVIDENCE_GROUP=structure evidence_hardening
+}
+
+test_evidence_hardening_routing() {
+  REV_EVIDENCE_GROUP=routing evidence_hardening
+}
+
+test_evidence_hardening_context() {
+  REV_EVIDENCE_GROUP=context evidence_hardening
+}
+
+test_evidence_hardening_scale_receipts() {
+  REV_EVIDENCE_GROUP=scale_receipts evidence_hardening
+}
+
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  test_evidence_contract && test_evidence_hardening
+  test_evidence_contract \
+    && test_evidence_hardening_structure \
+    && test_evidence_hardening_routing \
+    && test_evidence_hardening_context \
+    && test_evidence_hardening_scale_receipts \
+    && test_evidence_provider_contract_binding
 fi

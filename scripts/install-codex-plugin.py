@@ -31,11 +31,7 @@ def install():
     spec = importlib.util.spec_from_file_location('builder', Path(__file__).with_name('build-codex-plugin.py'))
     builder = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(builder)
-    output = builder.build(home / 'plugins/review-council')
-    manifest = output / '.codex-plugin/plugin.json'
-    metadata = json.loads(manifest.read_text())
-    metadata['version'] = metadata['version'].split('+')[0] + '+codex.' + str(time.time_ns())
-    manifest.write_text(json.dumps(metadata, indent=2) + '\n')
+    builder.build(home / 'plugins/review-council', cachebuster=time.time_ns())
     if existing is None:
         plugins.append({'name': 'review-council', 'source': source,
                         'policy': {'installation': 'AVAILABLE', 'authentication': 'ON_INSTALL'},

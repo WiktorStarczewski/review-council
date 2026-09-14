@@ -81,34 +81,46 @@ ceiling. Other patches use windows of at most 240 lines. Literal source packets 
 declarations, callers, tests, and gates. Oversized omitted bodies become mandatory
 integration-seat reads bound to the exact tree, blob, content hash, and returned
 bytes. These bodies are published as manifest-hashed session artifacts in ordered,
-gapless segments of at most 240 lines and 16 KiB predicted visible output, one segment
+gapless segments of at most 240 lines and normally at most 16 KiB predicted visible
+output. A one-line segment may extend to the 32 KiB per-tool ceiling. Read one segment
 per Codex turn. Later verification uses the semantic fix delta only when a valid receipt proves
 prior coverage and the delta plus its evidence is smaller. Otherwise, safe cumulative
 evidence keeps one full integration seat and gives specialists semantic components.
 Invalid predecessor state or any current-evidence error restores full cumulative scope
-for the whole panel. Numeric and document reviews keep full scope.
+for the affected assignment or panel according to the audited failure class. One failed
+seat first retries its exact generation. A repeated failure uses a full-scope child
+generation bound to that parent assignment, and a composite receipt retains the valid
+sibling generations while rejecting any changed snapshot, roster, bundle, model,
+effort, prompt, or result. Panel-global failures still restore full scope for the whole
+panel. Numeric and document reviews keep full scope.
 
 Adaptive plan panels hash-bind every parsed fix-plan cluster. The plan-completeness
-seat keeps the full cumulative patch; all other seats receive one identical closure of
-the named sites, tests, regression paths, and changed local-import boundaries. Every
-seat still reads the complete plan and navigation index, runs each cluster's bounded
-repository-root sibling search, and proves its named source ranges. Each search is one
+seat keeps the full cumulative patch and every cluster. Each cluster also goes to one
+specialist with its named sites, tests, regression paths, and changed local-import
+boundaries. Every seat still reads the complete plan and navigation index. Preparation
+runs each cluster's bounded repository-root sibling search once against the frozen
+snapshot and routes its hash-bound result to the assigned readers. Reviewers run another
+search only for a concrete unresolved question and prove the named source ranges. Each search is one
 `rg` or recursive `grep` expression whose only path operand is literal `.`. Traversal
 filters, extra operands, file-sourced patterns, engine substitutions, filename
 suppression, redirects, saturated results, absent named sites, and producer errors fail
 closed. Successful shell proof uses `--null` and contains fewer than 80
 `path<NUL>line:text` match records; native text search cannot certify it.
 `verify-panel` validates the complete attempt without writing a receipt or advancing
-code coverage. Any parse, binding, audit, or validation failure reruns the entire plan
-panel at fresh legacy full scope. Agent-adapter plan panels use legacy full scope because
-their native read hooks cannot be enforced.
+code coverage. A seat-local failure gets one exact retry with the same assignment while
+valid sibling results remain available. If it repeats, the plan panel stays incomplete.
+Plan specialists never broaden to legacy full scope after either a seat-local or
+panel-global failure.
+An Agent adapter in the core plan roster refuses preparation before evidence artifacts
+are published because its native read hooks cannot enforce receipt-relative scope.
+Agent extras remain available outside the core plan assignments.
 
 ## Provider and orchestration differences
 
 | Behavior | Claude Code | Codex |
 | --- | --- | --- |
 | Anthropic seat | Built-in Opus agent | Installed, signed-in Claude CLI |
-| Other seats | Detected Codex/Grok/Gemini CLIs | Same |
+| Other seats | Detected Codex/Gemini CLIs | Same |
 | Thin-panel padding | Opus agents | Repeated surviving CLI runs, reported as degraded |
 | No usable external CLI | Built-in Claude panel | Refuse if no actual provider survives |
 | Session policy | Claude SessionStart hook | Native skills, no global review hook |
@@ -119,13 +131,22 @@ By default, Codex selects its newest visible model generation from its local mod
 cache, up to two seats, using the existing supported effort ladder. Set
 `codex_models` to an ordered list of one or two unique visible slugs when the council
 must use exact models. Invalid values, unknown slugs, pins outside that list, and
-missing configured seats refuse the roster before padding. Set `claude_seats` to an
-integer from 0 to 4 for an exact number of independent Opus runs; a missing positive
-configured count also refuses before padding. Identical adapter/model availability
-probes are cached. To require Sol, Grok, and two Opus runs, set the exact model and
-count, exclude Gemini, disable extras, and set `min_labs` to 3. A single-provider panel
+missing configured seats refuse the roster before padding. Set `claude_models` to an
+ordered list of unique Claude model families for distinct exact seats, or use
+`claude_seats` from 0 to 4 for the legacy repeated-Opus behavior. The settings are
+mutually exclusive, and a missing positive configured model or count refuses before
+padding. Identical adapter/model/effort availability probes are cached. To require Sol, Terra,
+Opus, and Sonnet, set `codex_models` to the ordered Sol and Terra model IDs, set
+`claude_models` to `["opus", "sonnet"]`, exclude Gemini, disable extras, and set
+`min_labs` to 2. A single-provider panel
 without strict settings is reported as degraded. See
 [configuration](config.md) for pins, exclusions, and environment variables.
+
+Set `quota_fallback` to `true` to replace quota-exhausted Claude seats temporarily with
+unique Terra seats, or quota-exhausted OpenAI seats with unique Sonnet seats. The effective
+roster and profile name every substitution and any attributable `min_labs` waiver. Authentication
+and unknown failures do not substitute, fallback never rewrites configuration, and the next
+run probes the preferred providers again.
 
 Strict availability failures exit 5 and may clear after a provider signs in, a probe
 recovers, or a model cache becomes available. This includes a satisfiable lab floor that
@@ -142,9 +163,9 @@ Both hosts install the same plugin directory. The Codex manifest selects
 does not discover it as a default startup hook. The review scripts and schema have
 one shared source.
 
-The Claude CLI adapter permits Read/Glob/Grep and Bash checked by the original
-allowlist hook. It disables inherited settings/plugins and MCP configuration,
-uses plan mode, and excludes editing tools. Codex seats retain the read-only sandbox.
+The Claude CLI adapter permits only Read and Grep, both checked by bounded hooks.
+It disables inherited settings/plugins and MCP configuration,
+uses neutral execution mode, and excludes editing tools. Codex seats retain the read-only sandbox.
 Both emit the shared findings schema; missing/malformed answers fail validation.
 A Claude structured-output event alone does not count as inspecting source files.
 
@@ -161,6 +182,9 @@ consume substantial usage; automated tests exercise its orchestration with doubl
 The profiler reports full, assigned, delta, evidence, and avoided words as projected
 scope fields, plus patch proof calls, turns, visible bytes, chunks, and delivery modes.
 Provider input, output, processed tokens, and cost remain separate actual measurements.
+Each session also carries a deterministic core-roster signature. Mixed-roster output is
+marked explicitly, while historical sessions with incomplete model metadata remain
+accepted and labeled incomplete without changing their recorded totals.
 
 ## Development checks
 

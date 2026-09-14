@@ -16,7 +16,7 @@
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 SUMMARY="$HERE/../lib/stream-summary.py"
-EFFORT=${EFFORT:-max}
+[ -n "${EFFORT:-}" ] || { echo "codex adapter: missing receipted effort" >&2; exit 1; }
 GITCHECK=""
 git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || GITCHECK="--skip-git-repo-check"
 CODEX_STATE_HOME=${CODEX_HOME:-$HOME/.codex}

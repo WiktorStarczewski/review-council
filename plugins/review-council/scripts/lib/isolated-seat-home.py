@@ -12,6 +12,8 @@ import sys
 import tempfile
 import time
 
+KINDS = ('codex',)
+
 
 def seat_path(kind, identity):
     key = hashlib.sha256(identity.encode()).hexdigest()[:20]
@@ -151,22 +153,22 @@ def main():
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest='command', required=True)
     path_command = commands.add_parser('path')
-    path_command.add_argument('kind', choices=('codex', 'grok'))
+    path_command.add_argument('kind', choices=KINDS)
     path_command.add_argument('identity')
     create = commands.add_parser('create')
-    create.add_argument('kind', choices=('codex', 'grok'))
+    create.add_argument('kind', choices=KINDS)
     create.add_argument('identity')
     create.add_argument('--auth')
     hold_command = commands.add_parser('hold')
-    hold_command.add_argument('kind', choices=('codex', 'grok'))
+    hold_command.add_argument('kind', choices=KINDS)
     hold_command.add_argument('path')
     hold_command.add_argument('--auth')
     hold_command.add_argument('--parent', type=int, required=True)
     clean = commands.add_parser('clean')
-    clean.add_argument('kind', choices=('codex', 'grok'))
+    clean.add_argument('kind', choices=KINDS)
     clean.add_argument('path')
     sweep_command = commands.add_parser('sweep')
-    sweep_command.add_argument('kind', choices=('codex', 'grok'))
+    sweep_command.add_argument('kind', choices=KINDS)
     args = parser.parse_args()
     try:
         if args.command == 'path':

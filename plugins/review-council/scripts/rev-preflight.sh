@@ -1,5 +1,6 @@
 #!/bin/bash
 # rev-preflight.sh [--scope branch|uncommitted|<path>] [--write <session-dir>] [--base <ref>]
+#                  [--quota-failed-seat <seat>]...
 # The base branch is, in order: --base, $REV_BASE_REF, the open PR's base (gh, when installed and signed in),
 # the nearest fork point among the long-lived branches (origin/HEAD's, next, develop, dev, release), else
 # origin/HEAD's. origin/HEAD alone was wrong for every branch cut from a `next` line: the review then
@@ -15,12 +16,15 @@
 # Strict availability failures use exit 5. Permanent exact-setting conflicts use exit 6.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
-SCOPE=branch; WRITE=""; BASEREF=${REV_BASE_REF:-}
+SCOPE=branch; WRITE=""; BASEREF=${REV_BASE_REF:-}; QUOTA_FAILED_SEATS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --scope) SCOPE=${2:?}; shift 2;;
     --write) WRITE=${2:?}; shift 2;;
     --base) BASEREF=${2:?}; shift 2;;
+    --quota-failed-seat)
+      [ $# -ge 2 ] && [ -n "$2" ] || { echo "rev-preflight: --quota-failed-seat needs a seat" >&2; exit 1; }
+      QUOTA_FAILED_SEATS+=("$2"); shift 2;;
     *) echo "rev-preflight: unknown argument $1" >&2; exit 1;;
   esac
 done
@@ -94,7 +98,13 @@ else
   RJSON="$SCRATCH/roster.json"
   trap 'rm -rf -- "$SCRATCH"' EXIT
 fi
-BRIEF=$("$HERE/roster.sh" --probe --brief --write "$RJSON"); RC=$?
+ROSTER_ARGS=(--probe --brief --write "$RJSON")
+if [ ${#QUOTA_FAILED_SEATS[@]} -gt 0 ]; then
+  for FAILED_SEAT in "${QUOTA_FAILED_SEATS[@]}"; do
+    ROSTER_ARGS+=(--quota-failed-seat "$FAILED_SEAT")
+  done
+fi
+BRIEF=$("$HERE/roster.sh" "${ROSTER_ARGS[@]}"); RC=$?
 if [ "$RC" = 5 ] || [ "$RC" = 6 ]; then
   # Only the roster may assign a strict status. Preserve it after validating that the written
   # object carries the matching class and a concrete one-line cause.
@@ -124,6 +134,8 @@ PY
   exit "$RC"
 fi
 [ "$RC" = 0 ] || die "roster.sh failed (exit $RC) - run $HERE/roster.sh --json to see why"
+python3 "$HERE/rev-contract-check.py" --root "$ROOT" --session "$(dirname "$RJSON")" --base "$BASE" \
+  --roster "$RJSON" >/dev/null || die "provider contract replay failed after the roster probe"
 # -z + tr, never field-splitting: git quotes paths containing spaces in porcelain/diff output otherwise.
 UNTRACKED=$(git ls-files -z --others --exclude-standard ${PS[@]+"${PS[@]}"} | tr '\0' '\n' | grep .)
 FILES=$( { git diff --name-only -z "$BASE" ${PS[@]+"${PS[@]}"} | tr '\0' '\n'

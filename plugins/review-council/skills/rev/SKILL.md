@@ -1,13 +1,13 @@
 ---
 name: rev
-description: Multi-model review-and-fix loop run from this session - a panel built at run time from whichever frontier CLIs are installed and signed in (Codex, Grok, Gemini) plus an Opus subagent, all at maximum effort, triaged into a ledger, fixed, verified and committed until rounds stop producing material findings. Use when the user runs /review-council:rev, asks for a review, audit, or check of code changes (a PR, a branch, uncommitted work, a path), after completing any non-trivial implementation, or for a read-only second opinion on a plan, design doc, or prose.
+description: Multi-model review-and-fix loop run from this session - a panel built at run time from whichever frontier CLIs are installed and signed in (Codex and Gemini) plus configured Claude subagents, all at maximum effort, triaged into a ledger, fixed, verified and committed until rounds stop producing material findings. Use when the user runs /review-council:rev, asks for a review, audit, or check of code changes (a PR, a branch, uncommitted work, a path), after completing any non-trivial implementation, or for a read-only second opinion on a plan, design doc, or prose.
 user_invocable: true
 ---
 
 # rev - multi-model review-and-fix loop
 
-You are the orchestrator. The reviewers are other labs' frontier models plus one Opus
-subagent; **they never edit**. You fan out, verify their claims against the source,
+You are the orchestrator. The reviewers are other labs' frontier models plus configured
+Claude subagents; **they never edit**. You fan out, verify their claims against the source,
 fix, verify the gates, commit, and report. The point is decorrelation: a reviewer
 that shares your weights shares your blind spots, so a review you run on your own
 work alone is proofreading. Disagreement between labs is the signal worth having.
@@ -58,6 +58,10 @@ is decorrelation, not coverage - and losing it is something you say out loud (se
 - `REV_STACK_LEG=1` → **Stack-leg mode** differences apply (below).
 
 ## Setup (once)
+
+Configuration lives at `~/.config/review-council/config.json` or the path in
+`REVIEW_COUNCIL_CONFIG`. The optional `quota_fallback` boolean is shared with the
+Codex host.
 
 1. Resolve the scope. PR number/URL: `gh pr checkout <n>`, then save the author's own
    description for the seats: `gh pr view <n> --json title,body --jq '"# " + .title + "\n\n" + .body' > $S/pr.md`.
@@ -153,7 +157,7 @@ or rendering prompts. Numeric extras keep their fixed lenses.
 ### Adaptive scope preparation
 
 Scope optimization never changes the preflight roster, its models, efforts, or
-seat count. Use every configured core seat, including Sol, Grok, and both Opus seats
+seat count. Use every configured core seat, including Sol, Terra, Opus, and Sonnet
 when that is the configured roster.
 Cover all four risk bundles at least once in every risk and verification panel.
 Let `BUNDLES` be the four bundles in their listed order. In stable roster order, core seat `i` receives bundle `BUNDLES[i mod 4]`.
@@ -187,8 +191,7 @@ offsets are contiguous, and concatenating the chunks without delimiters must rep
 the canonical patch exactly. Reviewers read every chunk once, in rendered order and in
 full, before source-context packets or source expansion. Chunk reads prove change
 discovery only; they never establish source citation evidence.
-The 32 KiB per-tool and ordinary per-turn output limits still apply. Grok and Claude adapters may read two consecutive chunks in one turn under a patch-only 60 KiB combined cap; other adapters
-read one. Chunk mode is used only when it saves at least
+The 32 KiB per-tool and ordinary per-turn output limits still apply. Claude adapters may use two ordered proof reads in one turn across patch chunks, required source segments, and the evidence index under a 60 KiB combined cap; other adapters read one. Source-context packets and repository reads retain the ordinary 32 KiB turn cap. Repository expansion begins in a later turn. Chunk mode is used only when it saves at least
 10 percent against 240-line windows. Invalid UTF-8, NUL, an older manifest without a
 chunk set, or `REV_PATCH_CHUNKS=0` keeps window mode.
 
@@ -202,10 +205,12 @@ range. Repository instructions remain in the separate manifest-bound instruction
 snapshot and are never copied into source-context shards.
 An oversized mandatory range remains one parent proof but is delivered through
 manifest-hashed, session-local source artifacts as ordered, gapless segments of at
-most 240 lines and 16 KiB predicted visible output. The renderer uses each adapter's
+most 240 lines and normally at most 16 KiB predicted visible output. A one-line
+segment may extend to the 32 KiB per-tool ceiling when that line cannot be split.
+The renderer uses each adapter's
 native full-file action: shell `cat` for Codex, `Read` for Claude, and `read_file` for
-Grok and Gemini. Claude and Grok may read two listed source segments per turn; Codex
-and Gemini read one. Every segment must be read once in order before the parent range
+Gemini. Claude may read two listed source segments per turn; Codex and Gemini read
+one. Every segment must be read once in order before the parent range
 earns a receipt.
 
 Evidence preparation applies to adaptive code panels and accepted-fix plan panels.
@@ -213,10 +218,14 @@ Explicit numeric panels use the full cumulative patch, omit evidence preparation
 and leave `MANIFEST` empty. Document panels read every supplied document in full and
 use their legacy rendering flow below.
 
-If any launched roster row has adapter `agent`, skip evidence preparation for the
-whole panel and keep `MANIFEST` empty. Claude Code plugin subagents ignore hook frontmatter,
-so an Agent seat cannot provide the enforced tool transcript required by evidence mode.
-Render and launch every seat at full legacy scope under the same panel label.
+If any launched code-panel roster row has adapter `agent`, skip evidence preparation
+for the whole code panel and keep `MANIFEST` empty. Claude Code plugin subagents ignore
+hook frontmatter, so an Agent seat cannot provide the enforced tool transcript required
+by evidence mode. Render and launch every code seat at full legacy scope under the same
+panel label. Plan preparation instead fails before publishing artifacts when any plan
+seat uses adapter `agent`. Report that plan review is unavailable with an Agent seat
+and requires a roster whose seats use enforceable Codex or Claude CLI adapters. Do not
+replace the schema-4 plan with a legacy full-scope task.
 
 Before adaptive fan-out, set `PANEL_LABEL` to the artifact label and `PANEL_PHASE` to
 `discovery`, `risk`, `verification`, or `repair`. Build `EVIDENCE_ARGS` from the exact
@@ -227,17 +236,19 @@ and that repair seat as `--full-seat`. Then prepare once:
 
 ```bash
 MANIFEST=
-if CANDIDATE=$(REV_PATCH_CHUNKS=${REV_PATCH_CHUNKS:-0} REV_SOURCE_CONTEXT=${REV_SOURCE_CONTEXT:-0} python3 "${CLAUDE_PLUGIN_ROOT}/scripts/rev-evidence.py" prepare "$S" "$PANEL_LABEL" --phase "$PANEL_PHASE" "${EVIDENCE_ARGS[@]}"); then
+if CANDIDATE=$(REV_PATCH_CHUNKS=${REV_PATCH_CHUNKS:-auto} REV_SOURCE_CONTEXT=${REV_SOURCE_CONTEXT:-1} python3 "${CLAUDE_PLUGIN_ROOT}/scripts/rev-evidence.py" prepare "$S" "$PANEL_LABEL" --phase "$PANEL_PHASE" "${EVIDENCE_ARGS[@]}"); then
   case "$CANDIDATE" in
     "$S/r$PANEL_LABEL-evidence.manifest.json") [ -r "$CANDIDATE" ] && MANIFEST=$CANDIDATE ;;
   esac
 fi
 ```
 
-`REV_PATCH_CHUNKS=1` and `REV_SOURCE_CONTEXT=1` enable the held-out adoption
-candidate. The defaults remain `0` until an exact-roster panel certifies the delivery
-path. Baseline and candidate runs must otherwise use the same snapshot, roster,
-models, efforts, bundles, and host steps.
+`REV_PATCH_CHUNKS=auto` selects chunks when they save proof reads or are required to
+fit the compiled provider capacity. `REV_PATCH_CHUNKS=1` forces chunks when the patch
+is representable, while `REV_PATCH_CHUNKS=0` requests window mode and fails preparation
+when that mode cannot fit. `REV_SOURCE_CONTEXT=1` enables literal source packets and
+required-source segments. Baseline measurements may set both paths explicitly, but
+must otherwise use the same snapshot, roster, models, efforts, bundles, and host steps.
 Both runs keep the same component assignments and patch narrowing.
 
 Build the optional flag once. Render every seat before any reviewer process starts,
@@ -256,6 +267,17 @@ Render every seat again without `--evidence`. A failed legacy render stops the p
 prompts in one panel, reuse a partially prepared manifest, or narrow coverage after
 an evidence error.
 
+When `MANIFEST` is nonempty, after every prompt renders, run one ordinary `rev-evidence.py verify` against
+`MANIFEST` before writing fan-out state or launching a reviewer. Capture the final
+space-delimited field from its output, require exactly 64 lowercase hexadecimal
+characters, then inspect every already-rendered prompt. Every evidence prompt must
+contain exactly one matching `Evidence manifest SHA-256: <hash>` line. A failed
+verify, malformed hash, missing line, duplicate line, or mismatch discards the whole
+narrowed attempt. Code panels use the all-legacy rerender path above; schema-4 plan
+panels fix the evidence or task compiler and prepare a fresh schema-4 label. This is the one
+repository-wide plan-search replay for the panel; prompt rendering and every
+postlaunch check perform no search replay.
+
 Before triage or receipt, require every evidence-launched seat to have a read audit with schema 2 in `r<label>-<seat>.read-audit.json`, a valid status, exact
 manifest, prompt, stream, and result hashes, at least one recognized review tool, and
 canonical packet or bounded source ranges. Every finding citation must intersect one
@@ -268,16 +290,82 @@ zero-tool answers. In chunk mode, the audit also requires every hash-bound chunk
 in exact order before packet and source reads. Missing, reordered, truncated, replaced,
 duplicate, unassigned, redirected, or oversized chunks invalidate the attempt.
 
-On any such failure, discard every result from the attempt. Under a fresh fallback label `<N>f`, clear `MANIFEST` and `EVIDENCE_PROMPT_ARGS`, then rerender and relaunch every seat with the full cumulative patch and no source-context packet. Use only fallback results for
-triage. Never mix narrow and full results, and never create a coverage receipt for the
-failed attempt.
+Retain one launch handle for every pending seat and inspect each terminal result as it
+arrives. Store every Bash task ID and Agent task ID under its seat name. Treat a first
+exit 1 or 2 as seat-local. Retry only the failed seat once with its exact prompt,
+assignment, model, and effort while other seats continue. On an evidence audit
+rejection, rerender the failed seat's evidence fragment with the same plan argument;
+this calls the no-replay render path. Compare its first hash line with the exact prompt
+hash. If the rerender fails or the hashes differ, cancel every pending sibling because
+the failure is panel-global. Code panels then enter the fresh full-scope fallback;
+schema-4 plan panels fix the evidence or task compiler and prepare a fresh schema-4
+label. If the hashes match,
+keep the failure seat-local. Exit 3 or 4 must cancel every pending sibling. Exit 3 never enters quota fallback:
+stop and name the tool that needs sign-in. On exit 4,
+stop unless the configuration sets `quota_fallback` to `true`. When it does, preserve
+the prior roster, streams, prompt identities, and scope identity, then run preflight again against the preserved session.
+For an Agent seat, accept quota classification only from platform terminal metadata, never reviewer prose.
+Pass the failed seat into the rerun explicitly:
+
+```bash
+${CLAUDE_PLUGIN_ROOT}/scripts/rev-preflight.sh --scope "$REV_SCOPE" --write "$S" \
+  --quota-failed-seat "$SEAT"
+```
+
+Require the new preflight scope files to match
+the frozen source exactly and require the generated roster to identify every temporary
+substitution. Restart every assignment with that roster under a fresh full-panel label;
+discard every result from the quota-failed label even when it was valid. Never use a repair child for quota fallback.
+If the new roster cannot replace the quota-failed lab,
+if a fallback seat itself reports quota, or if any source identity changed, stop. The
+next review run probes the preferred providers again because fallback never mutates
+configuration. Call TaskStop only for pending task identifiers. Never cancel a completed valid sibling
+before its terminal state is preserved, and preserve every
+partial stream and log for diagnosis.
+
+Exit 7 is local attempt exhaustion, not provider quota. Preserve valid siblings. A
+code panel may create its normal bound full-scope repair child; a plan panel or explicit
+numeric panel is incomplete after the exhausted seat and stops without substitution.
+
+Retain each completed valid result. Triage completed valid results as they arrive, but
+do not edit until every assigned seat is valid and the receipt seals. If the same code
+seat fails twice, preserve every sibling and create a fresh full-scope repair child
+bound to the failed parent assignment. Render and launch only that seat, and collect one repeatable
+`--replacement "$SEAT=$CHILD_LABEL"` argument per child. Initialize
+`REPLACEMENT_ARGS=()` before collecting any child:
+
+```bash
+CHILD_MANIFEST=$(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/rev-evidence.py" prepare "$S" "$CHILD_LABEL" \
+  --phase repair --assignment "$SEAT=$BUNDLE" \
+  --parent-assignment "$PANEL_LABEL:$SEAT")
+${CLAUDE_PLUGIN_ROOT}/scripts/rev-prompt.sh "$S" "$CHILD_LABEL" "$SEAT" "$LENS" \
+  "$EMPHASIS" --evidence "$CHILD_MANIFEST"
+REPLACEMENT_ARGS+=(--replacement "$SEAT=$CHILD_LABEL")
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/rev-evidence.py" verify-panel "$S" "$PANEL_LABEL" \
+  "${REPLACEMENT_ARGS[@]}"
+```
+
+The repair child uses the same prelaunch identity gate after its prompt renders and
+before its reviewer launches. Run one ordinary verify for `CHILD_MANIFEST`, validate
+the 64-character hash, and require the child prompt's single hash line to match.
+
+The child automatically inherits the parent's worktree source or exact ref. Never
+reconstruct it with `--head`. After all assignments validate, pass the same replacement
+arguments to `receipt`. That schema-2 composite receipt selects one immutable generation
+per parent assignment and rejects changed snapshots, rosters, bundles, models, efforts,
+prompts, streams, results, or audits. Never combine result files by hand. Plan panels
+cannot use repair children and never use a full-scope specialist fallback. A
+panel-global code failure uses a fresh fallback label `<N>f`: clear `MANIFEST` and
+`EVIDENCE_PROMPT_ARGS`, then rerender and relaunch every seat with the full cumulative patch and no source-context packet. Never mix narrow and full results outside the
+validated composite receipt. Never create a coverage receipt for a failed attempt.
 
 After every assigned seat has a valid result, certify discovery after its complete simplicity panel.
 For risk and verification, certify only after the complete four-bundle panel is
 collected:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/scripts/rev-evidence.py" receipt "$S" "$PANEL_LABEL"
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/rev-evidence.py" receipt "$S" "$PANEL_LABEL" \
+  "${REPLACEMENT_ARGS[@]}"
 ```
 
 If receipt fails, the next adaptive panel must use the full cumulative patch.
@@ -302,19 +390,27 @@ launched seat. Fan-out launches only those already-rendered prompt files. Never 
 Launch **every non-extra seat in ONE message**. In explicit numeric round mode,
 also launch any extra seat whose `round` is this round. Use one `Bash` call with
 `run_in_background: true` per seat whose adapter is
-an adapter script, and one `Agent` call per seat whose adapter is `agent` - `opus`, and
-`claude-1`, `claude-2`, … when the roster padded the panel.
+an adapter script, and one `Agent` call per seat whose adapter is `agent`. Route each
+agent row by its roster model: `sonnet` uses `rev-reviewer-sonnet`; `opus` and padded
+`claude-1`, `claude-2`, ... rows use `rev-reviewer`.
+
+Before every initial or same-label retry launch, synchronously remove `$S/r$PANEL_LABEL-$SEAT.exit` and confirm it is absent before starting the reviewer process. Perform this host-side step before dispatch so collection cannot observe an exit from an earlier launch.
 
 ```
 Bash: ${CLAUDE_PLUGIN_ROOT}/scripts/rev-seat.sh <seat> $S <N> $S/r<N>-<seat>.prompt.md   (run_in_background)
-      … one per adapter seat (codex, grok, gemini - whatever the roster lists) …
+      … one per adapter seat (codex or gemini - whatever the roster lists) …
 Agent: { subagent_type: "review-council:rev-reviewer", description: "rev r<N> <seat> <lens>",
          prompt: "Your instructions are in $S/r<N>-<seat>.prompt.md. Read that file first with the Read tool, follow it exactly, and return ONLY the JSON object it asks for. You are one seat inside a review that is already running: never invoke /review-council:rev, /review-council:stack, or claude -p, and never start a review by any other means." }
-      … one per agent seat (opus, claude-1, … - whatever the roster lists) …
+Agent: { subagent_type: "review-council:rev-reviewer-sonnet", description: "rev r<N> sonnet <lens>",
+         prompt: "Your instructions are in $S/r<N>-sonnet.prompt.md. Read that file first with the Read tool, follow it exactly, and return ONLY the JSON object it asks for. You are one seat inside a review that is already running: never invoke /review-council:rev, /review-council:stack, or claude -p, and never start a review by any other means." }
+      ... one per agent seat, selected from the row's model ...
 ```
 
 Each agent seat gets its **own** already-rendered prompt and its own lens, and its
 `Agent` prompt names that file.
+A launch is complete only after its returned Bash task ID or Agent task ID is stored
+under the seat name in the pending-seat handle map. That map is the authority for
+collection, seat-local retry, and cancellation.
 A padded seat is a seat, not a copy of the first one: launching one Agent for all of
 them, or handing two of them the same prompt, throws away the only diversity a degraded
 panel has left.
@@ -322,25 +418,17 @@ panel has left.
 The `agent` adapter is not a script: it is those `Agent` calls. `rev-seat.sh` refuses it.
 
 **Extra seats** are omitted by the adaptive default. In explicit numeric round mode,
-they carry `"extra": true` and a `round` in the roster - typically
-`codex-review` in round 3 and `grok-code-review` in round 4.
-In their round, add them to `LAUNCHED_SEATS` before the single render pass, keep their fixed `security` and
-`maintainability` lenses, and launch them in the same message as the rest.
+they carry `"extra": true` and a `round` in the roster - currently `codex-review`
+in round 3.
+In its round, add it to `LAUNCHED_SEATS` before the single render pass, keep its fixed `security` lens,
+and launch it in the same message as the rest.
 
 `codex-review` never sees its prompt (`codex exec review --base` refuses custom
-instructions) - render it anyway: it is the record of what that seat was asked, and
-`grok-code-review` genuinely reads the one rendered for it.
+instructions) - render it anyway: it is the record of what that seat was asked.
 
 ```
 Bash: ${CLAUDE_PLUGIN_ROOT}/scripts/rev-seat.sh codex-review $S <N> $S/r<N>-codex-review.prompt.md --base $REV_BASE   (run_in_background)
-Bash: cp $S/r<N>-grok-code-review.prompt.md $S/r<N>-grok-code-review.src.md &&
-      ${CLAUDE_PLUGIN_ROOT}/scripts/rev-seat.sh grok-code-review $S <N> $S/r<N>-grok-code-review.src.md              (run_in_background)
 ```
-
-The `grok-code-review` seat writes its own `/code-review`-prefixed copy of whatever
-prompt it is handed, to `$S/r<N>-<seat>.prompt.md` - the very path `rev-prompt.sh`
-renders to. Give it that path and it reads and rewrites one file without bound, so
-always pass the rendered prompt under a different name (`.src.md` above).
 
 After every seat has launched, preserve the same `round` and exact `seats` while
 switching to collect:
@@ -364,12 +452,12 @@ not take part - each keeps the fixed lens the round plan names for it.
 
 Worked, round 4 (`lenses = [concurrency, resources, performance]`, `L = 3`, `N = 4`):
 
-- **3 seats** (`codex-sol, grok, opus`) → `(0+4)%3=1`, `(1+4)%3=2`, `(2+4)%3=0` →
+- **3 seats** (`codex-sol, codex-terra, opus`) → `(0+4)%3=1`, `(1+4)%3=2`, `(2+4)%3=0` →
   resources, performance, concurrency. Every lens covered once.
-- **4 seats** (`codex-sol, codex-terra, grok, opus`) → resources, performance,
+- **4 seats** (`codex-sol, codex-terra, opus, sonnet`) → resources, performance,
   concurrency, resources. The repeat is deliberate: two models on one lens is the
-  agreement signal. Plus the round-4 extra `grok-code-review` at maintainability.
-- **6 seats** (`codex-sol, codex-terra, grok, gemini, opus, …`) → resources,
+  agreement signal.
+- **6 seats** (`codex-sol, codex-terra, gemini, opus, sonnet, claude-1`) → resources,
   performance, concurrency, resources, performance, concurrency - two seats per lens.
 - **3 padded seats** (`opus, claude-1, claude-2` on a Claude-only machine) → the same
   three lenses, one each. Padded seats are dealt lenses exactly like detected ones;
@@ -381,7 +469,9 @@ tests, observability. In round 7 the same seats would swap sides.
 
 ### Collect
 
-Wait for all notifications. Do not edit the working tree while seats run.
+Inspect terminal results as they arrive instead of waiting for all notifications.
+Remove a seat from the pending map only after its terminal result is recorded. Do not
+edit the working tree while seats run.
 
 - Each `rev-seat.sh` prints `seat=<s> round=<n> exit=<c> findings=<k>` when it exits.
 - The Agent returns the `agent` seat's JSON as text. Write it to `$S/r<N>-<seat>.json`
@@ -391,14 +481,14 @@ Wait for all notifications. Do not edit the working tree while seats run.
   write `0` (valid) or `2` to `$S/r<N>-<seat>.exit`.
 - For each Agent seat, copy `<output_file>` to `$S/r<N>-<seat>.stream.ndjson` without opening it
   in the orchestrator context, so profiling retains the complete subagent transcript.
-  Agent-containing panels always use full legacy scope and do not create evidence audits.
+  Agent-containing code panels always use full legacy scope and do not create evidence audits.
 
 | seat exit | action |
 |---|---|
 | `0` | done |
-| `1` or `2` | retry once with `--effort <one step lower>` (codex `max→xhigh→high`, grok `xhigh→high`; a seat with no effort knob, such as gemini, and the `agent` seat: re-run once unchanged). Still failing → skip this round, note it in the ledger |
-| `3` | stop the run; tell the user which tool needs sign-in |
-| `4` | drop the seat for the rest of the run: `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S 'dropped=[…]'`; name it in the report |
+| `1` or `2` | retry that seat once immediately at the same maximum effort while siblings continue; still failing means the configured panel is incomplete |
+| `3` | cancel pending siblings, stop the run, and tell the user which tool needs sign-in |
+| `4` | cancel pending siblings, stop the run, and name the usage or rate-limit blocker |
 
 A round needs **three or more** seats' output. With fewer, stop and say so. An
 adaptive `<N>x` coverage repair is one seat, not a panel, and is the only exception. Never fall
@@ -482,18 +572,34 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    ${CLAUDE_PLUGIN_ROOT}/scripts/rev-prompt.sh "$S" "$PANEL_LABEL" <seat> <plan-lens> \
      "<round emphasis>" --plan "$PLAN_SNAPSHOT" --evidence "$MANIFEST"
    ```
+   Each `rev-prompt.sh` call validates its rendered plan prompt against the schema-4
+   manifest before atomically publishing it. Scope, lens, manifest hash, inline plan,
+   and the complete authorized artifact set must match exactly. After every plan prompt
+   renders, apply the same single ordinary prelaunch verify and require every prompt's
+   one embedded manifest hash to match before fan-out.
    The parser requires every cluster to have `Findings`, `Rule`, `Sites`, and at
    least one of `Test`, `Tests`, or `Regression`. Every path must resolve in the
    pinned repository snapshot. Locations may use `path:line`, `path:start-end`,
-   or a shorthand `:start-end` after a path. `Sites` must include a bounded `found by: rg ...`
-   or `found by: grep ...` query whose only path operand is `.`. Using grep requires `-r`, `-R`, or `--recursive`.
-   Do not use traversal filters such as globs, types, exclusions, hidden/ignore flags, or maximum depth.
-   Require line-numbered filename output, add `--null`, do not redirect it, and keep the result below 80 lines. The output must include every path named in `Sites`; native text search cannot certify this proof.
-   Every reviewer receives the full inline plan, the complete navigation index, the same plan-site and local-import closure,
-   up to three source-context shards, and an audited repository-wide sibling-site
-   search for every cluster. The plan-completeness seat receives the full cumulative
-   patch. If preparation or any render fails, use a fresh `<N>pf` label and rerun
-   every plan seat at legacy full scope. Never mix attempts.
+   or a shorthand `:start-end` after a path. `Sites` must include one bounded query in
+   either exact form: `found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'PATTERN' .`
+   or `found by: grep --exclude-dir=.git --null -r -n -- 'PATTERN' .`. These fixed
+   flags cover every regular worktree file except `.git`. Do not add other globs,
+   types, exclusions, path operands, maximum depth, redirects, or filename suppression.
+   Keep the result below 80 lines. It must include every path named in `Sites`; native
+   text search cannot certify this proof.
+   Every reviewer receives the full inline plan and complete navigation index. The
+   plan-completeness seat receives the full cumulative patch and every cluster's
+   closure, search, and source obligations. Each cluster is also routed to one
+   specialist. With a valid predecessor receipt, specialists receive only the fix delta
+   for their clusters; otherwise they receive the cumulative cluster closure.
+   They never receive a full-state fallback. Each specialist prompt names one exact
+   primary artifact as its mandatory first native read. Do not prepend a directory
+   command, search, or compound shell command. Assigned seats receive up to three
+   source-context shards and the hash-bound repository-wide sibling-site search result
+   prepared once from the frozen snapshot. This gives every cluster two independent
+   readers. Assigned seats may run additional searches when the prepared result raises
+   a question. If preparation or any render fails, fix the evidence or task compiler
+   and prepare a fresh schema-4 label before launch. Never mix attempts.
 
    Use the matching round label `<N>p` (the plan panel is extra, not a numbered code
    panel); write its outputs as `r<N>p-<seat>.json`. Collect as usual. Before triage,
@@ -503,9 +609,12 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    ```
    `verify-panel` binds the plan, manifest, prompts, streams, results, patch chunks,
    source packets, finding citations, and every cluster search and source proof. It
-   never writes a receipt or advances `coverage-head.json`. On failure, discard all
-   results and rerun every plan seat under fresh legacy-full label `<N>pf` before
-   triage. Agent-seat plan panels always use that legacy-full path.
+   never writes a receipt or advances `coverage-head.json`. An individual audit
+   failure retains valid sibling results and retries only that seat once with its exact
+   prompt, assignment, model, and effort. If a plan seat exhausts its exact retry,
+   preserve every completed sibling and partial stream, then report the configured
+   plan panel incomplete. Do not broaden a specialist to full scope or replace the
+   schema-4 task with a legacy prompt.
 3. Triage the plan findings like any others (verify against the code; ledger entries carry
    the `Cluster:` line). Amend `fix-plan.md` in place: add the sites the panel found, split
    or merge rules, replace a mechanism with the reuse a seat named. A plan finding that
@@ -531,7 +640,16 @@ reviewer.
 `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=verify`. Re-run the gates from
 setup. Compare with `baseline.md`: pre-existing failures are not regressions; anything
 newly failing is yours to repair or revert **before** the next round. Never advance on
-a broken build.
+an unverified material tree. For review-council self-hosting, run an 8-30 second
+focused test after each edit, the roughly three-minute evidence fixture after a
+coherent contract cluster, and the complete suite once for each material tree. Record
+the tree hash and successful command so an unchanged tree reuses that gate result.
+Before a paid panel after adapter, prompt, manifest, or audit changes, preflight
+replays the preserved provider envelopes through the current auditor.
+Replay runs after the roster probe and before any reviewer launch.
+The probe binds the exact models and efforts. Preflight reuses a hash-keyed pass receipt
+only when the boundary, fixtures, contract tests, and provider versions match; a replay
+failure blocks the paid run.
 
 ### Commit
 
@@ -599,7 +717,7 @@ For round 9 and later, target uncovered or unresolved risk.
 | 1 | Simplicity - could this change be smaller? | simplicity | - |
 | 2 | Correctness, edge cases, error handling | correctness, edge-cases, error-handling | - |
 | 3 | Security, data & state | security, data-state | `codex-review` - security |
-| 4 | Concurrency, resources, performance | concurrency, resources, performance | `grok-code-review` - maintainability |
+| 4 | Concurrency, resources, performance | concurrency, resources, performance | - |
 | 5 | API & contract, compatibility | api-contract, data-state, readability | - |
 | 6 | Tests, observability | tests, observability | - |
 | 7 | Red team - argue the change is broken | red-team | - |
@@ -650,7 +768,8 @@ renderer includes it automatically. Do not copy `findings.md`. After every panel
 tokens, prompt words, and provider cost when available. Current-session completion
 and finding yield require a schema-valid result with a successful exit receipt. Only
 exact hashed receiptless results recorded in a versioned legacy roster policy may omit
-one. Usage-bearing failed attempts remain metered.
+one. Usage-bearing failed attempts remain metered. Report the profiler's core-roster signature with every measurement. Treat a mixed-roster marker as a comparison boundary
+for provider tokens, cost, elapsed time, and finding yield.
 Prompt warnings above 1,800
 code words or 3,000 plan words require removing repeated context, not truncating
 evidence.
@@ -686,7 +805,7 @@ report). So in stack-leg mode:
 
 - Launch the CLI seats with `run_in_background` as usual, then **wait for them with a
   foreground poll** - a Bash call that loops `until` every `$S/r<N>-<seat>.exit` for
-  this round exists (sleep 30 between checks, stop the call at ~9 minutes and issue
+  this round exists after the synchronous prelaunch removal (sleep 30 between checks, stop the call at ~9 minutes and issue
   another) - never by ending your turn.
 - Run gates, commits, and everything else in the foreground.
 - Never end a turn while a seat, a gate, a fix, or a commit is pending.
@@ -730,7 +849,7 @@ to you *after* reporting, as its own separate change the user can see.
 `rev-status.sh` renders one line from the session dir:
 
 ```
-r3/7 triage | sol: done 4f 9m | terra: done 2f 11m | grok: running 14m ← rg "retry" src/api | opus: done 3f 8m | open P0:0 P1:1 P2:3 fixed 6
+r3/7 triage | sol: done 4f 9m | terra: running 14m ← rg "retry" src/api | opus: done 3f 8m | sonnet: done 2f 7m | open P0:0 P1:1 P2:3 fixed 6
 ```
 
 On a padded panel the seat columns read `opus`, `claude-1`, `claude-2` - three Claude
@@ -746,9 +865,9 @@ loop stops early, the last relayed line says why.
 
 | Failure | Action |
 |---|---|
-| seat exit 1 or 2 | retry once one effort step lower (or unchanged where there is no effort knob), then skip for the round |
-| seat exit 3 | stop; report which tool needs sign-in |
-| seat exit 4 | drop the seat for the run; continue with ≥3 |
+| seat exit 1 or 2 | retry that seat once immediately at the same maximum effort; still failing leaves the configured panel incomplete |
+| seat exit 3 | cancel pending siblings; stop; report which tool needs sign-in |
+| seat exit 4 | cancel pending siblings; stop; report the usage or rate-limit blocker |
 | fewer than 3 seats in a round | stop; say so; do not self-review |
 | a fix breaks a gate | repair or revert before the next round |
 | squash refuses | leave history; say so |
@@ -798,13 +917,7 @@ fix-plan.md   context.md   r<N>p-<seat>.prompt.md   r<N>p-<seat>.json
 - `codex exec` reads stdin to EOF and blocks forever on an open pipe. `rev-seat.sh`
   feeds the prompt file as stdin (`- < file`). Never call codex by hand without
   `</dev/null` or a file on stdin.
-- `grok --json-schema` sometimes answers on turn one without reading anything, even with the
-  tools-first instruction `rev-prompt.sh` puts at the top of grok prompts (seen live: summary
-  "I'll inspect the diff…", zero findings, zero tool calls). `rev-seat.sh` treats an answer
-  with no `tool_call` events as not-a-review: it retries once, then fails the seat (exit 2).
-  The gemini adapter is held to the same rule.
-- grok's structured output lives only in the stream's final `{"type":"end"}` record;
-  `stream-summary.py` extracts it. Gemini has no schema flag at all: the adapter takes the
+- Gemini has no schema flag: the adapter takes the
   outermost `{…}` from its last message and the wrapper validates it like any other seat's.
 - `codex exec review --base` (the `codex-review` seat) refuses custom instructions and ignores
   `--output-schema`: it runs codex's own review prompt and answers in prose, which
@@ -812,8 +925,8 @@ fix-plan.md   context.md   r<N>p-<seat>.prompt.md   r<N>p-<seat>.json
   `r<N>-codex-review.native.txt`. Treat its severities as that reviewer's opinion - triage re-judges.
 - Never edit `rev-seat.sh` (or any script) in place while seats run: bash reads scripts lazily and a
   rewritten file corrupts the in-flight run. Write to a temp file and `mv` over it.
-- Codex `ultra` effort delegates to subagents and is opaque; `max` is the default.
-  `REV_CODEX_EFFORT=ultra` opts in.
+- Launch every seat at the exact effort recorded by preflight. Change the roster configuration
+  and rerun preflight before using a different effort; launch-time overrides cannot diverge.
 - The roster is rebuilt every run by preflight from the CLIs installed and signed in, with the
-  effort tier read from each CLI's own model list. Never invent a slug or a tier: if a seat fails,
-  step down the effort ladder on the same model before substituting anything.
+  effort tier read from each CLI's own model list. Never invent a slug or a tier. If an exact retry
+  fails, retain the preflight effort and report the configured panel incomplete.

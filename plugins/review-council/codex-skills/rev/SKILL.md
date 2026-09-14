@@ -21,7 +21,7 @@ are relative to that absolute `PLUGIN`; quote paths and use arrays for arguments
 - Check `REV_ACTIVE` on entry: if set, refuse a nested council.
 - Set `REVIEW_COUNCIL_HOST=codex` on **every** runner invocation, including preflight.
   Shell environment changes may not persist between tool calls. All seats in the
-  Codex roster are actual external CLI processes, including Anthropic's `opus` seat.
+  Codex roster are actual external CLI processes, including Anthropic Claude seats.
 - Default scope is `branch`; accept `uncommitted`, a path, branch name, PR number or
   URL, or document paths. Resolve PR metadata and base read-only with `gh`; review a
   different branch in an isolated worktree instead of changing a dirty checkout.
@@ -69,8 +69,8 @@ one-line reason verbatim, preserve the session, and retry when provider availabi
 recovers. Exit 6 is permanent. Relay the one-line reason verbatim and stop because the
 scope or strict roster contract cannot run as asked.
 Configuration is `~/.config/review-council/config.json` (or `REVIEW_COUNCIL_CONFIG`):
-`exclude`, `pin`, `codex_models`, `claude_seat`, `claude_seats`, `extras`, and
-`min_labs` are shared with Claude Code.
+`exclude`, `pin`, `codex_models`, `claude_seat`, `claude_seats`, `extras`,
+`min_labs`, and `quota_fallback` are shared with Claude Code.
 See [configuration](https://github.com/WiktorStarczewski/review-council/blob/main/docs/config.md) for the full format.
 
 Read repository instructions, inspect the diff and consumers, and record existing
@@ -122,7 +122,7 @@ For round 9 and later, target uncovered or unresolved risk.
 | 1 | Could this change be smaller? | simplicity | - |
 | 2 | Logic and boundaries | correctness, edge-cases, error-handling | - |
 | 3 | Security and state | security, data-state | codex-review |
-| 4 | Concurrency and resource use | concurrency, resources, performance | grok-code-review |
+| 4 | Concurrency and resource use | concurrency, resources, performance | - |
 | 5 | Contracts and compatibility | api-contract, readability, maintainability | - |
 | 6 | Verification | tests, observability | - |
 | 7 | Argue the change is broken | red-team | - |
@@ -146,7 +146,7 @@ lenses.
 ### Adaptive scope preparation
 
 Scope optimization never changes the preflight roster, its models, efforts, or
-seat count. Use every configured core seat, including Sol, Grok, and both Opus seats
+seat count. Use every configured core seat, including Sol, Terra, Opus, and Sonnet
 when that is the configured roster.
 Cover all four risk bundles at least once in every risk and verification panel.
 Let `BUNDLES` be the four bundles in their listed order. In stable roster order, core seat `i` receives bundle `BUNDLES[i mod 4]`.
@@ -180,8 +180,7 @@ offsets are contiguous, and concatenating the chunks without delimiters must rep
 the canonical patch exactly. Reviewers read every chunk once, in rendered order and in
 full, before source-context packets or source expansion. Chunk reads prove change
 discovery only; they never establish source citation evidence.
-The 32 KiB per-tool and ordinary per-turn output limits still apply. Grok and Claude adapters may read two consecutive chunks in one turn under a patch-only 60 KiB combined cap; other adapters
-read one. Chunk mode is used only when it saves at least
+The 32 KiB per-tool and ordinary per-turn output limits still apply. Claude adapters may use two ordered proof reads in one turn across patch chunks, required source segments, and the evidence index under a 60 KiB combined cap; other adapters read one. Source-context packets and repository reads retain the ordinary 32 KiB turn cap. Repository expansion begins in a later turn. Chunk mode is used only when it saves at least
 10 percent against 240-line windows. Invalid UTF-8, NUL, an older manifest without a
 chunk set, or `REV_PATCH_CHUNKS=0` keeps window mode.
 
@@ -195,10 +194,12 @@ range. Repository instructions remain in the separate manifest-bound instruction
 snapshot and are never copied into source-context shards.
 An oversized mandatory range remains one parent proof but is delivered through
 manifest-hashed, session-local source artifacts as ordered, gapless segments of at
-most 240 lines and 16 KiB predicted visible output. The renderer uses each adapter's
+most 240 lines and normally at most 16 KiB predicted visible output. A one-line
+segment may extend to the 32 KiB per-tool ceiling when that line cannot be split.
+The renderer uses each adapter's
 native full-file action: shell `cat` for Codex, `Read` for Claude, and `read_file` for
-Grok and Gemini. Claude and Grok may read two listed source segments per turn; Codex
-and Gemini read one. Every segment must be read once in order before the parent range
+Gemini. Claude may read two listed source segments per turn; Codex and Gemini read
+one. Every segment must be read once in order before the parent range
 earns a receipt.
 
 Evidence preparation applies to adaptive code panels and accepted-fix plan panels.
@@ -206,10 +207,14 @@ Explicit numeric panels use the full cumulative patch, omit evidence preparation
 and leave `MANIFEST` empty. Document panels read every supplied document in full,
 omit evidence preparation, and append `--read-only "$S/docs.txt"` in the render pass.
 
-If any launched roster row has adapter `agent`, skip evidence preparation for the
-whole panel and keep `MANIFEST` empty. Claude Code plugin subagents ignore hook frontmatter,
-so an Agent seat cannot provide the enforced tool transcript required by evidence mode.
-Render and launch every seat at full legacy scope under the same panel label.
+If any launched code-panel roster row has adapter `agent`, skip evidence preparation
+for the whole code panel and keep `MANIFEST` empty. Claude Code plugin subagents ignore
+hook frontmatter, so an Agent seat cannot provide the enforced tool transcript required
+by evidence mode. Render and launch every code seat at full legacy scope under the same
+panel label. Plan preparation instead fails before publishing artifacts when any plan
+seat uses adapter `agent`. Report that plan review is unavailable with an Agent seat
+and requires a roster whose seats use enforceable Codex or Claude CLI adapters. Do not
+replace the schema-4 plan with a legacy full-scope task.
 
 Before adaptive fan-out, set `PANEL_LABEL` to the artifact label and `PANEL_PHASE` to
 `discovery`, `risk`, `verification`, or `repair`. Build `EVIDENCE_ARGS` from the exact
@@ -220,17 +225,19 @@ and that repair seat as `--full-seat`. Then prepare once:
 
 ```bash
 MANIFEST=
-if CANDIDATE=$(REV_PATCH_CHUNKS=${REV_PATCH_CHUNKS:-0} REV_SOURCE_CONTEXT=${REV_SOURCE_CONTEXT:-0} python3 "$PLUGIN/scripts/rev-evidence.py" prepare "$S" "$PANEL_LABEL" --phase "$PANEL_PHASE" "${EVIDENCE_ARGS[@]}"); then
+if CANDIDATE=$(REV_PATCH_CHUNKS=${REV_PATCH_CHUNKS:-auto} REV_SOURCE_CONTEXT=${REV_SOURCE_CONTEXT:-1} python3 "$PLUGIN/scripts/rev-evidence.py" prepare "$S" "$PANEL_LABEL" --phase "$PANEL_PHASE" "${EVIDENCE_ARGS[@]}"); then
   case "$CANDIDATE" in
     "$S/r$PANEL_LABEL-evidence.manifest.json") [ -r "$CANDIDATE" ] && MANIFEST=$CANDIDATE ;;
   esac
 fi
 ```
 
-`REV_PATCH_CHUNKS=1` and `REV_SOURCE_CONTEXT=1` enable the held-out adoption
-candidate. The defaults remain `0` until an exact-roster panel certifies the delivery
-path. Baseline and candidate runs must otherwise use the same snapshot, roster,
-models, efforts, bundles, and host steps.
+`REV_PATCH_CHUNKS=auto` selects chunks when they save proof reads or are required to
+fit the compiled provider capacity. `REV_PATCH_CHUNKS=1` forces chunks when the patch
+is representable, while `REV_PATCH_CHUNKS=0` requests window mode and fails preparation
+when that mode cannot fit. `REV_SOURCE_CONTEXT=1` enables literal source packets and
+required-source segments. Baseline measurements may set both paths explicitly, but
+must otherwise use the same snapshot, roster, models, efforts, bundles, and host steps.
 Both runs keep the same component assignments and patch narrowing.
 
 Build the optional flag once. Render every seat before any reviewer process starts,
@@ -249,6 +256,17 @@ Render every seat again without `--evidence`. A failed legacy render stops the p
 prompts in one panel, reuse a partially prepared manifest, or narrow coverage after
 an evidence error.
 
+When `MANIFEST` is nonempty, after every prompt renders, run one ordinary `rev-evidence.py verify` against
+`MANIFEST` before writing fan-out state or launching a reviewer. Capture the final
+space-delimited field from its output, require exactly 64 lowercase hexadecimal
+characters, then inspect every already-rendered prompt. Every evidence prompt must
+contain exactly one matching `Evidence manifest SHA-256: <hash>` line. A failed
+verify, malformed hash, missing line, duplicate line, or mismatch discards the whole
+narrowed attempt. Code panels use the all-legacy rerender path above; schema-4 plan
+panels fix the evidence or task compiler and prepare a fresh schema-4 label. This is the one
+repository-wide plan-search replay for the panel; prompt rendering and every
+postlaunch check perform no search replay.
+
 Before triage or receipt, require every evidence-launched seat to have a read audit with schema 2 in `r<label>-<seat>.read-audit.json`, a valid status, exact
 manifest, prompt, stream, and result hashes, at least one recognized review tool, and
 canonical packet or bounded source ranges. Every finding citation must intersect one
@@ -259,16 +277,82 @@ zero-tool answers. In chunk mode, the audit also requires every hash-bound chunk
 in exact order before packet and source reads. Missing, reordered, truncated, replaced,
 duplicate, unassigned, redirected, or oversized chunks invalidate the attempt.
 
-On any such failure, discard every result from the attempt. Under a fresh fallback label `<N>f`, clear `MANIFEST` and `EVIDENCE_PROMPT_ARGS`, then rerender and relaunch every seat with the full cumulative patch and no source-context packet. Use only fallback results for
-triage. Never mix narrow and full results, and never create a coverage receipt for the
-failed attempt.
+Retain one launch handle for every pending seat and inspect each terminal result as it
+arrives. Store every attached execution session identifier under its seat name. Treat
+a first exit 1 or 2 as seat-local. Retry only the failed seat once with its exact prompt,
+assignment, model, and effort while other seats continue. On an evidence audit
+rejection, rerender the failed seat's evidence fragment with the same plan argument;
+this calls the no-replay render path. Compare its first hash line with the exact prompt
+hash. If the rerender fails or the hashes differ, cancel every pending sibling because
+the failure is panel-global. Code panels then enter the fresh full-scope fallback;
+schema-4 plan panels fix the evidence or task compiler and prepare a fresh schema-4
+label. If the hashes match,
+keep the failure seat-local. Exit 3 or 4 must cancel every pending sibling. Exit 3 never enters quota fallback:
+stop and name the tool that needs sign-in. On exit 4,
+stop unless the configuration sets `quota_fallback` to `true`. When it does, preserve
+the prior roster, streams, prompt identities, and scope identity, then run preflight again against the preserved session.
+For an Agent seat, accept quota classification only from platform terminal metadata, never reviewer prose.
+Pass the failed seat into the rerun explicitly:
+
+```bash
+REVIEW_COUNCIL_HOST=codex "$PLUGIN/scripts/rev-preflight.sh" --scope "$REV_SCOPE" \
+  --write "$S" --quota-failed-seat "$SEAT"
+```
+
+Require the new preflight scope files to match
+the frozen source exactly and require the generated roster to identify every temporary
+substitution. Restart every assignment with that roster under a fresh full-panel label;
+discard every result from the quota-failed label even when it was valid. Never use a repair child for quota fallback.
+If the new roster cannot replace the quota-failed lab,
+if a fallback seat itself reports quota, or if any source identity changed, stop. The
+next review run probes the preferred providers again because fallback never mutates
+configuration. Interrupt only pending sessions. Never cancel a completed valid sibling
+before its terminal state is preserved, and preserve every partial stream and log for
+diagnosis.
+
+Exit 7 is local attempt exhaustion, not provider quota. Preserve valid siblings. A
+code panel may create its normal bound full-scope repair child; a plan panel or explicit
+numeric panel is incomplete after the exhausted seat and stops without substitution.
+
+Retain each completed valid result. Triage completed valid results as they arrive, but
+do not edit until every assigned seat is valid and the receipt seals. If the same code
+seat fails twice, preserve every sibling and create a fresh full-scope repair child
+bound to the failed parent assignment. Render and launch only that seat, and collect one repeatable
+`--replacement "$SEAT=$CHILD_LABEL"` argument per child. Initialize
+`REPLACEMENT_ARGS=()` before collecting any child:
+
+```bash
+CHILD_MANIFEST=$(python3 "$PLUGIN/scripts/rev-evidence.py" prepare "$S" "$CHILD_LABEL" \
+  --phase repair --assignment "$SEAT=$BUNDLE" \
+  --parent-assignment "$PANEL_LABEL:$SEAT")
+"$PLUGIN/scripts/rev-prompt.sh" "$S" "$CHILD_LABEL" "$SEAT" "$LENS" \
+  "$EMPHASIS" --evidence "$CHILD_MANIFEST"
+REPLACEMENT_ARGS+=(--replacement "$SEAT=$CHILD_LABEL")
+python3 "$PLUGIN/scripts/rev-evidence.py" verify-panel "$S" "$PANEL_LABEL" \
+  "${REPLACEMENT_ARGS[@]}"
+```
+
+The repair child uses the same prelaunch identity gate after its prompt renders and
+before its reviewer launches. Run one ordinary verify for `CHILD_MANIFEST`, validate
+the 64-character hash, and require the child prompt's single hash line to match.
+
+The child automatically inherits the parent's worktree source or exact ref. Never
+reconstruct it with `--head`. After all assignments validate, pass the same replacement
+arguments to `receipt`. That schema-2 composite receipt selects one immutable generation
+per parent assignment and rejects changed snapshots, rosters, bundles, models, efforts,
+prompts, streams, results, or audits. Never combine result files by hand. Plan panels
+cannot use repair children and never use a full-scope specialist fallback. A
+panel-global code failure uses a fresh fallback label `<N>f`: clear `MANIFEST` and
+`EVIDENCE_PROMPT_ARGS`, then rerender and relaunch every seat with the full cumulative patch and no source-context packet. Never mix narrow and full results outside the
+validated composite receipt. Never create a coverage receipt for a failed attempt.
 
 After every assigned seat has a valid result, certify discovery after its complete simplicity panel.
 For risk and verification, certify only after the complete four-bundle panel is
 collected:
 
 ```bash
-python3 "$PLUGIN/scripts/rev-evidence.py" receipt "$S" "$PANEL_LABEL"
+python3 "$PLUGIN/scripts/rev-evidence.py" receipt "$S" "$PANEL_LABEL" \
+  "${REPLACEMENT_ARGS[@]}"
 ```
 
 If receipt fails, the next adaptive panel must use the full cumulative patch.
@@ -285,6 +369,8 @@ Fan-out launches only those already-rendered prompt files. Never call
 `rev-prompt.sh` between the completed render pass and launch. Launch independent
 seats concurrently using the available shell execution tools.
 
+Before every initial or same-label retry launch, synchronously remove `$S/r$PANEL_LABEL-$SEAT.exit` and confirm it is absent before starting the reviewer process. Perform this host-side step before dispatch so collection cannot observe an exit from an earlier launch.
+
 Record the exact artifact label and the same launched seats whose prompts were already
 rendered immediately before starting processes:
 
@@ -297,6 +383,12 @@ REVIEW_COUNCIL_HOST=codex REV_REPO="$REPO" \
   "$PLUGIN/scripts/rev-seat.sh" "$SEAT" "$S" "$ROUND" "$PROMPT" --base "$BASE"
 ```
 
+Keep every launch attached and store its returned execution session identifier in the
+pending-seat handle map. Inspect each terminal result as it arrives and remove only
+that completed seat from the map. On a cancellation trigger, interrupt only pending
+sessions. Completed valid siblings remain available for triage, and partial streams
+remain on disk.
+
 Pass the pinned `REV_BASE` from `scope.env`, parsed as data; do not source untrusted
 files. Omit `--base` for documents. Use the actual tools available in this Codex
 session; do not invoke Claude's `Agent`, `Monitor`, or `TaskStop` APIs. Keep processes
@@ -306,10 +398,13 @@ The CLI runner enforces read-only review tools and validates the findings schema
 After all processes launch, switch to collect while retaining the exact label and
 seats with `rev-state.sh "$S" phase=collect round=<N> "seats=$LAUNCHED_SEATS"`.
 
-Inspect each `.exit`, `.json`, and `.log`; absence of findings is not success without
-a valid completed response. Exit 1/2: retry once at the next supported lower effort
-(`max` → `xhigh` → `high`; omit for models without effort). Exit 3: stop and name the
-sign-in problem. Exit 4: drop that seat for the run. If fewer than three reviewers
+Inspect each `.exit`, `.json`, and `.log` as soon as that seat finishes; accept only the
+exit created after the synchronous prelaunch removal for the current launch. Absence of
+findings is not success without a valid completed response. Exit 1/2: retry that seat
+once immediately with the same maximum effort while siblings continue. Exit 3 or 4:
+cancel every pending sibling, then stop and name the sign-in, usage, or rate-limit
+blocker.
+Never lower effort or drop a configured core seat. If fewer than three reviewers
 complete a round, report an incomplete panel; do not substitute your own review.
 Record reduced coverage and failed extras; never label an incomplete run clean.
 
@@ -342,12 +437,13 @@ For five or more, keep `plan-completeness` unique and cycle only the other three
 lenses on surplus seats.
 Every cluster must contain `Findings`,
 `Rule`, `Sites`, and at least one of `Test`, `Tests`, or `Regression`. Its `Sites`
-field must include a bounded `found by: rg ...` or `found by: grep ...` query whose
-only path operand is `.`. Using grep requires `-r`, `-R`, or `--recursive`. Do not
-use traversal filters such as globs, types, exclusions, hidden/ignore flags, or
-maximum depth. Require line-numbered filename output, add `--null`, do not redirect it,
-and keep the result below 80 lines. The output must include every path named in `Sites`;
-native text search cannot certify this proof.
+field must include one bounded query in either exact form:
+`found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'PATTERN' .`
+or `found by: grep --exclude-dir=.git --null -r -n -- 'PATTERN' .`. These fixed
+flags cover every regular worktree file except `.git`. Do not add other globs, types,
+exclusions, path operands, maximum depth, redirects, or filename suppression. Keep the
+result below 80 lines. It must include every path named in `Sites`; native text search
+cannot certify this proof.
 Locations may use `path:line`, `path:start-end`, or a shorthand `:start-end` after
 a path.
 Bind and prepare the immutable plan before rendering:
@@ -363,22 +459,40 @@ PLAN_SNAPSHOT="$S/r$PANEL_LABEL-plan.md"
   "<round emphasis>" --plan "$PLAN_SNAPSHOT" --evidence "$MANIFEST"
 ```
 
-Every reviewer receives the full inline plan, every cluster, the complete navigation
-index, the same plan-site and one-hop local-import changed closure, and up to three
-source-context shards. The plan-completeness seat receives the full cumulative patch.
-Every seat must run each cluster's rendered repository-wide sibling-site query from the repository
-root and prove each required cluster source location. Before triage run:
+Each `rev-prompt.sh` call validates its rendered plan prompt against the schema-4
+manifest before atomically publishing it. Scope, lens, manifest hash, inline plan,
+and the complete authorized artifact set must match exactly. After every plan prompt
+renders, apply the same single ordinary prelaunch verify and require every prompt's
+one embedded manifest hash to match before fan-out.
+
+Every reviewer receives the full inline plan, every cluster, and the complete navigation
+index. The plan-completeness seat receives the full cumulative patch and every cluster's
+closure, search, and source obligations. Each cluster is also routed to one specialist.
+With a valid predecessor receipt, specialists receive only the fix delta for their
+clusters; otherwise they receive the cumulative cluster closure. They never receive a
+full-state fallback. Assigned seats receive up to three source-context shards. Each
+specialist prompt names one exact primary artifact as its mandatory first native read.
+Do not prepend a directory command, search, or compound shell command. This gives every
+cluster two independent readers.
+Preparation runs each repository-wide sibling-site query once against the frozen snapshot
+and embeds its hash-bound result for the assigned seats. Assigned seats prove the required
+source locations and may run additional searches when the prepared result raises a question.
+Before triage run:
 
 ```bash
 python3 "$PLUGIN/scripts/rev-evidence.py" verify-panel "$S" "$PANEL_LABEL"
 ```
 
-This validation never writes a receipt or advances `coverage-head.json`. If prepare,
-render, or validation fails, discard every result and rerun all plan seats under a
-fresh `<N>pf` label with legacy full scope and no evidence manifest. Agent-seat plan
-panels always use that legacy-full path. Never mix attempts. Verify and address plan
-objections before editing. Keep one rule per root-cause cluster with a compact site
-table, invariants, and falsifiable tests.
+This validation never writes a receipt or advances `coverage-head.json`. A manifest,
+snapshot, roster, render, or other panel-global failure discards the invalid generation;
+fix the evidence or task compiler and prepare a fresh schema-4 label before launching.
+An individual audit failure retains valid sibling results and retries only that seat
+once with the exact prompt, assignment, model, and effort. If a plan seat exhausts its
+exact retry, preserve every completed sibling and partial stream, then report the
+configured plan panel incomplete. Do not broaden a specialist to full scope or replace
+the schema-4 task with a legacy prompt. Verify and address plan objections before
+editing. Keep one rule per root-cause cluster with a compact site table, invariants,
+and falsifiable tests.
 
 Apply confirmed fixes in coherent clusters. Preserve user changes. Run the relevant
 gates and bring them to baseline or better. Add meaningful regressions when warranted,
@@ -386,6 +500,17 @@ not tests that merely mirror implementation. Commit only when within the user's
 requested workflow, with `fix(rev): <concrete change>` and no unrelated files. Record
 uncommitted fixes accurately when commits were not requested. Read-only runs skip
 all fix, commit, squash, push, and post-report editing steps.
+
+For review-council self-hosting, use tiered verification: run an 8-30 second focused
+test after each edit, the roughly three-minute evidence fixture after a coherent
+contract cluster, and the complete suite once for each material tree. Record the tree
+hash and successful command so an unchanged tree reuses that gate result. Before a
+paid panel after adapter, prompt, manifest, or audit changes, preflight replays the
+preserved provider envelopes through the current auditor.
+Replay runs after the roster probe and before any reviewer launch.
+The probe binds the exact models and efforts. Preflight reuses a hash-keyed pass receipt
+only when the boundary, fixtures, contract tests, and provider versions match; a replay
+failure blocks the paid run.
 
 Update state and the ledger after every phase. During foreground work send concise
 progress regularly, including `rev-status.sh "$S"` when useful; use waits of at most
@@ -411,7 +536,8 @@ After every panel, run `rev-profile.py "$S"` and report completed calls, process
 tokens, prompt words, and provider cost when available. Current-session completion
 and finding yield require a schema-valid result with a successful exit receipt. Only
 exact hashed receiptless results recorded in a versioned legacy roster policy may omit
-one. Usage-bearing failed attempts remain metered.
+one. Usage-bearing failed attempts remain metered. Report the profiler's core-roster signature with every measurement. Treat a mixed-roster marker as a comparison boundary
+for provider tokens, cost, elapsed time, and finding yield.
 Prompt generation warns above
 1,800 words for code and 3,000 words for plans; investigate the repeated context
 instead of silently truncating evidence.

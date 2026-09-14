@@ -5,6 +5,8 @@ import io
 import json
 import os
 from pathlib import Path
+import shlex
+import stat
 import subprocess
 import tempfile
 import unittest
@@ -31,15 +33,23 @@ class CodexTests(unittest.TestCase):
                         REVIEW_COUNCIL_CONFIG=str(self.root / 'absent'))
         self.roster = module(SCRIPTS / 'lib/roster.py')
         self.roster.CODEX_HOST = True
-        self.roster.ORDER = ('codex', 'grok', 'gemini', 'claude')
+        self.roster.ORDER = ('codex', 'gemini', 'claude')
 
-    def build_roster(self, seats, config=None, probe=None):
+    def build_roster(self, seats, config=None, probe=None, quota_failed_seats=()):
         detects = {key: (lambda cfg, key=key: (seats.get(key, []), None))
                    for key in self.roster.ORDER}
         with patch.dict(os.environ, self.env), patch.object(self.roster, 'DETECT', detects), \
              patch.object(self.roster, 'load_config', return_value=(config or {}, None)), \
              patch.object(self.roster, 'probe_seat', side_effect=probe):
-            return self.roster.build(probe is not None)[0::2]
+            return self.roster.build(probe is not None, quota_failed_seats)[0::2]
+
+    def test_grok_is_not_a_live_roster_provider(self):
+        for collection in (self.roster.LABS, self.roster.NAMES,
+                           self.roster.PROBE_CMD, self.roster.DETECT):
+            self.assertNotIn('grok', collection)
+        self.assertNotIn('grok', self.roster.ORDER)
+        self.assertFalse(hasattr(self.roster, 'detect_grok'))
+        self.assertFalse(any(extra[0] == 'grok' for extra in self.roster.EXTRAS))
 
     def test_no_implicit_anthropic_seat(self):
         roster, failed = self.build_roster({})
@@ -59,9 +69,33 @@ class CodexTests(unittest.TestCase):
 
     def test_failed_probes_are_not_padded_back(self):
         seat = self.roster.make_seat('opus', 'claude', 'opus', 'max')
-        roster, failed = self.build_roster({'claude': [seat]}, probe=lambda s: 'probe failed')
+        roster, failed = self.build_roster(
+            {'claude': [seat]},
+            probe=lambda _seat: ('probe failed', 'other', 'unclassified provider failure'),
+        )
         self.assertTrue(failed)
         self.assertEqual(roster['seats'], [])
+
+    def test_provider_probes_bind_the_selected_effort(self):
+        commands = []
+
+        def capture(command, _timeout):
+            commands.append(command)
+            return 0, 'OK', ''
+
+        with patch.object(self.roster, 'run', side_effect=capture):
+            self.assertEqual(
+                self.roster.probe_seat(
+                    self.roster.make_seat('sol', 'codex', 'gpt-5.6-sol', 'max')),
+                (None, None, None),
+            )
+            self.assertEqual(
+                self.roster.probe_seat(
+                    self.roster.make_seat('sonnet', 'claude', 'sonnet', 'max')),
+                (None, None, None),
+            )
+        self.assertIn('model_reasoning_effort=max', commands[0])
+        self.assertEqual(commands[1][commands[1].index('--effort') + 1], 'max')
 
     def test_repeat_seats_do_not_satisfy_lab_floor(self):
         seat = self.roster.make_seat('codex-astra', 'codex', 'gpt-6-astra', 'max')
@@ -91,21 +125,19 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(self.roster.select_codex_models(listed, ['gpt-5.6-sol']),
                          [('gpt-5.6-sol', 'max')])
 
-    def test_exact_panel_detects_sol_grok_and_two_opus_seats(self):
+    def test_exact_count_detects_sol_terra_and_two_opus_seats(self):
         cache = self.root / 'cache.json'
         cache.write_text(json.dumps({'models': [
             {'slug': name, 'visibility': 'list', 'priority': priority,
              'supported_reasoning_levels': [{'effort': 'max'}]}
             for name, priority in [('gpt-5.6-sol', 1), ('gpt-5.6-terra', 2),
                                    ('gpt-6-astra', 1)]]}))
-        cfg = {'codex_models': ['gpt-5.6-sol'], 'claude_seats': 2,
+        cfg = {'codex_models': ['gpt-5.6-sol', 'gpt-5.6-terra'], 'claude_seats': 2,
                'exclude': ['gemini'], 'extras': False}
 
         def fake_run(cmd, _timeout):
             if cmd[:3] == ['codex', 'login', 'status']:
                 return 0, 'Logged in using ChatGPT', ''
-            if cmd[:2] == ['grok', 'models']:
-                return 0, 'You are logged in with grok.com.\nDefault model: grok-4.6', ''
             if cmd[:4] == ['claude', 'auth', 'status', '--json']:
                 return 0, '{"loggedIn":true}', ''
             self.fail('unexpected command: %r' % cmd)
@@ -120,10 +152,28 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(
             [(seat['seat'], seat['adapter'], seat['model']) for seat in roster['seats']],
             [('codex-sol', 'codex', 'gpt-5.6-sol'),
-             ('grok', 'grok', 'grok-4.6'),
+             ('codex-terra', 'codex', 'gpt-5.6-terra'),
              ('opus', 'claude', 'opus'),
              ('opus-2', 'claude', 'opus')],
         )
+
+    def test_exact_panel_detects_ordered_opus_and_sonnet_on_both_hosts(self):
+        config = {'claude_models': ['opus', 'sonnet'], 'extras': False}
+        for codex_host, adapter in ((True, 'claude'), (False, 'agent')):
+            with self.subTest(codex_host=codex_host), patch.dict(os.environ, self.env), \
+                 patch.object(self.roster.shutil, 'which', return_value='/fixture/claude'), \
+                 patch.object(self.roster, 'run', return_value=(
+                     0, '{"loggedIn":true}', '')):
+                self.roster.CODEX_HOST = codex_host
+                seats, reason = (self.roster.detect_claude(config) if codex_host
+                                 else self.roster.detect_agent(config))
+            self.assertIsNone(reason)
+            self.assertEqual(
+                [(seat['seat'], seat['adapter'], seat['model'], seat['effort'])
+                 for seat in seats],
+                [('opus', adapter, 'opus', 'max'),
+                 ('sonnet', adapter, 'sonnet', 'max')],
+            )
 
     def test_invalid_exact_settings_fail_closed(self):
         invalid_codex = [
@@ -143,13 +193,36 @@ class CodexTests(unittest.TestCase):
                 seats, reason = self.roster.detect_claude({'claude_seats': value})
                 self.assertEqual(seats, [])
                 self.assertIn('invalid claude_seats', reason)
-        for config in ({'codex_models': 'gpt-5.6-sol'}, {'claude_seats': '2'}):
+        invalid_claude_models = (
+            'opus', [], ['opus', 'sonnet', 'haiku'], ['haiku'],
+            ['claude-opus-4-1'], ['opus', 3], ['opus', 'opus'],
+            ['opus', 'OPUS'], [' opus'],
+        )
+        for value in invalid_claude_models:
+            with self.subTest(claude_models=value):
+                seats, reason = self.roster.detect_agent({'claude_models': value})
+                self.assertEqual(seats, [])
+                self.assertIn('invalid claude_models', reason)
+        seats, reason = self.roster.detect_agent(
+            {'claude_models': ['opus', 'sonnet'], 'claude_seats': 2})
+        self.assertEqual(seats, [])
+        self.assertEqual(reason, 'claude_models and claude_seats are mutually exclusive')
+        for config in ({'codex_models': 'gpt-5.6-sol'}, {'claude_seats': '2'},
+                       {'claude_models': 'opus'},
+                       {'claude_models': ['opus'], 'claude_seats': 1}):
             with self.subTest(config=config):
                 roster, strict_class = self.build_roster({}, config)
                 self.assertEqual(strict_class, 'config')
                 self.assertEqual(roster['strict_class'], 'config')
-                self.assertTrue(any(entry['reason'].startswith('strict: invalid ')
+                self.assertTrue(any(entry['reason'].startswith(
+                    ('strict: invalid ', 'strict: claude_models and claude_seats '))
                                     for entry in roster['excluded']))
+
+    def test_claude_model_seat_names_are_stable_and_unique(self):
+        self.assertEqual(
+            self.roster.claude_model_seat_names(['opus', 'sonnet']),
+            ['opus', 'sonnet'],
+        )
 
     def test_permanent_config_wins_over_availability(self):
         roster, strict_class = self.build_roster(
@@ -236,13 +309,13 @@ class CodexTests(unittest.TestCase):
 
     def test_codex_model_pin_cannot_escape_exact_allowlist(self):
         sol = self.roster.make_seat('codex-sol', 'codex', 'gpt-5.6-sol', 'max')
-        grok = self.roster.make_seat('grok', 'grok', 'grok-4.6', 'xhigh')
+        gemini = self.roster.make_seat('gemini', 'gemini', 'gemini-2.5-pro', None)
         opus = self.roster.make_seat('opus', 'claude', 'opus', 'max')
         config = {'codex_models': ['gpt-5.6-sol'], 'claude_seats': 1,
                   'extras': False,
                   'pin': {'codex-sol': {'model': 'gpt-6-astra'}}}
         roster, failed = self.build_roster(
-            {'codex': [sol], 'grok': [grok], 'claude': [opus]}, config)
+            {'codex': [sol], 'gemini': [gemini], 'claude': [opus]}, config)
         self.assertEqual(failed, 'config')
         self.assertNotIn('gpt-6-astra', [seat['model'] for seat in roster['seats']])
         self.assertIn(
@@ -259,7 +332,8 @@ class CodexTests(unittest.TestCase):
     def test_exact_extra_pins_apply_only_to_active_extras(self):
         def seats(include_codex=True):
             found = {
-                'grok': [self.roster.make_seat('grok', 'grok', 'grok-4.6', 'xhigh')],
+                'gemini': [self.roster.make_seat(
+                    'gemini', 'gemini', 'gemini-2.5-pro', None)],
                 'claude': [self.roster.make_seat('opus', 'claude', 'opus', 'max')],
             }
             if include_codex:
@@ -320,6 +394,81 @@ class CodexTests(unittest.TestCase):
                 self.assertEqual(sum(entry['reason'].startswith('strict: claude_seats')
                                      for entry in roster['excluded']), 1)
 
+    def test_exact_claude_model_pins_are_fail_closed_on_both_hosts(self):
+        cases = (
+            ({'opus': {'model': 'haiku'}},
+             'opus: pinned model haiku is outside claude_models'),
+            ({'sonnet': {'model': 'opus'}},
+             'sonnet: pinned model opus does not match required model sonnet'),
+            ({'opus': {'model': 'sonnet'}, 'sonnet': {'model': 'opus'}},
+             'opus: pinned model sonnet does not match required model opus'),
+            ({'sonnet': {'effort': 'high'}},
+             'sonnet: pinned effort high does not match required effort max'),
+        )
+        for codex_host, adapter in ((True, 'claude'), (False, 'agent')):
+            for pins, expected in cases:
+                with self.subTest(codex_host=codex_host, pins=pins):
+                    self.roster.CODEX_HOST = codex_host
+                    self.roster.ORDER = (adapter,)
+                    detected = [
+                        self.roster.make_seat('opus', adapter, 'opus', 'max'),
+                        self.roster.make_seat('sonnet', adapter, 'sonnet', 'max'),
+                    ]
+                    roster, failed = self.build_roster(
+                        {adapter: detected},
+                        {'claude_models': ['opus', 'sonnet'], 'extras': False,
+                         'pin': pins},
+                    )
+                    self.assertEqual(failed, 'config')
+                    self.assertEqual(roster['strict_reason'], expected)
+                    self.assertEqual(
+                        sum(entry['reason'].startswith('strict: claude_models')
+                            for entry in roster['excluded']),
+                        1,
+                    )
+
+    def test_excluding_an_exact_claude_model_is_permanent_config(self):
+        opus = self.roster.make_seat('opus', 'claude', 'opus', 'max')
+        sonnet = self.roster.make_seat('sonnet', 'claude', 'sonnet', 'max')
+        calls = []
+        roster, failed = self.build_roster(
+            {'claude': [opus, sonnet]},
+            {'claude_models': ['opus', 'sonnet'], 'exclude': ['sonnet'],
+             'extras': False},
+            probe=lambda seat: calls.append(seat['seat']),
+        )
+        self.assertEqual(failed, 'config')
+        self.assertEqual(roster['strict_reason'], 'sonnet: excluded by config')
+        self.assertEqual(calls, [])
+        self.assertIn(
+            {'cli': 'claude_models',
+             'reason': 'strict: claude_models requires 2 matching seat(s), 1 survived'},
+            roster['excluded'],
+        )
+
+    def test_exact_claude_models_cannot_be_disabled_and_skip_probes(self):
+        opus = self.roster.make_seat('opus', 'claude', 'opus', 'max')
+        sonnet = self.roster.make_seat('sonnet', 'claude', 'sonnet', 'max')
+        cases = (
+            ({'claude_seat': False}, {},
+             'claude_models conflicts with claude_seat: false'),
+            ({}, {'REVIEW_COUNCIL_CLAUDE_SEAT': '0'},
+             'claude_models conflicts with REVIEW_COUNCIL_CLAUDE_SEAT=0'),
+        )
+        for extra_config, extra_env, expected in cases:
+            calls = []
+            config = {'claude_models': ['opus', 'sonnet'], 'extras': False,
+                      **extra_config}
+            with self.subTest(config=extra_config, env=extra_env), \
+                 patch.dict(os.environ, extra_env):
+                roster, failed = self.build_roster(
+                    {'claude': [opus, sonnet]}, config,
+                    probe=lambda seat: calls.append(seat['seat']),
+                )
+            self.assertEqual(failed, 'config')
+            self.assertEqual(roster['strict_reason'], expected)
+            self.assertEqual(calls, [])
+
     def test_default_claude_pin_behavior_remains_non_exact(self):
         detected = self.roster.make_seat('opus', 'claude', 'opus', 'max')
         roster, failed = self.build_roster(
@@ -360,7 +509,8 @@ class CodexTests(unittest.TestCase):
             return {
                 'codex': [self.roster.make_seat(
                     'codex-sol', 'codex', 'gpt-5.6-sol', 'max')],
-                'grok': [self.roster.make_seat('grok', 'grok', 'grok-4.6', 'xhigh')],
+                'gemini': [self.roster.make_seat(
+                    'gemini', 'gemini', 'gemini-2.5-pro', None)],
                 'claude': [self.roster.make_seat('opus', 'claude', 'opus', 'max')],
             }
 
@@ -381,17 +531,17 @@ class CodexTests(unittest.TestCase):
             seats(),
             {'codex_models': ['gpt-5.6-sol'], 'claude_seats': 1,
              'extras': False},
-            probe=lambda seat: valid_calls.append(seat['seat']),
+            probe=lambda seat: (valid_calls.append(seat['seat']), None, None),
         )
         self.assertFalse(failed)
-        self.assertEqual(valid_calls, ['codex-sol', 'grok', 'opus'])
+        self.assertEqual(valid_calls, ['codex-sol', 'gemini', 'opus'])
         self.assertNotIn('strict_class', valid)
 
     def test_exact_codex_count_rejects_padded_name_collision(self):
         sol = self.roster.make_seat('codex-sol', 'codex', 'gpt-5.6-sol', 'max')
-        grok = self.roster.make_seat('grok', 'grok', 'grok-4.6', 'xhigh')
+        gemini = self.roster.make_seat('gemini', 'gemini', 'gemini-2.5-pro', None)
         roster, failed = self.build_roster(
-            {'codex': [sol], 'grok': [grok]},
+            {'codex': [sol], 'gemini': [gemini]},
             {'codex_models': ['gpt-5.6-sol', 'gpt-5.6-sol-1'], 'extras': False},
         )
         self.assertEqual(failed, 'availability')
@@ -429,7 +579,7 @@ class CodexTests(unittest.TestCase):
         roster, failed = self.build_roster(
             {'codex': [sol], 'claude': [opus]},
             {'codex_models': ['gpt-5.6-sol'], 'claude_seats': 1, 'extras': False},
-            probe=lambda _seat: 'probe failed',
+            probe=lambda _seat: ('probe failed', 'other', 'unclassified provider failure'),
         )
         self.assertEqual(failed, 'availability')
         self.assertEqual(roster['seats'], [])
@@ -518,10 +668,9 @@ class CodexTests(unittest.TestCase):
 
     def test_min_labs_rejects_invalid_and_impossible_config_before_probes(self):
         codex = self.roster.make_seat('codex-sol', 'codex', 'gpt-5.6-sol', 'max')
-        grok = self.roster.make_seat('grok', 'grok', 'grok-4.6', 'xhigh')
         gemini = self.roster.make_seat('gemini', 'gemini', 'gemini-2.5-pro', None)
         opus = self.roster.make_seat('opus', 'claude', 'opus', 'max')
-        seats = {'codex': [codex], 'grok': [grok], 'gemini': [gemini], 'claude': [opus]}
+        seats = {'codex': [codex], 'gemini': [gemini], 'claude': [opus]}
         for value in ('two', True, 0, -1):
             calls = []
             with self.subTest(min_labs=value):
@@ -537,7 +686,7 @@ class CodexTests(unittest.TestCase):
         calls = []
         roster, failed = self.build_roster(
             seats,
-            {'min_labs': 3, 'exclude': ['grok', 'gemini'], 'extras': False},
+            {'min_labs': 3, 'exclude': ['gemini'], 'extras': False},
             probe=lambda seat: calls.append(seat['seat']),
         )
         self.assertEqual(failed, 'config')
@@ -547,41 +696,130 @@ class CodexTests(unittest.TestCase):
 
     def test_satisfiable_min_labs_availability_shortfall_remains_retryable(self):
         codex = self.roster.make_seat('codex-sol', 'codex', 'gpt-5.6-sol', 'max')
-        grok = self.roster.make_seat('grok', 'grok', 'grok-4.6', 'xhigh')
+        gemini = self.roster.make_seat('gemini', 'gemini', 'gemini-2.5-pro', None)
         opus = self.roster.make_seat('opus', 'claude', 'opus', 'max')
         calls = []
 
         def probe(seat):
             calls.append(seat['seat'])
-            return 'probe failed' if seat['adapter'] == 'grok' else None
+            if seat['adapter'] == 'gemini':
+                return 'probe failed', 'other', 'unclassified provider failure'
+            return None, None, None
 
         roster, failed = self.build_roster(
-            {'codex': [codex], 'grok': [grok], 'claude': [opus]},
-            {'min_labs': 3, 'exclude': ['gemini'], 'extras': False},
+            {'codex': [codex], 'gemini': [gemini], 'claude': [opus]},
+            {'min_labs': 3, 'extras': False},
             probe=probe,
         )
         self.assertEqual(failed, 'availability')
         self.assertEqual(roster['strict_reason'], '2 lab(s) available, min_labs=3')
-        self.assertEqual(calls, ['codex-sol', 'grok', 'opus'])
+        self.assertEqual(calls, ['codex-sol', 'gemini', 'opus'])
+
+    def test_forced_quota_seats_cannot_fallback_to_each_other(self):
+        terra = self.roster.make_seat(
+            'codex-terra', 'codex', 'gpt-5.6-terra', 'max')
+        sonnet = self.roster.make_seat('sonnet', 'claude', 'sonnet', 'max')
+        roster, failed = self.build_roster(
+            {'codex': [terra], 'claude': [sonnet]},
+            {'extras': False, 'quota_fallback': True},
+            probe=lambda _seat: (None, None, None),
+            quota_failed_seats=('codex-terra', 'sonnet'),
+        )
+        self.assertEqual(failed, 'availability')
+        self.assertFalse(any(seat.get('substitutes_for') for seat in roster['seats']))
+        self.assertIn('codex-terra has no usable fallback target', roster['strict_reason'])
+        self.assertIn('sonnet has no usable fallback target', roster['strict_reason'])
+
+    def test_quota_substitution_does_not_waive_an_unrelated_lab_failure(self):
+        terra = self.roster.make_seat(
+            'codex-terra', 'codex', 'gpt-5.6-terra', 'max')
+        gemini = self.roster.make_seat('gemini', 'gemini', 'gemini-2.5-pro', None)
+        opus = self.roster.make_seat('opus', 'claude', 'opus', 'max')
+
+        def probe(seat):
+            if seat['adapter'] == 'gemini':
+                return 'probe failed', 'other', 'unclassified provider failure'
+            if seat['adapter'] == 'claude':
+                return 'probe failed', 'quota', 'quota exhausted'
+            return None, None, None
+
+        roster, failed = self.build_roster(
+            {'codex': [terra], 'gemini': [gemini], 'claude': [opus]},
+            {'extras': False, 'min_labs': 3, 'quota_fallback': True},
+            probe=probe,
+        )
+        self.assertEqual(failed, 'availability')
+        self.assertEqual(roster['strict_reason'], '1 lab(s) available, min_labs=3')
+        self.assertTrue(any(seat.get('substitutes_for') == 'opus'
+                            for seat in roster['seats']))
+        self.assertIn(
+            {'cli': 'min_labs', 'reason': 'strict: 1 lab(s) available, min_labs=3'},
+            roster['excluded'],
+        )
+        self.assertFalse(any('temporarily waived' in entry['reason']
+                             for entry in roster['excluded']))
 
     def test_repeated_provider_model_probe_runs_once(self):
         sol = self.roster.make_seat('codex-sol', 'codex', 'gpt-5.6-sol', 'max')
-        grok = self.roster.make_seat('grok', 'grok', 'grok-4.6', 'xhigh')
+        gemini = self.roster.make_seat('gemini', 'gemini', 'gemini-2.5-pro', None)
         opus = self.roster.make_seat('opus', 'claude', 'opus', 'max')
         opus2 = self.roster.make_seat('opus-2', 'claude', 'opus', 'max')
         calls = []
 
         def probe(seat):
             calls.append((seat['adapter'], seat['model']))
-            return None
+            return None, None, None
 
         roster, failed = self.build_roster(
-            {'codex': [sol], 'grok': [grok], 'claude': [opus, opus2]},
+            {'codex': [sol], 'gemini': [gemini], 'claude': [opus, opus2]},
             {'codex_models': ['gpt-5.6-sol'], 'claude_seats': 2,
              'extras': False}, probe)
         self.assertFalse(failed)
         self.assertEqual(len(roster['seats']), 4)
         self.assertEqual(calls.count(('claude', 'opus')), 1)
+
+    def test_probe_cache_distinguishes_a_pinned_extra_effort(self):
+        sol = self.roster.make_seat('codex-sol', 'codex', 'gpt-5.6-sol', 'max')
+        calls = []
+
+        def probe(seat):
+            calls.append((seat['adapter'], seat['model'], seat['effort'], seat['extra']))
+            return None, None, None
+
+        roster, failed = self.build_roster(
+            {'codex': [sol]},
+            {'pin': {'codex-review': {'effort': 'ultra'}}, 'claude_seat': False},
+            probe,
+        )
+        self.assertFalse(failed)
+        self.assertIn(
+            ('codex', 'gpt-5.6-sol', 'max', False), calls)
+        self.assertIn(
+            ('codex', 'gpt-5.6-sol', 'ultra', True), calls)
+        extra = next(seat for seat in roster['seats'] if seat['extra'])
+        self.assertEqual(extra['effort'], 'ultra')
+
+    def test_exact_claude_models_probe_each_model_and_require_both(self):
+        opus = self.roster.make_seat('opus', 'claude', 'opus', 'max')
+        sonnet = self.roster.make_seat('sonnet', 'claude', 'sonnet', 'max')
+        calls = []
+
+        def probe(seat):
+            calls.append((seat['adapter'], seat['model']))
+            if seat['model'] == 'sonnet':
+                return 'probe failed', 'other', 'unclassified provider failure'
+            return None, None, None
+
+        roster, failed = self.build_roster(
+            {'claude': [opus, sonnet]},
+            {'claude_models': ['opus', 'sonnet'], 'extras': False}, probe)
+        self.assertEqual(failed, 'availability')
+        self.assertCountEqual(calls, [('claude', 'opus'), ('claude', 'sonnet')])
+        self.assertIn(
+            {'cli': 'claude_models',
+             'reason': 'strict: claude_models requires 2 matching seat(s), 1 survived'},
+            roster['excluded'],
+        )
 
     def test_claude_seats_zero_padding_override_is_recorded(self):
         self.roster.CODEX_HOST = False
@@ -625,6 +863,10 @@ class CodexTests(unittest.TestCase):
         output = module(REPO / 'scripts/build-codex-plugin.py').build(self.root / 'review-council')
         self.assertTrue((output / 'scripts/seats.d/claude.sh').stat().st_mode & 0o111)
         self.assertTrue((output / 'schema/findings.schema.json').exists())
+        self.assertTrue((output / 'tests/run-tests.sh').stat().st_mode & 0o111)
+        self.assertTrue((output / 'tests/t-provider-contract.sh').exists())
+        self.assertTrue((output / 'agents/rev-reviewer.md').exists())
+        self.assertTrue((output / 'agents/rev-reviewer-sonnet.md').exists())
         self.assertTrue((output / 'docs/config.md').exists())
         self.assertFalse((output / '.claude-plugin').exists())
         self.assertFalse((output / 'hooks').exists())
@@ -637,6 +879,171 @@ class CodexTests(unittest.TestCase):
         (output / 'stale').touch()
         module(REPO / 'scripts/build-codex-plugin.py').build(output)
         self.assertFalse((output / 'stale').exists())
+
+    def test_public_exit_contract_distinguishes_quota_and_local_attempts(self):
+        seats = (REPO / 'docs/seats.md').read_text()
+        self.assertIn('`4` provider quota, capacity, or rate limit', seats)
+        self.assertIn('`7` persistent local attempt exhaustion', seats)
+        for relative in ('plugins/review-council/skills/rev/SKILL.md',
+                         'plugins/review-council/codex-skills/rev/SKILL.md'):
+            contract = (REPO / relative).read_text()
+            self.assertIn('Exit 7 is local attempt exhaustion, not provider quota', contract)
+            self.assertIn('Exit 3 never enters quota fallback', contract)
+
+    def test_bundle_builds_repeatedly_from_a_read_only_source(self):
+        source = self.root / 'source'
+        plugin_files = {
+            '.codex-plugin/plugin.json': '{"name":"review-council"}\n',
+            'agents/rev-reviewer.md': 'reviewer\n',
+            'codex-skills/rev/SKILL.md': 'skill\n',
+            'scripts/roster.sh': '#!/bin/bash\nprintf roster\\n\n',
+            'scripts/stack.sh': '#!/bin/bash\nprintf stack\\n\n',
+            'schema/findings.schema.json': '{}\n',
+            'tests/run-tests.sh': '#!/bin/bash\nprintf tests\\n',
+        }
+        files = {
+            **{f'plugins/review-council/{relative}': content
+               for relative, content in plugin_files.items()},
+            'docs/config.md': 'config\n',
+            'LICENSE': 'license\n',
+        }
+        executable = {'scripts/roster.sh', 'scripts/stack.sh', 'tests/run-tests.sh'}
+        for relative, content in files.items():
+            path = source / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+            output_relative = relative.removeprefix('plugins/review-council/')
+            path.chmod(0o555 if output_relative in executable else 0o444)
+        for current, directories, _ in os.walk(source, topdown=False):
+            for name in directories:
+                (Path(current) / name).chmod(0o555)
+        source.chmod(0o555)
+
+        def restore_source_write():
+            for current, directories, _ in os.walk(source):
+                Path(current).chmod(Path(current).stat().st_mode | stat.S_IWUSR)
+                for name in directories:
+                    path = Path(current) / name
+                    path.chmod(path.stat().st_mode | stat.S_IWUSR)
+
+        self.addCleanup(restore_source_write)
+
+        def snapshot(root):
+            return {
+                str(path.relative_to(root)): (
+                    stat.S_IMODE(path.lstat().st_mode),
+                    path.read_bytes() if path.is_file() else None,
+                )
+                for path in (root, *root.rglob('*'))
+            }
+
+        original = snapshot(source)
+        builder = module(REPO / 'scripts/build-codex-plugin.py')
+        builder.REPO = source
+        output = self.root / 'output' / 'review-council'
+        for _ in range(2):
+            self.assertEqual(builder.build(output), output.absolute())
+            for built in (output, *output.rglob('*')):
+                mode = built.lstat().st_mode
+                if stat.S_ISDIR(mode) or stat.S_ISREG(mode):
+                    self.assertTrue(mode & stat.S_IWUSR, built)
+            for relative in files:
+                output_relative = relative.removeprefix('plugins/review-council/')
+                built = output / output_relative
+                source_mode = original[relative][0]
+                self.assertEqual(stat.S_IMODE(built.lstat().st_mode),
+                                 source_mode | stat.S_IWUSR)
+            self.assertEqual(
+                stat.S_IMODE((output / '.codex-plugin').stat().st_mode),
+                original['plugins/review-council/.codex-plugin'][0] | stat.S_IWUSR,
+            )
+            for script in ('roster.sh', 'stack.sh'):
+                content = (output / 'scripts' / script).read_text()
+                self.assertEqual(content.count('export REVIEW_COUNCIL_HOST=codex'), 1)
+                self.assertTrue(content.startswith(
+                    '#!/bin/bash\nexport REVIEW_COUNCIL_HOST=codex\n'))
+            self.assertTrue((output / 'tests/run-tests.sh').stat().st_mode & 0o111)
+        self.assertEqual(snapshot(source), original)
+
+        guard = self.root / 'symlink-guard'
+        guard.mkdir()
+        target = guard / 'target'
+        target.write_text('guard\n')
+        target.chmod(0o444)
+        staging = guard / 'stage'
+        staging.mkdir()
+        (staging / 'link').symlink_to(target)
+        builder._make_staging_writable(staging)
+        self.assertEqual(stat.S_IMODE(target.stat().st_mode), 0o444)
+
+    def test_built_bundle_replays_its_own_contract_for_a_foreign_target(self):
+        output = module(REPO / 'scripts/build-codex-plugin.py').build(self.root / 'review-council')
+        checker = module(output / 'scripts/rev-contract-check.py')
+        expected_selectors = list(checker.CONTRACT_TESTS)
+        recorder = self.root / 'contract-recorder.jsonl'
+        bundled_runner = output / 'tests/run-tests.sh'
+        bundled_runner.write_text('''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+allowed = set(%s)
+if len(sys.argv) != 2 or sys.argv[1] not in allowed:
+    raise SystemExit(2)
+record = {'selector': sys.argv[1], 'owner': str(Path(__file__).resolve())}
+descriptor = os.open(os.environ['CONTRACT_RECORDER'], os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+with os.fdopen(descriptor, 'a') as output:
+    output.write(json.dumps(record, sort_keys=True) + '\\n')
+print('passed=1 failed=0')
+''' % repr(expected_selectors))
+        bundled_runner.chmod(0o755)
+        target = self.root / 'target'
+        subject = target / 'plugins/review-council'
+        (subject / '.codex-plugin').mkdir(parents=True)
+        (subject / 'scripts').mkdir()
+        (subject / 'tests').mkdir()
+        (subject / '.codex-plugin/plugin.json').write_text('{}\n')
+        (subject / 'scripts/rev-prompt.sh').write_text('base boundary\n')
+        subprocess.run(['git', 'init', '-q', str(target)], check=True)
+        subprocess.run(['git', '-C', str(target), '-c', 'user.name=test',
+                        '-c', 'user.email=test@example.invalid', 'add', '.'], check=True)
+        subprocess.run(['git', '-C', str(target), '-c', 'user.name=test',
+                        '-c', 'user.email=test@example.invalid', 'commit', '-qm', 'base'], check=True)
+        base = subprocess.check_output(['git', '-C', str(target), 'rev-parse', 'HEAD'], text=True).strip()
+        (subject / 'scripts/rev-prompt.sh').write_text('changed boundary\n')
+        sentinel = self.root / 'foreign-runner.sentinel'
+        foreign_runner = subject / 'tests/run-tests.sh'
+        foreign_runner.write_text('#!/bin/bash\nprintf hit >> "$TARGET_SENTINEL"\n')
+        foreign_runner.chmod(0o755)
+        session = self.root / 'session'
+        session.mkdir()
+        roster = session / 'roster.json'
+        roster.write_text(json.dumps({'seats': [
+            {'seat': 'sol', 'adapter': 'codex', 'model': 'gpt-5.6-sol',
+             'effort': 'max', 'extra': False}]}))
+        env = dict(os.environ, TARGET_SENTINEL=str(sentinel),
+                   CONTRACT_RECORDER=str(recorder),
+                   REVIEW_COUNCIL_CONTRACT_PROVIDER_VERSIONS='{"codex":"1"}',
+                   REVIEW_COUNCIL_CACHE_DIR=str(self.root / 'cache'))
+        proc = subprocess.run([
+            'python3', str(output / 'scripts/rev-contract-check.py'),
+            '--root', str(target), '--base', base, '--session', str(session),
+            '--roster', str(roster),
+        ], env=env, text=True, capture_output=True, timeout=120)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertFalse(sentinel.exists())
+        receipt = json.loads(Path(proc.stdout.strip()).read_text())
+        self.assertEqual(receipt['identity']['executor']['plugin'], str(output.resolve()))
+        self.assertEqual(receipt['identity']['executor']['policy'], 'checker-owned')
+        records = [json.loads(line) for line in recorder.read_text().splitlines()]
+
+        def verify_records(rows):
+            self.assertEqual(sorted(row['selector'] for row in rows), sorted(expected_selectors))
+            self.assertEqual({row['owner'] for row in rows}, {str(bundled_runner.resolve())})
+
+        verify_records(records)
+        with self.assertRaises(AssertionError):
+            verify_records(records[:-1])
+        with self.assertRaises(AssertionError):
+            verify_records([dict(records[0], owner=str(foreign_runner.resolve())), *records[1:]])
 
     def test_build_refuses_unrelated_directory(self):
         output = self.root / 'review-council'
@@ -672,7 +1079,7 @@ class CodexTests(unittest.TestCase):
             {'type': 'tool_use', 'name': 'StructuredOutput', 'input': {}}]}}])
         self.assertNotIn('tool_call ', log)
 
-    def test_claude_adapter_runs_readonly_and_validates(self):
+    def test_claude_adapter_runs_sonnet_at_max_readonly_and_validates(self):
         cli = self.root / 'claude'
         cli.write_text('''#!/usr/bin/env python3
 import json, os, sys
@@ -684,33 +1091,62 @@ print(json.dumps({'type':'result','is_error':False,'subtype':'success',
 ''')
         cli.chmod(0o755)
         (self.root / 'roster.json').write_text(json.dumps({'seats': [
-            self.roster.make_seat('opus', 'claude', 'opus', 'max')]}))
+            self.roster.make_seat('sonnet', 'claude', 'sonnet', 'max')]}))
         prompt = self.root / 'prompt.md'
         prompt.write_text('Review the fixture.')
+        deps = self.root / 'deps'
+        deps.mkdir()
         capture = self.root / 'args.json'
         env = dict(self.env, PATH=str(self.root) + os.pathsep + os.environ['PATH'],
                    REV_REPO=str(self.root), CAPTURE=str(capture),
+                   REV_DEPS_DIR=str(deps),
                    FINDINGS=str(SHARED / 'tests/fixtures/findings-valid.json'))
-        proc = subprocess.run([str(SCRIPTS / 'rev-seat.sh'), 'opus', str(self.root), '1', str(prompt)],
+        proc = subprocess.run([str(SCRIPTS / 'rev-seat.sh'), 'sonnet', str(self.root), '1', str(prompt)],
                               env=env, text=True, capture_output=True)
         self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
-        self.assertEqual((self.root / 'r1-opus.exit').read_text().strip(), '0')
+        self.assertEqual((self.root / 'r1-sonnet.exit').read_text().strip(), '0')
         args = json.loads(capture.read_text())
-        self.assertEqual(args[args.index('--permission-mode') + 1], 'plan')
-        self.assertEqual(args[args.index('--tools') + 1], 'Read,Glob,Grep,Bash')
+        self.assertEqual(args[args.index('--model') + 1], 'sonnet')
+        self.assertEqual(args[args.index('--effort') + 1], 'max')
+        self.assertEqual(args[args.index('--max-turns') + 1], '160')
+        self.assertEqual(args[args.index('--permission-mode') + 1], 'bypassPermissions')
+        self.assertEqual(args[args.index('--tools') + 1], 'Read,Grep')
         self.assertIn('--strict-mcp-config', args)
         self.assertEqual(args[args.index('--setting-sources') + 1], '')
+        continuation = args[args.index('--append-system-prompt') + 1]
+        self.assertIn('Continue the noninteractive review without waiting for user input', continuation)
+        self.assertIn('Never end a response with progress text alone', continuation)
         schema = json.loads(args[args.index('--json-schema') + 1])
         self.assertNotIn('$schema', schema)
         self.assertIn('findings', schema['properties'])
         settings = json.loads(args[args.index('--settings') + 1])
-        command = settings['hooks']['PreToolUse'][0]['hooks'][0]['command']
-        for text, rc in [('git diff --stat | head -20', 0), ('git reset --hard', 2), ('echo bad > file', 2)]:
-            guarded = subprocess.run(command, shell=True, input=json.dumps({
-                'tool_name': 'Bash', 'tool_input': {'command': text}}), text=True, capture_output=True)
-            self.assertEqual(guarded.returncode, rc, guarded.stderr)
+        for phase in ('PreToolUse', 'PostToolUse'):
+            self.assertEqual({row['matcher'] for row in settings['hooks'][phase]},
+                             {'Read', 'Grep'})
+        self.assertNotIn('readonly-bash-guard.py', json.dumps(settings))
+        audit_commands = [
+            hook['command']
+            for phase in ('PreToolUse', 'PostToolUse')
+            for matcher in settings['hooks'][phase]
+            for hook in matcher['hooks']
+            if 'review-read-audit.py' in hook['command']
+        ]
+        self.assertTrue(audit_commands)
+        for audit_command in audit_commands:
+            command_args = shlex.split(audit_command)
+            self.assertEqual(command_args[command_args.index('--prompt') + 1], str(prompt))
+            self.assertEqual(command_args[command_args.index('--deps') + 1], str(deps))
 
-    def test_installer_preserves_marketplace_and_refreshes_version(self):
+    def test_claude_reviewer_limits_session_reads_to_current_prompt(self):
+        reviewer = (SHARED / 'agents/rev-reviewer.md').read_text()
+        sonnet = (SHARED / 'agents/rev-reviewer-sonnet.md').read_text()
+        for contract in (reviewer, sonnet):
+            self.assertIn('exact review-session artifacts named in the current prompt', contract)
+            self.assertIn('explicitly named pinned dependency roots', contract)
+            self.assertIn('document inputs listed in the current prompt', contract)
+            self.assertNotIn('the named review session', contract)
+
+    def test_production_installer_atomically_replaces_bundle_and_preserves_marketplace(self):
         installer = module(REPO / 'scripts/install-codex-plugin.py')
         marketplace = self.root / '.agents/plugins/marketplace.json'
         marketplace.parent.mkdir(parents=True)
@@ -723,9 +1159,12 @@ print(json.dumps({'type':'result','is_error':False,'subtype':'success',
             installer.install()
             manifest = self.root / 'plugins/review-council/.codex-plugin/plugin.json'
             first = json.loads(manifest.read_text())['version']
+            prior_marker = manifest.parents[1] / 'prior-bundle'
+            prior_marker.write_text('old\n')
             saved = marketplace.read_text()
             installer.install()
             self.assertNotEqual(first, json.loads(manifest.read_text())['version'])
+            self.assertFalse(prior_marker.exists())
             self.assertEqual(saved, marketplace.read_text())
             run.assert_called_with(['codex', 'plugin', 'add', 'review-council@mine'], check=True)
         data = json.loads(saved)

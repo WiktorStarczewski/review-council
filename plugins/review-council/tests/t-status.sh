@@ -3,13 +3,13 @@
 . "$SCRIPTS/lib/compat.sh"
 test_status() {
   local S="$T/status-sess"; mkdir -p "$S"
-  "$SCRIPTS/rev-state.sh" "$S" round=2 min_rounds=7 phase=collect 'seats=["codex-sol","codex-terra","grok","opus"]' open.P0=0 open.P1=1 open.P2=3 fixed=4 'dropped=["codex-terra"]' >/dev/null
+  "$SCRIPTS/rev-state.sh" "$S" round=2 min_rounds=7 phase=collect 'seats=["codex-sol","codex-terra","sonnet","opus"]' open.P0=0 open.P1=1 open.P2=3 fixed=4 'dropped=["codex-terra"]' >/dev/null
   # sol: done with 1 finding, started 9 minutes ago, finished 2 minutes ago
   cp "$FX/findings-valid.json" "$S/r2-codex-sol.json"; echo 0 > "$S/r2-codex-sol.exit"; : > "$S/r2-codex-sol.prompt.md"
   rc_touch_ago 540 "$S/r2-codex-sol.prompt.md"; rc_touch_ago 120 "$S/r2-codex-sol.exit"
-  # grok: running, last action from the log
-  : > "$S/r2-grok.prompt.md"; rc_touch_ago 840 "$S/r2-grok.prompt.md"
-  printf 'tool_call shell: git diff abc --stat\ntext: thinking\ntool_call shell: rg "retry" src/api\n' > "$S/r2-grok.log"
+  # sonnet: running, last action from the log
+  : > "$S/r2-sonnet.prompt.md"; rc_touch_ago 840 "$S/r2-sonnet.prompt.md"
+  printf 'tool_call shell: git diff abc --stat\ntext: thinking\ntool_call shell: rg "retry" src/api\n' > "$S/r2-sonnet.log"
   # opus: running, transcript present
   : > "$S/r2-opus.prompt.md"; rc_touch_ago 300 "$S/r2-opus.prompt.md"
   printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{}}]}}\n{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Grep","input":{}}]}}\n' > "$T/opus.jsonl"
@@ -21,11 +21,11 @@ test_status() {
   assert_grep "header" "$T/line" '^r2/7 collect \|'
   assert_grep "sol done with duration" "$T/line" 'sol: done 1f 7m'
   assert_grep "terra dropped" "$T/line" 'terra: dropped'
-  assert_grep "grok running with last action" "$T/line" 'grok: running 14m ← rg "retry" src/api'
+  assert_grep "sonnet running with last action" "$T/line" 'sonnet: running 14m ← rg "retry" src/api'
   assert_grep "opus last tool from legacy transcript" "$T/line" 'opus: running 5m ← Grep'
   assert_grep "totals" "$T/line" 'open P0:0 P1:1 P2:3 fixed 4$'
-  echo 4 > "$S/r2-grok.exit"; echo "$("$SCRIPTS/rev-status.sh" "$S")" > "$T/line"
-  assert_grep "failed seat" "$T/line" 'grok: failed exit=4'
+  echo 4 > "$S/r2-sonnet.exit"; echo "$("$SCRIPTS/rev-status.sh" "$S")" > "$T/line"
+  assert_grep "failed seat" "$T/line" 'sonnet: failed exit=4'
   assert_exit "missing session → 1" 1 "$SCRIPTS/rev-status.sh" "$T/nope"
   mkdir -p "$T/empty-sess"; echo "$("$SCRIPTS/rev-status.sh" "$T/empty-sess")" > "$T/line"
   assert_grep "no state yet is still one line" "$T/line" '^r\?/\? setup'
@@ -142,16 +142,16 @@ test_status_repair_label() {
 test_status_post_extra_exact_seats() {
   local S="$T/status-after-extra"; mkdir -p "$S"
   "$SCRIPTS/rev-state.sh" "$S" round=4 min_rounds=4 phase=collect \
-    'seats=["codex-sol","grok"]' open.P0=0 open.P1=0 open.P2=0 fixed=5 >/dev/null
+    'seats=["codex-sol","codex-terra"]' open.P0=0 open.P1=0 open.P2=0 fixed=5 >/dev/null
   cp "$FX/findings-valid.json" "$S/r4-codex-sol.json"
-  cp "$FX/findings-valid.json" "$S/r4-grok.json"
-  echo 0 > "$S/r4-codex-sol.exit"; echo 0 > "$S/r4-grok.exit"
-  : > "$S/r4-codex-sol.prompt.md"; : > "$S/r4-grok.prompt.md"
+  cp "$FX/findings-valid.json" "$S/r4-codex-terra.json"
+  echo 0 > "$S/r4-codex-sol.exit"; echo 0 > "$S/r4-codex-terra.exit"
+  : > "$S/r4-codex-sol.prompt.md"; : > "$S/r4-codex-terra.prompt.md"
   : > "$S/r3-codex-review.prompt.md"
 
   local line; line=$("$SCRIPTS/rev-status.sh" "$S"); echo "    $line"; echo "$line" > "$T/post-extra-line"
   [ "${#line}" -le 220 ] && ok "post-extra status ≤220 chars" || fail "post-extra status ≤220 chars" "${#line}"
-  assert_grep "current core seats are complete" "$T/post-extra-line" 'sol: done 1f 0m \| grok: done 1f 0m'
+  assert_grep "current core seats are complete" "$T/post-extra-line" 'sol: done 1f 0m \| terra: done 1f 0m'
   assert_nogrep "prior extra does not leak into status" "$T/post-extra-line" 'codex-review|cx-rev'
   assert_nogrep "completed panel has no pending seat" "$T/post-extra-line" 'pending'
 }
@@ -160,10 +160,10 @@ test_status_post_extra_exact_seats() {
 test_status_overflow() {
   local S="$T/status-wide"; mkdir -p "$S"
   "$SCRIPTS/rev-state.sh" "$S" round=3 min_rounds=7 phase=collect \
-    'seats=["codex-sol","codex-terra","grok","opus","grok-code-review"]' \
+    'seats=["codex-sol","codex-terra","gemini","opus","sonnet"]' \
     open.P0=2 open.P1=3 open.P2=4 fixed=9 >/dev/null
   local seat
-  for seat in codex-sol codex-terra grok opus grok-code-review; do
+  for seat in codex-sol codex-terra gemini opus sonnet; do
     : > "$S/r3-$seat.prompt.md"; rc_touch_ago 660 "$S/r3-$seat.prompt.md"
     printf 'tool_call shell: rg "retry|timeout|backoff" src/api/handlers --stats\n' > "$S/r3-$seat.log"
   done
@@ -171,7 +171,7 @@ test_status_overflow() {
   echo "$line" > "$T/wline"
   [ "${#line}" -le 220 ] && ok "5 seats ≤220 chars" || fail "5 seats ≤220 chars" "${#line}"
   assert_eq "5 seats single line" "$(printf '%s' "$line" | wc -l | tr -d ' ')" "0"
-  assert_grep "5th seat present" "$T/wline" 'grok-cr: running 11m'
+  assert_grep "5th seat present" "$T/wline" 'sonnet: running 11m'
   assert_grep "tail survives 5 seats" "$T/wline" 'open P0:2 P1:3 P2:4 fixed 9$'
   assert_grep "actions still shown" "$T/wline" 'sol: running 11m ← rg'
   # pathological width: seats are elided with a marker, header and tail still intact

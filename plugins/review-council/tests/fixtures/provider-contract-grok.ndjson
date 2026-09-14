@@ -1,0 +1,8 @@
+{"type":"available_commands","tools":["read_file"],"commands":[]}
+{"type":"thought","data":"Read the assigned source."}
+{"type":"tool_call","toolCallId":"contract-read","title":"read_file","kind":"read","status":"pending","toolName":"read_file","rawInput":{"target_file":"src/provider-contract.txt","offset":1,"limit":3},"content":[],"locations":[]}
+{"type":"tool_call_update","toolCallId":"contract-read","status":"pending","content":[],"rawOutput":null,"locations":[{"path":"src/provider-contract.txt","line":1}]}
+{"type":"tool_call_update","toolCallId":"contract-read","status":"completed","content":[],"rawOutput":{"type":"ReadFile","FileContent":{"content":"1→alpha\nterminal\n","total_lines":3}},"locations":[]}
+{"type":"text","data":"{\"summary\":\"checked\",\"findings\":[]}"}
+{"type":"usage","usage":{"input_tokens":40,"output_tokens":8,"reasoning_tokens":4,"cache_creation_input_tokens":0,"cache_read_input_tokens":0},"signature":"fixture"}
+{"type":"end","stopReason":"end_turn","sessionId":"contract-session","requestId":"contract-request","usage":{"input_tokens":40,"output_tokens":8,"reasoning_tokens":4,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"total_tokens":52},"num_turns":1,"total_cost_usd":0.0,"total_cost_usd_ticks":0,"modelUsage":{"grok":{"inputTokens":40,"outputTokens":8,"cacheCreationInputTokens":0,"cacheReadInputTokens":0,"modelCalls":1,"costUSD":0.0}},"structuredOutput":{"summary":"checked","findings":[]}}

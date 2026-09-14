@@ -110,17 +110,37 @@ test_hook_roster_timeout() {  # a hanging roster.sh must not hang the session --
     printf 'p\n' > "$R/skills/rev/POLICY.md"
     cat > "$R/scripts/roster.sh" <<'SH'
 #!/bin/bash
-sleep 30
+exec python3 - "$HOOK_PROVIDER_PID" <<'PY'
+import os, signal, subprocess, sys, time
+child = subprocess.Popen(
+    ['sleep', '30'], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL, start_new_session=True)
+open(sys.argv[1], 'w').write(str(child.pid))
+def stop(signum, frame):
+    child.terminate()
+    child.wait(timeout=2)
+    raise SystemExit(128 + signum)
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGHUP, stop)
+time.sleep(30)
+PY
 SH
     chmod +x "$R/scripts/roster.sh"
     local start=$(date +%s)
-    "$R/hooks/session-start" > "$T/out.json" 2>/dev/null; local rc=$?
+    HOOK_PROVIDER_PID="$R/provider.pid" "$R/hooks/session-start" > "$T/out.json" 2>/dev/null; local rc=$?
     local elapsed=$(( $(date +%s) - start ))
     assert_eq "exits 0 even on a hung roster.sh" "$rc" 0
     [ "$elapsed" -lt 15 ] && ok "capped well under the 30s sleep (${elapsed}s)" || fail "capped well under the 30s sleep" "took ${elapsed}s"
     ctx=$(hook_ctx "$T/out.json") || { fail "valid JSON (roster timeout)" ""; return; }
     printf '%s' "$ctx" > "$T/ctx.txt"
     assert_grep "reports timed out" "$T/ctx.txt" 'roster unavailable \(timed out\)'
+    local alive=no pid
+    pid=$(cat "$R/provider.pid")
+    if kill -0 "$pid" 2>/dev/null; then
+      alive=yes
+      kill -KILL "$pid" 2>/dev/null || true
+    fi
+    assert_eq "hook timeout lets roster clean up its detached provider" "$alive" no
   )
 }
 

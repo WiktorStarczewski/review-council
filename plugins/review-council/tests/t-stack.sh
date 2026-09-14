@@ -21,7 +21,7 @@ printf '%s\n' "$@" >> "${FAKE_ROSTER_ARGS:-/dev/null}"
 case "${FAKE_ROSTER_RC:-0}" in
   5) echo "review-council seats: codex x unavailable | STRICT availability: configured Codex seat did not survive probe";;
   6) echo "review-council seats: codex x invalid | STRICT config: codex_models must be a list";;
-  *) echo "review-council seats: codex ok | grok ok | gemini x not installed | claude ok";;
+  *) echo "review-council seats: codex ok | gemini ok | claude ok";;
 esac
 exit "${FAKE_ROSTER_RC:-0}"
 RSEOF
@@ -238,7 +238,11 @@ test_stack_status_never_blank() {
   ( seat_env; export REV_STACK_FOREGROUND=1 SHIM_CLAUDE_ARGS_FILE="$T/claude-args-sb"
     local R="$T/stk-sb"; mkrepo "$R"; git -C "$R" checkout -qb feat; echo w > "$R/w.txt"; git -C "$R" add w.txt; git -C "$R" commit -qm "feat: w"
     # a rev-status.sh that prints nothing and fails must not blank the status line
-    local D="$T/scripts-sb"; mkdir -p "$D"; cp "$SCRIPTS"/*.sh "$D"/; cp -R "$SCRIPTS/lib" "$D"/; printf '#!/bin/bash\necho "boom" >&2; exit 1\n' > "$D/rev-status.sh"; chmod +x "$D/rev-status.sh"
+    local D="$T/scripts-sb"; mkdir -p "$D"
+    local script
+    for script in "$SCRIPTS"/*.sh; do copy_writable_file "$script" "$D/$(basename "$script")"; done
+    copy_writable_tree "$SCRIPTS/lib" "$D/lib"
+    printf '#!/bin/bash\necho "boom" >&2; exit 1\n' > "$D/rev-status.sh"; chmod +x "$D/rev-status.sh"
     printf 'legs() { run_leg "%s" 1 leg1 "premise"; }\n' "$R" > "$T/stack-sb.cfg"
     export REV_SCRIPTS="$D" ROOT="$T/stack-root-sb" LOG="$T/stack-sb.log" POLL=1 STATUS_EVERY=1 STALL_SECS=30 CPU_SAMPLE_SECS=1 INFRA_SLEEP_SECS=1 FAST_FAIL_SECS=1 AUTH_WAIT_SECS=1 NO_PUSH=1 PASSES=1
     SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-sb.cfg" > /dev/null 2>&1
@@ -252,7 +256,7 @@ test_stack_report_is_attempt_local() {
     local D="$T/attempt-scripts" B="$T/attempt-bin" R="$T/attempt-repo"
     mkdir -p "$D" "$B"
     cp "$STACK/stack.sh" "$D/stack.sh"
-    cp -R "$SCRIPTS/lib" "$D/lib"
+    copy_writable_tree "$SCRIPTS/lib" "$D/lib"
     mkdir -p "$T/codex-skills/rev"
     cp "$SK/codex-skills/rev/SKILL.md" "$T/codex-skills/rev/SKILL.md"
     cat > "$D/roster.sh" <<'SH'

@@ -1,21 +1,14 @@
 name: test
 on: [push, pull_request]
 jobs:
-  unit:
+  verify:
     strategy:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-      - run: plugins/review-council/tests/run-tests.sh
-      - run: python3 -m unittest discover -s tests -v
-  validate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - run: npm install -g @anthropic-ai/claude-code @openai/codex
-      - run: claude plugin validate --strict .claude-plugin/marketplace.json && claude plugin validate --strict plugins/review-council
-      - run: python3 tests/check-codex-marketplace.py
+      - run: python3 scripts/verify-review-council.py

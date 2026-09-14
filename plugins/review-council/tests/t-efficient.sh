@@ -59,7 +59,7 @@ test_adaptive_schedule_contract() {
   for K in "$SK/skills/rev/SKILL.md" "$SK/codex-skills/rev/SKILL.md"; do
     assert_grep "numeric schedule restores Emphasis column" "$K" '^\| Round \| Emphasis \| Lenses(, in order)? \| Extra( seat)? \|$'
     assert_grep "numeric round 3 restores its extra" "$K" '^\| 3 \|.*\| security, data-state \| `?codex-review`?.*\|$'
-    assert_grep "numeric round 4 restores its extra" "$K" '^\| 4 \|.*\| concurrency, resources, performance \| `?grok-code-review`?.*\|$'
+    assert_grep "numeric round 4 has no retired provider extra" "$K" '^\| 4 \|.*\| concurrency, resources, performance \| - \|$'
   done
 
   local ST

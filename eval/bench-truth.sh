@@ -8,14 +8,19 @@ mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd); FULL="$OUT/full"   # absolute: the hea
 [ -d "$FULL/.git" ] || git clone -q "https://github.com/$REPO.git" "$FULL" || { echo "$NAME: clone failed"; exit 1; }
 git -C "$FULL" fetch -q origin "$HEAD_SHA" "$MERGED" 2>/dev/null || true
 TRUTH="$OUT/truth.md"; COMPLETE="$OUT/truth.complete"
-TMP_TRUTH=; TMP_COMPLETE=; truth_published=0
+TMP_TRUTH=; TMP_COMPLETE=; OLD_TRUTH=; OLD_COMPLETE=
+had_truth=0; had_complete=0; truth_publish_started=0; truth_published=0
 cleanup_truth() {
   [ -z "$TMP_TRUTH" ] || rm -f "$TMP_TRUTH"
   [ -z "$TMP_COMPLETE" ] || rm -f "$TMP_COMPLETE"
-  [ "$truth_published" -eq 1 ] || rm -f "$TRUTH" "$COMPLETE"
+  if [ "$truth_publish_started" -eq 1 ] && [ "$truth_published" -eq 0 ]; then
+    if [ "$had_truth" -eq 1 ]; then cp -p "$OLD_TRUTH" "$TRUTH"; else rm -f "$TRUTH"; fi
+    if [ "$had_complete" -eq 1 ]; then cp -p "$OLD_COMPLETE" "$COMPLETE"; else rm -f "$COMPLETE"; fi
+  fi
+  [ -z "$OLD_TRUTH" ] || rm -f "$OLD_TRUTH"
+  [ -z "$OLD_COMPLETE" ] || rm -f "$OLD_COMPLETE"
 }
 trap cleanup_truth EXIT
-rm -f "$TRUTH" "$COMPLETE"
 TMP_TRUTH=$(mktemp "$OUT/.truth.XXXXXX") || { echo "$NAME truth: FAILED (cannot create temporary file)"; exit 1; }
 TMP_COMPLETE=$(mktemp "$OUT/.truth.complete.XXXXXX") || { echo "$NAME truth: FAILED (cannot create completion marker)"; exit 1; }
 PROMPT="Read-only task; use git show/diff/log and gh only, check nothing out. Build the ground truth for scoring a code-review lens on $REPO pull request #$PR. Review-time head $HEAD_SHA, base (merge-base or parent PR head) $BASE_SHA, merged head $MERGED; the full clone is at $FULL (fetch shas from origin if missing). The review-time head may not be an ancestor of the merged head (force-push after review): compare the two trees directly and each against the base. Read every review comment, inline comment and issue comment on the PR via gh api. Produce ROWS, one per distinct simplification or removal that happened after review - a construct, abstraction, parameter, helper, test, doc or capability the review-time head had and the merged head does not, with what replaced it (an existing symbol reused, an inline expression, nothing, or a scope cut). Separately list post-review changes that were NOT simplifications (bug fixes, additions). For each row: id (A1, A2, ...), weight (K = load-bearing, the change everything else followed from; S = structural, its own decision; C = consequential of another row), what the review-time head had (file and lines at the review-time head), what the merged head has instead, the reviewer comment that triggered it paraphrased with NO names or handles, and a one-line hint on how an outsider could have found it from the review-time tree alone. Write the result to $TMP_TRUTH. Your final message must be exactly one line: 'ROWS K=<n> S=<n> C=<n> NONSIMPL=<n>' and nothing else."
@@ -31,9 +36,21 @@ if [ ! -s "$TMP_TRUTH" ] || ! printf '%s\n' "$line" | grep -Eq '^ROWS K=[0-9]+ S
   exit 1
 fi
 printf '%s\n' "$line" > "$TMP_COMPLETE"
+if [ -e "$TRUTH" ]; then
+  OLD_TRUTH=$(mktemp "$OUT/.truth.rollback.XXXXXX") || { echo "$NAME truth: FAILED (cannot prepare publication)"; exit 1; }
+  cp -p "$TRUTH" "$OLD_TRUTH" || { echo "$NAME truth: FAILED (cannot prepare publication)"; exit 1; }
+  had_truth=1
+fi
+if [ -e "$COMPLETE" ]; then
+  OLD_COMPLETE=$(mktemp "$OUT/.truth.complete.rollback.XXXXXX") || { echo "$NAME truth: FAILED (cannot prepare publication)"; exit 1; }
+  cp -p "$COMPLETE" "$OLD_COMPLETE" || { echo "$NAME truth: FAILED (cannot prepare publication)"; exit 1; }
+  had_complete=1
+fi
+truth_publish_started=1
 if ! mv "$TMP_TRUTH" "$TRUTH" || ! mv "$TMP_COMPLETE" "$COMPLETE"; then
   echo "$NAME truth: FAILED (cannot publish result)"
   exit 1
 fi
+TMP_TRUTH=; TMP_COMPLETE=
 truth_published=1
 echo "$NAME truth: $line"

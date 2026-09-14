@@ -1,8 +1,21 @@
-# tests for the rev-reviewer read-only Bash guard — sourced by run-tests.sh
+# tests for the rev-reviewer read-only Bash guard, sourced by run-tests.sh
 # The guard is an ALLOWLIST (see the file header): everything not named here is refused, so the
 # matrix below is the contract. `python3 -c "print(1)"` used to be allowed by the old denylist and
-# is deliberately BLOCKED now — an interpreter with -c can write any file.
-guard() { printf '{"tool_name":"Bash","tool_input":{"command":%s}}' "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1")" | python3 "$SCRIPTS/lib/readonly-bash-guard.py" >/dev/null 2>&1; }
+# is deliberately BLOCKED now because an interpreter with -c can write any file.
+guard() {
+  local response status
+  response=$(printf '{"tool_name":"Bash","tool_input":{"command":%s}}' \
+    "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1")" | \
+    python3 "$SCRIPTS/lib/readonly-bash-guard.py" 2>/dev/null)
+  status=$?
+  [ "$status" -eq 0 ] || return "$status"
+  [ -n "$response" ] || return 0
+  printf '%s' "$response" | python3 -c '
+import json, sys
+response = json.load(sys.stdin)
+raise SystemExit(2 if response.get("hookSpecificOutput", {}).get("permissionDecision") == "deny" else 0)
+'
+}
 test_guard() {
   for c in 'git diff abc123' 'git log --oneline -5' 'git show HEAD:src/x.ts' 'rg -n "retry" src/' \
            'cat src/x.ts 2>/dev/null' 'git diff abc | head -50' 'ls -la 2>&1' 'npx jest src/lib/x' \
@@ -14,7 +27,8 @@ test_guard() {
            'jq . out.json' 'npm run test:unit' 'pytest -q tests/' 'go test ./...' 'cargo clippy -- -D warnings' \
            'npx vitest run src' 'yarn test --coverage' 'git diff $(git merge-base HEAD main)' \
            'echo $(git log -1 --format=%H)' 'rg "retry|timeout" src/' 'cat "file with > in name"' \
-           'git log -1 --format=%H > /dev/null' 'git diff --stat 2>&1 | tail -5' 'env' 'git'; do
+           'git log -1 --format=%H > /dev/null' 'git diff --stat 2>&1 | tail -5' \
+           'command -v git' 'command -V rg' 'env' 'git'; do
     guard "$c"; assert_eq "allows: $c" "$?" 0
   done
   for c in 'git commit -m x' 'git checkout main' 'git reset --hard' 'git stash' 'git apply p.diff' 'git push' \
@@ -27,9 +41,12 @@ test_guard() {
            'tee out.txt' 'git config user.name bob' 'git remote add origin u' 'git branch -d feat' \
            'git worktree add ../w' "awk '{print > \"f\"}' x" 'find . -delete' 'find . -exec rm {} \;' \
            'git diff $(rm -rf x)' 'npm test --fix' 'cargo clippy --fix' 'yarn build' 'npx vitest -u' \
-           './script.sh' 'git diff |& cat' 'ls > /tmp/f' 'git log > log.txt' 'source ~/.bashrc' 'eval "rm x"'; do
+           './script.sh' 'git diff |& cat' 'ls > /tmp/f' 'git log > log.txt' 'source ~/.bashrc' \
+           'eval "rm x"' 'command git push' 'command -p git' 'command -v git rg' 'command -x git'; do
     guard "$c"; assert_eq "blocks: $c" "$?" 2
   done
+  guard "sed -n '1,10p' a; sed -n '20,30p' b"
+  assert_eq "default read-only guard keeps shell calls to one source producer" "$?" 2
   echo 'not json' | python3 "$SCRIPTS/lib/readonly-bash-guard.py" >/dev/null 2>&1; assert_eq "non-JSON payload is not blocked" "$?" 0
   assert_grep "header documents Read/Grep/Glob first" "$SCRIPTS/lib/readonly-bash-guard.py" "Read, Grep and Glob are the reviewer's primary tools"
   assert_grep "header says ALLOWLIST" "$SCRIPTS/lib/readonly-bash-guard.py" 'ALLOWLIST'
@@ -38,6 +55,20 @@ test_guard() {
   # seat fails the hook open (exit 126 is not 2) and an unscoped shell reaches the repo.
   assert_grep "guard carries a python3 shebang" "$SCRIPTS/lib/readonly-bash-guard.py" '^#!/usr/bin/env python3$'
   assert_eq "guard is executable (the agent hook calls it directly)" "$([ -x "$SCRIPTS/lib/readonly-bash-guard.py" ] && echo yes)" "yes"
-  printf '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}' | "$SCRIPTS/lib/readonly-bash-guard.py" >/dev/null 2>&1
-  assert_eq "guard blocks a write command when run as a bare command" "$?" 2
+  local terminal_response terminal_status
+  terminal_response=$(printf '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}' | \
+    "$SCRIPTS/lib/readonly-bash-guard.py" 2> "$T/guard-terminal.err")
+  terminal_status=$?
+  assert_eq "unsafe Bash denial returns a structured hook response" "$terminal_status" 0
+  printf '%s' "$terminal_response" | python3 -c '
+import json, sys
+response = json.load(sys.stdin)
+assert response["continue"] is False
+assert isinstance(response["stopReason"], str) and response["stopReason"]
+specific = response["hookSpecificOutput"]
+assert specific["hookEventName"] == "PreToolUse"
+assert specific["permissionDecision"] == "deny"
+assert isinstance(specific["permissionDecisionReason"], str) and specific["permissionDecisionReason"]
+'
+  assert_eq "unsafe Bash denial stops Claude with an exact deny decision" "$?" 0
 }

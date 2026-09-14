@@ -113,7 +113,7 @@ stall is never counted as an "infrastructure" fast failure.
 Every 10 minutes the log gets one line per running leg:
 
 ```
-[status] wallet pass1 attempt1 | r3/7 triage | sol: done 4f 9m | terra: running 12m ← git diff … | grok: done 2f 8m | opus: done 3f 7m | open P0:0 P1:1 P2:3 fixed 6 | idle=41s cpu=12:07(moving) commits=3
+[status] wallet pass1 attempt1 | r3/7 triage | sol: done 4f 9m | terra: running 12m ← git diff … | sonnet: done 2f 8m | opus: done 3f 7m | open P0:0 P1:1 P2:3 fixed 6 | idle=41s cpu=12:07(moving) commits=3
 ```
 
 Read `idle` and `cpu` together. A large `idle` with `cpu=…(moving)` is a leg mid-build;

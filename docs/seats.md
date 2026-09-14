@@ -1,6 +1,6 @@
 # Seats: the adapter contract, and how to add a lab
 
-A "seat" is one reviewer in the `/review-council:rev` panel: a lab (`openai`, `xai`, `google`, `anthropic`), an adapter that knows how to drive that lab's CLI, and a model/effort pair the roster picked for it. This document is for adding a new lab, not for using the plugin - see the root `README.md` for that.
+A "seat" is one reviewer in the `/review-council:rev` panel: a lab (`openai`, `google`, `anthropic`), an adapter that knows how to drive that lab's CLI, and a model/effort pair the roster picked for it. This document is for adding a new lab, not for using the plugin - see the root `README.md` for that.
 
 ## The roster
 
@@ -12,7 +12,7 @@ A "seat" is one reviewer in the `/review-council:rev` panel: a lab (`openai`, `x
   "result_receipts": { "version": 1, "legacy_no_exit_sha256": {} },
   "seats": [
     { "seat": "codex-sol",   "lab": "openai",    "adapter": "codex",  "model": "gpt-5.6-sol",   "effort": "max",   "extra": false },
-    { "seat": "grok",        "lab": "xai",       "adapter": "grok",   "model": "grok-4.6",      "effort": "xhigh", "extra": false },
+    { "seat": "codex-terra", "lab": "openai",    "adapter": "codex",  "model": "gpt-5.6-terra", "effort": "max",   "extra": false },
     { "seat": "gemini",      "lab": "google",    "adapter": "gemini", "model": "gemini-2.5-pro","effort": null,    "extra": false },
     { "seat": "opus",        "lab": "anthropic", "adapter": "agent",  "model": "opus",          "effort": "max",   "extra": false },
     { "seat": "codex-review","lab": "openai",    "adapter": "codex",  "mode": "review",         "extra": true, "round": 3 }
@@ -30,12 +30,13 @@ Every non-agent seat names an `adapter` - the script in `scripts/seats.d/` that 
 `scripts/rev-seat.sh <seat> <session-dir> <round> <prompt-file> [--effort e] [--base ref]` is the one thing the review loop calls. It:
 
 1. Reads `<session-dir>/roster.json` and looks up `<seat>`. An unknown seat, or a missing roster file, exits `1` with `run preflight first` - it never guesses a model or adapter.
-2. Resolves effort: `--effort` on the command line, else `REV_CODEX_EFFORT`/`REV_GROK_EFFORT` for that adapter, else the roster's `effort` for the seat.
-3. Executes `scripts/seats.d/<adapter>.sh` with the environment described below, capturing its exit code.
-4. Validates the JSON left at `<session-dir>/r<round>-<seat>.json` against `schema/findings.schema.json`, retries once (one effort step down) on a zero-tool-call or invalid-JSON result, and writes `<session-dir>/r<round>-<seat>.exit`.
-5. Prints one summary line: `seat=<s> round=<n> exit=<c> findings=<k>`.
+2. Uses the roster's probed effort as the launch value. A legacy `--effort` argument must equal that value or the launch is refused.
+3. Allows only the shipped `codex`, `gemini`, and `claude` CLI adapters. The `agent` adapter is dispatched separately by the skill. Any other or retired adapter is refused before path lookup.
+4. Executes `scripts/seats.d/<adapter>.sh` with the environment described below, capturing its exit code.
+5. Validates the JSON left at `<session-dir>/r<round>-<seat>.json` against `schema/findings.schema.json`, retries once at the same exact effort on a zero-tool-call result, and writes `<session-dir>/r<round>-<seat>.exit`.
+6. Prints one summary line: `seat=<s> round=<n> exit=<c> findings=<k>`.
 
-Exit codes are a fixed contract, unchanged regardless of adapter: `0` valid findings, `2` missing or invalid JSON, `3` not signed in, `4` usage cap or rate limit, `1` anything else.
+Exit codes are a fixed contract, unchanged regardless of adapter: `0` valid findings, `1` retryable seat failure, `2` missing or invalid JSON, `3` not signed in, `4` provider quota, capacity, or rate limit, and `7` persistent local attempt exhaustion. Exit 7 is never classified as provider quota.
 
 ## The adapter contract
 
@@ -45,8 +46,8 @@ Exit codes are a fixed contract, unchanged regardless of adapter: `0` valid find
 |---|---|
 | `SEAT` | seat name, e.g. `codex-terra` |
 | `MODEL` | model slug for this seat |
-| `EFFORT` | reasoning effort, or empty for a lab with no effort knob |
-| `MODE` | empty for a normal review round, or a lab-specific mode (`review`, `code-review`) for an extra seat |
+| `EFFORT` | exact effort selected before the provider probe and bound through the roster and receipt, or empty for a lab with no effort knob |
+| `MODE` | empty for a normal review round, or a lab-specific mode (`review`) for an extra seat |
 | `ROOT` | repo root (or document root for a read-only panel over prose) to run the CLI from |
 | `PROMPT` | path to the prompt file - pass as a file, not inline, and never leave stdin as an open pipe |
 | `SCHEMA` | path to `findings.schema.json` |
@@ -69,7 +70,7 @@ An adapter must, in order:
 Four pieces, each independently testable:
 
 1. **One adapter** - `scripts/seats.d/<lab>.sh` implementing the contract above for that lab's CLI.
-2. **One shim** - `tests/shims/<lab>`, a fake binary the test suite puts first on `PATH` so no test ever calls a real CLI or touches the network. The shipped shims (`codex`, `grok`, `gemini`, `claude`) are frozen for this plugin's initial wave; adding a fifth lab means adding a fifth shim to that set, which is a maintainer change, not something a single adapter change should do unilaterally.
+2. **One shim** - `tests/shims/<lab>`, a fake binary the test suite puts first on `PATH` so no test ever calls a real CLI or touches the network. The shipped shims (`codex`, `gemini`, `claude`) are frozen for this plugin's initial wave; adding a fourth lab means adding a fourth shim to that set, which is a maintainer change, not something a single adapter change should do unilaterally.
 3. **One fixture** - `tests/fixtures/<lab>-stream.ndjson` (or whatever shape that CLI's streaming output actually takes), the reference the shim plays back and the test asserts against.
 4. **One test** - `tests/t-<lab>.sh`, covering at minimum: a clean success (exit 0, findings present, a recognizable log line), a not-signed-in case (exit 3), a rate-limit/usage-cap case (exit 4), and a malformed/empty-output case (exit 2).
 

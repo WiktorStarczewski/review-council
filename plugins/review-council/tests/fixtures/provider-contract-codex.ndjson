@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"contract-thread"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"contract-read","type":"command_execution","command":"/bin/zsh -lc \"sed -n '1,3p' src/provider-contract.txt\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"contract-read","type":"command_execution","command":"/bin/zsh -lc \"sed -n '1,3p' src/provider-contract.txt\"","aggregated_output":"alpha\nterminal\n\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"contract-answer","type":"agent_message","text":"{\"summary\":\"checked\",\"findings\":[]}"}}
+{"type":"turn.completed","usage":{"input_tokens":40,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":8,"reasoning_output_tokens":4}}

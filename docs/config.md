@@ -6,17 +6,19 @@ review-council needs no configuration to run - the roster is detected from whate
 
 Path: `${REVIEW_COUNCIL_CONFIG:-$HOME/.config/review-council/config.json}`.
 
-Read by `scripts/roster.sh` (via `scripts/lib/roster.py`) on every invocation. A missing file is not an error - it's the common case, and detection proceeds with defaults. A file that exists but fails to parse is reported in the roster's `excluded[]` list with reason `config unreadable`, and is otherwise ignored - a broken config degrades the roster, it never crashes it. Unknown keys are ignored, so the file is forward-compatible with a future release adding more.
+Read by `scripts/roster.sh` (via `scripts/lib/roster.py`) on every invocation. A missing file is not an error - it is the common case, and detection proceeds with defaults. A file that exists but fails to parse refuses reviewer selection as a permanent configuration error so an exact roster cannot silently fall back to defaults. Unknown keys are ignored, so the file is forward-compatible with a future release adding more.
 
 | Key | Type | Default | Effect |
 |---|---|---|---|
-| `exclude` | array of strings | `[]` | Lab or seat names to drop from the roster even if detected and signed in, e.g. `["gemini"]` or `["grok-code-review"]`. Applies to detected seats only: padded seats are added afterwards and cannot be excluded, because the three-seat floor is not something config is allowed to remove - excluding the Claude lab is instead recorded as overridden in `excluded[]`. |
+| `exclude` | array of strings | `[]` | Lab or seat names to drop from the roster even if detected and signed in, e.g. `["gemini"]` or `["codex-review"]`. Applies to detected seats only: padded seats are added afterwards and cannot be excluded, because the three-seat floor is not something config is allowed to remove - excluding the Claude lab is instead recorded as overridden in `excluded[]`. |
 | `pin` | object | `{}` | Per-seat override of the detected `model`/`effort`, e.g. `{"codex-sol": {"effort": "ultra"}}`. Only overrides the given field(s); anything omitted keeps its detected value. A Codex model pin outside `codex_models` is excluded and reported. Applies to detected seats only: padded seats are added afterwards and cannot be pinned. |
 | `codex_models` | array of 1 or 2 unique strings | newest two | Exact visible Codex model slugs to seat, in order. Invalid values and unknown slugs exclude Codex with the reason in `excluded[]`; they never fall back to another model. When this key is present, every listed model must survive exclusions, pins, and probes before padding. Permanent configuration conflicts exit 6; retryable provider availability exits 5. Models from different generations that share a suffix receive generation-qualified seat IDs. |
+| `claude_models` | array of 1 or 2 unique strings | absent | Exact Claude model families to seat, in order. Supported values are `opus` and `sonnet`; both run at maximum effort with stable seat IDs. Every listed model must survive exclusions, pins, and probes before padding. This setting is mutually exclusive with `claude_seats`; malformed lists, incompatible pins, and using both settings exit 6. Provider availability failures exit 5. |
 | `claude_seats` | integer from 0 to 4 | `1` | Number of independent Opus runs. Invalid values exclude the detected Claude seats with the reason in `excluded[]`; they never fall back to one seat. When this key is explicitly positive, that many Opus seats must survive before padding. Permanent configuration conflicts exit 6; retryable provider availability exits 5. `0` disables detected Claude seats. If Claude-host padding must restore the three-seat floor, `excluded[]` records that override. `claude_seat: false` and `REVIEW_COUNCIL_CLAUDE_SEAT=0` also disable them. |
-| `extras` | boolean | `true` | Makes both extra seats available to explicit numeric round plans. Adaptive defaults omit them. `false` removes them entirely. |
+| `extras` | boolean | `true` | Makes the `codex-review` extra seat available to explicit numeric round plans. Adaptive defaults omit it. `false` removes it entirely. |
 | `claude_seat` | boolean | `true` | `false` removes the `opus` seat - equivalent to `REVIEW_COUNCIL_CLAUDE_SEAT=0`. It cannot empty the panel: if fewer than three seats remain, Claude seats are padded back in and `excluded[]` records the override. |
-| `min_labs` | integer at least 1 | `1` | Hard floor on how many distinct labs must be **detected** - padded seats never count towards it. Invalid values and floors above the maximum allowed by exclusions and disable settings exit 6 before probes. A satisfiable floor that current provider availability cannot meet exits 5. The default of `1` preserves graceful degradation. Set `2` to reject a single-lab review. Set `3` with Gemini excluded to require Codex, Grok, and Claude. |
+| `min_labs` | integer at least 1 | `1` | Hard floor on how many distinct labs must be **detected** - padded seats never count towards it. Invalid values and floors above the maximum allowed by exclusions and disable settings exit 6 before probes. A satisfiable floor that current provider availability cannot meet exits 5. The default of `1` preserves graceful degradation. Set `2` to reject a single-lab review. Set `3` to require Codex, Gemini, and Claude. |
+| `quota_fallback` | boolean | `false` | Temporarily replaces each Claude seat blocked by a provider quota or capacity error with a unique Terra seat, or each blocked OpenAI seat with a unique Sonnet seat. The active run records a `min_labs` waiver only when successful substitutions account for the complete diversity shortfall. Authentication, configuration, model, unknown, missing-target, and failed-target errors remain strict. The roster records every substitution and never changes this file. |
 | `check_updates` | boolean | `false` | `true` adds one line to the session banner when a newer release is published: `review-council <version> available: claude plugin update review-council`. Nothing is ever installed by it. Off unless the value is literally `true`. |
 
 Example:
@@ -24,11 +26,12 @@ Example:
 ```json
 {
   "exclude": ["gemini"],
-  "pin": { "grok": { "effort": "high" } },
-  "codex_models": ["gpt-5.6-sol"],
-  "claude_seats": 2,
+  "pin": { "codex-sol": { "effort": "ultra" } },
+  "codex_models": ["gpt-5.6-sol", "gpt-5.6-terra"],
+  "claude_models": ["opus", "sonnet"],
   "extras": false,
-  "min_labs": 3
+  "min_labs": 2,
+  "quota_fallback": true
 }
 ```
 
@@ -44,12 +47,14 @@ Environment variables take precedence over the config file, which takes preceden
 | `REVIEW_COUNCIL_GEMINI_MODEL` | `roster.sh` | Model slug for the Gemini seat, instead of `gemini-2.5-pro`. Gemini has no effort knob, so there is no matching effort variable. |
 | `GEMINI_API_KEY` | `roster.sh` | Presence alone counts as "signed in" for Gemini, alongside the credentials file. |
 | `REVIEW_COUNCIL_CLAUDE_SEAT` | `roster.sh` | `0` removes the `opus` seat for this invocation - the env-var form of `claude_seat: false`. |
-| `REV_CODEX_EFFORT` | `rev-seat.sh` | Overrides the roster-selected effort for any Codex seat on a single call, without touching the roster. |
-| `REV_GROK_EFFORT` | `rev-seat.sh` | Same, for the Grok seat. |
+| `REVIEW_COUNCIL_PROVIDER_OUTPUT_BYTES` | `roster.sh` | Combined stdout/stderr cap for each provider status or probe command. Defaults to 1 MiB. Exceeding it rejects that command and terminates its process group. |
+| `REVIEW_COUNCIL_CONTRACT_VERSION_TIMEOUT_SECONDS` | `rev-contract-check.py` | Per-provider CLI version timeout. Defaults to 5 seconds. |
+| `REVIEW_COUNCIL_CONTRACT_VERSION_OUTPUT_BYTES` | `rev-contract-check.py` | Output cap for each provider CLI version command. Defaults to 64 KiB. |
 | `REV_ACTIVE` | the loop | Set to `1` automatically inside every seat's environment once a review starts; a nested `/review-council:rev` refuses to start while it's set. Not meant to be set by hand. |
 | `REV_STACK_LEG` | `stack.sh` | Set to `1` automatically inside each stack leg so it skips the top-level squash/push and so a leg can never itself launch a stack. Not meant to be set by hand. |
-| `REV_SOURCE_CONTEXT` | `rev-evidence.py` | Set to `1` to enable literal source-context packets for the held-out adoption candidate. The default remains `0` until certification. |
-| `REV_PATCH_CHUNKS` | `rev-evidence.py` | Set to `1` to enable exact patch chunks for the held-out adoption candidate. The default remains `0` until certification; chunk mode also requires at least 10% fewer proof reads and every byte, line, and UTF-8 bound. |
+| `REV_SOURCE_CONTEXT` | `rev-evidence.py` | `1` enables literal source-context packets and required-source segments. This is the host default. Set `0` only for a labeled baseline measurement. |
+| `REV_PATCH_CHUNKS` | `rev-evidence.py` | `auto` selects exact patch chunks when they save proof reads or are required to fit compiled provider capacity. `1` forces chunks when representable. `0` requests window mode and fails preparation when that mode cannot fit. The host default is `auto`. |
+| `REV_CODEX_SOURCE_BATCH` | `rev-prompt.sh` | Set to `1` only for a certified Codex prompt. It permits semicolon-separated pure source windows under one 240-line aggregate and a 32 KiB exact-output cap. The script default remains `0`. |
 | `REVIEW_COUNCIL_UPDATE_URL` | `update-check.py` | Where the published `plugin.json` is read from, instead of this repo's `main`. |
 | `REVIEW_COUNCIL_UPDATE_TTL` | `update-check.py` | Seconds before the cached answer is refetched (default 86400 - once a day). |
 | `REVIEW_COUNCIL_CACHE_DIR` | `update-check.py` | Directory for `update-check.json`, instead of `${XDG_CACHE_HOME:-~/.cache}/review-council`. |
@@ -64,13 +69,15 @@ A panel is three seats. When detection finds fewer, `roster.sh` appends Claude s
 
 Exact positive model and seat counts are checked against unpadded survivors before padding. Padding then runs last - after `exclude`, after `pin`, and after the `--probe` round trip - so it replaces seats only for non-strict degraded panels. It cannot satisfy an exact count or `min_labs`. Padded seats are not addressable by `exclude` or `pin`.
 
-Preflight caches each probe by adapter and model. Two independent Opus seats therefore make one availability probe, then run as separate reviewers during the council.
+Quota fallback is a separate opt-in path for an exact roster. It accepts quota or capacity errors emitted by a provider CLI, or platform terminal metadata for a Claude Code Agent seat; reviewer prose never qualifies. Every substitute has a unique padded seat name, keeps maximum effort, and records `substitutes_for` with the preferred seat name. An active substitution may waive `min_labs` only for diversity lost through successful quota substitutions. Authentication, transport, or other provider failures still enforce the floor; the roster records either result. A mid-panel quota failure cancels pending work, passes the failed seat explicitly into preflight in the same session, verifies that the frozen source did not change, and restarts the whole panel under a fresh label. Completed outputs from the failed label are diagnostic only. The next review probes the preferred providers again, so restored credits restore the configured roster automatically.
+
+Preflight selects every effective effort before provider calls and caches each probe by adapter, model, and effort. Repeated seats share an availability probe only when all three values match. The roster, provider contract receipt, evidence manifest, and launch retain that exact identity. A later `--effort` argument is accepted only when it equals the roster value.
 
 Nothing about this is quiet: the `--brief` banner ends in ` · DEGRADED: <sentence>` for a runnable thin panel or ` · STRICT <class>: <reason>` for a refusal. Preflight preserves the strict status and reason. A satisfiable requirement blocked by current provider availability exits 5. An invalid setting or a lab floor made impossible by exclusions and disable settings exits 6 before paid probes. The roster records `strict_class` as `availability` or `config` and the matching `strict_reason`, with config taking precedence when both occur.
 
 ## Precedence in one line
 
-For anything with both a config key and an env var (`claude_seat`/`REVIEW_COUNCIL_CLAUDE_SEAT`): env var wins if set, else the config key, else the built-in default. For anything config-only (`exclude`, `pin`, `extras`): there is no env-var equivalent - edit the config file.
+For anything with both a config key and an env var (`claude_seat`/`REVIEW_COUNCIL_CLAUDE_SEAT`): env var wins if set, else the config key, else the built-in default. For anything config-only (`exclude`, `pin`, `extras`, `quota_fallback`): there is no env-var equivalent - edit the config file.
 
 
 ## Where the config file is looked up
@@ -80,7 +87,7 @@ For anything with both a config key and an env var (`claude_seat`/`REVIEW_COUNCI
 
 `CLAUDE_PLUGIN_DATA` is deliberately not consulted: Claude Code sets it per plugin and a shell can inherit another plugin's value.
 
-An unreadable file is reported in the session banner as `config unreadable (pins and exclusions ignored)`. Extras (`codex-review`, `grok-code-review`) can be excluded or pinned by seat name. `REVIEW_COUNCIL_LOGIN_TIMEOUT` (default 20 s) and `REVIEW_COUNCIL_PROBE_TIMEOUT` (default 60 s) bound the sign-in and probe calls.
+An unreadable file is reported in the session banner as `config unreadable (reviewer selection refused)`. The `codex-review` extra can be excluded or pinned by seat name. `REVIEW_COUNCIL_LOGIN_TIMEOUT` (default 20 s) and `REVIEW_COUNCIL_PROBE_TIMEOUT` (default 60 s) bound the sign-in and probe calls.
 
 ## Update notices and auto-update
 

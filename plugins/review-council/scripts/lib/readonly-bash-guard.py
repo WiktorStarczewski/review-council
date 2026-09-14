@@ -2,7 +2,7 @@
 """PreToolUse hook for the rev-reviewer agent: allow only read-shaped Bash commands.
 
 Read, Grep and Glob are the reviewer's primary tools. Bash exists for the handful of things
-they cannot do — `git diff`/`log`/`show`, `rg`, and running the project's test suite — and for
+they cannot do: `git diff`/`log`/`show`, `rg`, and running the project's test suite. It exists for
 nothing else. This guard is therefore an ALLOWLIST: a command runs only if every segment's
 program is on the list below and its arguments carry no write-shaped flag. A denylist cannot
 enforce that contract (`/usr/bin/git commit`, `command git push`, `python3 -c "open(f,'w')"`,
@@ -21,6 +21,30 @@ import sys
 
 class Blocked(Exception):
     pass
+
+
+class SourceBatchBlocked(Blocked):
+    def __init__(self, code, detail):
+        super().__init__(detail)
+        self.code = code
+
+
+def emit_pretool_deny(reason, terminal=False):
+    response = {
+        'hookSpecificOutput': {
+            'hookEventName': 'PreToolUse',
+            'permissionDecision': 'deny',
+            'permissionDecisionReason': reason,
+        },
+    }
+    if terminal:
+        response.update({'continue': False, 'stopReason': reason})
+    print(json.dumps(response, sort_keys=True, separators=(',', ':')))
+
+
+def emit_terminal_stop(reason):
+    print(json.dumps({'continue': False, 'stopReason': reason},
+                     sort_keys=True, separators=(',', ':')))
 
 
 # ---------------------------------------------------------------- allowlists
@@ -64,7 +88,7 @@ FIND_WRITE_FLAGS = ('-delete', '-exec', '-execdir', '-ok', '-okdir', '-fprint', 
 # ---------------------------------------------------------------- lexing
 
 def read_subst(text, i):
-    """text[i] == '$' and text[i+1] == '(' — return (inner, index-after-closing-paren)."""
+    """For '$(' at text[i:i+2], return (inner, index after closing parenthesis)."""
     depth = 0
     j = i + 1
     q = None
@@ -120,7 +144,7 @@ def strip_substitutions(text, depth):
             i += 1
             continue
         if c == '$' and i + 1 < len(text) and text[i + 1] == '(':
-            if i + 2 < len(text) and text[i + 2] == '(':        # $(( arithmetic )) — no command runs
+            if i + 2 < len(text) and text[i + 2] == '(':        # $(( arithmetic )); no command runs
                 end = text.find('))', i)
                 if end < 0:
                     raise Blocked('unterminated arithmetic expansion')
@@ -161,7 +185,7 @@ def split_segments(text):
             continue
         if c == '|' and i + 1 < len(text) and text[i + 1] == '&':
             raise Blocked('`|&` pipes stderr into the next command')
-        if c == '&' and i + 1 < len(text) and text[i + 1] == '>':   # &>file — a redirection, not a split
+        if c == '&' and i + 1 < len(text) and text[i + 1] == '>':   # &>file is a redirection, not a split
             cur.append('&>')
             i += 2
             continue
@@ -184,6 +208,95 @@ def split_segments(text):
         raise Blocked('unbalanced quote')
     segs.append(''.join(cur))
     return [s for s in segs if s.strip()]
+
+
+def _source_batch_segments(text):
+    if '`' in text or '$' in text or '\n' in text:
+        raise SourceBatchBlocked('unsupported-source-batch', 'source batches require literal commands')
+    segments, current = [], []
+    quote = None
+    escaped = False
+    for char in text:
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+        if char == '\\' and quote != "'":
+            current.append(char)
+            escaped = True
+            continue
+        if quote:
+            current.append(char)
+            if char == quote:
+                quote = None
+            continue
+        if char in ("'", '"'):
+            quote = char
+            current.append(char)
+            continue
+        if char == ';':
+            if not ''.join(current).strip():
+                raise SourceBatchBlocked('unsupported-source-batch', 'empty source batch producer')
+            segments.append(''.join(current).strip())
+            current = []
+            continue
+        if char in '|&<>':
+            raise SourceBatchBlocked('unsupported-source-batch', 'source batch operator is not allowed')
+        current.append(char)
+    if quote or escaped or not ''.join(current).strip():
+        raise SourceBatchBlocked('unsupported-source-batch', 'malformed source batch')
+    segments.append(''.join(current).strip())
+    if len(segments) < 2:
+        raise SourceBatchBlocked('unsupported-source-batch', 'source batch needs multiple producers')
+    return segments
+
+
+def strict_source_batch(text, root):
+    root = os.path.realpath(os.fspath(root))
+    ranges = []
+    total_lines = 0
+    for segment in _source_batch_segments(text):
+        try:
+            words = shlex.split(segment, comments=False, posix=True)
+        except ValueError as error:
+            raise SourceBatchBlocked('unsupported-source-batch', 'cannot parse source batch') from error
+        if len(words) != 4 or words[:2] != ['sed', '-n']:
+            raise SourceBatchBlocked(
+                'unsupported-source-batch', 'source batch producers must be pure sed windows')
+        match = re.fullmatch(r'([1-9][0-9]*),([1-9][0-9]*)p', words[2])
+        if match is None:
+            raise SourceBatchBlocked('unsupported-source-batch', 'source batch range is malformed')
+        start, end = map(int, match.groups())
+        count = end - start + 1
+        if count < 1 or count > 240:
+            raise SourceBatchBlocked('unsupported-source-batch', 'source batch window exceeds 240 lines')
+        total_lines += count
+        if total_lines > 240:
+            raise SourceBatchBlocked(
+                'source-batch-lines-too-large', 'source batch exceeds 240 selected lines')
+        raw_path = words[3]
+        if (not raw_path or raw_path.startswith(('-', '~'))
+                or any(char in raw_path for char in '*?[]{}')):
+            raise SourceBatchBlocked('unsupported-source-batch', 'source batch path is not literal')
+        path = os.path.realpath(raw_path if os.path.isabs(raw_path) else os.path.join(root, raw_path))
+        try:
+            if os.path.commonpath((root, path)) != root:
+                raise SourceBatchBlocked('unsupported-source-batch', 'source batch path is out of scope')
+        except ValueError as error:
+            raise SourceBatchBlocked('unsupported-source-batch', 'source batch path is out of scope') from error
+        if not os.path.isfile(path):
+            raise SourceBatchBlocked('unsupported-source-batch', 'source batch path is not a file')
+        with open(path, 'rb') as source:
+            raw = source.read()
+        line_count = raw.count(b'\n') + (1 if raw and not raw.endswith(b'\n') else 0)
+        if end > line_count:
+            raise SourceBatchBlocked('unsupported-source-batch', 'source batch range exceeds the file')
+        if any(path == other_path and start <= other_end and other_start <= end
+               for other_path, other_start, other_end in ranges):
+            raise SourceBatchBlocked(
+                'overlapping-source-batch', 'source batch windows overlap or repeat')
+        ranges.append((path, start, end))
+    return ranges
 
 
 def mask_quotes(seg):
@@ -391,6 +504,9 @@ def check_segment(seg):
     except ValueError as e:
         raise Blocked(f'cannot parse command ({e})')
     words = [w for w in words if not re.match(r'^&?\d?>', w) and not re.match(r'^\d?<', w)]
+    if (len(words) == 3 and words[0] == 'command' and words[1] in ('-v', '-V')
+            and re.fullmatch(r'[A-Za-z0-9_.+-]+', words[2])):
+        return
     while words:
         w = words[0]
         m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)=', w)
@@ -436,10 +552,21 @@ def check_segment(seg):
         check_find(args)
 
 
-def validate(text, depth=0):
+def validate(text, depth=0, allow_source_batch=False):
     if '`' in text:
         raise Blocked('backtick command substitution')
-    for seg in split_segments(strip_substitutions(text, depth)):
+    stripped = strip_substitutions(text, depth)
+    segments = split_segments(stripped)
+    sed_producers = 0
+    for segment in segments:
+        try:
+            words = shlex.split(segment, comments=False, posix=True)
+        except ValueError:
+            words = []
+        sed_producers += bool(words and os.path.basename(words[0]) == 'sed')
+    if sed_producers > 1 and not allow_source_batch:
+        raise Blocked('multiple source producers require the Codex source-batch contract')
+    for seg in segments:
         check_segment(seg)
 
 
@@ -453,11 +580,15 @@ def main():
     try:
         validate(cmd)
     except Blocked as why:
-        print(f"rev-reviewer is read-only: blocked ({why}): {cmd[:200]}", file=sys.stderr)
-        sys.exit(2)
-    except Exception as why:  # noqa: BLE001 — anything unexpected fails CLOSED
-        print(f"rev-reviewer is read-only: cannot verify command ({why}): {cmd[:200]}", file=sys.stderr)
-        sys.exit(2)
+        reason = f"rev-reviewer is read-only: blocked ({why}): {cmd[:200]}"
+        print(reason, file=sys.stderr)
+        emit_pretool_deny(reason, terminal=True)
+        sys.exit(0)
+    except Exception as why:  # noqa: BLE001; anything unexpected fails CLOSED
+        reason = f"rev-reviewer is read-only: cannot verify command ({why}): {cmd[:200]}"
+        print(reason, file=sys.stderr)
+        emit_pretool_deny(reason, terminal=True)
+        sys.exit(0)
     sys.exit(0)
 
 

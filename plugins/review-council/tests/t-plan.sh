@@ -8,16 +8,17 @@ test_plan_prompt() {
   printf '%s\n' '- CONTEXT-SENTINEL-c04: retry ownership is checked after parking' > "$S/context.md"
   printf '%s\n' 'FINDINGS-SENTINEL-c04' > "$S/findings.md"
   printf '# Add an admin listing endpoint\n\nFor the browser dashboard demo.\n\nPR-SENTINEL-c04\n' > "$S/pr.md"
-  local out RP
-  RP=$(cd "$S" && pwd -P)/fix-plan.md
+  local out
   out=$("$SCRIPTS/rev-prompt.sh" "$S" 1 codex-sol plan-completeness "plan round" --plan "$S/fix-plan.md" 2> "$S/normal-plan.err") || { fail "plan prompt renders"; return; }
   ok "plan prompt renders"
   assert_nogrep "normal plan prompt stays below its word budget" "$S/normal-plan.err" '.'
   assert_grep "plan prompt contains an immutable plan snapshot" "$out" 're-check ownership after every parking await'
   assert_nogrep "plan prompt does not depend on reading the live plan path" "$out" 'Read .*fix-plan\.md in full'
-  assert_eq "plan snapshot names its exact physical source" "$(grep -Fxc "Source: \`$RP\` (source line numbers shown below)" "$out")" 1
+  assert_grep "plan prompt forbids opening a separate plan snapshot" "$out" 'Do not open a separate plan snapshot'
+  assert_grep "plan snapshot basename is citation-only" "$out" 'fix-plan\.md.*citation label only'
+  assert_nogrep "plan snapshot does not expose its denied physical source" "$out" '^Source: `.*fix-plan\.md`'
   out=$(cd "$S" && "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-sol plan-completeness "relative plan" --plan fix-plan.md)
-  assert_eq "relative plan paths resolve to the exact physical source" "$(grep -Fxc "Source: \`$RP\` (source line numbers shown below)" "$out")" 1
+  assert_nogrep "relative plan paths do not expose their denied physical source" "$out" '^Source: `.*fix-plan\.md`'
   assert_grep "plan snapshot shows source line numbers" "$out" '^[[:space:]]*1[[:space:]]+## C-01'
   assert_grep "plan prompt says nothing is implemented yet" "$out" 'nothing in it is implemented yet'
   assert_grep "plan prompt automatically includes compact context" "$out" 'CONTEXT-SENTINEL-c04'
@@ -27,10 +28,10 @@ test_plan_prompt() {
   assert_grep "plan prompt keeps the code scope" "$out" 'Base commit: 0000000'
   assert_grep "suggested_fix must state the rule and its siblings" "$out" 'suggested_fix. states the general rule'
   for lens in plan-soundness plan-simplicity plan-tests; do
-    out=$("$SCRIPTS/rev-prompt.sh" "$S" 1 grok "$lens" "plan round" --plan "$S/fix-plan.md")
+    out=$("$SCRIPTS/rev-prompt.sh" "$S" 1 codex-terra "$lens" "plan round" --plan "$S/fix-plan.md")
     assert_nogrep "plan lens $lens is known (not echoed verbatim as the whole lens text)" "$out" "^$lens\$"
   done
-  out=$("$SCRIPTS/rev-prompt.sh" "$S" 1 grok plan-simplicity "plan round" --plan "$S/fix-plan.md"); assert_grep "plan-simplicity asks for reuse" "$out" 'existing helper, type, hook, or path'
+  out=$("$SCRIPTS/rev-prompt.sh" "$S" 1 codex-terra plan-simplicity "plan round" --plan "$S/fix-plan.md"); assert_grep "plan-simplicity asks for reuse" "$out" 'existing helper, type, hook, or path'
   out=$("$SCRIPTS/rev-prompt.sh" "$S" 1 codex-sol simplicity "code round"); assert_grep "simplicity lens checks the pinned dependency" "$out" 'pinned dependency source'; assert_grep "simplicity lens asks who passes the parameter" "$out" 'list every production caller'
   out=$(REV_SEAT_OFFLINE=1 REV_DEPS_DIR=/tmp/depsview "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-sol simplicity "blind"); assert_grep "offline paragraph names the deps view" "$out" 'linked under /tmp/depsview'; assert_nogrep "and does not name the registry as a source" "$out" 'the cargo registry, node_modules\)'
   out=$(REV_SEAT_OFFLINE=1 "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-sol simplicity "blind"); assert_grep "offline paragraph on request" "$out" '## Offline review'; assert_grep "offline forbids whole-registry searches" "$out" 'do not search the whole registry'
@@ -50,13 +51,13 @@ test_plan_prompt() {
     assert_eq "no-roster $compatibility_seat prompt embeds one schema" \
       "$(grep -c '"[$]schema"' "$out" || true)" 1
   done
-  printf '%s\n' '{"seats":[{"seat":"codex-sol","adapter":"codex"},{"seat":"grok","adapter":"grok"},{"seat":"claude-native","adapter":"claude"},{"seat":"opus","adapter":"agent"},{"seat":"gemini","adapter":"gemini"}]}' > "$S/roster.json"
+  printf '%s\n' '{"seats":[{"seat":"codex-sol","adapter":"codex"},{"seat":"codex-terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"},{"seat":"agent-compat","adapter":"agent"},{"seat":"gemini","adapter":"gemini"}]}' > "$S/roster.json"
   local seat
-  for seat in codex-sol grok claude-native; do
+  for seat in codex-sol codex-terra opus sonnet; do
     out=$("$SCRIPTS/rev-prompt.sh" "$S" 1 "$seat" correctness "native schema round")
     assert_eq "$seat native-schema prompt omits the JSON schema" "$(grep -c '"[$]schema"' "$out" || true)" 0
   done
-  for seat in opus gemini; do
+  for seat in agent-compat gemini; do
     out=$("$SCRIPTS/rev-prompt.sh" "$S" 1 "$seat" correctness "inline schema round")
     assert_eq "$seat prompt embeds the JSON schema exactly once" "$(grep -c '"[$]schema"' "$out" || true)" 1
   done

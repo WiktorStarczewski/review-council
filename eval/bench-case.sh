@@ -59,10 +59,12 @@ PRARGS=(); if [ -n "$PR_REPO" ] && [ -n "$PR_NUM" ]; then gh pr view "$PR_NUM" -
 i=0; for seat in $SEATS; do lens=$(python3 -c "import sys; L=sys.argv[1].split(','); print(L[(int(sys.argv[2])+1) % len(L)])" "$LENSES" "$i"); REV_SEAT_OFFLINE=1 "$SCRIPTS/rev-prompt.sh" "$S" 1 "$seat" "$lens" "$EMPH" ${PRARGS[@]+"${PRARGS[@]}"} >/dev/null || { echo "$NAME: render failed for $seat"; exit 1; }; echo "$seat $lens" >> "$S/lenses.txt"; i=$((i+1)); done
 pids=(); [ -n "$SEATS" ] || { echo "$NAME: no seats in roster"; exit 1; }
 for seat in $SEATS; do
-  adapter=$(python3 -c "import json,sys; print(next(s['adapter'] for s in json.load(open(sys.argv[1]))['seats'] if s['seat']==sys.argv[2]))" "$S/roster.json" "$seat")
+  IFS=$'\t' read -r adapter model effort < <(python3 -c "import json,sys; s=next(s for s in json.load(open(sys.argv[1]))['seats'] if s['seat']==sys.argv[2]); print(s['adapter'],s['model'],s.get('effort') or '',sep='\\t')" "$S/roster.json" "$seat")
   if [ "$adapter" = agent ]; then
     ( cd "$REPO" && claude -p "Your instructions are in $S/r1-$seat.prompt.md. Read that file first with the Read tool, follow it exactly, and return ONLY the JSON object it asks for. You are one seat inside a review that is already running: never invoke /review-council:rev, /review-council:stack, or claude -p, and never start a review by any other means. This review is read-only and offline: do not create, edit or delete any file, do not run any git command that changes state, do not fetch or use the network, and do not use any other checkout of this repository on this machine. The repository is at $REPO. Complete every assigned check and substantiate each finding from the assigned source." \
-        --model opus --permission-mode bypassPermissions --effort max --max-turns 150 --output-format text </dev/null > "$S/r1-$seat.raw" 2> "$S/r1-$seat.log"
+        --model "$model" --permission-mode bypassPermissions --effort "$effort" \
+        --tools 'Read,Grep' --disallowedTools 'Bash,Write,Edit,NotebookEdit' \
+        --max-turns 150 --output-format text </dev/null > "$S/r1-$seat.raw" 2> "$S/r1-$seat.log"
       agent_rc=$?
       rc=$agent_rc
       if [ "$agent_rc" -eq 0 ]; then

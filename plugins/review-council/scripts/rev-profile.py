@@ -92,6 +92,44 @@ def roster_metadata(directory):
     return adapters, version, {name: digest.lower() for name, digest in legacy.items()}
 
 
+def roster_identity(directory):
+    path = directory / "roster.json"
+    try:
+        document = json.loads(path.read_text(errors="replace"))
+    except (OSError, ValueError):
+        return {"signature": "unavailable", "complete": False, "core_seats": []}
+    if not isinstance(document, dict) or not isinstance(document.get("seats"), list):
+        return {"signature": "unavailable", "complete": False, "core_seats": []}
+    core_seats = []
+    complete = True
+    for item in document["seats"]:
+        if not isinstance(item, dict) or item.get("extra") is True:
+            continue
+        fields = {}
+        for key in ("seat", "adapter", "model", "effort"):
+            value = item.get(key)
+            if key == "effort" and item.get("adapter") == "gemini" \
+                    and key in item and value is None:
+                fields[key] = "none"
+            else:
+                fields[key] = value if isinstance(value, str) and value else "?"
+        complete = complete and all(fields[key] != "?" for key in fields)
+        substitute = item.get("substitutes_for")
+        if isinstance(substitute, str) and substitute:
+            fields["substitutes_for"] = substitute
+        core_seats.append(fields)
+    if not core_seats:
+        return {"signature": "unavailable", "complete": False, "core_seats": []}
+    signature = ",".join(
+        "%s=%s:%s@%s%s" % (
+            item["seat"], item["adapter"], item["model"], item["effort"],
+            "[for=%s]" % item["substitutes_for"] if "substitutes_for" in item else "",
+        )
+        for item in core_seats
+    )
+    return {"signature": signature, "complete": complete, "core_seats": core_seats}
+
+
 def adapter_for_key(key, adapters):
     matches = (seat for seat in adapters if key.endswith("-" + seat))
     seat = max(matches, key=len, default=None)
@@ -236,6 +274,10 @@ def empty_scope_projection(with_names=True):
         "avoided_words": 0,
         "plan_words": 0,
         "closure_words": 0,
+        "prepared_search_words": 0,
+        "plan_specialist_patch_words": 0,
+        "receipt_relative_plan_manifests": 0,
+        "cumulative_plan_manifests": 0,
     }
 
 
@@ -243,6 +285,7 @@ def empty_read_activity(with_names=True):
     return {
         "audits": 0,
         "violating_audits": 0,
+        "advisories": 0,
         "invalid_audits": [] if with_names else 0,
         "tool_calls": 0,
         "tool_turns": 0,
@@ -250,6 +293,7 @@ def empty_read_activity(with_names=True):
         "max_tool_output_bytes": 0,
         "recognized_tool_calls": 0,
         "source_read_calls": 0,
+        "source_read_batches": 0,
         "packet_shards": 0,
         "packet_bytes": 0,
         "packet_ranges": 0,
@@ -269,7 +313,7 @@ def read_activity(directory, adapters):
     activity = empty_read_activity()
     metric_fields = ("tool_calls", "tool_turns", "tool_output_bytes", "max_tool_output_bytes")
     source_fields = (
-        "recognized_tool_calls", "source_read_calls", "packet_shards", "packet_bytes",
+        "recognized_tool_calls", "source_read_calls", "source_read_batches", "packet_shards", "packet_bytes",
         "packet_ranges", "opened_source_ranges", "finding_citations",
     )
     for path in sorted(directory.glob("r*-*.read-audit.json")):
@@ -287,11 +331,17 @@ def read_activity(directory, adapters):
             ]
             version = audit.get("schema_version")
             values = [audit.get(field) for field in metric_fields]
+            advisories = audit.get("advisories", [])
             if (version not in (1, 2)
                     or audit.get("status") not in ("valid", "invalid")
                     or not isinstance(audit.get("narrow"), bool)
                     or not isinstance(audit.get("adapter"), str) or not audit["adapter"]
                     or not isinstance(audit.get("violations"), list)
+                    or not isinstance(advisories, list)
+                    or any(not isinstance(item, dict) or set(item) != {"code", "tool"}
+                           or not isinstance(item.get("code"), str) or not item["code"]
+                           or not isinstance(item.get("tool"), str) or not item["tool"]
+                           for item in advisories)
                     or any(not isinstance(value, int) or isinstance(value, bool) or value < 0
                            for value in values)):
                 raise ValueError("invalid read audit structure")
@@ -300,12 +350,13 @@ def read_activity(directory, adapters):
                     or audit["max_tool_output_bytes"] > audit["tool_output_bytes"]):
                 raise ValueError("inconsistent read audit metrics")
             if version == 2:
-                source_values = [audit.get(field) for field in source_fields]
+                source_values = [audit.get(field, 0) for field in source_fields]
                 ranges = audit.get("source_ranges")
                 if (any(not isinstance(value, int) or isinstance(value, bool) or value < 0
                         for value in source_values)
                         or audit["recognized_tool_calls"] > audit["tool_calls"]
                         or audit["source_read_calls"] > audit["recognized_tool_calls"]
+                        or audit.get("source_read_batches", 0) > audit["source_read_calls"]
                         or not isinstance(ranges, list)
                         or any(not isinstance(row, dict) or set(row) != {
                             "path", "line_start", "line_end", "origin"
@@ -407,6 +458,7 @@ def read_activity(directory, adapters):
         else:
             activity["audits"] += 1
             activity["violating_audits"] += audit["status"] == "invalid"
+            activity["advisories"] += len(advisories)
             for field in metric_fields[:-1]:
                 activity[field] += audit[field]
             activity["max_tool_output_bytes"] = max(
@@ -414,7 +466,7 @@ def read_activity(directory, adapters):
             )
             if version == 2:
                 for field in source_fields:
-                    activity[field] += audit[field]
+                    activity[field] += audit.get(field, 0)
                 if audit.get("patch_proof_mode") is not None:
                     for field in patch_fields:
                         activity[field] += audit[field]
@@ -485,6 +537,7 @@ def evidence_words(path, validate):
     assignments = manifest["assignments"]
     manifest_line = "Evidence manifest SHA-256: " + manifest_hash
     assigned = 0
+    plan_specialist_patch_words = 0
     for seat, assignment in assignments.items():
         prompt = session / f"r{label}-{seat}.prompt.md"
         try:
@@ -496,23 +549,36 @@ def evidence_words(path, validate):
         try:
             assigned_patch = Path(assignment["patch"]).resolve(strict=True)
             assigned_patch.relative_to(session)
-            assigned += len(assigned_patch.read_bytes().split())
+            patch_words = len(assigned_patch.read_bytes().split())
+            assigned += patch_words
+            if manifest.get("phase") == "plan" and seat != manifest.get("mechanical_owner"):
+                plan_specialist_patch_words += patch_words
         except (KeyError, OSError, ValueError) as error:
             raise ValueError("assigned evidence patch unavailable: " + seat) from error
-    avoided = max(0, len(assignments) * words["full"] - assigned
-                  - len(assignments) * words["evidence"] - source_context_words)
-    if words["assigned_patch"] != assigned or words["avoided"] != avoided:
-        raise ValueError("invalid evidence scope projection")
     plan_words = 0
     closure_words = 0
+    prepared_search_words = 0
     if manifest.get("phase") == "plan":
         if any(not isinstance(words.get(key), int) or isinstance(words.get(key), bool)
                or words[key] < 0 for key in ("plan", "closure")):
             raise ValueError("invalid plan evidence word counts")
         plan_words = len((session / f"r{label}-plan.md").read_bytes().split())
         closure_words = len((session / f"r{label}-plan-closure.patch").read_bytes().split())
-        if words["plan"] != plan_words or words["closure"] != closure_words:
+        clusters = {cluster["id"]: cluster for cluster in manifest["plan"]["clusters"]}
+        if all("search_proof" in cluster for cluster in clusters.values()) \
+                and all("plan_clusters" in assignment for assignment in assignments.values()):
+            prepared_search_words = sum(
+                len((session / clusters[cluster_id]["search_proof"]["artifact"]).read_bytes().split())
+                for assignment in assignments.values()
+                for cluster_id in assignment["plan_clusters"])
+        if (words["plan"] != plan_words or words["closure"] != closure_words
+                or words.get("prepared_search", 0) != prepared_search_words):
             raise ValueError("plan evidence word count mismatch")
+    avoided = max(0, len(assignments) * words["full"] - assigned
+                  - len(assignments) * words["evidence"] - source_context_words
+                  - prepared_search_words)
+    if words["assigned_patch"] != assigned or words["avoided"] != avoided:
+        raise ValueError("invalid evidence scope projection")
     return {
         "full_words": words["full"],
         "assigned_patch_words": words["assigned_patch"],
@@ -522,6 +588,15 @@ def evidence_words(path, validate):
         "avoided_words": words["avoided"],
         "plan_words": plan_words,
         "closure_words": closure_words,
+        "prepared_search_words": prepared_search_words,
+        "plan_specialist_patch_words": plan_specialist_patch_words,
+        "receipt_relative_plan_manifests": int(
+            manifest.get("schema_version") == 4
+            and manifest.get("plan", {}).get("delta_mode") == "receipt-delta"),
+        "cumulative_plan_manifests": int(
+            manifest.get("phase") == "plan"
+            and not (manifest.get("schema_version") == 4
+                     and manifest.get("plan", {}).get("delta_mode") == "receipt-delta")),
     }
 
 
@@ -640,6 +715,7 @@ def profile_session(directory):
     return {
         "session": directory.name,
         "path": str(directory),
+        "roster": roster_identity(directory),
         "prompts": prompts,
         "results": results,
         "calls": calls,
@@ -675,10 +751,11 @@ def main():
         activity = session["read_activity"]
         read_totals["audits"] += activity["audits"]
         read_totals["violating_audits"] += activity["violating_audits"]
+        read_totals["advisories"] += activity["advisories"]
         read_totals["invalid_audits"] += len(activity["invalid_audits"])
         for key in (
             "tool_calls", "tool_turns", "tool_output_bytes", "recognized_tool_calls",
-            "source_read_calls", "packet_shards", "packet_bytes", "packet_ranges",
+            "source_read_calls", "source_read_batches", "packet_shards", "packet_bytes", "packet_ranges",
             "opened_source_ranges", "finding_citations", "patch_proof_calls",
             "patch_proof_turns", "patch_proof_visible_bytes", "expected_patch_chunks",
             "opened_patch_chunks", "window_seats", "chunk_seats",
@@ -691,11 +768,30 @@ def main():
         scope_totals["valid_manifests"] += projection["valid_manifests"]
         scope_totals["invalid_manifests"] += len(projection["invalid_manifests"])
         for key in ("full_words", "assigned_patch_words", "delta_words", "evidence_words",
-                    "source_context_words", "avoided_words", "plan_words", "closure_words"):
+                    "source_context_words", "avoided_words", "plan_words", "closure_words",
+                    "prepared_search_words", "plan_specialist_patch_words",
+                    "receipt_relative_plan_manifests", "cumulative_plan_manifests"):
             scope_totals[key] += projection[key]
     totals["scope_projection"] = scope_totals
     totals["read_activity"] = read_totals
-    document = {"sessions": sessions, "totals": totals}
+    roster_groups = []
+    roster_group_indexes = {}
+    for session in sessions:
+        roster = session["roster"]
+        key = (roster["signature"], roster["complete"])
+        if key not in roster_group_indexes:
+            roster_group_indexes[key] = len(roster_groups)
+            roster_groups.append({
+                "signature": roster["signature"],
+                "complete": roster["complete"],
+                "sessions": [],
+            })
+        roster_groups[roster_group_indexes[key]]["sessions"].append(session["session"])
+    comparison = {
+        "mixed_core_rosters": len(roster_groups) > 1,
+        "roster_signatures": roster_groups,
+    }
+    document = {"sessions": sessions, "totals": totals, "comparison": comparison}
 
     if args.as_json:
         print(json.dumps(document, indent=2, sort_keys=True, allow_nan=False))
@@ -706,15 +802,21 @@ def main():
         plan = session["prompts"]["plan"]
         scope = session["scope_projection"]
         print(
-            "%s calls=%d processed=%d input=%d output=%d cached_input=%d cache_write_input=%d cache_read_input=%d cost_usd=%.2f completed=%d metered=%d unmetered=%d usage_invalid=%d prompt_words=%d/%d projected_scope_words=full:%d assigned:%d delta:%d evidence:%d avoided:%d packet:%d evidence_invalid=%d"
+            "%s roster=%s roster_complete=%s calls=%d processed=%d input=%d output=%d cached_input=%d cache_write_input=%d cache_read_input=%d cost_usd=%.2f completed=%d metered=%d unmetered=%d usage_invalid=%d prompt_words=%d/%d projected_scope_words=full:%d assigned:%d delta:%d evidence:%d avoided:%d packet:%d plan_search:%d plan_specialist:%d plan_routes:receipt:%d,cumulative:%d evidence_invalid=%d"
             % (
-                session["session"], usage["calls"], usage["processed_tokens"], usage["input_tokens"],
+                session["session"], session["roster"]["signature"],
+                str(session["roster"]["complete"]).lower(),
+                usage["calls"], usage["processed_tokens"], usage["input_tokens"],
                 usage["output_tokens"], usage["cached_input_tokens"], usage["cache_write_input_tokens"],
                 usage["cache_read_input_tokens"], usage["cost_usd"],
                 session["calls"]["completed"], session["calls"]["metered"], session["calls"]["unmetered"],
                 len(session["invalid_usage"]), code["words"], plan["words"], scope["full_words"], scope["assigned_patch_words"],
                 scope["delta_words"], scope["evidence_words"], scope["avoided_words"],
                 scope["source_context_words"],
+                scope["prepared_search_words"],
+                scope["plan_specialist_patch_words"],
+                scope["receipt_relative_plan_manifests"],
+                scope["cumulative_plan_manifests"],
                 len(scope["invalid_manifests"])
             )
         )
@@ -724,13 +826,14 @@ def main():
             print("  usage_invalid_detail=%s: %s" % (invalid["stream"], invalid["reason"]))
         activity = session["read_activity"]
         print(
-            "  read_activity=audits:%d violating:%d calls:%d turns:%d output_bytes:%d max_output_bytes:%d invalid:%d packet_shards:%d packet_bytes:%d packet_ranges:%d source_reads:%d opened_ranges:%d finding_citations:%d patch_proof_calls:%d patch_proof_turns:%d patch_proof_bytes:%d expected_chunks:%d opened_chunks:%d patch_modes:window:%d,chunk:%d"
+            "  read_activity=audits:%d violating:%d advisories:%d calls:%d turns:%d output_bytes:%d max_output_bytes:%d invalid:%d packet_shards:%d packet_bytes:%d packet_ranges:%d source_reads:%d source_batches:%d opened_ranges:%d finding_citations:%d patch_proof_calls:%d patch_proof_turns:%d patch_proof_bytes:%d expected_chunks:%d opened_chunks:%d patch_modes:window:%d,chunk:%d"
             % (
-                activity["audits"], activity["violating_audits"], activity["tool_calls"],
+                activity["audits"], activity["violating_audits"], activity["advisories"], activity["tool_calls"],
                 activity["tool_turns"], activity["tool_output_bytes"],
                 activity["max_tool_output_bytes"], len(activity["invalid_audits"]),
                 activity["packet_shards"], activity["packet_bytes"], activity["packet_ranges"],
-                activity["source_read_calls"], activity["opened_source_ranges"],
+                activity["source_read_calls"], activity["source_read_batches"],
+                activity["opened_source_ranges"],
                 activity["finding_citations"],
                 activity["patch_proof_calls"], activity["patch_proof_turns"],
                 activity["patch_proof_visible_bytes"], activity["expected_patch_chunks"],
@@ -741,7 +844,11 @@ def main():
         for invalid in activity["invalid_audits"]:
             print("  read_audit_invalid_detail=%s: %s" % (invalid["audit"], invalid["reason"]))
     print(
-        "TOTAL calls=%d processed=%d input=%d output=%d cached_input=%d cache_write_input=%d cache_read_input=%d cost_usd=%.2f completed=%d metered=%d unmetered=%d usage_invalid=%d projected_scope_words=full:%d assigned:%d delta:%d evidence:%d avoided:%d packet:%d evidence_invalid=%d"
+        "COMPARABILITY mixed_core_rosters=%s roster_signatures=%d"
+        % (str(comparison["mixed_core_rosters"]).lower(), len(roster_groups))
+    )
+    print(
+        "TOTAL calls=%d processed=%d input=%d output=%d cached_input=%d cache_write_input=%d cache_read_input=%d cost_usd=%.2f completed=%d metered=%d unmetered=%d usage_invalid=%d projected_scope_words=full:%d assigned:%d delta:%d evidence:%d avoided:%d packet:%d plan_search:%d plan_specialist:%d plan_routes:receipt:%d,cumulative:%d evidence_invalid=%d"
         % (
             totals["calls"], totals["processed_tokens"], totals["input_tokens"], totals["output_tokens"],
             totals["cached_input_tokens"], totals["cache_write_input_tokens"],
@@ -750,17 +857,22 @@ def main():
             scope_totals["assigned_patch_words"], scope_totals["delta_words"],
             scope_totals["evidence_words"], scope_totals["avoided_words"],
             scope_totals["source_context_words"],
+            scope_totals["prepared_search_words"],
+            scope_totals["plan_specialist_patch_words"],
+            scope_totals["receipt_relative_plan_manifests"],
+            scope_totals["cumulative_plan_manifests"],
             scope_totals["invalid_manifests"]
         )
     )
     print(
-        "TOTAL_READ_ACTIVITY audits=%d violating=%d calls=%d turns=%d output_bytes=%d max_output_bytes=%d invalid=%d packet_shards=%d packet_bytes=%d packet_ranges=%d source_reads:%d opened_ranges:%d finding_citations:%d patch_proof_calls:%d patch_proof_turns:%d patch_proof_bytes:%d expected_chunks:%d opened_chunks:%d patch_modes:window:%d,chunk:%d"
+        "TOTAL_READ_ACTIVITY audits=%d violating=%d calls=%d turns=%d output_bytes=%d max_output_bytes=%d invalid=%d packet_shards=%d packet_bytes=%d packet_ranges=%d source_reads:%d source_batches:%d opened_ranges:%d finding_citations:%d patch_proof_calls:%d patch_proof_turns:%d patch_proof_bytes:%d expected_chunks:%d opened_chunks:%d patch_modes:window:%d,chunk:%d"
         % (
             read_totals["audits"], read_totals["violating_audits"], read_totals["tool_calls"],
             read_totals["tool_turns"], read_totals["tool_output_bytes"],
             read_totals["max_tool_output_bytes"], read_totals["invalid_audits"],
             read_totals["packet_shards"], read_totals["packet_bytes"], read_totals["packet_ranges"],
-            read_totals["source_read_calls"], read_totals["opened_source_ranges"],
+            read_totals["source_read_calls"], read_totals["source_read_batches"],
+            read_totals["opened_source_ranges"],
             read_totals["finding_citations"],
             read_totals["patch_proof_calls"], read_totals["patch_proof_turns"],
             read_totals["patch_proof_visible_bytes"], read_totals["expected_patch_chunks"],

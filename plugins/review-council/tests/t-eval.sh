@@ -9,7 +9,7 @@ while [ "$#" -gt 0 ]; do
 done
 mkdir -p "$out"
 cat > "$out/roster.json" <<'JSON'
-{"seats":[{"seat":"opus","adapter":"agent"},{"seat":"codex-sol","adapter":"codex"}]}
+{"seats":[{"seat":"opus","adapter":"agent","model":"opus","effort":"max"},{"seat":"sonnet","adapter":"agent","model":"sonnet","effort":"high"},{"seat":"codex-sol","adapter":"codex","model":"gpt-5.6-sol","effort":"max"}]}
 JSON
 SH
   cat > "$root/plugins/review-council/scripts/rev-prompt.sh" <<'SH'
@@ -30,6 +30,15 @@ json.load(open(sys.argv[1]))
 PY
   cat > "$root/bin/claude" <<'SH'
 #!/bin/bash
+model=unknown
+previous=
+for argument in "$@"; do
+  case "$previous" in
+    --model) model=$argument ;;
+  esac
+  previous=$argument
+done
+[ -z "${AGENT_ARGS:-}" ] || printf '%s\n' "$@" > "$AGENT_ARGS.$model"
 printf '{"summary":"valid despite process failure","findings":[]}\n'
 exit "${AGENT_RC:-9}"
 SH
@@ -42,11 +51,21 @@ make_eval_claude_shim() {
   mkdir -p "$root/bin"
   cat > "$root/bin/claude" <<'SH'
 #!/bin/bash
+original=("$@")
 prompt=
 while [ "$#" -gt 0 ]; do
   if [ "$1" = -p ]; then prompt=$2; break; fi
   shift
 done
+if [ -n "${CLAUDE_ARGS_DIR:-}" ]; then
+  mkdir -p "$CLAUDE_ARGS_DIR"
+  case "$prompt" in
+    *"Write the result to "*) capture=truth ;;
+    *"Produce, and write to "*) capture=score ;;
+    *) capture=other ;;
+  esac
+  printf '%s\n' "${original[@]}" > "$CLAUDE_ARGS_DIR/$capture"
+fi
 case "$prompt" in
   *"Write the result to "*)
     path=${prompt#*Write the result to }
@@ -103,6 +122,22 @@ SH
   chmod +x "$root/bin/claude"
 }
 
+make_eval_mv_shim() {
+  local root=$1
+  cat > "$root/bin/mv" <<'SH'
+#!/bin/bash
+src= dst=
+for arg in "$@"; do src=$dst; dst=$arg; done
+case "${MV_FAIL_TARGET:-}:${src##*/}:${dst##*/}" in
+  truth:.truth.*:truth.md) exit 73 ;;
+  truth-complete:.truth.complete.*:truth.complete) exit 74 ;;
+  score:.score.*:score.md) exit 75 ;;
+esac
+exec "$REAL_MV" "$@"
+SH
+  chmod +x "$root/bin/mv"
+}
+
 test_eval_preflight_status() {
   ( local E="$T/eval-preflight" OUT="$T/eval-preflight-out"
     mkdir -p "$E/eval" "$E/plugins/review-council/scripts" "$OUT/repo/.git"
@@ -125,18 +160,27 @@ SH
 }
 
 test_eval_case_statuses() {
-  ( local E="$T/eval-case-status" OUT="$T/eval-case-status-out"
+  ( local E="$T/eval-case-status" OUT="$T/eval-case-status-out" AGENT_ARGS="$T/eval-case-agent-args"
     make_eval_case_fixture "$E"
     mkdir -p "$OUT/repo/.git"
-    export PATH="$E/bin:$PATH" PROMPT_CALLS="$T/eval-case-prompts" AGENT_RC=9 DIRECT_RC=0
+    export PATH="$E/bin:$PATH" PROMPT_CALLS="$T/eval-case-prompts" AGENT_RC=9 DIRECT_RC=0 \
+      AGENT_ARGS
     "$E/eval/bench-case.sh" sample unused HEAD BASE "$OUT" > "$T/eval-case-status.out" 2>&1
     local rc=$?
     assert_eq "bench case fails after all seats report" "$rc" 1
     assert_grep "failed Agent status is preserved" "$T/eval-case-status.out" '^sample seat=opus exit=9 findings=\?$'
+    assert_grep "failed Sonnet status is preserved" "$T/eval-case-status.out" '^sample seat=sonnet exit=9 findings=\?$'
     assert_grep "successful direct seat still reports" "$T/eval-case-status.out" '^sample seat=codex-sol exit=0 findings=0$'
     python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$OUT/session/r1-opus.raw" >/dev/null 2>&1
     assert_eq "failed Agent emitted valid JSON" "$?" 0
     [ ! -e "$OUT/session/r1-opus.json" ] && ok "failed Agent output is not accepted" || fail "failed Agent output is not accepted"
+    assert_grep "Opus benchmark uses its recorded model" "$AGENT_ARGS.opus" '^opus$'
+    assert_grep "Opus benchmark uses its recorded effort" "$AGENT_ARGS.opus" '^max$'
+    assert_grep "Sonnet benchmark uses its recorded model" "$AGENT_ARGS.sonnet" '^sonnet$'
+    assert_grep "Sonnet benchmark uses its recorded effort" "$AGENT_ARGS.sonnet" '^high$'
+    assert_grep "benchmark Agent exposes only read-only tools" "$AGENT_ARGS.sonnet" '^Read,Grep$'
+    assert_grep "benchmark Agent explicitly disallows Bash and editors" "$AGENT_ARGS.sonnet" \
+      '^Bash,Write,Edit,NotebookEdit$'
   )
 
   ( local E="$T/eval-deps" OUT="$T/eval-deps-out" REAL_PYTHON
@@ -159,11 +203,11 @@ SH
 }
 
 test_eval_truth_publication() {
-  ( local E="$T/eval-truth" OUT="$T/eval-truth-out"
+  ( local E="$T/eval-truth" OUT="$T/eval-truth-out" CLAUDE_ARGS_DIR="$T/eval-judge-args"
     mkdir -p "$E/eval" "$OUT/full/.git"
     cp "$SK/../../eval/bench-truth.sh" "$E/eval/bench-truth.sh"
     make_eval_claude_shim "$E"
-    export PATH="$E/bin:$PATH" CLAUDE_MODE=truth_fail
+    export PATH="$E/bin:$PATH" CLAUDE_MODE=truth_fail CLAUDE_ARGS_DIR
     "$E/eval/bench-truth.sh" sample owner/repo 1 HEAD BASE MERGED "$OUT" > "$T/eval-truth-fail.out" 2>&1
     local rc=$?
     assert_eq "truth generator status is preserved" "$rc" 11
@@ -177,29 +221,65 @@ test_eval_truth_publication() {
     assert_eq "successful truth generation completes" "$rc" 0
     assert_grep "truth artifact is published" "$OUT/truth.md" '^complete truth$'
     assert_grep "truth completion marker records summary" "$OUT/truth.complete" '^ROWS K=1 S=1 C=0 NONSIMPL=0$'
+    assert_grep "truth judge remains fixed to Opus" "$CLAUDE_ARGS_DIR/truth" '^opus$'
+    assert_grep "truth judge remains fixed at max effort" "$CLAUDE_ARGS_DIR/truth" '^max$'
 
     export CLAUDE_MODE=truth_no_summary
     "$E/eval/bench-truth.sh" sample owner/repo 1 HEAD BASE MERGED "$OUT" > "$T/eval-truth-summary.out" 2>&1
     rc=$?
     assert_eq "truth requires a terminal summary" "$rc" 1
-    [ ! -e "$OUT/truth.md" ] && ok "summary failure removes truth" || fail "summary failure removes truth"
-    [ ! -e "$OUT/truth.complete" ] && ok "summary failure removes marker" || fail "summary failure removes marker"
+    assert_grep "summary failure preserves published truth" "$OUT/truth.md" '^complete truth$'
+    assert_grep "summary failure preserves published marker" "$OUT/truth.complete" '^ROWS K=1 S=1 C=0 NONSIMPL=0$'
+  )
+}
+
+test_eval_truth_publish_rollback() {
+  ( local E="$T/eval-truth-rollback" OUT="$T/eval-truth-rollback-out" REAL_MV
+    mkdir -p "$E/eval" "$OUT/full/.git"
+    cp "$SK/../../eval/bench-truth.sh" "$E/eval/bench-truth.sh"
+    make_eval_claude_shim "$E"
+    REAL_MV=$(command -v mv); export REAL_MV PATH="$E/bin:$PATH" CLAUDE_MODE=truth_success
+    make_eval_mv_shim "$E"
+    printf 'old truth\n' > "$OUT/truth.md"
+    printf 'old marker\n' > "$OUT/truth.complete"
+
+    MV_FAIL_TARGET=truth "$E/eval/bench-truth.sh" sample owner/repo 1 HEAD BASE MERGED "$OUT" > "$T/eval-truth-first-mv.out" 2>&1
+    assert_eq "first truth rename failure is reported" "$?" 1
+    assert_grep "first truth rename failure preserves truth" "$OUT/truth.md" '^old truth$'
+    assert_grep "first truth rename failure preserves marker" "$OUT/truth.complete" '^old marker$'
+
+    MV_FAIL_TARGET=truth-complete "$E/eval/bench-truth.sh" sample owner/repo 1 HEAD BASE MERGED "$OUT" > "$T/eval-truth-second-mv.out" 2>&1
+    assert_eq "completion marker rename failure is reported" "$?" 1
+    assert_grep "completion marker rename failure rolls back truth" "$OUT/truth.md" '^old truth$'
+    assert_grep "completion marker rename failure rolls back marker" "$OUT/truth.complete" '^old marker$'
+    [ -z "$(find "$OUT" -maxdepth 1 -name '.truth.*' -print -quit)" ] && ok "truth rollback removes temporary files" || fail "truth rollback removes temporary files"
+
+    MV_FAIL_TARGET= "$E/eval/bench-truth.sh" sample owner/repo 1 HEAD BASE MERGED "$OUT" > "$T/eval-truth-retry.out" 2>&1
+    assert_eq "truth retry after rename failure succeeds" "$?" 0
+    assert_grep "truth retry replaces old truth" "$OUT/truth.md" '^complete truth$'
+    assert_grep "truth retry replaces old marker" "$OUT/truth.complete" '^ROWS K=1 S=1 C=0 NONSIMPL=0$'
   )
 }
 
 test_eval_score_publication() {
-  ( local E="$T/eval-score" RUN="$T/eval-score-run" FULL="$T/eval-score-full" TRUTH="$T/eval-score-truth.md"
+  ( local E="$T/eval-score" RUN="$T/eval-score-run" FULL="$T/eval-score-full" \
+      TRUTH="$T/eval-score-truth.md" CLAUDE_ARGS_DIR="$T/eval-score-judge-args"
     mkdir -p "$E/eval" "$RUN/session" "$FULL"
     cp "$SK/../../eval/bench-score.sh" "$E/eval/bench-score.sh"
     make_eval_claude_shim "$E"
     printf 'truth\n' > "$TRUTH"
-    printf 'stale score\n' > "$RUN/score.md"
-    export PATH="$E/bin:$PATH" CLAUDE_MODE=score_fail
+    export PATH="$E/bin:$PATH" CLAUDE_MODE=score_fail CLAUDE_ARGS_DIR
     "$E/eval/bench-score.sh" sample owner/repo 1 HEAD MERGED "$RUN" "$TRUTH" "$FULL" > "$T/eval-score-fail.out" 2>&1
     local rc=$?
     assert_eq "scorer status is preserved despite a valid summary" "$rc" 12
-    [ ! -e "$RUN/score.md" ] && ok "failed score is not published" || fail "failed score is not published"
+    [ ! -e "$RUN/score.md" ] && ok "first failed score is not published" || fail "first failed score is not published"
     [ -z "$(find "$RUN" -maxdepth 1 -name '.score.*' -print -quit)" ] && ok "failed score temporary files are removed" || fail "failed score temporary files are removed"
+
+    printf 'stale score\n' > "$RUN/score.md"
+    "$E/eval/bench-score.sh" sample owner/repo 1 HEAD MERGED "$RUN" "$TRUTH" "$FULL" > "$T/eval-score-regeneration-fail.out" 2>&1
+    rc=$?
+    assert_eq "failed score regeneration preserves status" "$rc" 12
+    assert_grep "failed score regeneration preserves published score" "$RUN/score.md" '^stale score$'
 
     export CLAUDE_MODE=score_success
     "$E/eval/bench-score.sh" sample owner/repo 1 HEAD MERGED "$RUN" "$TRUTH" "$FULL" > "$T/eval-score-ok.out" 2>&1
@@ -207,12 +287,36 @@ test_eval_score_publication() {
     assert_eq "successful scoring completes" "$rc" 0
     assert_grep "score artifact is published" "$RUN/score.md" '^complete score$'
     assert_grep "score summary is reported" "$T/eval-score-ok.out" '^sample SUMMARY K=1/1 S=1/1 C=0/0 verdict=PASS contradicted=0 contaminated=none$'
+    assert_grep "score judge remains fixed to Opus" "$CLAUDE_ARGS_DIR/score" '^opus$'
+    assert_grep "score judge remains fixed at max effort" "$CLAUDE_ARGS_DIR/score" '^max$'
 
     export CLAUDE_MODE=score_no_summary
     "$E/eval/bench-score.sh" sample owner/repo 1 HEAD MERGED "$RUN" "$TRUTH" "$FULL" > "$T/eval-score-summary.out" 2>&1
     rc=$?
     assert_eq "score requires a terminal summary" "$rc" 1
-    [ ! -e "$RUN/score.md" ] && ok "summary failure removes score" || fail "summary failure removes score"
+    assert_grep "summary failure preserves published score" "$RUN/score.md" '^complete score$'
+  )
+}
+
+test_eval_score_publish_rollback() {
+  ( local E="$T/eval-score-rollback" RUN="$T/eval-score-rollback-run" FULL="$T/eval-score-rollback-full" \
+      TRUTH="$T/eval-score-rollback-truth.md" REAL_MV
+    mkdir -p "$E/eval" "$RUN/session" "$FULL"
+    cp "$SK/../../eval/bench-score.sh" "$E/eval/bench-score.sh"
+    make_eval_claude_shim "$E"
+    REAL_MV=$(command -v mv); export REAL_MV PATH="$E/bin:$PATH" CLAUDE_MODE=score_success
+    make_eval_mv_shim "$E"
+    printf 'truth\n' > "$TRUTH"
+    printf 'old score\n' > "$RUN/score.md"
+
+    MV_FAIL_TARGET=score "$E/eval/bench-score.sh" sample owner/repo 1 HEAD MERGED "$RUN" "$TRUTH" "$FULL" > "$T/eval-score-mv.out" 2>&1
+    assert_eq "score rename failure is reported" "$?" 1
+    assert_grep "score rename failure preserves published score" "$RUN/score.md" '^old score$'
+    [ -z "$(find "$RUN" -maxdepth 1 -name '.score.*' -print -quit)" ] && ok "score rollback removes temporary files" || fail "score rollback removes temporary files"
+
+    MV_FAIL_TARGET= "$E/eval/bench-score.sh" sample owner/repo 1 HEAD MERGED "$RUN" "$TRUTH" "$FULL" > "$T/eval-score-retry.out" 2>&1
+    assert_eq "score retry after rename failure succeeds" "$?" 0
+    assert_grep "score retry replaces old score" "$RUN/score.md" '^complete score$'
   )
 }
 

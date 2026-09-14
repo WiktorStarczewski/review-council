@@ -12,7 +12,7 @@
 # liveness signal (one event per assistant message and tool call); the CPU veto is what prevents false kills
 # during a long silent build. A stall is never counted as an infrastructure failure.
 #
-# CPU and kill both see the whole leg TREE, never just the direct child: the seat CLIs (codex/grok) run as
+# CPU and kill both see the whole leg TREE, never just the direct child: the seat CLIs (codex/claude) run as
 # grandchildren under claude and are where the CPU actually goes, so measuring the child alone reads "frozen"
 # while a seat is mid-run (a false kill) and killing the child alone orphans the seats (leaked usage quota).
 set -u
@@ -21,7 +21,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 # Guarded: without rc_mtime/rc_newest_mtime the stall detector loses the file-activity half of its
 # two-condition kill rule and silently kills healthy legs, so a missing compat.sh is fatal, not a warning.
 . "$HERE/lib/compat.sh" || { echo "stack: cannot load $HERE/lib/compat.sh" >&2; exit 1; }   # rc_mtime / rc_newest_mtime - BSD and GNU stat differ
-# PATH is APPENDED, never prepended: an operator's (or a test's) own claude/codex/grok must keep winning.
+# PATH is APPENDED, never prepended: an operator's (or a test's) own claude/codex must keep winning.
 export PATH="$PATH:$HOME/.nvm/versions/node/v22.22.0/bin:$HOME/.local/bin"
 [ -z "${REV_ACTIVE:-}${REV_STACK_LEG:-}" ] || { echo "stack: refusing to nest (REV_ACTIVE or REV_STACK_LEG is set)" >&2; exit 1; }
 CONFIG=${1:?usage: stack.sh <config.sh>   (template: stack.example.sh next to this script)}

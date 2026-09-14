@@ -42,7 +42,7 @@ SH
     assert_exit "empty → 2" 2 env SHIM_MODE=empty "$SCRIPTS/rev-seat.sh" gemini "$S" 4 "$prompt"
     assert_exit "badjson → 2" 2 env SHIM_MODE=badjson "$SCRIPTS/rev-seat.sh" gemini "$S" 5 "$prompt"
     assert_grep "exit file records 2" "$S/r5-gemini.exit" '^2$'
-    # an answer with no tool calls is not a review - same rule as grok: retry once, then fail the seat
+    # an answer with no tool calls is not a review: retry once, then fail the seat
     SHIM_MODE=notools "$SCRIPTS/rev-seat.sh" gemini "$S" 6 "$prompt" > "$T/gem-nt.out" 2>&1
     assert_eq "no tool calls twice → exit 2" "$?" 2
     assert_grep "log explains" "$S/r6-gemini.log" 'answered without a single tool call \(attempt 2\)'

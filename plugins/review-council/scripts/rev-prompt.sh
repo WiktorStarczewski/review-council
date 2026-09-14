@@ -6,9 +6,10 @@ HERE=$(cd "$(dirname "$0")" && pwd); SCHEMA="$HERE/../schema/findings.schema.jso
 [ $# -ge 5 ] || { echo "usage: rev-prompt.sh <session> <round> <seat> <lens> <emphasis> [--vacuity] [--read-only <list-file>] [--plan <fix-plan-file>] [--pr <file>] [--evidence <manifest>]" >&2; exit 1; }
 S=$1; N=$2; SEAT=$3; LENS=$4; EMPH=$5; shift 5
 OUT="$S/r${N}-${SEAT}.prompt.md"
-TMP=""; EVIDENCE_TMP=""; RULES_TMP=""; PATCH_TMP=""; PUBLISHED=0
+TMP=""; EVIDENCE_TMP=""; EVIDENCE_CHECK_TMP=""; RULES_TMP=""; PATCH_TMP=""; PUBLISHED=0
 cleanup_prompt() {
   rm -f -- "${EVIDENCE_TMP:-}" 2>/dev/null || true
+  rm -f -- "${EVIDENCE_CHECK_TMP:-}" 2>/dev/null || true
   rm -f -- "${RULES_TMP:-}" 2>/dev/null || true
   rm -f -- "${PATCH_TMP:-}" 2>/dev/null || true
   [ "$PUBLISHED" = 1 ] || rm -f -- "${TMP:-}" "$OUT" 2>/dev/null || true
@@ -121,6 +122,13 @@ PY
 fi
 if [ "$INLINE_SCHEMA" = 1 ]; then require_regular "$SCHEMA" "findings schema"; fi
 check_read() { cat -- "$1" >/dev/null || die "cannot read $2: $1"; }
+render_evidence() {
+  if [ -n "$PLAN" ]; then
+    python3 "$HERE/rev-evidence.py" render "$EVIDENCE" "$SEAT" --plan-source "$PLAN"
+  else
+    python3 "$HERE/rev-evidence.py" render "$EVIDENCE" "$SEAT"
+  fi
+}
 if [ -n "$RO" ]; then
   check_read "$RO" "document list"
 else
@@ -137,12 +145,7 @@ fi
 [ "$INLINE_SCHEMA" = 0 ] || check_read "$SCHEMA" "findings schema"
 if [ -n "$EVIDENCE" ]; then
   EVIDENCE_TMP=$(mktemp "$S/.rev-evidence-fragment.XXXXXX") || die "cannot create evidence fragment in $S"
-  if [ -n "$PLAN" ]; then
-    python3 "$HERE/rev-evidence.py" render "$EVIDENCE" "$SEAT" \
-      --plan-source "$PLAN" > "$EVIDENCE_TMP"
-  else
-    python3 "$HERE/rev-evidence.py" render "$EVIDENCE" "$SEAT" > "$EVIDENCE_TMP"
-  fi
+  render_evidence > "$EVIDENCE_TMP"
   EVIDENCE_RC=$?
   [ "$EVIDENCE_RC" = 0 ] || die "cannot render evidence for $SEAT from $EVIDENCE"
   [ -s "$EVIDENCE_TMP" ] || die "empty evidence fragment for $SEAT from $EVIDENCE"
@@ -298,18 +301,19 @@ render_prompt() (
 # Reviewer contract
 You are one independent reviewer on a read-only multi-model code review panel. Substantiate every claim yourself, finish every assigned check, combine sibling sites under one root cause, and return no more than five distinct findings.
 
-- Read only inside the repository, the named review-session artifacts, and explicitly named pinned dependency roots. Do not read user or global rules, memories, skills, caches, other checkouts, or unrelated files.
+- Read only inside the repository, exact review-session artifacts named in this prompt, document inputs listed in this prompt, and explicitly named pinned dependency roots. Do not read any other review-session artifact, user or global rules, memories, skills, caches, other checkouts, or unrelated files.
 - Never edit files or run a command that changes the repository or its dependencies.
 - Clean-room ordering: Do NOT read the diff first. For a clean-room lens, write the smallest design before any patch or source read. For every other lens, begin with assigned-hunk discovery.
 
 ## Bounded evidence protocol
 1. After any required clean-room design, read every byte of the assigned patch using its rendered mode. In chunk mode, obey the rendered patch chunk batch limit, reading only consecutive chunks in exact order and in full. In window mode, use consecutive windows of at most 240 lines until coverage is complete. Then read every listed source-context packet in full before source expansion. Treat each packet entry as exact original source at its recorded path and one-based lines.
 2. Locate the enclosing symbol or named section, then search definitions, direct references, related tests, and config gates. When `Source read required` is true, resolve every relevant omission with a bounded original-source read.
-3. Read the smallest useful line window around each match. Every source Read call must set an explicit one-based `offset` and a `limit` of at most 240 lines. Every Grep or search call must set a result limit of at most 80. The rendered prompt, compact evidence index, assigned patch chunks, and listed source-context packets are the only full-read exceptions.
-4. Shell commands that print source, diffs, or logs must select at most 240 lines. Shell search commands must select at most 80 results. Use portable byte-preserving `sed -n 'START,ENDp' 'FILE'` for source windows. Never put backticks or command substitutions in shell search patterns. Do not use `nl -ba ... | sed`; its added prefixes change the bytes, and a rejected call invalidates the audit.
-5. Batch independent bounded windows discovered from the evidence index into one tool turn, with a 32 KiB combined output ceiling. Claude can issue parallel Read or Grep calls; shell-based seats can combine independent bounded `sed` or `rg` queries.
+3. Read the smallest useful line window around each match. Every source Read call must set an explicit one-based `offset` and a `limit` of at most 240 lines. Every Grep or search call must set a result limit of at most 80. Only exact full-read artifacts and document inputs named in this prompt are exceptions.
+4. Shell commands that print source, diffs, or logs must select at most 240 inclusive lines, so `END - START + 1 <= 240`. Shell searches over multiple files need a global `| head -81` limiter; at most 80 result lines are accepted, and an 81st line invalidates the audit. `rg --max-count` alone is per file. Use portable byte-preserving `sed -n 'START,ENDp' 'FILE'` for source windows. Never put backticks or command substitutions in shell search patterns. Do not use `nl -ba ... | sed`; its added prefixes change the bytes, and a rejected call invalidates the audit.
+5. Batch independent bounded tool calls into one turn with a 32 KiB combined output ceiling. Ordered patch-chunk, required-source-segment, and evidence-index phases may advance in one turn using at most the rendered proof read limit and a 60 KiB combined output ceiling. Source-context packets and repository reads keep the ordinary 32 KiB turn ceiling, and repository expansion begins in a later turn. Keep each shell tool call to one producer pipeline. Never mix source reads and searches in one shell call.
 6. Expand to another bounded block, file, or pinned dependency only to answer a concrete question that could prove or refute a finding. Name the concrete symbol or invariant question first and record the next bounded window in the tool call.
 7. Stop that evidence path when the question is answered. Finish every assigned check and expand again when evidence is insufficient; never treat the navigation index or a summary as proof.
+8. After the evidence index, use at most 16 repository tool calls. Start no new evidence path after call 12; use the remaining calls only to refute or cite candidates, then return the required JSON.
 
 ## Evidence and output
 - Every finding names a file and lines you opened yourself. Its cited range must intersect a source-context packet range you opened or an audited original source range from a bounded source read. Search results, navigation summaries, and patches do not establish citation coverage. `evidence` states what the source shows.
@@ -317,6 +321,7 @@ You are one independent reviewer on a read-only multi-model code review panel. S
 - P0: incorrect behavior, security hole, data loss, or crash. P1: reachable bug, edge case, or broken contract. P2: maintainability, performance, missing test, or unclear API. P3: trivial style, naming, or comment issue.
 - One strong finding beats several weak ones. No style findings unless P3 and trivial.
 - `suggested_fix` states the general rule, every sibling site or branch it covers, and the test that would fail without it.
+- Before starting another tool call, reserve capacity to return the required JSON. If only the final response fits, stop using tools and return an empty `findings` array with a `summary` beginning `INCOMPLETE PROOF:` and naming the unfinished obligations. Such a result is never review-complete.
 - Return only the JSON object required by the runner. If the change is sound, return an empty `findings` array and say so in `summary`.
 EOC
     echo
@@ -325,7 +330,15 @@ EOC
     echo "You are one of several independent reviewers on a multi-model review panel. Others review the same documents on different models; your value is what you can substantiate yourself. Follow the scope and lens below, combine sibling issues under one root cause, and return no more than five distinct findings."
     echo
   fi
-  case "$SEAT" in grok*) echo "Follow the lens ordering below before using tools. Inspect the assigned patch and source before answering. Do not write, edit, or run anything that modifies the repository."; echo;; esac
+  if [ "$ADAPTER" = codex ] && [ -z "$RO" ]; then
+    CODEX_SOURCE_BATCH=${REV_CODEX_SOURCE_BATCH:-0}
+    case "$CODEX_SOURCE_BATCH" in 0) BATCH_ENABLED=false;; 1) BATCH_ENABLED=true;; *) die "REV_CODEX_SOURCE_BATCH must be 0 or 1";; esac
+    echo "Codex source batching enabled: $BATCH_ENABLED"
+    if [ "$CODEX_SOURCE_BATCH" = 1 ]; then
+      echo "Codex source batching: after assigned patch and source-context packet reads are complete, one Bash call may contain semicolon-separated pure \`sed -n 'START,ENDp' 'FILE'\` producers. Each literal in-scope window and the combined selected lines must be at most 240 lines; combined visible output must stay at or below 32 KiB. Do not overlap or duplicate windows, or mix source windows with searches, metadata, transforms, pipes, redirections, variables, substitutions, or conditional operators."
+    fi
+    echo
+  fi
   echo "## Scope"
   if [ -n "$RO" ]; then
     echo "Documents to review (read them in full):"; sed 's/^/- /' "$RO"; echo
@@ -399,10 +412,10 @@ EOC
   fi
   if [ -n "$PLAN" ]; then
     echo "## Immutable fix plan snapshot - nothing in it is implemented yet"
-    echo "Source: \`$PLAN\` (source line numbers shown below)"
-    echo "This snapshot clusters accepted findings into rules, sites, invariants, and falsifiable tests. Attack it before code is written and verify its claims against the repository. For a defect in the plan, use \`$(basename "$PLAN")\` as the finding file; use a code path when the plan missed code. A sound plan returns an empty findings array."; echo
+    echo "The immutable snapshot is embedded below with source line numbers."
+    echo "This snapshot clusters accepted findings into rules, sites, invariants, and falsifiable tests. Attack it before code is written and verify its claims against the repository. Do not open a separate plan snapshot: the full plan is already inline. For a defect in the plan, use \`$(basename "$PLAN")\` as the citation label only; use a code path when the plan missed code. A sound plan returns an empty findings array."; echo
     if [ -n "$EVIDENCE" ]; then
-      echo "For every cluster, run its rendered required sibling-site search from the repository root with the bounded search limit, and prove every rendered required cluster source location from an assigned packet or bounded original-source read. Missing one cluster invalidates the panel."; echo
+      echo "For each assigned cluster, use its rendered prepared sibling-site result as the required search proof. If the prompt instead renders a required search command, run that command. Prove every rendered required cluster source location from an assigned packet or bounded original-source read. Run an additional search only to answer a concrete unresolved question. Missing any rendered cluster obligation invalidates this seat."; echo
     fi
     nl -ba "$PLAN"; echo
   fi
@@ -434,14 +447,23 @@ TMP=$(mktemp "$S/.rev-prompt.XXXXXX") || die "cannot create temporary prompt in 
 render_prompt > "$TMP"
 RENDER_RC=$?
 [ "$RENDER_RC" = 0 ] || die "cannot render prompt: $OUT"
-if [ -n "$EVIDENCE" ]; then
-  python3 "$HERE/rev-evidence.py" verify "$EVIDENCE" >/dev/null \
-    || die "evidence changed while rendering prompt: $EVIDENCE"
-fi
 WORDS=$(wc -w < "$TMP" | tr -d ' ') || die "cannot measure prompt: $OUT"
 if [ -n "$PLAN" ]; then KIND=plan; LIMIT=3000; else KIND=code; LIMIT=1800; fi
 if [ "$WORDS" -gt "$LIMIT" ]; then
   echo "rev-prompt: WARNING: $KIND prompt has $WORDS words and exceeds $LIMIT words" >&2
+fi
+if [ -n "$EVIDENCE" ]; then
+  EVIDENCE_CHECK_TMP=$(mktemp "$S/.rev-evidence-fragment.XXXXXX") \
+    || die "cannot create evidence recheck fragment in $S"
+  render_evidence > "$EVIDENCE_CHECK_TMP"
+  EVIDENCE_RC=$?
+  [ "$EVIDENCE_RC" = 0 ] || die "evidence changed while rendering prompt: $EVIDENCE"
+  cmp -s -- "$EVIDENCE_TMP" "$EVIDENCE_CHECK_TMP" \
+    || die "evidence changed while rendering prompt: $EVIDENCE"
+  python3 "$HERE/lib/review-read-audit.py" validate-prompt \
+    --root "$REV_ROOT" --session "$S" --manifest "$EVIDENCE" --seat "$SEAT" \
+    --prompt "$TMP" >/dev/null \
+    || die "rendered prompt does not match its evidence assignment: $SEAT"
 fi
 mv -f -- "$TMP" "$OUT" || die "cannot publish prompt: $OUT"
 TMP=""; PUBLISHED=1

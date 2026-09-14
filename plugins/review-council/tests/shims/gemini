@@ -3,6 +3,7 @@
 # Records argv to $SHIM_ARGS_FILE and stdin to $SHIM_ARGS_FILE.stdin (the prompt travels on stdin).
 [ -n "${SHIM_ARGS_FILE:-}" ] && printf '%s\n' "$@" > "$SHIM_ARGS_FILE" && printf 'REV_ACTIVE=%s\ncwd=%s\n' "${REV_ACTIVE:-unset}" "$PWD" >> "$SHIM_ARGS_FILE.env"
 case "${1:-}" in --version|-v) echo "0.58.0"; exit 0;; esac
+[ -z "${SHIM_PROBE_DELAY:-}" ] || { printf '%s\n' "$@" | grep -Fxq 'Reply with exactly OK' && sleep "$SHIM_PROBE_DELAY"; }
 STDIN=$(cat); [ -n "${SHIM_ARGS_FILE:-}" ] && printf '%s' "$STDIN" > "$SHIM_ARGS_FILE.stdin"
 case "${SHIM_MODE:-ok}" in
   notauth)   echo 'Error: Please set an Auth method in your settings or run `gemini` to log in.' >&2; exit 1;;

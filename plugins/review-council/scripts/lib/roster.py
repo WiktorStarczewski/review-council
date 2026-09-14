@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the review-council reviewer roster from whichever lab CLIs are installed and signed in.
 
-    roster.sh [--json|--brief] [--probe] [--write <file>]
+    roster.sh [--json|--brief] [--probe] [--quota-failed-seat <seat>] [--write <file>]
 
 Detection is CHEAP by default - a binary on PATH, one status command, a cache or credentials file -
 because session start prints the `--brief` line on every startup and must never call a model.
@@ -16,12 +16,16 @@ The JSON is printed either way and `excluded[]` says why each CLI is missing. St
 """
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import re
+import selectors
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 
@@ -29,27 +33,30 @@ EFFORTS = ('max', 'xhigh', 'high')   # highest first; a mid tier is never seated
 PANEL = 3                            # seats a round needs; a thinner roster is padded, never refused
 LOGIN_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_LOGIN_TIMEOUT', '20'))   # a wedged status command must not hang session start
 PROBE_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_PROBE_TIMEOUT', '60'))
+_ACTIVE_PROCESSES = {}
+_ACTIVE_LOCK = threading.RLock()
+_CANCELLED = threading.Event()
+_LAUNCH_STATE = threading.local()
 
 CODEX_HOST = os.environ.get('REVIEW_COUNCIL_HOST') == 'codex'
-LABS = {'codex': 'openai', 'grok': 'xai', 'gemini': 'google', 'agent': 'anthropic', 'claude': 'anthropic'}
+LABS = {'codex': 'openai', 'gemini': 'google', 'agent': 'anthropic', 'claude': 'anthropic'}
 # the name an adapter answers to in the --brief line, in `excluded[].cli` and in config `exclude`
-NAMES = {'codex': 'codex', 'grok': 'grok', 'gemini': 'gemini', 'agent': 'claude', 'claude': 'claude'}
-ORDER = ('codex', 'grok', 'gemini', 'claude' if CODEX_HOST else 'agent')
+NAMES = {'codex': 'codex', 'gemini': 'gemini', 'agent': 'claude', 'claude': 'claude'}
+ORDER = ('codex', 'gemini', 'claude' if CODEX_HOST else 'agent')
 # (adapter, seat, mode, round) - an extra pass is seated whenever its lab has a seat
-EXTRAS = (('codex', 'codex-review', 'review', 3), ('grok', 'grok-code-review', 'code-review', 4))
+EXTRAS = (('codex', 'codex-review', 'review', 3),)
 
 GEN = re.compile(r'^gpt-(\d+)(?:\.(\d+))?(?:-|$)')  # gpt-6-astra and gpt-5.6-sol
-GROK_VER = re.compile(r'grok-(\d+)\.(\d+)')
 
 PROBE_CMD = {
-    'claude': lambda m: ['claude', '-p', 'Reply with exactly OK', '--model', m,
+    'claude': lambda m, e: ['claude', '-p', 'Reply with exactly OK', '--model', m,
+                         '--effort', e,
                          '--permission-mode', 'plan', '--tools', '', '--setting-sources', '',
                          '--strict-mcp-config', '--no-session-persistence', '--max-turns', '1'],
-    'codex':  lambda m: ['codex', 'exec', '--ephemeral', '--skip-git-repo-check', '-s', 'read-only', '-m', m,
+    'codex':  lambda m, e: ['codex', 'exec', '--ephemeral', '--skip-git-repo-check',
+                         '-s', 'read-only', '-m', m, '-c', 'model_reasoning_effort=' + e,
                          'Reply with exactly OK'],
-    'grok':   lambda m: ['grok', '-p', 'Reply with exactly OK', '-m', m, '--permission-mode', 'plan',
-                         '--output-format', 'json', '--max-turns', '1'],
-    'gemini': lambda m: ['gemini', '-p', 'Reply with exactly OK', '-m', m, '--approval-mode', 'plan',
+    'gemini': lambda m, _e: ['gemini', '-p', 'Reply with exactly OK', '-m', m, '--approval-mode', 'plan',
                          '-o', 'json'],
 }
 
@@ -59,19 +66,178 @@ def env_path(var, default):
     return os.environ.get(var) or os.path.expanduser(default)
 
 
+def register_process(process):
+    with _ACTIVE_LOCK:
+        _ACTIVE_PROCESSES[process.pid] = process
+        cancelled = _CANCELLED.is_set()
+    if cancelled:
+        terminate_process_group(process)
+        unregister_process(process)
+        return False
+    return True
+
+
+def unregister_process(process):
+    with _ACTIVE_LOCK:
+        _ACTIVE_PROCESSES.pop(process.pid, None)
+
+
+def begin_process_launch():
+    _LAUNCH_STATE.depth = getattr(_LAUNCH_STATE, 'depth', 0) + 1
+
+
+def finish_process_launch():
+    depth = _LAUNCH_STATE.depth - 1
+    _LAUNCH_STATE.depth = depth
+    if depth == 0 and hasattr(_LAUNCH_STATE, 'pending_signal'):
+        signum = _LAUNCH_STATE.pending_signal
+        del _LAUNCH_STATE.pending_signal
+        cancel_active_process_groups()
+        raise SystemExit(128 + signum)
+
+
 def run(cmd, timeout):
     """Run cmd with no stdin. → (rc, stdout, stderr); rc is None on timeout, 127 if it cannot start."""
     try:
-        p = subprocess.run(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return None, '', ''
+        output_limit = int(os.environ.get('REVIEW_COUNCIL_PROVIDER_OUTPUT_BYTES', 1024 * 1024))
+    except ValueError:
+        output_limit = 1024 * 1024
+    if output_limit < 256 or output_limit > 64 * 1024 * 1024:
+        output_limit = 1024 * 1024
+    p = None
+    begin_process_launch()
+    try:
+        try:
+            p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, start_new_session=True)
+            registered = register_process(p)
+        finally:
+            finish_process_launch()
     except OSError as exc:
         return 127, '', str(exc)
+    except BaseException:
+        if p is not None:
+            terminate_process_group(p)
+            unregister_process(p)
+            p.stdout.close()
+            p.stderr.close()
+        raise
+    if not registered:
+        p.stdout.close(); p.stderr.close()
+        return 125, '', 'provider command cancelled'
+    selector = selectors.DefaultSelector()
+    streams = {p.stdout: bytearray(), p.stderr: bytearray()}
+    total = 0
+    failure = None
+    try:
+        for stream in streams:
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ)
+        deadline = time.monotonic() + timeout
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                failure = 'timeout'
+                break
+            for key, _ in selector.select(min(0.05, remaining)):
+                stream = key.fileobj
+                try:
+                    chunk = os.read(stream.fileno(), 65536)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    selector.unregister(stream)
+                    continue
+                total += len(chunk)
+                if total > output_limit:
+                    failure = 'output'
+                    break
+                streams[stream].extend(chunk)
+            if failure is not None:
+                break
+        if failure is None:
+            remaining = max(0, deadline - time.monotonic())
+            try:
+                p.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                failure = 'timeout'
+        if failure is None and process_group_alive(p.pid):
+            failure = 'descendant'
+    except BaseException:
+        terminate_process_group(p)
+        raise
+    finally:
+        if failure is not None:
+            terminate_process_group(p)
+        selector.close()
+        for stream in streams:
+            stream.close()
+        unregister_process(p)
+    if failure is not None:
+        if failure == 'timeout':
+            return None, '', ''
+        if failure == 'descendant':
+            return 125, '', 'provider command left a descendant process running'
+        return 125, '', 'provider command output limit exceeded'
     dec = lambda b: (b or b'').decode('utf-8', 'replace')
     if os.environ.get('REVIEW_COUNCIL_DEBUG'):
-        sys.stderr.write('roster debug: %s → rc=%s\n  stdout: %r\n  stderr: %r\n' % (' '.join(cmd), p.returncode, dec(p.stdout)[:400], dec(p.stderr)[:400]))
-    return p.returncode, dec(p.stdout), dec(p.stderr)
+        sys.stderr.write('roster debug: %s → rc=%s\n  stdout: %r\n  stderr: %r\n' % (
+            ' '.join(cmd), p.returncode, dec(streams[p.stdout])[:400],
+            dec(streams[p.stderr])[:400]))
+    return p.returncode, dec(streams[p.stdout]), dec(streams[p.stderr])
+
+
+def process_group_alive(pid):
+    try:
+        os.killpg(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def terminate_process_groups(processes):
+    processes = list({process.pid: process for process in processes}.values())
+    for process in processes:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline and any(
+            process_group_alive(process.pid) for process in processes):
+        time.sleep(0.02)
+    for process in processes:
+        if process_group_alive(process.pid):
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+    for process in processes:
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=1)
+
+
+def terminate_process_group(process):
+    terminate_process_groups([process])
+
+
+def cancel_active_process_groups():
+    _CANCELLED.set()
+    with _ACTIVE_LOCK:
+        processes = list(_ACTIVE_PROCESSES.values())
+    terminate_process_groups(processes)
+
+
+def cancellation_signal(signum, _frame):
+    _CANCELLED.set()
+    if getattr(_LAUNCH_STATE, 'depth', 0):
+        _LAUNCH_STATE.pending_signal = signum
+        return
+    cancel_active_process_groups()
+    raise SystemExit(128 + signum)
 
 
 def first_line(text, limit=200):
@@ -188,31 +354,32 @@ def codex_seat_names(models):
     return names
 
 
-NEGATIVE = ('not logged in', 'not signed in', 'login required', 'please log in', 'run `codex login`', 'run codex login', 'run grok login')
+NEGATIVE = ('not logged in', 'not signed in', 'login required', 'please log in',
+            'run `codex login`', 'run codex login')
 
 
 def status_check(cmd, positive):
-    """→ (ok, reason). A transient non-zero exit (no sign-out text) is retried once after 1 s and, if it
-    persists, reported as a failed check - never as a sign-out, which is a different message to the user."""
+    """Return (ok, reason, output), retaining the successful check output for callers that need it."""
     rc, out, err = run(cmd, LOGIN_TIMEOUT)
     if rc is None:
-        return False, 'sign-in check timed out'
+        return False, 'sign-in check timed out', ''
     low = (out + err).lower()
     if any(n in low for n in NEGATIVE):
-        return False, 'not signed in'
+        return False, 'not signed in', out + err
     if rc != 0:
         time.sleep(1)
         rc, out, err = run(cmd, LOGIN_TIMEOUT)
         if rc is None:
-            return False, 'sign-in check timed out'
+            return False, 'sign-in check timed out', ''
         low = (out + err).lower()
         if any(n in low for n in NEGATIVE):
-            return False, 'not signed in'
+            return False, 'not signed in', out + err
         if rc != 0:
-            return False, 'status check failed: %s' % (first_line(err) or first_line(out) or 'exit %s' % rc)
+            reason = first_line(err) or first_line(out) or 'exit %s' % rc
+            return False, 'status check failed: %s' % reason, out + err
     if positive.lower() not in low:
-        return False, 'not signed in'
-    return True, None
+        return False, 'not signed in', out + err
+    return True, None, out + err
 
 
 def detect_codex(cfg):
@@ -237,7 +404,7 @@ def detect_codex(cfg):
                        % (label, verb, ', '.join(unsupported))
     if shutil.which('codex') is None:
         return [], 'not installed'
-    ok, reason = status_check(['codex', 'login', 'status'], 'logged in')
+    ok, reason, _ = status_check(['codex', 'login', 'status'], 'logged in')
     if not ok:
         return [], reason
     if listed is None:
@@ -251,21 +418,6 @@ def detect_codex(cfg):
             for name, (slug, effort) in zip(codex_seat_names(models), models)], None
 
 
-def detect_grok(cfg):
-    if shutil.which('grok') is None:
-        return [], 'not installed'
-    ok, reason = status_check(['grok', 'models'], 'logged in')
-    if not ok:
-        return [], reason
-    rc, out, err = run(['grok', 'models'], LOGIN_TIMEOUT)   # the model list itself (cheap, cached by grok)
-    text = out + err
-    versions = [(int(a), int(b)) for a, b in GROK_VER.findall(text)]
-    if not versions:
-        return [], 'no grok model listed'
-    major, minor = max(versions)
-    return [make_seat('grok', 'grok', 'grok-%d.%d' % (major, minor), 'xhigh')], None
-
-
 def detect_gemini(cfg):
     if shutil.which('gemini') is None:
         return [], 'not installed'
@@ -277,6 +429,8 @@ def detect_gemini(cfg):
 
 
 def claude_seat_count(cfg):
+    if 'claude_models' in cfg and 'claude_seats' in cfg:
+        return None, 'claude_models and claude_seats are mutually exclusive'
     if 'claude_seats' in cfg:
         value = cfg.get('claude_seats')
         if not isinstance(value, int) or isinstance(value, bool) or not 0 <= value <= 4:
@@ -288,26 +442,52 @@ def claude_seat_count(cfg):
     return value, None
 
 
+def claude_models_setting(cfg):
+    if 'claude_models' in cfg and 'claude_seats' in cfg:
+        return None, 'claude_models and claude_seats are mutually exclusive'
+    if 'claude_models' not in cfg:
+        return None, None
+    raw = cfg.get('claude_models')
+    valid = (isinstance(raw, list) and 1 <= len(raw) <= 2
+             and all(model in ('opus', 'sonnet') for model in raw)
+             and len(set(raw)) == len(raw))
+    if not valid:
+        return None, 'invalid claude_models: expected 1 or 2 unique values from opus and sonnet'
+    return raw, None
+
+
+def claude_model_seat_names(models):
+    return list(models)
+
+
 def opus_seats(adapter, count):
     return [make_seat('opus' if index == 0 else 'opus-%d' % (index + 1),
                       adapter, 'opus', 'max') for index in range(count)]
 
 
-def detect_agent(cfg):
+def claude_seats(adapter, cfg):
+    models, config_error = claude_models_setting(cfg)
+    if config_error:
+        return [], config_error
     count, config_error = claude_seat_count(cfg)
     if config_error:
         return [], config_error
     if count == 0:
         return [], 'disabled'
-    return opus_seats('agent', count), None
+    if models is None:
+        return opus_seats(adapter, count), None
+    return [make_seat(name, adapter, model, 'max')
+            for name, model in zip(claude_model_seat_names(models), models)], None
+
+
+def detect_agent(cfg):
+    return claude_seats('agent', cfg)
 
 
 def detect_claude(cfg):
-    count, config_error = claude_seat_count(cfg)
-    if config_error:
-        return [], config_error
-    if count == 0:
-        return [], 'disabled'
+    seats, reason = claude_seats('claude', cfg)
+    if reason:
+        return [], reason
     if shutil.which('claude') is None:
         return [], 'not installed'
     rc, out, _ = run(['claude', 'auth', 'status', '--json'], LOGIN_TIMEOUT)
@@ -319,10 +499,10 @@ def detect_claude(cfg):
         return [], 'sign-in check failed'
     if rc != 0 or not isinstance(status, dict) or status.get('loggedIn') is not True:
         return [], 'not signed in'
-    return opus_seats('claude', count), None
+    return seats, None
 
 
-DETECT = {'codex': detect_codex, 'grok': detect_grok, 'gemini': detect_gemini,
+DETECT = {'codex': detect_codex, 'gemini': detect_gemini,
           'agent': detect_agent, 'claude': detect_claude}
 
 
@@ -385,15 +565,162 @@ def enforce_codex_models(cfg, seats, excluded):
     return kept
 
 
+def enforce_claude_models(cfg, seats, excluded):
+    allowed, config_error = claude_models_setting(cfg)
+    if allowed is None or config_error:
+        return seats
+    adapter = 'claude' if CODEX_HOST else 'agent'
+    required = dict(zip(claude_model_seat_names(allowed), allowed))
+    kept, seen = [], set()
+    for seat in seats:
+        if seat['adapter'] != adapter:
+            kept.append(seat)
+            continue
+        if seat['model'] not in allowed:
+            excluded.append({'cli': seat['seat'],
+                             'reason': 'pinned model %s is outside claude_models'
+                                       % seat['model']})
+            continue
+        if not seat['extra'] and seat['seat'] in required \
+                and seat['model'] != required[seat['seat']]:
+            excluded.append({
+                'cli': seat['seat'],
+                'reason': 'pinned model %s does not match required model %s'
+                          % (seat['model'], required[seat['seat']]),
+            })
+            continue
+        if not seat['extra'] and seat['model'] in seen:
+            excluded.append({'cli': seat['seat'],
+                             'reason': 'pinned model %s duplicates another Claude seat'
+                                       % seat['model']})
+            continue
+        if not seat['extra'] and seat.get('effort') != 'max':
+            excluded.append({'cli': seat['seat'],
+                             'reason': 'pinned effort %s does not match required effort max'
+                                       % seat.get('effort')})
+            continue
+        if not seat['extra']:
+            seen.add(seat['model'])
+        kept.append(seat)
+    return kept
+
+
+AUTH_FAILURE = re.compile(
+    r"not logged in|login required|please (?:log|sign) in|run codex login|to log in|"
+    r"auth(?:entication)? (?:method|required)|[^0-9]401[^0-9]|unauthori[sz]ed",
+    re.IGNORECASE,
+)
+QUOTA_FAILURE = re.compile(
+    r"usage limit|rate limit|too many requests|[^0-9]429[^0-9]|quota exceeded|"
+    r"resource_exhausted|capacity exhausted|credit balance|insufficient credits|"
+    r"out of credits|hit your limit",
+    re.IGNORECASE,
+)
+
+
+def provider_stream_errors(adapter, output):
+    errors = []
+    if adapter not in ('codex', 'gemini', 'claude'):
+        return errors
+    for line in (output or '').splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get('type') == 'error' or event.get('is_error') is True \
+                or event.get('subtype') == 'error':
+            errors.append(json.dumps(event, ensure_ascii=False))
+    return errors
+
+
+def classify_provider_failure(adapter, stdout='', stderr='', summary_log=None):
+    if summary_log is not None:
+        lines = []
+        for line in summary_log.splitlines():
+            if re.match(r'^(?:text|exec|done): |^tool_call ', line):
+                continue
+            lines.append(line)
+        cli_text = '\n'.join(lines)
+    else:
+        cli_text = '\n'.join([stderr or ''] + provider_stream_errors(adapter, stdout))
+    if AUTH_FAILURE.search(cli_text):
+        return 'auth', 'authentication unavailable'
+    if QUOTA_FAILURE.search(cli_text):
+        return 'quota', 'quota exhausted'
+    return 'other', 'unclassified provider failure'
+
+
 def probe_seat(s):
-    """→ None if the seat answers, else the exclusion reason."""
-    rc, out, err = run(PROBE_CMD[s['adapter']](s['model']), PROBE_TIMEOUT)
+    """Return (reason, class, sanitized cause), with reason None when the seat answers."""
+    rc, out, err = run(PROBE_CMD[s['adapter']](s['model'], s.get('effort')), PROBE_TIMEOUT)
     if rc is None:
-        return 'probe timed out'
+        return 'probe timed out', 'other', 'probe timed out'
     if rc == 0:
-        return None
+        return None, None, None
     line = first_line(err) or first_line(out)
-    return 'probe failed: %s' % line if line else 'probe failed'
+    failure_class, cause = classify_provider_failure(s['adapter'], out, err)
+    reason = 'probe failed: %s' % line if line else 'probe failed'
+    return reason, failure_class, cause
+
+
+def quota_fallback_setting(cfg):
+    value = cfg.get('quota_fallback', False)
+    if not isinstance(value, bool):
+        return False, 'invalid quota_fallback: expected true or false'
+    return value, None
+
+
+def fallback_target(source, seats, probe_results, unavailable=()):
+    if source['lab'] == 'anthropic':
+        candidates = [s for s in seats if not s['extra'] and s['adapter'] == 'codex'
+                      and codex_suffix(s['model']) == 'terra']
+    elif source['lab'] == 'openai':
+        candidates = [s for s in seats if not s['extra']
+                      and s['adapter'] in ('agent', 'claude') and s['model'] == 'sonnet']
+    else:
+        return None
+    for candidate in candidates:
+        if candidate['seat'] in unavailable:
+            continue
+        key = (candidate['adapter'], candidate['model'], candidate.get('effort'))
+        result = probe_results.get(key)
+        if result is not None and result[0] is None:
+            return candidate
+    return None
+
+
+def fallback_seat(target, source, used, counters):
+    family = 'codex-terra' if target['adapter'] == 'codex' else 'claude-sonnet'
+    counters[family] = counters.get(family, 0) + 1
+    name = '%s-fallback-%d' % (family, counters[family])
+    while name in used:
+        counters[family] += 1
+        name = '%s-fallback-%d' % (family, counters[family])
+    used.add(name)
+    substitute = make_seat(name, target['adapter'], target['model'], target.get('effort'))
+    substitute['padded'] = True
+    substitute['substitutes_for'] = source['seat']
+    return substitute
+
+
+def quota_handoff_error(names, do_probe, fallback_enabled, seats):
+    if not names:
+        return None
+    if not do_probe:
+        return '--quota-failed-seat requires --probe'
+    if not fallback_enabled:
+        return '--quota-failed-seat requires quota_fallback: true'
+    if len(set(names)) != len(names):
+        return 'duplicate --quota-failed-seat value'
+    current = {seat['seat']: seat for seat in seats}
+    for name in names:
+        seat = current.get(name)
+        if seat is None or seat['extra'] or seat['lab'] not in ('openai', 'anthropic'):
+            return ('invalid --quota-failed-seat %s: expected a current non-extra '
+                    'OpenAI or Anthropic seat' % name)
+    return None
 
 
 def min_labs_setting(cfg):
@@ -415,11 +742,13 @@ def configured_lab_capacity(cfg):
         if {NAMES[adapter], adapter, lab} & dropped:
             continue
         if lab == 'anthropic':
+            models, models_error = claude_models_setting(cfg)
             count, error = claude_seat_count(cfg)
-            if error or count == 0:
+            if models_error or error or count == 0:
                 continue
-            names = {'opus' if index == 0 else 'opus-%d' % (index + 1)
-                     for index in range(count)}
+            names = (set(claude_model_seat_names(models)) if models is not None else
+                     {'opus' if index == 0 else 'opus-%d' % (index + 1)
+                      for index in range(count)})
             if names and names <= dropped:
                 continue
         labs.add(lab)
@@ -458,6 +787,28 @@ def claude_pin_conflict(cfg, count):
     return None
 
 
+def claude_models_pin_conflict(cfg, allowed):
+    pins = cfg.get('pin') if isinstance(cfg.get('pin'), dict) else {}
+    seen = set()
+    for seat, default_model in zip(claude_model_seat_names(allowed), allowed):
+        pin = pins.get(seat)
+        model = pin.get('model') if isinstance(pin, dict) else None
+        model = model if isinstance(model, str) and model else default_model
+        effort = pin.get('effort') if isinstance(pin, dict) else None
+        effort = effort if isinstance(effort, str) and effort else 'max'
+        if model not in allowed:
+            return seat, 'pinned model %s is outside claude_models' % model
+        if model != default_model:
+            return seat, 'pinned model %s does not match required model %s' \
+                         % (model, default_model)
+        if model in seen:
+            return seat, 'pinned model %s duplicates another Claude seat' % model
+        if effort != 'max':
+            return seat, 'pinned effort %s does not match required effort max' % effort
+        seen.add(model)
+    return None
+
+
 def append_exclusion(excluded, cli, reason):
     entry = {'cli': cli, 'reason': reason}
     if entry not in excluded:
@@ -479,6 +830,10 @@ def enforce_exact_seats(cfg, seats, excluded):
     for a model or independent run that the configuration explicitly required.
     """
     strict_class, strict_reason = None, None
+    _, fallback_error = quota_fallback_setting(cfg)
+    if fallback_error:
+        append_exclusion(excluded, 'quota_fallback', 'strict: %s' % fallback_error)
+        strict_class, strict_reason = 'config', fallback_error
     floor, floor_error = min_labs_setting(cfg)
     if floor_error:
         append_exclusion(excluded, 'min_labs', 'strict: %s' % floor_error)
@@ -497,11 +852,14 @@ def enforce_exact_seats(cfg, seats, excluded):
         pin_conflict = codex_pin_conflict(cfg, allowed)
         if pin_conflict:
             append_exclusion(excluded, pin_conflict[0], pin_conflict[1])
-        matched = [s for s in seats
-                   if s['adapter'] == 'codex' and not s['extra'] and not s.get('padded')
-                   and s['model'] in allowed]
-        expected = {'codex', 'openai'} | set(
-            codex_seat_names([(slug, None) for slug in allowed]))
+        required_names = set(codex_seat_names([(slug, None) for slug in allowed]))
+        matched = {s.get('substitutes_for') for s in seats
+                   if not s['extra'] and s.get('substitutes_for') in required_names}
+        matched.update(s['seat'] for s in seats
+                       if s['adapter'] == 'codex' and not s['extra']
+                       and not s.get('padded') and s['seat'] in required_names
+                       and s['model'] in allowed)
+        expected = {'codex', 'openai'} | required_names
         config_reason = None
         if pin_conflict:
             config_reason = '%s: %s' % pin_conflict
@@ -533,33 +891,87 @@ def enforce_exact_seats(cfg, seats, excluded):
             strict_class, strict_reason = strict_winner(
                 strict_class, strict_reason, 'config', config_reason)
 
+    allowed_claude, claude_models_error = claude_models_setting(cfg)
+    if claude_models_error:
+        append_exclusion(excluded, 'claude_models', 'strict: %s' % claude_models_error)
+        strict_class, strict_reason = strict_winner(
+            strict_class, strict_reason, 'config', claude_models_error)
+    elif allowed_claude is not None:
+        adapter = 'claude' if CODEX_HOST else 'agent'
+        pin_conflict = claude_models_pin_conflict(cfg, allowed_claude)
+        if pin_conflict:
+            append_exclusion(excluded, pin_conflict[0], pin_conflict[1])
+        required_names = set(claude_model_seat_names(allowed_claude))
+        matched = {s.get('substitutes_for') for s in seats
+                   if not s['extra'] and s.get('substitutes_for') in required_names}
+        matched.update(s['seat'] for s in seats
+                       if s['adapter'] == adapter and not s['extra']
+                       and not s.get('padded') and s['seat'] in required_names
+                       and s['model'] in allowed_claude and s.get('effort') == 'max')
+        expected = {'claude', 'agent', 'anthropic'} | required_names
+        if cfg.get('claude_seat') is False:
+            config_reason = 'claude_models conflicts with claude_seat: false'
+        elif os.environ.get('REVIEW_COUNCIL_CLAUDE_SEAT') == '0':
+            config_reason = 'claude_models conflicts with REVIEW_COUNCIL_CLAUDE_SEAT=0'
+        elif pin_conflict:
+            config_reason = '%s: %s' % pin_conflict
+        elif expected & excluded_names(cfg):
+            config_reason = '%s: excluded by config' \
+                            % sorted(expected & excluded_names(cfg))[0]
+        else:
+            config_reason = next(
+                ('%s: %s' % (entry.get('cli'), entry.get('reason'))
+                 for entry in excluded
+                 if entry.get('cli') in expected
+                 and (entry.get('reason') == 'excluded by config'
+                      or str(entry.get('reason', '')).startswith(('pinned model ',
+                                                                  'pinned effort ')))),
+                None,
+            )
+        if len(matched) != len(allowed_claude):
+            summary = 'claude_models requires %d matching seat(s), %d survived' \
+                      % (len(allowed_claude), len(matched))
+            append_exclusion(excluded, 'claude_models', 'strict: ' + summary)
+            cause = 'config' if config_reason else 'availability'
+            strict_class, strict_reason = strict_winner(
+                strict_class, strict_reason, cause, config_reason or summary)
+        elif config_reason:
+            append_exclusion(excluded, 'claude_models',
+                             'strict: claude_models conflicts with configuration')
+            strict_class, strict_reason = strict_winner(
+                strict_class, strict_reason, 'config', config_reason)
+
     raw_claude = cfg.get('claude_seats') if 'claude_seats' in cfg else None
     claude_disabled = (os.environ.get('REVIEW_COUNCIL_CLAUDE_SEAT') == '0'
                        or cfg.get('claude_seat') is False)
     valid_claude = (isinstance(raw_claude, int) and not isinstance(raw_claude, bool)
                     and 0 <= raw_claude <= 4)
-    if 'claude_seats' in cfg and not valid_claude:
+    if 'claude_models' not in cfg and 'claude_seats' in cfg and not valid_claude:
         reason = 'invalid claude_seats: expected an integer from 0 to 4'
         append_exclusion(excluded, 'claude_seats', 'strict: %s' % reason)
         strict_class, strict_reason = strict_winner(
             strict_class, strict_reason, 'config', reason)
-    valid_positive = valid_claude and raw_claude > 0
+    valid_positive = ('claude_models' not in cfg and valid_claude and raw_claude > 0)
     if valid_positive and not claude_disabled:
         adapter = 'claude' if CODEX_HOST else 'agent'
         pin_conflict = claude_pin_conflict(cfg, raw_claude)
         if pin_conflict:
             append_exclusion(excluded, pin_conflict[0], pin_conflict[1])
-        matched = [s for s in seats
-                   if s['adapter'] == adapter and not s['extra'] and not s.get('padded')
-                   and opus_model(s.get('model'))]
+        required_names = {
+            'opus' if index == 0 else 'opus-%d' % (index + 1)
+            for index in range(raw_claude)
+        }
+        matched = {s.get('substitutes_for') for s in seats
+                   if not s['extra'] and s.get('substitutes_for') in required_names}
+        matched.update(s['seat'] for s in seats
+                       if s['adapter'] == adapter and not s['extra']
+                       and not s.get('padded') and s['seat'] in required_names
+                       and opus_model(s.get('model')))
         if len(matched) != raw_claude:
             summary = 'claude_seats requires %d matching seat(s), %d survived' \
                       % (raw_claude, len(matched))
             append_exclusion(excluded, 'claude_seats', 'strict: ' + summary)
-            expected = {'claude', 'agent', 'anthropic'} | {
-                'opus' if index == 0 else 'opus-%d' % (index + 1)
-                for index in range(raw_claude)
-            }
+            expected = {'claude', 'agent', 'anthropic'} | required_names
             if pin_conflict:
                 config_reason = '%s: %s' % pin_conflict
             elif expected & excluded_names(cfg):
@@ -700,6 +1112,11 @@ def degradation(seats, padded):
     for s in seats:
         if not s['extra'] and s['lab'] not in labs:
             labs.append(s['lab'])
+    substitutions = [s for s in seats if not s['extra'] and s.get('substitutes_for')]
+    if substitutions:
+        detail = ', '.join('%s -> %s' % (s['substitutes_for'], s['seat'])
+                           for s in substitutions)
+        return labs, True, 'quota fallback: %s; reduced provider diversity' % detail
     if padded <= 0 and len(labs) > 1:
         return labs, False, None
     if CODEX_HOST:
@@ -718,11 +1135,22 @@ def degradation(seats, padded):
 
 # ---------------------------------------------------------------- assembly
 
-def build(do_probe):
+def build(do_probe, quota_failed_seats=()):
     cfg, cfg_error = load_config()
-    excluded = []
     if cfg_error:
-        excluded.append({'cli': 'config', 'reason': cfg_error})
+        roster = {
+            'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'seats': [],
+            'labs': [],
+            'padded': 0,
+            'degraded': True,
+            'degradation': 'configuration is unreadable - reviewer selection refused',
+            'strict_class': 'config',
+            'strict_reason': cfg_error,
+            'excluded': [{'cli': 'config', 'reason': cfg_error}],
+        }
+        return roster, {}, 'config'
+    excluded = []
     dropped = excluded_names(cfg)
     seats, adapter_of = [], {}
 
@@ -737,7 +1165,7 @@ def build(do_probe):
         seats.extend(found)
 
     # Extras are built BEFORE exclusion and pins so config can address them by seat name
-    # (`exclude: ["codex-review"]`, `pin: {"grok-code-review": …}`), then follow their base lab through the probe.
+    # (`exclude: ["codex-review"]`, `pin: {"codex-review": ...}`), then follow their base lab through the probe.
     if cfg.get('extras') is not False:
         for adapter, name, mode, round_ in EXTRAS:
             base = next((s for s in seats if s['adapter'] == adapter and not s['extra']), None)
@@ -756,32 +1184,90 @@ def build(do_probe):
 
     apply_pins(cfg, kept)
     kept = enforce_codex_models(cfg, kept, excluded)
+    kept = enforce_claude_models(cfg, kept, excluded)
+    preferred_labs = {s['seat']: s['lab'] for s in kept if not s['extra']}
 
+    fallback_enabled, _ = quota_fallback_setting(cfg)
+    handoff_error = quota_handoff_error(
+        quota_failed_seats, do_probe, fallback_enabled, kept)
+    if handoff_error:
+        append_exclusion(excluded, 'quota_fallback', 'strict: ' + handoff_error)
     static_class = None
     if do_probe:
         static_excluded = [dict(entry) for entry in excluded]
         static_class, _ = enforce_exact_seats(cfg, kept, static_excluded)
+    if handoff_error:
+        static_class = 'config'
     if do_probe and static_class != 'config':
         survivors = []
-        probe_results = {}
+        targets = {}
         for s in kept:
-            key = (s['adapter'], s['model'])
-            if s['adapter'] in PROBE_CMD and not s['extra'] and key not in probe_results:
-                probe_results[key] = probe_seat(s)
-            reason = probe_results.get(key) if not s['extra'] else None
-            if reason:
-                excluded.append({'cli': s['seat'], 'reason': reason})
-            else:
+            key = (s['adapter'], s['model'], s.get('effort'))
+            if s['adapter'] in PROBE_CMD:
+                targets.setdefault(key, s)
+        with ThreadPoolExecutor(max_workers=min(4, len(targets) or 1)) as pool:
+            pending = {key: pool.submit(probe_seat, seat) for key, seat in targets.items()}
+            try:
+                probe_results = {key: pending[key].result() for key in targets}
+            except BaseException:
+                cancel_active_process_groups()
+                for future in pending.values():
+                    future.cancel()
+                raise
+        used = {s['seat'] for s in kept}
+        counters = {}
+        policy_failures = []
+        forced_quota = set(quota_failed_seats)
+        for s in kept:
+            key = (s['adapter'], s['model'], s.get('effort'))
+            result = (('probe failed', 'quota', 'quota exhausted')
+                      if s['seat'] in forced_quota else probe_results.get(key))
+            if result is None or result[0] is None:
                 survivors.append(s)
+                continue
+            reason, failure_class, cause = result
+            eligible = fallback_enabled and not s['extra'] and s['lab'] in ('openai', 'anthropic')
+            if eligible and failure_class == 'quota':
+                target = fallback_target(s, kept, probe_results, forced_quota)
+                if target is not None:
+                    substitute = fallback_seat(target, s, used, counters)
+                    survivors.append(substitute)
+                    adapter_of[substitute['seat']] = substitute['adapter']
+                    excluded.append({
+                        'cli': s['seat'],
+                        'reason': 'probe %s; substituted by %s' % (cause, substitute['seat']),
+                    })
+                    continue
+                reason = 'probe %s; fallback target unavailable' % cause
+                policy_failures.append('%s has no usable fallback target' % s['seat'])
+            elif eligible:
+                policy_failures.append('%s failed outside the quota fallback policy' % s['seat'])
+            excluded.append({'cli': s['seat'], 'reason': reason})
         kept = survivors
+    else:
+        policy_failures = []
     # an extra rides on its lab: no surviving base seat → no extra
-    kept = [s for s in kept if not s['extra'] or any(b['adapter'] == s['adapter'] and not b['extra'] for b in kept)]
+    kept = [s for s in kept if not s['extra'] or any(
+        b['adapter'] == s['adapter'] and b['model'] == s['model'] and not b['extra']
+        for b in kept)]
 
+    policy_class = None
+    policy_reason = None
+    if policy_failures:
+        policy_class = 'availability'
+        policy_reason = '; '.join(policy_failures)
+        append_exclusion(excluded, 'quota_fallback', 'strict: ' + policy_reason)
     exact_class, exact_reason = enforce_exact_seats(cfg, kept, excluded)
+    exact_class, exact_reason = strict_winner(
+        'config' if handoff_error else None, handoff_error,
+        exact_class, exact_reason)
+    exact_class, exact_reason = strict_winner(
+        policy_class, policy_reason, exact_class, exact_reason)
 
     # Padding comes LAST - after config, after exclusions, after the probe - so it replaces the seats
     # those steps actually removed rather than a count taken before they ran.
-    padded = pad(kept, excluded, cfg)
+    pad(kept, excluded, cfg)
+    padded = len([s for s in kept if not s['extra'] and s.get('padded')])
     labs, degraded, sentence = degradation(kept, padded)
 
     # Strict mode counts the labs that were actually DETECTED. Padded Claude seats are not a second
@@ -792,11 +1278,19 @@ def build(do_probe):
     floor, floor_error = min_labs_setting(cfg)
     real = [l for l in labs
             if any(s['lab'] == l and not s['extra'] and not s.get('padded') for s in kept)]
+    quota_labs = {preferred_labs.get(s.get('substitutes_for')) for s in kept
+                  if not s['extra'] and s.get('substitutes_for')}
+    quota_labs.discard(None)
+    quota_floor_met = (not floor_error and fallback_enabled and quota_labs
+                       and len(set(real) | quota_labs) >= floor)
     labs_strict = (not floor_error and (floor > 1 or CODEX_HOST)
-                   and len(real) < floor)
+                   and len(real) < floor and not quota_floor_met)
     if labs_strict:
         append_exclusion(excluded, 'min_labs',
                          'strict: %d lab(s) available, min_labs=%d' % (len(real), floor))
+    elif not floor_error and len(real) < floor and quota_floor_met:
+        append_exclusion(excluded, 'quota_fallback',
+                         'min_labs=%d temporarily waived for quota substitution' % floor)
     labs_reason = (None if floor_error else
                    '%d lab(s) available, min_labs=%d' % (len(real), floor))
     strict_class = ('config' if exact_class == 'config' else
@@ -839,7 +1333,7 @@ def brief_line(roster, adapter_of):
                 reason += ' (%d padded seat%s)' % (n, '' if n == 1 else 's')
             parts.append('%s ✗ %s' % (name, reason))
     if any(e.get('reason') == 'config unreadable' for e in roster['excluded']):
-        parts.append('config unreadable (pins and exclusions ignored)')
+        parts.append('config unreadable (reviewer selection refused)')
     line = 'review-council seats: ' + ' · '.join(parts)
     if roster.get('degraded'):
         line += ' · DEGRADED: ' + (roster.get('degradation') or 'the panel is short of voices')
@@ -849,12 +1343,24 @@ def brief_line(roster, adapter_of):
 
 
 def usage(message):
-    sys.stderr.write('roster: %s\nusage: roster.sh [--json|--brief] [--probe] [--write <file>]\n' % message)
+    sys.stderr.write(
+        'roster: %s\nusage: roster.sh [--json|--brief] [--probe] '
+        '[--quota-failed-seat <seat>] [--write <file>]\n' % message)
     return 1
 
 
 def main(argv):
+    if len(argv) == 3 and argv[0] == '--classify-log':
+        try:
+            with open(argv[2], encoding='utf-8', errors='replace') as stream:
+                content = stream.read()
+        except OSError:
+            content = ''
+        failure_class, _ = classify_provider_failure(argv[1], summary_log=content)
+        sys.stdout.write(failure_class + '\n')
+        return 0
     fmt, do_probe, write = 'json', False, None
+    quota_failed_seats = []
     args = list(argv)
     while args:
         a = args.pop(0)
@@ -864,6 +1370,10 @@ def main(argv):
             fmt = 'brief'
         elif a == '--probe':
             do_probe = True
+        elif a == '--quota-failed-seat':
+            if not args:
+                return usage('--quota-failed-seat needs a seat')
+            quota_failed_seats.append(args.pop(0))
         elif a == '--write':
             if not args:
                 return usage('--write needs a file')
@@ -871,7 +1381,9 @@ def main(argv):
         else:
             return usage('unknown argument %s' % a)
 
-    roster, adapter_of, strict_class = build(do_probe)
+    if quota_failed_seats and not do_probe:
+        return usage('--quota-failed-seat requires --probe')
+    roster, adapter_of, strict_class = build(do_probe, quota_failed_seats)
     if write:
         roster['result_receipts'] = result_receipt_policy(write)
     text = json.dumps(roster, indent=2, ensure_ascii=False) + '\n'
@@ -891,8 +1403,14 @@ def main(argv):
 
 
 if __name__ == '__main__':
+    for signum in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+        signal.signal(signum, cancellation_signal)
     try:                                  # a C-locale shell must not break the ✓/✗/· line
         sys.stdout.reconfigure(encoding='utf-8')
     except Exception:
         pass
-    sys.exit(main(sys.argv[1:]))
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        cancel_active_process_groups()
+        sys.exit(130)

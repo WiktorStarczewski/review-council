@@ -1,7 +1,7 @@
 #!/bin/bash
 # rev-status.sh <session-dir>
 # ONE line (≤220 chars) describing the run, from files in the session dir only:
-#   r3/7 triage | sol: done 4f 9m | terra: done 2f 11m | grok: running 14m ← rg "retry" src/api | opus: done 3f 8m | open P0:0 P1:1 P2:3 fixed 6
+#   r3/7 triage | sol: done 4f 9m | terra: done 2f 11m | opus: running 14m ← rg "retry" src/api | sonnet: done 3f 8m | open P0:0 P1:1 P2:3 fixed 6
 # Per seat: pending | running <t>m ← <last action> | done <k>f <t>m | failed exit=<c> | dropped
 set -u
 S=${1:?usage: rev-status.sh <session-dir>}
@@ -19,7 +19,7 @@ now = time.time()
 rnd = st.get('round', '?'); mn = st.get('min_rounds', '?'); phase = st.get('phase', 'setup')
 seats = st.get('seats') or []
 dropped = set(st.get('dropped') or [])
-SHORT = {'codex-sol': 'sol', 'codex-terra': 'terra', 'codex-review': 'cx-rev', 'grok-code-review': 'grok-cr'}
+SHORT = {'codex-sol': 'sol', 'codex-terra': 'terra', 'codex-review': 'cx-rev'}
 
 def mtime(path):
     try: return os.stat(path).st_mtime

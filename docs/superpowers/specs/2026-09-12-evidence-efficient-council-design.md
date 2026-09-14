@@ -278,7 +278,8 @@ source expansion when relevant.
 
 An oversized mandatory range keeps one parent tree, blob, range, and content hash.
 Its delivery is partitioned into ordered, gapless child artifacts of at most 240 lines
-and 16 KiB predicted visible output, including an eight-byte reserve per line. Each
+and normally 16 KiB predicted visible output, including an eight-byte reserve per line.
+A single-line segment may extend to the 32 KiB per-tool ceiling. Each
 artifact is a regular, single-link file covered by the evidence manifest hash. The
 renderer supplies shell `cat` for Codex, `Read` for Claude, and `read_file` for Grok
 and Gemini. The audit permits two consecutive segments per turn for Claude and Grok
@@ -307,7 +308,8 @@ opaque, non-UTF-8, or oversized inputs reject adaptive preparation.
 
 The `Sites` row also names one representable `rg` or recursive `grep` expression used
 to enumerate siblings. The only path operand is the literal repository root `.`.
-`grep`, `egrep`, and `fgrep` require `-r`, `-R`, or `--recursive`. Tool-specific
+The strict contract accepts plain BRE `grep` with `-r` or `--recursive`. It rejects
+`grep -R`, `egrep`, and `fgrep` because those forms change symlink or regex semantics. Tool-specific
 allowlists reject file-sourced patterns, multiple patterns or path operands, working
 directory changes, traversal filters such as globs or maximum depth, and ambiguous
 commands. Every reviewer receives the complete plan and navigation index, then runs
@@ -315,7 +317,7 @@ each cluster expression from the repository root under the 80-result bound. Audi
 records the canonical search engine and pattern, result hash, and hash-bound source
 coverage for every named site or range. It rejects engine substitutions, pattern
 semantics changes, redirects, and output modes that omit filenames or line numbers.
-Proof uses the shell command's `--null` filename mode and must contain 1-79
+Proof uses the shell command's `--null` filename mode and must contain 1-80
 `path<NUL>line:text` match records and every named `Sites` path. Native text search
 cannot certify this proof because it cannot represent every filename unambiguously.
 Producer errors cannot satisfy the search proof even when a later pipeline command exits
