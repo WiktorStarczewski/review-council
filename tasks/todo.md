@@ -216,6 +216,7 @@
 - [x] Keep in-repository session artifacts out of repository-source classification and require the mandatory evidence-index read.
 - [x] Install ripgrep explicitly in both hosted runner images used by the plan-evidence fixtures.
 - [x] Remove the live zsh dependency and concurrent shared-file race from the cross-platform shell tests.
+- [x] Make the parallel provider-probe unit test independent of operating-system callback completion order.
 
 - [x] Make evidence order accept multiple repository reads in a later turn while still rejecting
   repository expansion mixed with proof delivery.

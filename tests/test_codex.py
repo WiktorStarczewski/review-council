@@ -713,7 +713,7 @@ class CodexTests(unittest.TestCase):
         )
         self.assertEqual(failed, 'availability')
         self.assertEqual(roster['strict_reason'], '2 lab(s) available, min_labs=3')
-        self.assertEqual(calls, ['codex-sol', 'gemini', 'opus'])
+        self.assertCountEqual(calls, ['codex-sol', 'gemini', 'opus'])
 
     def test_forced_quota_seats_cannot_fallback_to_each_other(self):
         terra = self.roster.make_seat(

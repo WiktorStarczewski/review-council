@@ -209,3 +209,5 @@
   does not prove a clean hosted runner has the same tool inventory, so reproduce missing-tool failures in a clean container.
 - A fail-closed gate must still expose the failing shard in hosted CI. Print the bounded tail of nonzero private logs, and
   avoid duplicate push and pull-request matrices for the same feature commit, so one failure produces one useful diagnosis.
+- Tests for concurrent probes may assert the submitted or returned roster order, but never their callback completion order.
+  Verify the callback set and cardinality separately because the operating-system scheduler is intentionally unordered.
