@@ -266,13 +266,19 @@ test_roster_probe() {
 printf '%s\n' "\$@" >> "$B/codex-probe-args"
 exec "$B/codex-real" "\$@"
 EOF
-    chmod +x "$B/codex"
+    mv "$B/gemini" "$B/gemini-real"
+    cat > "$B/gemini" <<EOF
+#!/bin/bash
+printf '%s\n' "\$@" >> "$B/gemini-probe-args"
+exec "$B/gemini-real" "\$@"
+EOF
+    chmod +x "$B/codex" "$B/gemini"
     "$SCRIPTS/roster.sh" --probe > "$B/out.json" 2> "$B/err"; assert_eq "a passing probe exits 0" "$?" 0
     roster_lines "$B/out.json" "$B/lines" || { fail "roster_probe_ok" "stdout is not JSON"; return 1; }
     assert_grep "every seat survives" "$B/lines" '^counts 4 5$'
     assert_nogrep "nothing probe-excluded" "$B/lines" 'probe'
-    assert_grep "the probe ran gemini read-only" "$B/args" '^--approval-mode$'
-    assert_grep "the probe asked for one token" "$B/args" '^Reply with exactly OK$'
+    assert_grep "the probe ran gemini read-only" "$B/gemini-probe-args" '^--approval-mode$'
+    assert_grep "the probe asked for one token" "$B/gemini-probe-args" '^Reply with exactly OK$'
     assert_grep "the Codex probe uses the selected effort" "$B/codex-probe-args" \
       '^model_reasoning_effort=max$'
   )

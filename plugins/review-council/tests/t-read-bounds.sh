@@ -1603,11 +1603,11 @@ PY
     assert_grep "Codex batch remains one source read call" "$S/good-audit.json" \
       '"source_read_calls":1'
 
-    local wrapped="/bin/zsh -lc \"$good\""
+    local wrapped="/bin/sh -lc \"$good\""
     write_codex_batch wrapped "$wrapped" exact || return
     audit_codex_batch wrapped
-    assert_eq "Codex accepts the live zsh-wrapped source batch envelope" "$?" 0
-    assert_grep "Codex counts a live zsh-wrapped source batch" "$S/wrapped-audit.json" \
+    assert_eq "Codex accepts the live shell-wrapped source batch envelope" "$?" 0
+    assert_grep "Codex counts a live shell-wrapped source batch" "$S/wrapped-audit.json" \
       '"source_read_batches":1'
 
     printf 'Codex source batching enabled: false\nAssigned scope: full\n' > "$S/prompt.md"

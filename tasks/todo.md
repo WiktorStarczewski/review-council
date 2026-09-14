@@ -214,6 +214,8 @@
 - [x] Count code source proof and refutation reserve in provider turn capacity and enforce Claude's compiled cap.
 - [x] Promote adjacent omitted source ranges as a group when they jointly remove a mandatory plan read.
 - [x] Keep in-repository session artifacts out of repository-source classification and require the mandatory evidence-index read.
+- [x] Install ripgrep explicitly in both hosted runner images used by the plan-evidence fixtures.
+- [x] Remove the live zsh dependency and concurrent shared-file race from the cross-platform shell tests.
 
 - [x] Make evidence order accept multiple repository reads in a later turn while still rejecting
   repository expansion mixed with proof delivery.
@@ -230,7 +232,7 @@
 - [x] Bind verifier receipts to local script interpreters and declared transitive gate tools, and
   probe current external tool versions on every identity calculation.
 - [x] Run each focused regression red, implement the minimal fix, and make its focused gate green.
-- [ ] Run one fresh frozen-tree gate, then a fresh exact-roster four-bundle panel that seals.
+- [x] Run one fresh frozen-tree gate, then a fresh exact-roster four-bundle panel that seals.
 - [ ] Commit, push, release, and install 0.4.2.
 
 ### Discovery-panel repairs
