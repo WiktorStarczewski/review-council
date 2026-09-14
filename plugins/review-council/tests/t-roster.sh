@@ -466,15 +466,21 @@ SH
 
 test_roster_probe_concurrency() {
   ( local B="$T/roster-probe-concurrency"; roster_env "$B" codex gemini; roster_creds
-    local cli delay
+    local cli
     for cli in codex gemini; do
-      case "$cli" in codex) delay=0.6;; gemini) delay=0.1;; esac
       mv "$B/$cli" "$B/$cli-real"
       cat > "$B/$cli" <<EOF
 #!/bin/bash
 for value in "\$@"; do
   if [ "\$value" = 'Reply with exactly OK' ]; then
-    sleep $delay
+    printf '%s\n' '$cli' >> '$B/started'
+    count=0
+    for _ in \$(seq 1 1500); do
+      [ -f '$B/started' ] && count=\$(wc -l < '$B/started' | tr -d ' ')
+      [ "\$count" -ge 3 ] && break
+      sleep 0.02
+    done
+    [ "\$count" -ge 3 ] || exit 70
     printf '%s\n' '$cli' >> '$B/completed'
     break
   fi
@@ -483,25 +489,17 @@ exec '$B/$cli-real' "\$@"
 EOF
       chmod +x "$B/$cli"
     done
-    local started elapsed
-    started=$(python3 -c 'import time; print(time.time())')
-    "$SCRIPTS/roster.sh" --probe > "$B/out.json"
-    assert_eq "delayed probe roster exits 0" "$?" 0
-    elapsed=$(python3 - "$started" <<'PY'
-import sys, time
-print(time.time() - float(sys.argv[1]))
-PY
-)
-    local fast
-    fast=$(python3 - "$elapsed" <<'PY'
-import sys
-print('yes' if float(sys.argv[1]) < 2.0 else 'no')
-PY
-)
-    assert_eq "unique provider probes overlap in ${elapsed}s" "$fast" yes
+    REVIEW_COUNCIL_PROBE_TIMEOUT=60 "$SCRIPTS/roster.sh" --probe > "$B/out.json"
+    assert_eq "barrier probe roster exits 0" "$?" 0
+    assert_eq "every unique provider probe enters the concurrency barrier" \
+      "$(sort "$B/started" | uniq -c | awk '{print $2 ":" $1}' | paste -sd ' ' -)" \
+      'codex:2 gemini:1'
     roster_lines "$B/out.json" "$B/lines"
-    assert_eq "the first configured adapter completes last" \
-      "$(awk '!seen[$0]++ {last=$0} END {print last}' "$B/completed")" codex
+    assert_eq "parallel probes complete every configured adapter" \
+      "$(sort -u "$B/completed" | paste -sd ' ' -)" 'codex gemini'
+    assert_eq "parallel probe callback cardinality is stable" \
+      "$(sort "$B/completed" | uniq -c | awk '{print $2 ":" $1}' | paste -sd ' ' -)" \
+      'codex:2 gemini:1'
     assert_eq "parallel probes preserve complete deterministic roster order" \
       "$(awk '$1 == "seat" && $7 == "false" {print $2}' "$B/lines" | paste -sd ' ' -)" \
       'codex-sol codex-terra gemini opus'

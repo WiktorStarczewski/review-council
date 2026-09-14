@@ -164,6 +164,19 @@ PY
   rmdir "$R/plugins/review-council/scripts" "$R/plugins/review-council/.codex-plugin" \
     "$R/plugins/review-council" "$R/plugins"
   : > "$RSTUB_ARGS"
+  mkdir -p "$T/pf-quota-original"
+  printf 'original roster\n' > "$T/pf-quota-original/roster.json"
+  printf 'original scope\n' > "$T/pf-quota-original/scope.env"
+  "$PF" --quota-failed-seat opus --write "$T/pf-quota-original" \
+    > "$T/pf.out" 2> "$T/pf.err"
+  assert_eq "quota handoff refuses an initialized session" "$?" 1
+  assert_grep "quota overwrite refusal explains the fresh-session requirement" "$T/pf.err" \
+    'quota fallback requires a fresh empty session directory'
+  assert_exit "quota overwrite refusal happens before a paid roster probe" 0 test ! -s "$RSTUB_ARGS"
+  assert_grep "quota overwrite refusal preserves the original roster" \
+    "$T/pf-quota-original/roster.json" '^original roster$'
+  assert_grep "quota overwrite refusal preserves the original scope" \
+    "$T/pf-quota-original/scope.env" '^original scope$'
   "$PF" --quota-failed-seat opus --quota-failed-seat sonnet \
     --write "$T/pf-quota-handoff" > "$T/pf.out" 2> "$T/pf.err"
   assert_eq "preflight accepts classified quota handoffs" "$?" 0

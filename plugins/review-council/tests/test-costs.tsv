@@ -18,6 +18,7 @@ t-evidence.sh::test_evidence_hardening_routing	25	normal
 t-evidence.sh::test_evidence_hardening_scale_receipts	25	normal
 t-evidence.sh::test_evidence_hardening_structure	25	normal
 t-evidence.sh::test_evidence_provider_contract_binding	1	normal
+t-evidence.sh::test_evidence_source_identity_match	2	normal
 t-gemini.sh::test_gemini	1	normal
 t-guard.sh::test_guard	1	normal
 t-guard2.sh::test_guard2	1	normal

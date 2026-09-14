@@ -83,6 +83,8 @@ test_skill_contract() {
   assert_grep "POLICY says relay the status line" "$POL" 'status line'
   assert_grep "POLICY forbids self-review as a substitute" "$POL" 'substitute'
   assert_grep "POLICY says a degraded panel still runs, loudly" "$POL" 'degraded'
+  assert_grep "POLICY makes the skill an executable workflow contract" "$POL" \
+    'executable workflow contract.*every applicable step in order.*required receipt'
 
   # --- fan-out reads the roster ---------------------------------------------
   assert_grep "fan-out reads the session roster" "$K" '\$S/roster\.json'
@@ -107,6 +109,10 @@ test_skill_contract() {
   # C-13 and C-14: both hosts keep panel state exact and numeric mode compatible.
   local H
   for H in "$K" "$CK"; do
+    assert_grep "host forbids cherry-picking the workflow" "$H" \
+      'executable workflow contract.*Do not cherry-pick'
+    assert_grep "host refuses certification without required artifacts" "$H" \
+      'missing any audit, receipt, or final report required by its selected mode is incomplete'
     assert_grep "host writes exact code-panel state" "$H" 'phase=fan-out round=<N> "seats=\$LAUNCHED_SEATS"'
     assert_grep "host writes exact repair state" "$H" 'phase=repair round=<N>x "seats=\$REPAIR_SEATS"'
     assert_grep "host writes exact plan state" "$H" 'phase=plan round=<N>p "seats=\$PLAN_SEATS"'
@@ -142,8 +148,6 @@ test_skill_contract() {
       '[Ee]very evidence prompt must'
     assert_grep "host names the embedded manifest hash line" "$H" \
       'Evidence manifest SHA-256: <hash>'
-    assert_grep "host gates repair-child launch on the same manifest identity" "$H" \
-      '[Rr]epair child.*same prelaunch identity gate'
     assert_grep "fan-out launches the already-rendered prompts" "$H" \
       '[Ff]an-out launches only those already-rendered prompt files'
     assert_grep "host certifies evidence after collection" "$H" \
@@ -160,8 +164,8 @@ test_skill_contract() {
       '[Rr]epair.*full cumulative patch'
     assert_grep "host rerenders every prompt on evidence failure" "$H" \
       '[Rr]ender every seat again without `--evidence`'
-    assert_grep "host does not narrow after receipt failure" "$H" \
-      '[Rr]eceipt.*fails.*next adaptive panel.*full cumulative'
+    assert_grep "receipt failure stops before another reviewer" "$H" \
+      '[Rr]eceipt fails.*stop before another reviewer launch'
     assert_grep "host preserves the exact configured roster" "$H" \
       '[Ss]cope optimization never changes.*roster'
     assert_grep "host preserves all four bundles" "$H" \
@@ -227,25 +231,23 @@ test_skill_contract() {
     assert_grep "host rejects incomplete chunk receipts" "$H" \
       '[Mm]issing, reordered, truncated, replaced,'
     assert_grep "host rejects redirected chunk receipts" "$H" \
-      'duplicate, unassigned, redirected, or oversized chunks'
+      'unassigned, redirected, or oversized chunks'
     assert_grep "host preserves component narrowing in paired baseline" "$H" \
       'same component assignments and patch narrowing'
     assert_grep "host checks narrow read audits before triage" "$H" \
       '[Bb]efore triage or receipt.*read-audit'
     assert_grep "every evidence seat requires a schema 2 read audit" "$H" \
       '[Ee]very evidence-launched seat.*schema 2'
-    assert_grep "a narrow audit failure retries only its failed seat first" "$H" \
-      '[Rr]etry only the failed seat once.*exact prompt'
+    assert_grep "budget and choreography audit findings remain advisory" "$H" \
+      '[Rr]ead order.*call count.*output sentinel.*advisories'
+    assert_grep "hard audit failure stops before another paid launch" "$H" \
+      '[Hh]ard evidence-audit failure.*stop.*without.*paid retry'
     assert_grep "seat-local recovery retains valid completed reviewers" "$H" \
       '[Rr]etain each completed valid result'
     assert_grep "host retains one launch handle for every pending seat" "$H" \
       '[Rr]etain.*launch handle.*every pending seat'
     assert_grep "host inspects terminal results as they arrive" "$H" \
       '[Ii]nspect.*terminal result.*as.*arrive'
-    assert_grep "host classifies global evidence drift without search replay" "$H" \
-      '[Nn]o-replay render path'
-    assert_grep "host cancels pending siblings after proven global drift" "$H" \
-      'failure is panel-global'
     assert_grep "host cancels pending siblings on auth or quota exit" "$H" \
       '[Ee]xit 3 or 4.*cancel.*pending sibling'
     assert_grep "host keeps authentication failures permanent" "$H" \
@@ -253,9 +255,23 @@ test_skill_contract() {
     assert_grep "host gates quota substitution on explicit config" "$H" \
       '`quota_fallback`.*`true`'
     assert_grep "host reruns preflight after a quota failure" "$H" \
-      '[Rr]un preflight again.*preserved session'
+      '[Rr]un preflight again.*fresh sibling session'
     assert_grep "host binds a mid-panel quota seat into preflight" "$H" \
       '--quota-failed-seat "\$SEAT"'
+    assert_grep "quota fallback keeps the original session immutable" "$H" \
+      '[Nn]ever run quota fallback preflight against the original session'
+    assert_grep "quota fallback compares frozen session inputs" "$H" \
+      'scope\.env.*files\.txt.*untracked\.txt'
+    assert_grep "quota fallback compares content-addressed source identity" "$H" \
+      'rev-evidence\.py.*same-source.*PARENT_MANIFEST.*MANIFEST'
+    assert_grep "quota fallback covers same-path content mutations" "$H" \
+      'same-path tracked, staged, and untracked content'
+    assert_grep "quota fallback promotes the fresh panel label" "$H" \
+      'PANEL_LABEL=\$FALLBACK_LABEL'
+    assert_grep "quota fallback rebuilds active prompt arguments" "$H" \
+      'EVIDENCE_PROMPT_ARGS=\(--evidence "\$MANIFEST"\)'
+    assert_grep "quota fallback promotes its launched seat list" "$H" \
+      'LAUNCHED_SEATS=\$FALLBACK_LAUNCHED_SEATS'
     assert_grep "host ignores reviewer prose when classifying Agent quota" "$H" \
       '[Pp]latform terminal metadata.*never reviewer prose'
     assert_grep "quota fallback restarts the complete frozen panel" "$H" \
@@ -266,38 +282,34 @@ test_skill_contract() {
       '[Nn]ext review run probes the preferred providers again'
     assert_grep "host distinguishes local attempt exhaustion" "$H" \
       '[Ee]xit 7.*local attempt exhaustion'
-    assert_grep "host preserves siblings for code repair children" "$H" \
-      'seat fails twice, preserve every sibling'
+    assert_grep "host preserves siblings when an audit stops the panel" "$H" \
+      '[Hh]ard evidence-audit failure.*preserve.*valid sibling'
     assert_grep "host never cancels completed valid siblings" "$H" \
       'cancel a completed valid sibling'
     assert_grep "host retains partial streams on cancellation" "$H" \
       '[Pp]reserve.*partial stream'
-    assert_grep "repeated code-seat failure prepares a bound child" "$H" \
-      '--parent-assignment "\$PANEL_LABEL:\$SEAT"'
-    assert_grep "replacement children use full repair scope" "$H" \
-      '--phase repair --assignment "\$SEAT=\$BUNDLE"'
-    assert_grep "composite verification names replacement generations" "$H" \
-      'verify-panel .*"\$PANEL_LABEL"'
-    assert_grep "host appends each replacement child before verification" "$H" \
-      'REPLACEMENT_ARGS\+=\(--replacement "\$SEAT=\$CHILD_LABEL"\)'
-    assert_grep "composite receipt reuses replacement arguments" "$H" \
-      'receipt .*"\$PANEL_LABEL"'
-    assert_grep "child source selection is inherited" "$H" \
-      'automatically inherits the parent.s worktree source or exact ref'
-    assert_grep "plan child recovery is explicitly excluded" "$H" \
-      'cannot use repair children'
+    assert_grep "audit failures never widen to full-state repair" "$H" \
+      '[Nn]ever widen.*evidence-audit failure.*full-state repair'
+    assert_grep "hard audit failure cannot enter coverage repair" "$H" \
+      '[Hh]ard audit failure never enters coverage repair'
+    assert_nogrep "no host section can retry an audit failure" "$H" \
+      '[Aa]n individual audit failure.*retr(y|ies)'
+    assert_nogrep "Codex host has no unconditional exit 1/2 retry directive" "$H" \
+      '[Ee]xit 1/2: retry'
+    assert_nogrep "Claude host has no unconditional exit 1/2 retry table row" "$H" \
+      '\| (`1` or `2`|seat exit 1 or 2) \| retry'
+    assert_grep "collection retries only without an invalid audit" "$H" \
+      '([Ee]xit 1/2|seat exit|`1` or `2`).*no invalid read audit.*retry'
     assert_grep "seat-local recovery preserves maximum effort" "$H" \
       '[Nn]ever lower effort|same maximum effort'
     assert_grep "triage may overlap stragglers without early edits" "$H" \
       '[Tt]riage completed valid results as they arrive'
-    assert_grep "audit fallback uses a fresh artifact label" "$H" \
-      'fresh fallback label `<N>f`'
-    assert_grep "host never mixes narrow and fallback results" "$H" \
-      '[Nn]ever mix narrow and full results'
+    assert_grep "one quota fallback panel is the retry ceiling" "$H" \
+      '[Qq]uota fallback panel.*only permitted full-panel restart'
+    assert_grep "fallback audit failure cannot start repair" "$H" \
+      '[Hh]ard audit failure.*fallback panel.*stop.*repair'
     assert_grep "host requires citation range coverage" "$H" \
       '[Ee]very finding citation must intersect'
-    assert_grep "host fallback removes source-context packets" "$H" \
-      'full cumulative patch and no source-context packet'
     assert_grep "host excludes unenforced Agent seats from evidence mode" "$H" \
       'adapter `agent`.*skip evidence preparation|skip evidence preparation.*adapter `agent`'
     assert_grep "numeric panels bypass evidence narrowing" "$H" \

@@ -210,7 +210,7 @@ SH
   mkdir -p "$python_bin"
   cat > "$python_bin/python3" <<'SH'
 #!/bin/bash
-if [ "$1" = "$RESERVE_HELPER" ]; then
+if [ "$1" = "$RESERVE_HELPER" ] && [ "$2" = reserve ]; then
   : > "$RESERVE_READY"
   while [ ! -e "$RESERVE_RELEASE" ]; do sleep 0.02; done
   exit 7

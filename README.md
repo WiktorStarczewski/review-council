@@ -36,12 +36,15 @@ preflight and probe
 
 Key properties:
 
+- The host skill is an executable workflow contract. Every applicable step runs in
+  order; omitted steps require an explicit inapplicability reason.
 - Every reviewer is read-only. Reviewers return findings; the host session owns
   triage, edits, tests, commits, and any authorized publication.
 - Every core seat receives an independent task and produces the same findings schema.
 - Agreement increases confidence but never replaces source verification.
 - The source, prompt, evidence, transcript, result, model, and effort are hash-bound.
-- One failed code seat can be repaired without paying to rerun valid siblings.
+- Valid siblings are retained. Only a missing semantic bundle may trigger one
+  full-state coverage repair after at least three valid reviewers.
 - Provider quota fallback is explicit, visible, temporary, and limited to quota or
   capacity failures.
 - Later panels review a safe semantic delta only after a valid predecessor receipt.
@@ -478,9 +481,16 @@ A plausible prose answer is not a valid review result. Completion requires:
 5. A valid read audit for evidence panels.
 6. A panel receipt selecting exactly one valid generation per assignment.
 
+A run missing any audit, receipt, or final report required by its selected mode is
+incomplete and cannot be described as a Review Council review. This rule appears in
+the always-loaded Claude Code policy and in both host-specific `/rev` skills.
+
 The audit distinguishes provider transport failure from a source-backed finding.
 Unsupported stream shapes, zero-tool answers, missing output, malformed JSON, stale
 receipts, hash mismatches, and incomplete evidence reads cannot certify the panel.
+When patch, required-source, citation, and result proof are complete, read order,
+repository call count, output overflow, a missing navigation index, and duplicate
+completed reads remain visible as advisories. They do not discard the review.
 
 A persistent attempt budget allows at most four provider calls for one seat generation
 across wrapper and host retries. Exhaustion is a local exit 7 and is never reclassified
@@ -490,17 +500,15 @@ as provider quota.
 
 | Failure | Recovery |
 | --- | --- |
-| first exit 1 or 2 | retry only that seat once with the exact prompt, assignment, model, and effort |
-| same code seat fails twice | create one full-scope child generation bound to the failed parent assignment |
+| first provider exit 1 or 2 without an invalid audit | retry only that seat once with the exact prompt, assignment, model, and effort |
+| hard evidence-audit failure | preserve all artifacts, block every seat under that label, and stop the panel before another paid launch |
 | valid sibling | retain its result, transcript, audit, and usage |
-| child succeeds | seal a composite receipt selecting the valid original siblings and the replacement child |
-| plan seat fails twice | leave the configured plan panel incomplete |
-| panel-global identity or evidence failure | discard the narrowed attempt and start a fresh full-scope code label, or fix and rebuild a schema-4 plan label |
+| at least three valid reviewers but one missing semantic bundle | run one full-state coverage repair on a surviving seat |
+| provider seat fails twice or a plan seat fails twice | leave the configured panel incomplete |
+| receipt failure | diagnose the provenance or contract defect and end the run without automatic reviewers |
 
-A repair child inherits its parent's exact source identity and evidence settings. The
-composite receipt rejects a changed snapshot, roster, bundle, model, effort, prompt,
-stream, result, or audit. Review fixes wait until the receipt seals, even when valid
-results are triaged while slower siblings remain active.
+Audit failures never widen into a full-state repair. Review fixes wait until the
+receipt seals, even when valid results are triaged while slower siblings remain active.
 
 ## Quota fallback
 
@@ -524,8 +532,14 @@ Rules:
 - A substitute records `substitutes_for`. A temporary `min_labs` waiver applies only
   when successful quota substitutions account for the complete diversity shortfall.
 - Pending siblings are stopped after their terminal state is preserved.
-- The complete panel restarts under a fresh label against the same frozen source.
+- Preflight runs in a fresh sibling session and refuses an initialized target.
+- The fallback session's scope, file list, and untracked-file list must byte-match the
+  original before the complete panel restarts.
+- Its evidence manifest must also match the original content-addressed base and snapshot
+  trees, scope, and paths, including same-path tracked, staged, and untracked content.
 - Results from the quota-failed label remain diagnostic and do not enter the receipt.
+- One quota fallback panel is the only permitted full-panel restart.
+- A hard audit failure in fallback stops without repair or another fallback.
 - Fallback never edits configuration.
 - The next review probes the preferred roster again, so restored capacity restores the
   configured council automatically.
@@ -618,6 +632,7 @@ r<label>-<seat>.log
 r<label>-<seat>.json
 r<label>-<seat>.exit
 r<label>-<seat>.read-audit.json
+r<label>-<seat>.audit-invalid.json  # hard audit failure only; diagnostic, never accepted
 r<label>-coverage.receipt.json
 ```
 
@@ -629,7 +644,6 @@ Receipt roles:
 | exit | the specific seat generation terminated successfully |
 | read audit | the transcript completed its hash-bound evidence obligations |
 | panel | one immutable valid generation covers every assignment |
-| composite panel | valid original siblings and named repair children share one source and roster identity |
 | `report.md` | the review completed; stack legs use it as their success receipt |
 
 Interrupted or blocked runs write `incomplete.md`. They do not write a success report.
@@ -709,8 +723,8 @@ See [the stack config example](plugins/review-council/scripts/stack.example.sh).
 | Exit | Class | Meaning | Action |
 | ---: | --- | --- | --- |
 | 0 | success | valid findings result | audit and retain |
-| 1 | seat-local | retryable provider or adapter failure | exact retry once |
-| 2 | seat-local | missing or invalid findings JSON | exact retry once |
+| 1 | seat-local | retryable provider or adapter failure | exact retry once when no invalid audit exists |
+| 2 | seat-local | missing or invalid findings JSON | exact retry once when no invalid audit exists |
 | 3 | provider-global | not signed in | stop and name the required sign-in |
 | 4 | provider-global | provider quota, rate, or capacity | stop, or use explicit quota fallback |
 | 5 | roster availability | currently unsatisfied but possible roster | preserve session and retry when availability changes |
@@ -727,6 +741,10 @@ Other fail-closed conditions include:
 - project gate falls below baseline;
 - squash safety check refuses;
 - stack leg exits without a fresh `report.md`.
+
+A hard read-audit failure stops the current run before another reviewer launch. It is
+reported as an evidence compiler or contract defect, with valid siblings and partial
+streams preserved for diagnosis.
 
 ## Read-only and security boundaries
 

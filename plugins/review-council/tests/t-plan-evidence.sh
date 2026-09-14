@@ -1629,10 +1629,11 @@ for seat, assignment in manifest['assignments'].items():
     assert capacity['seats'][seat]['mandatory_repository_reads'] == len(direct)
     if assignment['adapter'] == 'claude':
         assert capacity['seats'][seat]['projected_turns'] <= 160
-assert any(
-    row['required_payload_predicted_visible_bytes'] <= manifest['source_context']['max_shard_bytes']
-    for packet in manifest['source_context']['seats'].values()
-    for row in packet['required_source_ranges'])
+required = [row for packet in manifest['source_context']['seats'].values()
+            for row in packet['required_source_ranges']]
+assert required
+assert all(segment['predicted_visible_bytes'] <= manifest['source_context']['max_shard_bytes']
+           for row in required for segment in row['segments'])
 PY
     assert_eq "mandatory plan reads compile under the reserved repository-call budget" "$?" 0
     assert_exit "capacity-compiled plan evidence validates before launch" 0 \

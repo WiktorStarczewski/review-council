@@ -84,6 +84,15 @@ else
   fi
   [ -n "$(git diff --stat "$BASE" ${PS[@]+"${PS[@]}"})$(git status --porcelain ${PS[@]+"${PS[@]}"})" ] || die "scope is empty - nothing differs from $BASE${PS[0]+ under $SCOPE}"
 fi
+# A quota handoff belongs to a new session. Reusing the failed session would overwrite the roster and
+# frozen scope before the host could compare identities, destroying the evidence needed to diagnose it.
+if [ ${#QUOTA_FAILED_SEATS[@]} -gt 0 ] && [ -n "$WRITE" ] && [ -d "$WRITE" ]; then
+  for EXISTING in "$WRITE"/* "$WRITE"/.[!.]* "$WRITE"/..?*; do
+    if [ -e "$EXISTING" ] || [ -L "$EXISTING" ]; then
+      die "quota fallback requires a fresh empty session directory"
+    fi
+  done
+fi
 # --- seats -------------------------------------------------------------------------------------------
 # The roster is built AFTER the git checks: a run that is going to be refused for scope reasons must not
 # spend a probe. --probe costs one token per CLI seat and drops the ones that cannot answer.

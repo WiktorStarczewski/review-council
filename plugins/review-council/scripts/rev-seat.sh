@@ -84,8 +84,17 @@ ROOT=${REV_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}
 BASEN="$SESSION/r${ROUND}-${SEAT}"
 OUT="$BASEN.json"; LOG="$BASEN.log"; RAW="$BASEN.stream.ndjson"; EXITF="$BASEN.exit"
 AUDITF="$BASEN.read-audit.json"
+AUDIT_INVALID_OUT="$BASEN.audit-invalid.json"
 export REV_ACTIVE=1
 export SEAT MODEL EFFORT MODE ROOT PROMPT SCHEMA OUT LOG RAW BASE
+preserve_audit_invalid_result() {
+  if [ -s "$OUT" ]; then mv -f "$OUT" "$AUDIT_INVALID_OUT"
+  else rm -f "$OUT" "$AUDIT_INVALID_OUT"
+  fi
+}
+stop_panel_generation() {
+  python3 "$HERE/lib/rev-attempt.py" stop "$SESSION" "$ROUND" >>"$LOG" 2>&1
+}
 
 finish() {  # <code> - validate on 0, record, print the one-line summary, exit
   local code=$1 n="-"
@@ -131,6 +140,16 @@ has_tool_call() {
 # one WITHOUT reading anything, even when the prompt says to run tools first (seen live: summary "I'll
 # inspect the diff…", zero findings, zero tool calls). An answer with no tool calls is not a review: retry
 # once at the same effort, then fail the seat so the orchestrator's retry/skip rule applies.
+python3 "$HERE/lib/rev-attempt.py" check "$SESSION" "$ROUND" >/dev/null 2>&1
+PANEL_CHECK_RC=$?
+if [ "$PANEL_CHECK_RC" -eq 2 ]; then
+  echo "prior hard audit failure blocks this seat generation; use a fresh panel label" >> "$LOG"
+  echo "rev-seat: prior hard audit failure blocks this seat generation; use a fresh panel label" >&2
+  finish 2
+elif [ "$PANEL_CHECK_RC" -ne 0 ]; then
+  echo "cannot validate panel attempt state" >> "$LOG"
+  finish 1
+fi
 rm -f "$EXITF"
 attempt=0
 while :; do
@@ -202,18 +221,21 @@ PY
   AUDIT_META_RC=$?
   if [ "$AUDIT_META_RC" -ne 0 ]; then
     echo "bounded-read audit metadata is missing, malformed, or inconsistent" >> "$LOG"
-    rm -f "$OUT"
+    stop_panel_generation || echo "cannot persist panel hard-stop state" >> "$LOG"
+    preserve_audit_invalid_result
     finish 2
   fi
   if [ "$AUDIT_RC" -ne 0 ]; then
     case "$AUDIT_SCOPE" in
       full)
-        echo "bounded-read audit rejected full-scope evidence review; rerun this full-scope seat after correcting its evidence reads" >> "$LOG"
-        rm -f "$OUT"
+        echo "bounded-read audit rejected full-scope evidence review; stop the panel before another reviewer launch" >> "$LOG"
+        stop_panel_generation || echo "cannot persist panel hard-stop state" >> "$LOG"
+        preserve_audit_invalid_result
         finish 2;;
       narrow)
-        echo "bounded-read audit rejected narrowed review; retry this seat with the exact assignment" >> "$LOG"
-        rm -f "$OUT"
+        echo "bounded-read audit rejected narrowed review; stop the panel before another reviewer launch" >> "$LOG"
+        stop_panel_generation || echo "cannot persist panel hard-stop state" >> "$LOG"
+        preserve_audit_invalid_result
         finish 2;;
       legacy)
         echo "bounded-read audit found violations in a legacy review; result retained as advisory" >> "$LOG";;

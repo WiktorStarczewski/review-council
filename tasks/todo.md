@@ -326,3 +326,40 @@ Deferred after the frozen release:
   four reviewer results were valid. Two high-confidence auditor P1s were accepted and
   fixed, one orchestration P1 was rejected as unreachable under compliant callers, and
   two bounded P2 hardening items were deferred.
+
+## 0.4.3 audit-convergence repair
+
+- [x] Reproduce the wallet PR #814 failure cascade from preserved session artifacts.
+- [x] Quantify accepted calls, audit failures, dominant violation families, and retry amplification.
+- [x] Make completed evidence choreography and budget overruns advisory when substantive coverage is complete.
+- [x] Keep incomplete patch, required-source, citation, and result proof as hard audit failures.
+- [x] Remove the contradictory pre-index original-source target from generated prompts.
+- [x] Stop paid retry and full-state repair after a hard evidence-audit failure.
+- [x] Preserve the original session and limit quota fallback to one isolated full-panel restart.
+- [x] Replay the preserved PR #814 audits against the new policy: acceptance rises from 16/32 to 31/32; the remaining attempt lacks required source proof.
+- [x] Run focused tests and the complete release gate: 208 shell tasks, 3,154 assertions, 89 Python tests, and all marketplace and plugin validators passed.
+- [x] Run one bounded self-host panel. Two valid seats found two contract contradictions; one hard audit failure stopped the panel with no retry, fallback, or repair cascade.
+- [x] Run a fresh bounded post-fix panel without automatic retry. Three valid seats found the remaining same-label relaunch path and required-source duplicate mismatch; the hard-audit Sonnet result was preserved and stopped without retry.
+- [x] Block a same-label relaunch in `rev-seat.sh` before provider-call reservation, preserve its hard-audit artifacts, qualify every host exit 1/2 retry, and make duplicate complete required-source reads advisory.
+- [x] Validate duplicate patch and source reads before classifying them as advisory, fit source packets inside the observed live transport envelope, and bind quota fallback to identical content-addressed source.
+- [x] Run one final fresh bounded panel without retries. Sol, Terra, and Sonnet completed valid reviews; the Opus result was preserved after one harmless trailing patch-window overshoot. The panel found the atomic fallback transition, panel-wide hard stop, advisory receipt, and two vacuous-test gaps fixed below.
+- [x] Make the Claude Code policy and both `/rev` skills executable workflow contracts, with explicit reasons for skipped steps and non-certifying missing artifacts.
+- [x] Promote every fallback session variable atomically, stop all sibling launches under a hard-failed panel label, retain per-seat advisories in durable receipts, and replace both vacuous regressions with exercised malformed or omitted cases.
+- [x] Treat a trailing out-of-range patch read as advisory only after complete byte proof, while preserving the fatal boundary before proof completes.
+- [ ] Re-run the complete release gate after the accepted council fixes.
+- [ ] Push, release, and reinstall 0.4.3 before resuming wallet PR #814.
+
+Deferred to 0.4.4 after the stable release:
+
+- Keep evidence mode for enforceable CLI seats in mixed Claude Code panels while Agent seats receive explicit unaudited full-state coverage, and define the combined receipt and certification semantics.
+
+### 0.4.3 review
+
+- The preserved PR #814 replay converts 15 choreography-only rejections to valid advisory audits. Acceptance rises from 50.0 percent to 96.9 percent; the remaining attempt still lacks required source proof.
+- The first 0.4.3 self-host panel launched exactly Sol, Terra, Opus, and Sonnet once. Sol and Terra returned valid audits. Opus missed required source proof, which stopped the panel and canceled pending Sonnet without any automatic reviewer launch.
+- Sol found a stale plan-panel audit-retry instruction in both host skills. Terra found the nearby duplicate-chunk wording still described every duplicate as fatal. Both contradictions were fixed to match the deterministic auditor policy.
+- The live hard-stop exposed a stale retry directive in `rev-seat.sh`. Hard audit failures now preserve rejected findings as `.audit-invalid.json`, remove the canonical result, and tell the host to stop before another reviewer launch.
+- The next bounded panel returned three valid audits. Sol and Opus independently found that stale collection instructions and a wrapper relaunch could still retry a failed audit label; Terra found duplicate required-source reads remained fatal despite the advisory contract. All three were fixed with focused regressions.
+- Sonnet completed a useful result but missed required source proof. The wrapper preserved it under `.audit-invalid.json`, emitted exit 2, and made no retry. Its mixed advisory/fatal classification suggestion was rejected because 0.4.3 intentionally promotes choreography issues to advisories only after every substantive proof gate passes.
+- The third bounded panel stopped on Terra's truncated source packet without retrying any seat. Sol found malformed duplicate patch reads could skip completeness validation, and Terra identified quota fallback's path-only source comparison. The fixes validate duplicate bytes, cap normal source packets at 16 KiB, and compare frozen content identities across fallback sessions.
+- The final bounded panel launched each configured seat once and performed no automatic retry, fallback, or repair. Sol found that quota fallback did not promote all active generation variables. Opus's preserved result found that a hard stop was seat-local and two tests were vacuous. Sonnet found that receipt output dropped advisory detail. Terra reported no findings. All source-verifiable P1 and P2 findings were fixed. Opus's audit failure came from a redundant Read after the full patch had already been proven; that exact sequence is now a valid advisory regression, while a premature overshoot remains fatal.
