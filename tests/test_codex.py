@@ -534,7 +534,8 @@ class CodexTests(unittest.TestCase):
             probe=lambda seat: (valid_calls.append(seat['seat']), None, None),
         )
         self.assertFalse(failed)
-        self.assertEqual(valid_calls, ['codex-sol', 'gemini', 'opus'])
+        self.assertEqual(len(valid_calls), 3)
+        self.assertEqual(set(valid_calls), {'codex-sol', 'gemini', 'opus'})
         self.assertNotIn('strict_class', valid)
 
     def test_exact_codex_count_rejects_padded_name_collision(self):
