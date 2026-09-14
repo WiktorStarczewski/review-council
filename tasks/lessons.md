@@ -205,3 +205,5 @@
   repository code is changing while the tree is actually frozen.
 - When a final self-host panel has no valid predecessor receipt, say that its scope must widen before launch. Once it seals,
   constrain any post-fix verification to the receipt-relative delta plus the one required full-state integration seat.
+- When CI fixtures execute a system binary, install that binary explicitly in every runner image. A developer-machine pass
+  does not prove a clean hosted runner has the same tool inventory, so reproduce missing-tool failures in a clean container.
