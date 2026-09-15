@@ -330,11 +330,14 @@ finish_repos() {
     case " $FAILED_REPOS " in *" $d "*)
       say "--- skipping $(basename "$d") - a leg on it failed; its review is not complete"; continue;; esac
     say "--- finishing $(basename "$d")"
-    before=$(cd "$d" && git rev-parse HEAD 2>/dev/null) || {
-      say "!!! cannot read pre-squash head for $(basename "$d")"
-      note_failure "finish:$(basename "$d")" "$d"
-      continue
-    }
+    before=""
+    if [ "$NO_PUSH" != 1 ] && [ "$NO_SQUASH" != 1 ]; then
+      before=$(cd "$d" && git rev-parse HEAD 2>/dev/null) || {
+        say "!!! cannot read pre-squash head for $(basename "$d")"
+        note_failure "finish:$(basename "$d")" "$d"
+        continue
+      }
+    fi
     set -o pipefail
     ( cd "$d" && if [ "$NO_SQUASH" = 1 ]; then echo "(NO_SQUASH=1: keeping review commits)"; else "$REV_SCRIPTS/rev-squash.sh" --apply; fi ) 2>&1 | sed 's/^/    /' | tee -a "$LOG"
     srq=$?
@@ -342,12 +345,15 @@ finish_repos() {
     # A refused squash is not a reason to withhold the push: the round commits are real work and CI
     # must see them. Squash and push are therefore independent steps, not one && chain.
     [ "$srq" -eq 0 ] || say "!!! squash refused for $(basename "$d") - pushing the un-collapsed review commits"
-    after=$(cd "$d" && git rev-parse HEAD 2>/dev/null) || {
-      say "!!! cannot read final head for $(basename "$d")"
-      note_failure "finish:$(basename "$d")" "$d"
-      continue
-    }
-    if [ "$NO_PUSH" != 1 ] && [ "$srq" -eq 0 ] && [ "$before" != "$after" ]; then
+    after=""
+    if [ -n "$before" ]; then
+      after=$(cd "$d" && git rev-parse HEAD 2>/dev/null) || {
+        say "!!! cannot read final head for $(basename "$d")"
+        note_failure "finish:$(basename "$d")" "$d"
+        continue
+      }
+    fi
+    if [ -n "$before" ] && [ "$srq" -eq 0 ] && [ "$before" != "$after" ]; then
       map_tmp="$SQUASH_MAP.tmp.$$"
       awk -F '\t' -v repo="$d" '$1 != repo' "$SQUASH_MAP" > "$map_tmp" || {
         say "!!! cannot update squash recovery map for $(basename "$d")"
