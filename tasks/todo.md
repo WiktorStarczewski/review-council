@@ -48,6 +48,9 @@
 - [x] Refresh the exact upstream tracking ref after a successful literal-URL push.
 - [x] Add non-vacuous regressions for wrong-ref refusal and post-push tracking state.
 - [ ] Rerun focused, frozen-tree, and exact-roster verification on the repaired tree.
+- [x] Make publication a recoverable GitHub pending-review transaction.
+- [x] Prove concurrent identical publication across separate clones submits one review.
+- [x] Preserve exact COMMENTED-review idempotence and ambiguous-write recovery.
 
 ### Review
 
@@ -59,6 +62,10 @@
   both Claude validators, and the Codex marketplace validator.
 - The destination repair passed 302 PR-publication assertions, 282 stack assertions,
   and 447 skill-contract assertions.
+- A live disposable draft on PR #6 confirmed GitHub rejects a second pending review
+  for the same authenticated user and exposes the first draft through the review list.
+- The remote transaction repair passed 332 PR-publication assertions and 449
+  skill-contract assertions, including independent-clone serialization and safe cleanup.
 
 ## Wall-time optimization spike
 
