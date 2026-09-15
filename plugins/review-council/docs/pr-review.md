@@ -171,9 +171,13 @@ assigned by the stack config.
 Before every real push or no-push completion, the stack validates the authoritative
 session, clean reviewed tree, merge base, frozen structured input, body and target,
 and repository set without calling GitHub. Real pushes additionally validate the
-captured endpoint, then push the captured commit to that literal URL and destination
-ref, so later branch or remote configuration changes cannot widen or redirect the
-push. Validation accepts complete original and finalized review states. A real-push
+captured endpoint, and the destination ref must equal the reviewed branch ref. The
+upstream tracking ref is reconciled from that literal endpoint before squash. The
+stack then pushes the captured commit to the literal URL and validated destination,
+so later branch or remote configuration changes cannot widen or redirect the push.
+After a successful pinned push, it records the immutable pushed head in the tracking ref before testing for branch movement.
+A retry therefore sees prior remote success
+before it can squash. Validation accepts complete original and finalized review states. A real-push
 retry also accepts the body-before-target split left by interrupted finalization so
 the finalizer can repair it; no-push completion rejects that split state.
 The finalizer tolerates brief GitHub head propagation only while the visible head is

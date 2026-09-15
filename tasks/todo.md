@@ -44,6 +44,10 @@
 - [x] Validate original, finalized, and recoverable stack review states before completion.
 - [x] Run focused tests and the full frozen-tree gate on the repaired implementation.
 - [ ] Run the final exact-roster panel.
+- [x] Reject mismatched stack push refs before any remote mutation.
+- [x] Refresh the exact upstream tracking ref after a successful literal-URL push.
+- [x] Add non-vacuous regressions for wrong-ref refusal and post-push tracking state.
+- [ ] Rerun focused, frozen-tree, and exact-roster verification on the repaired tree.
 
 ### Review
 
@@ -53,6 +57,8 @@
   the Codex marketplace validator.
 - Post-r9 repair gate passed 222 shell tasks, 3,386 assertions, 89 Python tests,
   both Claude validators, and the Codex marketplace validator.
+- The destination repair passed 302 PR-publication assertions, 282 stack assertions,
+  and 447 skill-contract assertions.
 
 ## Wall-time optimization spike
 

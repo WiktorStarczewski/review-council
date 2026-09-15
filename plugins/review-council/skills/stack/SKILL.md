@@ -89,9 +89,10 @@ the log is the record.
 
 Legs run with `REV_STACK_LEG=1`, so a leg never squashes or pushes; the orchestrator
 does both once per repo at the end (`NO_PUSH=1` to skip the push). Give every
-working branch an upstream of the same name first (`git push -u origin HEAD`): a
-branch created from `origin/main` tracks `main`, and the final `git push` is only
-saved from targeting it by `push.default=simple`. `ROOT` (session root, one
+working branch an upstream of the same name first (`git push -u origin HEAD`). The
+stack fails closed before squash or push when the upstream destination differs from
+the reviewed branch, including a branch created while tracking `origin/main`.
+`ROOT` (session root, one
 `<leg>/` dir each), `LOG`, `PASSES`, `STALL_SECS`, `MAX_ATTEMPTS` are env knobs; see
 the script header.
 
@@ -139,6 +140,10 @@ with `${CLAUDE_PLUGIN_ROOT}/scripts/rev-squash.sh --apply` and pushes once. Squa
 refused squash is logged (`!!! squash refused for <repo>`) and the push still happens,
 because the round commits are real work that CI has to see. If a repo prints
 "refusing: … only N unpushed", something was pushed mid-run - leave that history alone.
+Before squash, the orchestrator reconciles the validated upstream tracking ref from
+the captured literal push URL. After a pinned push succeeds, it records the immutable
+pushed commit in that ref before checking whether the local branch moved. A retry can
+therefore recognize remote success without rewriting an already-pushed review commit.
 
 After every completed repository is pushed successfully, `stack.sh` follows
 `docs/pr-review.md`: a changed-head squash must preserve the inspected tree, decision

@@ -1163,15 +1163,67 @@ test_pr_review_validate_stack() {
   PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" \
     --head "$head" --root "$root" --push-url 'https://github.com/acme/repo.git' \
+    > "$T/pr-validate-missing-ref.out" 2> "$T/pr-validate-missing-ref.err"
+  assert_eq "push URL without a destination ref fails closed" "$?" 1
+  assert_grep "missing push ref names the paired requirement" \
+    "$T/pr-validate-missing-ref.err" 'push URL and ref.*together'
+
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" \
+    --head "$head" --root "$root" --push-ref 'refs/heads/feat' \
+    > "$T/pr-validate-missing-url.out" 2> "$T/pr-validate-missing-url.err"
+  assert_eq "push ref without a URL fails closed" "$?" 1
+  assert_grep "missing push URL names the paired requirement" \
+    "$T/pr-validate-missing-url.err" 'push URL and ref.*together'
+
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" \
+    --head "$head" --root "$root" --push-url 'https://github.com/acme/repo.git' \
+    --push-ref 'refs/heads/main' \
+    > "$T/pr-validate-wrong-ref.out" 2> "$T/pr-validate-wrong-ref.err"
+  assert_eq "a different destination branch fails closed" "$?" 1
+  assert_grep "wrong push ref names the reviewed branch boundary" \
+    "$T/pr-validate-wrong-ref.err" 'push ref.*reviewed branch'
+
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" \
+    --head "$head" --root "$root" --push-url 'https://github.com/acme/repo.git' \
+    --push-ref 'refs/heads/feat' \
     > "$T/pr-validate.out" 2> "$T/pr-validate.err"
   assert_eq "local stack validation accepts the frozen review" "$?" 0
   assert_nogrep "local stack validation makes no GitHub calls" "$T/pr-validate.calls" '.'
+
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack-destination "$session" \
+    --root "$root" --push-url 'https://github.com/acme/repo.git' \
+    --push-ref 'refs/heads/feat' \
+    > "$T/pr-validate-destination.out" 2> "$T/pr-validate-destination.err"
+  assert_eq "pre-squash destination validation accepts the reviewed branch" "$?" 0
+
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack-destination "$session" \
+    --root "$root" --push-url 'https://github.com/acme/repo.git' \
+    --push-ref 'refs/heads/main' \
+    > "$T/pr-validate-destination-ref.out" 2> "$T/pr-validate-destination-ref.err"
+  assert_eq "pre-squash destination validation rejects another branch" "$?" 1
+  assert_grep "pre-squash wrong ref names the reviewed branch" \
+    "$T/pr-validate-destination-ref.err" 'push ref.*reviewed branch'
+
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack-destination "$session" \
+    --root "$root" --push-url 'https://github.com/evil/repo.git' \
+    --push-ref 'refs/heads/feat' \
+    > "$T/pr-validate-destination-url.out" 2> "$T/pr-validate-destination-url.err"
+  assert_eq "pre-squash destination validation rejects another repository" "$?" 1
+  assert_grep "pre-squash wrong URL names the frozen repository" \
+    "$T/pr-validate-destination-url.err" 'push URL.*frozen GitHub repository'
 
   git -C "$root" commit --allow-empty -qm 'fix(rev): same tree'
   next=$(git -C "$root" rev-parse HEAD)
   PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" \
     --head "$next" --root "$root" --push-url 'ssh://git@github.com/acme/repo.git' \
+    --push-ref 'refs/heads/feat' \
     > "$T/pr-validate-same-tree.out" 2> "$T/pr-validate-same-tree.err"
   assert_eq "local stack validation accepts a same-tree aggregate commit" "$?" 0
 
@@ -1179,6 +1231,7 @@ test_pr_review_validate_stack() {
   PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" \
     --head "$next" --root "$root" --push-url 'https://github.com/acme/repo.git' \
+    --push-ref 'refs/heads/feat' \
     > "$T/pr-validate-dirty.out" 2> "$T/pr-validate-dirty.err"
   assert_eq "local stack validation rejects dirty bytes" "$?" 1
   assert_grep "dirty validation names the clean-tree gate" \
@@ -1188,6 +1241,7 @@ test_pr_review_validate_stack() {
   PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" \
     --head "$next" --root "$root" --push-url 'https://github.com/evil/repo.git' \
+    --push-ref 'refs/heads/feat' \
     > "$T/pr-validate-push.out" 2> "$T/pr-validate-push.err"
   assert_eq "local stack validation rejects a redirected GitHub push" "$?" 1
   assert_grep "redirected push names the frozen repository boundary" \
@@ -1197,6 +1251,7 @@ test_pr_review_validate_stack() {
   PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" \
     --head "$next" --root "$root" --push-url 'https://github.com/acme/repo.git' \
+    --push-ref 'refs/heads/feat' \
     > "$T/pr-validate-body.out" 2> "$T/pr-validate-body.err"
   assert_eq "local stack validation rejects a tampered rendered body" "$?" 1
   assert_grep "tampered validation names the frozen body" \
@@ -1250,6 +1305,7 @@ PY
   PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" --head "$after" \
     --root "$root" --push-url 'https://github.com/acme/repo.git' \
+    --push-ref 'refs/heads/feat' \
     > "$T/pr-finalize-validate.out" 2> "$T/pr-finalize-validate.err"
   assert_eq "real-push validation accepts a finalized review" "$?" 0
   PATH="$bin:$PATH" NO_PUSH=1 GH_CALLS="$T/pr-finalize.calls" \
@@ -1276,6 +1332,7 @@ PY
   PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$changed_input" --head "$after" \
     --root "$root" --push-url 'https://github.com/acme/repo.git' \
+    --push-ref 'refs/heads/feat' \
     > "$T/pr-finalize-changed-url.out" 2> "$T/pr-finalize-changed-url.err"
   assert_eq "finalized validation rejects a changed original decision SHA" "$?" 1
   assert_grep "changed decision SHA names the semantic source mismatch" \
@@ -1297,6 +1354,7 @@ PY
   PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$changed_input" --head "$after" \
     --root "$root" --push-url 'https://github.com/acme/repo.git' \
+    --push-ref 'refs/heads/feat' \
     > "$T/pr-finalize-changed-label.out" 2> "$T/pr-finalize-changed-label.err"
   assert_eq "finalized validation rejects a changed original fix label" "$?" 1
   assert_grep "changed fix label names the semantic source mismatch" \
@@ -1306,6 +1364,7 @@ PY
   PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize-interrupted.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$interrupted" --head "$after" \
     --root "$root" --push-url 'https://github.com/acme/repo.git' \
+    --push-ref 'refs/heads/feat' \
     > "$T/pr-finalize-interrupted-validate.out" \
     2> "$T/pr-finalize-interrupted-validate.err"
   assert_eq "real-push validation accepts an interrupted finalization" "$?" 0

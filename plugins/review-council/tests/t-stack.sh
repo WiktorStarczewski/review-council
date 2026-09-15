@@ -210,6 +210,10 @@ RSEOF
     local publish_head; publish_head=$(git -C "$RP" rev-parse HEAD)
     assert_grep "real-push validation records a nonempty endpoint" \
       "$STACK_PUBLISH_CALLS" '^validate-stack .*--push-url [^ ]+ '
+    assert_grep "real-push validation binds the reviewed destination ref" \
+      "$STACK_PUBLISH_CALLS" '^validate-stack .*--push-ref refs/heads/feat '
+    assert_eq "literal-URL push refreshes the upstream tracking ref" \
+      "$(git -C "$RP" rev-parse '@{u}')" "$publish_head"
     assert_eq "stack publisher receives the completed session" \
       "$(grep '^publish ' "$STACK_PUBLISH_CALLS")" \
       "publish $ROOT/legpub local=$publish_head remote=$publish_head"
@@ -217,6 +221,56 @@ RSEOF
       "$STACK_PUBLISH_ENV" '^mode=1 '
     assert_grep "stack publisher receives the resumable stack command" \
       "$STACK_PUBLISH_ENV" "retry=.*ROOT=.*stack-publish-root.*stack.sh.*stack-publish.cfg"
+
+    local RW="$T/stk-wrong-ref" rw_remote="$T/stk-wrong-ref-remote.git"
+    mkrepo "$RW"
+    git init -q --bare "$rw_remote"
+    git -C "$RW" remote add origin "$rw_remote"
+    git -C "$RW" push -q -u origin main
+    git -C "$RW" checkout -qb feat origin/main
+    echo reviewed > "$RW/reviewed.txt"; git -C "$RW" add reviewed.txt
+    git -C "$RW" commit -qm 'fix(rev): wrong destination guard'
+    local rw_main_before; rw_main_before=$(git -C "$RW" rev-parse origin/main)
+    printf 'legs() { run_leg "%s" 1 legwrong "wrong destination"; }\n' "$RW" \
+      > "$T/stack-wrong-ref.cfg"
+    export ROOT="$T/stack-wrong-ref-root" LOG="$T/stack-wrong-ref.log"
+    export STACK_PUBLISH_CALLS="$T/stack-wrong-ref.calls" NO_SQUASH=1
+    : > "$STACK_PUBLISH_CALLS"
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-wrong-ref.cfg" \
+      > "$T/stack-wrong-ref.out" 2>&1
+    assert_eq "stack rejects an upstream ref different from the reviewed branch" "$?" 1
+    assert_nogrep "wrong destination fails before Python validation" \
+      "$STACK_PUBLISH_CALLS" '^validate-stack '
+    assert_eq "wrong destination cannot advance remote main" \
+      "$(git -C "$RW" ls-remote origin refs/heads/main | awk '{print $1}')" \
+      "$rw_main_before"
+    assert_eq "wrong destination cannot create remote feat" \
+      "$(git -C "$RW" ls-remote origin refs/heads/feat | awk '{print $1}')" ""
+
+    local RN="$T/stk-tracking-namespace" rn_remote="$T/stk-tracking-namespace-remote.git"
+    mkrepo "$RN"; git -C "$RN" checkout -qb feat
+    git init -q --bare "$rn_remote"
+    git -C "$RN" remote add origin "$rn_remote"
+    git -C "$RN" push -q -u origin feat
+    git -C "$RN" config remote.origin.fetch '+refs/heads/*:refs/remotes/alternate/*'
+    git -C "$RN" fetch -q origin
+    echo reviewed > "$RN/reviewed.txt"; git -C "$RN" add reviewed.txt
+    git -C "$RN" commit -qm 'fix(rev): tracking namespace guard'
+    local rn_remote_before
+    rn_remote_before=$(git -C "$RN" ls-remote origin refs/heads/feat | awk '{print $1}')
+    printf 'legs() { run_leg "%s" 1 legnamespace "tracking namespace"; }\n' "$RN" \
+      > "$T/stack-tracking-namespace.cfg"
+    export ROOT="$T/stack-tracking-namespace-root" LOG="$T/stack-tracking-namespace.log"
+    export STACK_PUBLISH_CALLS="$T/stack-tracking-namespace.calls"
+    : > "$STACK_PUBLISH_CALLS"
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-tracking-namespace.cfg" \
+      > "$T/stack-tracking-namespace.out" 2>&1
+    assert_eq "stack rejects an upstream outside the selected tracking namespace" "$?" 1
+    assert_nogrep "invalid tracking namespace fails before Python validation" \
+      "$STACK_PUBLISH_CALLS" '^validate-stack '
+    assert_eq "invalid tracking namespace cannot advance the remote" \
+      "$(git -C "$RN" ls-remote origin refs/heads/feat | awk '{print $1}')" \
+      "$rn_remote_before"
 
     export ROOT="$T/stack-publish-fail-root" LOG="$T/stack-publish-fail.log" STACK_PUBLISH_RC=1
     SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-publish.cfg" > "$T/stack-publish-fail.out" 2>&1
@@ -325,6 +379,9 @@ SH
     assert_nogrep "failed stack push never reaches finalization" \
       "$STACK_PUBLISH_CALLS" '^finalize-stack '
     assert_nogrep "failed stack push never reports completion" "$LOG" 'ALL PHASES COMPLETE'
+    assert_eq "failed stack push records only the actual remote head" \
+      "$(git -C "$RP" rev-parse '@{u}')" \
+      "$(git -C "$RP" ls-remote origin refs/heads/feat | awk '{print $1}')"
 
     local RH="$T/stk-head-race" rh_remote="$T/stk-head-race-remote.git"
     mkrepo "$RH"; git -C "$RH" checkout -qb feat
@@ -350,11 +407,76 @@ SH
     remote_head=$(git -C "$RH" ls-remote origin refs/heads/feat | awk '{print $1}')
     assert_eq "branch movement cannot widen the immutable push" \
       "$remote_head" "$reviewed_head"
+    assert_eq "branch movement still records the immutable pushed head" \
+      "$(git -C "$RH" rev-parse '@{u}')" "$reviewed_head"
     assert_nogrep "branch movement never reaches finalization" \
       "$STACK_PUBLISH_CALLS" '^finalize-stack '
     assert_exit "race fixture really advances the local branch" 0 \
       test "$raced_head" != "$reviewed_head"
     unset STACK_AFTER_VALIDATE
+    export NO_SQUASH=0 STACK_VALIDATE_RC=1
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-head-race.cfg" \
+      > "$T/stack-head-race-retry.out" 2>&1
+    assert_eq "head-race retry remains incomplete on the unreviewed local commit" "$?" 1
+    assert_grep "head-race retry refuses to rewrite the pushed review commit" \
+      "$LOG" 'refusing: 2 review commits at tip but only 1 unpushed'
+    assert_exit "head-race retry preserves the pushed commit in local history" 0 \
+      git -C "$RH" merge-base --is-ancestor "$reviewed_head" HEAD
+    unset STACK_VALIDATE_RC
+    export NO_SQUASH=1
+
+    local RT="$T/stk-tracking-retry" rt_remote="$T/stk-tracking-retry-remote.git"
+    local rt_bin="$T/stk-tracking-retry-bin" rt_git
+    mkrepo "$RT"; git -C "$RT" checkout -qb feat
+    git init -q --bare "$rt_remote"
+    git -C "$RT" remote add origin "$rt_remote"
+    git -C "$RT" push -q -u origin feat
+    local rt_before; rt_before=$(git -C "$RT" rev-parse '@{u}')
+    echo one > "$RT/one.txt"; git -C "$RT" add one.txt
+    git -C "$RT" commit -qm 'fix(rev): tracking retry one'
+    echo two > "$RT/two.txt"; git -C "$RT" add two.txt
+    git -C "$RT" commit -qm 'fix(rev): tracking retry two'
+    local rt_head; rt_head=$(git -C "$RT" rev-parse HEAD)
+    printf 'legs() { run_leg "%s" 1 legtracking "tracking retry"; }\n' "$RT" \
+      > "$T/stack-tracking-retry.cfg"
+    mkdir -p "$rt_bin"
+    rt_git=$(command -v git)
+    cat > "$rt_bin/git" <<'SH'
+#!/bin/sh
+after_update=0
+for argument in "$@"; do
+  if [ "$after_update" = 1 ] && [ "$argument" = "${STACK_FAIL_TRACKING_HEAD:-}" ]; then
+    exit 88
+  fi
+  [ "$argument" = update-ref ] && after_update=1
+done
+exec "$STACK_GIT_REAL" "$@"
+SH
+    chmod +x "$rt_bin/git"
+    export ROOT="$T/stack-tracking-retry-root" LOG="$T/stack-tracking-retry.log"
+    export STACK_PUBLISH_CALLS="$T/stack-tracking-retry.calls"
+    export STACK_GIT_REAL="$rt_git" STACK_FAIL_TRACKING_HEAD="$rt_head" NO_SQUASH=1
+    : > "$STACK_PUBLISH_CALLS"
+    PATH="$rt_bin:$PATH" SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-tracking-retry.cfg" \
+      > "$T/stack-tracking-retry.out" 2>&1
+    assert_eq "post-push tracking failure keeps the stack incomplete" "$?" 1
+    assert_eq "tracking failure occurs after the immutable push lands" \
+      "$(git -C "$RT" ls-remote origin refs/heads/feat | awk '{print $1}')" "$rt_head"
+    assert_eq "failed tracking transaction does not claim the pushed head" \
+      "$(git -C "$RT" rev-parse '@{u}')" "$rt_before"
+    assert_nogrep "tracking failure never reaches finalization" \
+      "$STACK_PUBLISH_CALLS" '^finalize-stack '
+    unset STACK_FAIL_TRACKING_HEAD
+    export NO_SQUASH=0
+    PATH="$rt_bin:$PATH" SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-tracking-retry.cfg" \
+      > "$T/stack-tracking-retry-retry.out" 2>&1
+    assert_eq "tracking failure retry reconciles and completes" "$?" 0
+    assert_grep "tracking retry refuses to rewrite already-pushed commits" \
+      "$LOG" 'refusing: 2 review commits at tip but only 0 unpushed'
+    assert_eq "tracking retry records the actual pushed head" \
+      "$(git -C "$RT" rev-parse '@{u}')" "$rt_head"
+    unset STACK_GIT_REAL
+    export NO_SQUASH=1
 
     local RR="$T/stk-pushurl-race" rr_remote="$T/stk-pushurl-race-remote.git"
     local rr_redirect="$T/stk-pushurl-redirect.git"

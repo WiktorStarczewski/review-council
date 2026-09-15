@@ -837,38 +837,61 @@ def stack_review_state(session, target, head):
     return state, updated, source_body, body, current_body
 
 
-def validate_stack(session, head, expected_root=None, push_url=None):
-    require(OID.fullmatch(head) is not None, "--head must be a full commit ID")
-    no_push = os.environ.get("NO_PUSH") == "1"
-    require(push_url is not None or no_push,
-            "a push URL is required unless NO_PUSH=1")
-    scope = parse_scope(session / "scope.env")
+def validate_stack_identity(scope, target, expected_root=None):
     root = scope["root"]
     if expected_root is not None:
         require(root.resolve() == Path(expected_root).resolve(),
                 "stack validation repository does not match the reviewed session")
-    target = load_target(session / "pr-review-target.json")
     require(target["branch"] == scope["branch"] and target["base"] == scope["base"],
             "the PR review target does not match its reviewed session scope")
     require(run_git(["branch", "--show-current"], root) == target["branch"],
             "stack validation branch does not match the reviewed branch")
+    require(github_repositories(root) == target["repositories"],
+            "the reviewed GitHub repository remotes changed; rerender before pushing")
+    return root
+
+
+def validate_push_destination(target, push_url, push_ref, required):
+    require((push_url is None) == (push_ref is None),
+            "the push URL and ref must be provided together")
+    require(push_url is not None or not required,
+            "a push URL and ref are required unless NO_PUSH=1")
+    if push_ref is None:
+        return
+    require(push_ref == f"refs/heads/{target['branch']}",
+            "the push ref does not match the reviewed branch")
+    if target["repositories"]:
+        repository = github_repository(push_url)
+        require(repository in target["repositories"],
+                "the push URL is outside the frozen GitHub repository set")
+
+
+def validate_stack_destination(session, expected_root, push_url, push_ref):
+    scope = parse_scope(session / "scope.env")
+    target = load_target(session / "pr-review-target.json")
+    validate_stack_identity(scope, target, expected_root)
+    validate_push_destination(target, push_url, push_ref, True)
+    print(f"pr-review: validated stack destination {push_url} {push_ref}")
+
+
+def validate_stack(session, head, expected_root=None, push_url=None, push_ref=None):
+    require(OID.fullmatch(head) is not None, "--head must be a full commit ID")
+    no_push = os.environ.get("NO_PUSH") == "1"
+    scope = parse_scope(session / "scope.env")
+    target = load_target(session / "pr-review-target.json")
+    root = validate_stack_identity(scope, target, expected_root)
+    validate_push_destination(target, push_url, push_ref, not no_push)
     require(run_git(["rev-parse", "HEAD"], root) == head,
             "stack validation head does not match the local checkout")
     require(run_git(["rev-parse", f"{head}^{{tree}}"], root) == target["tree"],
             "stack validation changed the reviewed tree")
     require(git_is_ancestor(target["base"], head, root),
             "stack validation head does not preserve the reviewed base")
-    require(github_repositories(root) == target["repositories"],
-            "the reviewed GitHub repository remotes changed; rerender before pushing")
     require_clean_review_tree(root, session)
 
     state, _, _, _, _ = stack_review_state(session, target, head)
     require(state in ("original", "finalized") or (state == "interrupted" and not no_push),
             "rendered PR review does not match its frozen body hash and target state")
-    if target["repositories"] and push_url is not None:
-        repository = github_repository(push_url)
-        require(repository in target["repositories"],
-                "the push URL is outside the frozen GitHub repository set")
     print(f"pr-review: validated stack review at {head}")
 
 
@@ -941,6 +964,12 @@ def main():
     validate_parser.add_argument("--head", required=True)
     validate_parser.add_argument("--root")
     validate_parser.add_argument("--push-url")
+    validate_parser.add_argument("--push-ref")
+    destination_parser = subparsers.add_parser("validate-stack-destination")
+    destination_parser.add_argument("session", type=Path)
+    destination_parser.add_argument("--root", required=True)
+    destination_parser.add_argument("--push-url")
+    destination_parser.add_argument("--push-ref")
     args = parser.parse_args()
     session = args.session.expanduser().absolute()
     try:
@@ -950,7 +979,9 @@ def main():
         elif args.command == "finalize-stack":
             finalize_stack(session, args.head, args.root)
         elif args.command == "validate-stack":
-            validate_stack(session, args.head, args.root, args.push_url)
+            validate_stack(session, args.head, args.root, args.push_url, args.push_ref)
+        elif args.command == "validate-stack-destination":
+            validate_stack_destination(session, args.root, args.push_url, args.push_ref)
         else:
             publish(session, Path(__file__).resolve())
     except (OSError, ValueError, subprocess.SubprocessError) as error:

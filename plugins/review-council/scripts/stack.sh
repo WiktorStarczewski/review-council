@@ -375,7 +375,8 @@ ${VACUITY}${resume}"
 }
 
 finish_repos() {
-  local d srq push_rc session head branch_ref push_remote push_ref push_urls push_url
+  local d srq push_rc session head branch_ref tracking_ref tracking_before
+  local push_remote push_ref push_urls push_url remote_head upstream
   local -a validate_args
   for d in $REPOS_SEEN; do
     case " $FAILED_REPOS " in *" $d "*)
@@ -390,37 +391,41 @@ finish_repos() {
       note_failure "finish:$(basename "$d")" "$d"
       continue
     fi
-    set -o pipefail
-    ( cd "$d" && if [ "$NO_SQUASH" = 1 ]; then echo "(NO_SQUASH=1: keeping review commits)"; else "$REV_SCRIPTS/rev-squash.sh" --apply; fi ) 2>&1 | sed 's/^/    /' | tee -a "$LOG"
-    srq=$?
-    set +o pipefail
-    # A refused squash is not a reason to withhold the push: the round commits are real work and CI
-    # must see them. Squash and push are therefore independent steps, not one && chain.
-    [ "$srq" -eq 0 ] || say "!!! squash refused for $(basename "$d") - pushing the un-collapsed review commits"
     session=$(session_for_repo "$d") || {
       say "!!! no authoritative completed review session for $(basename "$d")"
       note_failure "PR review validation" "$d"
       continue
     }
-    head=$(git -C "$d" rev-parse HEAD 2>/dev/null) || {
-      say "!!! cannot capture the reviewed head for $(basename "$d")"
-      note_failure "PR review validation" "$d"
-      continue
-    }
-    validate_args=(validate-stack "$session" --head "$head" --root "$d")
     if [ "$NO_PUSH" != 1 ]; then
       branch_ref=$(git -C "$d" symbolic-ref -q HEAD 2>/dev/null) || {
         say "!!! cannot capture the reviewed push branch for $(basename "$d")"
         note_failure "PR review validation" "$d"
         continue
       }
-      push_remote=$(git -C "$d" for-each-ref --format='%(upstream:remotename)' "$branch_ref")
-      push_ref=$(git -C "$d" for-each-ref --format='%(upstream:remoteref)' "$branch_ref")
-      if [ -z "$push_remote" ] || [ -z "$push_ref" ]; then
-        say "!!! cannot resolve one upstream push destination for $(basename "$d")"
+      upstream=$(git -C "$d" for-each-ref \
+        --format='%(upstream)%09%(upstream:remotename)%09%(upstream:remoteref)' \
+        "$branch_ref")
+      IFS=$'\t' read -r tracking_ref push_remote push_ref <<< "$upstream"
+      case "$tracking_ref:$push_remote:$push_ref" in
+        :*|*::*|*:)
+          say "!!! cannot resolve one upstream push destination for $(basename "$d")"
+          note_failure "PR review validation" "$d"
+          continue
+          ;;
+      esac
+      if [ "$push_ref" != "$branch_ref" ]; then
+        say "!!! upstream push ref does not match the reviewed branch for $(basename "$d")"
         note_failure "PR review validation" "$d"
         continue
       fi
+      case "$tracking_ref" in
+        "refs/remotes/$push_remote/"*) ;;
+        *)
+          say "!!! upstream tracking ref is outside the selected remote for $(basename "$d")"
+          note_failure "PR review validation" "$d"
+          continue
+          ;;
+      esac
       push_urls=$(git -C "$d" remote get-url --push --all "$push_remote" 2>/dev/null) || {
         say "!!! cannot resolve the push URL for $(basename "$d")"
         note_failure "PR review validation" "$d"
@@ -432,7 +437,52 @@ finish_repos() {
         continue
       fi
       push_url=$push_urls
-      validate_args+=(--push-url "$push_url")
+      set -o pipefail
+      python3 "$REV_SCRIPTS/rev-pr-review.py" validate-stack-destination "$session" \
+        --root "$d" --push-url "$push_url" --push-ref "$push_ref" 2>&1 \
+        | sed 's/^/    /' | tee -a "$LOG"
+      push_rc=$?
+      set +o pipefail
+      if [ "$push_rc" -ne 0 ]; then
+        note_failure "PR review validation" "$d"
+        continue
+      fi
+      tracking_before=$(git -C "$d" rev-parse "$tracking_ref" 2>/dev/null) || {
+        say "!!! cannot read the upstream tracking ref for $(basename "$d")"
+        note_failure "PR review validation" "$d"
+        continue
+      }
+      if ! git -C "$d" fetch -q --no-tags "$push_url" "$push_ref"; then
+        say "!!! cannot reconcile the upstream push destination for $(basename "$d")"
+        note_failure "PR review validation" "$d"
+        continue
+      fi
+      remote_head=$(git -C "$d" rev-parse FETCH_HEAD 2>/dev/null) || {
+        say "!!! cannot read the upstream push destination for $(basename "$d")"
+        note_failure "PR review validation" "$d"
+        continue
+      }
+      if ! git -C "$d" update-ref "$tracking_ref" "$remote_head" "$tracking_before"; then
+        say "!!! cannot reconcile the upstream tracking ref for $(basename "$d")"
+        note_failure "PR review validation" "$d"
+        continue
+      fi
+    fi
+    set -o pipefail
+    ( cd "$d" && if [ "$NO_SQUASH" = 1 ]; then echo "(NO_SQUASH=1: keeping review commits)"; else "$REV_SCRIPTS/rev-squash.sh" --apply; fi ) 2>&1 | sed 's/^/    /' | tee -a "$LOG"
+    srq=$?
+    set +o pipefail
+    # A refused squash is not a reason to withhold the push: the round commits are real work and CI
+    # must see them. Squash and push are therefore independent steps, not one && chain.
+    [ "$srq" -eq 0 ] || say "!!! squash refused for $(basename "$d") - pushing the un-collapsed review commits"
+    head=$(git -C "$d" rev-parse HEAD 2>/dev/null) || {
+      say "!!! cannot capture the reviewed head for $(basename "$d")"
+      note_failure "PR review validation" "$d"
+      continue
+    }
+    validate_args=(validate-stack "$session" --head "$head" --root "$d")
+    if [ "$NO_PUSH" != 1 ]; then
+      validate_args+=(--push-url "$push_url" --push-ref "$push_ref")
     fi
     set -o pipefail
     python3 "$REV_SCRIPTS/rev-pr-review.py" "${validate_args[@]}" 2>&1 \
@@ -455,6 +505,11 @@ finish_repos() {
     if [ "$push_rc" -ne 0 ]; then
       say "!!! push failed for $(basename "$d")"
       note_failure "push:$(basename "$d")" "$d"
+      continue
+    fi
+    if ! git -C "$d" update-ref "$tracking_ref" "$head" "$remote_head"; then
+      say "!!! cannot record the successful pinned push for $(basename "$d")"
+      note_failure "push tracking:$(basename "$d")" "$d"
       continue
     fi
     if [ "$(git -C "$d" rev-parse HEAD 2>/dev/null)" != "$head" ]; then

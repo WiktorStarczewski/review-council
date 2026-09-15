@@ -410,6 +410,16 @@ test_skill_contract() {
     assert_grep "stack excludes plan panels from numeric count" "$H" '[Pp]lan panels do not count'
     assert_grep "stack distinguishes retryable roster status" "$H" 'Exit 5 is retryable'
     assert_grep "stack distinguishes permanent roster status" "$H" 'Exit 6 is permanent'
+    assert_grep "stack names the upstream destination" "$H" \
+      'upstream destination|destination ref'
+    assert_grep "stack binds that destination to the reviewed branch" "$H" \
+      'reviewed branch'
+    assert_grep "stack reconciles before squash" "$H" '[Bb]efore squash'
+    assert_grep "stack reconciles the tracking ref" "$H" 'tracking ref'
+    assert_grep "stack records successful pinned pushes" "$H" \
+      '[Aa]fter a pinned push succeeds'
+    assert_grep "stack checks branch movement after recording" "$H" \
+      'before checking'
   done
   assert_grep "Claude stack documents post-push PR review publication" "$ST" \
     'latest completed review for'
@@ -456,6 +466,12 @@ test_skill_contract() {
     'exact `COMMENTED` review'
   assert_grep "shared publication contract requires the stack push barrier" "$PRDOC" \
     'every completed repository.*push'
+  assert_grep "shared publication contract binds the stack destination branch" "$PRDOC" \
+    'destination ref must equal the reviewed branch ref'
+  assert_grep "shared publication contract reconciles prior pinned pushes before squash" "$PRDOC" \
+    'tracking ref.*reconciled.*before squash'
+  assert_grep "shared publication contract records a successful pinned push before branch checks" "$PRDOC" \
+    'successful pinned push.*tracking ref.*before.*branch movement'
   assert_grep "shared publication contract requires post-squash final rendering" "$PRDOC" \
     'squash.*render'
   assert_grep "shared publication contract selects one stack session per repository" "$PRDOC" \
