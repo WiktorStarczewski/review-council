@@ -128,8 +128,12 @@ PR discovery is restricted to repositories named by the reviewed checkout's GitH
 remotes. The exact normalized repository set is frozen at render time, and adding,
 removing, or repointing one of those remotes requires a fresh render. Ambient GitHub
 CLI repository selection or copied target state therefore cannot redirect the post.
+Accepted remotes are GitHub HTTPS, git protocol, SCP-style SSH, explicit-port SSH on
+`github.com`, and GitHub's documented `ssh.github.com:443` SSH-over-HTTPS form.
 Under a repository-local lock, it reads and updates the rendered body and target,
-checks all existing reviews, and
+checks all existing reviews, then revalidates the frozen open head before choosing a
+duplicate or creating a review. After creation it revalidates the head again before
+reporting success. It
 treats only an exact `COMMENTED` review body on the reviewed commit as idempotent
 success. The API request sets `commit_id` to the frozen head and `event` to `COMMENT`,
 then verifies the returned body, state, and commit. A real

@@ -579,7 +579,7 @@ def bind_target(scope, target, session, allow_rewritten_head=False):
                 "the PR base branch changed after review; rerun the review before publishing")
         return target, resolved, False
 
-    require(resolved["head"] == local_head,
+    require(allow_rewritten_head or resolved["head"] == local_head,
             "the open PR head does not match the reviewed local head")
     return associate_target(target, resolved), resolved, True
 
@@ -680,6 +680,13 @@ def unresolved_target_skip(scope, session):
     raise ReviewError("associated open PR has no rendered target; run render first")
 
 
+def require_publishable_head(target, live):
+    require(live["state"] == "OPEN",
+            "the PR closed after review; rerun the review before publishing")
+    require(live["head"] == target["head"],
+            "the PR head changed after review; rerun the review before publishing")
+
+
 def publish(session, script):
     scope = parse_scope(session / "scope.env")
     if os.environ.get("NO_PUSH") == "1":
@@ -701,13 +708,13 @@ def publish(session, script):
         if promoted:
             write_atomic(session / "pr-review-target.json",
                          json.dumps(target, indent=2) + "\n")
-        require(live["head"] == target["head"],
-                "the PR head changed after review; rerun the review before publishing")
+        require_publishable_head(target, live)
+        reviews = existing_reviews(target["repo"], target["number"], scope["root"])
+        require_publishable_head(target, live_pr(target, scope["root"]))
         if any(review.get("body") == body
                and review.get("state") == "COMMENTED"
                and review.get("commit_id") == target["head"]
-               for review in existing_reviews(
-                   target["repo"], target["number"], scope["root"])):
+               for review in reviews):
             print(f"pr-review: identical review already posted on {target['url']}")
             return
         payload = json.dumps({
@@ -729,6 +736,7 @@ def publish(session, script):
                     and posted.get("state") == "COMMENTED"
                     and posted.get("commit_id") == target["head"],
                     "GitHub did not confirm the commit-pinned COMMENTED review")
+            require_publishable_head(target, live_pr(target, scope["root"]))
         except (ReviewError, OSError, subprocess.SubprocessError) as error:
             raise ReviewError(str(error) + "\npr-review: retry: " + retry) from error
     print(f"pr-review: posted {target['url']}")

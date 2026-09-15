@@ -149,6 +149,9 @@ if [ "${1:-} ${2:-}" = "pr view" ]; then
     count=$((count + 1))
     printf '%s\n' "$count" > "$GH_VIEW_COUNT_FILE"
     [ "$count" -ne 1 ] || live_head=${GH_FIRST_LIVE_HEAD:-$live_head}
+    if [ -n "${GH_SWITCH_HEAD_AFTER:-}" ] && [ "$count" -gt "$GH_SWITCH_HEAD_AFTER" ]; then
+      live_head=${GH_SWITCHED_HEAD:?}
+    fi
   fi
   live_state=${GH_LIVE_STATE:-OPEN}
   live_base=${GH_LIVE_BASE:-main}
@@ -181,6 +184,11 @@ if [ "${1:-}" = api ]; then
     [ -z "${GH_POSTED_BODY:-}" ] || printf '%s' "$payload" | jq -j .body > "$GH_POSTED_BODY"
     if [ "${GH_MODE:-post}" = invalid-post-json ]; then
       printf '%s\n' '{invalid'
+      exit 0
+    fi
+    if [ "${GH_MODE:-post}" = mismatched-post ]; then
+      printf '%s' "$payload" | jq \
+        '{id: 80, body: .body, state: "COMMENTED", commit_id: "0000000000000000000000000000000000000001"}'
       exit 0
     fi
     printf '%s' "$payload" | jq '{id: 80, body: .body, state: "COMMENTED", commit_id: .commit_id}'
@@ -781,10 +789,13 @@ test_pr_review_frozen_publication() {
 
   : > "$T/pr-frozen.calls"
   PATH="$bin:$PATH" GH_LIVE_HEAD=0000000000000000000000000000000000000001 \
+    GH_MERGE_BASE="$(git -C "$root" rev-parse main)" \
     GH_CALLS="$T/pr-frozen.calls" GH_POSTED_BODY="$T/pr-frozen-stale.md" \
     python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
     > "$T/pr-frozen-stale.out" 2> "$T/pr-frozen-stale.err"
   assert_eq "changed PR head fails frozen publication" "$?" 1
+  assert_grep "changed PR head reaches the intended identity gate" \
+    "$T/pr-frozen-stale.err" 'the PR head changed after review'
   assert_nogrep "changed PR head is never posted" "$T/pr-frozen.calls" \
     '^api --method POST '
 
@@ -827,6 +838,80 @@ test_pr_review_frozen_publication() {
   assert_eq "changed merge base blocks publication" "$?" 1
   assert_nogrep "changed merge base is never posted" "$T/pr-frozen.calls" \
     '^api --method POST '
+
+  local reviewed_head changed_head
+  reviewed_head=$(git -C "$root" rev-parse HEAD)
+  changed_head=0000000000000000000000000000000000000004
+  : > "$T/pr-frozen-list-race.calls"
+  : > "$T/pr-frozen-list-race.views"
+  PATH="$bin:$PATH" GH_HEAD_OID="$reviewed_head" GH_SWITCH_HEAD_AFTER=1 \
+    GH_SWITCHED_HEAD="$changed_head" GH_MERGE_BASE="$(git -C "$root" rev-parse main)" \
+    GH_VIEW_COUNT_FILE="$T/pr-frozen-list-race.views" \
+    GH_CALLS="$T/pr-frozen-list-race.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-frozen-list-race.out" 2> "$T/pr-frozen-list-race.err"
+  assert_eq "head movement after review listing blocks publication" "$?" 1
+  assert_nogrep "post-list head movement creates no review" \
+    "$T/pr-frozen-list-race.calls" '^api --method POST '
+  assert_grep "post-list head movement reaches the frozen-head gate" \
+    "$T/pr-frozen-list-race.err" 'the PR head changed after review'
+
+  : > "$T/pr-frozen-post-race.calls"
+  : > "$T/pr-frozen-post-race.views"
+  PATH="$bin:$PATH" GH_HEAD_OID="$reviewed_head" GH_SWITCH_HEAD_AFTER=2 \
+    GH_SWITCHED_HEAD="$changed_head" GH_MERGE_BASE="$(git -C "$root" rev-parse main)" \
+    GH_VIEW_COUNT_FILE="$T/pr-frozen-post-race.views" \
+    GH_CALLS="$T/pr-frozen-post-race.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-frozen-post-race.out" 2> "$T/pr-frozen-post-race.err"
+  assert_eq "head movement after POST confirmation fails publication" "$?" 1
+  assert_grep "post-confirmation head movement occurs after the side effect" \
+    "$T/pr-frozen-post-race.calls" '^api --method POST '
+  assert_grep "post-confirmation head movement prints the exact retry" \
+    "$T/pr-frozen-post-race.err" "retry: .*rev-pr-review.py publish $session$"
+}
+
+test_pr_review_github_remote_forms() {
+  local variant session root bin="$T/pr-remotes-bin" url
+  pr_review_gh_shim "$bin"
+  for variant in explicit-port ssh-over-https; do
+    session="$T/pr-remote-$variant"
+    root="$T/pr-remote-$variant-repo"
+    pr_review_session "$session" "$root"
+    case "$variant" in
+      explicit-port) url='ssh://git@github.com:22/acme/repo.git';;
+      ssh-over-https) url='ssh://git@ssh.github.com:443/acme/repo.git';;
+    esac
+    git -C "$root" remote set-url origin "$url"
+    : > "$T/pr-remote-$variant.calls"
+    PATH="$bin:$PATH" GH_CALLS="$T/pr-remote-$variant.calls" \
+      python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 \
+      > "$T/pr-remote-$variant-render.out" 2> "$T/pr-remote-$variant-render.err"
+    assert_eq "$variant GitHub remote renders an associated target" "$?" 0
+    assert_eq "$variant GitHub remote normalizes its repository" \
+      "$(jq -r .repo "$session/pr-review-target.json")" acme/repo
+    PATH="$bin:$PATH" GH_CALLS="$T/pr-remote-$variant.calls" \
+      python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+      > "$T/pr-remote-$variant-publish.out" 2> "$T/pr-remote-$variant-publish.err"
+    assert_eq "$variant GitHub remote publishes" "$?" 0
+    assert_grep "$variant GitHub remote posts to the normalized repository" \
+      "$T/pr-remote-$variant.calls" '^api --method POST repos/acme/repo/pulls/12/reviews --input -$'
+  done
+
+  session="$T/pr-remote-lookalike"
+  root="$T/pr-remote-lookalike-repo"
+  pr_review_session "$session" "$root"
+  git -C "$root" remote set-url origin \
+    'ssh://git@ssh.github.com.evil.example:443/acme/repo.git'
+  : > "$T/pr-remote-lookalike.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-remote-lookalike.calls" NO_PUSH=1 \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 >/dev/null
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-remote-lookalike.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-remote-lookalike.out" 2> "$T/pr-remote-lookalike.err"
+  assert_eq "lookalike GitHub host remains an unassociated no-op" "$?" 0
+  assert_nogrep "lookalike GitHub host makes no GitHub calls" \
+    "$T/pr-remote-lookalike.calls" '.'
 }
 
 test_pr_review_repository_and_base_identity() {
@@ -1121,8 +1206,10 @@ PY
   pin_pr_review_links "$lag" "$lag_root"
   lag_before=$(git -C "$lag_root" rev-parse HEAD)
   : > "$T/pr-finalize-lag.calls"
-  PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize-lag.calls" \
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize-lag.calls" NO_PUSH=1 \
     python3 "$SCRIPTS/rev-pr-review.py" render "$lag" --date 2026-09-15 >/dev/null
+  assert_eq "lag fixture starts with an unassociated target" \
+    "$(jq -r .associated "$lag/pr-review-target.json")" false
   git -C "$lag_root" reset -q --soft HEAD~1
   git -C "$lag_root" commit -qm 'apply review findings'
   lag_after=$(git -C "$lag_root" rev-parse HEAD)
@@ -1134,6 +1221,8 @@ PY
   assert_eq "stack finalization tolerates one stale post-push PR read" "$?" 0
   assert_eq "stack finalization polls until GitHub exposes the pushed head" \
     "$(cat "$T/pr-finalize-lag.views")" 2
+  assert_eq "stack finalization promotes only the pushed head" \
+    "$(jq -r .head "$lag/pr-review-target.json")" "$lag_after"
 }
 
 test_pr_review_rejects_invalid_review_pages() {
@@ -1331,6 +1420,18 @@ test_pr_review_publish_failure() {
     "$T/pr-failure.calls" '^api --method POST '
   assert_grep "invalid confirmation preserves the exact retry command" \
     "$T/pr-failure-invalid.err" "retry: .*rev-pr-review.py publish $session$"
+
+  : > "$T/pr-failure.calls"
+  PATH="$bin:$PATH" GH_MODE=mismatched-post GH_CALLS="$T/pr-failure.calls" \
+    GH_POSTED_BODY="$T/pr-failure-mismatched-body.md" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-failure-mismatched.out" 2> "$T/pr-failure-mismatched.err"
+  assert_eq "mismatched post confirmation fails publication" "$?" 1
+  assert_grep "mismatched confirmation reaches the commit-pinned gate" \
+    "$T/pr-failure-mismatched.err" \
+    'GitHub did not confirm the commit-pinned COMMENTED review'
+  assert_grep "mismatched confirmation preserves the exact retry command" \
+    "$T/pr-failure-mismatched.err" "retry: .*rev-pr-review.py publish $session$"
   : > "$T/pr-failure.calls"
   PATH="$bin:$PATH" GH_MODE=duplicate GH_CALLS="$T/pr-failure.calls" \
     GH_DUP_BODY="$session/pr-review.md" \
