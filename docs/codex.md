@@ -80,8 +80,10 @@ command. The inspected body and PR target are frozen for exact retries. Stack se
 publish only after every completed repository pushes, with only the latest completed
 session authoritative for each canonical repository. A changed-head squash must
 preserve the inspected tree and rerender SHA links against the pushed aggregate commit.
-Publication also revalidates the frozen base and refuses reviewed local bytes absent
-from the PR head. `NO_PUSH=1` suppresses publication.
+Separate-PR fix links remain pinned to their own repository. Publication also
+revalidates the frozen base branch and tip, restricts PR discovery to reviewed GitHub
+remotes, and refuses reviewed local bytes absent from the PR head. `NO_PUSH=1`
+suppresses publication.
 
 Adaptive code panels use hashed scope manifests and semantic dependency components.
 Mechanical lockfiles, generated output, snapshots, and locale copies go to one named

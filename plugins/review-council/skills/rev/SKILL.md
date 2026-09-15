@@ -880,6 +880,8 @@ not post. In stack-leg mode, prepare and render the body but leave guarded
 finalization, final rendering, and publication to the stack after its final squash and push.
 A required publication failure writes
 `incomplete.md` and blocks `phase=done` and `report.md`.
+When `NO_PUSH=1`, render and inspect the body but let the publisher's no-push gate
+skip every external GitHub call.
 
 ## Report (`$S/report.md` and in chat)
 

@@ -56,9 +56,12 @@ partial stack clean. Summarize per-repository results, seam findings, critic fin
 actual provider coverage, tests, commit/publication status, and the session-root path.
 The stack follows `docs/pr-review.md` and publishes one canonical PR review per completed
 repository only after every completed repository pushes successfully. When multiple
-sessions review one canonical repository, only its latest completed session is authoritative.
+sessions review one canonical repository, only its latest actually completed session
+is authoritative; a later skipped session cannot reclaim that role.
 A changed-head
-squash must preserve the inspected tree, maps fix and decision SHA links to the pushed
-aggregate commit, and renders the final body before publication. No associated open
+squash must preserve the inspected tree, maps decision links and reviewed-PR fix links
+to the pushed aggregate commit, preserves separate-PR fix links, and renders the final
+body before publication. A pushed retry derives finalization from the frozen target
+and current head. No associated open
 PR skips cleanly; a push, finalization, missing-input, or publication failure makes
 the stack incomplete. `NO_PUSH=1` suppresses publication.

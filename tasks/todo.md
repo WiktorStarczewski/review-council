@@ -10,6 +10,12 @@
 - [x] Document the workflow and prepare the 0.4.4 release metadata.
 - [x] Run focused tests, the complete frozen-tree gate, and plugin validators.
 - [x] Pressure-test the edited skills against normal, read-only, and stack-failure scenarios.
+- [x] Bind PR discovery and base identity to the reviewed repository and merge base.
+- [x] Make no-push publication and stack finalization durable across retries.
+- [x] Preserve separate-PR fix links and normalize commit counting.
+- [x] Record authoritative stack sessions only after completion.
+- [x] Add body-hash and non-git stack regressions.
+- [ ] Run a fresh complete council pass after the r9 audit-invalid panel.
 - [ ] Run Review Council and fix every finding.
 - [ ] Push, open and merge the PR, publish 0.4.4, install it, and verify discovery.
 
@@ -19,6 +25,8 @@
   all 3 evaluators followed the new contract when the edited skills were loaded.
 - Frozen-tree verifier passed shell tests, Python tests, both Claude validators, and
   the Codex marketplace validator.
+- Post-r9 repair gate passed 222 shell tasks, 3,386 assertions, 89 Python tests,
+  both Claude validators, and the Codex marketplace validator.
 
 ## Wall-time optimization spike
 

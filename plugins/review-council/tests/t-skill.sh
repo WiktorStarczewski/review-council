@@ -412,9 +412,9 @@ test_skill_contract() {
     assert_grep "stack distinguishes permanent roster status" "$H" 'Exit 6 is permanent'
   done
   assert_grep "Claude stack documents post-push PR review publication" "$ST" \
-    'latest completed review for each canonical'
+    'latest completed review for'
   assert_grep "Codex stack documents post-push PR review publication" "$CST" \
-    'latest completed session is authoritative'
+    'latest actually completed session'
 
   local PRDOC="$SK/docs/pr-review.md"
   assert_exit "canonical PR review instructions are shipped" 0 test -f "$PRDOC"
@@ -441,11 +441,15 @@ test_skill_contract() {
   assert_eq "Claude report schema is not nested under publication" \
     "${first_report_line%%,*}" '1. **Outcome**'
   assert_grep "shared publication contract freezes the reviewed target" "$PRDOC" \
-    'frozen.*PR.*head'
+    'freezes the associated PR, reviewed merge base'
   assert_grep "shared publication contract binds a clean committed tree" "$PRDOC" \
     'staged, unstaged, or untracked bytes'
   assert_grep "shared publication contract revalidates the PR base" "$PRDOC" \
-    'branch, base, and head'
+    'branch, base branch, base tip, and'
+  assert_grep "shared publication contract binds discovery to reviewed remotes" "$PRDOC" \
+    "restricted to repositories named by the reviewed checkout's"
+  assert_grep "shared publication contract enforces NO_PUSH before GitHub" "$PRDOC" \
+    'no-push gate'
   assert_grep "shared publication contract requires COMMENTED-state idempotence" "$PRDOC" \
     'exact `COMMENTED` review'
   assert_grep "shared publication contract requires the stack push barrier" "$PRDOC" \
@@ -454,6 +458,10 @@ test_skill_contract() {
     'squash.*render'
   assert_grep "shared publication contract selects one stack session per repository" "$PRDOC" \
     'latest completed session for each repository'
+  assert_grep "shared publication contract preserves separate-PR fix links" "$PRDOC" \
+    '`fixed_in` remain pinned'
+  assert_grep "shared publication contract derives finalization recovery durably" "$PRDOC" \
+    'derives finalization from the frozen target'
   assert_nogrep "Codex host does not prohibit required PR publication" "$CK" \
     'not authorize pushing, publishing'
   assert_grep "Codex host limits publication authority to the canonical review" "$CK" \

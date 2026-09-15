@@ -3,7 +3,7 @@
 ## 0.4.4
 
 - Publish every completed PR-associated review as a `COMMENTED` GitHub review using the canonical badge, verdict tip, decisions, fixes, verified-sound, coverage, and footer structure. Rendering is deterministic from validated session JSON; the inspected body, open PR, and reviewed head are frozen for exact retries; reviews without an associated open PR skip without posting.
-- Make GitHub publication part of the success receipt for normal and read-only code reviews. Preserve the rendered body and an exact retry command on failure. Bind publication to a clean committed tree and revalidate the frozen base branch. Stack publication now requires every final push to succeed, publishes only the latest completed session per canonical repository, proves an unchanged tree before mapping squashed SHA links, and recovers safely from an interrupted target update.
+- Make GitHub publication part of the success receipt for normal and read-only code reviews. Preserve the rendered body and an exact retry command on failure. Bind discovery to reviewed GitHub remotes, a clean committed tree, the reviewed merge base, and the frozen PR base tip. Stack publication requires every final push to succeed, publishes only the latest actually completed session per canonical repository, proves an unchanged tree before mapping reviewed-PR SHA links, preserves separate-PR fix links, and derives retry finalization from the frozen target instead of a post-squash marker.
 
 ## 0.4.3
 

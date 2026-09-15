@@ -534,6 +534,8 @@ A branch with no associated open PR skips cleanly. Document reviews do not post.
 rendering, and publication to the stack after its final squash and push. A required
 publication failure writes
 `incomplete.md` and blocks `phase=done` and `report.md`.
+When `NO_PUSH=1`, render and inspect the body but let the publisher's no-push gate
+skip every external GitHub call.
 
 After publication succeeds or cleanly skips, set `phase=done` and write `S/report.md`
 with scope/base, actual roster and degradation, rounds/lenses,

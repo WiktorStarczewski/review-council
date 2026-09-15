@@ -1,5 +1,8 @@
 # Lessons
 
+- PR review automation needs an explicit association boundary. If the reviewed
+  branch has no open PR, skip cleanly; never infer or choose another publication target.
+
 - Optimize repeated reviewer launches before reducing independent discovery
   breadth. Held-out results show that four simplicity seats recover findings a
   single seat misses.

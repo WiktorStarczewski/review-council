@@ -141,10 +141,11 @@ because the round commits are real work that CI has to see. If a repo prints
 "refusing: … only N unpushed", something was pushed mid-run - leave that history alone.
 
 After every completed repository is pushed successfully, `stack.sh` follows
-`docs/pr-review.md`: a changed-head squash must preserve the inspected tree, both fix
-and decision SHA links are mapped to the pushed aggregate commit, the canonical body
-is rendered again, and only then is the latest completed review for each canonical
-repository published. It skips
+`docs/pr-review.md`: a changed-head squash must preserve the inspected tree, decision
+links and reviewed-PR fix links are mapped to the pushed aggregate commit, the
+canonical body is rendered again, and only then is the latest completed review for
+each canonical repository published. Separate-PR fix links stay pinned. A pushed
+retry derives the transition from the frozen target and current head. It skips
 sessions with no associated open PR and suppresses an exact prior `COMMENTED` review.
 A push, finalization, missing-input, or publication failure makes the stack incomplete.
 `NO_PUSH=1` suppresses external review publication.
