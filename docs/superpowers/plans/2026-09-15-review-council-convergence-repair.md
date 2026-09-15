@@ -417,9 +417,11 @@ candidate root and use its base and `roster.json` to invoke the installed stable
 Validate `coverage-head.json`, its named coverage receipt, all receipt hashes, the
 latest reviewed snapshot tree, `state.json`, and `findings.md`. Hash the complete
 decision artifact set into the review record. Counts must be nonnegative integers.
-`open-p0 + open-p1 == 0` records `clean`; a first nonzero or newly fixed P0/P1 set may
-record `correction-required`; a second nonzero records `blocked`. A session stop marker
-records `infrastructure-blocked` and accepts no product counts.
+Generation 1 records `clean` only when all four counts are zero. A nonzero verified
+P0/P1 count with a matching nonzero open count records `correction-required`.
+Generation 2 records `clean` only when all four counts are zero; otherwise it records
+`blocked`. A session stop marker records `infrastructure-blocked` and accepts no
+product counts.
 
 - [ ] **Step 6: Add canary selection and execution tests**
 
