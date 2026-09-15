@@ -214,6 +214,10 @@ test_skill_contract() {
       'concurrency, resources, and performance plus duplication and exhaustion'
     assert_grep "full red-team covers compatibility and integration" "$H" \
       'tests, observability, and regression plus consumer compatibility and integration'
+    assert_grep "full red-team concatenates multi-bundle emphases" "$H" \
+      '[Ww]hen a core seat carries multiple canonical bundles.*concatenate.*matching adversarial emphases.*single prompt'
+    assert_grep "full red-team cycles surplus-seat emphases" "$H" \
+      '[Ff]or surplus seats.*cycle.*mapped adversarial emphasis.*canonical bundle'
     assert_grep "verification owner traces integration boundaries" "$H" \
       '[Vv]erification owner always traces the cumulative change through consumers and integration boundaries'
     assert_grep "compatibility routing is explicit" "$H" \

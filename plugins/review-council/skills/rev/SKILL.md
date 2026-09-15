@@ -203,6 +203,11 @@ For this panel, set `PANEL_PHASE=risk` and reuse the existing four canonical bun
 3. concurrency, resources, and performance plus duplication and exhaustion;
 4. tests, observability, and regression plus consumer compatibility and integration.
 
+Map each entry above to its canonical bundle. When a core seat carries multiple canonical bundles, concatenate the matching adversarial emphases into that seat's single prompt emphasis in canonical bundle order.
+For surplus seats, cycle the mapped adversarial emphasis with the canonical bundle, so
+each repeated bundle repeats its matching emphasis. Keep the result in the existing
+seat prompt; neither case changes the canonical topology or adds a provider call.
+
 The full panel joins the same initial finding clusters and does not grant another correction cycle.
 The ordinary adaptive and numeric stopping rules remain unchanged. Document panels receive no automatic red-team assignment unless the user explicitly requests an adversarial document review.
 
