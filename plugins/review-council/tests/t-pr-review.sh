@@ -143,6 +143,9 @@ if [ "${1:-} ${2:-}" = "pr view" ]; then
     exit 1
   fi
   live_head=${GH_LIVE_HEAD:-$head}
+  live_state=${GH_LIVE_STATE:-OPEN}
+  live_base=${GH_LIVE_BASE:-main}
+  live_base_oid=${GH_LIVE_BASE_OID:-$base_oid}
   if [ -n "${GH_VIEW_COUNT_FILE:-}" ]; then
     count=0
     [ ! -f "$GH_VIEW_COUNT_FILE" ] || count=$(cat "$GH_VIEW_COUNT_FILE")
@@ -152,10 +155,13 @@ if [ "${1:-} ${2:-}" = "pr view" ]; then
     if [ -n "${GH_SWITCH_HEAD_AFTER:-}" ] && [ "$count" -gt "$GH_SWITCH_HEAD_AFTER" ]; then
       live_head=${GH_SWITCHED_HEAD:?}
     fi
+    if [ -n "${GH_SWITCH_STATE_AFTER:-}" ] && [ "$count" -gt "$GH_SWITCH_STATE_AFTER" ]; then
+      live_state=${GH_SWITCHED_STATE:?}
+      live_head=${GH_SWITCHED_HEAD:-$live_head}
+      live_base=${GH_SWITCHED_BASE:-$live_base}
+      live_base_oid=${GH_SWITCHED_BASE_OID:-$live_base_oid}
+    fi
   fi
-  live_state=${GH_LIVE_STATE:-OPEN}
-  live_base=${GH_LIVE_BASE:-main}
-  live_base_oid=${GH_LIVE_BASE_OID:-$base_oid}
   repo=${GH_REPO:-acme/repo}
   previous=
   for argument in "$@"; do
@@ -775,6 +781,8 @@ test_pr_review_frozen_publication() {
   assert_eq "cross-day retry is an exact-body no-op" "$?" 0
   assert_exit "publish preserves the inspected review bytes" 0 \
     cmp -s "$session/pr-review.md" "$T/pr-frozen-inspected.md"
+  assert_exit "successful frozen retry clears the stale failure receipt" 0 \
+    test ! -e "$session/incomplete.md"
   assert_nogrep "exact COMMENTED review suppresses a duplicate post" "$T/pr-frozen.calls" \
     '^api --method POST '
 
@@ -809,6 +817,23 @@ test_pr_review_frozen_publication() {
     '^pr-review: no associated open PR; skipped$'
   assert_nogrep "closed frozen PR is never posted" "$T/pr-frozen.calls" \
     '^api --method POST '
+
+  local terminal_state
+  for terminal_state in CLOSED MERGED; do
+    : > "$T/pr-frozen.calls"
+    PATH="$bin:$PATH" GH_LIVE_STATE="$terminal_state" \
+      GH_LIVE_HEAD=0000000000000000000000000000000000000006 \
+      GH_LIVE_BASE=release GH_LIVE_BASE_OID=0000000000000000000000000000000000000007 \
+      GH_MERGE_BASE=0000000000000000000000000000000000000008 \
+      GH_CALLS="$T/pr-frozen.calls" \
+      python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+      > "$T/pr-frozen-$terminal_state.out" 2> "$T/pr-frozen-$terminal_state.err"
+    assert_eq "$terminal_state frozen PR ignores mutable metadata and skips" "$?" 0
+    assert_grep "$terminal_state frozen PR reports the exact skip" \
+      "$T/pr-frozen-$terminal_state.out" '^pr-review: no associated open PR; skipped$'
+    assert_nogrep "$terminal_state frozen PR makes no API request" \
+      "$T/pr-frozen.calls" '^api '
+  done
 
   : > "$T/pr-frozen.calls"
   PATH="$bin:$PATH" GH_LIVE_BASE=release GH_CALLS="$T/pr-frozen.calls" \
@@ -855,6 +880,23 @@ test_pr_review_frozen_publication() {
     "$T/pr-frozen-list-race.calls" '^api --method POST '
   assert_grep "post-list head movement reaches the frozen-head gate" \
     "$T/pr-frozen-list-race.err" 'the PR head changed after review'
+
+  : > "$T/pr-frozen-close-race.calls"
+  : > "$T/pr-frozen-close-race.views"
+  PATH="$bin:$PATH" GH_HEAD_OID="$reviewed_head" GH_SWITCH_STATE_AFTER=1 \
+    GH_SWITCHED_STATE=CLOSED GH_SWITCHED_HEAD="$changed_head" GH_SWITCHED_BASE=release \
+    GH_SWITCHED_BASE_OID=0000000000000000000000000000000000000007 \
+    GH_VIEW_COUNT_FILE="$T/pr-frozen-close-race.views" \
+    GH_CALLS="$T/pr-frozen-close-race.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-frozen-close-race.out" 2> "$T/pr-frozen-close-race.err"
+  assert_eq "closure after review listing skips cleanly" "$?" 0
+  assert_grep "post-list closure reports the exact skip" \
+    "$T/pr-frozen-close-race.out" '^pr-review: no associated open PR; skipped$'
+  assert_nogrep "post-list closure creates no review" \
+    "$T/pr-frozen-close-race.calls" '^api --method POST '
+  assert_grep "post-list closure is the final GitHub request" \
+    "$T/pr-frozen-close-race.calls" 'pr view 12 --repo acme/repo'
 
   : > "$T/pr-frozen-post-race.calls"
   : > "$T/pr-frozen-post-race.views"
@@ -1278,6 +1320,38 @@ PY
     "$(cat "$T/pr-finalize-lag.views")" 2
   assert_eq "stack finalization promotes only the pushed head" \
     "$(jq -r .head "$lag/pr-review-target.json")" "$lag_after"
+
+  local closing="$T/pr-finalize-closing"
+  cp -R "$lag" "$closing"
+  python3 - "$closing/pr-review-target.json" "$lag_before" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data['associated'] = False
+data['head'] = sys.argv[2]
+path.write_text(json.dumps(data, indent=2) + '\n')
+PY
+  : > "$T/pr-finalize-closing.calls"
+  : > "$T/pr-finalize-closing.views"
+  PATH="$bin:$PATH" GH_HEAD_OID="$lag_after" GH_FIRST_LIVE_HEAD="$lag_before" \
+    GH_SWITCH_STATE_AFTER=1 GH_SWITCHED_STATE=MERGED \
+    GH_SWITCHED_HEAD=0000000000000000000000000000000000000006 \
+    GH_SWITCHED_BASE=release \
+    GH_SWITCHED_BASE_OID=0000000000000000000000000000000000000007 \
+    GH_VIEW_COUNT_FILE="$T/pr-finalize-closing.views" \
+    GH_CALLS="$T/pr-finalize-closing.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" finalize-stack "$closing" --head "$lag_after" \
+    > "$T/pr-finalize-closing.out" 2> "$T/pr-finalize-closing.err"
+  assert_eq "closure during stack head polling skips cleanly" "$?" 0
+  assert_grep "stack polling closure reports the exact skip" \
+    "$T/pr-finalize-closing.out" '^pr-review: no associated open PR; skipped$'
+  assert_nogrep "stack polling closure makes no API request" \
+    "$T/pr-finalize-closing.calls" '^api '
+  assert_eq "stack polling closure does not promote the frozen target" \
+    "$(jq -r .head "$closing/pr-review-target.json")" "$lag_before"
 }
 
 test_pr_review_rejects_invalid_review_pages() {
@@ -1453,6 +1527,9 @@ test_pr_review_publish_failure() {
   PATH="$bin:$PATH" GH_CALLS="$T/pr-failure.calls" \
     GH_POSTED_BODY="$T/pr-failure-body" \
     python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 >/dev/null
+  cp "$session/pr-review.json" "$T/pr-failure-input.json"
+  cp "$session/pr-review.md" "$T/pr-failure-rendered.md"
+  cp "$session/pr-review-target.json" "$T/pr-failure-target.json"
   PATH="$bin:$PATH" GH_MODE=fail-post GH_CALLS="$T/pr-failure.calls" \
     GH_POSTED_BODY="$T/pr-failure-body" \
     python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
@@ -1464,6 +1541,18 @@ test_pr_review_publish_failure() {
     'remote rejected review'
   assert_grep "failed publication prints an exact retry command" "$T/pr-failure.err" \
     "retry: .*rev-pr-review.py publish $session$"
+  assert_exit "failed publication writes the durable failure receipt" 0 \
+    test -s "$session/incomplete.md"
+  assert_grep "failure receipt preserves GitHub's diagnostic" \
+    "$session/incomplete.md" 'remote rejected review'
+  assert_grep "failure receipt preserves the exact retry command" \
+    "$session/incomplete.md" "retry: .*rev-pr-review.py publish $session$"
+  assert_exit "failure receipt preserves the structured input" 0 \
+    cmp -s "$session/pr-review.json" "$T/pr-failure-input.json"
+  assert_exit "failure receipt preserves the rendered review" 0 \
+    cmp -s "$session/pr-review.md" "$T/pr-failure-rendered.md"
+  assert_exit "failure receipt preserves the frozen target" 0 \
+    cmp -s "$session/pr-review-target.json" "$T/pr-failure-target.json"
 
   : > "$T/pr-failure.calls"
   PATH="$bin:$PATH" GH_MODE=invalid-post-json GH_CALLS="$T/pr-failure.calls" \
@@ -1475,6 +1564,8 @@ test_pr_review_publish_failure() {
     "$T/pr-failure.calls" '^api --method POST '
   assert_grep "invalid confirmation preserves the exact retry command" \
     "$T/pr-failure-invalid.err" "retry: .*rev-pr-review.py publish $session$"
+  assert_grep "invalid confirmation updates the failure receipt" \
+    "$session/incomplete.md" 'invalid created-review JSON'
 
   : > "$T/pr-failure.calls"
   PATH="$bin:$PATH" GH_MODE=mismatched-post GH_CALLS="$T/pr-failure.calls" \
@@ -1487,6 +1578,8 @@ test_pr_review_publish_failure() {
     'GitHub did not confirm the commit-pinned COMMENTED review'
   assert_grep "mismatched confirmation preserves the exact retry command" \
     "$T/pr-failure-mismatched.err" "retry: .*rev-pr-review.py publish $session$"
+  assert_grep "mismatched confirmation updates the failure receipt" \
+    "$session/incomplete.md" 'did not confirm the commit-pinned COMMENTED review'
   : > "$T/pr-failure.calls"
   PATH="$bin:$PATH" GH_MODE=duplicate GH_CALLS="$T/pr-failure.calls" \
     GH_DUP_BODY="$session/pr-review.md" \
@@ -1495,4 +1588,31 @@ test_pr_review_publish_failure() {
   assert_eq "retry after ambiguous confirmation is idempotent" "$?" 0
   assert_nogrep "ambiguous-confirmation retry creates no duplicate" \
     "$T/pr-failure.calls" '^api --method POST '
+  assert_exit "successful duplicate retry clears the failure receipt" 0 \
+    test ! -e "$session/incomplete.md"
+
+  echo tampered >> "$session/pr-review.md"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-failure.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-failure-predispatch.out" 2> "$T/pr-failure-predispatch.err"
+  assert_eq "pre-dispatch publication failure is terminal" "$?" 1
+  assert_grep "pre-dispatch failure receipt names the frozen body" \
+    "$session/incomplete.md" 'frozen body hash'
+  assert_grep "pre-dispatch failure receipt contains the exact retry" \
+    "$session/incomplete.md" "retry: .*rev-pr-review.py publish $session$"
+  cp "$T/pr-failure-rendered.md" "$session/pr-review.md"
+  PATH="$bin:$PATH" NO_PUSH=1 GH_CALLS="$T/pr-failure.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-failure-no-push.out" 2> "$T/pr-failure-no-push.err"
+  assert_eq "no-push retry is a clean skip" "$?" 0
+  assert_exit "no-push retry clears the stale failure receipt" 0 \
+    test ! -e "$session/incomplete.md"
+
+  local missing="$T/pr-failure-missing-session"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-failure.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$missing" \
+    > "$T/pr-failure-missing.out" 2> "$T/pr-failure-missing.err"
+  assert_eq "missing publication session fails" "$?" 1
+  assert_exit "missing publication session is not created for a receipt" 0 \
+    test ! -e "$missing"
 }

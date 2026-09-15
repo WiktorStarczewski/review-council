@@ -428,6 +428,8 @@ def live_pr(target, root):
     live = parse_pr(metadata, target["branch"])
     require(live["repo"] == target["repo"] and live["number"] == target["number"]
             and live["url"] == target["url"], "the frozen PR identity changed")
+    if live["state"] != "OPEN":
+        return live
     require(live["base_branch"] == target["base_branch"],
             "the PR base branch changed after review; rerun the review before publishing")
     require_reviewed_merge_base(target, live["head"], live["base_head"], root)
@@ -689,12 +691,13 @@ def require_publishable_head(target, live):
 
 def publish(session, script):
     scope = parse_scope(session / "scope.env")
-    if os.environ.get("NO_PUSH") == "1":
-        print("pr-review: NO_PUSH=1; skipped publication")
-        return
-    if unresolved_target_skip(scope, session):
-        return
-    with publication_lock(scope["root"]):
+    retry = publication_retry(session, script)
+    with publication_transaction(session, scope, retry):
+        if os.environ.get("NO_PUSH") == "1":
+            print("pr-review: NO_PUSH=1; skipped publication")
+            return
+        if unresolved_target_skip(scope, session):
+            return
         target = load_target(session / "pr-review-target.json")
         output = session / "pr-review.md"
         require(output.is_file(), f"rendered PR review is missing: {output}")
@@ -710,7 +713,11 @@ def publish(session, script):
                          json.dumps(target, indent=2) + "\n")
         require_publishable_head(target, live)
         reviews = existing_reviews(target["repo"], target["number"], scope["root"])
-        require_publishable_head(target, live_pr(target, scope["root"]))
+        live = live_pr(target, scope["root"])
+        if live["state"] != "OPEN":
+            print("pr-review: no associated open PR; skipped")
+            return
+        require_publishable_head(target, live)
         if any(review.get("body") == body
                and review.get("state") == "COMMENTED"
                and review.get("commit_id") == target["head"]
@@ -720,26 +727,63 @@ def publish(session, script):
         payload = json.dumps({
             "commit_id": target["head"], "body": body, "event": "COMMENT",
         })
-        retry = shlex.join([sys.executable, str(script), "publish", str(session)])
+        result = run_gh([
+            "api", "--method", "POST",
+            f"repos/{target['repo']}/pulls/{target['number']}/reviews", "--input", "-",
+        ], scope["root"], payload)
+        if result.returncode != 0:
+            raise ReviewError("GitHub review post failed: " + result.stderr.strip())
         try:
-            result = run_gh([
-                "api", "--method", "POST",
-                f"repos/{target['repo']}/pulls/{target['number']}/reviews", "--input", "-",
-            ], scope["root"], payload)
-            if result.returncode != 0:
-                raise ReviewError("GitHub review post failed: " + result.stderr.strip())
-            try:
-                posted = json.loads(result.stdout)
-            except json.JSONDecodeError as error:
-                raise ReviewError("GitHub returned invalid created-review JSON") from error
-            require(isinstance(posted, dict) and posted.get("body") == body
-                    and posted.get("state") == "COMMENTED"
-                    and posted.get("commit_id") == target["head"],
-                    "GitHub did not confirm the commit-pinned COMMENTED review")
-            require_publishable_head(target, live_pr(target, scope["root"]))
-        except (ReviewError, OSError, subprocess.SubprocessError) as error:
-            raise ReviewError(str(error) + "\npr-review: retry: " + retry) from error
+            posted = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise ReviewError("GitHub returned invalid created-review JSON") from error
+        require(isinstance(posted, dict) and posted.get("body") == body
+                and posted.get("state") == "COMMENTED"
+                and posted.get("commit_id") == target["head"],
+                "GitHub did not confirm the commit-pinned COMMENTED review")
+        require_publishable_head(target, live_pr(target, scope["root"]))
     print(f"pr-review: posted {target['url']}")
+
+
+def publication_retry(session, script):
+    override = os.environ.get("REVIEW_COUNCIL_RETRY_COMMAND")
+    if override and override.strip() and not BAD_INLINE.search(override):
+        return override.strip()
+    return shlex.join([sys.executable, str(script), "publish", str(session)])
+
+
+def write_incomplete(session, error, retry):
+    body = (
+        "# Incomplete review\n\n"
+        "PR review publication failed.\n\n"
+        + error + "\n\n"
+        "pr-review: retry: " + retry + "\n"
+    )
+    write_atomic(session / "incomplete.md", body)
+
+
+def clear_incomplete(session):
+    try:
+        (session / "incomplete.md").unlink()
+    except FileNotFoundError:
+        pass
+
+
+@contextmanager
+def publication_transaction(session, scope, retry):
+    with publication_lock(scope["root"]):
+        try:
+            yield
+            if os.environ.get("REV_STACK_PUBLICATION") != "1":
+                clear_incomplete(session)
+        except (OSError, ReviewError, subprocess.SubprocessError) as error:
+            message = str(error)
+            if session.is_dir():
+                try:
+                    write_incomplete(session, message, retry)
+                except OSError as receipt_error:
+                    message += "\npr-review: cannot write incomplete receipt: " + str(receipt_error)
+            raise ReviewError(message + "\npr-review: retry: " + retry) from error
 
 
 def replace_sha_url(url, pattern, head, field):
@@ -825,8 +869,10 @@ def finalize_stack(session, head, expected_root=None):
             print("pr-review: no associated open PR; skipped")
             return
         live = wait_for_expected_head(target, root, head, live)
-        require(live["state"] == "OPEN" and live["head"] == head,
-                "the pushed PR head does not match stack finalization")
+        if live["state"] != "OPEN":
+            print("pr-review: no associated open PR; skipped")
+            return
+        require(live["head"] == head, "the pushed PR head does not match stack finalization")
         require_reviewed_merge_base(target, head, live["base_head"], root)
 
         data = load_input(session / "pr-review.json")
@@ -891,7 +937,16 @@ def main():
         else:
             publish(session, Path(__file__).resolve())
     except (OSError, ReviewError, subprocess.SubprocessError) as error:
-        print(f"pr-review: {error}", file=sys.stderr)
+        message = str(error)
+        if args.command == "publish" and "\npr-review: retry: " not in message:
+            retry = publication_retry(session, Path(__file__).resolve())
+            message += "\npr-review: retry: " + retry
+            if session.is_dir():
+                try:
+                    write_incomplete(session, str(error), retry)
+                except OSError as receipt_error:
+                    message += "\npr-review: cannot write incomplete receipt: " + str(receipt_error)
+        print("pr-review: " + message, file=sys.stderr)
         return 1
     return 0
 

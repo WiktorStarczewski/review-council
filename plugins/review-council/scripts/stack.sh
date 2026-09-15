@@ -26,6 +26,7 @@ export PATH="$PATH:$HOME/.nvm/versions/node/v22.22.0/bin:$HOME/.local/bin"
 [ -z "${REV_ACTIVE:-}${REV_STACK_LEG:-}" ] || { echo "stack: refusing to nest (REV_ACTIVE or REV_STACK_LEG is set)" >&2; exit 1; }
 CONFIG=${1:?usage: stack.sh <config.sh>   (template: stack.example.sh next to this script)}
 [ -f "$CONFIG" ] || { echo "stack: config not found: $CONFIG" >&2; exit 1; }
+CONFIG=$(cd "$(dirname "$CONFIG")" && pwd)/$(basename "$CONFIG")
 ROOT=${ROOT:-/tmp/review-council-stack-$(date +%s)}
 LOG=${LOG:-/tmp/review-council-stack.log}
 # DETACH BY DEFAULT. A run lasts hours; anything still inside the launching tool's process tree dies with it -
@@ -76,6 +77,11 @@ say() { echo "$(date '+%m-%d %H:%M') $*" | tee -a "$LOG"; }
 note_failure() {  # <label> <repo-dir> - a failed leg must not be reported as a complete run
   FAILED_LABELS="$FAILED_LABELS $1"
   case " $FAILED_REPOS " in *" $2 "*) ;; *) FAILED_REPOS="$FAILED_REPOS $2";; esac
+}
+stack_retry_command() {
+  printf 'REVIEW_COUNCIL_HOST=%q NO_PUSH=%q NO_SQUASH=%q ROOT=%q LOG=%q REV_SCRIPTS=%q REV_STACK_FOREGROUND=1 %q %q' \
+    "${REVIEW_COUNCIL_HOST:-claude}" "$NO_PUSH" "$NO_SQUASH" "$ROOT" "$LOG" \
+    "$REV_SCRIPTS" "$HERE/stack.sh" "$CONFIG"
 }
 replace_tab_row() {  # <file> <key> <value> - replace one tab-separated row atomically
   local file=$1 key=$2 value=$3 temporary="$1.tmp.$$"
@@ -494,7 +500,7 @@ finalize_reviews() {
 }
 
 publish_reviews() {
-  local repo session rc=0
+  local repo session retry rc=0
   if [ "$NO_PUSH" = 1 ]; then
     say "--- NO_PUSH=1: not publishing PR reviews"
     return 0
@@ -521,8 +527,10 @@ publish_reviews() {
       note_failure "PR review publication" "$repo"
       continue
     fi
+    retry=$(stack_retry_command)
     set -o pipefail
-    python3 "$REV_SCRIPTS/rev-pr-review.py" publish "$session" 2>&1 \
+    REV_STACK_PUBLICATION=1 REVIEW_COUNCIL_RETRY_COMMAND="$retry" \
+      python3 "$REV_SCRIPTS/rev-pr-review.py" publish "$session" 2>&1 \
       | sed 's/^/    /' | tee -a "$LOG"
     if [ "$?" -ne 0 ]; then
       rc=1
@@ -558,6 +566,12 @@ complete_reviews() {
     if [ -f "$session/stack-report.md" ] \
         && ! mv "$session/stack-report.md" "$session/report.md"; then
       say "!!! cannot promote the stack-ready report: $session"
+      rc=1
+      note_failure "PR review completion" "$repo"
+      continue
+    fi
+    if [ -e "$session/incomplete.md" ] && ! rm -f -- "$session/incomplete.md"; then
+      say "!!! cannot clear the completed review failure receipt: $session"
       rc=1
       note_failure "PR review completion" "$repo"
     fi

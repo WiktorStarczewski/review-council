@@ -133,15 +133,19 @@ Accepted remotes are GitHub HTTPS, git protocol, SCP-style SSH, explicit-port SS
 Under a repository-local lock, it reads and updates the rendered body and target,
 checks all existing reviews, then revalidates the frozen open head before choosing a
 duplicate or creating a review. After creation it revalidates the head again before
-reporting success. It
+reporting success. Closure or merge before the POST becomes the exact no-open-PR skip,
+including closure during stack head propagation. Closure after the POST remains a
+retryable ambiguity. It
 treats only an exact `COMMENTED` review body on the reviewed commit as idempotent
 success. The API request sets `commit_id` to the frozen head and `event` to `COMMENT`,
 then verifies the returned body, state, and commit. A real
 no-PR association skips cleanly; missing session scope or artifacts fail closed.
 
-Any other nonzero exit leaves the PR review incomplete. Preserve `pr-review.json` and
-`pr-review.md`, write `incomplete.md` with the failure and retry command, and do not
-set `phase=done` or write the success receipt.
+Any other nonzero publish exit leaves the PR review incomplete. Preserve
+`pr-review.json`, `pr-review.md`, and the frozen target, then atomically write
+`incomplete.md` with the failure and exact retry command. Direct success or a clean
+skip clears stale publication failure state. Stack publication retains it until the
+done state and final report promotion both succeed, including on a no-push retry.
 
 In `REV_STACK_LEG=1`, render and inspect the body but do not publish it. The stack
 leg records `phase=stack-ready` and writes `stack-report.md`, not `phase=done` or
@@ -170,7 +174,8 @@ The finalizer tolerates brief GitHub head propagation only while the visible hea
 the frozen head or its ancestor. After successful publication or an explicit no-push
 skip, the stack sets `phase=done` before promoting `stack-report.md` to `report.md`.
 The two artifacts jointly form the completion receipt; either one alone is incomplete
-and remains retryable.
+and remains retryable. The stack clears a stale publication failure receipt only after
+that joint completion succeeds.
 For every completed repository, the push must succeed before finalization starts.
 Read the final body before reporting success. A push, tree or merge-base check,
 finalization, or publication failure keeps the ready receipt unpromoted.

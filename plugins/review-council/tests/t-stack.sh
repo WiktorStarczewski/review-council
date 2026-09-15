@@ -76,7 +76,18 @@ if command == 'finalize-stack':
         Path(__file__).unlink()
     raise SystemExit(int(os.environ.get('STACK_FINALIZE_RC', '0')))
 if command == 'publish':
-    raise SystemExit(int(os.environ.get('STACK_PUBLISH_RC', '0')))
+    capture = os.environ.get('STACK_PUBLISH_ENV')
+    if capture:
+        with Path(capture).open('a') as stream:
+            stream.write(
+                f"mode={os.environ.get('REV_STACK_PUBLICATION', '-')} "
+                f"retry={os.environ.get('REVIEW_COUNCIL_RETRY_COMMAND', '-')}\n")
+    rc = int(os.environ.get('STACK_PUBLISH_RC', '0'))
+    if rc:
+        retry = os.environ.get('REVIEW_COUNCIL_RETRY_COMMAND', '-')
+        (session / 'incomplete.md').write_text(
+            f'publisher failed\npr-review: retry: {retry}\n')
+    raise SystemExit(rc)
 raise SystemExit(0)
 PY
     cat > "$RS/roster.sh" <<'RSEOF'
@@ -170,12 +181,18 @@ RSEOF
     printf 'legs() { run_leg "%s" 1 legpub "publish premise"; }\n' "$RP" > "$T/stack-publish.cfg"
     export ROOT="$T/stack-publish-root" LOG="$T/stack-publish.log" PASSES=1 NO_PUSH=0 NO_SQUASH=1
     export STACK_PUBLISH_CALLS="$T/stack-publish.calls" STACK_REQUIRE_SYNC=1
+    export STACK_PUBLISH_ENV="$T/stack-publish.env"
+    : > "$STACK_PUBLISH_ENV"
     SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-publish.cfg" > "$T/stack-publish.out" 2>&1
     assert_eq "completed pushed stack publishes PR review" "$?" 0
     local publish_head; publish_head=$(git -C "$RP" rev-parse HEAD)
     assert_eq "stack publisher receives the completed session" \
       "$(grep '^publish ' "$STACK_PUBLISH_CALLS")" \
       "publish $ROOT/legpub local=$publish_head remote=$publish_head"
+    assert_grep "stack publisher defers failure-receipt cleanup" \
+      "$STACK_PUBLISH_ENV" '^mode=1 '
+    assert_grep "stack publisher receives the resumable stack command" \
+      "$STACK_PUBLISH_ENV" "retry=.*ROOT=.*stack-publish-root.*stack.sh.*stack-publish.cfg"
 
     export ROOT="$T/stack-publish-fail-root" LOG="$T/stack-publish-fail.log" STACK_PUBLISH_RC=1
     SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-publish.cfg" > "$T/stack-publish-fail.out" 2>&1
@@ -186,9 +203,24 @@ RSEOF
       test ! -e "$ROOT/legpub/report.md"
     assert_exit "failed publication preserves the stack-ready report" 0 \
       test -s "$ROOT/legpub/stack-report.md"
+    assert_exit "failed stack publication preserves its failure receipt" 0 \
+      test -s "$ROOT/legpub/incomplete.md"
+    assert_grep "stack failure receipt contains the resumable command" \
+      "$ROOT/legpub/incomplete.md" \
+      "retry: .*ROOT=.*stack-publish-fail-root.*stack.sh.*stack-publish.cfg"
     assert_nogrep "failed stack publication never reports completion" "$LOG" \
       'ALL PHASES COMPLETE'
     unset STACK_PUBLISH_RC
+
+    export NO_PUSH=1
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-publish.cfg" \
+      > "$T/stack-publish-no-push-retry.out" 2>&1
+    assert_eq "no-push stack retry completes the ready session" "$?" 0
+    assert_exit "no-push stack retry promotes the final report" 0 \
+      test -s "$ROOT/legpub/report.md"
+    assert_exit "no-push stack retry clears the stale failure receipt" 0 \
+      test ! -e "$ROOT/legpub/incomplete.md"
+    export NO_PUSH=0
 
     local state_real="$SCRIPTS/rev-state.sh"
     unlink "$RS/rev-state.sh"
