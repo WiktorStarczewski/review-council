@@ -455,6 +455,131 @@ def existing_reviews(repo, number, root):
     return reviews
 
 
+def authenticated_user(root):
+    result = run_gh(["api", "user"], root)
+    if result.returncode != 0:
+        raise ReviewError("cannot identify the authenticated GitHub user: "
+                          + result.stderr.strip())
+    try:
+        user = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise ReviewError("gh api returned invalid authenticated-user JSON") from error
+    require(isinstance(user, dict), "gh api returned an invalid authenticated user")
+    return inline(user.get("login"), "authenticated GitHub login")
+
+
+def existing_review_comments(repo, number, review_id, root):
+    result = run_gh([
+        "api", "--paginate", "--slurp",
+        f"repos/{repo}/pulls/{number}/reviews/{review_id}/comments?per_page=100",
+    ], root)
+    if result.returncode != 0:
+        raise ReviewError("cannot inspect pending-review comments: "
+                          + result.stderr.strip())
+    try:
+        pages = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise ReviewError("gh api returned invalid review-comment JSON") from error
+    require(isinstance(pages, list) and pages,
+            "gh api returned an invalid review-comment list")
+    require(all(isinstance(page, list) for page in pages),
+            "gh api returned an invalid review-comment page")
+    comments = [comment for page in pages for comment in page]
+    require(all(isinstance(comment, dict) for comment in comments),
+            "gh api returned an invalid review-comment item")
+    return comments
+
+
+def current_review(repo, number, review_id, root):
+    result = run_gh(["api", f"repos/{repo}/pulls/{number}/reviews/{review_id}"], root)
+    if result.returncode != 0:
+        reviews = existing_reviews(repo, number, root)
+        if not any(review.get("id") == review_id
+                   and review.get("state") == "PENDING" for review in reviews):
+            return None
+        raise ReviewError("cannot revalidate the pending review before cleanup: "
+                          + result.stderr.strip())
+    try:
+        review = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise ReviewError("gh api returned invalid current-review JSON") from error
+    require(isinstance(review, dict), "gh api returned an invalid current review")
+    return review
+
+
+def exact_commented_review(reviews, body, head):
+    return next((review for review in reviews
+                 if review.get("body") == body
+                 and review.get("state") == "COMMENTED"
+                 and review.get("commit_id") == head), None)
+
+
+def review_user(review):
+    user = review.get("user")
+    return user.get("login") if isinstance(user, dict) else None
+
+
+def pending_review_id(review):
+    return count(review.get("id"), "pending review id", positive=True)
+
+
+def recoverable_pending_review(reviews, body, head, actor, target, root):
+    owned = [review for review in reviews
+             if review.get("state") == "PENDING" and review_user(review) == actor]
+    require(len(owned) <= 1,
+            "GitHub returned more than one pending review for the authenticated user")
+    if not owned:
+        return None
+    pending = owned[0]
+    require(pending.get("body") == body and pending.get("commit_id") == head,
+            "an unrelated pending review already exists; submit or discard it on GitHub")
+    review_id = pending_review_id(pending)
+    require(not existing_review_comments(
+        target["repo"], target["number"], review_id, root),
+        "the pending review has inline comments; submit or discard it on GitHub")
+    return pending
+
+
+def validate_created_pending(review, body, head, actor):
+    require(isinstance(review, dict)
+            and review.get("body") == body
+            and review.get("state") == "PENDING"
+            and review.get("commit_id") == head
+            and review_user(review) == actor,
+            "GitHub did not confirm the exact owned PENDING review")
+    pending_review_id(review)
+    return review
+
+
+def delete_pending_review(target, pending, actor, root):
+    review_id = pending_review_id(pending)
+    require(review_user(pending) == actor and pending.get("state") == "PENDING",
+            "refusing to delete a pending review not owned by the authenticated user")
+    current = current_review(target["repo"], target["number"], review_id, root)
+    if current is None or current.get("state") != "PENDING":
+        return
+    require(review_user(current) == actor
+            and current.get("body") == pending.get("body")
+            and current.get("commit_id") == pending.get("commit_id"),
+            "the owned pending review changed before cleanup; submit or discard it on GitHub")
+    require(not existing_review_comments(
+        target["repo"], target["number"], review_id, root),
+        "the pending review gained inline comments; submit or discard it on GitHub")
+    result = run_gh([
+        "api", "--method", "DELETE",
+        f"repos/{target['repo']}/pulls/{target['number']}/reviews/{review_id}",
+    ], root)
+    if result.returncode == 0:
+        return
+    reviews = existing_reviews(target["repo"], target["number"], root)
+    if not any(review.get("id") == review_id
+               and review.get("state") == "PENDING"
+               and review_user(review) == actor for review in reviews):
+        return
+    raise ReviewError("cannot discard the pending review after publication stopped: "
+                      + result.stderr.strip())
+
+
 def body_hash(body):
     return hashlib.sha256(body.encode()).hexdigest()
 
@@ -722,29 +847,91 @@ def publish(session, script):
             print("pr-review: no associated open PR; skipped")
             return
         require_publishable_head(target, live)
-        if any(review.get("body") == body
-               and review.get("state") == "COMMENTED"
-               and review.get("commit_id") == target["head"]
-               for review in reviews):
+        if exact_commented_review(reviews, body, target["head"]):
             print(f"pr-review: identical review already posted on {target['url']}")
             return
-        payload = json.dumps({
-            "commit_id": target["head"], "body": body, "event": "COMMENT",
-        })
+        actor = authenticated_user(scope["root"])
+        pending = recoverable_pending_review(
+            reviews, body, target["head"], actor, target, scope["root"])
+        if pending is None:
+            payload = json.dumps({"commit_id": target["head"], "body": body})
+            result = run_gh([
+                "api", "--method", "POST",
+                f"repos/{target['repo']}/pulls/{target['number']}/reviews", "--input", "-",
+            ], scope["root"], payload)
+            create_error = None
+            if result.returncode != 0:
+                create_error = "GitHub pending-review creation failed: " + result.stderr.strip()
+            else:
+                try:
+                    pending = validate_created_pending(
+                        json.loads(result.stdout), body, target["head"], actor)
+                except json.JSONDecodeError:
+                    create_error = "GitHub returned invalid created-review JSON"
+                except ReviewError as error:
+                    create_error = str(error)
+            if pending is None:
+                reviews = existing_reviews(
+                    target["repo"], target["number"], scope["root"])
+                if exact_commented_review(reviews, body, target["head"]):
+                    print(f"pr-review: identical review already posted on {target['url']}")
+                    return
+                pending = recoverable_pending_review(
+                    reviews, body, target["head"], actor, target, scope["root"])
+                if pending is None:
+                    raise ReviewError(create_error)
+
+        try:
+            live = live_pr(target, scope["root"])
+            if live["state"] != "OPEN":
+                delete_pending_review(target, pending, actor, scope["root"])
+                print("pr-review: no associated open PR; skipped")
+                return
+            require_publishable_head(target, live)
+            reviews = existing_reviews(target["repo"], target["number"], scope["root"])
+            if exact_commented_review(reviews, body, target["head"]):
+                if any(review.get("id") == pending_review_id(pending)
+                       and review.get("state") == "PENDING"
+                       and review_user(review) == actor for review in reviews):
+                    delete_pending_review(target, pending, actor, scope["root"])
+                print(f"pr-review: identical review already posted on {target['url']}")
+                return
+            listed_pending = recoverable_pending_review(
+                reviews, body, target["head"], actor, target, scope["root"])
+            if listed_pending is not None:
+                pending = listed_pending
+        except (OSError, ValueError, subprocess.SubprocessError):
+            delete_pending_review(target, pending, actor, scope["root"])
+            raise
+
+        review_id = pending_review_id(pending)
+        payload = json.dumps({"body": body, "event": "COMMENT"})
         result = run_gh([
             "api", "--method", "POST",
-            f"repos/{target['repo']}/pulls/{target['number']}/reviews", "--input", "-",
+            f"repos/{target['repo']}/pulls/{target['number']}/reviews/{review_id}/events",
+            "--input", "-",
         ], scope["root"], payload)
+        submit_error = None
         if result.returncode != 0:
-            raise ReviewError("GitHub review post failed: " + result.stderr.strip())
-        try:
-            posted = json.loads(result.stdout)
-        except json.JSONDecodeError as error:
-            raise ReviewError("GitHub returned invalid created-review JSON") from error
-        require(isinstance(posted, dict) and posted.get("body") == body
-                and posted.get("state") == "COMMENTED"
-                and posted.get("commit_id") == target["head"],
-                "GitHub did not confirm the commit-pinned COMMENTED review")
+            submit_error = "GitHub pending-review submission failed: " + result.stderr.strip()
+        else:
+            try:
+                posted = json.loads(result.stdout)
+            except json.JSONDecodeError:
+                submit_error = "GitHub returned invalid submitted-review JSON"
+            else:
+                if not (isinstance(posted, dict) and posted.get("body") == body
+                        and posted.get("state") == "COMMENTED"
+                        and posted.get("commit_id") == target["head"]):
+                    submit_error = "GitHub did not confirm the commit-pinned COMMENTED review"
+        if submit_error is not None:
+            reviews = existing_reviews(target["repo"], target["number"], scope["root"])
+            if not exact_commented_review(reviews, body, target["head"]):
+                listed_pending = recoverable_pending_review(
+                    reviews, body, target["head"], actor, target, scope["root"])
+                if listed_pending is not None:
+                    delete_pending_review(target, listed_pending, actor, scope["root"])
+                raise ReviewError(submit_error)
         require_publishable_head(target, live_pr(target, scope["root"]))
     print(f"pr-review: posted {target['url']}")
 

@@ -175,29 +175,108 @@ if [ "${1:-} ${2:-}" = "pr view" ]; then
   printf '{"number":12,"url":"https://github.com/%s/pull/12","state":"%s","headRefName":"feat","headRefOid":"%s","baseRefName":"%s","baseRefOid":"%s"}\n' "$repo" "$live_state" "$live_head" "$live_base" "$live_base_oid"
   exit 0
 fi
-if [ "${1:-}" = api ]; then
+  if [ "${1:-}" = api ]; then
+  if [ "${2:-}" = user ]; then
+    printf '{"login":"%s"}\n' "${GH_ACTOR:-tester}"
+    exit 0
+  fi
+  if [ "${2:-}" = --paginate ] && [[ "${4:-}" == repos/*/pulls/*/reviews/*/comments\?per_page=100 ]]; then
+    if [ "${GH_DUP_COMMENTS:-0}" = 0 ]; then
+      printf '%s\n' '[[]]'
+    else
+      printf '%s\n' '[[{"id":1,"body":"unrelated inline comment"}]]'
+    fi
+    exit 0
+  fi
+  if [[ "${2:-}" == repos/*/pulls/*/reviews/[0-9]* ]]; then
+    review_id=${2##*/}
+    body_file=${GH_DUP_BODY:-$GH_CALLS.pending-body}
+    python3 - "$body_file" "${GH_GET_STATE:-PENDING}" \
+      "${GH_GET_COMMIT:-$head}" "${GH_GET_ACTOR:-${GH_ACTOR:-tester}}" "$review_id" <<'PY'
+import json
+import pathlib
+import sys
+print(json.dumps({"body": pathlib.Path(sys.argv[1]).read_text(), "state": sys.argv[2],
+                  "commit_id": sys.argv[3], "id": int(sys.argv[5]),
+                  "user": {"login": sys.argv[4]}}))
+PY
+    exit 0
+  fi
+  if [ "${2:-}" = --method ] && [ "${3:-}" = DELETE ]; then
+    if [ "${GH_MODE:-post}" = fail-delete ]; then
+      echo 'remote rejected pending-review cleanup' >&2
+      exit 1
+    fi
+    [ -z "${GH_DELETED_REVIEW:-}" ] || printf '%s\n' "${4##*/}" > "$GH_DELETED_REVIEW"
+    exit 0
+  fi
   if [ "${2:-}" = --method ] && [ "${3:-}" = POST ]; then
     payload=$(cat)
+    if [[ "${4:-}" == repos/*/pulls/*/reviews/*/events ]]; then
+      if [ "${GH_MODE:-post}" = fail-submit ]; then
+        echo 'remote rejected pending-review submission' >&2
+        exit 1
+      fi
+      if [ "${GH_MODE:-post}" = concurrent ]; then
+        if ! mkdir "$GH_REVIEW_MARKER.submit" 2>/dev/null; then
+          echo 'pending review was already submitted' >&2
+          exit 1
+        fi
+        rm -rf "$GH_REVIEW_MARKER.pending"
+        mkdir "$GH_REVIEW_MARKER.commented"
+        [ -z "${GH_SUBMIT_COUNT:-}" ] || printf 'submitted\n' >> "$GH_SUBMIT_COUNT"
+      fi
+      [ -z "${GH_POSTED_PAYLOAD:-}" ] || printf '%s' "$payload" > "$GH_POSTED_PAYLOAD"
+      [ -z "${GH_POSTED_BODY:-}" ] || printf '%s' "$payload" | jq -j .body > "$GH_POSTED_BODY"
+      if [ "${GH_MODE:-post}" = ambiguous-submit ]; then
+        : > "$GH_REVIEW_MARKER"
+        echo 'connection closed after pending-review submission' >&2
+        exit 1
+      fi
+      if [ "${GH_MODE:-post}" = invalid-submit-json ]; then
+        printf '%s\n' '{invalid'
+        exit 0
+      fi
+      if [ "${GH_MODE:-post}" = mismatched-submit ]; then
+        printf '%s' "$payload" | jq \
+          '{id: 80, body: .body, state: "COMMENTED", commit_id: "0000000000000000000000000000000000000001", user: {login: "tester"}}'
+        exit 0
+      fi
+      printf '%s' "$payload" | jq --arg commit "$head" --arg actor "${GH_ACTOR:-tester}" \
+        '{id: 80, body: .body, state: "COMMENTED", commit_id: $commit, user: {login: $actor}}'
+      exit 0
+    fi
     if [ "${GH_MODE:-post}" = fail-post ]; then
       echo 'remote rejected review' >&2
       exit 1
     fi
     if [ "${GH_MODE:-post}" = concurrent ]; then
       sleep 1
-      : > "$GH_REVIEW_MARKER"
+      if ! mkdir "$GH_REVIEW_MARKER.pending" 2>/dev/null; then
+        echo 'User can only have one pending review per pull request' >&2
+        exit 1
+      fi
     fi
+    printf '%s' "$payload" | jq -j .body > "$GH_CALLS.pending-body"
+    [ -z "${GH_CREATED_PAYLOAD:-}" ] || printf '%s' "$payload" > "$GH_CREATED_PAYLOAD"
     [ -z "${GH_POSTED_PAYLOAD:-}" ] || printf '%s' "$payload" > "$GH_POSTED_PAYLOAD"
     [ -z "${GH_POSTED_BODY:-}" ] || printf '%s' "$payload" | jq -j .body > "$GH_POSTED_BODY"
+    if [ "${GH_MODE:-post}" = ambiguous-create ]; then
+      : > "$GH_REVIEW_MARKER"
+      echo 'connection closed after pending-review creation' >&2
+      exit 1
+    fi
     if [ "${GH_MODE:-post}" = invalid-post-json ]; then
       printf '%s\n' '{invalid'
       exit 0
     fi
     if [ "${GH_MODE:-post}" = mismatched-post ]; then
       printf '%s' "$payload" | jq \
-        '{id: 80, body: .body, state: "COMMENTED", commit_id: "0000000000000000000000000000000000000001"}'
+        '{id: 80, body: .body, state: "PENDING", commit_id: "0000000000000000000000000000000000000001", user: {login: "tester"}}'
       exit 0
     fi
-    printf '%s' "$payload" | jq '{id: 80, body: .body, state: "COMMENTED", commit_id: .commit_id}'
+    printf '%s' "$payload" | jq --arg actor "${GH_ACTOR:-tester}" \
+      '{id: 80, body: .body, state: "PENDING", commit_id: .commit_id, user: {login: $actor}}'
     exit 0
   fi
   case "${2:-}" in
@@ -227,13 +306,23 @@ if [ "${1:-}" = api ]; then
     exit 0
   fi
   if [ "${GH_MODE:-post}" = duplicate ] \
-      || { [ "${GH_MODE:-post}" = concurrent ] && [ -f "$GH_REVIEW_MARKER" ]; }; then
-    python3 - "$GH_DUP_BODY" "${GH_DUP_STATE:-COMMENTED}" "${GH_DUP_COMMIT:-$head}" <<'PY'
+      || { [ "${GH_MODE:-post}" = ambiguous-create ] && [ -f "$GH_REVIEW_MARKER" ]; } \
+      || { [ "${GH_MODE:-post}" = ambiguous-submit ] && [ -f "$GH_REVIEW_MARKER" ]; } \
+      || { [ "${GH_MODE:-post}" = concurrent ] \
+        && { [ -d "$GH_REVIEW_MARKER.pending" ] || [ -d "$GH_REVIEW_MARKER.commented" ]; }; }; then
+    state=${GH_DUP_STATE:-COMMENTED}
+    [ "${GH_MODE:-post}" != ambiguous-create ] || state=PENDING
+    [ "${GH_MODE:-post}" != ambiguous-submit ] || state=COMMENTED
+    if [ "${GH_MODE:-post}" = concurrent ]; then
+      if [ -d "$GH_REVIEW_MARKER.commented" ]; then state=COMMENTED; else state=PENDING; fi
+    fi
+    python3 - "$GH_DUP_BODY" "$state" "${GH_DUP_COMMIT:-$head}" "${GH_DUP_ACTOR:-${GH_ACTOR:-tester}}" "${GH_DUP_ID:-80}" <<'PY'
 import json
 import pathlib
 import sys
 print(json.dumps([[{"body": pathlib.Path(sys.argv[1]).read_text(), "state": sys.argv[2],
-                    "commit_id": sys.argv[3]}]]))
+                    "commit_id": sys.argv[3], "id": int(sys.argv[5]),
+                    "user": {"login": sys.argv[4]}}]]))
 PY
   else
     printf '%s\n' '[[]]'
@@ -721,7 +810,7 @@ test_pr_review_publish() {
 
   : > "$T/pr.calls"
   PATH="$bin:$PATH" GH_CALLS="$T/pr.calls" GH_POSTED_BODY="$T/pr-posted.md" \
-    GH_POSTED_PAYLOAD="$T/pr-posted.json" \
+    GH_CREATED_PAYLOAD="$T/pr-created.json" GH_POSTED_PAYLOAD="$T/pr-posted.json" \
     python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
     > "$T/pr-publish.out" 2> "$T/pr-publish.err"
   assert_eq "PR review publisher exits cleanly" "$?" 0
@@ -732,11 +821,15 @@ test_pr_review_publish() {
     '^api --paginate --slurp repos/acme/repo/pulls/12/reviews\?per_page=100$'
   assert_grep "PR review publisher creates a commit-pinned review" "$T/pr.calls" \
     '^api --method POST repos/acme/repo/pulls/12/reviews --input -$'
+  assert_grep "PR review publisher submits the pending review" "$T/pr.calls" \
+    '^api --method POST repos/acme/repo/pulls/12/reviews/80/events --input -$'
   assert_nogrep "PR review publisher never uses the unpinned CLI review command" \
     "$T/pr.calls" '^pr review '
   assert_eq "created review payload pins the reviewed head" \
-    "$(jq -r .commit_id "$T/pr-posted.json")" "$local_head"
-  assert_eq "created review payload submits a comment" \
+    "$(jq -r .commit_id "$T/pr-created.json")" "$local_head"
+  assert_eq "created review payload remains pending" \
+    "$(jq -r 'has("event")' "$T/pr-created.json")" false
+  assert_eq "submitted review payload posts a comment" \
     "$(jq -r .event "$T/pr-posted.json")" COMMENT
   assert_exit "posted body is the rendered body" 0 \
     cmp -s "$session/pr-review.md" "$T/pr-posted.md"
@@ -898,18 +991,56 @@ test_pr_review_frozen_publication() {
   assert_grep "post-list closure is the final GitHub request" \
     "$T/pr-frozen-close-race.calls" 'pr view 12 --repo acme/repo'
 
+  : > "$T/pr-frozen-pending-close.calls"
+  : > "$T/pr-frozen-pending-close.views"
+  rm -f "$T/pr-frozen-pending-close.deleted"
+  PATH="$bin:$PATH" GH_HEAD_OID="$reviewed_head" GH_SWITCH_STATE_AFTER=2 \
+    GH_SWITCHED_STATE=CLOSED GH_SWITCHED_HEAD="$changed_head" GH_SWITCHED_BASE=release \
+    GH_SWITCHED_BASE_OID=0000000000000000000000000000000000000007 \
+    GH_VIEW_COUNT_FILE="$T/pr-frozen-pending-close.views" \
+    GH_DELETED_REVIEW="$T/pr-frozen-pending-close.deleted" \
+    GH_CALLS="$T/pr-frozen-pending-close.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-frozen-pending-close.out" 2> "$T/pr-frozen-pending-close.err"
+  assert_eq "closure after pending creation skips cleanly" "$?" 0
+  assert_grep "closure after pending creation discards only the owned draft" \
+    "$T/pr-frozen-pending-close.calls" \
+    '^api --method DELETE repos/acme/repo/pulls/12/reviews/80$'
+  assert_nogrep "closure after pending creation never submits the draft" \
+    "$T/pr-frozen-pending-close.calls" 'reviews/80/events'
+
+  : > "$T/pr-frozen-changed-draft.calls"
+  : > "$T/pr-frozen-changed-draft.views"
+  PATH="$bin:$PATH" GH_HEAD_OID="$reviewed_head" GH_SWITCH_STATE_AFTER=2 \
+    GH_SWITCHED_STATE=CLOSED GH_SWITCHED_HEAD="$changed_head" GH_SWITCHED_BASE=release \
+    GH_SWITCHED_BASE_OID=0000000000000000000000000000000000000007 \
+    GH_VIEW_COUNT_FILE="$T/pr-frozen-changed-draft.views" GH_GET_ACTOR=other \
+    GH_CALLS="$T/pr-frozen-changed-draft.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-frozen-changed-draft.out" 2> "$T/pr-frozen-changed-draft.err"
+  assert_eq "a pending review that changed ownership is not deleted" "$?" 1
+  assert_nogrep "changed pending ownership blocks cleanup deletion" \
+    "$T/pr-frozen-changed-draft.calls" '^api --method DELETE '
+  assert_grep "changed pending ownership has an actionable diagnostic" \
+    "$T/pr-frozen-changed-draft.err" 'pending review changed before cleanup'
+
   : > "$T/pr-frozen-post-race.calls"
   : > "$T/pr-frozen-post-race.views"
+  rm -f "$T/pr-frozen-post-race.deleted"
   PATH="$bin:$PATH" GH_HEAD_OID="$reviewed_head" GH_SWITCH_HEAD_AFTER=2 \
     GH_SWITCHED_HEAD="$changed_head" GH_MERGE_BASE="$(git -C "$root" rev-parse main)" \
     GH_VIEW_COUNT_FILE="$T/pr-frozen-post-race.views" \
+    GH_DELETED_REVIEW="$T/pr-frozen-post-race.deleted" \
     GH_CALLS="$T/pr-frozen-post-race.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
     > "$T/pr-frozen-post-race.out" 2> "$T/pr-frozen-post-race.err"
-  assert_eq "head movement after POST confirmation fails publication" "$?" 1
-  assert_grep "post-confirmation head movement occurs after the side effect" \
-    "$T/pr-frozen-post-race.calls" '^api --method POST '
-  assert_grep "post-confirmation head movement prints the exact retry" \
+  assert_eq "head movement after pending creation fails publication" "$?" 1
+  assert_grep "head movement after pending creation discards the owned draft" \
+    "$T/pr-frozen-post-race.calls" \
+    '^api --method DELETE repos/acme/repo/pulls/12/reviews/80$'
+  assert_nogrep "head movement after pending creation never submits the draft" \
+    "$T/pr-frozen-post-race.calls" 'reviews/80/events'
+  assert_grep "post-creation head movement prints the exact retry" \
     "$T/pr-frozen-post-race.err" "retry: .*rev-pr-review.py publish $session$"
 }
 
@@ -1517,8 +1648,12 @@ test_pr_review_rejects_invalid_review_pages() {
     python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
     > "$T/pr-pages-null-fields.out" 2> "$T/pr-pages-null-fields.err"
   assert_eq "null comparison fields remain valid nonmatches" "$?" 0
-  assert_eq "a null-field nonmatch posts exactly once" \
-    "$(grep -Ec '^api --method POST ' "$T/pr-pages.calls")" 1
+  assert_eq "a null-field nonmatch creates one pending review" \
+    "$(grep -Ec '^api --method POST repos/acme/repo/pulls/12/reviews --input -$' \
+      "$T/pr-pages.calls")" 1
+  assert_eq "a null-field nonmatch submits one pending review" \
+    "$(grep -Ec '^api --method POST repos/acme/repo/pulls/12/reviews/80/events --input -$' \
+      "$T/pr-pages.calls")" 1
 }
 
 test_pr_review_concurrent_publication() {
@@ -1528,14 +1663,18 @@ test_pr_review_concurrent_publication() {
   : > "$T/pr-concurrent.calls"
   PATH="$bin:$PATH" GH_CALLS="$T/pr-concurrent.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 >/dev/null
-  rm -f "$T/pr-concurrent.marker"
+  rm -rf "$T/pr-concurrent.marker.pending" "$T/pr-concurrent.marker.commented" \
+    "$T/pr-concurrent.marker.submit"
+  : > "$T/pr-concurrent.submits"
   PATH="$bin:$PATH" GH_MODE=concurrent GH_CALLS="$T/pr-concurrent.calls" \
     GH_REVIEW_MARKER="$T/pr-concurrent.marker" GH_DUP_BODY="$session/pr-review.md" \
+    GH_SUBMIT_COUNT="$T/pr-concurrent.submits" \
     GH_POSTED_BODY="$T/pr-concurrent-one.md" \
     python3 "$SCRIPTS/rev-pr-review.py" publish "$session" >/dev/null 2>&1 &
   local first=$!
   PATH="$bin:$PATH" GH_MODE=concurrent GH_CALLS="$T/pr-concurrent.calls" \
     GH_REVIEW_MARKER="$T/pr-concurrent.marker" GH_DUP_BODY="$session/pr-review.md" \
+    GH_SUBMIT_COUNT="$T/pr-concurrent.submits" \
     GH_POSTED_BODY="$T/pr-concurrent-two.md" \
     python3 "$SCRIPTS/rev-pr-review.py" publish "$session" >/dev/null 2>&1 &
   local second=$!
@@ -1544,7 +1683,53 @@ test_pr_review_concurrent_publication() {
   assert_eq "first concurrent publication exits cleanly" "$first_rc" 0
   assert_eq "second concurrent publication exits cleanly" "$second_rc" 0
   assert_eq "concurrent retries create exactly one review" \
-    "$(grep -Ec '^(pr review |api --method POST )' "$T/pr-concurrent.calls")" 1
+    "$(cat "$T/pr-concurrent.submits" | wc -l | tr -d ' ')" 1
+
+  local clone_one="$T/pr-clone-one" clone_two="$T/pr-clone-two"
+  local clone_session_one="$T/pr-clone-session-one" clone_session_two="$T/pr-clone-session-two"
+  local clone_base clone_first clone_second clone_first_rc clone_second_rc
+  pr_review_session "$clone_session_one" "$clone_one"
+  git clone -q "$clone_one" "$clone_two"
+  git -C "$clone_two" remote set-url origin https://github.com/acme/repo.git
+  clone_base=$(git -C "$clone_one" rev-parse main)
+  git -C "$clone_two" branch main "$clone_base"
+  mkdir -p "$clone_session_two"
+  cp "$clone_session_one/pr-review.json" "$clone_session_two/pr-review.json"
+  printf "REV_BASE='%s'\nREV_ROOT='%s'\nREV_BRANCH='feat'\nREV_BASE_BRANCH='main'\n" \
+    "$clone_base" "$clone_two" > "$clone_session_two/scope.env"
+  : > "$T/pr-clone-render.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-clone-render.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$clone_session_one" \
+    --date 2026-09-15 >/dev/null
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-clone-render.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$clone_session_two" \
+    --date 2026-09-15 >/dev/null
+  rm -rf "$T/pr-clone.marker.pending" "$T/pr-clone.marker.commented" \
+    "$T/pr-clone.marker.submit"
+  : > "$T/pr-clone.calls"
+  : > "$T/pr-clone.submits"
+  PATH="$bin:$PATH" GH_MODE=concurrent GH_CALLS="$T/pr-clone.calls" \
+    GH_REVIEW_MARKER="$T/pr-clone.marker" \
+    GH_DUP_BODY="$clone_session_one/pr-review.md" \
+    GH_SUBMIT_COUNT="$T/pr-clone.submits" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$clone_session_one" \
+    > "$T/pr-clone-one.out" 2> "$T/pr-clone-one.err" &
+  clone_first=$!
+  PATH="$bin:$PATH" GH_MODE=concurrent GH_CALLS="$T/pr-clone.calls" \
+    GH_REVIEW_MARKER="$T/pr-clone.marker" \
+    GH_DUP_BODY="$clone_session_one/pr-review.md" \
+    GH_SUBMIT_COUNT="$T/pr-clone.submits" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$clone_session_two" \
+    > "$T/pr-clone-two.out" 2> "$T/pr-clone-two.err" &
+  clone_second=$!
+  wait "$clone_first"; clone_first_rc=$?
+  wait "$clone_second"; clone_second_rc=$?
+  assert_eq "first separate-clone publication exits cleanly" "$clone_first_rc" 0
+  assert_eq "second separate-clone publication exits cleanly" "$clone_second_rc" 0
+  assert_eq "separate clones submit one COMMENTED review" \
+    "$(cat "$T/pr-clone.submits" | wc -l | tr -d ' ')" 1
+  assert_exit "separate clones leave no pending review" 0 \
+    test ! -d "$T/pr-clone.marker.pending"
 
   local final_session="$T/pr-finalize-lock" final_root="$T/pr-finalize-lock-repo"
   local final_head finalize_pid publish_pid finalize_rc publish_rc
@@ -1617,6 +1802,49 @@ test_pr_review_duplicate_and_no_pr() {
   assert_exit "duplicate publication creates no review" 0 test ! -e "$T/should-not-exist"
   assert_nogrep "duplicate path never creates another review" "$T/pr-duplicate.calls" \
     '^api --method POST '
+
+  : > "$T/pr-duplicate.calls"
+  PATH="$bin:$PATH" GH_MODE=duplicate GH_DUP_STATE=PENDING \
+    GH_DUP_BODY="$session/pr-review.md" GH_CALLS="$T/pr-duplicate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-pending-recovery.out" 2> "$T/pr-pending-recovery.err"
+  assert_eq "an exact owned pending review is recovered" "$?" 0
+  assert_grep "pending recovery submits the owned review" "$T/pr-duplicate.calls" \
+    '^api --method POST repos/acme/repo/pulls/12/reviews/80/events --input -$'
+
+  printf '%s\n' 'different pending body' > "$T/pr-unrelated-pending.md"
+  : > "$T/pr-duplicate.calls"
+  PATH="$bin:$PATH" GH_MODE=duplicate GH_DUP_STATE=PENDING \
+    GH_DUP_BODY="$T/pr-unrelated-pending.md" GH_CALLS="$T/pr-duplicate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-unrelated-pending.out" 2> "$T/pr-unrelated-pending.err"
+  assert_eq "an unrelated owned pending review blocks publication" "$?" 1
+  assert_grep "unrelated pending review has an actionable diagnostic" \
+    "$T/pr-unrelated-pending.err" 'unrelated pending review.*submit or discard it on GitHub'
+  assert_nogrep "unrelated pending review is never submitted or deleted" \
+    "$T/pr-duplicate.calls" 'reviews/80($|/events)'
+
+  : > "$T/pr-duplicate.calls"
+  PATH="$bin:$PATH" GH_MODE=duplicate GH_DUP_STATE=PENDING GH_DUP_COMMENTS=1 \
+    GH_DUP_BODY="$session/pr-review.md" GH_CALLS="$T/pr-duplicate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-commented-pending.out" 2> "$T/pr-commented-pending.err"
+  assert_eq "a comment-bearing pending review blocks publication" "$?" 1
+  assert_grep "comment-bearing pending review names its unsafe state" \
+    "$T/pr-commented-pending.err" 'pending review.*inline comments'
+  assert_nogrep "comment-bearing pending review is never submitted or deleted" \
+    "$T/pr-duplicate.calls" 'reviews/80($|/events)'
+
+  : > "$T/pr-duplicate.calls"
+  PATH="$bin:$PATH" GH_MODE=duplicate GH_DUP_STATE=PENDING GH_DUP_ACTOR=other \
+    GH_DUP_ID=81 GH_DUP_BODY="$session/pr-review.md" GH_CALLS="$T/pr-duplicate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-foreign-pending.out" 2> "$T/pr-foreign-pending.err"
+  assert_eq "a foreign pending review does not block owned publication" "$?" 0
+  assert_nogrep "foreign pending review is never submitted or deleted" \
+    "$T/pr-duplicate.calls" 'reviews/81($|/events)'
+  assert_grep "publisher submits only its own new pending review" \
+    "$T/pr-duplicate.calls" 'reviews/80/events'
 
   local no_pr="$T/pr-no-scope"
   mkdir -p "$no_pr"
@@ -1693,6 +1921,30 @@ test_pr_review_publish_failure() {
   assert_exit "failure receipt preserves the frozen target" 0 \
     cmp -s "$session/pr-review-target.json" "$T/pr-failure-target.json"
 
+  rm -f "$T/pr-ambiguous-create.marker"
+  : > "$T/pr-failure.calls"
+  PATH="$bin:$PATH" GH_MODE=ambiguous-create GH_CALLS="$T/pr-failure.calls" \
+    GH_REVIEW_MARKER="$T/pr-ambiguous-create.marker" \
+    GH_DUP_BODY="$session/pr-review.md" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-ambiguous-create.out" 2> "$T/pr-ambiguous-create.err"
+  assert_eq "ambiguous pending creation recovers through the review list" "$?" 0
+  assert_grep "ambiguous creation submits the recovered pending review" \
+    "$T/pr-failure.calls" 'reviews/80/events'
+  assert_exit "ambiguous creation recovery clears the failure receipt" 0 \
+    test ! -e "$session/incomplete.md"
+
+  rm -f "$T/pr-ambiguous-submit.marker"
+  : > "$T/pr-failure.calls"
+  PATH="$bin:$PATH" GH_MODE=ambiguous-submit GH_CALLS="$T/pr-failure.calls" \
+    GH_REVIEW_MARKER="$T/pr-ambiguous-submit.marker" \
+    GH_DUP_BODY="$session/pr-review.md" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-ambiguous-submit.out" 2> "$T/pr-ambiguous-submit.err"
+  assert_eq "ambiguous pending submission recovers exact COMMENTED state" "$?" 0
+  assert_exit "ambiguous submission recovery clears the failure receipt" 0 \
+    test ! -e "$session/incomplete.md"
+
   : > "$T/pr-failure.calls"
   PATH="$bin:$PATH" GH_MODE=invalid-post-json GH_CALLS="$T/pr-failure.calls" \
     GH_POSTED_BODY="$T/pr-failure-invalid-body.md" \
@@ -1714,11 +1966,11 @@ test_pr_review_publish_failure() {
   assert_eq "mismatched post confirmation fails publication" "$?" 1
   assert_grep "mismatched confirmation reaches the commit-pinned gate" \
     "$T/pr-failure-mismatched.err" \
-    'GitHub did not confirm the commit-pinned COMMENTED review'
+    'GitHub did not confirm the exact owned PENDING review'
   assert_grep "mismatched confirmation preserves the exact retry command" \
     "$T/pr-failure-mismatched.err" "retry: .*rev-pr-review.py publish $session$"
   assert_grep "mismatched confirmation updates the failure receipt" \
-    "$session/incomplete.md" 'did not confirm the commit-pinned COMMENTED review'
+    "$session/incomplete.md" 'did not confirm the exact owned PENDING review'
   : > "$T/pr-failure.calls"
   PATH="$bin:$PATH" GH_MODE=duplicate GH_CALLS="$T/pr-failure.calls" \
     GH_DUP_BODY="$session/pr-review.md" \

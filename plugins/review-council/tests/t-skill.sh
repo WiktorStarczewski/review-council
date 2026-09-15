@@ -464,6 +464,10 @@ test_skill_contract() {
     'no-push gate'
   assert_grep "shared publication contract requires COMMENTED-state idempotence" "$PRDOC" \
     'exact `COMMENTED` review'
+  assert_grep "shared publication contract uses the remote pending-review transaction" "$PRDOC" \
+    'PENDING.*COMMENTED'
+  assert_grep "shared publication contract limits pending recovery to safe owned drafts" "$PRDOC" \
+    'owned.*no inline comments'
   assert_grep "shared publication contract requires the stack push barrier" "$PRDOC" \
     'every completed repository.*push'
   assert_grep "shared publication contract binds the stack destination branch" "$PRDOC" \

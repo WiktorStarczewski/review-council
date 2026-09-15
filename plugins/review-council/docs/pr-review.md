@@ -133,13 +133,15 @@ Accepted remotes are GitHub HTTPS, git protocol, SCP-style SSH, explicit-port SS
 `github.com`, and GitHub's documented `ssh.github.com:443` SSH-over-HTTPS form.
 Under a repository-local lock, it reads and updates the rendered body and target,
 checks all existing reviews, then revalidates the frozen open head before choosing a
-duplicate or creating a review. After creation it revalidates the head again before
-reporting success. Closure or merge before the POST becomes the exact no-open-PR skip,
-including closure during stack head propagation. Closure after the POST remains a
-retryable ambiguity. It
-treats only an exact `COMMENTED` review body on the reviewed commit as idempotent
-success. The API request sets `commit_id` to the frozen head and `event` to `COMMENT`,
-then verifies the returned body, state, and commit. A real
+duplicate or creating a review. Publication creates or recovers the authenticated publisher's exact owned `PENDING` review with no inline comments, pins `commit_id` to the frozen head, revalidates that head, and submits the review as `COMMENTED`. GitHub therefore serializes concurrent publishers
+using the same authenticated account even when they run from separate clones. Foreign
+and unrelated pending reviews are never submitted or deleted. After submission the
+publisher revalidates the head again before reporting success. Closure or merge before
+submission becomes the exact no-open-PR skip and discards only the owned transaction,
+including closure during stack head propagation. Closure after submission remains a
+retryable ambiguity. It treats only an exact `COMMENTED` review body on the reviewed
+commit as idempotent success. The submission request sets `event` to `COMMENT`; both
+responses are verified. A real
 no-PR association skips cleanly; missing session scope or artifacts fail closed.
 
 Any other nonzero publish exit leaves the PR review incomplete. Preserve
