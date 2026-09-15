@@ -31,6 +31,7 @@ GITHUB_REMOTE = re.compile(
     re.IGNORECASE,
 )
 OID = re.compile(r"^[0-9a-f]{40}$")
+REPOSITORY = re.compile(r"^[^/\s]+/[^/\s]+$")
 
 
 class ReviewError(ValueError):
@@ -270,7 +271,7 @@ def github_repositories(root):
                              capture_output=True, timeout=30)
     if remotes.returncode != 0:
         raise ReviewError("cannot inspect git remotes: " + remotes.stderr.strip())
-    repositories = []
+    repositories = set()
     for name in remotes.stdout.splitlines():
         urls = subprocess.run(["git", "remote", "get-url", "--all", name], cwd=root,
                               text=True, capture_output=True, timeout=30)
@@ -279,10 +280,8 @@ def github_repositories(root):
         for url in urls.stdout.splitlines():
             match = GITHUB_REMOTE.fullmatch(url.strip())
             if match is not None:
-                repository = match.group(1)
-                if repository.lower() not in {item.lower() for item in repositories}:
-                    repositories.append(repository)
-    return repositories
+                repositories.add(match.group(1).lower())
+    return sorted(repositories)
 
 
 def remote_merge_base(repository, base_head, head, root):
@@ -341,9 +340,9 @@ def parse_pr(metadata, branch):
     }
 
 
-def resolve_pr(scope):
+def resolve_pr(scope, repositories=None):
     root = scope["root"]
-    repositories = github_repositories(root)
+    repositories = github_repositories(root) if repositories is None else repositories
     if not repositories:
         return None
     require(shutil.which("gh") is not None, "gh is required to publish a PR review")
@@ -409,7 +408,10 @@ def existing_reviews(repo, number, root):
             "gh api returned an invalid review list")
     require(all(isinstance(page, list) for page in pages),
             "gh api returned an invalid review page")
-    return [review for page in pages for review in page]
+    reviews = [review for page in pages for review in page]
+    require(all(isinstance(review, dict) for review in reviews),
+            "gh api returned an invalid review item")
+    return reviews
 
 
 def body_hash(body):
@@ -436,7 +438,8 @@ def require_clean_review_tree(root, session):
             + dirty.replace("\0", "\n").rstrip())
 
 
-def target_envelope(scope, target, body, date, session, allow_unpushed=False):
+def target_envelope(scope, target, body, date, session, repositories,
+                    allow_unpushed=False):
     root = scope["root"]
     head = run_git(["rev-parse", "HEAD"], root)
     tree = run_git(["rev-parse", "HEAD^{tree}"], root)
@@ -452,6 +455,7 @@ def target_envelope(scope, target, body, date, session, allow_unpushed=False):
         "tree": tree,
         "date": date,
         "body_sha256": body_hash(body),
+        "repositories": repositories,
     }
     if target is not None:
         require_clean_review_tree(root, session)
@@ -473,6 +477,16 @@ def load_target(path):
     require(OID.fullmatch(target["tree"]) is not None, "target.tree must be a full tree ID")
     require(re.fullmatch(r"[0-9a-f]{64}", target["body_sha256"]) is not None,
             "target.body_sha256 must be SHA-256")
+    repositories = target.get("repositories")
+    require(isinstance(repositories, list), "target.repositories must be a list")
+    normalized = []
+    for index, repository in enumerate(repositories):
+        repository = inline(repository, f"target.repositories[{index}]")
+        require(REPOSITORY.fullmatch(repository) is not None,
+                f"target.repositories[{index}] must be owner/repo")
+        normalized.append(repository.lower())
+    require(repositories == sorted(set(normalized)),
+            "target.repositories must be a sorted, unique, normalized list")
     if target["associated"]:
         inline(target.get("base_head"), "target.base_head")
         require(OID.fullmatch(target["base_head"]) is not None,
@@ -483,6 +497,8 @@ def load_target(path):
             "baseRefName": target["base_branch"], "baseRefOid": target["base_head"],
         }, target["branch"])
         require(frozen["repo"] == target.get("repo"), "target repository does not match its URL")
+        require(frozen["repo"].lower() in repositories,
+                "target repository is outside its frozen repository set")
     return target
 
 
@@ -500,10 +516,9 @@ def bind_target(scope, target, session, allow_rewritten_head=False):
     require(target["branch"] == scope["branch"] and target["base"] == scope["base"],
             "the PR review target does not match its reviewed session scope")
     repositories = github_repositories(root)
-    if target["associated"]:
-        require(target["repo"].lower() in {item.lower() for item in repositories},
-                "the PR review target is outside the reviewed repository remotes")
-    resolved = resolve_pr(scope)
+    require(repositories == target["repositories"],
+            "the reviewed GitHub repository remotes changed; rerender before publishing")
+    resolved = resolve_pr(scope, target["repositories"])
     if resolved is None:
         if not target["associated"]:
             return target, None, False
@@ -601,12 +616,13 @@ def render_session(session, date):
     target = None
     if scope_path.is_file():
         scope = parse_scope(scope_path)
-        resolved = None if os.environ.get("NO_PUSH") == "1" else resolve_pr(scope)
+        repositories = github_repositories(scope["root"])
+        resolved = None if os.environ.get("NO_PUSH") == "1" \
+            else resolve_pr(scope, repositories)
         target = target_envelope(
-            scope, resolved, body, date, session,
+            scope, resolved, body, date, session, repositories,
             allow_unpushed=os.environ.get("REV_STACK_LEG") == "1",
         )
-        repositories = github_repositories(scope["root"])
         if repositories:
             validate_publication_links(data, repositories, target["head"], scope["root"])
     output = session / "pr-review.md"
@@ -632,13 +648,13 @@ def publish(session, script):
         return
     if unresolved_target_skip(scope, session):
         return
-    target = load_target(session / "pr-review-target.json")
-    output = session / "pr-review.md"
-    require(output.is_file(), f"rendered PR review is missing: {output}")
-    body = output.read_text()
-    require(body_hash(body) == target["body_sha256"],
-            "rendered PR review does not match its frozen body hash")
     with publication_lock(scope["root"]):
+        target = load_target(session / "pr-review-target.json")
+        output = session / "pr-review.md"
+        require(output.is_file(), f"rendered PR review is missing: {output}")
+        body = output.read_text()
+        require(body_hash(body) == target["body_sha256"],
+                "rendered PR review does not match its frozen body hash")
         target, live, promoted = bind_target(scope, target, session)
         if live is None or live["state"] != "OPEN":
             print("pr-review: no associated open PR; skipped")
@@ -648,7 +664,7 @@ def publish(session, script):
                          json.dumps(target, indent=2) + "\n")
         require(live["head"] == target["head"],
                 "the PR head changed after review; rerun the review before publishing")
-        if any(isinstance(review, dict) and review.get("body") == body
+        if any(review.get("body") == body
                and review.get("state") == "COMMENTED"
                and review.get("commit_id") == target["head"]
                for review in existing_reviews(
@@ -658,22 +674,24 @@ def publish(session, script):
         payload = json.dumps({
             "commit_id": target["head"], "body": body, "event": "COMMENT",
         })
-        result = run_gh([
-            "api", "--method", "POST",
-            f"repos/{target['repo']}/pulls/{target['number']}/reviews", "--input", "-",
-        ], scope["root"], payload)
-        if result.returncode != 0:
-            retry = shlex.join([sys.executable, str(script), "publish", str(session)])
-            raise ReviewError("GitHub review post failed: " + result.stderr.strip() +
-                              "\npr-review: retry: " + retry)
+        retry = shlex.join([sys.executable, str(script), "publish", str(session)])
         try:
-            posted = json.loads(result.stdout)
-        except json.JSONDecodeError as error:
-            raise ReviewError("GitHub returned invalid created-review JSON") from error
-        require(isinstance(posted, dict) and posted.get("body") == body
-                and posted.get("state") == "COMMENTED"
-                and posted.get("commit_id") == target["head"],
-                "GitHub did not confirm the commit-pinned COMMENTED review")
+            result = run_gh([
+                "api", "--method", "POST",
+                f"repos/{target['repo']}/pulls/{target['number']}/reviews", "--input", "-",
+            ], scope["root"], payload)
+            if result.returncode != 0:
+                raise ReviewError("GitHub review post failed: " + result.stderr.strip())
+            try:
+                posted = json.loads(result.stdout)
+            except json.JSONDecodeError as error:
+                raise ReviewError("GitHub returned invalid created-review JSON") from error
+            require(isinstance(posted, dict) and posted.get("body") == body
+                    and posted.get("state") == "COMMENTED"
+                    and posted.get("commit_id") == target["head"],
+                    "GitHub did not confirm the commit-pinned COMMENTED review")
+        except (ReviewError, OSError, subprocess.SubprocessError) as error:
+            raise ReviewError(str(error) + "\npr-review: retry: " + retry) from error
     print(f"pr-review: posted {target['url']}")
 
 
@@ -711,48 +729,52 @@ def finalize_stack(session, head, expected_root=None):
                 "stack finalization repository does not match the reviewed session")
     if unresolved_target_skip(scope, session):
         return
-    target = load_target(session / "pr-review-target.json")
     root = scope["root"]
-    require(run_git(["rev-parse", "HEAD"], root) == head,
-            "stack finalization head does not match the local checkout")
-    require(run_git(["rev-parse", f"{head}^{{tree}}"], root) == target["tree"],
-            "stack finalization changed the reviewed tree")
-    target, live, promoted = bind_target(
-        scope, target, session, allow_rewritten_head=True)
-    if live is None or live["state"] != "OPEN":
-        print("pr-review: no associated open PR; skipped")
-        return
-    live = wait_for_expected_head(target, root, head, live)
-    require(live["state"] == "OPEN" and live["head"] == head,
-            "the pushed PR head does not match stack finalization")
-    require_reviewed_merge_base(target, head, live["base_head"], root)
+    with publication_lock(root):
+        target = load_target(session / "pr-review-target.json")
+        require(run_git(["rev-parse", "HEAD"], root) == head,
+                "stack finalization head does not match the local checkout")
+        require(run_git(["rev-parse", f"{head}^{{tree}}"], root) == target["tree"],
+                "stack finalization changed the reviewed tree")
+        target, live, promoted = bind_target(
+            scope, target, session, allow_rewritten_head=True)
+        if live is None or live["state"] != "OPEN":
+            print("pr-review: no associated open PR; skipped")
+            return
+        live = wait_for_expected_head(target, root, head, live)
+        require(live["state"] == "OPEN" and live["head"] == head,
+                "the pushed PR head does not match stack finalization")
+        require_reviewed_merge_base(target, head, live["base_head"], root)
 
-    data = load_input(session / "pr-review.json")
-    source_body = render(data, target["date"])
-    updated = finalized_data(data, head)
-    validate_publication_links(updated, github_repositories(root), head, root)
-    body = render(updated, target["date"])
-    output = session / "pr-review.md"
-    require(output.is_file(), f"rendered PR review is missing: {output}")
-    current_body = output.read_text()
-    source_is_frozen = body_hash(source_body) == target["body_sha256"]
-    if target["head"] == head and source_is_frozen and not promoted:
-        require(body_hash(current_body) == target["body_sha256"],
+        data = load_input(session / "pr-review.json")
+        source_body = render(data, target["date"])
+        updated = finalized_data(data, head)
+        validate_publication_links(updated, target["repositories"], head, root)
+        body = render(updated, target["date"])
+        output = session / "pr-review.md"
+        require(output.is_file(), f"rendered PR review is missing: {output}")
+        current_body = output.read_text()
+        source_is_frozen = body_hash(source_body) == target["body_sha256"]
+        if target["head"] == head and source_is_frozen and not promoted:
+            require(body_hash(current_body) == target["body_sha256"],
+                    "rendered PR review does not match its frozen body hash")
+            print(f"pr-review: stack review already uses reviewed head {head}")
+            return
+        if not source_is_frozen:
+            require(target["head"] == head
+                    and body_hash(current_body) == target["body_sha256"]
+                    and current_body == body,
+                    "structured PR review input does not match the frozen rendered review")
+            print(f"pr-review: stack review already finalized at {head}")
+            return
+        require(body_hash(current_body) == target["body_sha256"] or current_body == body,
                 "rendered PR review does not match its frozen body hash")
-        print(f"pr-review: stack review already uses reviewed head {head}")
-        return
-    if not source_is_frozen:
-        require(target["head"] == head and body_hash(current_body) == target["body_sha256"]
-                and current_body == body,
-                "structured PR review input does not match the frozen rendered review")
-        print(f"pr-review: stack review already finalized at {head}")
-        return
-    require(body_hash(current_body) == target["body_sha256"] or current_body == body,
-            "rendered PR review does not match its frozen body hash")
-    new_target = target_envelope(scope, live, body, target["date"], session)
-    if current_body != body:
-        write_atomic(output, body)
-    write_atomic(session / "pr-review-target.json", json.dumps(new_target, indent=2) + "\n")
+        new_target = target_envelope(
+            scope, live, body, target["date"], session, target["repositories"])
+        if current_body != body:
+            write_atomic(output, body)
+        write_atomic(session / "pr-review-target.json",
+                     json.dumps(new_target, indent=2) + "\n")
     print(f"pr-review: finalized stack review at {head}")
 
 

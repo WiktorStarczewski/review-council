@@ -134,6 +134,10 @@ printf '%s\n' "$*" >> "$GH_CALLS"
 head=${GH_HEAD_OID:-$(git rev-parse HEAD 2>/dev/null || printf '%040d' 0)}
 base_oid=${GH_BASE_OID:-$(git rev-parse main 2>/dev/null || printf '%040d' 0)}
 if [ "${1:-} ${2:-}" = "pr view" ]; then
+  if [ -n "${GH_BLOCK_ENTERED:-}" ]; then
+    : > "$GH_BLOCK_ENTERED"
+    while [ ! -e "$GH_BLOCK_RELEASE" ]; do sleep 0.05; done
+  fi
   if [ "${GH_MODE:-post}" = no-pr ]; then
     echo 'no pull requests found for branch "feat"' >&2
     exit 1
@@ -155,6 +159,10 @@ if [ "${1:-} ${2:-}" = "pr view" ]; then
     [ "$previous" != --repo ] || repo=$argument
     previous=$argument
   done
+  if [ -n "${GH_ONLY_REPO:-}" ] && [ "$repo" != "$GH_ONLY_REPO" ]; then
+    echo 'no pull requests found for branch "feat"' >&2
+    exit 1
+  fi
   printf '{"number":12,"url":"https://github.com/%s/pull/12","state":"%s","headRefName":"feat","headRefOid":"%s","baseRefName":"%s","baseRefOid":"%s"}\n' "$repo" "$live_state" "$live_head" "$live_base" "$live_base_oid"
   exit 0
 fi
@@ -171,6 +179,10 @@ if [ "${1:-}" = api ]; then
     fi
     [ -z "${GH_POSTED_PAYLOAD:-}" ] || printf '%s' "$payload" > "$GH_POSTED_PAYLOAD"
     [ -z "${GH_POSTED_BODY:-}" ] || printf '%s' "$payload" | jq -j .body > "$GH_POSTED_BODY"
+    if [ "${GH_MODE:-post}" = invalid-post-json ]; then
+      printf '%s\n' '{invalid'
+      exit 0
+    fi
     printf '%s' "$payload" | jq '{id: 80, body: .body, state: "COMMENTED", commit_id: .commit_id}'
     exit 0
   fi
@@ -186,6 +198,18 @@ if [ "${1:-}" = api ]; then
   fi
   if [ "${GH_MODE:-post}" = empty-pages ]; then
     printf '%s\n' '[]'
+    exit 0
+  fi
+  if [ "${GH_MODE:-post}" = null-item ]; then
+    printf '%s\n' '[[null]]'
+    exit 0
+  fi
+  if [ "${GH_MODE:-post}" = scalar-item ]; then
+    printf '%s\n' '[[1]]'
+    exit 0
+  fi
+  if [ "${GH_MODE:-post}" = null-fields ]; then
+    printf '%s\n' '[[{"body":null,"state":"COMMENTED","commit_id":null}]]'
     exit 0
   fi
   if [ "${GH_MODE:-post}" = duplicate ] \
@@ -418,6 +442,59 @@ PY
   assert_eq "same-PR fix links outside reviewed ancestry fail closed" "$?" 1
   assert_grep "fix ancestry mismatch is explicit" "$T/pr-bound-ancestry.err" \
     'not an ancestor of the reviewed head'
+
+  local no_remote="$session-no-remote" no_remote_root="$root-no-remote"
+  mkdir -p "$no_remote"
+  mkrepo "$no_remote_root"
+  git -C "$no_remote_root" checkout -qb feat
+  printf "REV_BASE='%s'\nREV_ROOT='%s'\nREV_BRANCH='feat'\nREV_BASE_BRANCH='main'\n" \
+    "$(git -C "$no_remote_root" rev-parse main)" "$no_remote_root" \
+    > "$no_remote/scope.env"
+  pr_review_input > "$no_remote/pr-review.json"
+  pin_pr_review_links "$no_remote" "$no_remote_root"
+  : > "$T/pr-no-remote-bound.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-no-remote-bound.calls" NO_PUSH=1 \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$no_remote" --date 2026-09-15 >/dev/null
+  git -C "$no_remote_root" remote add origin https://github.com/acme/repo.git
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-no-remote-bound.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$no_remote" \
+    > "$T/pr-no-remote-bound.out" 2> "$T/pr-no-remote-bound.err"
+  assert_eq "a target rendered without GitHub remotes requires a fresh render" "$?" 1
+  assert_nogrep "a newly added remote receives no deferred review" \
+    "$T/pr-no-remote-bound.calls" '^api --method POST '
+
+  local repoint="$session-repoint" repoint_root="$root-repoint"
+  pr_review_session "$repoint" "$repoint_root"
+  : > "$T/pr-repoint.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-repoint.calls" NO_PUSH=1 \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$repoint" --date 2026-09-15 >/dev/null
+  git -C "$repoint_root" remote set-url origin https://github.com/evil/repo.git
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-repoint.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$repoint" \
+    > "$T/pr-repoint.out" 2> "$T/pr-repoint.err"
+  assert_eq "a repointed remote cannot redirect deferred publication" "$?" 1
+  assert_nogrep "a repointed remote receives no review" "$T/pr-repoint.calls" \
+    '^api --method POST '
+
+  local widen="$session-widen" widen_root="$root-widen" widen_head
+  pr_review_session "$widen" "$widen_root"
+  : > "$T/pr-widen.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-widen.calls" NO_PUSH=1 \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$widen" --date 2026-09-15 >/dev/null
+  cp "$widen/pr-review.md" "$T/pr-widen-original.md"
+  cp "$widen/pr-review-target.json" "$T/pr-widen-original-target.json"
+  git -C "$widen_root" remote add mirror https://github.com/evil/repo.git
+  widen_head=$(git -C "$widen_root" rev-parse HEAD)
+  PATH="$bin:$PATH" GH_ONLY_REPO=evil/repo GH_CALLS="$T/pr-widen.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" finalize-stack "$widen" --head "$widen_head" \
+    > "$T/pr-widen.out" 2> "$T/pr-widen.err"
+  assert_eq "an expanded remote set cannot redirect stack finalization" "$?" 1
+  assert_exit "failed widened finalization preserves the body" 0 \
+    cmp -s "$widen/pr-review.md" "$T/pr-widen-original.md"
+  assert_exit "failed widened finalization preserves the target" 0 \
+    cmp -s "$widen/pr-review-target.json" "$T/pr-widen-original-target.json"
+  assert_nogrep "an expanded remote set receives no review" "$T/pr-widen.calls" \
+    '^api --method POST '
 }
 
 test_pr_review_pins_github_host() {
@@ -1005,7 +1082,7 @@ test_pr_review_rejects_invalid_review_pages() {
   PATH="$bin:$PATH" GH_CALLS="$T/pr-pages.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 >/dev/null
   local mode
-  for mode in invalid-page empty-pages; do
+  for mode in invalid-page empty-pages null-item scalar-item; do
     : > "$T/pr-pages.calls"
     PATH="$bin:$PATH" GH_MODE="$mode" GH_CALLS="$T/pr-pages.calls" \
       GH_POSTED_BODY="$T/pr-pages-posted.md" \
@@ -1015,6 +1092,15 @@ test_pr_review_rejects_invalid_review_pages() {
     assert_nogrep "$mode review API page never posts" "$T/pr-pages.calls" \
       '^api --method POST '
   done
+
+  : > "$T/pr-pages.calls"
+  PATH="$bin:$PATH" GH_MODE=null-fields GH_CALLS="$T/pr-pages.calls" \
+    GH_POSTED_BODY="$T/pr-pages-null-fields.md" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-pages-null-fields.out" 2> "$T/pr-pages-null-fields.err"
+  assert_eq "null comparison fields remain valid nonmatches" "$?" 0
+  assert_eq "a null-field nonmatch posts exactly once" \
+    "$(grep -Ec '^api --method POST ' "$T/pr-pages.calls")" 1
 }
 
 test_pr_review_concurrent_publication() {
@@ -1041,6 +1127,58 @@ test_pr_review_concurrent_publication() {
   assert_eq "second concurrent publication exits cleanly" "$second_rc" 0
   assert_eq "concurrent retries create exactly one review" \
     "$(grep -Ec '^(pr review |api --method POST )' "$T/pr-concurrent.calls")" 1
+
+  local final_session="$T/pr-finalize-lock" final_root="$T/pr-finalize-lock-repo"
+  local final_head finalize_pid publish_pid finalize_rc publish_rc
+  pr_review_session "$final_session" "$final_root"
+  python3 - "$final_session/pr-review.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data.pop('fixed_in')
+path.write_text(json.dumps(data))
+PY
+  pin_pr_review_links "$final_session" "$final_root"
+  : > "$T/pr-finalize-lock-render.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize-lock-render.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$final_session" --date 2026-09-15 >/dev/null
+  git -C "$final_root" commit -q --allow-empty -m 'apply review findings'
+  final_head=$(git -C "$final_root" rev-parse HEAD)
+  rm -f "$T/pr-finalize-lock.entered" "$T/pr-finalize-lock.release"
+  : > "$T/pr-finalize-lock.calls"
+  : > "$T/pr-publish-lock.calls"
+  PATH="$bin:$PATH" GH_HEAD_OID="$final_head" \
+    GH_BLOCK_ENTERED="$T/pr-finalize-lock.entered" \
+    GH_BLOCK_RELEASE="$T/pr-finalize-lock.release" \
+    GH_CALLS="$T/pr-finalize-lock.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" finalize-stack "$final_session" \
+    --head "$final_head" >/dev/null 2>&1 &
+  finalize_pid=$!
+  for _ in $(seq 1 100); do
+    [ ! -e "$T/pr-finalize-lock.entered" ] || break
+    sleep 0.05
+  done
+  assert_exit "finalization reaches the guarded GitHub read" 0 \
+    test -e "$T/pr-finalize-lock.entered"
+  PATH="$bin:$PATH" GH_HEAD_OID="$final_head" GH_CALLS="$T/pr-publish-lock.calls" \
+    GH_POSTED_BODY="$T/pr-publish-lock.md" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$final_session" >/dev/null 2>&1 &
+  publish_pid=$!
+  sleep 0.2
+  assert_nogrep "publication waits while finalization owns the state lock" \
+    "$T/pr-publish-lock.calls" '.'
+  : > "$T/pr-finalize-lock.release"
+  wait "$finalize_pid"; finalize_rc=$?
+  wait "$publish_pid"; publish_rc=$?
+  assert_eq "locked finalization exits cleanly" "$finalize_rc" 0
+  assert_eq "publication resumes after locked finalization" "$publish_rc" 0
+  assert_exit "publication posts only the finalized body" 0 \
+    cmp -s "$final_session/pr-review.md" "$T/pr-publish-lock.md"
+  assert_eq "locked finalization and publication retain one target head" \
+    "$(jq -r .head "$final_session/pr-review-target.json")" "$final_head"
 }
 
 test_pr_review_duplicate_and_no_pr() {
@@ -1120,4 +1258,23 @@ test_pr_review_publish_failure() {
     'remote rejected review'
   assert_grep "failed publication prints an exact retry command" "$T/pr-failure.err" \
     "retry: .*rev-pr-review.py publish $session$"
+
+  : > "$T/pr-failure.calls"
+  PATH="$bin:$PATH" GH_MODE=invalid-post-json GH_CALLS="$T/pr-failure.calls" \
+    GH_POSTED_BODY="$T/pr-failure-invalid-body.md" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-failure-invalid.out" 2> "$T/pr-failure-invalid.err"
+  assert_eq "invalid post confirmation fails publication" "$?" 1
+  assert_grep "invalid confirmation occurs after the remote side effect" \
+    "$T/pr-failure.calls" '^api --method POST '
+  assert_grep "invalid confirmation preserves the exact retry command" \
+    "$T/pr-failure-invalid.err" "retry: .*rev-pr-review.py publish $session$"
+  : > "$T/pr-failure.calls"
+  PATH="$bin:$PATH" GH_MODE=duplicate GH_CALLS="$T/pr-failure.calls" \
+    GH_DUP_BODY="$session/pr-review.md" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-failure-retry.out" 2> "$T/pr-failure-retry.err"
+  assert_eq "retry after ambiguous confirmation is idempotent" "$?" 0
+  assert_nogrep "ambiguous-confirmation retry creates no duplicate" \
+    "$T/pr-failure.calls" '^api --method POST '
 }

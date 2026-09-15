@@ -6,8 +6,9 @@ open PR do not post. Document reviews do not post.
 
 The renderer owns the exact Markdown structure. Do not hand-build, reorder, rename,
 remove, or add sections in `pr-review.md`. It also writes
-`pr-review-target.json`, which freezes the associated PR, reviewed merge base, observed
-PR base tip, reviewed head and tree, footer date, and exact body hash.
+`pr-review-target.json`, which freezes the exact normalized GitHub repository set,
+associated PR, reviewed merge base, observed PR base tip, reviewed head and tree,
+footer date, and exact body hash.
 
 Set `PLUGIN_ROOT` to the plugin root already resolved by the host: `PLUGIN` on Codex
 or `CLAUDE_PLUGIN_ROOT` on Claude Code.
@@ -122,8 +123,11 @@ and rebinds the durable target to the reviewed session scope. It revalidates the
 identity, open state, branch, base branch, reviewed merge base, and head. A forward
 move of the base tip is accepted only when the merge base remains the reviewed commit.
 PR discovery is restricted to repositories named by the reviewed checkout's GitHub
-remotes, so ambient GitHub CLI repository selection or copied target state cannot
-redirect the post. Under a repository-local lock, it checks all existing reviews and
+remotes. The exact normalized repository set is frozen at render time, and adding,
+removing, or repointing one of those remotes requires a fresh render. Ambient GitHub
+CLI repository selection or copied target state therefore cannot redirect the post.
+Under a repository-local lock, it reads and updates the rendered body and target,
+checks all existing reviews, and
 treats only an exact `COMMENTED` review body on the reviewed commit as idempotent
 success. The API request sets `commit_id` to the frozen head and `event` to `COMMENT`,
 then verifies the returned body, state, and commit. A real
@@ -149,6 +153,8 @@ The post-squash body is rendered from the immutable input with the frozen date.
 Only the latest completed session for each repository is finalized and published. A
 pushed retry derives finalization from the frozen target and current head, so recovery
 does not depend on a marker written after history changes.
+Stack no-push and no-squash settings are exported to every child leg, including values
+assigned by the stack config.
 The finalizer tolerates brief GitHub head propagation only while the visible head is
 the frozen head or its ancestor. After successful publication or an explicit no-push
 skip, the stack promotes `stack-report.md` to `report.md` and sets `phase=done`.
