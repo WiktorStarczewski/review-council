@@ -938,8 +938,10 @@ fix-plan.md   context.md   r<N>p-<seat>.prompt.md   r<N>p-<seat>.json
   `r<N>-codex-review.native.txt`. Treat its severities as that reviewer's opinion - triage re-judges.
 - Never edit `rev-seat.sh` (or any script) in place while seats run: bash reads scripts lazily and a
   rewritten file corrupts the in-flight run. Write to a temp file and `mv` over it.
-- Launch every seat at the exact effort recorded by preflight. Change the roster configuration
-  and rerun preflight before using a different effort; launch-time overrides cannot diverge.
-- The roster is rebuilt every run by preflight from the CLIs installed and signed in, with the
-  effort tier read from each CLI's own model list. Never invent a slug or a tier. If an exact retry
-  fails, retain the preflight effort and report the configured panel incomplete.
+- Launch every seat at the exact effort recorded by the session roster; launch-time overrides
+  cannot diverge. Roster configuration changes require a fresh session. Start that session and
+  run preflight once before using a different effort.
+- A fresh session rebuilds its roster once during preflight from the CLIs installed and signed in,
+  with the effort tier read from each CLI's own model list. An initialized session validates and
+  reuses its frozen roster without probing. Never invent a slug or a tier. If an exact retry fails,
+  retain the recorded effort and report the configured panel incomplete.

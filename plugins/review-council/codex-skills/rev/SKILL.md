@@ -88,6 +88,10 @@ scope or strict roster contract cannot run as asked.
 Configuration is `~/.config/review-council/config.json` (or `REVIEW_COUNCIL_CONFIG`):
 `exclude`, `pin`, `codex_models`, `claude_seat`, `claude_seats`, `extras`,
 `min_labs`, and `quota_fallback` are shared with Claude Code.
+A fresh session rebuilds its roster once during preflight. An initialized session validates
+and reuses its frozen roster without probing.
+Roster configuration changes require a fresh session, whose preflight applies the new
+configuration once.
 See [configuration](https://github.com/WiktorStarczewski/review-council/blob/main/docs/config.md) for the full format.
 
 Read repository instructions, inspect the diff and consumers, and record existing

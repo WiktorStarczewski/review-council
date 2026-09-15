@@ -339,13 +339,15 @@ def prepare_with_observed_lock(session, label, blocked, acquired, status):
         write_status(status)
 
 
-def prepare_while_holding(session, label, locked, release, status):
-    original = evidence.Repository
-    def pause(path):
-        locked.touch()
-        wait_for(release)
-        return original(path)
-    evidence.Repository = pause
+def prepare_at_manifest_publication(session, label, boundary, release, status):
+    original = evidence.publish
+    manifest_name = f'r{label}-evidence.manifest.json'
+    def pause(path, data):
+        if Path(path).name == manifest_name:
+            boundary.touch()
+            wait_for(release)
+        return original(path, data)
+    evidence.publish = pause
     try:
         evidence.prepare(prepare_args(session, label))
     except Exception as error:
@@ -444,19 +446,20 @@ prepare_first = base / 'prepare-first'
 replacement = base / 'replacement-roster.json'
 write_generation(prepare_first, old)
 replacement.write_bytes(new['roster.json'])
-prepare_locked = base / 'prepare-first.locked'
+publication_boundary = base / 'prepare-first.publication-boundary'
 prepare_release = base / 'prepare-first.release'
 prepare_status = base / 'prepare-first.prepare-status'
 install_blocked = base / 'prepare-first.install-blocked'
 install_acquired = base / 'prepare-first.install-acquired'
 install_status = base / 'prepare-first.install-status'
-preparer = context.Process(target=prepare_while_holding, args=(
-    prepare_first, 'prepare-first', prepare_locked, prepare_release, prepare_status))
+preparer = context.Process(target=prepare_at_manifest_publication, args=(
+    prepare_first, 'prepare-first', publication_boundary, prepare_release, prepare_status))
 installer = context.Process(target=install_with_observed_lock, args=(
     prepare_first, replacement, install_blocked, install_acquired, install_status))
 try:
     preparer.start()
-    wait_for(prepare_locked)
+    wait_for(publication_boundary)
+    assert not (prepare_first / 'rprepare-first-evidence.manifest.json').exists()
     installer.start()
     wait_for(install_blocked, install_status)
 finally:

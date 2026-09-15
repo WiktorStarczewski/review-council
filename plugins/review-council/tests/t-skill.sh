@@ -115,6 +115,12 @@ test_skill_contract() {
       '`initialized`: all four safe inputs exist, so validate and reuse them without probing'
     assert_grep "host rejects an invalid input session" "$H" \
       '`invalid`: a partial or unsafe set exists, so stop incomplete and use a fresh session'
+    assert_nogrep "host never rebuilds an initialized session roster" "$H" \
+      '[Rr]oster is rebuilt every run'
+    assert_grep "fresh session rebuilds the roster once" "$H" \
+      '[Aa] fresh session rebuilds its roster once during preflight'
+    assert_grep "roster configuration changes require a fresh session" "$H" \
+      '[Rr]oster configuration changes require a fresh session'
     assert_grep "host forbids cherry-picking the workflow" "$H" \
       'executable workflow contract.*Do not cherry-pick'
     assert_grep "host refuses certification without required artifacts" "$H" \
