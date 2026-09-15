@@ -143,7 +143,8 @@ because the round commits are real work that CI has to see. If a repo prints
 After every completed repository is pushed successfully, `stack.sh` follows
 `docs/pr-review.md`: a changed-head squash must preserve the inspected tree, both fix
 and decision SHA links are mapped to the pushed aggregate commit, the canonical body
-is rendered again, and only then is each completed review published. It skips
+is rendered again, and only then is the latest completed review for each canonical
+repository published. It skips
 sessions with no associated open PR and suppresses an exact prior `COMMENTED` review.
 A push, finalization, missing-input, or publication failure makes the stack incomplete.
 `NO_PUSH=1` suppresses external review publication.

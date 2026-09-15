@@ -70,11 +70,29 @@ FAILED_REPOS=""       # …and the repos they belong to: those are NOT squashed 
 mkdir -p "$ROOT"
 SQUASH_MAP="$ROOT/squash-map.tsv"
 [ -f "$SQUASH_MAP" ] || : > "$SQUASH_MAP"
+SESSION_MAP="$ROOT/repo-sessions.tsv"
+[ -f "$SESSION_MAP" ] || : > "$SESSION_MAP"
 
 say() { echo "$(date '+%m-%d %H:%M') $*" | tee -a "$LOG"; }
 note_failure() {  # <label> <repo-dir> - a failed leg must not be reported as a complete run
   FAILED_LABELS="$FAILED_LABELS $1"
   case " $FAILED_REPOS " in *" $2 "*) ;; *) FAILED_REPOS="$FAILED_REPOS $2";; esac
+}
+replace_tab_row() {  # <file> <key> <value> - replace one tab-separated row atomically
+  local file=$1 key=$2 value=$3 temporary="$1.tmp.$$"
+  if ! awk -F '\t' -v wanted="$key" '$1 != wanted' "$file" > "$temporary" \
+      || ! printf '%s\t%s\n' "$key" "$value" >> "$temporary" \
+      || ! mv "$temporary" "$file"; then
+    rm -f "$temporary"
+    return 1
+  fi
+}
+session_for_repo() {  # <canonical-repo> - print its one authoritative completed session
+  local repo=$1 rows count
+  rows=$(awk -F '\t' -v wanted="$repo" '$1 == wanted { print $2 }' "$SESSION_MAP") || return 1
+  count=$(printf '%s\n' "$rows" | grep -c .)
+  [ "$count" -eq 1 ] || return 1
+  printf '%s\n' "$rows"
 }
 leg_group() {  # the leg's own process-group id, and only when it leads that group (see leg_tree)
   local g; g=$(ps -o pgid= -p "$1" 2>/dev/null | tr -d ' ')
@@ -209,9 +227,19 @@ wait_for_auth() {
 }
 
 run_leg() {  # <repo-path> <rounds> <label> "<premise>"
-  local dir="$1" rounds="$2" label="$3" extra="$4"
+  local dir="$1" rounds="$2" label="$3" extra="$4" repo
   local S="$ROOT/$label" attempt=1 infra=0 roster_rc
-  case " $REPOS_SEEN " in *" $dir "*) ;; *) REPOS_SEEN="$REPOS_SEEN $dir";; esac
+  repo=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || {
+    say "!!! $label: cannot resolve repository root for $dir"
+    note_failure "$label" "$dir"
+    return 1
+  }
+  case " $REPOS_SEEN " in *" $repo "*) ;; *) REPOS_SEEN="$REPOS_SEEN $repo";; esac
+  if ! replace_tab_row "$SESSION_MAP" "$repo" "$S"; then
+    say "!!! $label: cannot record the authoritative review session"
+    note_failure "$label" "$repo"
+    return 1
+  fi
   # Resume keys on THIS run's session root as well as the label: a different stack sharing the default LOG must
   # never skip a leg it has not actually run (that would fall straight through to the squash + push phase).
   grep -qF "=== DONE $label pass${PASS} exit=0 root=$ROOT" "$LOG" 2>/dev/null && { say "=== SKIP $label pass${PASS} (already done in $LOG)"; return 0; }
@@ -220,9 +248,9 @@ run_leg() {  # <repo-path> <rounds> <label> "<premise>"
     wait_for_auth; roster_rc=$?
     case "$roster_rc" in
       0) ;;
-      5) say "!!! $label: reviewer availability never recovered; skipping: ${ROSTER_BRIEF:-no cause reported}"; note_failure "$label" "$dir"; return 1;;
-      6) say "!!! $label: roster configuration is invalid; skipping: ${ROSTER_BRIEF:-no cause reported}"; note_failure "$label" "$dir"; return 1;;
-      *) say "!!! $label: roster check failed (exit $roster_rc); skipping: ${ROSTER_BRIEF:-no cause reported}"; note_failure "$label" "$dir"; return 1;;
+      5) say "!!! $label: reviewer availability never recovered; skipping: ${ROSTER_BRIEF:-no cause reported}"; note_failure "$label" "$repo"; return 1;;
+      6) say "!!! $label: roster configuration is invalid; skipping: ${ROSTER_BRIEF:-no cause reported}"; note_failure "$label" "$repo"; return 1;;
+      *) say "!!! $label: roster check failed (exit $roster_rc); skipping: ${ROSTER_BRIEF:-no cause reported}"; note_failure "$label" "$repo"; return 1;;
     esac
     local resume=""
     [ -f "$S/findings.md" ] && resume="
@@ -237,7 +265,7 @@ ${extra}
 ${VACUITY}${resume}"
     if [ "${REVIEW_COUNCIL_HOST:-claude}" = codex ]; then
       local skill="$HERE/../codex-skills/rev/SKILL.md"
-      [ -f "$skill" ] || { say "!!! missing Codex rev skill: $skill"; note_failure "$label" "$dir"; return 1; }
+      [ -f "$skill" ] || { say "!!! missing Codex rev skill: $skill"; note_failure "$label" "$repo"; return 1; }
       prompt="Read and follow the Codex review-council skill at $skill.
 Review branch $rounds rounds; use $S as the session dir. This is a stack leg: do not squash or push.
 
@@ -250,13 +278,13 @@ ${VACUITY}${resume}"
     local previous_report="$S/report.pass${PASS}.attempt${attempt}.previous.md"
     if { [ -e "$S/report.md" ] || [ -L "$S/report.md" ]; } && ! mv "$S/report.md" "$previous_report"; then
       say "!!! $label: could not archive the prior report; refusing to launch"
-      note_failure "$label" "$dir"
+      note_failure "$label" "$repo"
       return 1
     fi
     local state_before; state_before=$(state_signature "$S/state.json")
     if [ "$state_before" = unsafe ]; then
       say "!!! $label: unsafe state.json; refusing to launch"
-      note_failure "$label" "$dir"
+      note_failure "$label" "$repo"
       return 1
     fi
     set -m   # give the leg its own process group, so the CPU veto and the kill can address the whole tree
@@ -321,11 +349,11 @@ ${VACUITY}${resume}"
     fi
     say "=== $label ended rc=$rc after ${dur}s (attempt $attempt)"; attempt=$(( attempt + 1 ))
   done
-  say "=== GAVE UP on $label"; note_failure "$label" "$dir"; return 1
+  say "=== GAVE UP on $label"; note_failure "$label" "$repo"; return 1
 }
 
 finish_repos() {
-  local d srq before after push_rc map_tmp
+  local d srq before after push_rc
   for d in $REPOS_SEEN; do
     case " $FAILED_REPOS " in *" $d "*)
       say "--- skipping $(basename "$d") - a leg on it failed; its review is not complete"; continue;; esac
@@ -354,14 +382,11 @@ finish_repos() {
       }
     fi
     if [ -n "$before" ] && [ "$srq" -eq 0 ] && [ "$before" != "$after" ]; then
-      map_tmp="$SQUASH_MAP.tmp.$$"
-      awk -F '\t' -v repo="$d" '$1 != repo' "$SQUASH_MAP" > "$map_tmp" || {
+      replace_tab_row "$SQUASH_MAP" "$d" "$after" || {
         say "!!! cannot update squash recovery map for $(basename "$d")"
         note_failure "finish:$(basename "$d")" "$d"
         continue
       }
-      printf '%s\t%s\n' "$d" "$after" >> "$map_tmp"
-      mv "$map_tmp" "$SQUASH_MAP"
     fi
     set -o pipefail
     ( cd "$d" && if [ "$NO_PUSH" = 1 ]; then echo "(NO_PUSH=1: not pushing)"; else git push; fi ) 2>&1 | sed 's/^/    /' | tee -a "$LOG"
@@ -379,22 +404,33 @@ finalize_reviews() {
   local repo head session rc=0
   [ -s "$SQUASH_MAP" ] || return 0
   while IFS="$(printf '\t')" read -r repo head; do
-    [ -n "$repo" ] && [ -n "$head" ] || continue
-    for session in "$ROOT"/*; do
-      [ -d "$session" ] && [ -f "$session/report.md" ] || continue
-      set -o pipefail
-      python3 "$REV_SCRIPTS/rev-pr-review.py" finalize-stack "$session" \
-        --head "$head" --root "$repo" 2>&1 | sed 's/^/    /' | tee -a "$LOG"
-      [ "$?" -eq 0 ] || rc=1
-      set +o pipefail
-    done
+    if [ -z "$repo" ] || [ -z "$head" ]; then
+      say "!!! malformed squash recovery map entry"
+      rc=1
+      continue
+    fi
+    session=$(session_for_repo "$repo") || {
+      say "!!! no authoritative completed review session for $(basename "$repo")"
+      rc=1
+      continue
+    }
+    if [ ! -f "$session/report.md" ]; then
+      say "!!! authoritative review session has no completion report: $session"
+      rc=1
+      continue
+    fi
+    set -o pipefail
+    python3 "$REV_SCRIPTS/rev-pr-review.py" finalize-stack "$session" \
+      --head "$head" --root "$repo" 2>&1 | sed 's/^/    /' | tee -a "$LOG"
+    [ "$?" -eq 0 ] || rc=1
+    set +o pipefail
   done < "$SQUASH_MAP"
-  [ "$rc" -ne 0 ] || : > "$SQUASH_MAP"
+  [ "$rc" -ne 0 ] || : > "$SQUASH_MAP" || rc=1
   return "$rc"
 }
 
 publish_reviews() {
-  local session rc=0
+  local repo session rc=0
   if [ "$NO_PUSH" = 1 ]; then
     say "--- NO_PUSH=1: not publishing PR reviews"
     return 0
@@ -403,8 +439,18 @@ publish_reviews() {
     say "!!! PR review publisher is missing: $REV_SCRIPTS/rev-pr-review.py"
     return 1
   }
-  for session in "$ROOT"/*; do
-    [ -d "$session" ] && [ -f "$session/report.md" ] || continue
+  for repo in $REPOS_SEEN; do
+    case " $FAILED_REPOS " in *" $repo "*) continue;; esac
+    session=$(session_for_repo "$repo") || {
+      say "!!! no authoritative review session for $(basename "$repo")"
+      rc=1
+      continue
+    }
+    if [ ! -f "$session/report.md" ]; then
+      say "!!! authoritative review session has no completion report: $session"
+      rc=1
+      continue
+    fi
     set -o pipefail
     python3 "$REV_SCRIPTS/rev-pr-review.py" publish "$session" 2>&1 \
       | sed 's/^/    /' | tee -a "$LOG"
@@ -426,6 +472,6 @@ say "########## FINISH - squash + push per repo ##########"; finish_repos
 if [ -n "$FAILED_LABELS" ]; then say "COMPLETE WITH FAILURES:$FAILED_LABELS"; exit 1; fi
 say "########## FINALIZE - reconcile post-squash review links ##########"
 finalize_reviews || { say "COMPLETE WITH FAILURES: PR review finalization"; exit 1; }
-say "########## PUBLISH - PR review per completed session ##########"
+say "########## PUBLISH - one PR review per completed repository ##########"
 publish_reviews || { say "COMPLETE WITH FAILURES: PR review publication"; exit 1; }
 say "ALL PHASES COMPLETE"

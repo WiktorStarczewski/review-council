@@ -108,8 +108,10 @@ RSEOF
     export STACK_PUBLISH_CALLS="$T/stack-publish.calls" STACK_REQUIRE_SYNC=1
     SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-publish.cfg" > "$T/stack-publish.out" 2>&1
     assert_eq "completed pushed stack publishes PR review" "$?" 0
-    assert_grep "stack publisher receives the completed session" "$STACK_PUBLISH_CALLS" \
-      "^publish $ROOT/legpub local=([0-9a-f]{40}) remote=\\1$"
+    local publish_head; publish_head=$(git -C "$RP" rev-parse HEAD)
+    assert_eq "stack publisher receives the completed session" \
+      "$(grep '^publish ' "$STACK_PUBLISH_CALLS")" \
+      "publish $ROOT/legpub local=$publish_head remote=$publish_head"
 
     export ROOT="$T/stack-publish-fail-root" LOG="$T/stack-publish-fail.log" STACK_PUBLISH_RC=1
     SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-publish.cfg" > "$T/stack-publish-fail.out" 2>&1
@@ -153,12 +155,58 @@ SH
     : > "$STACK_PUBLISH_CALLS"
     SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-squash.cfg" > "$T/stack-squash-retry.out" 2>&1
     assert_eq "stack finalization retry publishes" "$?" 0
+    local squash_root; squash_root=$(git -C "$RSQ" rev-parse --show-toplevel)
     assert_grep "stack finalizes links after a changed-head squash" "$STACK_PUBLISH_CALLS" \
-      "^finalize-stack $ROOT/legsquash --head [0-9a-f]{40} --root $RSQ local="
-    assert_grep "stack publishes the remote aggregate head" "$STACK_PUBLISH_CALLS" \
-      "^publish $ROOT/legsquash local=([0-9a-f]{40}) remote=\\1$"
+      "^finalize-stack $ROOT/legsquash --head [0-9a-f]{40} --root $squash_root local="
+    publish_head=$(git -C "$RSQ" rev-parse HEAD)
+    assert_eq "stack publishes the remote aggregate head" \
+      "$(grep '^publish ' "$STACK_PUBLISH_CALLS")" \
+      "publish $ROOT/legsquash local=$publish_head remote=$publish_head"
     assert_exit "successful stack finalization clears its recovery map" 0 \
       test ! -s "$ROOT/squash-map.tsv"
+
+    local RM="$T/stk-multi" RM2="$T/stk-multi-second"
+    mkrepo "$RM"; git -C "$RM" checkout -qb feat
+    mkdir -p "$RM/sub"; echo nested > "$RM/sub/nested.txt"
+    git -C "$RM" add sub/nested.txt; git -C "$RM" commit -qm 'feat: nested leg'
+    git init -q --bare "$T/stk-multi-remote.git"
+    git -C "$RM" remote add origin "$T/stk-multi-remote.git"
+    git -C "$RM" push -q -u origin feat
+    echo later > "$RM/later.txt"; git -C "$RM" add later.txt
+    git -C "$RM" commit -qm 'fix(rev): same repository'
+    mkrepo "$RM2"; git -C "$RM2" checkout -qb feat
+    git init -q --bare "$T/stk-multi-second-remote.git"
+    git -C "$RM2" remote add origin "$T/stk-multi-second-remote.git"
+    git -C "$RM2" push -q -u origin feat
+    echo second > "$RM2/second.txt"; git -C "$RM2" add second.txt
+    git -C "$RM2" commit -qm 'fix(rev): second repository'
+    printf 'legs() { run_leg "%s" 1 primary "primary"; run_leg "%s" 1 secondary "secondary"; run_leg "%s/sub" 1 seam "seam"; }\n' \
+      "$RM" "$RM2" "$RM" > "$T/stack-multi.cfg"
+    export ROOT="$T/stack-multi-root" LOG="$T/stack-multi.log" NO_SQUASH=1 NO_PUSH=0
+    export STACK_PUBLISH_CALLS="$T/stack-multi.calls" STACK_REQUIRE_SYNC=1
+    : > "$STACK_PUBLISH_CALLS"
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-multi.cfg" > "$T/stack-multi.out" 2>&1
+    assert_eq "same-repository stack completes" "$?" 0
+    assert_eq "stack publishes once per canonical repository" \
+      "$(grep -c '^publish ' "$STACK_PUBLISH_CALLS")" 2
+    publish_head=$(git -C "$RM" rev-parse HEAD)
+    assert_eq "latest same-repository session is authoritative" \
+      "$(grep "^publish $ROOT/seam " "$STACK_PUBLISH_CALLS")" \
+      "publish $ROOT/seam local=$publish_head remote=$publish_head"
+    publish_head=$(git -C "$RM2" rev-parse HEAD)
+    assert_eq "distinct repository keeps its authoritative publication" \
+      "$(grep "^publish $ROOT/secondary " "$STACK_PUBLISH_CALLS")" \
+      "publish $ROOT/secondary local=$publish_head remote=$publish_head"
+
+    export ROOT="$T/stack-unmatched-root" LOG="$T/stack-unmatched.log"
+    mkdir -p "$ROOT"
+    printf '%s\t%s\n' "$T/no-matching-repository" "$publish_head" > "$ROOT/squash-map.tsv"
+    export STACK_PUBLISH_CALLS="$T/stack-unmatched.calls"
+    : > "$STACK_PUBLISH_CALLS"
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-multi.cfg" > "$T/stack-unmatched.out" 2>&1
+    assert_eq "unmatched recovery-map entry fails the stack" "$?" 1
+    assert_exit "unmatched recovery-map entry is preserved" 0 test -s "$ROOT/squash-map.tsv"
+    assert_nogrep "unmatched recovery map blocks publication" "$STACK_PUBLISH_CALLS" '^publish '
 
     export ROOT="$T/stack-root" LOG="$T/stack.log" PASSES=2 NO_PUSH=1 NO_SQUASH=0
     unset STACK_REQUIRE_SYNC
