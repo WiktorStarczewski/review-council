@@ -329,9 +329,11 @@ def tag_plugin_records(root, revision):
     return records, contents
 
 
-def installed_plugin_records(plugin):
+def installed_plugin_material(plugin, capture=()):
     root = direct_directory(plugin, "stable plugin")
     records = []
+    capture = frozenset(capture)
+    captured = {}
 
     def visit(directory, prefix=""):
         for entry in sorted(os.scandir(directory), key=lambda item: item.name):
@@ -376,9 +378,18 @@ def installed_plugin_records(plugin):
                 "sha256": digest(raw),
                 "size": len(raw),
             })
+            if relative in capture:
+                captured[relative] = raw
 
     visit(root)
     records.sort(key=lambda row: row["path"])
+    if set(captured) != set(capture):
+        raise ReleaseError("installed stable plugin mismatch")
+    return root, records, captured
+
+
+def installed_plugin_records(plugin):
+    root, records, _ = installed_plugin_material(plugin)
     return root, records
 
 
@@ -409,13 +420,18 @@ def stable_tag_identity(root, tag):
     }
 
 
-def stable_identity(root, tag, plugin):
+def verified_stable_material(root, tag, plugin, capture=()):
     identity = stable_tag_identity(root, tag)
-    plugin_path, installed = installed_plugin_records(plugin)
+    _, installed, captured = installed_plugin_material(plugin, capture)
     if installed != identity["records"]:
         raise ReleaseError("installed stable plugin mismatch")
     public = dict(identity["public"])
     public["plugin_identity"] = digest(encoded(installed))
+    return public, captured
+
+
+def stable_identity(root, tag, plugin):
+    public, _ = verified_stable_material(root, tag, plugin)
     return public
 
 
@@ -432,7 +448,16 @@ def candidate_identity(root, commit, stable_version):
     head = git(root, "rev-parse", "HEAD", error="candidate HEAD is invalid").decode().strip()
     if head != commit:
         raise ReleaseError("candidate commit does not equal HEAD")
-    if git(root, "status", "--porcelain=v1", "-z", "--untracked-files=all"):
+    environment = dict(
+        os.environ, GIT_CONFIG_GLOBAL="/dev/null", GIT_CONFIG_NOSYSTEM="1",
+    )
+    if git(
+            root, "-c", "core.fileMode=true", "status", "--porcelain=v1", "-z",
+            "--untracked-files=all", environment=environment):
+        raise ReleaseError("candidate worktree is not clean")
+    expected_plugin, _ = tag_plugin_records(root, commit)
+    _, physical_plugin = installed_plugin_records(root / PLUGIN_PREFIX)
+    if physical_plugin != expected_plugin:
         raise ReleaseError("candidate worktree is not clean")
     versions = set()
     for relative in (
@@ -879,23 +904,36 @@ def scope_values(raw):
     return values
 
 
-def run_stable_checker(stable_plugin, root, session, base, roster_path):
+def run_stable_checker(stable_plugin, checker_snapshot, root, session, base, roster_path):
     checker = stable_plugin / "scripts" / "rev-contract-check.py"
-    regular_bytes(checker, "stable contract checker")
+    launcher = (
+        "import os,sys;"
+        "path=sys.argv[1];"
+        "sys.path[0]=os.path.dirname(path);"
+        "sys.argv=sys.argv[1:];"
+        "source=sys.stdin.buffer.read();"
+        "namespace={'__name__':'__main__','__file__':path};"
+        "exec(compile(source,path,'exec'),namespace)"
+    )
     command = [
-        sys.executable, str(checker), "--root", str(root), "--session", str(session),
-        "--base", base, "--roster", str(roster_path), "--verify-only",
+        sys.executable, "-I", "-B", "-c", launcher, str(checker), "--root", str(root),
+        "--session", str(session), "--base", base, "--roster", str(roster_path),
+        "--verify-only",
     ]
     try:
         result = subprocess.run(
-            command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=60,
+            command, input=checker_snapshot, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=60,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ReleaseError("stable contract checker failed") from error
     if result.returncode != 0:
-        detail = result.stderr.strip()
+        detail = result.stderr.decode(errors="replace").strip()
         raise ReleaseError("stable contract checker failed" + (": " + detail if detail else ""))
-    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    lines = [
+        line.strip() for line in result.stdout.decode(errors="replace").splitlines()
+        if line.strip()
+    ]
     if not lines:
         raise ReleaseError("stable contract checker did not name a contract receipt")
     raw_path = Path(lines[-1]).expanduser()
@@ -910,7 +948,7 @@ def run_stable_checker(stable_plugin, root, session, base, roster_path):
     return path, match.group(1)
 
 
-def validate_review_session(session_path, root, candidate, stable_plugin):
+def validate_review_session(session_path, root, candidate, stable_plugin, checker_snapshot):
     session = direct_directory(session_path, "session")
     captured = {}
     scope_raw = session_file(session, "scope.env", "scope metadata", captured)
@@ -927,7 +965,7 @@ def validate_review_session(session_path, root, candidate, stable_plugin):
         raise ReleaseError("session roster is invalid")
     roster_path = session / "roster.json"
     contract_path, contract_key = run_stable_checker(
-        stable_plugin, root, session, values["REV_BASE"], roster_path,
+        stable_plugin, checker_snapshot, root, session, values["REV_BASE"], roster_path,
     )
     contract_raw = regular_bytes(contract_path, "stable contract receipt")
     captured[contract_path] = contract_raw
@@ -1052,11 +1090,15 @@ def nonnegative(value):
 def record_review(args):
     root = repository_root(args.root)
     stable_plugin = direct_directory(args.stable_plugin, "stable plugin")
-    stable = stable_identity(root, args.stable_tag, stable_plugin)
+    checker_name = "scripts/rev-contract-check.py"
+    stable, stable_material = verified_stable_material(
+        root, args.stable_tag, stable_plugin, (checker_name,),
+    )
+    checker_snapshot = stable_material[checker_name]
     stable_version = tag_version(args.stable_tag)
     candidate = candidate_identity(root, args.candidate_commit, stable_version)
     session_identity, stop = validate_review_session(
-        args.session, root, candidate, stable_plugin,
+        args.session, root, candidate, stable_plugin, checker_snapshot,
     )
     counts = {
         "new_p0": args.new_p0, "new_p1": args.new_p1,

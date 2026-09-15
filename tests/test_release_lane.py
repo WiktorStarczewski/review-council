@@ -1,6 +1,8 @@
 """Stable release authority contract tests."""
+import contextlib
 import hashlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -57,10 +59,14 @@ class ReleaseLaneFixture(unittest.TestCase):
         executable.parent.mkdir(parents=True, exist_ok=True)
         executable.write_text("#!/usr/bin/env python3\n")
         executable.chmod(0o755)
+        helper = self.plugin / "scripts" / "checker_fixture_helper.py"
+        helper.write_text("IDENTITY = 'stable checker helper'\n")
         checker = self.plugin / "scripts" / "rev-contract-check.py"
         checker.write_text(
             "#!/usr/bin/env python3\n"
             "import argparse, json, os, pathlib, sys\n"
+            "from checker_fixture_helper import IDENTITY\n"
+            "assert IDENTITY == 'stable checker helper'\n"
             "parser = argparse.ArgumentParser()\n"
             "parser.add_argument('--root', required=True)\n"
             "parser.add_argument('--session', required=True)\n"
@@ -491,6 +497,17 @@ class ReleaseLaneIdentityTests(ReleaseLaneFixture):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("candidate worktree is not clean", result.stderr)
 
+    def test_config_hidden_plugin_mode_mutation_is_rejected(self):
+        self.git("config", "core.fileMode", "false")
+        tool = self.plugin / "scripts" / "stable-tool.py"
+        tool.chmod(0o644)
+        self.assertEqual(self.git("status", "--porcelain=v1").stdout, "")
+
+        result = self.requirements()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("candidate worktree is not clean", result.stderr)
+
     def test_candidate_commit_must_equal_head(self):
         (self.root / "later.txt").write_text("later\n")
         self.commit("later")
@@ -548,6 +565,65 @@ class ReleaseLaneIdentityTests(ReleaseLaneFixture):
 
 
 class ReleaseLaneReviewTests(ReleaseLaneFixture):
+    def test_checker_snapshot_preserves_the_stable_script_import_path(self):
+        session = self.make_session()
+
+        result, output, _ = self.record_review(session)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(output.exists())
+
+    def test_checker_path_replacement_cannot_change_the_executed_bytes(self):
+        session = self.make_session()
+        output = self.base / "review.json"
+        marker = self.base / "replacement-executed"
+        checker = self.installed.resolve() / "scripts" / "rev-contract-check.py"
+        original_checker = checker.read_bytes()
+        replacement = (
+            "#!/usr/bin/env python3\n"
+            "import pathlib,sys\n"
+            f"pathlib.Path({str(marker)!r}).write_text('executed\\n')\n"
+            "session = pathlib.Path(sys.argv[sys.argv.index('--session') + 1])\n"
+            "print(next(session.glob('contract-pass-*.json')))\n"
+        ).encode()
+        module = load_module()
+        arguments = module.parser().parse_args([
+            "record-review", "--root", str(self.root),
+            "--candidate-commit", self.candidate_commit,
+            "--stable-plugin", str(self.installed), "--stable-tag", TAG,
+            "--session", str(session), "--new-p0", "0", "--new-p1", "0",
+            "--open-p0", "0", "--open-p1", "0", "--out", str(output),
+        ])
+        subprocess_run = module.subprocess.run
+        raced = False
+
+        def replace_at_launch(command, *args, **kwargs):
+            nonlocal raced
+            vector = [str(value) for value in command] if isinstance(command, list) else []
+            if not raced and vector[:1] == [sys.executable] and str(checker) in vector:
+                raced = True
+                checker.write_bytes(replacement)
+                checker.chmod(0o755)
+                try:
+                    return subprocess_run(command, *args, **kwargs)
+                finally:
+                    checker.write_bytes(original_checker)
+                    checker.chmod(0o755)
+            return subprocess_run(command, *args, **kwargs)
+
+        module.subprocess.run = replace_at_launch
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                module.record_review(arguments)
+        finally:
+            module.subprocess.run = subprocess_run
+            checker.write_bytes(original_checker)
+            checker.chmod(0o755)
+
+        self.assertTrue(raced)
+        self.assertTrue(output.exists())
+        self.assertFalse(marker.exists())
+
     def test_clean_first_review_records_canonical_decision_and_exact_checker_call(self):
         session = self.make_session()
 
@@ -951,23 +1027,25 @@ class ReleaseLaneCanaryTests(ReleaseLaneFixture):
 
 
 class ReleaseLaneCertificationTests(ReleaseLaneFixture):
-    def test_verifier_tree_ignores_caller_global_git_excludes(self):
-        review = self.make_review_receipt()
+    def test_caller_global_git_excludes_cannot_hide_candidate_dirtiness(self):
         ignored = self.root / "globally-ignored.txt"
         ignored.write_text("must still be verified\n")
         ignore_patterns = self.base / "global-ignore"
         ignore_patterns.write_text("globally-ignored.txt\n")
         global_config = self.base / "global.gitconfig"
         self.git("config", "--file", global_config, "core.excludesFile", ignore_patterns)
-        verification = self.make_verification_receipt()
         environment = self.signed_env(
             GIT_CONFIG_GLOBAL=str(global_config), GIT_CONFIG_NOSYSTEM="1",
         )
 
-        result, path = self.certify([review], verification, env=environment)
+        result = self.run_lane(
+            "requirements", "--root", self.root,
+            "--candidate-commit", self.candidate_commit, "--stable-tag", TAG,
+            env=environment,
+        )
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(path.read_text())["status"], "certified")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("candidate worktree is not clean", result.stderr)
 
     def test_verifier_tree_mismatch_is_rejected(self):
         review = self.make_review_receipt()
