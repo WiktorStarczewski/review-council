@@ -52,9 +52,10 @@ Key properties:
 - Status and usage are read from session artifacts without another model call.
 - Completed PR reviews use one deterministic `COMMENTED` review format with the
   badge, verdict tip, decisions, fixes, verified-sound, coverage, and footer sections.
-  The inspected body, open PR, and reviewed head are frozen for exact retries, and
+  The inspected body, open PR, base, and clean reviewed head are frozen for exact retries, and
   only an identical `COMMENTED` review suppresses a duplicate post. Local branches
-  and document reviews without an associated open PR do not post.
+  and document reviews without an associated open PR do not post. A stack publishes
+  only the latest completed session for each canonical repository.
 
 ## Install
 

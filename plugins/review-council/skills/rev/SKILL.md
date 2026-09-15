@@ -802,8 +802,8 @@ diff, not a document list): run **Setup** exactly as in the loop, including
 dir) and the baseline gates, and render prompts the normal way - *without*
 `--read-only`, so seats get the repo, the pinned base and the changed-file list. Fan
 out, collect and triage exactly as in a round. Then stop: no **Fix**, no **Verify**,
-no **Commit**, no squash, no push, and no `--vacuity` exemption. Report as below,
-minus the commits section; the standing rule to apply actionable findings then applies
+no **Commit**, no squash, no push, and no `--vacuity` exemption. Follow **PR review publication**
+below, then report as below, minus the commits section; the standing rule to apply actionable findings then applies
 to you *after* reporting, as its own separate change the user can see.
 
 **Documents** (the rest of this section):

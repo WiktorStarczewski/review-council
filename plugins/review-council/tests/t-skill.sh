@@ -412,9 +412,9 @@ test_skill_contract() {
     assert_grep "stack distinguishes permanent roster status" "$H" 'Exit 6 is permanent'
   done
   assert_grep "Claude stack documents post-push PR review publication" "$ST" \
-    'only then is each completed review published'
+    'latest completed review for each canonical'
   assert_grep "Codex stack documents post-push PR review publication" "$CST" \
-    '[Pp]ublishes each completed session'
+    'latest completed session is authoritative'
 
   local PRDOC="$SK/docs/pr-review.md"
   assert_exit "canonical PR review instructions are shipped" 0 test -f "$PRDOC"
@@ -442,16 +442,28 @@ test_skill_contract() {
     "${first_report_line%%,*}" '1. **Outcome**'
   assert_grep "shared publication contract freezes the reviewed target" "$PRDOC" \
     'frozen.*PR.*head'
+  assert_grep "shared publication contract binds a clean committed tree" "$PRDOC" \
+    'staged, unstaged, or untracked bytes'
+  assert_grep "shared publication contract revalidates the PR base" "$PRDOC" \
+    'branch, base, and head'
   assert_grep "shared publication contract requires COMMENTED-state idempotence" "$PRDOC" \
     'exact `COMMENTED` review'
   assert_grep "shared publication contract requires the stack push barrier" "$PRDOC" \
     'every completed repository.*push'
   assert_grep "shared publication contract requires post-squash final rendering" "$PRDOC" \
     'squash.*render'
+  assert_grep "shared publication contract selects one stack session per repository" "$PRDOC" \
+    'latest completed session for each repository'
   assert_nogrep "Codex host does not prohibit required PR publication" "$CK" \
     'not authorize pushing, publishing'
   assert_grep "Codex host limits publication authority to the canonical review" "$CK" \
     'authorizes only the canonical `COMMENTED` PR review'
+
+  local read_only_section="$T/claude-read-only-section.md"
+  awk '/^## Read-only panel$/{inside=1} inside && /^## / && $0 != "## Read-only panel"{exit} inside{print}' \
+    "$K" > "$read_only_section"
+  assert_grep "Claude read-only code path reaches PR review publication" \
+    "$read_only_section" 'Follow \*\*PR review publication\*\*'
 
   # B1 - a resumed leg's ledger must be read, never truncated
   assert_grep "findings.md created only if absent" "$K" '\[ -f \$S/findings\.md \] \|\| printf'

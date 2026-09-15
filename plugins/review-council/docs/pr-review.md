@@ -93,10 +93,13 @@ test total against the completed session and pushed head. Do not edit the Markdo
 Correct `pr-review.json` and render again when anything is wrong.
 
 For an associated PR, render resolves the branch and base recorded by preflight,
-requires an open PR at the reviewed local head, and freezes that PR and head in the
-target envelope. A normal or read-only review therefore renders only after its final
-authorized push. Stack legs may render their unpushed reviewed head because the stack
-performs the guarded final transition below.
+requires an open PR at the reviewed local head, and freezes that PR, branch, base,
+head, tree, date, and body hash in the target envelope. Rendering fails when the
+repository has staged, unstaged, or untracked bytes outside the exact active session
+directory because those bytes are absent from the PR head. A normal or read-only
+review therefore renders only after its final authorized push. Stack legs may render
+their clean unpushed reviewed head because the stack performs the guarded final
+transition below.
 
 For a normal or read-only code review, publish before setting `phase=done` or writing
 `report.md`:
@@ -106,8 +109,8 @@ python3 "$PLUGIN_ROOT/scripts/rev-pr-review.py" publish "$S"
 ```
 
 The publisher reads the saved Markdown without rerendering it, verifies its body hash,
-and revalidates the frozen PR identity, open state, branch, and head. It checks all
-existing reviews and treats only an exact `COMMENTED` review body as idempotent
+and revalidates the frozen PR identity, open state, branch, base, and head. It checks
+all existing reviews and treats only an exact `COMMENTED` review body as idempotent
 success, then posts with `gh pr review --comment`. A real no-PR association skips
 cleanly; missing session scope or artifacts for an associated PR fail closed.
 
@@ -116,9 +119,14 @@ Any other nonzero exit leaves the PR review incomplete. Preserve `pr-review.json
 set `phase=done` or write the success receipt.
 
 In `REV_STACK_LEG=1`, render and inspect the body but do not publish it. The stack
-does not publish anything until every completed repository has pushed successfully.
-When a squash changes commit identity, guarded final rendering first proves that the pushed
-aggregate commit has the inspected tree, maps both fix commit links and decision blob
-links to that aggregate SHA, and runs the sole renderer again with the frozen date.
+records the latest completed session for each canonical repository and does not publish
+anything until every completed repository has pushed successfully. When a squash changes
+commit identity, guarded final rendering first proves that the pushed aggregate commit
+has the inspected tree, verifies the frozen structured input and body, and maps both fix
+commit links and decision blob links to that aggregate SHA. The structured input remains
+immutable. The body is written before the target envelope, which is the commit marker;
+publication rejects a mismatched pair and an exact retry completes an interrupted update.
+The post-squash body is rendered from the immutable input with the frozen date.
+Only the latest completed session for each repository is finalized and published.
 Read the final body before reporting success. A push, tree check, finalization, or
 publication failure makes the stack incomplete and suppresses the completion marker.

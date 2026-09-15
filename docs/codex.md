@@ -77,9 +77,11 @@ badge, verdict tip, decisions, fixes, verified-sound, coverage, and footer as a
 document review without an associated open PR does not post. An identical body is not
 posted twice, and other publication failures keep the review incomplete with a retry
 command. The inspected body and PR target are frozen for exact retries. Stack sessions
-publish only after every completed repository pushes; a changed-head squash must
-preserve the inspected tree and rerender SHA links against the pushed aggregate
-commit. `NO_PUSH=1` suppresses publication.
+publish only after every completed repository pushes, with only the latest completed
+session authoritative for each canonical repository. A changed-head squash must
+preserve the inspected tree and rerender SHA links against the pushed aggregate commit.
+Publication also revalidates the frozen base and refuses reviewed local bytes absent
+from the PR head. `NO_PUSH=1` suppresses publication.
 
 Adaptive code panels use hashed scope manifests and semantic dependency components.
 Mechanical lockfiles, generated output, snapshots, and locale copies go to one named
