@@ -33,8 +33,10 @@
 - [x] Promote composite red-team, compatibility, recovery, security, and integration coverage in normal panels.
 - [x] Remove the custom release authority and document the signed-tag procedural lane.
 - [x] Pressure-test both host skills.
-- [ ] Repair the three stale shell fixtures and run the complete frozen-tree gate.
-- [ ] Run the stable 0.4.3 P0/P1-only release lane for 0.4.4.
+- [x] Repair the three stale shell fixtures and run the complete frozen-tree gate.
+- [x] Run the initial stable 0.4.3 P0/P1-only release panel for 0.4.4.
+- [x] Repair its three accepted P1 groups with focused regression coverage.
+- [ ] Pass the repaired frozen-tree gate and the one permitted stable delta panel.
 - [ ] Squash-merge PR #6, publish 0.4.4, reinstall, and verify fresh-session discovery.
 
 ## 0.4.4 PR review publication
@@ -111,6 +113,11 @@
   skill-contract assertions, including independent-clone serialization and safe cleanup.
 - The final P1 repairs passed 350 PR-publication assertions and 453 skill-contract
   assertions, including red-green coverage for all three write-boundary races.
+- The signed 0.4.3 release panel completed all four exact-roster seats with a valid
+  evidence receipt and no audit violations. Three P1 repair groups were accepted.
+- The release-panel repairs passed 19 neighboring audit-stop assertions, 354
+  PR-publication assertions, retry and serialization coverage for immutable session
+  inputs, Python compilation, and shell syntax checks.
 
 ## Wall-time optimization spike
 

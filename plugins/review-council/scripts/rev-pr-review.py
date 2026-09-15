@@ -861,6 +861,11 @@ def publish(session, script):
         pending = recoverable_pending_review(
             reviews, body, target["head"], actor, target, scope["root"])
         if pending is None:
+            live = live_pr(target, scope["root"])
+            if live["state"] != "OPEN":
+                print("pr-review: no associated open PR; skipped")
+                return
+            require_publishable_head(target, live)
             payload = json.dumps({"commit_id": target["head"], "body": body})
             result = run_gh([
                 "api", "--method", "POST",
@@ -910,6 +915,12 @@ def publish(session, script):
                 reviews, body, target["head"], actor, target, scope["root"])
             if listed_pending is not None:
                 pending = listed_pending
+            live = live_pr(target, scope["root"])
+            if live["state"] != "OPEN":
+                delete_pending_review(target, pending, actor, scope["root"])
+                print("pr-review: no associated open PR; skipped")
+                return
+            require_publishable_head(target, live)
         except (OSError, ValueError, subprocess.SubprocessError):
             delete_pending_review(target, pending, actor, scope["root"])
             raise

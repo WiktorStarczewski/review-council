@@ -171,6 +171,9 @@ if [ "${1:-} ${2:-}" = "pr view" ]; then
       live_state=CLOSED
     fi
   fi
+  if [ -n "${GH_HEAD_MOVED_MARKER:-}" ] && [ -e "$GH_HEAD_MOVED_MARKER" ]; then
+    live_head=${GH_SWITCHED_HEAD:?}
+  fi
   repo=${GH_REPO:-acme/repo}
   previous=
   for argument in "$@"; do
@@ -186,10 +189,21 @@ if [ "${1:-} ${2:-}" = "pr view" ]; then
 fi
   if [ "${1:-}" = api ]; then
   if [ "${2:-}" = user ]; then
+    [ -z "${GH_SWITCH_HEAD_ON_USER:-}" ] || : > "$GH_HEAD_MOVED_MARKER"
     printf '{"login":"%s"}\n' "${GH_ACTOR:-tester}"
     exit 0
   fi
   if [ "${2:-}" = --paginate ] && [[ "${4:-}" == repos/*/pulls/*/reviews/*/comments\?per_page=100 ]]; then
+    if [ -n "${GH_COMMENT_COUNT_FILE:-}" ]; then
+      count=0
+      [ ! -f "$GH_COMMENT_COUNT_FILE" ] || count=$(cat "$GH_COMMENT_COUNT_FILE")
+      count=$((count + 1))
+      printf '%s\n' "$count" > "$GH_COMMENT_COUNT_FILE"
+      if [ -n "${GH_SWITCH_HEAD_ON_COMMENT_AFTER:-}" ] \
+          && [ "$count" -gt "$GH_SWITCH_HEAD_ON_COMMENT_AFTER" ]; then
+        : > "$GH_HEAD_MOVED_MARKER"
+      fi
+    fi
     if [ "${GH_DUP_COMMENTS:-0}" = 0 ]; then
       printf '%s\n' '[[]]'
     else
@@ -1035,7 +1049,7 @@ test_pr_review_frozen_publication() {
   : > "$T/pr-frozen-pending-close.calls"
   : > "$T/pr-frozen-pending-close.views"
   rm -f "$T/pr-frozen-pending-close.deleted"
-  PATH="$bin:$PATH" GH_HEAD_OID="$reviewed_head" GH_SWITCH_STATE_AFTER=2 \
+  PATH="$bin:$PATH" GH_HEAD_OID="$reviewed_head" GH_SWITCH_STATE_AFTER=3 \
     GH_SWITCHED_STATE=CLOSED GH_SWITCHED_HEAD="$changed_head" GH_SWITCHED_BASE=release \
     GH_SWITCHED_BASE_OID=0000000000000000000000000000000000000007 \
     GH_VIEW_COUNT_FILE="$T/pr-frozen-pending-close.views" \
@@ -1052,7 +1066,7 @@ test_pr_review_frozen_publication() {
 
   : > "$T/pr-frozen-changed-draft.calls"
   : > "$T/pr-frozen-changed-draft.views"
-  PATH="$bin:$PATH" GH_HEAD_OID="$reviewed_head" GH_SWITCH_STATE_AFTER=2 \
+  PATH="$bin:$PATH" GH_HEAD_OID="$reviewed_head" GH_SWITCH_STATE_AFTER=3 \
     GH_SWITCHED_STATE=CLOSED GH_SWITCHED_HEAD="$changed_head" GH_SWITCHED_BASE=release \
     GH_SWITCHED_BASE_OID=0000000000000000000000000000000000000007 \
     GH_VIEW_COUNT_FILE="$T/pr-frozen-changed-draft.views" GH_GET_ACTOR=other \
@@ -1068,7 +1082,7 @@ test_pr_review_frozen_publication() {
   : > "$T/pr-frozen-post-race.calls"
   : > "$T/pr-frozen-post-race.views"
   rm -f "$T/pr-frozen-post-race.deleted"
-  PATH="$bin:$PATH" GH_HEAD_OID="$reviewed_head" GH_SWITCH_HEAD_AFTER=2 \
+  PATH="$bin:$PATH" GH_HEAD_OID="$reviewed_head" GH_SWITCH_HEAD_AFTER=3 \
     GH_SWITCHED_HEAD="$changed_head" GH_MERGE_BASE="$(git -C "$root" rev-parse main)" \
     GH_VIEW_COUNT_FILE="$T/pr-frozen-post-race.views" \
     GH_DELETED_REVIEW="$T/pr-frozen-post-race.deleted" \
@@ -1083,6 +1097,34 @@ test_pr_review_frozen_publication() {
     "$T/pr-frozen-post-race.calls" 'reviews/80/events'
   assert_grep "post-creation head movement prints the exact retry" \
     "$T/pr-frozen-post-race.err" "retry: .*rev-pr-review.py publish $session$"
+
+  : > "$T/pr-frozen-user-race.calls"
+  rm -f "$T/pr-frozen-user-race.moved"
+  PATH="$bin:$PATH" GH_HEAD_OID="$reviewed_head" GH_SWITCH_HEAD_ON_USER=1 \
+    GH_HEAD_MOVED_MARKER="$T/pr-frozen-user-race.moved" GH_SWITCHED_HEAD="$changed_head" \
+    GH_MERGE_BASE="$(git -C "$root" rev-parse main)" \
+    GH_CALLS="$T/pr-frozen-user-race.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-frozen-user-race.out" 2> "$T/pr-frozen-user-race.err"
+  assert_eq "head movement during actor lookup blocks draft creation" "$?" 1
+  assert_nogrep "actor-lookup head movement creates no review" \
+    "$T/pr-frozen-user-race.calls" '^api --method POST '
+
+  : > "$T/pr-frozen-comment-race.calls"
+  : > "$T/pr-frozen-comment-race.comments"
+  rm -f "$T/pr-frozen-comment-race.moved"
+  PATH="$bin:$PATH" GH_MODE=duplicate GH_DUP_STATE=PENDING \
+    GH_DUP_BODY="$session/pr-review.md" GH_HEAD_OID="$reviewed_head" \
+    GH_COMMENT_COUNT_FILE="$T/pr-frozen-comment-race.comments" \
+    GH_SWITCH_HEAD_ON_COMMENT_AFTER=1 \
+    GH_HEAD_MOVED_MARKER="$T/pr-frozen-comment-race.moved" \
+    GH_SWITCHED_HEAD="$changed_head" GH_MERGE_BASE="$(git -C "$root" rev-parse main)" \
+    GH_CALLS="$T/pr-frozen-comment-race.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-frozen-comment-race.out" 2> "$T/pr-frozen-comment-race.err"
+  assert_eq "head movement during draft recovery blocks submission" "$?" 1
+  assert_nogrep "draft-recovery head movement never submits the draft" \
+    "$T/pr-frozen-comment-race.calls" 'reviews/80/events'
 }
 
 test_pr_review_github_remote_forms() {

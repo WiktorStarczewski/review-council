@@ -500,6 +500,65 @@ test_malformed_manifest_seals_inputs() {
   )
 }
 
+test_session_input_install_recovers_partial_generation() {
+  python3 - "$SCRIPTS/lib/session_inputs.py" "$T/session-input-retry" <<'PY'
+import importlib.util
+from pathlib import Path
+import sys
+
+module_path = Path(sys.argv[1])
+base = Path(sys.argv[2])
+spec = importlib.util.spec_from_file_location('session_input_retry_test', module_path)
+session_inputs = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(session_inputs)
+values = {name: f'value:{name}\n'.encode() for name in session_inputs.STANDARD_INPUTS}
+
+for fail_after in range(1, len(session_inputs.STANDARD_INPUTS)):
+    session = base / str(fail_after)
+    session.mkdir(parents=True)
+    original_replace = session_inputs.os.replace
+    replacements = 0
+    def interrupted_replace(source, target):
+        global replacements
+        if replacements == fail_after:
+            raise OSError('injected replacement failure')
+        original_replace(source, target)
+        replacements += 1
+    session_inputs.os.replace = interrupted_replace
+    try:
+        try:
+            session_inputs.install_inputs(session, values, complete=True)
+        except session_inputs.SessionInputsError:
+            pass
+        else:
+            raise AssertionError('injected replacement failure did not fail installation')
+    finally:
+        session_inputs.os.replace = original_replace
+    assert sum((session / name).exists() for name in values) == fail_after
+    session_inputs.install_inputs(session, values, complete=True)
+    assert {name: (session / name).read_bytes() for name in values} == values
+    session_inputs.install_inputs(session, values, complete=True)
+
+conflict = base / 'conflict'
+conflict.mkdir(parents=True)
+(conflict / 'scope.env').write_bytes(b'other generation\n')
+try:
+    session_inputs.install_inputs(conflict, values, complete=True)
+except session_inputs.SessionInputsError:
+    pass
+else:
+    raise AssertionError('conflicting partial generation was accepted')
+assert (conflict / 'scope.env').read_bytes() == b'other generation\n'
+PY
+  local rc=$?
+  if [ "$rc" -eq 0 ]; then
+    ok "partial session-input generations are retry-safe"
+  else
+    fail "partial session-input generations are retry-safe" "exit $rc"
+  fi
+  return "$rc"
+}
+
 test_evidence_source_identity_match() {
   ( local R="$T/source-identity-repo" P="$T/source-identity-parent"
     mkrepo "$R"; git -C "$R" checkout -qb feat

@@ -40,6 +40,12 @@ def prior_hard_audit(session: Path) -> Path | None:
     marker = session_stop_path(session)
     if marker.exists() or marker.is_symlink():
         return marker
+    for stopped in sorted((session / 'attempts').glob('panel-*.stopped.json')):
+        if stopped.exists() or stopped.is_symlink():
+            return stopped
+    for invalid in sorted(session.glob('r*-*.audit-invalid.json')):
+        if safe_regular(invalid) and invalid.stat().st_size > 0:
+            return invalid
     for pattern in ("r*-*.read-audit.json", "r*-*.audit.json"):
         for audit in sorted(session.glob(pattern)):
             if hard_audit_failure(audit):
@@ -75,16 +81,21 @@ def open_private(path):
 def write_immutable(path, raw):
     try:
         descriptor, created = open_private(path)
+        with os.fdopen(descriptor, 'r+', encoding='utf-8') as stream:
+            if created:
+                stream.write(raw)
+                stream.flush()
+                os.fsync(stream.fileno())
+                parent = os.open(path.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+                try:
+                    os.fsync(parent)
+                finally:
+                    os.close(parent)
+                return True
+            stream.seek(0)
+            return stream.read() == raw
     except (OSError, ValueError):
         return False
-    with os.fdopen(descriptor, 'r+', encoding='utf-8') as stream:
-        if created:
-            stream.write(raw)
-            stream.flush()
-            os.fsync(stream.fileno())
-            return True
-        stream.seek(0)
-        return stream.read() == raw
 
 
 def main():
@@ -130,7 +141,9 @@ def main():
                                  separators=(',', ':')) + '\n'
                 session_raw = json.dumps({'panel': panel, 'reason': reason, 'stopped': True},
                                          sort_keys=True, separators=(',', ':')) + '\n'
-                return 0 if write_immutable(stopped, raw) and write_immutable(session_stop_path(session), session_raw) else 1
+                session_written = write_immutable(session_stop_path(session), session_raw)
+                panel_written = write_immutable(stopped, raw)
+                return 0 if session_written and panel_written else 1
             prior = prior_hard_audit(session)
             if prior is not None:
                 print(stop_notice(prior), file=sys.stderr)

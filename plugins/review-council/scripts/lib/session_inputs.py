@@ -158,12 +158,19 @@ def install_inputs(session: Path, values: Mapping[str, bytes], complete: bool) -
     with session_input_lock(session):
         assert_unsealed(session)
         initialized = [name for name in STANDARD_INPUTS if _has_entry(session / name)]
-        if complete and initialized:
-            raise SessionInputsError('session inputs are already initialized')
+        if complete:
+            conflicting = [name for name in initialized
+                           if _read_private_regular(session / name) != values[name]]
+            if conflicting:
+                raise SessionInputsError(
+                    'session inputs conflict with the staged generation: '
+                    + ', '.join(conflicting))
         if not complete:
             _validate_legacy_target(session / 'roster.json')
         try:
             for name, value in values.items():
+                if complete and name in initialized:
+                    continue
                 descriptor, temporary = tempfile.mkstemp(
                     prefix=f'.{name}.', suffix='.tmp', dir=session)
                 temporary_path = Path(temporary)
@@ -176,6 +183,12 @@ def install_inputs(session: Path, values: Mapping[str, bytes], complete: bool) -
             for name in STANDARD_INPUTS:
                 if name in temporaries:
                     os.replace(temporaries.pop(name), session / name)
+            if complete:
+                descriptor = os.open(session, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
         except OSError as exc:
             raise SessionInputsError(f"cannot install session inputs: {exc}") from exc
         finally:

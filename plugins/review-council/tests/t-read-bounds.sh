@@ -2258,6 +2258,32 @@ JSON
   )
 }
 
+test_session_audit_stop_survives_partial_marker_state() {
+  ( local session="$T/session-audit-partial" prompt="$T/session-audit-partial.prompt.md"
+    mkdir -p "$session/attempts"; printf 'review\n' > "$prompt"
+    local panel_key
+    panel_key=$(printf r1 | shasum -a 256 | awk '{print $1}')
+    printf 'conflicting marker\n' > "$session/attempts/panel-$panel_key.stopped.json"
+    python3 "$SCRIPTS/lib/rev-attempt.py" stop "$session" r1 --reason "hard evidence audit failed" \
+      >"$T/session-audit-partial-stop.out" 2>"$T/session-audit-partial-stop.err"
+    assert_eq "a conflicting panel marker reports an incomplete stop write" "$?" 1
+    assert_exit "the authoritative session stop is still persisted" 0 \
+      test -s "$session/attempts/session.stopped.json"
+    python3 "$SCRIPTS/lib/rev-attempt.py" reserve "$session" r2 codex-sol "$prompt" \
+      >"$T/session-audit-partial.out" 2>"$T/session-audit-partial.err"
+    assert_eq "a partial panel stop cannot reopen the session" "$?" 2
+
+    session="$T/session-audit-invalid-fallback"
+    mkdir -p "$session"; printf 'invalid findings\n' > "$session/r1-codex-sol.audit-invalid.json"
+    python3 "$SCRIPTS/lib/rev-attempt.py" reserve "$session" r2 codex-sol "$prompt" \
+      >"$T/session-audit-invalid-fallback.out" \
+      2>"$T/session-audit-invalid-fallback.err"
+    assert_eq "a preserved invalid-audit result stops another panel label" "$?" 2
+    assert_grep "invalid-audit fallback requires a fresh session" \
+      "$T/session-audit-invalid-fallback.err" 'fresh review session'
+  )
+}
+
 test_evidence_audit_failure_modes() {
   ( seat_env; local S="$T/audit-failure-malformed"; seat_roster "$S"
     cat > "$S/malformed-evidence.md" <<'EOF'
