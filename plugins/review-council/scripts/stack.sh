@@ -68,8 +68,6 @@ REPOS_SEEN=""
 FAILED_LABELS=""      # every leg that ended without a completed review
 FAILED_REPOS=""       # …and the repos they belong to: those are NOT squashed at the end
 mkdir -p "$ROOT"
-SQUASH_MAP="$ROOT/squash-map.tsv"
-[ -f "$SQUASH_MAP" ] || : > "$SQUASH_MAP"
 SESSION_MAP="$ROOT/repo-sessions.tsv"
 [ -f "$SESSION_MAP" ] || : > "$SESSION_MAP"
 
@@ -240,11 +238,6 @@ run_leg() {  # <repo-path> <rounds> <label> "<premise>"
     fi
   }
   case " $REPOS_SEEN " in *" $repo "*) ;; *) REPOS_SEEN="$REPOS_SEEN $repo";; esac
-  if ! replace_tab_row "$SESSION_MAP" "$repo" "$S"; then
-    say "!!! $label: cannot record the authoritative review session"
-    note_failure "$label" "$repo"
-    return 1
-  fi
   # Resume keys on THIS run's session root as well as the label: a different stack sharing the default LOG must
   # never skip a leg it has not actually run (that would fall straight through to the squash + push phase).
   grep -qF "=== DONE $label pass${PASS} exit=0 root=$ROOT" "$LOG" 2>/dev/null && { say "=== SKIP $label pass${PASS} (already done in $LOG)"; return 0; }
@@ -348,7 +341,15 @@ ${VACUITY}${resume}"
         say "!!! $label exited 0 after ${dur}s with invalid completion receipt (${receipt_error}); retrying with resume"; rc=75
       fi
     fi
-    if [ "$rc" -eq 0 ] && [ "$stalled" = 0 ]; then say "=== DONE $label pass${PASS} exit=0 root=$ROOT (${dur}s)"; return 0; fi
+    if [ "$rc" -eq 0 ] && [ "$stalled" = 0 ]; then
+      if ! replace_tab_row "$SESSION_MAP" "$repo" "$S"; then
+        say "!!! $label: cannot record the authoritative review session"
+        note_failure "$label" "$repo"
+        return 1
+      fi
+      say "=== DONE $label pass${PASS} exit=0 root=$ROOT (${dur}s)"
+      return 0
+    fi
     if [ "$stalled" = 0 ] && [ "$dur" -lt "$FAST_FAIL_SECS" ] && [ "$infra" -lt "$MAX_INFRA_RETRIES" ]; then
       infra=$(( infra + 1 )); say "    $label failed in ${dur}s - infrastructure; sleeping ${INFRA_SLEEP_SECS}s"; sleep "$INFRA_SLEEP_SECS"; continue
     fi
@@ -358,18 +359,19 @@ ${VACUITY}${resume}"
 }
 
 finish_repos() {
-  local d srq before after push_rc
+  local d srq push_rc
   for d in $REPOS_SEEN; do
     case " $FAILED_REPOS " in *" $d "*)
       say "--- skipping $(basename "$d") - a leg on it failed; its review is not complete"; continue;; esac
     say "--- finishing $(basename "$d")"
-    before=""
-    if [ "$NO_PUSH" != 1 ] && [ "$NO_SQUASH" != 1 ]; then
-      before=$(cd "$d" && git rev-parse HEAD 2>/dev/null) || {
-        say "!!! cannot read pre-squash head for $(basename "$d")"
-        note_failure "finish:$(basename "$d")" "$d"
+    if ! git -C "$d" rev-parse --show-toplevel >/dev/null 2>&1; then
+      if [ "$NO_PUSH" = 1 ]; then
+        say "--- $(basename "$d") is not a git repository; NO_PUSH=1 skips squash and push (NO_SQUASH=$NO_SQUASH)"
         continue
-      }
+      fi
+      say "!!! cannot finish $(basename "$d"): not a git repository"
+      note_failure "finish:$(basename "$d")" "$d"
+      continue
     fi
     set -o pipefail
     ( cd "$d" && if [ "$NO_SQUASH" = 1 ]; then echo "(NO_SQUASH=1: keeping review commits)"; else "$REV_SCRIPTS/rev-squash.sh" --apply; fi ) 2>&1 | sed 's/^/    /' | tee -a "$LOG"
@@ -378,21 +380,6 @@ finish_repos() {
     # A refused squash is not a reason to withhold the push: the round commits are real work and CI
     # must see them. Squash and push are therefore independent steps, not one && chain.
     [ "$srq" -eq 0 ] || say "!!! squash refused for $(basename "$d") - pushing the un-collapsed review commits"
-    after=""
-    if [ -n "$before" ]; then
-      after=$(cd "$d" && git rev-parse HEAD 2>/dev/null) || {
-        say "!!! cannot read final head for $(basename "$d")"
-        note_failure "finish:$(basename "$d")" "$d"
-        continue
-      }
-    fi
-    if [ -n "$before" ] && [ "$srq" -eq 0 ] && [ "$before" != "$after" ]; then
-      replace_tab_row "$SQUASH_MAP" "$d" "$after" || {
-        say "!!! cannot update squash recovery map for $(basename "$d")"
-        note_failure "finish:$(basename "$d")" "$d"
-        continue
-      }
-    fi
     set -o pipefail
     ( cd "$d" && if [ "$NO_PUSH" = 1 ]; then echo "(NO_PUSH=1: not pushing)"; else git push; fi ) 2>&1 | sed 's/^/    /' | tee -a "$LOG"
     push_rc=$?
@@ -407,15 +394,19 @@ finish_repos() {
 
 finalize_reviews() {
   local repo head session rc=0
-  [ -s "$SQUASH_MAP" ] || return 0
-  while IFS="$(printf '\t')" read -r repo head; do
-    if [ -z "$repo" ] || [ -z "$head" ]; then
-      say "!!! malformed squash recovery map entry"
-      rc=1
-      continue
-    fi
+  if [ "$NO_PUSH" = 1 ]; then
+    say "--- NO_PUSH=1: deferring PR review finalization"
+    return 0
+  fi
+  for repo in $REPOS_SEEN; do
+    case " $FAILED_REPOS " in *" $repo "*) continue;; esac
     session=$(session_for_repo "$repo") || {
       say "!!! no authoritative completed review session for $(basename "$repo")"
+      rc=1
+      continue
+    }
+    head=$(git -C "$repo" rev-parse HEAD 2>/dev/null) || {
+      say "!!! cannot read final review head for $(basename "$repo")"
       rc=1
       continue
     }
@@ -429,8 +420,7 @@ finalize_reviews() {
       --head "$head" --root "$repo" 2>&1 | sed 's/^/    /' | tee -a "$LOG"
     [ "$?" -eq 0 ] || rc=1
     set +o pipefail
-  done < "$SQUASH_MAP"
-  [ "$rc" -ne 0 ] || : > "$SQUASH_MAP" || rc=1
+  done
   return "$rc"
 }
 

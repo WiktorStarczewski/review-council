@@ -95,6 +95,18 @@ RSEOF
     assert_grep "no-push stack suppresses external review publication" "$LOG" \
       'NO_PUSH=1: not publishing PR reviews'
     assert_grep "all complete" "$LOG" 'ALL PHASES COMPLETE'
+
+    local PLAIN="$T/stk-plain"
+    mkdir -p "$PLAIN"
+    printf 'legs() { run_leg "%s" 1 plain "plain premise"; }\n' "$PLAIN" > "$T/stack-plain.cfg"
+    export ROOT="$T/stack-plain-root" LOG="$T/stack-plain.log" PASSES=1 NO_PUSH=1 NO_SQUASH=0
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-plain.cfg" > "$T/stack-plain.out" 2>&1
+    assert_eq "no-push plain-directory stack completes" "$?" 0
+    assert_grep "plain-directory finish skips git operations explicitly" "$LOG" \
+      'plain is not a git repository; NO_PUSH=1 skips squash and push'
+    assert_nogrep "plain-directory finish does not claim un-collapsed commits" "$LOG" \
+      'un-collapsed review commits'
+
     assert_exit "REV_STACK_LEG refuses" 1 env REV_STACK_LEG=1 "$STACK/stack.sh" "$T/stack.cfg"
     assert_exit "REV_ACTIVE refuses" 1 env REV_ACTIVE=1 "$STACK/stack.sh" "$T/stack.cfg"
     assert_exit "missing config refuses" 1 "$STACK/stack.sh"
@@ -148,8 +160,8 @@ SH
     export STACK_PUBLISH_CALLS="$T/stack-squash.calls" STACK_FINALIZE_RC=1
     SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-squash.cfg" > "$T/stack-squash.out" 2>&1
     assert_eq "failed stack finalization fails the workflow" "$?" 1
-    assert_exit "failed stack finalization preserves its recovery map" 0 \
-      test -s "$ROOT/squash-map.tsv"
+    assert_exit "failed stack finalization preserves authoritative session state" 0 \
+      test -s "$ROOT/repo-sessions.tsv"
     assert_nogrep "failed stack finalization does not publish" "$STACK_PUBLISH_CALLS" '^publish '
     unset STACK_FINALIZE_RC
     : > "$STACK_PUBLISH_CALLS"
@@ -162,8 +174,35 @@ SH
     assert_eq "stack publishes the remote aggregate head" \
       "$(grep '^publish ' "$STACK_PUBLISH_CALLS")" \
       "publish $ROOT/legsquash local=$publish_head remote=$publish_head"
-    assert_exit "successful stack finalization clears its recovery map" 0 \
-      test ! -s "$ROOT/squash-map.tsv"
+
+    local RNP="$T/stk-no-push-squash" rnp_root
+    mkrepo "$RNP"; git -C "$RNP" checkout -qb feat
+    git init -q --bare "$T/stk-no-push-squash-remote.git"
+    git -C "$RNP" remote add origin "$T/stk-no-push-squash-remote.git"
+    git -C "$RNP" push -q -u origin feat
+    rnp_root=$(git -C "$RNP" rev-parse --show-toplevel)
+    for i in 1 2; do
+      echo "$i" > "$RNP/n$i.txt"
+      git -C "$RNP" add "n$i.txt"
+      git -C "$RNP" commit -qm "fix(rev): no-push squash $i"
+    done
+    printf 'legs() { run_leg "%s" 1 legnopush "no-push squash"; }\n' \
+      "$RNP" > "$T/stack-no-push-squash.cfg"
+    export ROOT="$T/stack-no-push-squash-root" LOG="$T/stack-no-push-squash.log"
+    export NO_PUSH=1 NO_SQUASH=0 STACK_PUBLISH_CALLS="$T/stack-no-push-squash.calls"
+    : > "$STACK_PUBLISH_CALLS"
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-no-push-squash.cfg" \
+      > "$T/stack-no-push-squash.out" 2>&1
+    assert_eq "no-push squash run completes without publishing" "$?" 0
+    : > "$STACK_PUBLISH_CALLS"
+    export NO_PUSH=0 STACK_REQUIRE_SYNC=1
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-no-push-squash.cfg" \
+      > "$T/stack-no-push-squash-retry.out" 2>&1
+    assert_eq "later push recovers no-push squash finalization" "$?" 0
+    assert_grep "later push finalizes the aggregate head from durable session state" \
+      "$STACK_PUBLISH_CALLS" \
+      "^finalize-stack $ROOT/legnopush --head [0-9a-f]{40} --root $rnp_root "
+    unset STACK_REQUIRE_SYNC
 
     local RM="$T/stk-multi" RM2="$T/stk-multi-second"
     mkrepo "$RM"; git -C "$RM" checkout -qb feat
@@ -198,15 +237,29 @@ SH
       "$(grep "^publish $ROOT/secondary " "$STACK_PUBLISH_CALLS")" \
       "publish $ROOT/secondary local=$publish_head remote=$publish_head"
 
-    export ROOT="$T/stack-unmatched-root" LOG="$T/stack-unmatched.log"
-    mkdir -p "$ROOT"
-    printf '%s\t%s\n' "$T/no-matching-repository" "$publish_head" > "$ROOT/squash-map.tsv"
-    export STACK_PUBLISH_CALLS="$T/stack-unmatched.calls"
+    local RR="$T/stk-resume-order"
+    mkrepo "$RR"; git -C "$RR" checkout -qb feat
+    git init -q --bare "$T/stk-resume-order-remote.git"
+    git -C "$RR" remote add origin "$T/stk-resume-order-remote.git"
+    git -C "$RR" push -q -u origin feat
+    printf 'legs() { run_leg "%s" 1 fresh "fresh"; run_leg "%s" 1 stale "stale"; }\n' \
+      "$RR" "$RR" > "$T/stack-resume-order.cfg"
+    export ROOT="$T/stack-resume-order-root" LOG="$T/stack-resume-order.log"
+    export NO_SQUASH=1 NO_PUSH=0 STACK_PUBLISH_CALLS="$T/stack-resume-order.calls"
+    mkdir -p "$ROOT/stale"
+    printf '%s\n' '# stale report' > "$ROOT/stale/report.md"
+    printf '%s\n' '{"phase":"done"}' > "$ROOT/stale/state.json"
+    printf "REV_ROOT='%s'\nREV_BRANCH='feat'\nREV_BASE_BRANCH='main'\n" "$RR" \
+      > "$ROOT/stale/scope.env"
+    printf '%s\n' "=== DONE stale pass1 exit=0 root=$ROOT" > "$LOG"
     : > "$STACK_PUBLISH_CALLS"
-    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-multi.cfg" > "$T/stack-unmatched.out" 2>&1
-    assert_eq "unmatched recovery-map entry fails the stack" "$?" 1
-    assert_exit "unmatched recovery-map entry is preserved" 0 test -s "$ROOT/squash-map.tsv"
-    assert_nogrep "unmatched recovery map blocks publication" "$STACK_PUBLISH_CALLS" '^publish '
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-resume-order.cfg" \
+      > "$T/stack-resume-order.out" 2>&1
+    assert_eq "resume-order stack completes" "$?" 0
+    assert_grep "latest completed leg stays authoritative after a later skip" \
+      "$STACK_PUBLISH_CALLS" "^publish $ROOT/fresh "
+    assert_nogrep "skipped stale session cannot reclaim repository authority" \
+      "$STACK_PUBLISH_CALLS" "^publish $ROOT/stale "
 
     export ROOT="$T/stack-root" LOG="$T/stack.log" PASSES=2 NO_PUSH=1 NO_SQUASH=0
     unset STACK_REQUIRE_SYNC
