@@ -51,6 +51,12 @@
 - [x] Make publication a recoverable GitHub pending-review transaction.
 - [x] Prove concurrent identical publication across separate clones submits one review.
 - [x] Preserve exact COMMENTED-review idempotence and ambiguous-write recovery.
+- [x] Triage the final P1 plan with three valid seats and preserve the invalid Sonnet audit.
+- [x] Record the explicit override of the incomplete fourth plan seat without retrying it.
+- [x] Reject publication sessions that overlap an associated PR checkout.
+- [x] Make terminal write-boundary closure and post-confirmation head movement idempotent.
+- [ ] Run focused gates and one final P0/P1 delta panel.
+- [ ] Squash-merge PR #6, release 0.4.4, reinstall it, and verify plugin discovery.
 
 ### Review
 
@@ -66,6 +72,8 @@
   for the same authenticated user and exposes the first draft through the review list.
 - The remote transaction repair passed 332 PR-publication assertions and 449
   skill-contract assertions, including independent-clone serialization and safe cleanup.
+- The final P1 repairs passed 350 PR-publication assertions and 453 skill-contract
+  assertions, including red-green coverage for all three write-boundary races.
 
 ## Wall-time optimization spike
 

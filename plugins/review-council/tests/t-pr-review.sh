@@ -162,6 +162,15 @@ if [ "${1:-} ${2:-}" = "pr view" ]; then
       live_base_oid=${GH_SWITCHED_BASE_OID:-$live_base_oid}
     fi
   fi
+  if [ -n "${GH_REVIEW_MARKER:-}" ] && [ -e "$GH_REVIEW_MARKER" ]; then
+    if [ "${GH_MODE:-post}" = post-confirm-move ]; then
+      live_head=${GH_SWITCHED_HEAD:?}
+    fi
+    if [ "${GH_MODE:-post}" = close-create ] \
+        || [ "${GH_MODE:-post}" = close-submit ]; then
+      live_state=CLOSED
+    fi
+  fi
   repo=${GH_REPO:-acme/repo}
   previous=
   for argument in "$@"; do
@@ -233,6 +242,14 @@ PY
         echo 'connection closed after pending-review submission' >&2
         exit 1
       fi
+      if [ "${GH_MODE:-post}" = close-submit ]; then
+        : > "$GH_REVIEW_MARKER"
+        echo 'pull request is closed' >&2
+        exit 1
+      fi
+      if [ "${GH_MODE:-post}" = post-confirm-move ]; then
+        : > "$GH_REVIEW_MARKER"
+      fi
       if [ "${GH_MODE:-post}" = invalid-submit-json ]; then
         printf '%s\n' '{invalid'
         exit 0
@@ -264,6 +281,11 @@ PY
     if [ "${GH_MODE:-post}" = ambiguous-create ]; then
       : > "$GH_REVIEW_MARKER"
       echo 'connection closed after pending-review creation' >&2
+      exit 1
+    fi
+    if [ "${GH_MODE:-post}" = close-create ]; then
+      : > "$GH_REVIEW_MARKER"
+      echo 'pull request is closed' >&2
       exit 1
     fi
     if [ "${GH_MODE:-post}" = invalid-post-json ]; then
@@ -308,11 +330,15 @@ PY
   if [ "${GH_MODE:-post}" = duplicate ] \
       || { [ "${GH_MODE:-post}" = ambiguous-create ] && [ -f "$GH_REVIEW_MARKER" ]; } \
       || { [ "${GH_MODE:-post}" = ambiguous-submit ] && [ -f "$GH_REVIEW_MARKER" ]; } \
+      || { [ "${GH_MODE:-post}" = close-submit ] && [ -f "$GH_REVIEW_MARKER" ]; } \
+      || { [ "${GH_MODE:-post}" = post-confirm-move ] && [ -f "$GH_REVIEW_MARKER" ]; } \
       || { [ "${GH_MODE:-post}" = concurrent ] \
         && { [ -d "$GH_REVIEW_MARKER.pending" ] || [ -d "$GH_REVIEW_MARKER.commented" ]; }; }; then
     state=${GH_DUP_STATE:-COMMENTED}
     [ "${GH_MODE:-post}" != ambiguous-create ] || state=PENDING
     [ "${GH_MODE:-post}" != ambiguous-submit ] || state=COMMENTED
+    [ "${GH_MODE:-post}" != close-submit ] || state=PENDING
+    [ "${GH_MODE:-post}" != post-confirm-move ] || state=COMMENTED
     if [ "${GH_MODE:-post}" = concurrent ]; then
       if [ -d "$GH_REVIEW_MARKER.commented" ]; then state=COMMENTED; else state=PENDING; fi
     fi
@@ -714,10 +740,13 @@ test_pr_review_clean_identity() {
 
   local nested_root="$T/pr-nested-repo" nested
   mkrepo "$nested_root"
+  mkdir -p "$nested_root/project"
+  echo source > "$nested_root/project/code.txt"
+  git -C "$nested_root" add project/code.txt
+  git -C "$nested_root" commit -qm 'test: add tracked project directory'
   git -C "$nested_root" checkout -qb feat
   git -C "$nested_root" remote add origin https://github.com/acme/repo.git
-  nested="$nested_root/.review-session"
-  mkdir -p "$nested"
+  nested="$nested_root/project"
   printf "REV_BASE='%s'\nREV_ROOT='%s'\nREV_BRANCH='feat'\nREV_BASE_BRANCH='main'\n" \
     "$(git -C "$nested_root" rev-parse main)" "$nested_root" \
     > "$nested/scope.env"
@@ -727,7 +756,19 @@ test_pr_review_clean_identity() {
   PATH="$bin:$PATH" GH_CALLS="$T/pr-nested.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" render "$nested" --date 2026-09-15 \
     > "$T/pr-nested.out" 2> "$T/pr-nested.err"
-  assert_eq "an in-repository session directory is excluded exactly" "$?" 0
+  assert_eq "an associated session cannot overlap the reviewed repository" "$?" 1
+  assert_grep "overlapping session reports the publication boundary" "$T/pr-nested.err" \
+    'review session must be outside the reviewed repository'
+  assert_exit "overlapping associated session writes no target" 0 \
+    test ! -e "$nested/pr-review-target.json"
+
+  : > "$T/pr-nested.calls"
+  PATH="$bin:$PATH" GH_MODE=no-pr GH_CALLS="$T/pr-nested.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$nested" --date 2026-09-15 \
+    > "$T/pr-nested-no-pr.out" 2> "$T/pr-nested-no-pr.err"
+  assert_eq "an in-repository session without an open PR still renders" "$?" 0
+  assert_exit "nested local render records an unassociated target" 0 \
+    jq -e '.associated == false' "$nested/pr-review-target.json"
 
   local literal_root="$T/pr-literal-repo" literal
   mkrepo "$literal_root"
@@ -743,9 +784,9 @@ test_pr_review_clean_identity() {
   PATH="$bin:$PATH" GH_CALLS="$T/pr-literal.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" render "$literal" --date 2026-09-15 \
     > "$T/pr-literal.out" 2> "$T/pr-literal.err"
-  assert_eq "pathspec metacharacters cannot hide a dirty sibling" "$?" 1
-  assert_grep "literal pathspec failure names the dirty sibling" "$T/pr-literal.err" \
-    '\.review-hidden/dirty\.txt'
+  assert_eq "pathspec metacharacters cannot bypass the external-session rule" "$?" 1
+  assert_grep "literal session path reports the publication boundary" "$T/pr-literal.err" \
+    'review session must be outside the reviewed repository'
 
   local stack="$T/pr-clean-stack" stack_root="$T/pr-clean-stack-repo" remote_head
   pr_review_session "$stack" "$stack_root"
@@ -1886,7 +1927,7 @@ test_pr_review_duplicate_and_no_pr() {
 }
 
 test_pr_review_publish_failure() {
-  local session="$T/pr-failure" root="$T/pr-failure-repo" bin="$T/pr-failure-bin"
+  local session="$T/pr-failure" root="$T/pr-failure-repo" bin="$T/pr-failure-bin" base moved_head
   pr_review_session "$session" "$root"
   pr_review_gh_shim "$bin"
   : > "$T/pr-failure.calls"
@@ -1897,6 +1938,8 @@ test_pr_review_publish_failure() {
   cp "$session/pr-review.md" "$T/pr-failure-rendered.md"
   cp "$session/pr-review-target.json" "$T/pr-failure-target.json"
   cp "$session/scope.env" "$T/pr-failure-scope.env"
+  base=$(git -C "$root" rev-parse main)
+  moved_head=$(printf '%040d' 7)
   PATH="$bin:$PATH" GH_MODE=fail-post GH_CALLS="$T/pr-failure.calls" \
     GH_POSTED_BODY="$T/pr-failure-body" \
     python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
@@ -1921,6 +1964,34 @@ test_pr_review_publish_failure() {
   assert_exit "failure receipt preserves the frozen target" 0 \
     cmp -s "$session/pr-review-target.json" "$T/pr-failure-target.json"
 
+  rm -f "$T/pr-close-create.marker"
+  : > "$T/pr-failure.calls"
+  PATH="$bin:$PATH" GH_MODE=close-create GH_CALLS="$T/pr-failure.calls" \
+    GH_REVIEW_MARKER="$T/pr-close-create.marker" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-close-create.out" 2> "$T/pr-close-create.err"
+  assert_eq "closure at pending creation becomes a clean skip" "$?" 0
+  assert_grep "creation-boundary closure explains the skip" "$T/pr-close-create.out" \
+    '^pr-review: no associated open PR; skipped$'
+  assert_exit "creation-boundary closure clears the failure receipt" 0 \
+    test ! -e "$session/incomplete.md"
+  assert_nogrep "creation-boundary closure never submits or deletes a draft" \
+    "$T/pr-failure.calls" 'reviews/[0-9]+(/events)?$'
+
+  rm -f "$T/pr-close-submit.marker"
+  : > "$T/pr-failure.calls"
+  PATH="$bin:$PATH" GH_MODE=close-submit GH_CALLS="$T/pr-failure.calls" \
+    GH_REVIEW_MARKER="$T/pr-close-submit.marker" GH_DUP_BODY="$session/pr-review.md" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-close-submit.out" 2> "$T/pr-close-submit.err"
+  assert_eq "closure at pending submission becomes a clean skip" "$?" 0
+  assert_grep "submission-boundary closure explains the skip" "$T/pr-close-submit.out" \
+    '^pr-review: no associated open PR; skipped$'
+  assert_grep "submission-boundary closure deletes the exact owned draft" \
+    "$T/pr-failure.calls" '^api --method DELETE repos/acme/repo/pulls/12/reviews/80$'
+  assert_exit "submission-boundary closure clears the failure receipt" 0 \
+    test ! -e "$session/incomplete.md"
+
   rm -f "$T/pr-ambiguous-create.marker"
   : > "$T/pr-failure.calls"
   PATH="$bin:$PATH" GH_MODE=ambiguous-create GH_CALLS="$T/pr-failure.calls" \
@@ -1931,6 +2002,8 @@ test_pr_review_publish_failure() {
   assert_eq "ambiguous pending creation recovers through the review list" "$?" 0
   assert_grep "ambiguous creation submits the recovered pending review" \
     "$T/pr-failure.calls" 'reviews/80/events'
+  assert_nogrep "ambiguous creation preserves the recovered pending review" \
+    "$T/pr-failure.calls" '^api --method DELETE '
   assert_exit "ambiguous creation recovery clears the failure receipt" 0 \
     test ! -e "$session/incomplete.md"
 
@@ -1944,6 +2017,29 @@ test_pr_review_publish_failure() {
   assert_eq "ambiguous pending submission recovers exact COMMENTED state" "$?" 0
   assert_exit "ambiguous submission recovery clears the failure receipt" 0 \
     test ! -e "$session/incomplete.md"
+
+  rm -f "$T/pr-post-confirm-move.marker"
+  : > "$T/pr-failure.calls"
+  PATH="$bin:$PATH" GH_MODE=post-confirm-move GH_CALLS="$T/pr-failure.calls" \
+    GH_REVIEW_MARKER="$T/pr-post-confirm-move.marker" GH_DUP_BODY="$session/pr-review.md" \
+    GH_SWITCHED_HEAD="$moved_head" GH_MERGE_BASE="$base" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-post-confirm-move.out" 2> "$T/pr-post-confirm-move.err"
+  assert_eq "confirmed submission remains successful after a head move" "$?" 0
+  assert_exit "confirmed submission clears the failure receipt" 0 \
+    test ! -e "$session/incomplete.md"
+
+  : > "$T/pr-failure.calls"
+  PATH="$bin:$PATH" GH_MODE=post-confirm-move GH_CALLS="$T/pr-failure.calls" \
+    GH_REVIEW_MARKER="$T/pr-post-confirm-move.marker" GH_DUP_BODY="$session/pr-review.md" \
+    GH_SWITCHED_HEAD="$moved_head" GH_MERGE_BASE="$base" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-post-confirm-retry.out" 2> "$T/pr-post-confirm-retry.err"
+  assert_eq "moved-head retry recognizes the exact frozen review" "$?" 0
+  assert_grep "moved-head retry reports exact idempotence" "$T/pr-post-confirm-retry.out" \
+    'identical review already posted'
+  assert_nogrep "moved-head retry creates no second review" "$T/pr-failure.calls" \
+    '^api --method POST '
 
   : > "$T/pr-failure.calls"
   PATH="$bin:$PATH" GH_MODE=invalid-post-json GH_CALLS="$T/pr-failure.calls" \

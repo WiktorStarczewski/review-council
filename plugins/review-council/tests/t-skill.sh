@@ -441,6 +441,8 @@ test_skill_contract() {
       'final squash and push'
     assert_grep "host gives stack legs a ready report" "$H" 'stack-report\.md'
     assert_grep "host gives stack legs a ready phase" "$H" 'phase=stack-ready'
+    assert_grep "host keeps associated review sessions outside the checkout" "$H" \
+      'associated with an open PR.*outside the reviewed'
   done
   assert_grep "PR review input preserves the decisions section" "$PRDOC" \
     '^  "decisions": \[$'
@@ -456,6 +458,8 @@ test_skill_contract() {
     'freezes the associated PR, reviewed merge base'
   assert_grep "shared publication contract binds a clean committed tree" "$PRDOC" \
     'staged, unstaged, or untracked bytes'
+  assert_grep "shared publication contract rejects overlapping associated sessions" "$PRDOC" \
+    'publication-capable sessions outside the reviewed checkout'
   assert_grep "shared publication contract revalidates the PR base" "$PRDOC" \
     'branch, base branch, reviewed merge base, and'
   assert_grep "shared publication contract binds discovery to reviewed remotes" "$PRDOC" \
@@ -464,6 +468,8 @@ test_skill_contract() {
     'no-push gate'
   assert_grep "shared publication contract requires COMMENTED-state idempotence" "$PRDOC" \
     'exact `COMMENTED` review'
+  assert_grep "shared publication contract makes confirmation the success boundary" "$PRDOC" \
+    'later live-state check'
   assert_grep "shared publication contract uses the remote pending-review transaction" "$PRDOC" \
     'PENDING.*COMMENTED'
   assert_grep "shared publication contract limits pending recovery to safe owned drafts" "$PRDOC" \

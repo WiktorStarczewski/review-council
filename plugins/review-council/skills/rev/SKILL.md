@@ -47,6 +47,8 @@ is decorrelation, not coverage - and losing it is something you say out loud (se
 
 "use S as the session dir" in the invocation names the session directory
 (`/review-council:stack` passes this). Otherwise `S=/tmp/rev-$(date +%s)`.
+For a code review associated with an open PR, `S` must resolve outside the reviewed repository.
+An unassociated local render may remain inside, but it cannot publish.
 
 ## Route
 

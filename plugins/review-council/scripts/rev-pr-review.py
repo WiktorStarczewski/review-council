@@ -587,20 +587,16 @@ def body_hash(body):
 def require_clean_review_tree(root, session):
     arguments = ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."]
     try:
-        relative = session.resolve().relative_to(root.resolve())
+        session.resolve().relative_to(root.resolve())
     except ValueError:
-        relative = None
-    if relative is not None:
-        require(relative != Path("."), "the review session cannot be the repository root")
-        session_path = relative.as_posix()
-        arguments.extend([
-            f":(top,literal,exclude){session_path}",
-            f":(top,literal,exclude){session_path}/**",
-        ])
+        pass
+    else:
+        raise ReviewError(
+            "the review session must be outside the reviewed repository before publishing")
     dirty = run_git(arguments, root)
     require(not dirty,
-            "the reviewed repository has staged, unstaged, or untracked bytes outside "
-            "the PR head; commit them and rerun the review before publishing. Dirty paths:\n"
+            "the reviewed repository has staged, unstaged, or untracked bytes outside the "
+            "PR head; commit them and rerun the review before publishing. Dirty paths:\n"
             + dirty.replace("\0", "\n").rstrip())
 
 
@@ -818,6 +814,14 @@ def require_publishable_head(target, live):
             "the PR head changed after review; rerun the review before publishing")
 
 
+def terminal_skip_after_write_failure(target, root):
+    live = live_pr(target, root)
+    if live["state"] != "OPEN":
+        return True
+    require_publishable_head(target, live)
+    return False
+
+
 def publish(session, script):
     scope = parse_scope(session / "scope.env")
     retry = publication_retry(session, script)
@@ -840,16 +844,19 @@ def publish(session, script):
         if promoted:
             write_atomic(session / "pr-review-target.json",
                          json.dumps(target, indent=2) + "\n")
-        require_publishable_head(target, live)
         reviews = existing_reviews(target["repo"], target["number"], scope["root"])
+        if exact_commented_review(reviews, body, target["head"]):
+            print(f"pr-review: identical review already posted on {target['url']}")
+            return
         live = live_pr(target, scope["root"])
         if live["state"] != "OPEN":
             print("pr-review: no associated open PR; skipped")
             return
-        require_publishable_head(target, live)
+        reviews = existing_reviews(target["repo"], target["number"], scope["root"])
         if exact_commented_review(reviews, body, target["head"]):
             print(f"pr-review: identical review already posted on {target['url']}")
             return
+        require_publishable_head(target, live)
         actor = authenticated_user(scope["root"])
         pending = recoverable_pending_review(
             reviews, body, target["head"], actor, target, scope["root"])
@@ -879,6 +886,9 @@ def publish(session, script):
                 pending = recoverable_pending_review(
                     reviews, body, target["head"], actor, target, scope["root"])
                 if pending is None:
+                    if terminal_skip_after_write_failure(target, scope["root"]):
+                        print("pr-review: no associated open PR; skipped")
+                        return
                     raise ReviewError(create_error)
 
         try:
@@ -887,7 +897,6 @@ def publish(session, script):
                 delete_pending_review(target, pending, actor, scope["root"])
                 print("pr-review: no associated open PR; skipped")
                 return
-            require_publishable_head(target, live)
             reviews = existing_reviews(target["repo"], target["number"], scope["root"])
             if exact_commented_review(reviews, body, target["head"]):
                 if any(review.get("id") == pending_review_id(pending)
@@ -896,6 +905,7 @@ def publish(session, script):
                     delete_pending_review(target, pending, actor, scope["root"])
                 print(f"pr-review: identical review already posted on {target['url']}")
                 return
+            require_publishable_head(target, live)
             listed_pending = recoverable_pending_review(
                 reviews, body, target["head"], actor, target, scope["root"])
             if listed_pending is not None:
@@ -931,8 +941,10 @@ def publish(session, script):
                     reviews, body, target["head"], actor, target, scope["root"])
                 if listed_pending is not None:
                     delete_pending_review(target, listed_pending, actor, scope["root"])
+                if terminal_skip_after_write_failure(target, scope["root"]):
+                    print("pr-review: no associated open PR; skipped")
+                    return
                 raise ReviewError(submit_error)
-        require_publishable_head(target, live_pr(target, scope["root"]))
     print(f"pr-review: posted {target['url']}")
 
 

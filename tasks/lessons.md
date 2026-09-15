@@ -224,3 +224,4 @@
 - Claude Code may treat a long skill as guidance unless the entry states its execution contract directly. Put the contract in the always-loaded policy and the skill body, require an exact reason for every omitted step, and make missing evidence audits or receipts non-certifying.
 - Once an assigned patch is fully byte-proven, a final out-of-range read adds no review evidence and should remain an advisory. The identical read before complete proof stays fatal.
 - For long release convergence, give an hourly checkpoint with concrete artifacts, open blockers, and bounded remaining gates. If an hour passes without source-changing progress, stop and reassess before launching another paid panel.
+- After the user explicitly overrides an incomplete review gate, record the exact waived seat and preserved evidence, then continue to the next meaningful certification. Do not relaunch the failed panel or let the waiver erase valid sibling results.

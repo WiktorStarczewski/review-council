@@ -102,11 +102,12 @@ For an associated PR, render resolves the branch and base recorded by preflight,
 pins every GitHub CLI call to `github.com`,
 requires an open PR at the reviewed local head, and freezes that PR, branch, base,
 head, tree, date, and body hash in the target envelope. Rendering fails when the
-repository has staged, unstaged, or untracked bytes outside the exact active session
-directory because those bytes are absent from the PR head. A normal or read-only
-review therefore renders only after its final authorized push. Stack legs may render
-their clean unpushed reviewed head because the stack performs the guarded final
-transition below.
+session directory is inside the reviewed repository or the repository has staged, unstaged, or untracked bytes because those bytes are absent from the PR head. Keep
+publication-capable sessions outside the reviewed checkout. A session with no
+associated open PR may remain inside for local rendering because it cannot publish.
+A normal or read-only review therefore renders only after its final authorized push.
+Stack legs may render their clean unpushed reviewed head because the stack performs
+the guarded final transition below.
 
 For a normal or read-only code review, publish before setting `phase=done` or writing
 `report.md`:
@@ -132,17 +133,19 @@ CLI repository selection or copied target state therefore cannot redirect the po
 Accepted remotes are GitHub HTTPS, git protocol, SCP-style SSH, explicit-port SSH on
 `github.com`, and GitHub's documented `ssh.github.com:443` SSH-over-HTTPS form.
 Under a repository-local lock, it reads and updates the rendered body and target,
-checks all existing reviews, then revalidates the frozen open head before choosing a
-duplicate or creating a review. Publication creates or recovers the authenticated publisher's exact owned `PENDING` review with no inline comments, pins `commit_id` to the frozen head, revalidates that head, and submits the review as `COMMENTED`. GitHub therefore serializes concurrent publishers
-using the same authenticated account even when they run from separate clones. Foreign
-and unrelated pending reviews are never submitted or deleted. After submission the
-publisher revalidates the head again before reporting success. Closure or merge before
-submission becomes the exact no-open-PR skip and discards only the owned transaction,
-including closure during stack head propagation. Closure after submission remains a
-retryable ambiguity. It treats only an exact `COMMENTED` review body on the reviewed
-commit as idempotent success. The submission request sets `event` to `COMMENT`; both
-responses are verified. A real
-no-PR association skips cleanly; missing session scope or artifacts fail closed.
+checks all existing reviews, and recognizes an exact `COMMENTED` review on the frozen
+commit before rejecting a later open-head move. Immediately before the first write it
+revalidates the frozen open head. Publication creates or recovers the authenticated publisher's exact owned `PENDING` review with no inline comments, pins `commit_id` to the frozen head, revalidates that head, and submits the review as `COMMENTED`. GitHub
+therefore serializes concurrent publishers using the same authenticated account even
+when they run from separate clones. Foreign and unrelated pending reviews are never
+submitted or deleted. An ambiguous creation that leaves the exact owned pending review
+continues that transaction to submission. A failed submission cleans only that exact
+safe draft. If either write fails, a fresh closed or merged state becomes the exact
+no-open-PR skip, while an open moved head remains a rerun-required failure. Once GitHub
+confirms the exact commit-pinned `COMMENTED` review, publication is successful without
+a later live-state check. The submission request sets `event` to `COMMENT`; both
+responses are verified. A real no-PR association skips cleanly; missing session scope
+or artifacts fail closed.
 
 Any other nonzero publish exit leaves the PR review incomplete. Preserve
 `pr-review.json`, `pr-review.md`, and the frozen target, then atomically write

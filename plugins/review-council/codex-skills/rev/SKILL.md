@@ -42,6 +42,8 @@ are relative to that absolute `PLUGIN`; quote paths and use arrays for arguments
 - Reuse a requested session directory; otherwise make one with `mktemp -d
   /tmp/rev-XXXXXX`. Call it `S`. Read any existing ledger before continuing. Keep all
   logs, prompts, reviewer outputs, and ledgers there, away from the reviewed files.
+- For a code review associated with an open PR, `S` must resolve outside the reviewed repository.
+  An unassociated local render may remain inside, but it cannot publish.
 
 Immediately after selecting the session, canonicalize it once. This makes macOS `/tmp` and `/private/tmp`
 share one manifest identity:
