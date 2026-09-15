@@ -161,9 +161,16 @@ pushed retry derives finalization from the frozen target and current head, so re
 does not depend on a marker written after history changes.
 Stack no-push and no-squash settings are exported to every child leg, including values
 assigned by the stack config.
+Before every real push, the stack validates the authoritative session, clean reviewed
+tree, merge base, frozen body and target, repository set, and push endpoint without
+calling GitHub. It then pushes the captured commit to the captured literal URL and
+destination ref, so later branch or remote configuration changes cannot widen or
+redirect the push.
 The finalizer tolerates brief GitHub head propagation only while the visible head is
 the frozen head or its ancestor. After successful publication or an explicit no-push
-skip, the stack promotes `stack-report.md` to `report.md` and sets `phase=done`.
+skip, the stack sets `phase=done` before promoting `stack-report.md` to `report.md`.
+The two artifacts jointly form the completion receipt; either one alone is incomplete
+and remains retryable.
 For every completed repository, the push must succeed before finalization starts.
 Read the final body before reporting success. A push, tree or merge-base check,
 finalization, or publication failure keeps the ready receipt unpromoted.

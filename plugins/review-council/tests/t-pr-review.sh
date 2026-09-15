@@ -1085,12 +1085,67 @@ PY
   unrelated_head=$(printf 'same tree, unrelated parent\n' | git -C "$ancestry_root" \
     commit-tree "$ancestry_tree" -p "$other_parent")
   git -C "$ancestry_root" reset -q --hard "$unrelated_head"
-  PATH="$bin:$PATH" GH_HEAD_OID="$unrelated_head" GH_CALLS="$T/pr-ancestry.calls" \
+  PATH="$bin:$PATH" GH_HEAD_OID="$unrelated_head" GH_MERGE_BASE="$other_parent" \
+    GH_CALLS="$T/pr-ancestry.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" finalize-stack "$ancestry_session" \
     --head "$unrelated_head" > "$T/pr-ancestry.out" 2> "$T/pr-ancestry.err"
   assert_eq "same-tree finalization with a different merge base fails" "$?" 1
   assert_grep "different-parent failure names the reviewed merge base" \
-    "$T/pr-ancestry.err" 'merge base'
+    "$T/pr-ancestry.err" 'the open PR merge base does not match the reviewed base'
+}
+
+test_pr_review_validate_stack() {
+  local session="$T/pr-validate" root="$T/pr-validate-repo" bin="$T/pr-validate-bin"
+  local head next
+  pr_review_session "$session" "$root"
+  pr_review_gh_shim "$bin"
+  : > "$T/pr-validate.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 >/dev/null
+  head=$(git -C "$root" rev-parse HEAD)
+  : > "$T/pr-validate.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" \
+    --head "$head" --root "$root" --push-url 'https://github.com/acme/repo.git' \
+    > "$T/pr-validate.out" 2> "$T/pr-validate.err"
+  assert_eq "local stack validation accepts the frozen review" "$?" 0
+  assert_nogrep "local stack validation makes no GitHub calls" "$T/pr-validate.calls" '.'
+
+  git -C "$root" commit --allow-empty -qm 'fix(rev): same tree'
+  next=$(git -C "$root" rev-parse HEAD)
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" \
+    --head "$next" --root "$root" --push-url 'ssh://git@github.com/acme/repo.git' \
+    > "$T/pr-validate-same-tree.out" 2> "$T/pr-validate-same-tree.err"
+  assert_eq "local stack validation accepts a same-tree aggregate commit" "$?" 0
+
+  echo dirty > "$root/dirty.txt"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" \
+    --head "$next" --root "$root" --push-url 'https://github.com/acme/repo.git' \
+    > "$T/pr-validate-dirty.out" 2> "$T/pr-validate-dirty.err"
+  assert_eq "local stack validation rejects dirty bytes" "$?" 1
+  assert_grep "dirty validation names the clean-tree gate" \
+    "$T/pr-validate-dirty.err" 'staged, unstaged, or untracked bytes'
+  git -C "$root" clean -qf
+
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" \
+    --head "$next" --root "$root" --push-url 'https://github.com/evil/repo.git' \
+    > "$T/pr-validate-push.out" 2> "$T/pr-validate-push.err"
+  assert_eq "local stack validation rejects a redirected GitHub push" "$?" 1
+  assert_grep "redirected push names the frozen repository boundary" \
+    "$T/pr-validate-push.err" 'push URL.*frozen GitHub repository'
+
+  echo tampered >> "$session/pr-review.md"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" \
+    --head "$next" --root "$root" --push-url 'https://github.com/acme/repo.git' \
+    > "$T/pr-validate-body.out" 2> "$T/pr-validate-body.err"
+  assert_eq "local stack validation rejects a tampered rendered body" "$?" 1
+  assert_grep "tampered validation names the frozen body" \
+    "$T/pr-validate-body.err" 'frozen body hash'
+  assert_nogrep "every local validation path avoids GitHub" "$T/pr-validate.calls" '.'
 }
 
 test_pr_review_stack_finalization() {

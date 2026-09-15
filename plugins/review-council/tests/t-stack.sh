@@ -58,7 +58,22 @@ if os.environ.get('STACK_REQUIRE_SYNC') == '1':
         raise SystemExit(9)
     if command == 'finalize-stack' and (requested != local or local != remote):
         raise SystemExit(9)
+if command == 'validate-stack':
+    action = os.environ.get('STACK_AFTER_VALIDATE')
+    if action == 'commit':
+        changed = Path(root) / 'after-validation.txt'
+        changed.write_text('changed after validation\n')
+        subprocess.run(['git', '-C', root, 'add', changed.name], check=True)
+        subprocess.run(
+            ['git', '-C', root, 'commit', '-qm', 'fix(rev): after validation'], check=True)
+    elif action == 'pushurl':
+        subprocess.run(
+            ['git', '-C', root, 'remote', 'set-url', '--add', '--push', 'origin',
+             os.environ['STACK_REDIRECT_URL']], check=True)
+    raise SystemExit(int(os.environ.get('STACK_VALIDATE_RC', '0')))
 if command == 'finalize-stack':
+    if os.environ.get('STACK_REMOVE_PUBLISHER') == '1':
+        Path(__file__).unlink()
     raise SystemExit(int(os.environ.get('STACK_FINALIZE_RC', '0')))
 if command == 'publish':
     raise SystemExit(int(os.environ.get('STACK_PUBLISH_RC', '0')))
@@ -175,6 +190,66 @@ RSEOF
       'ALL PHASES COMPLETE'
     unset STACK_PUBLISH_RC
 
+    local state_real="$SCRIPTS/rev-state.sh"
+    unlink "$RS/rev-state.sh"
+    cat > "$RS/rev-state.sh" <<'SH'
+#!/bin/bash
+if [ "${STACK_STATE_FAIL:-}" = 1 ] && printf '%s\n' "$@" | grep -qx 'phase=done'; then
+  exit 1
+fi
+exec "$REV_STATE_REAL" "$@"
+SH
+    chmod +x "$RS/rev-state.sh"
+    export REV_STATE_REAL="$state_real"
+    export ROOT="$T/stack-state-fail-root" LOG="$T/stack-state-fail.log"
+    export STACK_PUBLISH_CALLS="$T/stack-state-fail.calls" STACK_STATE_FAIL=1
+    : > "$STACK_PUBLISH_CALLS"
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-publish.cfg" \
+      > "$T/stack-state-fail.out" 2>&1
+    assert_eq "failed completion state write fails the stack" "$?" 1
+    assert_exit "failed state write exposes no final report" 0 \
+      test ! -e "$ROOT/legpub/report.md"
+    assert_exit "failed state write preserves the ready report" 0 \
+      test -s "$ROOT/legpub/stack-report.md"
+    assert_grep "failed state write retains the nonterminal phase" \
+      "$ROOT/legpub/state.json" '"phase":[[:space:]]*"stack-ready"'
+    unset STACK_STATE_FAIL
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-publish.cfg" \
+      > "$T/stack-state-retry.out" 2>&1
+    assert_eq "completion retries after a failed state write" "$?" 0
+    assert_exit "state-write retry promotes the final report" 0 \
+      test -s "$ROOT/legpub/report.md"
+
+    local mv_bin="$T/stack-mv-bin"
+    mkdir -p "$mv_bin"
+    cat > "$mv_bin/mv" <<'SH'
+#!/bin/bash
+case "${STACK_PROMOTE_FAIL:-}:$1:$2" in
+  1:*stack-report.md:*report.md) exit 1;;
+esac
+exec /bin/mv "$@"
+SH
+    chmod +x "$mv_bin/mv"
+    export ROOT="$T/stack-promote-fail-root" LOG="$T/stack-promote-fail.log"
+    export STACK_PUBLISH_CALLS="$T/stack-promote-fail.calls" NO_PUSH=1
+    : > "$STACK_PUBLISH_CALLS"
+    PATH="$mv_bin:$PATH" STACK_PROMOTE_FAIL=1 SHIM_MODE=ok \
+      "$STACK/stack.sh" "$T/stack-publish.cfg" \
+      > "$T/stack-promote-fail.out" 2>&1
+    assert_eq "failed report promotion fails the stack" "$?" 1
+    assert_exit "failed promotion exposes no joint completion receipt" 0 \
+      test ! -e "$ROOT/legpub/report.md"
+    assert_exit "failed promotion preserves a retryable ready report" 0 \
+      test -s "$ROOT/legpub/stack-report.md"
+    assert_grep "failed promotion may retain done only without a final report" \
+      "$ROOT/legpub/state.json" '"phase": "done"'
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-publish.cfg" \
+      > "$T/stack-promote-retry.out" 2>&1
+    assert_eq "completion retries after a failed report promotion" "$?" 0
+    assert_exit "promotion retry creates the joint completion receipt" 0 \
+      test -s "$ROOT/legpub/report.md"
+    export NO_PUSH=0
+
     echo later > "$RP/later.txt"; git -C "$RP" add later.txt
     git -C "$RP" commit -qm 'fix(rev): rejected push'
     mkdir -p "$T/stk-publish-remote.git/hooks"
@@ -184,12 +259,102 @@ exit 1
 SH
     chmod +x "$T/stk-publish-remote.git/hooks/pre-receive"
     export ROOT="$T/stack-push-fail-root" LOG="$T/stack-push-fail.log"
+    unset STACK_REQUIRE_SYNC
     : > "$STACK_PUBLISH_CALLS"
     SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-publish.cfg" > "$T/stack-push-fail.out" 2>&1
     assert_eq "failed stack push fails the workflow" "$?" 1
     assert_nogrep "failed stack push invokes no publisher" "$STACK_PUBLISH_CALLS" '^publish '
-    assert_grep "failed stack push is terminal" "$LOG" 'COMPLETE WITH FAILURES'
+    assert_grep "failed stack push is attributed to the push" "$LOG" \
+      'COMPLETE WITH FAILURES: push:stk-publish'
+    assert_nogrep "failed stack push never reaches finalization" \
+      "$STACK_PUBLISH_CALLS" '^finalize-stack '
     assert_nogrep "failed stack push never reports completion" "$LOG" 'ALL PHASES COMPLETE'
+
+    local RH="$T/stk-head-race" rh_remote="$T/stk-head-race-remote.git"
+    mkrepo "$RH"; git -C "$RH" checkout -qb feat
+    git init -q --bare "$rh_remote"
+    git -C "$RH" remote add origin "$rh_remote"
+    git -C "$RH" push -q -u origin feat
+    echo reviewed > "$RH/reviewed.txt"; git -C "$RH" add reviewed.txt
+    git -C "$RH" commit -qm 'fix(rev): reviewed head'
+    printf 'legs() { run_leg "%s" 1 legrace "head race"; }\n' "$RH" \
+      > "$T/stack-head-race.cfg"
+    export ROOT="$T/stack-head-race-root" LOG="$T/stack-head-race.log"
+    export STACK_PUBLISH_CALLS="$T/stack-head-race.calls" STACK_AFTER_VALIDATE=commit
+    : > "$STACK_PUBLISH_CALLS"
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-head-race.cfg" \
+      > "$T/stack-head-race.out" 2>&1
+    assert_eq "branch movement during push fails the stack" "$?" 1
+    local reviewed_head raced_head remote_head
+    assert_grep "head-race fixture reaches pre-push validation" \
+      "$STACK_PUBLISH_CALLS" '^validate-stack '
+    raced_head=$(git -C "$RH" rev-parse HEAD)
+    reviewed_head=$(sed -n 's/^validate-stack .* local=\([^ ]*\) remote=.*/\1/p' \
+      "$STACK_PUBLISH_CALLS")
+    remote_head=$(git -C "$RH" ls-remote origin refs/heads/feat | awk '{print $1}')
+    assert_eq "branch movement cannot widen the immutable push" \
+      "$remote_head" "$reviewed_head"
+    assert_nogrep "branch movement never reaches finalization" \
+      "$STACK_PUBLISH_CALLS" '^finalize-stack '
+    assert_exit "race fixture really advances the local branch" 0 \
+      test "$raced_head" != "$reviewed_head"
+    unset STACK_AFTER_VALIDATE
+
+    local RR="$T/stk-pushurl-race" rr_remote="$T/stk-pushurl-race-remote.git"
+    local rr_redirect="$T/stk-pushurl-redirect.git"
+    mkrepo "$RR"; git -C "$RR" checkout -qb feat
+    git init -q --bare "$rr_remote"; git init -q --bare "$rr_redirect"
+    git -C "$RR" remote add origin "$rr_remote"
+    git -C "$RR" push -q -u origin feat
+    echo reviewed > "$RR/reviewed.txt"; git -C "$RR" add reviewed.txt
+    git -C "$RR" commit -qm 'fix(rev): pinned push URL'
+    printf 'legs() { run_leg "%s" 1 legurl "push URL race"; }\n' "$RR" \
+      > "$T/stack-pushurl-race.cfg"
+    export ROOT="$T/stack-pushurl-race-root" LOG="$T/stack-pushurl-race.log"
+    export STACK_PUBLISH_CALLS="$T/stack-pushurl-race.calls"
+    export STACK_AFTER_VALIDATE=pushurl STACK_REDIRECT_URL="$rr_redirect"
+    : > "$STACK_PUBLISH_CALLS"
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-pushurl-race.cfg" \
+      > "$T/stack-pushurl-race.out" 2>&1
+    assert_eq "push URL movement cannot redirect the reviewed push" "$?" 0
+    assert_grep "push-URL fixture reaches pre-push validation" \
+      "$STACK_PUBLISH_CALLS" '^validate-stack '
+    assert_eq "push-URL fixture changes the configured endpoint after validation" \
+      "$(git -C "$RR" remote get-url --push origin)" "$rr_redirect"
+    remote_head=$(git -C "$RR" ls-remote "$rr_remote" refs/heads/feat | awk '{print $1}')
+    assert_eq "captured push URL receives the reviewed commit" \
+      "$remote_head" "$(git -C "$RR" rev-parse HEAD)"
+    assert_eq "changed push URL receives no branch" \
+      "$(git -C "$RR" ls-remote "$rr_redirect" refs/heads/feat | awk '{print $1}')" ""
+    unset STACK_AFTER_VALIDATE STACK_REDIRECT_URL
+
+    local RMP="$T/stk-missing-publisher" rmp_remote="$T/stk-missing-publisher-remote.git"
+    local RSM="$T/rs-missing-publisher"
+    mkrepo "$RMP"; git -C "$RMP" checkout -qb feat
+    git init -q --bare "$rmp_remote"
+    git -C "$RMP" remote add origin "$rmp_remote"
+    git -C "$RMP" push -q -u origin feat
+    echo reviewed > "$RMP/reviewed.txt"; git -C "$RMP" add reviewed.txt
+    git -C "$RMP" commit -qm 'fix(rev): missing publisher'
+    printf 'legs() { run_leg "%s" 1 legmissingpub "missing publisher"; }\n' "$RMP" \
+      > "$T/stack-missing-publisher.cfg"
+    copy_writable_tree "$RS" "$RSM"
+    export REV_SCRIPTS="$RSM" ROOT="$T/stack-missing-publisher-root"
+    export LOG="$T/stack-missing-publisher.log"
+    export STACK_PUBLISH_CALLS="$T/stack-missing-publisher.calls"
+    export STACK_REMOVE_PUBLISHER=1
+    : > "$STACK_PUBLISH_CALLS"
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-missing-publisher.cfg" \
+      > "$T/stack-missing-publisher.out" 2>&1
+    assert_eq "publisher disappearance fails the stack" "$?" 1
+    assert_grep "publisher disappearance is attributed to publication" "$LOG" \
+      'COMPLETE WITH FAILURES: PR review publication'
+    assert_exit "publisher disappearance exposes no final report" 0 \
+      test ! -e "$ROOT/legmissingpub/report.md"
+    assert_exit "publisher disappearance preserves the ready report" 0 \
+      test -s "$ROOT/legmissingpub/stack-report.md"
+    unset STACK_REMOVE_PUBLISHER
+    export REV_SCRIPTS="$RS"
 
     local RSQ="$T/stk-squash"; mkrepo "$RSQ"; git -C "$RSQ" checkout -qb feat
     git init -q --bare "$T/stk-squash-remote.git"

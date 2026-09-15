@@ -369,7 +369,7 @@ ${VACUITY}${resume}"
 }
 
 finish_repos() {
-  local d srq push_rc
+  local d srq push_rc session head branch_ref push_remote push_ref push_urls push_url
   for d in $REPOS_SEEN; do
     case " $FAILED_REPOS " in *" $d "*)
       say "--- skipping $(basename "$d") - a leg on it failed; its review is not complete"; continue;; esac
@@ -390,12 +390,65 @@ finish_repos() {
     # A refused squash is not a reason to withhold the push: the round commits are real work and CI
     # must see them. Squash and push are therefore independent steps, not one && chain.
     [ "$srq" -eq 0 ] || say "!!! squash refused for $(basename "$d") - pushing the un-collapsed review commits"
+    if [ "$NO_PUSH" = 1 ]; then
+      say "    (NO_PUSH=1: not pushing)"
+      continue
+    fi
+    session=$(session_for_repo "$d") || {
+      say "!!! no authoritative completed review session before push for $(basename "$d")"
+      note_failure "pre-push review validation" "$d"
+      continue
+    }
+    head=$(git -C "$d" rev-parse HEAD 2>/dev/null) || {
+      say "!!! cannot capture the reviewed push head for $(basename "$d")"
+      note_failure "pre-push review validation" "$d"
+      continue
+    }
+    branch_ref=$(git -C "$d" symbolic-ref -q HEAD 2>/dev/null) || {
+      say "!!! cannot capture the reviewed push branch for $(basename "$d")"
+      note_failure "pre-push review validation" "$d"
+      continue
+    }
+    push_remote=$(git -C "$d" for-each-ref --format='%(upstream:remotename)' "$branch_ref")
+    push_ref=$(git -C "$d" for-each-ref --format='%(upstream:remoteref)' "$branch_ref")
+    if [ -z "$push_remote" ] || [ -z "$push_ref" ]; then
+      say "!!! cannot resolve one upstream push destination for $(basename "$d")"
+      note_failure "pre-push review validation" "$d"
+      continue
+    fi
+    push_urls=$(git -C "$d" remote get-url --push --all "$push_remote" 2>/dev/null) || {
+      say "!!! cannot resolve the push URL for $(basename "$d")"
+      note_failure "pre-push review validation" "$d"
+      continue
+    }
+    if [ "$(printf '%s\n' "$push_urls" | grep -c .)" -ne 1 ]; then
+      say "!!! cannot resolve exactly one push URL for $(basename "$d")"
+      note_failure "pre-push review validation" "$d"
+      continue
+    fi
+    push_url=$push_urls
     set -o pipefail
-    ( cd "$d" && if [ "$NO_PUSH" = 1 ]; then echo "(NO_PUSH=1: not pushing)"; else git push; fi ) 2>&1 | sed 's/^/    /' | tee -a "$LOG"
+    python3 "$REV_SCRIPTS/rev-pr-review.py" validate-stack "$session" \
+      --head "$head" --root "$d" --push-url "$push_url" 2>&1 \
+      | sed 's/^/    /' | tee -a "$LOG"
     push_rc=$?
     set +o pipefail
-    if [ "$NO_PUSH" != 1 ] && [ "$push_rc" -ne 0 ]; then
+    if [ "$push_rc" -ne 0 ]; then
+      note_failure "pre-push review validation" "$d"
+      continue
+    fi
+    set -o pipefail
+    git -C "$d" push "$push_url" "$head:$push_ref" 2>&1 \
+      | sed 's/^/    /' | tee -a "$LOG"
+    push_rc=$?
+    set +o pipefail
+    if [ "$push_rc" -ne 0 ]; then
       say "!!! push failed for $(basename "$d")"
+      note_failure "push:$(basename "$d")" "$d"
+      continue
+    fi
+    if [ "$(git -C "$d" rev-parse HEAD 2>/dev/null)" != "$head" ]; then
+      say "!!! branch moved while pushing $(basename "$d")"
       note_failure "push:$(basename "$d")" "$d"
       continue
     fi
@@ -448,6 +501,10 @@ publish_reviews() {
   fi
   [ -f "$REV_SCRIPTS/rev-pr-review.py" ] || {
     say "!!! PR review publisher is missing: $REV_SCRIPTS/rev-pr-review.py"
+    for repo in $REPOS_SEEN; do
+      case " $FAILED_REPOS " in *" $repo "*) continue;; esac
+      note_failure "PR review publication" "$repo"
+    done
     return 1
   }
   for repo in $REPOS_SEEN; do
@@ -486,14 +543,7 @@ complete_reviews() {
       note_failure "PR review completion" "$repo"
       continue
     }
-    if [ -f "$session/stack-report.md" ]; then
-      if ! mv "$session/stack-report.md" "$session/report.md"; then
-        say "!!! cannot promote the stack-ready report: $session"
-        rc=1
-        note_failure "PR review completion" "$repo"
-        continue
-      fi
-    elif [ ! -f "$session/report.md" ]; then
+    if [ ! -f "$session/stack-report.md" ] && [ ! -f "$session/report.md" ]; then
       say "!!! authoritative session has no report to complete: $session"
       rc=1
       note_failure "PR review completion" "$repo"
@@ -501,6 +551,13 @@ complete_reviews() {
     fi
     if ! "$REV_SCRIPTS/rev-state.sh" "$session" phase=done; then
       say "!!! cannot mark the published review complete: $session"
+      rc=1
+      note_failure "PR review completion" "$repo"
+      continue
+    fi
+    if [ -f "$session/stack-report.md" ] \
+        && ! mv "$session/stack-report.md" "$session/report.md"; then
+      say "!!! cannot promote the stack-ready report: $session"
       rc=1
       note_failure "PR review completion" "$repo"
     fi
