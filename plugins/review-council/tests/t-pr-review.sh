@@ -90,12 +90,14 @@ MARKDOWN
 }
 
 pr_review_session() {
-  local session=$1 root=$2
+  local session=$1 root=$2 base
   mkdir -p "$session"
   mkrepo "$root"
   git -C "$root" checkout -qb feat
   git -C "$root" remote add origin https://github.com/acme/repo.git
-  printf "REV_ROOT='%s'\nREV_BRANCH='feat'\nREV_BASE_BRANCH='main'\n" "$root" \
+  base=$(git -C "$root" rev-parse main)
+  printf "REV_BASE='%s'\nREV_ROOT='%s'\nREV_BRANCH='feat'\nREV_BASE_BRANCH='main'\n" \
+    "$base" "$root" \
     > "$session/scope.env"
   pr_review_input > "$session/pr-review.json"
 }
@@ -107,6 +109,7 @@ pr_review_gh_shim() {
 #!/bin/bash
 printf '%s\n' "$*" >> "$GH_CALLS"
 head=${GH_HEAD_OID:-$(git rev-parse HEAD 2>/dev/null || printf '%040d' 0)}
+base_oid=${GH_BASE_OID:-$(git rev-parse main 2>/dev/null || printf '%040d' 0)}
 if [ "${1:-} ${2:-}" = "pr view" ]; then
   if [ "${GH_MODE:-post}" = no-pr ]; then
     echo 'no pull requests found for branch "feat"' >&2
@@ -115,7 +118,13 @@ if [ "${1:-} ${2:-}" = "pr view" ]; then
   live_head=${GH_LIVE_HEAD:-$head}
   live_state=${GH_LIVE_STATE:-OPEN}
   live_base=${GH_LIVE_BASE:-main}
-  printf '{"number":12,"url":"https://github.com/acme/repo/pull/12","state":"%s","headRefName":"feat","headRefOid":"%s","baseRefName":"%s"}\n' "$live_state" "$live_head" "$live_base"
+  live_base_oid=${GH_LIVE_BASE_OID:-$base_oid}
+  repo=acme/repo
+  case " $* " in
+    *' --repo acme/repo '*) ;;
+    *) [ -z "${GH_REPO:-}" ] || repo=$GH_REPO;;
+  esac
+  printf '{"number":12,"url":"https://github.com/%s/pull/12","state":"%s","headRefName":"feat","headRefOid":"%s","baseRefName":"%s","baseRefOid":"%s"}\n' "$repo" "$live_state" "$live_head" "$live_base" "$live_base_oid"
   exit 0
 fi
 if [ "${1:-}" = api ]; then
@@ -150,6 +159,33 @@ fi
 exit 2
 SH
   chmod +x "$bin/gh"
+}
+
+test_pr_review_commit_deduplication() {
+  local session="$T/pr-commit-dedupe"
+  mkdir -p "$session"
+  pr_review_input > "$session/pr-review.json"
+  python3 - "$session/pr-review.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data['fixes'].append({
+    'severity': 'P2',
+    'summary': 'Keep the same fix identity',
+    'commit': {
+        'label': 'abc1234',
+        'url': ' https://github.com/acme/repo/commit/abc1234/ ',
+    },
+})
+path.write_text(json.dumps(data))
+PY
+  python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 >/dev/null
+  assert_eq "equivalent fix links render cleanly" "$?" 0
+  assert_grep "equivalent fix links count one commit" "$session/pr-review.md" \
+    '^<summary>Fixes \(1 commit\)</summary>$'
 }
 
 test_pr_review_render() {
@@ -258,7 +294,8 @@ test_pr_review_clean_identity() {
   git -C "$nested_root" remote add origin https://github.com/acme/repo.git
   nested="$nested_root/.review-session"
   mkdir -p "$nested"
-  printf "REV_ROOT='%s'\nREV_BRANCH='feat'\nREV_BASE_BRANCH='main'\n" "$nested_root" \
+  printf "REV_BASE='%s'\nREV_ROOT='%s'\nREV_BRANCH='feat'\nREV_BASE_BRANCH='main'\n" \
+    "$(git -C "$nested_root" rev-parse main)" "$nested_root" \
     > "$nested/scope.env"
   pr_review_input > "$nested/pr-review.json"
   : > "$T/pr-nested.calls"
@@ -300,14 +337,24 @@ test_pr_review_publish() {
     python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 \
     > "$T/pr-render-publish.out" 2> "$T/pr-render-publish.err"
   assert_eq "PR review target render exits cleanly" "$?" 0
+  assert_grep "PR review renderer freezes the scoped PR" "$T/pr.calls" \
+    '^pr view feat --repo acme/repo --json number,url,state,headRefName,headRefOid,baseRefName,baseRefOid$'
+  : > "$T/pr.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr.calls" GH_POSTED_BODY="$T/pr-no-push-posted.md" \
+    NO_PUSH=1 python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-no-push.out" 2> "$T/pr-no-push.err"
+  assert_eq "NO_PUSH suppresses direct PR review publication" "$?" 0
+  assert_grep "NO_PUSH publication skip is explicit" "$T/pr-no-push.out" \
+    '^pr-review: NO_PUSH=1; skipped publication$'
+  assert_nogrep "NO_PUSH never calls GitHub" "$T/pr.calls" '.'
+
+  : > "$T/pr.calls"
   PATH="$bin:$PATH" GH_CALLS="$T/pr.calls" GH_POSTED_BODY="$T/pr-posted.md" \
     python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
     > "$T/pr-publish.out" 2> "$T/pr-publish.err"
   assert_eq "PR review publisher exits cleanly" "$?" 0
-  assert_grep "PR review renderer freezes the scoped PR" "$T/pr.calls" \
-    '^pr view feat --json number,url,state,headRefName,headRefOid,baseRefName$'
   assert_grep "PR review publisher revalidates the frozen PR" "$T/pr.calls" \
-    '^pr view 12 --repo acme/repo --json number,url,state,headRefName,headRefOid,baseRefName$'
+    '^pr view 12 --repo acme/repo --json number,url,state,headRefName,headRefOid,baseRefName,baseRefOid$'
   assert_exit "PR review target envelope is written" 0 test -s "$session/pr-review-target.json"
   assert_grep "PR review publisher checks existing reviews" "$T/pr.calls" \
     '^api --paginate --slurp repos/acme/repo/pulls/12/reviews\?per_page=100$'
@@ -329,6 +376,19 @@ test_pr_review_frozen_publication() {
     python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-14 >/dev/null
   assert_eq "frozen publication fixture renders" "$?" 0
   cp "$session/pr-review.md" "$T/pr-frozen-inspected.md"
+
+  echo tampered >> "$session/pr-review.md"
+  : > "$T/pr-frozen.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-frozen.calls" \
+    GH_POSTED_BODY="$T/pr-frozen-tampered-posted.md" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-frozen-body.out" 2> "$T/pr-frozen-body.err"
+  assert_eq "edited rendered body blocks publication at the body-hash gate" "$?" 1
+  assert_grep "edited rendered body names the body-hash failure" "$T/pr-frozen-body.err" \
+    'frozen body hash'
+  assert_nogrep "edited rendered body is never posted" "$T/pr-frozen.calls" '^pr review '
+  cp "$T/pr-frozen-inspected.md" "$session/pr-review.md"
+
   sed 's/Nothing blocking from this review/Changed after inspection/' \
     "$session/pr-review.json" > "$T/pr-frozen-mutated.json"
   mv "$T/pr-frozen-mutated.json" "$session/pr-review.json"
@@ -379,6 +439,53 @@ test_pr_review_frozen_publication() {
     > "$T/pr-frozen-retargeted.out" 2> "$T/pr-frozen-retargeted.err"
   assert_eq "retargeted PR base fails frozen publication" "$?" 1
   assert_nogrep "retargeted PR is never posted" "$T/pr-frozen.calls" '^pr review '
+
+  : > "$T/pr-frozen.calls"
+  PATH="$bin:$PATH" GH_LIVE_BASE_OID=0000000000000000000000000000000000000001 \
+    GH_CALLS="$T/pr-frozen.calls" GH_POSTED_BODY="$T/pr-frozen-base-drift.md" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-frozen-base-drift.out" 2> "$T/pr-frozen-base-drift.err"
+  assert_eq "same-name base movement fails frozen publication" "$?" 1
+  assert_nogrep "same-name base movement is never posted" "$T/pr-frozen.calls" '^pr review '
+}
+
+test_pr_review_repository_and_base_identity() {
+  local session="$T/pr-identity" root="$T/pr-identity-repo" bin="$T/pr-identity-bin"
+  local base ref variant
+  pr_review_session "$session" "$root"
+  pr_review_gh_shim "$bin"
+  base=$(git -C "$root" rev-parse main)
+  git -C "$root" tag reviewed-base main
+  cp "$session/scope.env" "$T/pr-identity-original.scope"
+
+  for variant in remote tag sha; do
+    case "$variant" in
+      remote) ref=origin/main;;
+      tag) ref=reviewed-base;;
+      sha) ref=$base;;
+    esac
+    sed "s#REV_BASE_BRANCH='main'#REV_BASE_BRANCH='$ref'#" \
+      "$T/pr-identity-original.scope" > "$T/pr-identity-$variant.scope"
+    cp "$T/pr-identity-$variant.scope" "$session/scope.env"
+    : > "$T/pr-identity-$variant.calls"
+    PATH="$bin:$PATH" GH_CALLS="$T/pr-identity-$variant.calls" \
+      python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 \
+      > "$T/pr-identity-$variant.out" 2> "$T/pr-identity-$variant.err"
+    assert_eq "$variant base ref resolves through the reviewed merge base" "$?" 0
+    assert_eq "$variant base ref freezes the actual PR base branch" \
+      "$(jq -r .base_branch "$session/pr-review-target.json")" main
+  done
+
+  cp "$T/pr-identity-original.scope" "$session/scope.env"
+  : > "$T/pr-identity-ambient.calls"
+  PATH="$bin:$PATH" GH_REPO=evil/other GH_CALLS="$T/pr-identity-ambient.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 \
+    > "$T/pr-identity-ambient.out" 2> "$T/pr-identity-ambient.err"
+  assert_eq "ambient GH_REPO cannot redirect PR discovery" "$?" 0
+  assert_eq "PR discovery stays bound to a reviewed GitHub remote" \
+    "$(jq -r .repo "$session/pr-review-target.json")" acme/repo
+  assert_grep "PR discovery names the reviewed remote explicitly" \
+    "$T/pr-identity-ambient.calls" '^pr view feat --repo acme/repo '
 }
 
 test_pr_review_finalization_integrity() {
@@ -473,6 +580,17 @@ test_pr_review_stack_finalization() {
   local before after
   before=$(git -C "$root" rev-parse HEAD)
   cp "$session/pr-review.json" "$T/pr-finalize-original.json"
+  python3 - "$session/pr-review.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data.pop('fixed_in')
+path.write_text(json.dumps(data))
+PY
+  cp "$session/pr-review.json" "$T/pr-finalize-original.json"
   : > "$T/pr-finalize.calls"
   PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 >/dev/null
@@ -532,6 +650,27 @@ test_pr_review_stack_finalization() {
   assert_eq "failed finalization retains the reviewed head" \
     "$(jq -r .head "$bad/pr-review-target.json")" \
     "$(git -C "$bad_root" rev-parse HEAD^)"
+
+  local separate="$T/pr-finalize-separate" separate_root="$T/pr-finalize-separate-repo"
+  pr_review_session "$separate" "$separate_root"
+  echo one > "$separate_root/one.txt"; git -C "$separate_root" add one.txt
+  git -C "$separate_root" commit -qm 'fix(rev): separate one'
+  echo two > "$separate_root/two.txt"; git -C "$separate_root" add two.txt
+  git -C "$separate_root" commit -qm 'fix(rev): separate two'
+  : > "$T/pr-finalize-separate.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize-separate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$separate" --date 2026-09-15 >/dev/null
+  git -C "$separate_root" reset -q --soft HEAD~2
+  git -C "$separate_root" commit -qm 'apply review findings'
+  after=$(git -C "$separate_root" rev-parse HEAD)
+  PATH="$bin:$PATH" GH_HEAD_OID="$after" GH_CALLS="$T/pr-finalize-separate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" finalize-stack "$separate" --head "$after" \
+    > "$T/pr-finalize-separate.out" 2> "$T/pr-finalize-separate.err"
+  assert_eq "separate-PR fix finalization succeeds" "$?" 0
+  assert_grep "separate-PR fix link remains immutable" "$separate/pr-review.md" \
+    '/commit/abc1234)'
+  assert_nogrep "separate-PR fix link is not rewritten to the reviewed PR" \
+    "$separate/pr-review.md" "/commit/$after"
 }
 
 test_pr_review_rejects_invalid_review_pages() {
@@ -582,7 +721,8 @@ test_pr_review_duplicate_and_no_pr() {
   local no_remote="$T/pr-no-remote" no_remote_root="$T/pr-no-remote-repo"
   mkdir -p "$no_remote"
   mkrepo "$no_remote_root"
-  printf "REV_ROOT='%s'\nREV_BRANCH='feat'\nREV_BASE_BRANCH='main'\n" "$no_remote_root" \
+  printf "REV_BASE='%s'\nREV_ROOT='%s'\nREV_BRANCH='feat'\nREV_BASE_BRANCH='main'\n" \
+    "$(git -C "$no_remote_root" rev-parse main)" "$no_remote_root" \
     > "$no_remote/scope.env"
   PATH=/usr/bin:/bin python3 "$SCRIPTS/rev-pr-review.py" publish "$no_remote" \
     > "$T/pr-no-remote.out" 2> "$T/pr-no-remote.err"
