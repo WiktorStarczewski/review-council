@@ -1402,5 +1402,33 @@ class ReleaseLaneCertificationTests(ReleaseLaneFixture):
         ])
 
 
+class ReleaseDocumentationTests(unittest.TestCase):
+    def test_readme_links_to_the_release_operator_document(self):
+        readme = (REPO / "README.md").read_text()
+
+        self.assertIn("[release procedure](docs/release.md)", readme)
+
+    def test_release_operator_document_names_the_bounded_lane(self):
+        document = (REPO / "docs" / "release.md").read_text()
+
+        for phrase in (
+            "N-1 review",
+            "P0/P1-only repairs",
+            "two-generation cap",
+            "candidate non-self-review",
+            "deterministic gate",
+            "targeted canaries",
+            "squash merge",
+            "signed tag",
+            "fresh-session discovery",
+            "python3 scripts/verify-release-lane.py requirements --root .",
+            "python3 scripts/verify-review-council.py --root .",
+            "python3 scripts/verify-release-lane.py certify --root .",
+            "record-review",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, document)
+
+
 if __name__ == "__main__":
     unittest.main()

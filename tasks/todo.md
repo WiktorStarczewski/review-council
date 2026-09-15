@@ -29,6 +29,7 @@
 - [x] Reject a global correction cap for a release-specific failure mode.
 - [x] Approve and document previous-stable review, deterministic candidate gates, and targeted canaries.
 - [x] Implement and re-review the session-wide hard-audit stop.
+- [x] Document the executable release sequence and add static release-documentation assertions.
 - [ ] Seal and serialize the four evidence-session inputs.
 - [ ] Promote composite red-team, compatibility, recovery, security, and integration coverage in normal panels.
 - [ ] Implement the two-generation previous-stable release authority.
