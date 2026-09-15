@@ -52,9 +52,12 @@ Key properties:
 - Status and usage are read from session artifacts without another model call.
 - Completed PR reviews use one deterministic `COMMENTED` review format with the
   badge, verdict tip, decisions, fixes, verified-sound, coverage, and footer sections.
-  The inspected body, open PR, merge base, base tip, and clean reviewed head are
-  frozen for exact retries, and only an identical `COMMENTED` review suppresses a
-  duplicate post. Discovery stays within the reviewed checkout's GitHub remotes.
+  The inspected body, open PR, merge base, observed base tip, and clean reviewed head
+  are frozen for exact retries. Publication rebinds that state to the reviewed scope,
+  accepts base-tip movement only while the merge base is unchanged, serializes local
+  retries, and creates a `COMMENTED` review pinned to the reviewed commit. Only an
+  identical review on that commit suppresses a duplicate post. Discovery stays within
+  the reviewed checkout's GitHub remotes.
   Local branches and document reviews without an associated open PR do not post. A
   stack publishes only the latest actually completed session for each canonical repository.
 
@@ -632,6 +635,7 @@ rejected.md
 fix-plan.md
 context.md
 state.json
+stack-report.md
 report.md
 r<label>-evidence.manifest.json
 r<label>-<seat>.prompt.md
@@ -652,7 +656,8 @@ Receipt roles:
 | exit | the specific seat generation terminated successfully |
 | read audit | the transcript completed its hash-bound evidence obligations |
 | panel | one immutable valid generation covers every assignment |
-| `report.md` | the review completed; stack legs use it as their success receipt |
+| `stack-report.md` | a stack leg completed locally and is ready for finalization and publication |
+| `report.md` | publication succeeded or cleanly skipped and the review completed |
 
 Interrupted or blocked runs write `incomplete.md`. They do not write a success report.
 Current sessions require successful receipts. Compatible historical receiptless results
@@ -709,12 +714,14 @@ The stack runner:
 
 1. Runs one Review Council leg per repository in dependency order.
 2. Uses isolated repository paths or worktrees supplied by the config.
-3. Keeps one session root with per-leg ledgers, logs, and completion reports.
+3. Keeps one session root with per-leg ledgers, logs, and stack-ready reports.
 4. Detects stalls from both log activity and process-tree CPU before retrying.
 5. Resumes a leg from its existing session instead of discarding verified work.
 6. Runs cross-repository seam passes after repository-local review.
 7. Runs a final completeness critic when configured.
-8. Treats a missing `report.md`, failed leg, or `COMPLETE WITH FAILURES` as incomplete.
+8. Promotes `stack-report.md` to `report.md` only after publication or a no-push skip.
+9. Publishes successful repositories even when a sibling fails, while preserving the
+   overall nonzero stack result.
 
 Claude Code stack legs use `claude -p`. Codex stack legs use `codex exec` with
 workspace-write for authorized fixes, network access for reviewer providers, and write
@@ -748,7 +755,7 @@ Other fail-closed conditions include:
 - plan task exceeds compiled provider capacity;
 - project gate falls below baseline;
 - squash safety check refuses;
-- stack leg exits without a fresh `report.md`.
+- stack leg exits without a fresh `stack-report.md` and `phase=stack-ready` state.
 
 A hard read-audit failure stops the current run before another reviewer launch. It is
 reported as an evidence compiler or contract defect, with valid siblings and partial

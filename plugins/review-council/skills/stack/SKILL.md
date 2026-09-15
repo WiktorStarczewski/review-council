@@ -147,8 +147,12 @@ canonical body is rendered again, and only then is the latest completed review f
 each canonical repository published. Separate-PR fix links stay pinned. A pushed
 retry derives the transition from the frozen target and current head. It skips
 sessions with no associated open PR and suppresses an exact prior `COMMENTED` review.
-A push, finalization, missing-input, or publication failure makes the stack incomplete.
-`NO_PUSH=1` suppresses external review publication.
+A failed repository is skipped while every successful repository still finalizes and
+publishes; the overall run remains failed. Legs leave `stack-report.md` with
+`phase=stack-ready`. Only successful publication or an explicit no-push skip promotes
+that file to `report.md` and sets `phase=done`. A push, finalization, missing-input,
+or publication failure keeps that repository's ready receipt unpromoted. `NO_PUSH=1`
+suppresses every external GitHub call made by rendering, finalization, and publication.
 
 A repo whose leg never completed is **not** finished: it is skipped (no squash, no
 push) and the run ends `COMPLETE WITH FAILURES: <labels>` with a non-zero exit instead
@@ -169,7 +173,8 @@ generating motion on the consumers.
 
 ## Reading the output
 
-Each leg leaves `<ROOT>/<leg>/report.md` and `findings.md`. Findings cluster into
+Each ready leg leaves `<ROOT>/<leg>/stack-report.md` and `findings.md`; after successful
+stack completion, the ready report is promoted to `report.md`. Findings cluster into
 shapes worth naming when you summarise:
 
 - **Tests that cannot fail** - assertions satisfied by the call under test, fixtures

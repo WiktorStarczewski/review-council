@@ -775,9 +775,11 @@ Not in stack-leg mode:
 You are running headless under `/review-council:stack`. Differences: no Monitor
 (nobody is watching this transcript; `stack.sh` renders the status line itself); no
 squash, no push (the stack does both per repo at the end); never ask a question -
-decide and record the decision in the ledger; always write `$S/report.md` before your
-final message, even on a stopped run - the stack treats a leg that exits without it as
-incomplete and re-runs it.
+decide and record the decision in the ledger. After the local review, rendering, and
+inspection are complete, set `phase=stack-ready` and write `$S/stack-report.md` before
+your final message. Do not set `phase=done` or write `$S/report.md`; the stack promotes
+that ready receipt only after guarded finalization and publication. A stopped run has
+no ready receipt, so the stack treats it as incomplete and re-runs it.
 
 **Print mode delivers no background-task notifications.** A turn that ends "waiting
 for the seats" or "waiting for the gate run" ends the leg: `claude -p` returns at
@@ -903,7 +905,7 @@ shallow review is the one failure this skill exists to prevent.
 ## Session directory
 
 ```
-scope.env  files.txt  untracked.txt  roster.json  00-baseline.patch  baseline.md  findings.md  rejected.md  state.json  pr-review.json  pr-review.md  pr-review-target.json  report.md
+scope.env  files.txt  untracked.txt  roster.json  00-baseline.patch  baseline.md  findings.md  rejected.md  state.json  pr-review.json  pr-review.md  pr-review-target.json  stack-report.md  report.md
 r<N>-<seat>.prompt.md   r<N>-<seat>.json   r<N>-<seat>.log   r<N>-<seat>.stream.ndjson   r<N>-<seat>.exit
 fix-plan.md   context.md   r<N>p-<seat>.prompt.md   r<N>p-<seat>.json
 ```

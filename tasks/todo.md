@@ -19,6 +19,19 @@
 - [ ] Run Review Council and fix every finding.
 - [ ] Push, open and merge the PR, publish 0.4.4, install it, and verify discovery.
 
+### Final-panel repairs
+
+- [ ] Add red regressions for no-push rendering, copied target state, commit-pinned posts,
+  base movement, stack propagation, literal session paths, and invalid empty review pages.
+- [ ] Add red regressions for stack-leg ready receipts, partial multi-repository failure,
+  merge-base preservation, and dirty-path diagnostics.
+- [ ] Bind every target back to its reviewed scope and create reviews against the frozen commit.
+- [ ] Let safe base-tip movement and brief post-push propagation recover without weakening
+  base-branch or reviewed merge-base validation.
+- [ ] Give stack legs a pre-publication receipt and publish successful repositories even when a
+  different repository failed.
+- [ ] Run focused gates, the complete frozen-tree gate, and a fresh exact-roster council panel.
+
 ### Review
 
 - Pressure tests: the baseline skipped required publication in 2 of 3 scenarios;

@@ -531,7 +531,9 @@ exactly. Write `S/pr-review.json`, render and inspect `S/pr-review.md`, and publ
 as a `COMMENTED` GitHub PR review. This applies to normal and read-only code reviews.
 A branch with no associated open PR skips cleanly. Document reviews do not post. In
 `REV_STACK_LEG=1`, prepare and render the body but leave guarded finalization, final
-rendering, and publication to the stack after its final squash and push. A required
+rendering, and publication to the stack after its final squash and push. A completed
+leg sets `phase=stack-ready` and writes `S/stack-report.md`, not `phase=done` or
+`S/report.md`; the stack promotes the ready receipt only after publication. A required
 publication failure writes
 `incomplete.md` and blocks `phase=done` and `report.md`.
 When `NO_PUSH=1`, render and inspect the body but let the publisher's no-push gate
@@ -540,6 +542,7 @@ skip every external GitHub call.
 After publication succeeds or cleanly skips, set `phase=done` and write `S/report.md`
 with scope/base, actual roster and degradation, rounds/lenses,
 accepted/rejected/deferred findings and evidence, changes/commits, baseline/final
-gates, and remaining limitations. `report.md` is the stack's success receipt: write
-it only for a completed review. Interrupted/blocked
+gates, and remaining limitations. Outside stack-leg mode, write `report.md` only for
+a completed review. In stack-leg mode, put the same content in `stack-report.md` and
+leave its promotion to the stack. Interrupted/blocked
 runs write `incomplete.md`. End with the substantive results and report path.

@@ -429,11 +429,13 @@ test_skill_contract() {
       'blocks `phase=done` and `report\.md`'
     assert_grep "host leaves stack publication until after push" "$H" \
       'final squash and push'
+    assert_grep "host gives stack legs a ready report" "$H" 'stack-report\.md'
+    assert_grep "host gives stack legs a ready phase" "$H" 'phase=stack-ready'
   done
   assert_grep "PR review input preserves the decisions section" "$PRDOC" \
     '^  "decisions": \[$'
-  assert_grep "PR review publisher uses a COMMENTED review" "$PRDOC" \
-    '`gh pr review --comment`'
+  assert_grep "PR review publisher uses a commit-pinned COMMENTED review" "$PRDOC" \
+    'commit_id.*COMMENT'
   assert_grep "PR review publication keeps the inspected bytes" "$PRDOC" \
     'reads the saved Markdown without rerendering'
   local first_report_line
@@ -445,7 +447,7 @@ test_skill_contract() {
   assert_grep "shared publication contract binds a clean committed tree" "$PRDOC" \
     'staged, unstaged, or untracked bytes'
   assert_grep "shared publication contract revalidates the PR base" "$PRDOC" \
-    'branch, base branch, base tip, and'
+    'branch, base branch, reviewed merge base, and'
   assert_grep "shared publication contract binds discovery to reviewed remotes" "$PRDOC" \
     "restricted to repositories named by the reviewed checkout's"
   assert_grep "shared publication contract enforces NO_PUSH before GitHub" "$PRDOC" \

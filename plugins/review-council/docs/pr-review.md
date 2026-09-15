@@ -6,8 +6,8 @@ open PR do not post. Document reviews do not post.
 
 The renderer owns the exact Markdown structure. Do not hand-build, reorder, rename,
 remove, or add sections in `pr-review.md`. It also writes
-`pr-review-target.json`, which freezes the associated PR, reviewed merge base, PR
-base tip, reviewed head and tree, footer date, and exact body hash.
+`pr-review-target.json`, which freezes the associated PR, reviewed merge base, observed
+PR base tip, reviewed head and tree, footer date, and exact body hash.
 
 Set `PLUGIN_ROOT` to the plugin root already resolved by the host: `PLUGIN` on Codex
 or `CLAUDE_PLUGIN_ROOT` on Claude Code.
@@ -108,26 +108,36 @@ For a normal or read-only code review, publish before setting `phase=done` or wr
 python3 "$PLUGIN_ROOT/scripts/rev-pr-review.py" publish "$S"
 ```
 
-When `NO_PUSH=1`, render and inspect the review but do not post it. The publisher
-enforces this no-push gate before making any GitHub call.
+When `NO_PUSH=1`, render and inspect the review but do not post it. Rendering writes a
+local unassociated target envelope without calling GitHub. The publisher and stack
+finalizer enforce the no-push gate before making any GitHub call. A later authorized
+publication binds that envelope only when its reviewed scope, clean tree, and pushed
+head still match the scoped open PR.
 
 The publisher reads the saved Markdown without rerendering it, verifies its body hash,
-and revalidates the frozen PR identity, open state, branch, base branch, base tip, and
-head. PR discovery is restricted to repositories named by the reviewed checkout's
-GitHub remotes, so ambient GitHub CLI repository selection cannot redirect the post. It checks
-all existing reviews and treats only an exact `COMMENTED` review body as idempotent
-success, then posts with `gh pr review --comment`. A real no-PR association skips
-cleanly; missing session scope or artifacts for an associated PR fail closed.
+and rebinds the durable target to the reviewed session scope. It revalidates the PR
+identity, open state, branch, base branch, reviewed merge base, and head. A forward
+move of the base tip is accepted only when the merge base remains the reviewed commit.
+PR discovery is restricted to repositories named by the reviewed checkout's GitHub
+remotes, so ambient GitHub CLI repository selection or copied target state cannot
+redirect the post. Under a repository-local lock, it checks all existing reviews and
+treats only an exact `COMMENTED` review body on the reviewed commit as idempotent
+success. The API request sets `commit_id` to the frozen head and `event` to `COMMENT`,
+then verifies the returned body, state, and commit. A real
+no-PR association skips cleanly; missing session scope or artifacts fail closed.
 
 Any other nonzero exit leaves the PR review incomplete. Preserve `pr-review.json` and
 `pr-review.md`, write `incomplete.md` with the failure and retry command, and do not
 set `phase=done` or write the success receipt.
 
 In `REV_STACK_LEG=1`, render and inspect the body but do not publish it. The stack
-records the latest completed session for each canonical repository and does not publish
-anything until every completed repository has pushed successfully. When a squash changes
+leg records `phase=stack-ready` and writes `stack-report.md`, not `phase=done` or
+`report.md`. The stack records the latest ready session for each canonical repository.
+After pushes, it finalizes and publishes each successful repository even when a sibling
+repository failed, while the overall stack still exits nonzero. When a squash changes
 commit identity, guarded final rendering first proves that the pushed aggregate commit
-has the inspected tree, verifies the frozen structured input and body, and maps decision
+has the inspected tree and reviewed merge base, verifies the frozen structured input
+and body, and maps decision
 blob links plus reviewed-PR fix links to that aggregate SHA. Fix links covered by
 `fixed_in` remain pinned to their separate PR. The structured input remains
 immutable. The body is written before the target envelope, which is the commit marker;
@@ -136,5 +146,9 @@ The post-squash body is rendered from the immutable input with the frozen date.
 Only the latest completed session for each repository is finalized and published. A
 pushed retry derives finalization from the frozen target and current head, so recovery
 does not depend on a marker written after history changes.
-Read the final body before reporting success. A push, tree check, finalization, or
-publication failure makes the stack incomplete and suppresses the completion marker.
+The finalizer tolerates brief GitHub head propagation only while the visible head is
+the frozen head or its ancestor. After successful publication or an explicit no-push
+skip, the stack promotes `stack-report.md` to `report.md` and sets `phase=done`.
+For every completed repository, the push must succeed before finalization starts.
+Read the final body before reporting success. A push, tree or merge-base check,
+finalization, or publication failure keeps the ready receipt unpromoted.
