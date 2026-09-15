@@ -140,6 +140,7 @@ t-read-bounds.sh::test_implicit_turn_output_cap	3	normal
 t-read-bounds.sh::test_isolated_home_startup_cleanup	3	normal
 t-read-bounds.sh::test_narrow_seat_refuses_invalid_audit	3	normal
 t-read-bounds.sh::test_session_audit_stop_crosses_panel_labels	3	normal
+t-read-bounds.sh::test_session_audit_stop_recognizes_legacy_read_audit	3	normal
 t-read-bounds.sh::test_ordered_evidence_phase_validator	3	normal
 t-read-bounds.sh::test_ordered_proof_turn_exemption	3	normal
 t-read-bounds.sh::test_read_audit_binds_delivered_output	3	normal

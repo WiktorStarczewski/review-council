@@ -2242,6 +2242,22 @@ test_session_audit_stop_crosses_panel_labels() {
   )
 }
 
+test_session_audit_stop_recognizes_legacy_read_audit() {
+  ( local session="$T/session-audit-legacy" prompt="$T/session-audit-legacy.prompt.md"
+    mkdir -p "$session"; printf 'review\n' > "$prompt"
+    cat > "$session/r1-codex-sol.read-audit.json" <<'JSON'
+{"schema_version":2,"status":"invalid","evidence_scoped":true}
+JSON
+    python3 "$SCRIPTS/lib/rev-attempt.py" reserve "$session" r2 codex-sol "$prompt" \
+      >"$T/session-audit-legacy.out" 2>"$T/session-audit-legacy.err"
+    assert_eq "legacy hard audit stops another panel label" "$?" 2
+    assert_eq "legacy hard audit creates no reservation" \
+      "$(find "$session/attempts" -type f -name '*.json' -print -quit)" ""
+    assert_grep "legacy hard audit requires a fresh session" "$T/session-audit-legacy.err" \
+      'fresh review session'
+  )
+}
+
 test_evidence_audit_failure_modes() {
   ( seat_env; local S="$T/audit-failure-modes"; seat_roster "$S"
     cat > "$S/malformed-evidence.md" <<'EOF'

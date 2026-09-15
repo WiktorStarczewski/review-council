@@ -282,21 +282,56 @@ test_seat_process_group_cancellation_preserves_partial_stream() {
 
 test_session_audit_stop_serializes_reservations() {
   ( local session="$T/session-stop-reservations" prompt="$T/session-stop.prompt.md"
-    mkdir -p "$session"; printf 'review\n' > "$prompt"
-    python3 "$SCRIPTS/lib/rev-attempt.py" stop "$session" r1 --reason "hard evidence audit failed" &
-    local stop_pid=$!
+    local lock="$session/attempts/.session.lock" ready="$T/session-stop.ready" release="$T/session-stop.release"
+    mkdir -p "$session/attempts"; printf 'review\n' > "$prompt"
+    python3 - "$lock" "$ready" "$release" <<'PY' &
+import fcntl
+import os
+from pathlib import Path
+import sys
+import time
+
+lock, ready, release = map(Path, sys.argv[1:])
+descriptor = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+fcntl.flock(descriptor, fcntl.LOCK_EX)
+ready.touch()
+while not release.exists():
+    time.sleep(0.01)
+PY
+    local lock_pid=$!
     local i=0
-    while [ ! -e "$session/attempts/session.stopped.json" ] && kill -0 "$stop_pid" 2>/dev/null && [ "$i" -lt 100 ]; do
+    while [ ! -e "$ready" ] && kill -0 "$lock_pid" 2>/dev/null && [ "$i" -lt 100 ]; do
       sleep 0.02; i=$((i + 1))
     done
-    wait "$stop_pid"; assert_eq "hard evidence audit stop completes" "$?" 0
+    python3 "$SCRIPTS/lib/rev-attempt.py" stop "$session" r1 --reason "hard evidence audit failed" >/dev/null 2>&1 &
+    local stop_pid=$!
+    sleep 0.05
+    assert_exit "stop waits for the held session lock" 1 test -e "$session/attempts/session.stopped.json"
     python3 "$SCRIPTS/lib/rev-attempt.py" reserve "$session" r2 codex-sol "$prompt" >/dev/null 2>&1 &
     local r2_pid=$!
     python3 "$SCRIPTS/lib/rev-attempt.py" reserve "$session" r3 codex-terra "$prompt" >/dev/null 2>&1 &
     local r3_pid=$!
-    wait "$r2_pid"; assert_eq "first post-stop reservation is refused" "$?" 2
-    wait "$r3_pid"; assert_eq "second post-stop reservation is refused" "$?" 2
-    assert_eq "post-stop reservations create no attempt state" \
-      "$(find "$session/attempts" -type f -name '*.json' ! -name '*stopped.json' -print -quit)" ""
+    : > "$release"
+    wait "$lock_pid"; assert_eq "race lock holder releases" "$?" 0
+    wait "$stop_pid"; assert_eq "hard evidence audit stop completes" "$?" 0
+    wait "$r2_pid"; local r2_rc=$?
+    wait "$r3_pid"; local r3_rc=$?
+    case "$r2_rc" in 0|2) ok "first reservation races the stop";; *) fail "first reservation races the stop" "exit $r2_rc";; esac
+    case "$r3_rc" in 0|2) ok "second reservation races the stop";; *) fail "second reservation races the stop" "exit $r3_rc";; esac
+    assert_exit "no reservation is created after the session marker" 0 python3 - "$session/attempts" <<'PY'
+from pathlib import Path
+import sys
+
+attempts = Path(sys.argv[1])
+marker = attempts / 'session.stopped.json'
+if not marker.is_file():
+    raise SystemExit(1)
+marker_time = marker.stat().st_mtime_ns
+for reservation in attempts.glob('*.json'):
+    if reservation.name.endswith('stopped.json'):
+        continue
+    if reservation.stat().st_mtime_ns > marker_time:
+        raise SystemExit(1)
+PY
   )
 }

@@ -40,9 +40,10 @@ def prior_hard_audit(session: Path) -> Path | None:
     marker = session_stop_path(session)
     if marker.exists() or marker.is_symlink():
         return marker
-    for audit in sorted(session.glob("r*-*.audit.json")):
-        if hard_audit_failure(audit):
-            return audit
+    for pattern in ("r*-*.read-audit.json", "r*-*.audit.json"):
+        for audit in sorted(session.glob(pattern)):
+            if hard_audit_failure(audit):
+                return audit
     return None
 
 
