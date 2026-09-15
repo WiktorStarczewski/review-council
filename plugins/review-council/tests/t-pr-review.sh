@@ -116,28 +116,63 @@ if [ "${1:-} ${2:-}" = "pr view" ]; then
     exit 1
   fi
   live_head=${GH_LIVE_HEAD:-$head}
+  if [ -n "${GH_VIEW_COUNT_FILE:-}" ]; then
+    count=0
+    [ ! -f "$GH_VIEW_COUNT_FILE" ] || count=$(cat "$GH_VIEW_COUNT_FILE")
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$GH_VIEW_COUNT_FILE"
+    [ "$count" -ne 1 ] || live_head=${GH_FIRST_LIVE_HEAD:-$live_head}
+  fi
   live_state=${GH_LIVE_STATE:-OPEN}
   live_base=${GH_LIVE_BASE:-main}
   live_base_oid=${GH_LIVE_BASE_OID:-$base_oid}
-  repo=acme/repo
-  case " $* " in
-    *' --repo acme/repo '*) ;;
-    *) [ -z "${GH_REPO:-}" ] || repo=$GH_REPO;;
-  esac
+  repo=${GH_REPO:-acme/repo}
+  previous=
+  for argument in "$@"; do
+    [ "$previous" != --repo ] || repo=$argument
+    previous=$argument
+  done
   printf '{"number":12,"url":"https://github.com/%s/pull/12","state":"%s","headRefName":"feat","headRefOid":"%s","baseRefName":"%s","baseRefOid":"%s"}\n' "$repo" "$live_state" "$live_head" "$live_base" "$live_base_oid"
   exit 0
 fi
 if [ "${1:-}" = api ]; then
+  if [ "${2:-}" = --method ] && [ "${3:-}" = POST ]; then
+    payload=$(cat)
+    if [ "${GH_MODE:-post}" = fail-post ]; then
+      echo 'remote rejected review' >&2
+      exit 1
+    fi
+    if [ "${GH_MODE:-post}" = concurrent ]; then
+      sleep 1
+      : > "$GH_REVIEW_MARKER"
+    fi
+    [ -z "${GH_POSTED_PAYLOAD:-}" ] || printf '%s' "$payload" > "$GH_POSTED_PAYLOAD"
+    [ -z "${GH_POSTED_BODY:-}" ] || printf '%s' "$payload" | jq -j .body > "$GH_POSTED_BODY"
+    printf '%s' "$payload" | jq '{id: 80, body: .body, state: "COMMENTED", commit_id: .commit_id}'
+    exit 0
+  fi
+  case "${2:-}" in
+    repos/*/compare/*)
+      printf '{"merge_base_commit":{"sha":"%s"}}\n' "${GH_MERGE_BASE:?}"
+      exit 0
+      ;;
+  esac
   if [ "${GH_MODE:-post}" = invalid-page ]; then
     printf '%s\n' '[{"body":"x"}]'
     exit 0
   fi
-  if [ "${GH_MODE:-post}" = duplicate ]; then
-    python3 - "$GH_DUP_BODY" "${GH_DUP_STATE:-COMMENTED}" <<'PY'
+  if [ "${GH_MODE:-post}" = empty-pages ]; then
+    printf '%s\n' '[]'
+    exit 0
+  fi
+  if [ "${GH_MODE:-post}" = duplicate ] \
+      || { [ "${GH_MODE:-post}" = concurrent ] && [ -f "$GH_REVIEW_MARKER" ]; }; then
+    python3 - "$GH_DUP_BODY" "${GH_DUP_STATE:-COMMENTED}" "${GH_DUP_COMMIT:-$head}" <<'PY'
 import json
 import pathlib
 import sys
-print(json.dumps([[{"body": pathlib.Path(sys.argv[1]).read_text(), "state": sys.argv[2]}]]))
+print(json.dumps([[{"body": pathlib.Path(sys.argv[1]).read_text(), "state": sys.argv[2],
+                    "commit_id": sys.argv[3]}]]))
 PY
   else
     printf '%s\n' '[[]]'
@@ -153,6 +188,10 @@ if [ "${1:-} ${2:-}" = "pr review" ]; then
   if [ "${GH_MODE:-post}" = fail-post ]; then
     echo 'remote rejected review' >&2
     exit 1
+  fi
+  if [ "${GH_MODE:-post}" = concurrent ]; then
+    sleep 1
+    : > "$GH_REVIEW_MARKER"
   fi
   exit 0
 fi
@@ -275,6 +314,11 @@ test_pr_review_clean_identity() {
       python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 \
       > "$T/pr-dirty-$mode.out" 2> "$T/pr-dirty-$mode.err"
     assert_eq "$mode reviewed bytes block PR rendering" "$?" 1
+    case "$mode" in
+      staged) assert_grep "staged diagnostic names its dirty path" "$T/pr-dirty-$mode.err" 'staged\.txt';;
+      unstaged) assert_grep "unstaged diagnostic names its dirty path" "$T/pr-dirty-$mode.err" 'a\.txt';;
+      untracked) assert_grep "untracked diagnostic names its dirty path" "$T/pr-dirty-$mode.err" 'untracked\.txt';;
+    esac
     assert_exit "$mode failure writes no rendered review" 0 test ! -e "$session/pr-review.md"
     assert_exit "$mode failure writes no target envelope" 0 test ! -e "$session/pr-review-target.json"
   done
@@ -303,6 +347,24 @@ test_pr_review_clean_identity() {
     python3 "$SCRIPTS/rev-pr-review.py" render "$nested" --date 2026-09-15 \
     > "$T/pr-nested.out" 2> "$T/pr-nested.err"
   assert_eq "an in-repository session directory is excluded exactly" "$?" 0
+
+  local literal_root="$T/pr-literal-repo" literal
+  mkrepo "$literal_root"
+  git -C "$literal_root" checkout -qb feat
+  git -C "$literal_root" remote add origin https://github.com/acme/repo.git
+  literal="$literal_root/.review*"
+  mkdir -p "$literal" "$literal_root/.review-hidden"
+  printf "REV_BASE='%s'\nREV_ROOT='%s'\nREV_BRANCH='feat'\nREV_BASE_BRANCH='main'\n" \
+    "$(git -C "$literal_root" rev-parse main)" "$literal_root" > "$literal/scope.env"
+  pr_review_input > "$literal/pr-review.json"
+  echo dirty > "$literal_root/.review-hidden/dirty.txt"
+  : > "$T/pr-literal.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-literal.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$literal" --date 2026-09-15 \
+    > "$T/pr-literal.out" 2> "$T/pr-literal.err"
+  assert_eq "pathspec metacharacters cannot hide a dirty sibling" "$?" 1
+  assert_grep "literal pathspec failure names the dirty sibling" "$T/pr-literal.err" \
+    '\.review-hidden/dirty\.txt'
 
   local stack="$T/pr-clean-stack" stack_root="$T/pr-clean-stack-repo" remote_head
   pr_review_session "$stack" "$stack_root"
@@ -333,6 +395,22 @@ test_pr_review_publish() {
   pr_review_session "$session" "$root"
   pr_review_gh_shim "$bin"
   : > "$T/pr.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr.calls" NO_PUSH=1 \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 \
+    > "$T/pr-no-push-render.out" 2> "$T/pr-no-push-render.err"
+  assert_eq "NO_PUSH still renders the PR review body" "$?" 0
+  assert_nogrep "NO_PUSH rendering never calls GitHub" "$T/pr.calls" '.'
+  assert_exit "NO_PUSH rendering keeps a local target envelope" 0 \
+    test -s "$session/pr-review-target.json"
+  assert_eq "NO_PUSH target remains unassociated until guarded publication" \
+    "$(jq -r .associated "$session/pr-review-target.json")" false
+  local local_head; local_head=$(git -C "$root" rev-parse HEAD)
+  PATH="$bin:$PATH" GH_CALLS="$T/pr.calls" NO_PUSH=1 \
+    python3 "$SCRIPTS/rev-pr-review.py" finalize-stack "$session" --head "$local_head" \
+    > "$T/pr-no-push-finalize.out" 2> "$T/pr-no-push-finalize.err"
+  assert_eq "NO_PUSH suppresses direct stack finalization" "$?" 0
+  assert_nogrep "NO_PUSH stack finalization never calls GitHub" "$T/pr.calls" '.'
+  : > "$T/pr.calls"
   PATH="$bin:$PATH" GH_CALLS="$T/pr.calls" GH_POSTED_BODY="$T/pr-posted.md" \
     python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 \
     > "$T/pr-render-publish.out" 2> "$T/pr-render-publish.err"
@@ -350,16 +428,23 @@ test_pr_review_publish() {
 
   : > "$T/pr.calls"
   PATH="$bin:$PATH" GH_CALLS="$T/pr.calls" GH_POSTED_BODY="$T/pr-posted.md" \
+    GH_POSTED_PAYLOAD="$T/pr-posted.json" \
     python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
     > "$T/pr-publish.out" 2> "$T/pr-publish.err"
   assert_eq "PR review publisher exits cleanly" "$?" 0
-  assert_grep "PR review publisher revalidates the frozen PR" "$T/pr.calls" \
-    '^pr view 12 --repo acme/repo --json number,url,state,headRefName,headRefOid,baseRefName,baseRefOid$'
+  assert_grep "PR review publisher rebinds to the scoped open PR" "$T/pr.calls" \
+    '^pr view feat --repo acme/repo --json number,url,state,headRefName,headRefOid,baseRefName,baseRefOid$'
   assert_exit "PR review target envelope is written" 0 test -s "$session/pr-review-target.json"
   assert_grep "PR review publisher checks existing reviews" "$T/pr.calls" \
     '^api --paginate --slurp repos/acme/repo/pulls/12/reviews\?per_page=100$'
-  assert_grep "PR review publisher creates a COMMENTED review" "$T/pr.calls" \
-    "^pr review 12 --repo acme/repo --comment --body-file $session/pr-review.md$"
+  assert_grep "PR review publisher creates a commit-pinned review" "$T/pr.calls" \
+    '^api --method POST repos/acme/repo/pulls/12/reviews --input -$'
+  assert_nogrep "PR review publisher never uses the unpinned CLI review command" \
+    "$T/pr.calls" '^pr review '
+  assert_eq "created review payload pins the reviewed head" \
+    "$(jq -r .commit_id "$T/pr-posted.json")" "$local_head"
+  assert_eq "created review payload submits a comment" \
+    "$(jq -r .event "$T/pr-posted.json")" COMMENT
   assert_exit "posted body is the rendered body" 0 \
     cmp -s "$session/pr-review.md" "$T/pr-posted.md"
   assert_grep "publisher reports the target PR" "$T/pr-publish.out" \
@@ -386,7 +471,8 @@ test_pr_review_frozen_publication() {
   assert_eq "edited rendered body blocks publication at the body-hash gate" "$?" 1
   assert_grep "edited rendered body names the body-hash failure" "$T/pr-frozen-body.err" \
     'frozen body hash'
-  assert_nogrep "edited rendered body is never posted" "$T/pr-frozen.calls" '^pr review '
+  assert_nogrep "edited rendered body is never posted" "$T/pr-frozen.calls" \
+    '^api --method POST '
   cp "$T/pr-frozen-inspected.md" "$session/pr-review.md"
 
   sed 's/Nothing blocking from this review/Changed after inspection/' \
@@ -403,7 +489,7 @@ test_pr_review_frozen_publication() {
   assert_exit "publish preserves the inspected review bytes" 0 \
     cmp -s "$session/pr-review.md" "$T/pr-frozen-inspected.md"
   assert_nogrep "exact COMMENTED review suppresses a duplicate post" "$T/pr-frozen.calls" \
-    '^pr review '
+    '^api --method POST '
 
   : > "$T/pr-frozen.calls"
   PATH="$bin:$PATH" GH_MODE=duplicate GH_DUP_STATE=APPROVED \
@@ -412,7 +498,7 @@ test_pr_review_frozen_publication() {
     python3 "$SCRIPTS/rev-pr-review.py" publish "$session" >/dev/null 2>&1
   assert_eq "non-COMMENTED duplicate body does not satisfy publication" "$?" 0
   assert_grep "non-COMMENTED duplicate body still posts a comment" "$T/pr-frozen.calls" \
-    '^pr review '
+    '^api --method POST '
 
   : > "$T/pr-frozen.calls"
   PATH="$bin:$PATH" GH_LIVE_HEAD=0000000000000000000000000000000000000001 \
@@ -420,7 +506,8 @@ test_pr_review_frozen_publication() {
     python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
     > "$T/pr-frozen-stale.out" 2> "$T/pr-frozen-stale.err"
   assert_eq "changed PR head fails frozen publication" "$?" 1
-  assert_nogrep "changed PR head is never posted" "$T/pr-frozen.calls" '^pr review '
+  assert_nogrep "changed PR head is never posted" "$T/pr-frozen.calls" \
+    '^api --method POST '
 
   : > "$T/pr-frozen.calls"
   PATH="$bin:$PATH" GH_LIVE_STATE=CLOSED GH_CALLS="$T/pr-frozen.calls" \
@@ -430,7 +517,8 @@ test_pr_review_frozen_publication() {
   assert_eq "closed frozen PR skips cleanly" "$?" 0
   assert_grep "closed frozen PR explains the skip" "$T/pr-frozen-closed.out" \
     '^pr-review: no associated open PR; skipped$'
-  assert_nogrep "closed frozen PR is never posted" "$T/pr-frozen.calls" '^pr review '
+  assert_nogrep "closed frozen PR is never posted" "$T/pr-frozen.calls" \
+    '^api --method POST '
 
   : > "$T/pr-frozen.calls"
   PATH="$bin:$PATH" GH_LIVE_BASE=release GH_CALLS="$T/pr-frozen.calls" \
@@ -438,15 +526,28 @@ test_pr_review_frozen_publication() {
     python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
     > "$T/pr-frozen-retargeted.out" 2> "$T/pr-frozen-retargeted.err"
   assert_eq "retargeted PR base fails frozen publication" "$?" 1
-  assert_nogrep "retargeted PR is never posted" "$T/pr-frozen.calls" '^pr review '
+  assert_nogrep "retargeted PR is never posted" "$T/pr-frozen.calls" \
+    '^api --method POST '
 
   : > "$T/pr-frozen.calls"
   PATH="$bin:$PATH" GH_LIVE_BASE_OID=0000000000000000000000000000000000000001 \
+    GH_MERGE_BASE="$(git -C "$root" rev-parse main)" \
     GH_CALLS="$T/pr-frozen.calls" GH_POSTED_BODY="$T/pr-frozen-base-drift.md" \
     python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
     > "$T/pr-frozen-base-drift.out" 2> "$T/pr-frozen-base-drift.err"
-  assert_eq "same-name base movement fails frozen publication" "$?" 1
-  assert_nogrep "same-name base movement is never posted" "$T/pr-frozen.calls" '^pr review '
+  assert_eq "same-name base movement with the reviewed merge base publishes" "$?" 0
+  assert_grep "safe base movement verifies the reviewed merge base" "$T/pr-frozen.calls" \
+    '^api repos/acme/repo/compare/0000000000000000000000000000000000000001\.\.\.'
+
+  : > "$T/pr-frozen.calls"
+  PATH="$bin:$PATH" GH_LIVE_BASE_OID=0000000000000000000000000000000000000002 \
+    GH_MERGE_BASE=0000000000000000000000000000000000000003 \
+    GH_CALLS="$T/pr-frozen.calls" GH_POSTED_BODY="$T/pr-frozen-wrong-base.md" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-frozen-wrong-base.out" 2> "$T/pr-frozen-wrong-base.err"
+  assert_eq "changed merge base blocks publication" "$?" 1
+  assert_nogrep "changed merge base is never posted" "$T/pr-frozen.calls" \
+    '^api --method POST '
 }
 
 test_pr_review_repository_and_base_identity() {
@@ -486,6 +587,47 @@ test_pr_review_repository_and_base_identity() {
     "$(jq -r .repo "$session/pr-review-target.json")" acme/repo
   assert_grep "PR discovery names the reviewed remote explicitly" \
     "$T/pr-identity-ambient.calls" '^pr view feat --repo acme/repo '
+
+  python3 - "$session/pr-review-target.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+target = json.loads(path.read_text())
+target['repo'] = 'evil/other'
+target['url'] = 'https://github.com/evil/other/pull/12'
+path.write_text(json.dumps(target))
+PY
+  : > "$T/pr-identity-copied.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-identity-copied.calls" \
+    GH_POSTED_BODY="$T/pr-identity-copied.md" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-identity-copied.out" 2> "$T/pr-identity-copied.err"
+  assert_eq "cross-repository target state fails scope rebinding" "$?" 1
+  assert_nogrep "cross-repository target state never posts" \
+    "$T/pr-identity-copied.calls" '^api --method POST '
+
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-identity-copied.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 >/dev/null
+  python3 - "$session/pr-review-target.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+target = json.loads(path.read_text())
+target['tree'] = '0000000000000000000000000000000000000000'
+path.write_text(json.dumps(target))
+PY
+  : > "$T/pr-identity-tree.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-identity-tree.calls" \
+    GH_POSTED_BODY="$T/pr-identity-tree.md" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-identity-tree.out" 2> "$T/pr-identity-tree.err"
+  assert_eq "altered target tree fails scope rebinding" "$?" 1
+  assert_nogrep "altered target tree never posts" "$T/pr-identity-tree.calls" \
+    '^api --method POST '
 }
 
 test_pr_review_finalization_integrity() {
@@ -566,6 +708,25 @@ PY
     python3 "$SCRIPTS/rev-pr-review.py" finalize-stack "$format_session" --head "$head" \
     > "$T/pr-json-format.out" 2> "$T/pr-json-format.err"
   assert_eq "semantic JSON reformat remains finalizable" "$?" 0
+
+  local ancestry_session="$T/pr-ancestry" ancestry_root="$T/pr-ancestry-repo"
+  pr_review_session "$ancestry_session" "$ancestry_root"
+  : > "$T/pr-ancestry.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-ancestry.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$ancestry_session" --date 2026-09-15 >/dev/null
+  local ancestry_tree other_parent unrelated_head
+  ancestry_tree=$(git -C "$ancestry_root" rev-parse 'HEAD^{tree}')
+  other_parent=$(printf 'other root\n' | git -C "$ancestry_root" commit-tree \
+    "$(git -C "$ancestry_root" rev-parse 'main^{tree}')")
+  unrelated_head=$(printf 'same tree, unrelated parent\n' | git -C "$ancestry_root" \
+    commit-tree "$ancestry_tree" -p "$other_parent")
+  git -C "$ancestry_root" reset -q --hard "$unrelated_head"
+  PATH="$bin:$PATH" GH_HEAD_OID="$unrelated_head" GH_CALLS="$T/pr-ancestry.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" finalize-stack "$ancestry_session" \
+    --head "$unrelated_head" > "$T/pr-ancestry.out" 2> "$T/pr-ancestry.err"
+  assert_eq "same-tree finalization with a different merge base fails" "$?" 1
+  assert_grep "different-parent failure names the reviewed merge base" \
+    "$T/pr-ancestry.err" 'merge base'
 }
 
 test_pr_review_stack_finalization() {
@@ -619,7 +780,7 @@ PY
     > "$T/pr-finalize-interrupted-publish.out" 2> "$T/pr-finalize-interrupted-publish.err"
   assert_eq "interrupted finalization is not publishable" "$?" 1
   assert_nogrep "interrupted finalization never posts" \
-    "$T/pr-finalize-interrupted.calls" '^pr review '
+    "$T/pr-finalize-interrupted.calls" '^api --method POST '
   PATH="$bin:$PATH" GH_HEAD_OID="$after" GH_CALLS="$T/pr-finalize-interrupted.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" finalize-stack "$interrupted" --head "$after" \
     > "$T/pr-finalize-interrupted.out" 2> "$T/pr-finalize-interrupted.err"
@@ -671,6 +832,26 @@ PY
     '/commit/abc1234)'
   assert_nogrep "separate-PR fix link is not rewritten to the reviewed PR" \
     "$separate/pr-review.md" "/commit/$after"
+
+  local lag="$T/pr-finalize-lag" lag_root="$T/pr-finalize-lag-repo" lag_before lag_after
+  pr_review_session "$lag" "$lag_root"
+  echo lag > "$lag_root/lag.txt"; git -C "$lag_root" add lag.txt
+  git -C "$lag_root" commit -qm 'fix(rev): lag one'
+  lag_before=$(git -C "$lag_root" rev-parse HEAD)
+  : > "$T/pr-finalize-lag.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize-lag.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$lag" --date 2026-09-15 >/dev/null
+  git -C "$lag_root" reset -q --soft HEAD~1
+  git -C "$lag_root" commit -qm 'apply review findings'
+  lag_after=$(git -C "$lag_root" rev-parse HEAD)
+  : > "$T/pr-finalize-lag.views"
+  PATH="$bin:$PATH" GH_HEAD_OID="$lag_after" GH_FIRST_LIVE_HEAD="$lag_before" \
+    GH_VIEW_COUNT_FILE="$T/pr-finalize-lag.views" GH_CALLS="$T/pr-finalize-lag.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" finalize-stack "$lag" --head "$lag_after" \
+    > "$T/pr-finalize-lag.out" 2> "$T/pr-finalize-lag.err"
+  assert_eq "stack finalization tolerates one stale post-push PR read" "$?" 0
+  assert_eq "stack finalization polls until GitHub exposes the pushed head" \
+    "$(cat "$T/pr-finalize-lag.views")" 2
 }
 
 test_pr_review_rejects_invalid_review_pages() {
@@ -680,12 +861,43 @@ test_pr_review_rejects_invalid_review_pages() {
   : > "$T/pr-pages.calls"
   PATH="$bin:$PATH" GH_CALLS="$T/pr-pages.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 >/dev/null
-  PATH="$bin:$PATH" GH_MODE=invalid-page GH_CALLS="$T/pr-pages.calls" \
-    GH_POSTED_BODY="$T/pr-pages-posted.md" \
-    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
-    > "$T/pr-pages.out" 2> "$T/pr-pages.err"
-  assert_eq "non-array review API page fails closed" "$?" 1
-  assert_nogrep "invalid review API page never posts" "$T/pr-pages.calls" '^pr review '
+  local mode
+  for mode in invalid-page empty-pages; do
+    : > "$T/pr-pages.calls"
+    PATH="$bin:$PATH" GH_MODE="$mode" GH_CALLS="$T/pr-pages.calls" \
+      GH_POSTED_BODY="$T/pr-pages-posted.md" \
+      python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+      > "$T/pr-pages-$mode.out" 2> "$T/pr-pages-$mode.err"
+    assert_eq "$mode review API page fails closed" "$?" 1
+    assert_nogrep "$mode review API page never posts" "$T/pr-pages.calls" \
+      '^api --method POST '
+  done
+}
+
+test_pr_review_concurrent_publication() {
+  local session="$T/pr-concurrent" root="$T/pr-concurrent-repo" bin="$T/pr-concurrent-bin"
+  pr_review_session "$session" "$root"
+  pr_review_gh_shim "$bin"
+  : > "$T/pr-concurrent.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-concurrent.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 >/dev/null
+  rm -f "$T/pr-concurrent.marker"
+  PATH="$bin:$PATH" GH_MODE=concurrent GH_CALLS="$T/pr-concurrent.calls" \
+    GH_REVIEW_MARKER="$T/pr-concurrent.marker" GH_DUP_BODY="$session/pr-review.md" \
+    GH_POSTED_BODY="$T/pr-concurrent-one.md" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" >/dev/null 2>&1 &
+  local first=$!
+  PATH="$bin:$PATH" GH_MODE=concurrent GH_CALLS="$T/pr-concurrent.calls" \
+    GH_REVIEW_MARKER="$T/pr-concurrent.marker" GH_DUP_BODY="$session/pr-review.md" \
+    GH_POSTED_BODY="$T/pr-concurrent-two.md" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" >/dev/null 2>&1 &
+  local second=$!
+  wait "$first"; local first_rc=$?
+  wait "$second"; local second_rc=$?
+  assert_eq "first concurrent publication exits cleanly" "$first_rc" 0
+  assert_eq "second concurrent publication exits cleanly" "$second_rc" 0
+  assert_eq "concurrent retries create exactly one review" \
+    "$(grep -Ec '^(pr review |api --method POST )' "$T/pr-concurrent.calls")" 1
 }
 
 test_pr_review_duplicate_and_no_pr() {
@@ -704,7 +916,8 @@ test_pr_review_duplicate_and_no_pr() {
   assert_grep "duplicate publication is reported" "$T/pr-duplicate.out" \
     '^pr-review: identical review already posted on https://github.com/acme/repo/pull/12$'
   assert_exit "duplicate publication creates no review" 0 test ! -e "$T/should-not-exist"
-  assert_nogrep "duplicate path never invokes gh pr review" "$T/pr-duplicate.calls" '^pr review '
+  assert_nogrep "duplicate path never creates another review" "$T/pr-duplicate.calls" \
+    '^api --method POST '
 
   local no_pr="$T/pr-no-scope"
   mkdir -p "$no_pr"
@@ -741,7 +954,8 @@ test_pr_review_duplicate_and_no_pr() {
   assert_eq "branch without a PR is a successful no-op" "$?" 0
   assert_grep "branch without a PR explains the skip" "$T/pr-no-open.out" \
     '^pr-review: no associated open PR; skipped$'
-  assert_nogrep "branch without a PR never attempts a review" "$T/pr-no-open.calls" '^pr review '
+  assert_nogrep "branch without a PR never attempts a review" "$T/pr-no-open.calls" \
+    '^api --method POST '
 }
 
 test_pr_review_publish_failure() {
