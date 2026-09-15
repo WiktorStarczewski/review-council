@@ -230,9 +230,14 @@ run_leg() {  # <repo-path> <rounds> <label> "<premise>"
   local dir="$1" rounds="$2" label="$3" extra="$4" repo
   local S="$ROOT/$label" attempt=1 infra=0 roster_rc
   repo=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || {
-    say "!!! $label: cannot resolve repository root for $dir"
-    note_failure "$label" "$dir"
-    return 1
+    if [ "$NO_PUSH" = 1 ]; then
+      repo=$(cd "$dir" 2>/dev/null && pwd -P) || repo=""
+    fi
+    if [ -z "$repo" ]; then
+      say "!!! $label: cannot resolve repository root for $dir"
+      note_failure "$label" "$dir"
+      return 1
+    fi
   }
   case " $REPOS_SEEN " in *" $repo "*) ;; *) REPOS_SEEN="$REPOS_SEEN $repo";; esac
   if ! replace_tab_row "$SESSION_MAP" "$repo" "$S"; then
