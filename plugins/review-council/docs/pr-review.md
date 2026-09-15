@@ -6,9 +6,9 @@ open PR do not post. Document reviews do not post.
 
 The renderer owns the exact Markdown structure. Do not hand-build, reorder, rename,
 remove, or add sections in `pr-review.md`. It also writes
-`pr-review-target.json`, which freezes the exact normalized GitHub repository set,
-associated PR, reviewed merge base, observed PR base tip, reviewed head and tree,
-footer date, and exact body hash.
+`pr-review-target.json`, which freezes the associated PR, reviewed merge base, observed
+PR base tip, reviewed head and tree, footer date, exact body hash, and exact normalized
+GitHub repository set.
 
 Set `PLUGIN_ROOT` to the plugin root already resolved by the host: `PLUGIN` on Codex
 or `CLAUDE_PLUGIN_ROOT` on Claude Code.
