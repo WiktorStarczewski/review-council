@@ -624,6 +624,60 @@ class ReleaseLaneReviewTests(ReleaseLaneFixture):
         self.assertTrue(output.exists())
         self.assertFalse(marker.exists())
 
+    def test_checker_import_replacement_cannot_change_the_executed_bytes(self):
+        session = self.make_session()
+        output = self.base / "review.json"
+        marker = self.base / "replacement-imported"
+        stable_scripts = self.installed.resolve() / "scripts"
+        checker = stable_scripts / "rev-contract-check.py"
+        helper = stable_scripts / "checker_fixture_helper.py"
+        backup = stable_scripts / ".checker_fixture_helper.original"
+        replacement = (
+            "from pathlib import Path\n"
+            f"Path({str(marker)!r}).write_text('executed\\n')\n"
+            "IDENTITY = 'stable checker helper'\n"
+        ).encode()
+        module = load_module()
+        arguments = module.parser().parse_args([
+            "record-review", "--root", str(self.root),
+            "--candidate-commit", self.candidate_commit,
+            "--stable-plugin", str(self.installed), "--stable-tag", TAG,
+            "--session", str(session), "--new-p0", "0", "--new-p1", "0",
+            "--open-p0", "0", "--open-p1", "0", "--out", str(output),
+        ])
+        subprocess_run = module.subprocess.run
+        raced = False
+
+        def replace_at_launch(command, *args, **kwargs):
+            nonlocal raced
+            vector = [str(value) for value in command] if isinstance(command, list) else []
+            if not raced and vector[:1] == [sys.executable] and str(checker) in vector:
+                raced = True
+                os.replace(helper, backup)
+                helper.write_bytes(replacement)
+                helper.chmod(0o644)
+                try:
+                    return subprocess_run(command, *args, **kwargs)
+                finally:
+                    helper.unlink()
+                    os.replace(backup, helper)
+            return subprocess_run(command, *args, **kwargs)
+
+        module.subprocess.run = replace_at_launch
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                module.record_review(arguments)
+        finally:
+            module.subprocess.run = subprocess_run
+            if backup.exists():
+                if helper.exists():
+                    helper.unlink()
+                os.replace(backup, helper)
+
+        self.assertTrue(raced)
+        self.assertTrue(output.exists())
+        self.assertFalse(marker.exists())
+
     def test_clean_first_review_records_canonical_decision_and_exact_checker_call(self):
         session = self.make_session()
 

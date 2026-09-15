@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import zipfile
 
 
 PLUGIN_PREFIX = "plugins/review-council"
@@ -329,7 +330,7 @@ def tag_plugin_records(root, revision):
     return records, contents
 
 
-def installed_plugin_material(plugin, capture=()):
+def installed_plugin_material(plugin, capture=(), capture_regular=False):
     root = direct_directory(plugin, "stable plugin")
     records = []
     capture = frozenset(capture)
@@ -378,12 +379,12 @@ def installed_plugin_material(plugin, capture=()):
                 "sha256": digest(raw),
                 "size": len(raw),
             })
-            if relative in capture:
+            if relative in capture or capture_regular and kind == "regular":
                 captured[relative] = raw
 
     visit(root)
     records.sort(key=lambda row: row["path"])
-    if set(captured) != set(capture):
+    if not set(capture) <= set(captured):
         raise ReleaseError("installed stable plugin mismatch")
     return root, records, captured
 
@@ -420,9 +421,11 @@ def stable_tag_identity(root, tag):
     }
 
 
-def verified_stable_material(root, tag, plugin, capture=()):
+def verified_stable_material(root, tag, plugin, capture=(), capture_regular=False):
     identity = stable_tag_identity(root, tag)
-    _, installed, captured = installed_plugin_material(plugin, capture)
+    _, installed, captured = installed_plugin_material(
+        plugin, capture, capture_regular,
+    )
     if installed != identity["records"]:
         raise ReleaseError("installed stable plugin mismatch")
     public = dict(identity["public"])
@@ -904,29 +907,39 @@ def scope_values(raw):
     return values
 
 
-def run_stable_checker(stable_plugin, checker_snapshot, root, session, base, roster_path):
+def run_stable_checker(stable_plugin, stable_snapshot, root, session, base, roster_path):
     checker = stable_plugin / "scripts" / "rev-contract-check.py"
+    checker_name = "scripts/rev-contract-check.py"
     launcher = (
-        "import os,sys;"
+        "import sys;"
         "path=sys.argv[1];"
-        "sys.path[0]=os.path.dirname(path);"
-        "sys.argv=sys.argv[1:];"
+        "sys.path[0]=sys.argv[2];"
+        "sys.argv=[path,*sys.argv[3:]];"
         "source=sys.stdin.buffer.read();"
         "namespace={'__name__':'__main__','__file__':path};"
         "exec(compile(source,path,'exec'),namespace)"
     )
-    command = [
-        sys.executable, "-I", "-B", "-c", launcher, str(checker), "--root", str(root),
-        "--session", str(session), "--base", base, "--roster", str(roster_path),
-        "--verify-only",
-    ]
+    archive = tempfile.TemporaryFile()
     try:
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_STORED) as bundle:
+            for name, raw in sorted(stable_snapshot.items()):
+                bundle.writestr(name, raw)
+        archive.flush()
+        archive.seek(0)
+        import_path = "/dev/fd/" + str(archive.fileno()) + "/scripts"
+        command = [
+            sys.executable, "-I", "-B", "-c", launcher, str(checker), import_path,
+            "--root", str(root), "--session", str(session), "--base", base,
+            "--roster", str(roster_path), "--verify-only",
+        ]
         result = subprocess.run(
-            command, input=checker_snapshot, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, timeout=60,
+            command, input=stable_snapshot[checker_name], stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, timeout=60, pass_fds=(archive.fileno(),),
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise ReleaseError("stable contract checker failed") from error
+    finally:
+        archive.close()
     if result.returncode != 0:
         detail = result.stderr.decode(errors="replace").strip()
         raise ReleaseError("stable contract checker failed" + (": " + detail if detail else ""))
@@ -948,7 +961,7 @@ def run_stable_checker(stable_plugin, checker_snapshot, root, session, base, ros
     return path, match.group(1)
 
 
-def validate_review_session(session_path, root, candidate, stable_plugin, checker_snapshot):
+def validate_review_session(session_path, root, candidate, stable_plugin, stable_snapshot):
     session = direct_directory(session_path, "session")
     captured = {}
     scope_raw = session_file(session, "scope.env", "scope metadata", captured)
@@ -965,7 +978,7 @@ def validate_review_session(session_path, root, candidate, stable_plugin, checke
         raise ReleaseError("session roster is invalid")
     roster_path = session / "roster.json"
     contract_path, contract_key = run_stable_checker(
-        stable_plugin, checker_snapshot, root, session, values["REV_BASE"], roster_path,
+        stable_plugin, stable_snapshot, root, session, values["REV_BASE"], roster_path,
     )
     contract_raw = regular_bytes(contract_path, "stable contract receipt")
     captured[contract_path] = contract_raw
@@ -1092,13 +1105,12 @@ def record_review(args):
     stable_plugin = direct_directory(args.stable_plugin, "stable plugin")
     checker_name = "scripts/rev-contract-check.py"
     stable, stable_material = verified_stable_material(
-        root, args.stable_tag, stable_plugin, (checker_name,),
+        root, args.stable_tag, stable_plugin, (checker_name,), capture_regular=True,
     )
-    checker_snapshot = stable_material[checker_name]
     stable_version = tag_version(args.stable_tag)
     candidate = candidate_identity(root, args.candidate_commit, stable_version)
     session_identity, stop = validate_review_session(
-        args.session, root, candidate, stable_plugin, checker_snapshot,
+        args.session, root, candidate, stable_plugin, stable_material,
     )
     counts = {
         "new_p0": args.new_p0, "new_p1": args.new_p1,
