@@ -260,12 +260,13 @@ external CLI seats and refuses when no usable external CLI remains.
 | --- | --- | --- |
 | simplicity discovery | always | every core seat asks whether the change can be smaller through reuse or deletion |
 | risk discovery | more than 25 files, more than 1,500 lines, or a high-risk boundary | the four risk bundles across the full panel |
+| full red team | exactly once for a large, high-risk, user-marked-important, or explicitly adversarial adaptive review | four distinct adversarial compositions over the existing risk bundles, before planning |
 | plan | before each nontrivial accepted fix cluster | completeness, soundness, simplicity, and falsifiable tests |
 | fix and gates | after accepted and plan-approved findings | root-cause clusters, relevant regression tests, project gates at baseline or better |
 | verification | after discovery when no nontrivial fix follows, or after the latest nontrivial fix | all four risk bundles over the latest material state |
 
-High-risk boundaries include security, persistence, concurrency, transactions, and
-public APIs.
+High-risk boundaries include security, persistence, concurrency, transactions,
+protocols, public APIs, and irreversible mutations.
 
 For the four-seat council:
 
@@ -273,12 +274,14 @@ For the four-seat council:
 | --- | ---: |
 | ordinary, no nontrivial fix | 8 |
 | ordinary, with one plan panel | 12 |
-| large or high-risk, no nontrivial fix | 12 |
-| large or high-risk, with one plan panel | 16 |
+| large or high-risk, no nontrivial fix | 16 |
+| large or high-risk, with one plan panel | 20 |
 
 With four core seats, a normal review plans 12 seat launches: four simplicity, four
 conditional plan, and four final verification launches. A large or high-risk review
-plans 16 by adding four risk-discovery launches.
+plans 20 by adding four risk-discovery and four full red-team launches. An important
+or explicitly adversarial review that is not otherwise large or high-risk adds the
+four full red-team launches.
 
 One four-bundle verification panel reviews the latest material state: directly after
 discovery when no nontrivial fix follows, or after the latest nontrivial fix. Adaptive
@@ -303,6 +306,14 @@ Every risk and verification panel covers all four bundles:
 With four seats, each seat receives one bundle. With three seats, one seat receives
 two. Surplus seats cycle the bundles. The regression bundle owns the full cumulative
 state during risk and verification.
+
+Every code panel also composes red-team emphasis into one existing core seat, selected
+from stable roster order and rotated across panels. This preserves the seat's normal
+lens and bundle and adds no provider call or panel, including in numeric and read-only
+code reviews. The conditional full red-team panel reuses the four bundles with distinct
+attacker and trust-boundary, rollback and recovery, duplication and exhaustion, and
+consumer compatibility and integration emphases. Document panels are excluded unless
+the user explicitly requests adversarial document review.
 
 ### Why simplicity runs first
 

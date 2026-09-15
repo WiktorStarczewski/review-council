@@ -184,6 +184,37 @@ With five or more core seats, cycle through `BUNDLES` again for surplus seats.
 When a seat receives multiple bundles, join the bundle names with `+` in one
 `--assignment`. Set its risk or verification lens to the same canonical composite.
 
+### Promoted adversarial coverage
+
+Every code panel, including explicit numeric and read-only code panels, gives one existing core seat a composite red-team emphasis without another provider call.
+Select it deterministically from stable roster order and rotate it across code panels:
+for zero-based code-panel ordinal `j` and `n` core seats, use seat `j mod n`.
+Derive `j` from the planned panel order so a retry keeps the same owner. Append the
+red-team instruction to that seat's normal emphasis before rendering: assume the
+change is wrong and try to prove it by finding the input, timing, state, attacker,
+failure, or consumer boundary that breaks it. This supplements and never replaces the canonical lens, bundle, fixed numeric lens, or evidence assignment.
+Numeric mode adds no panel for this composite assignment.
+
+Large, high-risk, user-marked-important, or explicitly adversarial adaptive reviews run exactly one full red-team panel before planning.
+For this panel, set `PANEL_PHASE=risk` and reuse the existing four canonical bundle assignments without changing `rev-evidence.py` or its schema. The panel has these four distinct composed adversarial assignments, in bundle order:
+
+1. correctness and boundaries plus attacker behavior and trust boundaries;
+2. security, state, and API plus rollback and recovery;
+3. concurrency, resources, and performance plus duplication and exhaustion;
+4. tests, observability, and regression plus consumer compatibility and integration.
+
+The full panel joins the same initial finding clusters and does not grant another correction cycle.
+The ordinary adaptive and numeric stopping rules remain unchanged. Document panels receive no automatic red-team assignment unless the user explicitly requests an adversarial document review.
+
+The verification owner always traces the cumulative change through consumers and integration boundaries. Compose these additional emphases when relevant:
+
+- compatibility and consumer contracts for public APIs, protocols, schemas,
+  serialization, CLI output, and cross-repository interfaces;
+- recovery and idempotency for persistence, external writes, migrations, retries,
+  concurrency, CI orchestration, and partial failure;
+- security and trust boundaries for authentication, authorization, signatures,
+  secrets, untrusted input, and privilege changes.
+
 The first core seat is the discovery full-state owner. The first seat in roster order
 that carries `tests-observability-maintenance-regression` is the full-state owner for
 risk and verification. A repair seat receives the full cumulative patch.
@@ -672,17 +703,20 @@ findings by severity, what was fixed, gate status, commit.
 
 With four core seats, a normal review plans 12 seat launches: four simplicity,
 four conditional plan, and four final verification launches. A large or high-risk
-review plans 16 by adding four risk-discovery launches. An explicit round count
-remains a minimum override and exclusively selects the legacy numbered schedule.
+review plans 20 by adding four risk-discovery and four full red-team launches. An
+important or explicitly adversarial review that is not otherwise large or high-risk
+plans 16 by adding four full red-team launches. An explicit round count remains a
+minimum override and exclusively selects the legacy numbered schedule.
 
 A change is large with more than 25 changed files or more than 1,500 changed lines.
 It is high-risk when it crosses a security, persistence, concurrency, transaction,
-or public API boundary.
+protocol, public API, or irreversible mutation boundary.
 
 | Panel | When | Lenses, in order |
 |---|---|---|
 | Simplicity discovery | always | simplicity for every seat |
 | Risk discovery | large or high-risk only | correctness-boundaries, security-state-api, concurrency-resources-performance, tests-observability-maintenance-regression |
+| Full red team | exactly once for large, high-risk, user-marked-important, or explicitly adversarial adaptive reviews | the four risk bundles with the four distinct composed adversarial assignments |
 | Plan | accepted nontrivial fixes | plan-completeness, plan-soundness, plan-simplicity, plan-tests |
 | Verification | after discovery or the latest nontrivial fix | the four risk bundles, rotated from risk discovery |
 

@@ -192,6 +192,42 @@ test_skill_contract() {
       '[Ww]ith four core seats.*one canonical bundle per seat'
     assert_grep "composite bundles use one canonical assignment" "$H" \
       'join.*bundle names with `\+`'
+    assert_grep "every code panel receives one composite red-team seat" "$H" \
+      'Every code panel, including explicit numeric and read-only code panels, gives one existing core seat a composite red-team emphasis'
+    assert_grep "composite red-team emphasis preserves canonical coverage" "$H" \
+      'supplements and never replaces the canonical lens, bundle, fixed numeric lens, or evidence assignment'
+    assert_grep "composite red-team ownership rotates deterministically" "$H" \
+      'Select it deterministically from stable roster order and rotate it across code panels'
+    assert_grep "numeric mode adds no composite panel" "$H" \
+      'Numeric mode adds no panel for this composite assignment'
+    assert_grep "qualifying adaptive reviews run one full red-team panel before planning" "$H" \
+      'Large, high-risk, user-marked-important, or explicitly adversarial adaptive reviews run exactly one full red-team panel before planning'
+    assert_grep "full red-team reuses risk evidence and canonical bundles" "$H" \
+      'PANEL_PHASE=risk.*existing four canonical bundle assignments'
+    assert_grep "full red-team assignments are explicitly distinct" "$H" \
+      'four distinct composed adversarial assignments'
+    assert_grep "full red-team covers attacker behavior and trust boundaries" "$H" \
+      'correctness and boundaries plus attacker behavior and trust boundaries'
+    assert_grep "full red-team covers rollback and recovery" "$H" \
+      'security, state, and API plus rollback and recovery'
+    assert_grep "full red-team covers duplication and exhaustion" "$H" \
+      'concurrency, resources, and performance plus duplication and exhaustion'
+    assert_grep "full red-team covers compatibility and integration" "$H" \
+      'tests, observability, and regression plus consumer compatibility and integration'
+    assert_grep "verification owner traces integration boundaries" "$H" \
+      '[Vv]erification owner always traces the cumulative change through consumers and integration boundaries'
+    assert_grep "compatibility routing is explicit" "$H" \
+      'compatibility and consumer contracts for public APIs, protocols, schemas'
+    assert_grep "recovery routing is explicit" "$H" \
+      'recovery and idempotency for persistence, external writes, migrations, retries'
+    assert_grep "security routing is explicit" "$H" \
+      'security and trust boundaries for authentication, authorization, signatures'
+    assert_grep "red-team findings join initial clusters without another cycle" "$H" \
+      'joins the same initial finding clusters and does not grant another correction cycle'
+    assert_grep "ordinary stopping rules remain unchanged" "$H" \
+      'The ordinary adaptive and numeric stopping rules remain unchanged'
+    assert_grep "document reviews exclude automatic red-team coverage" "$H" \
+      'Document panels receive no automatic red-team assignment unless the user explicitly requests an adversarial document review'
     assert_grep "evidence owns component assignment" "$H" \
       '`rev-evidence\.py` owns semantic component assignment'
     assert_grep "components retain specialist and integration coverage" "$H" \
