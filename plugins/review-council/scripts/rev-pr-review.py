@@ -2,6 +2,7 @@
 """Render and publish the canonical Review Council pull-request review."""
 import argparse
 import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,9 @@ import tempfile
 
 BAD_INLINE = re.compile(r"[\r\n]")
 PR_URL = re.compile(r"^https://github\.com/([^/]+/[^/]+)/pull/([1-9][0-9]*)/?$")
+BLOB_URL = re.compile(r"^(https://github\.com/[^/]+/[^/]+/blob/)[0-9a-f]{7,40}(/.*)$")
+COMMIT_URL = re.compile(r"^(https://github\.com/[^/]+/[^/]+/commit/)[0-9a-f]{7,40}/?$")
+OID = re.compile(r"^[0-9a-f]{40}$")
 
 
 class ReviewError(ValueError):
@@ -49,9 +53,9 @@ def link(value, field, code=False):
     return f"[`{label}`]({url})" if code else f"[{label}]({url})"
 
 
-def inline_list(value, field, allow_empty=False):
+def inline_list(value, field):
     require(isinstance(value, list), f"{field} must be a list")
-    require(allow_empty or value, f"{field} must not be empty")
+    require(value, f"{field} must not be empty")
     return [inline(item, f"{field}[{index}]") for index, item in enumerate(value)]
 
 
@@ -189,8 +193,7 @@ def write_atomic(path, body):
 
 
 def parse_scope(path):
-    if not path.is_file():
-        return None
+    require(path.is_file(), f"required session scope is missing: {path}")
     values = {}
     for raw in path.read_text().splitlines():
         if not raw or "=" not in raw:
@@ -201,12 +204,23 @@ def parse_scope(path):
         values[key] = parsed[0]
     root = values.get("REV_ROOT")
     require(root and Path(root).is_dir(), f"scope has no usable REV_ROOT: {path}")
-    return Path(root)
+    branch = values.get("REV_BRANCH")
+    base_branch = values.get("REV_BASE_BRANCH")
+    require(branch and base_branch, f"scope has no usable branch identity: {path}")
+    return {"root": Path(root), "branch": branch, "base_branch": base_branch}
 
 
 def run_gh(arguments, root):
     return subprocess.run(["gh", *arguments], cwd=root, text=True,
                           capture_output=True, timeout=120)
+
+
+def run_git(arguments, root):
+    result = subprocess.run(["git", *arguments], cwd=root, text=True,
+                            capture_output=True, timeout=30)
+    if result.returncode != 0:
+        raise ReviewError("git " + " ".join(arguments) + " failed: " + result.stderr.strip())
+    return result.stdout.strip()
 
 
 def has_github_remote(root):
@@ -225,28 +239,68 @@ def has_github_remote(root):
     return False
 
 
-def resolve_pr(root):
+def parse_pr(metadata, branch):
+    require(isinstance(metadata, dict), "gh returned an invalid PR object")
+    number = metadata.get("number")
+    url = metadata.get("url")
+    state = metadata.get("state")
+    head_branch = metadata.get("headRefName")
+    head = metadata.get("headRefOid")
+    require(isinstance(number, int) and number > 0 and isinstance(url, str),
+            "gh omitted the PR number or URL")
+    match = PR_URL.fullmatch(url)
+    require(match is not None and int(match.group(2)) == number,
+            "gh returned an unsupported PR URL")
+    require(state in ("OPEN", "CLOSED", "MERGED"), "gh omitted the PR state")
+    require(head_branch == branch, "gh returned a PR for a different branch")
+    require(isinstance(head, str) and OID.fullmatch(head) is not None,
+            "gh omitted the PR head")
+    return {
+        "repo": match.group(1), "number": number, "url": url, "state": state,
+        "branch": head_branch, "head": head,
+    }
+
+
+def resolve_pr(scope):
+    root = scope["root"]
     if not has_github_remote(root):
         return None
     require(shutil.which("gh") is not None, "gh is required to publish a PR review")
-    result = run_gh(["pr", "view", "--json", "number,url"], root)
+    result = run_gh([
+        "pr", "view", scope["branch"],
+        "--json", "number,url,state,headRefName,headRefOid,baseRefName",
+    ], root)
     if result.returncode != 0:
         if "no pull requests found" in result.stderr.lower():
             return None
-        raise ReviewError("cannot resolve the current PR: " + result.stderr.strip())
+        raise ReviewError("cannot resolve the scoped PR: " + result.stderr.strip())
     try:
         metadata = json.loads(result.stdout)
     except json.JSONDecodeError as error:
         raise ReviewError("gh pr view returned invalid JSON") from error
-    require(isinstance(metadata, dict), "gh pr view returned an invalid object")
-    number = metadata.get("number")
-    url = metadata.get("url")
-    require(isinstance(number, int) and number > 0 and isinstance(url, str),
-            "gh pr view omitted number or URL")
-    match = PR_URL.fullmatch(url)
-    require(match is not None and int(match.group(2)) == number,
-            "gh pr view returned an unsupported PR URL")
-    return match.group(1), number, url
+    target = parse_pr(metadata, scope["branch"])
+    if target["state"] != "OPEN":
+        return None
+    require(metadata.get("baseRefName") == scope["base_branch"],
+            "the open PR base does not match the reviewed base")
+    return target
+
+
+def live_pr(target, root):
+    result = run_gh([
+        "pr", "view", str(target["number"]), "--repo", target["repo"],
+        "--json", "number,url,state,headRefName,headRefOid",
+    ], root)
+    if result.returncode != 0:
+        raise ReviewError("cannot revalidate the frozen PR: " + result.stderr.strip())
+    try:
+        metadata = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise ReviewError("gh pr view returned invalid JSON") from error
+    live = parse_pr(metadata, target["branch"])
+    require(live["repo"] == target["repo"] and live["number"] == target["number"]
+            and live["url"] == target["url"], "the frozen PR identity changed")
+    return live
 
 
 def existing_reviews(repo, number, root):
@@ -259,63 +313,184 @@ def existing_reviews(repo, number, root):
     except json.JSONDecodeError as error:
         raise ReviewError("gh api returned invalid review JSON") from error
     require(isinstance(pages, list), "gh api returned an invalid review list")
-    reviews = []
-    for page in pages:
-        if isinstance(page, list):
-            reviews.extend(page)
-        elif isinstance(page, dict):
-            reviews.append(page)
-        else:
-            raise ReviewError("gh api returned an invalid review page")
-    return reviews
+    require(all(isinstance(page, list) for page in pages),
+            "gh api returned an invalid review page")
+    return [review for page in pages for review in page]
+
+
+def body_hash(body):
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+def target_envelope(scope, target, body, date, allow_unpushed=False):
+    root = scope["root"]
+    head = run_git(["rev-parse", "HEAD"], root)
+    tree = run_git(["rev-parse", "HEAD^{tree}"], root)
+    require(OID.fullmatch(head) is not None and OID.fullmatch(tree) is not None,
+            "git returned an invalid reviewed identity")
+    envelope = {
+        "version": 1,
+        "associated": target is not None,
+        "branch": scope["branch"],
+        "base_branch": scope["base_branch"],
+        "head": head,
+        "tree": tree,
+        "date": date,
+        "body_sha256": body_hash(body),
+    }
+    if target is not None:
+        require(allow_unpushed or target["head"] == head,
+                "the open PR head does not match the reviewed local head; push before rendering")
+        envelope.update({key: target[key] for key in ("repo", "number", "url")})
+    return envelope
+
+
+def load_target(path):
+    target = load_input(path)
+    require(target.get("version") == 1, "unsupported PR review target version")
+    require(isinstance(target.get("associated"), bool), "target association must be boolean")
+    for field in ("branch", "base_branch", "head", "tree", "date", "body_sha256"):
+        inline(target.get(field), f"target.{field}")
+    require(OID.fullmatch(target["head"]) is not None, "target.head must be a full commit ID")
+    require(OID.fullmatch(target["tree"]) is not None, "target.tree must be a full tree ID")
+    require(re.fullmatch(r"[0-9a-f]{64}", target["body_sha256"]) is not None,
+            "target.body_sha256 must be SHA-256")
+    if target["associated"]:
+        frozen = parse_pr({
+            "number": target.get("number"), "url": target.get("url"), "state": "OPEN",
+            "headRefName": target["branch"], "headRefOid": target["head"],
+        }, target["branch"])
+        require(frozen["repo"] == target.get("repo"), "target repository does not match its URL")
+    return target
 
 
 def render_session(session, date):
-    body = render(load_input(session / "pr-review.json"), date)
+    data = load_input(session / "pr-review.json")
+    body = render(data, date)
+    scope_path = session / "scope.env"
+    target = None
+    if scope_path.is_file():
+        scope = parse_scope(scope_path)
+        target = target_envelope(
+            scope, resolve_pr(scope), body, date,
+            allow_unpushed=os.environ.get("REV_STACK_LEG") == "1",
+        )
     output = session / "pr-review.md"
     write_atomic(output, body)
+    if target is not None:
+        write_atomic(session / "pr-review-target.json", json.dumps(target, indent=2) + "\n")
     return output, body
 
 
-def publish(session, date, script):
-    root = parse_scope(session / "scope.env")
-    if root is None:
+def unresolved_target_skip(scope, session):
+    if (session / "pr-review-target.json").is_file():
+        return False
+    if resolve_pr(scope) is None:
+        print("pr-review: no associated open PR; skipped")
+        return True
+    raise ReviewError("associated open PR has no rendered target; run render first")
+
+
+def publish(session, script):
+    scope = parse_scope(session / "scope.env")
+    if unresolved_target_skip(scope, session):
+        return
+    target = load_target(session / "pr-review-target.json")
+    if not target["associated"]:
         print("pr-review: no associated open PR; skipped")
         return
-    target = resolve_pr(root)
-    if target is None:
+    output = session / "pr-review.md"
+    require(output.is_file(), f"rendered PR review is missing: {output}")
+    body = output.read_text()
+    require(body_hash(body) == target["body_sha256"],
+            "rendered PR review does not match its frozen body hash")
+    live = live_pr(target, scope["root"])
+    if live["state"] != "OPEN":
         print("pr-review: no associated open PR; skipped")
         return
-    repo, number, url = target
-    output, body = render_session(session, date)
+    require(live["head"] == target["head"],
+            "the PR head changed after review; rerun the review before publishing")
     if any(isinstance(review, dict) and review.get("body") == body
-           for review in existing_reviews(repo, number, root)):
-        print(f"pr-review: identical review already posted on {url}")
+           and review.get("state") == "COMMENTED"
+           for review in existing_reviews(target["repo"], target["number"], scope["root"])):
+        print(f"pr-review: identical review already posted on {target['url']}")
         return
-    result = run_gh(["pr", "review", str(number), "--repo", repo, "--comment",
-                     "--body-file", str(output)], root)
+    result = run_gh(["pr", "review", str(target["number"]), "--repo", target["repo"],
+                     "--comment", "--body-file", str(output)], scope["root"])
     if result.returncode != 0:
         retry = shlex.join([sys.executable, str(script), "publish", str(session)])
         raise ReviewError("GitHub review post failed: " + result.stderr.strip() +
                           "\npr-review: retry: " + retry)
-    print(f"pr-review: posted {url}")
+    print(f"pr-review: posted {target['url']}")
+
+
+def replace_sha_url(url, pattern, head, field):
+    value = inline(url, field)
+    match = pattern.fullmatch(value)
+    require(match is not None, f"{field} must be a SHA-pinned GitHub URL")
+    return match.group(1) + head + (match.group(2) if match.lastindex == 2 else "")
+
+
+def finalize_stack(session, head, expected_root=None):
+    require(OID.fullmatch(head) is not None, "--head must be a full commit ID")
+    scope = parse_scope(session / "scope.env")
+    if expected_root is not None:
+        if scope["root"].resolve() != Path(expected_root).resolve():
+            return
+    target = load_target(session / "pr-review-target.json")
+    if not target["associated"]:
+        print("pr-review: no associated open PR; skipped")
+        return
+    root = scope["root"]
+    require(run_git(["rev-parse", "HEAD"], root) == head,
+            "stack finalization head does not match the local checkout")
+    require(run_git(["rev-parse", f"{head}^{{tree}}"], root) == target["tree"],
+            "stack finalization changed the reviewed tree")
+    live = live_pr(target, root)
+    require(live["state"] == "OPEN" and live["head"] == head,
+            "the pushed PR head does not match stack finalization")
+
+    data = load_input(session / "pr-review.json")
+    for index, decision in enumerate(data.get("decisions", [])):
+        location = decision.get("location", {})
+        location["url"] = replace_sha_url(
+            location.get("url"), BLOB_URL, head, f"decisions[{index}].location.url")
+    for index, fix in enumerate(data.get("fixes", [])):
+        commit = fix.get("commit", {})
+        label = inline(commit.get("label"), f"fixes[{index}].commit.label")
+        commit["label"] = head[:min(len(label), len(head))]
+        commit["url"] = replace_sha_url(
+            commit.get("url"), COMMIT_URL, head, f"fixes[{index}].commit.url")
+    body = render(data, target["date"])
+    new_target = target_envelope(scope, live, body, target["date"])
+    write_atomic(session / "pr-review.json", json.dumps(data, indent=2) + "\n")
+    write_atomic(session / "pr-review.md", body)
+    write_atomic(session / "pr-review-target.json", json.dumps(new_target, indent=2) + "\n")
+    print(f"pr-review: finalized stack review at {head}")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for command in ("render", "publish"):
-        subparser = subparsers.add_parser(command)
-        subparser.add_argument("session", type=Path)
-        subparser.add_argument("--date", default=datetime.date.today().isoformat())
+    render_parser = subparsers.add_parser("render")
+    render_parser.add_argument("session", type=Path)
+    render_parser.add_argument("--date", default=datetime.date.today().isoformat())
+    publish_parser = subparsers.add_parser("publish")
+    publish_parser.add_argument("session", type=Path)
+    finalize_parser = subparsers.add_parser("finalize-stack")
+    finalize_parser.add_argument("session", type=Path)
+    finalize_parser.add_argument("--head", required=True)
+    finalize_parser.add_argument("--root")
     args = parser.parse_args()
     session = args.session.expanduser().absolute()
     try:
         if args.command == "render":
             output, _ = render_session(session, args.date)
             print(output)
+        elif args.command == "finalize-stack":
+            finalize_stack(session, args.head, args.root)
         else:
-            publish(session, args.date, Path(__file__).resolve())
+            publish(session, Path(__file__).resolve())
     except (OSError, ReviewError, subprocess.SubprocessError) as error:
         print(f"pr-review: {error}", file=sys.stderr)
         return 1
