@@ -8,7 +8,8 @@ The renderer owns the exact Markdown structure. Do not hand-build, reorder, rena
 remove, or add sections in `pr-review.md`. It also writes
 `pr-review-target.json`, which freezes the associated PR, reviewed merge base, observed
 PR base tip, reviewed head and tree, footer date, exact body hash, and exact normalized
-GitHub repository set.
+GitHub repository set. It also freezes a separate digest of the original semantic
+render so post-finalization input changes cannot hide behind rewritten commit links.
 
 Set `PLUGIN_ROOT` to the plugin root already resolved by the host: `PLUGIN` on Codex
 or `CLAUDE_PLUGIN_ROOT` on Claude Code.
@@ -167,11 +168,14 @@ pushed retry derives finalization from the frozen target and current head, so re
 does not depend on a marker written after history changes.
 Stack no-push and no-squash settings are exported to every child leg, including values
 assigned by the stack config.
-Before every real push, the stack validates the authoritative session, clean reviewed
-tree, merge base, frozen body and target, repository set, and push endpoint without
-calling GitHub. It then pushes the captured commit to the captured literal URL and
-destination ref, so later branch or remote configuration changes cannot widen or
-redirect the push.
+Before every real push or no-push completion, the stack validates the authoritative
+session, clean reviewed tree, merge base, frozen structured input, body and target,
+and repository set without calling GitHub. Real pushes additionally validate the
+captured endpoint, then push the captured commit to that literal URL and destination
+ref, so later branch or remote configuration changes cannot widen or redirect the
+push. Validation accepts complete original and finalized review states. A real-push
+retry also accepts the body-before-target split left by interrupted finalization so
+the finalizer can repair it; no-push completion rejects that split state.
 The finalizer tolerates brief GitHub head propagation only while the visible head is
 the frozen head or its ancestor. After successful publication or an explicit no-push
 skip, the stack sets `phase=done` before promoting `stack-report.md` to `report.md`.

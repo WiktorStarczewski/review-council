@@ -51,8 +51,10 @@ if root:
         text=True, capture_output=True)
     if result.returncode == 0 and result.stdout.strip():
         remote = result.stdout.split()[0]
-with Path(os.environ['STACK_PUBLISH_CALLS']).open('a') as stream:
-    stream.write(' '.join(sys.argv[1:]) + f' local={local} remote={remote}\n')
+calls = os.environ.get('STACK_PUBLISH_CALLS')
+if calls:
+    with Path(calls).open('a') as stream:
+        stream.write(' '.join(sys.argv[1:]) + f' local={local} remote={remote}\n')
 if os.environ.get('STACK_REQUIRE_SYNC') == '1':
     if command == 'publish' and local != remote:
         raise SystemExit(9)
@@ -103,6 +105,8 @@ RSEOF
     chmod +x "$RS/roster.sh"
     export REV_SCRIPTS="$RS" FAKE_ROSTER_ARGS="$T/roster-args"
     export SHIM_CLAUDE_ARGS_FILE="$T/claude-args" REV_STACK_FOREGROUND=1
+    export STACK_PUBLISH_CALLS="$T/stack.calls"
+    : > "$STACK_PUBLISH_CALLS"
     local R="$T/stk"; mkrepo "$R"; git -C "$R" checkout -qb feat; echo w > "$R/w.txt"; git -C "$R" add w.txt; git -C "$R" commit -qm "feat: w"
     printf 'legs() { run_leg "%s" 1 leg1 "premise one"; }\n' "$R" > "$T/stack.cfg"
     export ROOT="$T/stack-root" LOG="$T/stack.log" POLL=1 STATUS_EVERY=2 STALL_SECS=30 CPU_SAMPLE_SECS=1 \
@@ -132,7 +136,25 @@ RSEOF
     assert_grep "no push honoured" "$LOG" 'NO_PUSH=1'
     assert_grep "no-push stack suppresses external review publication" "$LOG" \
       'NO_PUSH=1: not publishing PR reviews'
+    assert_grep "no-push stack validates the authoritative review" \
+      "$STACK_PUBLISH_CALLS" '^validate-stack '
+    assert_nogrep "no-push validation has no push endpoint" \
+      "$STACK_PUBLISH_CALLS" '^validate-stack .*--push-url '
     assert_grep "all complete" "$LOG" 'ALL PHASES COMPLETE'
+
+    export ROOT="$T/stack-invalid-review-root" LOG="$T/stack-invalid-review.log"
+    export PASSES=1 STACK_VALIDATE_RC=1
+    : > "$STACK_PUBLISH_CALLS"
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack.cfg" \
+      > "$T/stack-invalid-review.out" 2>&1
+    assert_eq "no-push stack rejects an invalid review session" "$?" 1
+    assert_exit "invalid no-push review exposes no final report" 0 \
+      test ! -e "$ROOT/leg1/report.md"
+    assert_exit "invalid no-push review preserves the ready report" 0 \
+      test -s "$ROOT/leg1/stack-report.md"
+    assert_grep "invalid no-push review names the validation phase" \
+      "$LOG" 'COMPLETE WITH FAILURES: PR review validation'
+    unset STACK_VALIDATE_RC
 
     printf 'NO_PUSH=1\nNO_SQUASH=1\nlegs() { run_leg "%s" 1 legcfg "config env"; }\n' \
       "$R" > "$T/stack-config-env.cfg"
@@ -186,6 +208,8 @@ RSEOF
     SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-publish.cfg" > "$T/stack-publish.out" 2>&1
     assert_eq "completed pushed stack publishes PR review" "$?" 0
     local publish_head; publish_head=$(git -C "$RP" rev-parse HEAD)
+    assert_grep "real-push validation records a nonempty endpoint" \
+      "$STACK_PUBLISH_CALLS" '^validate-stack .*--push-url [^ ]+ '
     assert_eq "stack publisher receives the completed session" \
       "$(grep '^publish ' "$STACK_PUBLISH_CALLS")" \
       "publish $ROOT/legpub local=$publish_head remote=$publish_head"

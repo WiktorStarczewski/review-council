@@ -376,6 +376,7 @@ ${VACUITY}${resume}"
 
 finish_repos() {
   local d srq push_rc session head branch_ref push_remote push_ref push_urls push_url
+  local -a validate_args
   for d in $REPOS_SEEN; do
     case " $FAILED_REPOS " in *" $d "*)
       say "--- skipping $(basename "$d") - a leg on it failed; its review is not complete"; continue;; esac
@@ -396,51 +397,54 @@ finish_repos() {
     # A refused squash is not a reason to withhold the push: the round commits are real work and CI
     # must see them. Squash and push are therefore independent steps, not one && chain.
     [ "$srq" -eq 0 ] || say "!!! squash refused for $(basename "$d") - pushing the un-collapsed review commits"
-    if [ "$NO_PUSH" = 1 ]; then
-      say "    (NO_PUSH=1: not pushing)"
-      continue
-    fi
     session=$(session_for_repo "$d") || {
-      say "!!! no authoritative completed review session before push for $(basename "$d")"
-      note_failure "pre-push review validation" "$d"
+      say "!!! no authoritative completed review session for $(basename "$d")"
+      note_failure "PR review validation" "$d"
       continue
     }
     head=$(git -C "$d" rev-parse HEAD 2>/dev/null) || {
-      say "!!! cannot capture the reviewed push head for $(basename "$d")"
-      note_failure "pre-push review validation" "$d"
+      say "!!! cannot capture the reviewed head for $(basename "$d")"
+      note_failure "PR review validation" "$d"
       continue
     }
-    branch_ref=$(git -C "$d" symbolic-ref -q HEAD 2>/dev/null) || {
-      say "!!! cannot capture the reviewed push branch for $(basename "$d")"
-      note_failure "pre-push review validation" "$d"
-      continue
-    }
-    push_remote=$(git -C "$d" for-each-ref --format='%(upstream:remotename)' "$branch_ref")
-    push_ref=$(git -C "$d" for-each-ref --format='%(upstream:remoteref)' "$branch_ref")
-    if [ -z "$push_remote" ] || [ -z "$push_ref" ]; then
-      say "!!! cannot resolve one upstream push destination for $(basename "$d")"
-      note_failure "pre-push review validation" "$d"
-      continue
+    validate_args=(validate-stack "$session" --head "$head" --root "$d")
+    if [ "$NO_PUSH" != 1 ]; then
+      branch_ref=$(git -C "$d" symbolic-ref -q HEAD 2>/dev/null) || {
+        say "!!! cannot capture the reviewed push branch for $(basename "$d")"
+        note_failure "PR review validation" "$d"
+        continue
+      }
+      push_remote=$(git -C "$d" for-each-ref --format='%(upstream:remotename)' "$branch_ref")
+      push_ref=$(git -C "$d" for-each-ref --format='%(upstream:remoteref)' "$branch_ref")
+      if [ -z "$push_remote" ] || [ -z "$push_ref" ]; then
+        say "!!! cannot resolve one upstream push destination for $(basename "$d")"
+        note_failure "PR review validation" "$d"
+        continue
+      fi
+      push_urls=$(git -C "$d" remote get-url --push --all "$push_remote" 2>/dev/null) || {
+        say "!!! cannot resolve the push URL for $(basename "$d")"
+        note_failure "PR review validation" "$d"
+        continue
+      }
+      if [ "$(printf '%s\n' "$push_urls" | grep -c .)" -ne 1 ]; then
+        say "!!! cannot resolve exactly one push URL for $(basename "$d")"
+        note_failure "PR review validation" "$d"
+        continue
+      fi
+      push_url=$push_urls
+      validate_args+=(--push-url "$push_url")
     fi
-    push_urls=$(git -C "$d" remote get-url --push --all "$push_remote" 2>/dev/null) || {
-      say "!!! cannot resolve the push URL for $(basename "$d")"
-      note_failure "pre-push review validation" "$d"
-      continue
-    }
-    if [ "$(printf '%s\n' "$push_urls" | grep -c .)" -ne 1 ]; then
-      say "!!! cannot resolve exactly one push URL for $(basename "$d")"
-      note_failure "pre-push review validation" "$d"
-      continue
-    fi
-    push_url=$push_urls
     set -o pipefail
-    python3 "$REV_SCRIPTS/rev-pr-review.py" validate-stack "$session" \
-      --head "$head" --root "$d" --push-url "$push_url" 2>&1 \
+    python3 "$REV_SCRIPTS/rev-pr-review.py" "${validate_args[@]}" 2>&1 \
       | sed 's/^/    /' | tee -a "$LOG"
     push_rc=$?
     set +o pipefail
     if [ "$push_rc" -ne 0 ]; then
-      note_failure "pre-push review validation" "$d"
+      note_failure "PR review validation" "$d"
+      continue
+    fi
+    if [ "$NO_PUSH" = 1 ]; then
+      say "    (NO_PUSH=1: not pushing)"
       continue
     fi
     set -o pipefail

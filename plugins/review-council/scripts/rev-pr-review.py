@@ -480,14 +480,14 @@ def require_clean_review_tree(root, session):
 
 
 def target_envelope(scope, target, body, date, session, repositories,
-                    allow_unpushed=False):
+                    allow_unpushed=False, source_body=None):
     root = scope["root"]
     head = run_git(["rev-parse", "HEAD"], root)
     tree = run_git(["rev-parse", "HEAD^{tree}"], root)
     require(OID.fullmatch(head) is not None and OID.fullmatch(tree) is not None,
             "git returned an invalid reviewed identity")
     envelope = {
-        "version": 1,
+        "version": 2,
         "associated": target is not None,
         "branch": scope["branch"],
         "base": scope["base"],
@@ -496,6 +496,7 @@ def target_envelope(scope, target, body, date, session, repositories,
         "tree": tree,
         "date": date,
         "body_sha256": body_hash(body),
+        "source_body_sha256": body_hash(body if source_body is None else source_body),
         "repositories": repositories,
     }
     if target is not None:
@@ -509,15 +510,18 @@ def target_envelope(scope, target, body, date, session, repositories,
 
 def load_target(path):
     target = load_input(path)
-    require(target.get("version") == 1, "unsupported PR review target version")
+    require(target.get("version") == 2, "unsupported PR review target version")
     require(isinstance(target.get("associated"), bool), "target association must be boolean")
-    for field in ("branch", "base", "base_branch", "head", "tree", "date", "body_sha256"):
+    for field in ("branch", "base", "base_branch", "head", "tree", "date",
+                  "body_sha256", "source_body_sha256"):
         inline(target.get(field), f"target.{field}")
     require(OID.fullmatch(target["base"]) is not None, "target.base must be a full commit ID")
     require(OID.fullmatch(target["head"]) is not None, "target.head must be a full commit ID")
     require(OID.fullmatch(target["tree"]) is not None, "target.tree must be a full tree ID")
     require(re.fullmatch(r"[0-9a-f]{64}", target["body_sha256"]) is not None,
             "target.body_sha256 must be SHA-256")
+    require(re.fullmatch(r"[0-9a-f]{64}", target["source_body_sha256"]) is not None,
+            "target.source_body_sha256 must be SHA-256")
     repositories = target.get("repositories")
     require(isinstance(repositories, list), "target.repositories must be a list")
     normalized = []
@@ -809,8 +813,35 @@ def finalized_data(data, head):
     return updated
 
 
+def stack_review_state(session, target, head):
+    data = load_input(session / "pr-review.json")
+    source_body = render(data, target["date"])
+    require(body_hash(source_body) == target["source_body_sha256"],
+            "structured PR review input does not match its frozen semantic render")
+    updated = finalized_data(data, head)
+    body = render(updated, target["date"])
+    output = session / "pr-review.md"
+    require(output.is_file(), f"rendered PR review is missing: {output}")
+    current_body = output.read_text()
+    body_is_frozen = body_hash(current_body) == target["body_sha256"]
+    if body_is_frozen and current_body == source_body:
+        state = "original"
+    elif body_is_frozen and target["head"] == head and current_body == body:
+        state = "finalized"
+    elif (target["head"] != head
+          and target["body_sha256"] == target["source_body_sha256"]
+          and current_body == body):
+        state = "interrupted"
+    else:
+        state = "invalid"
+    return state, updated, source_body, body, current_body
+
+
 def validate_stack(session, head, expected_root=None, push_url=None):
     require(OID.fullmatch(head) is not None, "--head must be a full commit ID")
+    no_push = os.environ.get("NO_PUSH") == "1"
+    require(push_url is not None or no_push,
+            "a push URL is required unless NO_PUSH=1")
     scope = parse_scope(session / "scope.env")
     root = scope["root"]
     if expected_root is not None:
@@ -831,15 +862,11 @@ def validate_stack(session, head, expected_root=None, push_url=None):
             "the reviewed GitHub repository remotes changed; rerender before pushing")
     require_clean_review_tree(root, session)
 
-    output = session / "pr-review.md"
-    require(output.is_file(), f"rendered PR review is missing: {output}")
-    require(body_hash(output.read_text()) == target["body_sha256"],
-            "rendered PR review does not match its frozen body hash")
-    source_body = render(load_input(session / "pr-review.json"), target["date"])
-    require(body_hash(source_body) == target["body_sha256"],
-            "structured PR review input does not match the frozen rendered review")
-    if target["repositories"]:
-        repository = github_repository(push_url or "")
+    state, _, _, _, _ = stack_review_state(session, target, head)
+    require(state in ("original", "finalized") or (state == "interrupted" and not no_push),
+            "rendered PR review does not match its frozen body hash and target state")
+    if target["repositories"] and push_url is not None:
+        repository = github_repository(push_url)
         require(repository in target["repositories"],
                 "the push URL is outside the frozen GitHub repository set")
     print(f"pr-review: validated stack review at {head}")
@@ -875,31 +902,21 @@ def finalize_stack(session, head, expected_root=None):
         require(live["head"] == head, "the pushed PR head does not match stack finalization")
         require_reviewed_merge_base(target, head, live["base_head"], root)
 
-        data = load_input(session / "pr-review.json")
-        source_body = render(data, target["date"])
-        updated = finalized_data(data, head)
+        state, updated, source_body, body, current_body = stack_review_state(
+            session, target, head)
         validate_publication_links(updated, target["repositories"], head, root)
-        body = render(updated, target["date"])
-        output = session / "pr-review.md"
-        require(output.is_file(), f"rendered PR review is missing: {output}")
-        current_body = output.read_text()
-        source_is_frozen = body_hash(source_body) == target["body_sha256"]
-        if target["head"] == head and source_is_frozen and not promoted:
-            require(body_hash(current_body) == target["body_sha256"],
-                    "rendered PR review does not match its frozen body hash")
+        if target["head"] == head and state == "original" and not promoted:
             print(f"pr-review: stack review already uses reviewed head {head}")
             return
-        if not source_is_frozen:
-            require(target["head"] == head
-                    and body_hash(current_body) == target["body_sha256"]
-                    and current_body == body,
-                    "structured PR review input does not match the frozen rendered review")
+        if state == "finalized":
             print(f"pr-review: stack review already finalized at {head}")
             return
-        require(body_hash(current_body) == target["body_sha256"] or current_body == body,
-                "rendered PR review does not match its frozen body hash")
+        require(state in ("original", "interrupted"),
+                "rendered PR review does not match its frozen body hash and target state")
         new_target = target_envelope(
-            scope, live, body, target["date"], session, target["repositories"])
+            scope, live, body, target["date"], session, target["repositories"],
+            source_body=source_body)
+        output = session / "pr-review.md"
         if current_body != body:
             write_atomic(output, body)
         write_atomic(session / "pr-review-target.json",
@@ -923,7 +940,7 @@ def main():
     validate_parser.add_argument("session", type=Path)
     validate_parser.add_argument("--head", required=True)
     validate_parser.add_argument("--root")
-    validate_parser.add_argument("--push-url", required=True)
+    validate_parser.add_argument("--push-url")
     args = parser.parse_args()
     session = args.session.expanduser().absolute()
     try:

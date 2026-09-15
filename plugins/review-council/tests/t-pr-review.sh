@@ -1148,6 +1148,20 @@ test_pr_review_validate_stack() {
   : > "$T/pr-validate.calls"
   PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" \
+    --head "$head" --root "$root" \
+    > "$T/pr-validate-no-mode.out" 2> "$T/pr-validate-no-mode.err"
+  assert_eq "missing push URL outside no-push mode fails closed" "$?" 1
+  assert_grep "missing push URL names the local-mode requirement" \
+    "$T/pr-validate-no-mode.err" 'push URL.*NO_PUSH=1'
+
+  PATH="$bin:$PATH" NO_PUSH=1 GH_CALLS="$T/pr-validate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" \
+    --head "$head" --root "$root" \
+    > "$T/pr-validate-local.out" 2> "$T/pr-validate-local.err"
+  assert_eq "no-push stack validation accepts the frozen review" "$?" 0
+
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" \
     --head "$head" --root "$root" --push-url 'https://github.com/acme/repo.git' \
     > "$T/pr-validate.out" 2> "$T/pr-validate.err"
   assert_eq "local stack validation accepts the frozen review" "$?" 0
@@ -1233,8 +1247,73 @@ PY
     cmp -s "$session/pr-review.json" "$T/pr-finalize-original.json"
   assert_eq "stack finalization binds the aggregate head" \
     "$(jq -r .head "$session/pr-review-target.json")" "$after"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" --head "$after" \
+    --root "$root" --push-url 'https://github.com/acme/repo.git' \
+    > "$T/pr-finalize-validate.out" 2> "$T/pr-finalize-validate.err"
+  assert_eq "real-push validation accepts a finalized review" "$?" 0
+  PATH="$bin:$PATH" NO_PUSH=1 GH_CALLS="$T/pr-finalize.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" --head "$after" \
+    --root "$root" \
+    > "$T/pr-finalize-validate-local.out" 2> "$T/pr-finalize-validate-local.err"
+  assert_eq "no-push validation accepts a finalized review" "$?" 0
+
+  local changed_input="$T/pr-finalize-changed-input"
+  cp -R "$session" "$changed_input"
+  python3 - "$changed_input/pr-review.json" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data['decisions'][0]['location']['url'] = re.sub(
+    r'/blob/[0-9a-f]{40}/', '/blob/' + '0' * 40 + '/',
+    data['decisions'][0]['location']['url'])
+path.write_text(json.dumps(data))
+PY
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$changed_input" --head "$after" \
+    --root "$root" --push-url 'https://github.com/acme/repo.git' \
+    > "$T/pr-finalize-changed-url.out" 2> "$T/pr-finalize-changed-url.err"
+  assert_eq "finalized validation rejects a changed original decision SHA" "$?" 1
+  assert_grep "changed decision SHA names the semantic source mismatch" \
+    "$T/pr-finalize-changed-url.err" 'structured PR review input'
+
+  cp -R "$session" "$T/pr-finalize-changed-label"
+  changed_input="$T/pr-finalize-changed-label"
+  python3 - "$changed_input/pr-review.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+label = data['fixes'][0]['commit']['label']
+data['fixes'][0]['commit']['label'] = '0' * len(label)
+path.write_text(json.dumps(data))
+PY
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$changed_input" --head "$after" \
+    --root "$root" --push-url 'https://github.com/acme/repo.git' \
+    > "$T/pr-finalize-changed-label.out" 2> "$T/pr-finalize-changed-label.err"
+  assert_eq "finalized validation rejects a changed original fix label" "$?" 1
+  assert_grep "changed fix label names the semantic source mismatch" \
+    "$T/pr-finalize-changed-label.err" 'structured PR review input'
 
   cp "$session/pr-review.md" "$interrupted/pr-review.md"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize-interrupted.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$interrupted" --head "$after" \
+    --root "$root" --push-url 'https://github.com/acme/repo.git' \
+    > "$T/pr-finalize-interrupted-validate.out" \
+    2> "$T/pr-finalize-interrupted-validate.err"
+  assert_eq "real-push validation accepts an interrupted finalization" "$?" 0
+  PATH="$bin:$PATH" NO_PUSH=1 GH_CALLS="$T/pr-finalize-interrupted.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$interrupted" --head "$after" \
+    --root "$root" \
+    > "$T/pr-finalize-interrupted-local.out" 2> "$T/pr-finalize-interrupted-local.err"
+  assert_eq "no-push validation rejects an interrupted finalization" "$?" 1
   : > "$T/pr-finalize-interrupted.calls"
   PATH="$bin:$PATH" GH_HEAD_OID="$after" GH_CALLS="$T/pr-finalize-interrupted.calls" \
     GH_POSTED_BODY="$T/pr-finalize-interrupted-posted.md" \
