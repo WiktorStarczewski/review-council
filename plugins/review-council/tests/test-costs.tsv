@@ -21,6 +21,7 @@ t-evidence.sh::test_malformed_manifest_seals_inputs	1	normal
 t-evidence.sh::test_prepare_and_input_install_are_serialized	4	normal
 t-evidence.sh::test_evidence_provider_contract_binding	1	normal
 t-evidence.sh::test_evidence_source_identity_match	2	normal
+t-evidence.sh::test_session_input_install_recovers_partial_generation	1	normal
 t-gemini.sh::test_gemini	1	normal
 t-guard.sh::test_guard	1	normal
 t-guard2.sh::test_guard2	1	normal
@@ -145,6 +146,7 @@ t-read-bounds.sh::test_isolated_home_startup_cleanup	3	normal
 t-read-bounds.sh::test_narrow_seat_refuses_invalid_audit	3	normal
 t-read-bounds.sh::test_session_audit_stop_crosses_panel_labels	3	normal
 t-read-bounds.sh::test_session_audit_stop_recognizes_legacy_read_audit	3	normal
+t-read-bounds.sh::test_session_audit_stop_survives_partial_marker_state	3	normal
 t-read-bounds.sh::test_ordered_evidence_phase_validator	3	normal
 t-read-bounds.sh::test_ordered_proof_turn_exemption	3	normal
 t-read-bounds.sh::test_read_audit_binds_delivered_output	3	normal
