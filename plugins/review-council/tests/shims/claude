@@ -6,7 +6,9 @@
 # point of rev-stack) and must run inside the repo it reviews - neither is visible in the arguments.
 if [ -n "${SHIM_CLAUDE_ARGS_FILE:-}" ]; then
   printf '%s\n' "$@" >> "$SHIM_CLAUDE_ARGS_FILE"
-  printf 'REV_STACK_LEG=%s\ncwd=%s\n' "${REV_STACK_LEG:-unset}" "$PWD" >> "$SHIM_CLAUDE_ARGS_FILE"
+  printf 'REV_STACK_LEG=%s\nNO_PUSH=%s\nNO_SQUASH=%s\ncwd=%s\n' \
+    "${REV_STACK_LEG:-unset}" "${NO_PUSH:-unset}" "${NO_SQUASH:-unset}" "$PWD" \
+    >> "$SHIM_CLAUDE_ARGS_FILE"
 fi
 PROMPT=""; prev=""
 for a in "$@"; do [ "$prev" = "-p" ] && PROMPT=$a; prev=$a; done

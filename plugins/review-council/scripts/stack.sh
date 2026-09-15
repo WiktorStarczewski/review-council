@@ -58,6 +58,7 @@ else
   NO_PUSH=${NO_PUSH:-0}
   NO_SQUASH=${NO_SQUASH:-0}
 fi
+export NO_PUSH NO_SQUASH
 REV_SCRIPTS=${REV_SCRIPTS:-$HERE}   # roster.sh, rev-status.sh and rev-squash.sh live beside this script
 SEAM_REPO=${SEAM_REPO:-}
 SEAM_PREMISE=${SEAM_PREMISE:-"Review the SEAMS between the PRs in this stack, not the code again: what each PR promises the others, what each assumes of the others, and every claim that a sibling PR invalidates."}
@@ -412,11 +413,13 @@ finalize_reviews() {
     session=$(session_for_repo "$repo") || {
       say "!!! no authoritative completed review session for $(basename "$repo")"
       rc=1
+      note_failure "PR review finalization" "$repo"
       continue
     }
     head=$(git -C "$repo" rev-parse HEAD 2>/dev/null) || {
       say "!!! cannot read final review head for $(basename "$repo")"
       rc=1
+      note_failure "PR review finalization" "$repo"
       continue
     }
     if [ ! -f "$session/stack-report.md" ] && [ ! -f "$session/report.md" ]; then
@@ -452,6 +455,7 @@ publish_reviews() {
     session=$(session_for_repo "$repo") || {
       say "!!! no authoritative review session for $(basename "$repo")"
       rc=1
+      note_failure "PR review publication" "$repo"
       continue
     }
     if [ ! -f "$session/stack-report.md" ] && [ ! -f "$session/report.md" ]; then

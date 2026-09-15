@@ -36,6 +36,12 @@ if scope.is_file():
                 values[key] = parsed[0]
 root = values.get('REV_ROOT')
 local = remote = '-'
+requested = '-'
+previous = ''
+for argument in sys.argv[1:]:
+    if previous == '--head':
+        requested = argument
+    previous = argument
 if root:
     local = subprocess.check_output(['git', '-C', root, 'rev-parse', 'HEAD'], text=True).strip()
     branch = values.get('REV_BRANCH') or subprocess.check_output(
@@ -47,8 +53,11 @@ if root:
         remote = result.stdout.split()[0]
 with Path(os.environ['STACK_PUBLISH_CALLS']).open('a') as stream:
     stream.write(' '.join(sys.argv[1:]) + f' local={local} remote={remote}\n')
-if command == 'publish' and os.environ.get('STACK_REQUIRE_SYNC') == '1' and local != remote:
-    raise SystemExit(9)
+if os.environ.get('STACK_REQUIRE_SYNC') == '1':
+    if command == 'publish' and local != remote:
+        raise SystemExit(9)
+    if command == 'finalize-stack' and (requested != local or local != remote):
+        raise SystemExit(9)
 if command == 'finalize-stack':
     raise SystemExit(int(os.environ.get('STACK_FINALIZE_RC', '0')))
 if command == 'publish':
@@ -79,6 +88,8 @@ RSEOF
     assert_grep "auth gate asks the roster" "$T/roster-args" '^--brief$'
     assert_nogrep "roster brief is not echoed" "$T/stack.out" 'review-council seats:'
     assert_grep "leg marked stack" "$T/claude-args" '^REV_STACK_LEG=1$'
+    assert_grep "leg inherits no-push mode" "$T/claude-args" '^NO_PUSH=1$'
+    assert_grep "leg inherits no-squash mode" "$T/claude-args" '^NO_SQUASH=0$'
     assert_grep "leg runs in the repo" "$T/claude-args" "^cwd=$R$"
     assert_grep "bypass permissions" "$T/claude-args" '^bypassPermissions$'
     assert_grep "stream-json" "$T/claude-args" '^stream-json$'
@@ -96,6 +107,31 @@ RSEOF
     assert_grep "no-push stack suppresses external review publication" "$LOG" \
       'NO_PUSH=1: not publishing PR reviews'
     assert_grep "all complete" "$LOG" 'ALL PHASES COMPLETE'
+
+    printf 'NO_PUSH=1\nNO_SQUASH=1\nlegs() { run_leg "%s" 1 legcfg "config env"; }\n' \
+      "$R" > "$T/stack-config-env.cfg"
+    : > "$T/claude-config-env.args"
+    ( unset NO_PUSH NO_SQUASH
+      export ROOT="$T/stack-config-env-root" LOG="$T/stack-config-env.log" PASSES=1
+      export SHIM_CLAUDE_ARGS_FILE="$T/claude-config-env.args"
+      SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-config-env.cfg" \
+        > "$T/stack-config-env.out" 2>&1
+    )
+    assert_eq "config-assigned no-push stack completes" "$?" 0
+    assert_grep "config-assigned NO_PUSH reaches the leg" \
+      "$T/claude-config-env.args" '^NO_PUSH=1$'
+    assert_grep "config-assigned NO_SQUASH reaches the leg" \
+      "$T/claude-config-env.args" '^NO_SQUASH=1$'
+
+    : > "$T/args.env"
+    ( unset NO_PUSH NO_SQUASH
+      export REVIEW_COUNCIL_HOST=codex ROOT="$T/stack-codex-env-root"
+      export LOG="$T/stack-codex-env.log" PASSES=1 MAX_ATTEMPTS=1
+      SHIM_MODE=ok "$STACK/stack.sh" "$T/stack.cfg" > "$T/stack-codex-env.out" 2>&1
+    )
+    assert_eq "Codex stack double stops after its expected missing report" "$?" 1
+    assert_grep "Codex default NO_PUSH reaches the leg" "$T/args.env" '^NO_PUSH=1$'
+    assert_grep "Codex default NO_SQUASH reaches the leg" "$T/args.env" '^NO_SQUASH=1$'
 
     local PLAIN="$T/stk-plain"
     mkdir -p "$PLAIN"
@@ -177,9 +213,10 @@ SH
     SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-squash.cfg" > "$T/stack-squash-retry.out" 2>&1
     assert_eq "stack finalization retry publishes" "$?" 0
     local squash_root; squash_root=$(git -C "$RSQ" rev-parse --show-toplevel)
-    assert_grep "stack finalizes links after a changed-head squash" "$STACK_PUBLISH_CALLS" \
-      "^finalize-stack $ROOT/legsquash --head [0-9a-f]{40} --root $squash_root local="
     publish_head=$(git -C "$RSQ" rev-parse HEAD)
+    assert_eq "stack finalizes links at the changed-head squash tip" \
+      "$(grep '^finalize-stack ' "$STACK_PUBLISH_CALLS")" \
+      "finalize-stack $ROOT/legsquash --head $publish_head --root $squash_root local=$publish_head remote=$publish_head"
     assert_eq "stack publishes the remote aggregate head" \
       "$(grep '^publish ' "$STACK_PUBLISH_CALLS")" \
       "publish $ROOT/legsquash local=$publish_head remote=$publish_head"
@@ -208,10 +245,36 @@ SH
     SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-no-push-squash.cfg" \
       > "$T/stack-no-push-squash-retry.out" 2>&1
     assert_eq "later push recovers no-push squash finalization" "$?" 0
-    assert_grep "later push finalizes the aggregate head from durable session state" \
-      "$STACK_PUBLISH_CALLS" \
-      "^finalize-stack $ROOT/legnopush --head [0-9a-f]{40} --root $rnp_root "
+    publish_head=$(git -C "$RNP" rev-parse HEAD)
+    assert_eq "later push finalizes the exact aggregate head from durable state" \
+      "$(grep '^finalize-stack ' "$STACK_PUBLISH_CALLS")" \
+      "finalize-stack $ROOT/legnopush --head $publish_head --root $rnp_root local=$publish_head remote=$publish_head"
     unset STACK_REQUIRE_SYNC
+
+    local RMISS="$T/stk-missing-session"
+    mkrepo "$RMISS"; git -C "$RMISS" checkout -qb feat
+    git init -q --bare "$T/stk-missing-session-remote.git"
+    git -C "$RMISS" remote add origin "$T/stk-missing-session-remote.git"
+    git -C "$RMISS" push -q -u origin feat
+    echo later > "$RMISS/later.txt"; git -C "$RMISS" add later.txt
+    git -C "$RMISS" commit -qm 'fix(rev): missing session'
+    printf 'legs() { run_leg "%s" 1 legmissing "missing session"; }\n' \
+      "$RMISS" > "$T/stack-missing-session.cfg"
+    export ROOT="$T/stack-missing-session-root" LOG="$T/stack-missing-session.log"
+    export NO_PUSH=0 NO_SQUASH=1 STACK_PUBLISH_CALLS="$T/stack-missing-session.calls"
+    cat > "$RMISS/.git/hooks/pre-push" <<SH
+#!/bin/sh
+rm -f '$ROOT/repo-sessions.tsv'
+SH
+    chmod +x "$RMISS/.git/hooks/pre-push"
+    : > "$STACK_PUBLISH_CALLS"
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-missing-session.cfg" \
+      > "$T/stack-missing-session.out" 2>&1
+    assert_eq "missing authoritative session fails the stack" "$?" 1
+    assert_grep "missing session is attributed to finalization" "$LOG" \
+      'COMPLETE WITH FAILURES: PR review finalization'
+    assert_nogrep "missing finalization session skips publication" \
+      "$STACK_PUBLISH_CALLS" '^publish '
 
     local RM="$T/stk-multi" RM2="$T/stk-multi-second"
     mkrepo "$RM"; git -C "$RM" checkout -qb feat
