@@ -99,6 +99,8 @@ t-pr-review.sh::test_pr_review_required_lists	1	normal
 t-pr-review.sh::test_pr_review_stack_finalization	1	normal
 t-pr-review.sh::test_pr_review_validate_stack	1	normal
 t-preflight.sh::test_preflight	1	normal
+t-preflight.sh::test_preflight_installs_complete_staged_generation	1	normal
+t-preflight.sh::test_preflight_refuses_sealed_session_inputs	1	normal
 t-preflight.sh::test_prompt	1	normal
 t-preflight2.sh::test_preflight_base	1	normal
 t-preflight2.sh::test_preflight_edges	1	normal
@@ -171,6 +173,8 @@ t-roster.sh::test_roster_probe	1	normal
 t-roster.sh::test_roster_probe_concurrency	4	normal
 t-roster.sh::test_roster_provider_process_bounds	6	exclusive
 t-roster.sh::test_roster_result_receipt_boundary	1	normal
+t-roster.sh::test_roster_write_refuses_sealed_session	1	normal
+t-roster.sh::test_unsealed_legacy_roster_upgrade_remains_supported	1	normal
 t-roster2.sh::test_roster2	1	normal
 t-roster2.sh::test_roster_status_failed	1	normal
 t-roster3.sh::test_roster_brief_names_padded_seats_on_a_disabled_lab	1	normal

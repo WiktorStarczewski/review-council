@@ -93,6 +93,11 @@ if [ ${#QUOTA_FAILED_SEATS[@]} -gt 0 ] && [ -n "$WRITE" ] && [ -d "$WRITE" ]; th
     fi
   done
 fi
+# -z + tr, never field-splitting: git quotes paths containing spaces in porcelain/diff output otherwise.
+UNTRACKED=$(git ls-files -z --others --exclude-standard ${PS[@]+"${PS[@]}"} | tr '\0' '\n' | grep .)
+FILES=$( { git diff --name-only -z "$BASE" ${PS[@]+"${PS[@]}"} | tr '\0' '\n'
+           printf '%s\n' "$UNTRACKED"; } | sort -u | grep . )
+N=$(printf '%s\n' "$FILES" | grep -c .)
 # --- seats -------------------------------------------------------------------------------------------
 # The roster is built AFTER the git checks: a run that is going to be refused for scope reasons must not
 # spend a probe. --probe costs one token per CLI seat and drops the ones that cannot answer.
@@ -100,13 +105,31 @@ fi
 # the SAME probed roster (asking twice would probe twice and could print a seat the probe had just dropped).
 if [ -n "$WRITE" ]; then
   mkdir -p "$WRITE" || die "cannot create session dir $WRITE"
-  RJSON="$WRITE/roster.json"
+  python3 "$HERE/lib/session_inputs.py" check-unsealed "$WRITE" \
+    || die "cannot use sealed session inputs"
+  STAGE=$(mktemp -d "${TMPDIR:-/tmp}/rev-preflight.XXXXXX") \
+    || die "cannot create a staging directory for session inputs"
+  chmod 700 "$STAGE" || die "cannot make the session input staging directory private"
+  RJSON="$STAGE/roster.json"
+  CONTRACT_SESSION="$WRITE"
+  { printf 'REV_BASE=%s\n'    "$(q "$BASE")"
+    printf 'REV_BRANCH=%s\n'  "$(q "$BRANCH")"
+    printf 'REV_DEFAULT=%s\n' "$(q "$DEFAULT")"
+    printf 'REV_BASE_BRANCH=%s\n' "$(q "$BASE_BRANCH")"
+    printf 'REV_ROOT=%s\n'    "$(q "$ROOT")"
+    printf 'REV_SCOPE=%s\n'   "$(q "$SCOPE")"
+  } > "$STAGE/scope.env" || die "cannot stage scope.env"
+  printf '%s\n' "$FILES" > "$STAGE/files.txt" || die "cannot stage files.txt"
+  if [ -n "$UNTRACKED" ]; then printf '%s\n' "$UNTRACKED" > "$STAGE/untracked.txt" || die "cannot stage untracked.txt"
+  else : > "$STAGE/untracked.txt" || die "cannot stage untracked.txt"; fi
 else
-  SCRATCH=$(mktemp -d "${TMPDIR:-/tmp}/rev-preflight.XXXXXX") \
+  STAGE=$(mktemp -d "${TMPDIR:-/tmp}/rev-preflight.XXXXXX") \
     || die "cannot create a temporary directory for the roster"
-  RJSON="$SCRATCH/roster.json"
-  trap 'rm -rf -- "$SCRATCH"' EXIT
+  chmod 700 "$STAGE" || die "cannot make the roster directory private"
+  RJSON="$STAGE/roster.json"
+  CONTRACT_SESSION="$STAGE"
 fi
+trap 'rm -rf -- "$STAGE"' EXIT
 ROSTER_ARGS=(--probe --brief --write "$RJSON")
 if [ ${#QUOTA_FAILED_SEATS[@]} -gt 0 ]; then
   for FAILED_SEAT in "${QUOTA_FAILED_SEATS[@]}"; do
@@ -143,15 +166,8 @@ PY
   exit "$RC"
 fi
 [ "$RC" = 0 ] || die "roster.sh failed (exit $RC) - run $HERE/roster.sh --json to see why"
-python3 "$HERE/rev-contract-check.py" --root "$ROOT" --session "$(dirname "$RJSON")" --base "$BASE" \
+python3 "$HERE/rev-contract-check.py" --root "$ROOT" --session "$CONTRACT_SESSION" --base "$BASE" \
   --roster "$RJSON" >/dev/null || die "provider contract replay failed after the roster probe"
-# -z + tr, never field-splitting: git quotes paths containing spaces in porcelain/diff output otherwise.
-UNTRACKED=$(git ls-files -z --others --exclude-standard ${PS[@]+"${PS[@]}"} | tr '\0' '\n' | grep .)
-FILES=$( { git diff --name-only -z "$BASE" ${PS[@]+"${PS[@]}"} | tr '\0' '\n'
-           printf '%s\n' "$UNTRACKED"; } | sort -u | grep . )
-N=$(printf '%s\n' "$FILES" | grep -c .)
-echo "base=$BASE base_branch=$BASE_BRANCH ($BASE_HOW) branch=$BRANCH default=$DEFAULT root=$ROOT scope=$SCOPE changed_files=$N"
-[ -n "$BRIEF" ] && printf '%s\n' "$BRIEF"
 # A degraded panel runs, loudly. The roster line already ends in `· DEGRADED: …`; this second line makes
 # it impossible to miss in a transcript, and the skill copies the sentence verbatim into the report.
 WARN=$(ROSTER_JSON="$RJSON" python3 - <<'PY'
@@ -165,18 +181,9 @@ except Exception:
     pass
 PY
 )
+[ -z "$WRITE" ] || python3 "$HERE/lib/session_inputs.py" install "$WRITE" "$STAGE" \
+  || die "cannot install immutable session inputs"
+echo "base=$BASE base_branch=$BASE_BRANCH ($BASE_HOW) branch=$BRANCH default=$DEFAULT root=$ROOT scope=$SCOPE changed_files=$N"
+[ -n "$BRIEF" ] && printf '%s\n' "$BRIEF"
 [ -z "$WARN" ] || printf 'preflight: WARNING - %s\n' "$WARN"
-if [ -n "$WRITE" ]; then
-  { printf 'REV_BASE=%s\n'    "$(q "$BASE")"
-    printf 'REV_BRANCH=%s\n'  "$(q "$BRANCH")"
-    printf 'REV_DEFAULT=%s\n' "$(q "$DEFAULT")"
-    printf 'REV_BASE_BRANCH=%s\n' "$(q "$BASE_BRANCH")"
-    printf 'REV_ROOT=%s\n'    "$(q "$ROOT")"
-    printf 'REV_SCOPE=%s\n'   "$(q "$SCOPE")"
-  } > "$WRITE/scope.env" || die "cannot write $WRITE/scope.env"
-  printf '%s\n' "$FILES" > "$WRITE/files.txt" || die "cannot write $WRITE/files.txt"
-  # untracked files are invisible to `git diff`: the seats are told to read them in full (rev-prompt.sh)
-  if [ -n "$UNTRACKED" ]; then printf '%s\n' "$UNTRACKED" > "$WRITE/untracked.txt" || die "cannot write $WRITE/untracked.txt"
-  else : > "$WRITE/untracked.txt" || die "cannot write $WRITE/untracked.txt"; fi
-fi
 exit 0
