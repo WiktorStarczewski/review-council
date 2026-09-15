@@ -114,7 +114,8 @@ if [ "${1:-} ${2:-}" = "pr view" ]; then
   fi
   live_head=${GH_LIVE_HEAD:-$head}
   live_state=${GH_LIVE_STATE:-OPEN}
-  printf '{"number":12,"url":"https://github.com/acme/repo/pull/12","state":"%s","headRefName":"feat","headRefOid":"%s","baseRefName":"main"}\n' "$live_state" "$live_head"
+  live_base=${GH_LIVE_BASE:-main}
+  printf '{"number":12,"url":"https://github.com/acme/repo/pull/12","state":"%s","headRefName":"feat","headRefOid":"%s","baseRefName":"%s"}\n' "$live_state" "$live_head" "$live_base"
   exit 0
 fi
 if [ "${1:-}" = api ]; then
@@ -221,6 +222,75 @@ PY
   done
 }
 
+test_pr_review_clean_identity() {
+  local bin="$T/pr-clean-bin" mode session root
+  pr_review_gh_shim "$bin"
+  for mode in staged unstaged untracked; do
+    session="$T/pr-dirty-$mode"
+    root="$T/pr-dirty-$mode-repo"
+    pr_review_session "$session" "$root"
+    case "$mode" in
+      staged) echo changed > "$root/staged.txt"; git -C "$root" add staged.txt;;
+      unstaged) echo changed >> "$root/a.txt";;
+      untracked) echo changed > "$root/untracked.txt";;
+    esac
+    : > "$T/pr-dirty-$mode.calls"
+    PATH="$bin:$PATH" GH_CALLS="$T/pr-dirty-$mode.calls" \
+      python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 \
+      > "$T/pr-dirty-$mode.out" 2> "$T/pr-dirty-$mode.err"
+    assert_eq "$mode reviewed bytes block PR rendering" "$?" 1
+    assert_exit "$mode failure writes no rendered review" 0 test ! -e "$session/pr-review.md"
+    assert_exit "$mode failure writes no target envelope" 0 test ! -e "$session/pr-review-target.json"
+  done
+
+  local no_pr="$T/pr-dirty-no-open" no_pr_root="$T/pr-dirty-no-open-repo"
+  pr_review_session "$no_pr" "$no_pr_root"
+  echo local >> "$no_pr_root/a.txt"
+  : > "$T/pr-dirty-no-open.calls"
+  PATH="$bin:$PATH" GH_MODE=no-pr GH_CALLS="$T/pr-dirty-no-open.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$no_pr" --date 2026-09-15 \
+    > "$T/pr-dirty-no-open.out" 2> "$T/pr-dirty-no-open.err"
+  assert_eq "dirty branch without an open PR still renders for local inspection" "$?" 0
+
+  local nested_root="$T/pr-nested-repo" nested
+  mkrepo "$nested_root"
+  git -C "$nested_root" checkout -qb feat
+  git -C "$nested_root" remote add origin https://github.com/acme/repo.git
+  nested="$nested_root/.review-session"
+  mkdir -p "$nested"
+  printf "REV_ROOT='%s'\nREV_BRANCH='feat'\nREV_BASE_BRANCH='main'\n" "$nested_root" \
+    > "$nested/scope.env"
+  pr_review_input > "$nested/pr-review.json"
+  : > "$T/pr-nested.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-nested.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$nested" --date 2026-09-15 \
+    > "$T/pr-nested.out" 2> "$T/pr-nested.err"
+  assert_eq "an in-repository session directory is excluded exactly" "$?" 0
+
+  local stack="$T/pr-clean-stack" stack_root="$T/pr-clean-stack-repo" remote_head
+  pr_review_session "$stack" "$stack_root"
+  echo committed > "$stack_root/committed.txt"
+  git -C "$stack_root" add committed.txt
+  git -C "$stack_root" commit -qm 'fix(rev): local stack fix'
+  remote_head=$(git -C "$stack_root" rev-parse HEAD^)
+  : > "$T/pr-clean-stack.calls"
+  PATH="$bin:$PATH" GH_HEAD_OID="$remote_head" GH_CALLS="$T/pr-clean-stack.calls" \
+    REV_STACK_LEG=1 python3 "$SCRIPTS/rev-pr-review.py" render "$stack" --date 2026-09-15 \
+    > "$T/pr-clean-stack.out" 2> "$T/pr-clean-stack.err"
+  assert_eq "clean unpushed stack leg renders" "$?" 0
+
+  local dirty_stack="$T/pr-dirty-stack" dirty_stack_root="$T/pr-dirty-stack-repo"
+  pr_review_session "$dirty_stack" "$dirty_stack_root"
+  echo local > "$dirty_stack_root/untracked.txt"
+  : > "$T/pr-dirty-stack.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-dirty-stack.calls" REV_STACK_LEG=1 \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$dirty_stack" --date 2026-09-15 \
+    > "$T/pr-dirty-stack.out" 2> "$T/pr-dirty-stack.err"
+  assert_eq "dirty stack leg fails before rendering" "$?" 1
+  assert_exit "dirty stack leg writes no rendered review" 0 test ! -e "$dirty_stack/pr-review.md"
+  assert_exit "dirty stack leg writes no target envelope" 0 test ! -e "$dirty_stack/pr-review-target.json"
+}
+
 test_pr_review_publish() {
   local session="$T/pr-publish" root="$T/pr-repo" bin="$T/pr-bin"
   pr_review_session "$session" "$root"
@@ -237,7 +307,7 @@ test_pr_review_publish() {
   assert_grep "PR review renderer freezes the scoped PR" "$T/pr.calls" \
     '^pr view feat --json number,url,state,headRefName,headRefOid,baseRefName$'
   assert_grep "PR review publisher revalidates the frozen PR" "$T/pr.calls" \
-    '^pr view 12 --repo acme/repo --json number,url,state,headRefName,headRefOid$'
+    '^pr view 12 --repo acme/repo --json number,url,state,headRefName,headRefOid,baseRefName$'
   assert_exit "PR review target envelope is written" 0 test -s "$session/pr-review-target.json"
   assert_grep "PR review publisher checks existing reviews" "$T/pr.calls" \
     '^api --paginate --slurp repos/acme/repo/pulls/12/reviews\?per_page=100$'
@@ -301,10 +371,99 @@ test_pr_review_frozen_publication() {
   assert_grep "closed frozen PR explains the skip" "$T/pr-frozen-closed.out" \
     '^pr-review: no associated open PR; skipped$'
   assert_nogrep "closed frozen PR is never posted" "$T/pr-frozen.calls" '^pr review '
+
+  : > "$T/pr-frozen.calls"
+  PATH="$bin:$PATH" GH_LIVE_BASE=release GH_CALLS="$T/pr-frozen.calls" \
+    GH_POSTED_BODY="$T/pr-frozen-retargeted.md" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-frozen-retargeted.out" 2> "$T/pr-frozen-retargeted.err"
+  assert_eq "retargeted PR base fails frozen publication" "$?" 1
+  assert_nogrep "retargeted PR is never posted" "$T/pr-frozen.calls" '^pr review '
+}
+
+test_pr_review_finalization_integrity() {
+  local bin="$T/pr-integrity-bin" head
+  pr_review_gh_shim "$bin"
+
+  local json_session="$T/pr-json-tamper" json_root="$T/pr-json-tamper-repo"
+  pr_review_session "$json_session" "$json_root"
+  : > "$T/pr-json-tamper.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-json-tamper.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$json_session" --date 2026-09-15 >/dev/null
+  cp "$json_session/pr-review.md" "$T/pr-json-original.md"
+  cp "$json_session/pr-review-target.json" "$T/pr-json-original-target.json"
+  sed 's/Nothing blocking from this review/Tampered after review/' \
+    "$json_session/pr-review.json" > "$T/pr-json-mutated.json"
+  mv "$T/pr-json-mutated.json" "$json_session/pr-review.json"
+  head=$(git -C "$json_root" rev-parse HEAD)
+  PATH="$bin:$PATH" GH_HEAD_OID="$head" GH_CALLS="$T/pr-json-tamper.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" finalize-stack "$json_session" --head "$head" \
+    > "$T/pr-json-tamper.out" 2> "$T/pr-json-tamper.err"
+  assert_eq "mutated structured input blocks finalization" "$?" 1
+  assert_exit "structured-input failure leaves the rendered body unchanged" 0 \
+    cmp -s "$json_session/pr-review.md" "$T/pr-json-original.md"
+  assert_exit "structured-input failure leaves the target unchanged" 0 \
+    cmp -s "$json_session/pr-review-target.json" "$T/pr-json-original-target.json"
+
+  local body_session="$T/pr-body-tamper" body_root="$T/pr-body-tamper-repo"
+  pr_review_session "$body_session" "$body_root"
+  : > "$T/pr-body-tamper.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-body-tamper.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$body_session" --date 2026-09-15 >/dev/null
+  cp "$body_session/pr-review.json" "$T/pr-body-original.json"
+  cp "$body_session/pr-review-target.json" "$T/pr-body-original-target.json"
+  echo tampered >> "$body_session/pr-review.md"
+  head=$(git -C "$body_root" rev-parse HEAD)
+  PATH="$bin:$PATH" GH_HEAD_OID="$head" GH_CALLS="$T/pr-body-tamper.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" finalize-stack "$body_session" --head "$head" \
+    > "$T/pr-body-tamper.out" 2> "$T/pr-body-tamper.err"
+  assert_eq "mutated rendered body blocks finalization" "$?" 1
+  assert_exit "body failure leaves structured input unchanged" 0 \
+    cmp -s "$body_session/pr-review.json" "$T/pr-body-original.json"
+  assert_exit "body failure leaves the target unchanged" 0 \
+    cmp -s "$body_session/pr-review-target.json" "$T/pr-body-original-target.json"
+
+  local base_session="$T/pr-base-retarget" base_root="$T/pr-base-retarget-repo"
+  pr_review_session "$base_session" "$base_root"
+  : > "$T/pr-base-retarget.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-base-retarget.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$base_session" --date 2026-09-15 >/dev/null
+  cp "$base_session/pr-review.md" "$T/pr-base-original.md"
+  cp "$base_session/pr-review-target.json" "$T/pr-base-original-target.json"
+  head=$(git -C "$base_root" rev-parse HEAD)
+  PATH="$bin:$PATH" GH_HEAD_OID="$head" GH_LIVE_BASE=release \
+    GH_CALLS="$T/pr-base-retarget.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" finalize-stack "$base_session" --head "$head" \
+    > "$T/pr-base-retarget.out" 2> "$T/pr-base-retarget.err"
+  assert_eq "retargeted PR base blocks stack finalization" "$?" 1
+  assert_exit "retargeted finalization leaves the body unchanged" 0 \
+    cmp -s "$base_session/pr-review.md" "$T/pr-base-original.md"
+  assert_exit "retargeted finalization leaves the target unchanged" 0 \
+    cmp -s "$base_session/pr-review-target.json" "$T/pr-base-original-target.json"
+
+  local format_session="$T/pr-json-format" format_root="$T/pr-json-format-repo"
+  pr_review_session "$format_session" "$format_root"
+  : > "$T/pr-json-format.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-json-format.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$format_session" --date 2026-09-15 >/dev/null
+  python3 - "$format_session/pr-review.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+path.write_text(json.dumps(json.loads(path.read_text()), sort_keys=True, separators=(",", ":")))
+PY
+  head=$(git -C "$format_root" rev-parse HEAD)
+  PATH="$bin:$PATH" GH_HEAD_OID="$head" GH_CALLS="$T/pr-json-format.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" finalize-stack "$format_session" --head "$head" \
+    > "$T/pr-json-format.out" 2> "$T/pr-json-format.err"
+  assert_eq "semantic JSON reformat remains finalizable" "$?" 0
 }
 
 test_pr_review_stack_finalization() {
   local session="$T/pr-finalize" root="$T/pr-finalize-repo" bin="$T/pr-finalize-bin"
+  local interrupted="$T/pr-finalize-interrupted"
   pr_review_session "$session" "$root"
   pr_review_gh_shim "$bin"
   echo one > "$root/one.txt"; git -C "$root" add one.txt
@@ -313,9 +472,11 @@ test_pr_review_stack_finalization() {
   git -C "$root" commit -qm 'fix(rev): two'
   local before after
   before=$(git -C "$root" rev-parse HEAD)
+  cp "$session/pr-review.json" "$T/pr-finalize-original.json"
   : > "$T/pr-finalize.calls"
   PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 >/dev/null
+  cp -R "$session" "$interrupted"
   git -C "$root" reset -q --soft HEAD~2
   git -C "$root" commit -qm 'apply review findings'
   after=$(git -C "$root" rev-parse HEAD)
@@ -324,11 +485,35 @@ test_pr_review_stack_finalization() {
     > "$T/pr-finalize.out" 2> "$T/pr-finalize.err"
   assert_eq "equal-tree stack squash finalizes review links" "$?" 0
   assert_grep "stack finalization maps decision links to the aggregate SHA" \
-    "$session/pr-review.json" "/blob/$after/"
+    "$session/pr-review.md" "/blob/$after/"
   assert_grep "stack finalization maps fix links to the aggregate SHA" \
-    "$session/pr-review.json" "/commit/$after"
+    "$session/pr-review.md" "/commit/$after"
+  assert_exit "stack finalization leaves structured input immutable" 0 \
+    cmp -s "$session/pr-review.json" "$T/pr-finalize-original.json"
   assert_eq "stack finalization binds the aggregate head" \
     "$(jq -r .head "$session/pr-review-target.json")" "$after"
+
+  cp "$session/pr-review.md" "$interrupted/pr-review.md"
+  : > "$T/pr-finalize-interrupted.calls"
+  PATH="$bin:$PATH" GH_HEAD_OID="$after" GH_CALLS="$T/pr-finalize-interrupted.calls" \
+    GH_POSTED_BODY="$T/pr-finalize-interrupted-posted.md" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$interrupted" \
+    > "$T/pr-finalize-interrupted-publish.out" 2> "$T/pr-finalize-interrupted-publish.err"
+  assert_eq "interrupted finalization is not publishable" "$?" 1
+  assert_nogrep "interrupted finalization never posts" \
+    "$T/pr-finalize-interrupted.calls" '^pr review '
+  PATH="$bin:$PATH" GH_HEAD_OID="$after" GH_CALLS="$T/pr-finalize-interrupted.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" finalize-stack "$interrupted" --head "$after" \
+    > "$T/pr-finalize-interrupted.out" 2> "$T/pr-finalize-interrupted.err"
+  assert_eq "interrupted finalization completes on retry" "$?" 0
+  assert_eq "recovered finalization binds the aggregate head" \
+    "$(jq -r .head "$interrupted/pr-review-target.json")" "$after"
+  PATH="$bin:$PATH" GH_HEAD_OID="$after" GH_CALLS="$T/pr-finalize-interrupted.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" finalize-stack "$interrupted" --head "$after" \
+    > "$T/pr-finalize-idempotent.out" 2> "$T/pr-finalize-idempotent.err"
+  assert_eq "completed finalization retry is idempotent" "$?" 0
+  assert_grep "completed finalization retry reports its state" \
+    "$T/pr-finalize-idempotent.out" 'already finalized'
 
   local bad="$T/pr-finalize-bad" bad_root="$T/pr-finalize-bad-repo"
   pr_review_session "$bad" "$bad_root"

@@ -289,7 +289,7 @@ def resolve_pr(scope):
 def live_pr(target, root):
     result = run_gh([
         "pr", "view", str(target["number"]), "--repo", target["repo"],
-        "--json", "number,url,state,headRefName,headRefOid",
+        "--json", "number,url,state,headRefName,headRefOid,baseRefName",
     ], root)
     if result.returncode != 0:
         raise ReviewError("cannot revalidate the frozen PR: " + result.stderr.strip())
@@ -300,6 +300,8 @@ def live_pr(target, root):
     live = parse_pr(metadata, target["branch"])
     require(live["repo"] == target["repo"] and live["number"] == target["number"]
             and live["url"] == target["url"], "the frozen PR identity changed")
+    require(metadata.get("baseRefName") == target["base_branch"],
+            "the PR base changed after review; rerun the review before publishing")
     return live
 
 
@@ -322,7 +324,25 @@ def body_hash(body):
     return hashlib.sha256(body.encode()).hexdigest()
 
 
-def target_envelope(scope, target, body, date, allow_unpushed=False):
+def require_clean_review_tree(root, session):
+    arguments = ["status", "--porcelain=v1", "-z", "--untracked-files=all", "--", "."]
+    try:
+        relative = session.resolve().relative_to(root.resolve())
+    except ValueError:
+        relative = None
+    if relative is not None:
+        require(relative != Path("."), "the review session cannot be the repository root")
+        session_path = relative.as_posix()
+        arguments.extend([
+            f":(top,exclude){session_path}",
+            f":(top,exclude){session_path}/**",
+        ])
+    require(not run_git(arguments, root),
+            "the reviewed repository has staged, unstaged, or untracked bytes outside "
+            "the PR head; commit them and rerun the review before publishing")
+
+
+def target_envelope(scope, target, body, date, session, allow_unpushed=False):
     root = scope["root"]
     head = run_git(["rev-parse", "HEAD"], root)
     tree = run_git(["rev-parse", "HEAD^{tree}"], root)
@@ -339,6 +359,7 @@ def target_envelope(scope, target, body, date, allow_unpushed=False):
         "body_sha256": body_hash(body),
     }
     if target is not None:
+        require_clean_review_tree(root, session)
         require(allow_unpushed or target["head"] == head,
                 "the open PR head does not match the reviewed local head; push before rendering")
         envelope.update({key: target[key] for key in ("repo", "number", "url")})
@@ -372,7 +393,7 @@ def render_session(session, date):
     if scope_path.is_file():
         scope = parse_scope(scope_path)
         target = target_envelope(
-            scope, resolve_pr(scope), body, date,
+            scope, resolve_pr(scope), body, date, session,
             allow_unpushed=os.environ.get("REV_STACK_LEG") == "1",
         )
     output = session / "pr-review.md"
@@ -431,12 +452,27 @@ def replace_sha_url(url, pattern, head, field):
     return match.group(1) + head + (match.group(2) if match.lastindex == 2 else "")
 
 
+def finalized_body(data, date, head):
+    updated = json.loads(json.dumps(data))
+    for index, decision in enumerate(updated.get("decisions", [])):
+        location = decision.get("location", {})
+        location["url"] = replace_sha_url(
+            location.get("url"), BLOB_URL, head, f"decisions[{index}].location.url")
+    for index, fix in enumerate(updated.get("fixes", [])):
+        commit = fix.get("commit", {})
+        label = inline(commit.get("label"), f"fixes[{index}].commit.label")
+        commit["label"] = head[:min(len(label), len(head))]
+        commit["url"] = replace_sha_url(
+            commit.get("url"), COMMIT_URL, head, f"fixes[{index}].commit.url")
+    return render(updated, date)
+
+
 def finalize_stack(session, head, expected_root=None):
     require(OID.fullmatch(head) is not None, "--head must be a full commit ID")
     scope = parse_scope(session / "scope.env")
     if expected_root is not None:
-        if scope["root"].resolve() != Path(expected_root).resolve():
-            return
+        require(scope["root"].resolve() == Path(expected_root).resolve(),
+                "stack finalization repository does not match the reviewed session")
     target = load_target(session / "pr-review-target.json")
     if not target["associated"]:
         print("pr-review: no associated open PR; skipped")
@@ -451,20 +487,23 @@ def finalize_stack(session, head, expected_root=None):
             "the pushed PR head does not match stack finalization")
 
     data = load_input(session / "pr-review.json")
-    for index, decision in enumerate(data.get("decisions", [])):
-        location = decision.get("location", {})
-        location["url"] = replace_sha_url(
-            location.get("url"), BLOB_URL, head, f"decisions[{index}].location.url")
-    for index, fix in enumerate(data.get("fixes", [])):
-        commit = fix.get("commit", {})
-        label = inline(commit.get("label"), f"fixes[{index}].commit.label")
-        commit["label"] = head[:min(len(label), len(head))]
-        commit["url"] = replace_sha_url(
-            commit.get("url"), COMMIT_URL, head, f"fixes[{index}].commit.url")
-    body = render(data, target["date"])
-    new_target = target_envelope(scope, live, body, target["date"])
-    write_atomic(session / "pr-review.json", json.dumps(data, indent=2) + "\n")
-    write_atomic(session / "pr-review.md", body)
+    source_body = render(data, target["date"])
+    body = finalized_body(data, target["date"], head)
+    output = session / "pr-review.md"
+    require(output.is_file(), f"rendered PR review is missing: {output}")
+    current_body = output.read_text()
+    source_is_frozen = body_hash(source_body) == target["body_sha256"]
+    if not source_is_frozen:
+        require(target["head"] == head and body_hash(current_body) == target["body_sha256"]
+                and current_body == body,
+                "structured PR review input does not match the frozen rendered review")
+        print(f"pr-review: stack review already finalized at {head}")
+        return
+    require(body_hash(current_body) == target["body_sha256"] or current_body == body,
+            "rendered PR review does not match its frozen body hash")
+    new_target = target_envelope(scope, live, body, target["date"], session)
+    if current_body != body:
+        write_atomic(output, body)
     write_atomic(session / "pr-review-target.json", json.dumps(new_target, indent=2) + "\n")
     print(f"pr-review: finalized stack review at {head}")
 
