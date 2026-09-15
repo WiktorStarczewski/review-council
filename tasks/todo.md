@@ -40,7 +40,10 @@
 - [x] Escape raw HTML outside balanced Markdown code spans without changing the template.
 - [x] Close direct-publication head races and make the negative fixtures non-vacuous.
 - [x] Accept all documented GitHub remote forms without widening host trust.
-- [ ] Run focused tests, the full frozen-tree gate, and the final exact-roster panel.
+- [x] Contain malformed session text in durable failure receipts.
+- [x] Validate original, finalized, and recoverable stack review states before completion.
+- [x] Run focused tests and the full frozen-tree gate on the repaired implementation.
+- [ ] Run the final exact-roster panel.
 
 ### Review
 
