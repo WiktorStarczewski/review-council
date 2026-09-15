@@ -132,13 +132,19 @@ under sweep load, a "hung" suite that was debug-mode proving, and an E2E spec dy
 `Deadline expired`. Any failure whose text mentions a timeout or deadline is suspect:
 re-run it idle before touching code.
 
-## Finishing: squash, push, then promote
+## Finishing: squash, push, publish, then promote
 
 Each leg commits per round as crash recovery; the orchestrator collapses each repo's run
 with `${CLAUDE_PLUGIN_ROOT}/scripts/rev-squash.sh --apply` and pushes once. Squash and push are **independent**: a
 refused squash is logged (`!!! squash refused for <repo>`) and the push still happens,
 because the round commits are real work that CI has to see. If a repo prints
 "refusing: … only N unpushed", something was pushed mid-run - leave that history alone.
+
+After every completed repository is pushed, `stack.sh` publishes each completed
+session's canonical `pr-review.md` through `rev-pr-review.py`. It skips sessions with
+no associated open PR and suppresses an identical prior review. A missing input or
+publication failure makes the stack incomplete. `NO_PUSH=1` also suppresses external
+review publication.
 
 A repo whose leg never completed is **not** finished: it is skipped (no squash, no
 push) and the run ends `COMPLETE WITH FAILURES: <labels>` with a non-zero exit instead

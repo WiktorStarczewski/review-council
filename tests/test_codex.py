@@ -897,6 +897,7 @@ class CodexTests(unittest.TestCase):
             '.codex-plugin/plugin.json': '{"name":"review-council"}\n',
             'agents/rev-reviewer.md': 'reviewer\n',
             'codex-skills/rev/SKILL.md': 'skill\n',
+            'docs/pr-review.md': 'review format\n',
             'scripts/roster.sh': '#!/bin/bash\nprintf roster\\n\n',
             'scripts/stack.sh': '#!/bin/bash\nprintf stack\\n\n',
             'schema/findings.schema.json': '{}\n',

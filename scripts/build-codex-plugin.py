@@ -74,10 +74,10 @@ def build(output, cachebuster=None):
         stage = Path(temp) / 'review-council'
         stage.mkdir()
         shared = REPO / 'plugins/review-council'
-        for name in ('.codex-plugin', 'agents', 'codex-skills', 'scripts', 'schema', 'tests'):
+        for name in ('.codex-plugin', 'agents', 'codex-skills', 'docs', 'scripts', 'schema', 'tests'):
             shutil.copytree(shared / name, stage / name,
                             ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
-        (stage / 'docs').mkdir()
+        _make_staging_writable(stage)
         shutil.copy2(REPO / 'docs/config.md', stage / 'docs/config.md')
         shutil.copy2(REPO / 'LICENSE', stage / 'LICENSE')
         _make_staging_writable(stage)

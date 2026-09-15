@@ -78,6 +78,11 @@ t-plan-evidence.sh::test_plan_search_parser_rejects_ambiguous_commands	8	normal
 t-plan-evidence.sh::test_plan_source_capacity_compiles_to_bounded_reads	8	normal
 t-plan-evidence.sh::test_plan_topology_keeps_one_completeness_seat	8	normal
 t-plan.sh::test_plan_prompt	1	normal
+t-pr-review.sh::test_pr_review_duplicate_and_no_pr	1	normal
+t-pr-review.sh::test_pr_review_empty_sections	1	normal
+t-pr-review.sh::test_pr_review_publish	1	normal
+t-pr-review.sh::test_pr_review_publish_failure	1	normal
+t-pr-review.sh::test_pr_review_render	1	normal
 t-preflight.sh::test_preflight	1	normal
 t-preflight.sh::test_prompt	1	normal
 t-preflight2.sh::test_preflight_base	1	normal

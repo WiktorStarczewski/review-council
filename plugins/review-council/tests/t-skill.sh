@@ -411,6 +411,35 @@ test_skill_contract() {
     assert_grep "stack distinguishes retryable roster status" "$H" 'Exit 5 is retryable'
     assert_grep "stack distinguishes permanent roster status" "$H" 'Exit 6 is permanent'
   done
+  assert_grep "Claude stack documents post-push PR review publication" "$ST" \
+    '[Pp]ublishes each completed$'
+  assert_grep "Codex stack documents post-push PR review publication" "$CST" \
+    '[Pp]ublishes each completed session'
+
+  local PRDOC="$SK/docs/pr-review.md"
+  assert_exit "canonical PR review instructions are shipped" 0 test -f "$PRDOC"
+  for H in "$K" "$CK"; do
+    assert_grep "host requires the canonical PR review instructions" "$H" \
+      'docs/pr-review\.md'
+    assert_grep "host applies publication to read-only code reviews" "$H" \
+      'normal and read-only'
+    assert_grep "host skips branches without an open PR" "$H" \
+      'no associated open PR skips cleanly'
+    assert_grep "host blocks success when required publication fails" "$H" \
+      'blocks `phase=done` and `report\.md`'
+    assert_grep "host leaves stack publication until after push" "$H" \
+      'final squash and push'
+  done
+  assert_grep "PR review input preserves the decisions section" "$PRDOC" \
+    '^  "decisions": \[$'
+  assert_grep "PR review publisher uses a COMMENTED review" "$PRDOC" \
+    '`gh pr review --comment`'
+  assert_grep "PR review publication keeps exact-body idempotence" "$PRDOC" \
+    '[Ii]dentical body is success without a duplicate post'
+  assert_nogrep "Codex host does not prohibit required PR publication" "$CK" \
+    'not authorize pushing, publishing'
+  assert_grep "Codex host limits publication authority to the canonical review" "$CK" \
+    'authorizes only the canonical `COMMENTED` PR review'
 
   # B1 - a resumed leg's ledger must be read, never truncated
   assert_grep "findings.md created only if absent" "$K" '\[ -f \$S/findings\.md \] \|\| printf'

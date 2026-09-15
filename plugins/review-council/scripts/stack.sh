@@ -339,6 +339,32 @@ finish_repos() {
   done
 }
 
+publish_reviews() {
+  local session rc=0
+  if [ "$NO_PUSH" = 1 ]; then
+    say "--- NO_PUSH=1: not publishing PR reviews"
+    return 0
+  fi
+  [ -f "$REV_SCRIPTS/rev-pr-review.py" ] || {
+    say "!!! PR review publisher is missing: $REV_SCRIPTS/rev-pr-review.py"
+    return 1
+  }
+  for session in "$ROOT"/*; do
+    [ -d "$session" ] && [ -f "$session/report.md" ] || continue
+    if [ ! -f "$session/pr-review.json" ]; then
+      say "!!! $(basename "$session"): completed review has no pr-review.json"
+      rc=1
+      continue
+    fi
+    set -o pipefail
+    python3 "$REV_SCRIPTS/rev-pr-review.py" publish "$session" 2>&1 \
+      | sed 's/^/    /' | tee -a "$LOG"
+    [ "$?" -eq 0 ] || rc=1
+    set +o pipefail
+  done
+  return "$rc"
+}
+
 # shellcheck disable=SC1090
 set +u; . "$CONFIG"; set -u   # a user's stack config stays forgiving; this script does not
 type legs >/dev/null 2>&1 || { echo "stack: $CONFIG must define legs() containing run_leg calls in dependency order" >&2; exit 1; }
@@ -349,4 +375,6 @@ if [ -n "$SEAM_REPO" ]; then PASS=seam; say "########## PHASE 2 - CROSS-REPO SEA
 if [ -n "$CRITIC_REPO" ]; then PASS=critic; say "########## PHASE 3 - COMPLETENESS CRITIC ##########"; run_leg "$CRITIC_REPO" 1 critic "$CRITIC_PREMISE"; else say "PHASE 3 skipped (CRITIC_REPO unset)"; fi
 say "########## FINISH - squash + push per repo ##########"; finish_repos
 if [ -n "$FAILED_LABELS" ]; then say "COMPLETE WITH FAILURES:$FAILED_LABELS"; exit 1; fi
+say "########## PUBLISH - PR review per completed session ##########"
+publish_reviews || { say "COMPLETE WITH FAILURES: PR review publication"; exit 1; }
 say "ALL PHASES COMPLETE"

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.4
+
+- Publish every completed PR-associated review as a `COMMENTED` GitHub review using the canonical badge, verdict tip, decisions, fixes, verified-sound, coverage, and footer structure. Rendering is deterministic from a validated session JSON file, exact-body retries are idempotent, and reviews without an associated open PR skip without posting.
+- Make GitHub publication part of the success receipt for normal and read-only code reviews. Preserve the rendered body and an exact retry command on failure, and publish stack-session reviews only after the final squash and push.
+
 ## 0.4.3
 
 - Make the host skill an explicit executable workflow contract in both the always-loaded Claude Code policy and the Claude and Codex skill bodies. Runs that omit an applicable step or an artifact required by their selected mode remain incomplete and cannot claim Review Council completion.

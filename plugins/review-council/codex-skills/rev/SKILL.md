@@ -11,7 +11,8 @@ You are the orchestrator. Independent CLI reviewers inspect the scope; you verif
 claims against evidence, fix actionable defects within the user's scope, and repeat.
 Agreement is a signal, never proof. Preserve the user's requested scope and prior
 authorization. A request for report-only review remains report-only. This skill does
-not authorize pushing, publishing, rewriting history, or changing unrelated files.
+not authorize pushing, rewriting history, or changing unrelated files. The completion
+contract authorizes only the canonical `COMMENTED` PR review for an associated open PR.
 Do not start a council automatically after unrelated implementation work.
 
 ## Locate and set up
@@ -525,8 +526,17 @@ the authorized branch. In `REV_STACK_LEG=1`, never squash or push; the stack con
 those actions. If blocked in a headless leg, record `phase=blocked` and exit without
 a completion receipt; do not guess approval or report success.
 
-On completion set `phase=done` and write `S/report.md` with scope/base, actual roster
-and degradation, rounds/lenses, accepted/rejected/deferred findings and evidence,
-changes/commits, baseline/final gates, and remaining limitations. `report.md` is the
-stack's success receipt: write it only for a completed review. Interrupted/blocked
+Before completing any code review, read `$PLUGIN/docs/pr-review.md` and follow it
+exactly. Write `S/pr-review.json`, render and inspect `S/pr-review.md`, and publish it
+as a `COMMENTED` GitHub PR review. This applies to normal and read-only code reviews.
+A branch with no associated open PR skips cleanly. Document reviews do not post. In
+`REV_STACK_LEG=1`, prepare and render the body but leave publication to the stack
+after its final squash and push. A required publication failure writes
+`incomplete.md` and blocks `phase=done` and `report.md`.
+
+After publication succeeds or cleanly skips, set `phase=done` and write `S/report.md`
+with scope/base, actual roster and degradation, rounds/lenses,
+accepted/rejected/deferred findings and evidence, changes/commits, baseline/final
+gates, and remaining limitations. `report.md` is the stack's success receipt: write
+it only for a completed review. Interrupted/blocked
 runs write `incomplete.md`. End with the substantive results and report path.

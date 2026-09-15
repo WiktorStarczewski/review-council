@@ -15,6 +15,15 @@ test_stack() {
     # REV_SCRIPTS-default case below would exercise a stack.sh whose compat.sh never loaded.
     ln -sfn "$SCRIPTS/lib" "$RS/lib"
     cp "$STACK/stack.sh" "$RS/stack.sh"
+    cat > "$RS/rev-pr-review.py" <<'PY'
+import os
+from pathlib import Path
+import sys
+
+with Path(os.environ['STACK_PUBLISH_CALLS']).open('a') as stream:
+    stream.write(' '.join(sys.argv[1:]) + '\n')
+raise SystemExit(int(os.environ.get('STACK_PUBLISH_RC', '0')))
+PY
     cat > "$RS/roster.sh" <<'RSEOF'
 #!/bin/bash
 printf '%s\n' "$@" >> "${FAKE_ROSTER_ARGS:-/dev/null}"
@@ -53,10 +62,36 @@ RSEOF
     assert_grep "phase 3 skipped when unset" "$LOG" 'PHASE 3 skipped'
     assert_grep "finish runs squash" "$LOG" 'review commit\(s\) at tip'
     assert_grep "no push honoured" "$LOG" 'NO_PUSH=1'
+    assert_grep "no-push stack suppresses external review publication" "$LOG" \
+      'NO_PUSH=1: not publishing PR reviews'
     assert_grep "all complete" "$LOG" 'ALL PHASES COMPLETE'
     assert_exit "REV_STACK_LEG refuses" 1 env REV_STACK_LEG=1 "$STACK/stack.sh" "$T/stack.cfg"
     assert_exit "REV_ACTIVE refuses" 1 env REV_ACTIVE=1 "$STACK/stack.sh" "$T/stack.cfg"
     assert_exit "missing config refuses" 1 "$STACK/stack.sh"
+    local RP="$T/stk-publish"; mkrepo "$RP"; git -C "$RP" checkout -qb feat
+    echo p > "$RP/p.txt"; git -C "$RP" add p.txt; git -C "$RP" commit -qm "feat: publish"
+    git init -q --bare "$T/stk-publish-remote.git"
+    git -C "$RP" remote add origin "$T/stk-publish-remote.git"
+    git -C "$RP" push -q -u origin feat
+    printf 'legs() { run_leg "%s" 1 legpub "publish premise"; }\n' "$RP" > "$T/stack-publish.cfg"
+    export ROOT="$T/stack-publish-root" LOG="$T/stack-publish.log" PASSES=1 NO_PUSH=0 NO_SQUASH=1
+    export STACK_PUBLISH_CALLS="$T/stack-publish.calls"
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-publish.cfg" > "$T/stack-publish.out" 2>&1
+    assert_eq "completed pushed stack publishes PR review" "$?" 0
+    assert_grep "stack publisher receives the completed session" "$STACK_PUBLISH_CALLS" \
+      "^publish $ROOT/legpub$"
+    assert_grep "stack publishes after its push phase" "$LOG" \
+      '^.*PUBLISH - PR review per completed session'
+
+    export ROOT="$T/stack-publish-fail-root" LOG="$T/stack-publish-fail.log" STACK_PUBLISH_RC=1
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-publish.cfg" > "$T/stack-publish-fail.out" 2>&1
+    assert_eq "stack publication failure fails the workflow" "$?" 1
+    assert_grep "stack publication failure is terminal" "$LOG" \
+      'COMPLETE WITH FAILURES: PR review publication'
+    assert_nogrep "failed stack publication never reports completion" "$LOG" \
+      'ALL PHASES COMPLETE'
+    unset STACK_PUBLISH_RC
+    export ROOT="$T/stack-root" LOG="$T/stack.log" PASSES=2 NO_PUSH=1 NO_SQUASH=0
     # default = detach: returns at once, names the log, and the detached run completes on its own
     ( unset REV_STACK_FOREGROUND; export ROOT="$T/stack-root-d" LOG="$T/stack-d.log"; SHIM_MODE=ok "$STACK/stack.sh" "$T/stack.cfg" > "$T/detach.out" 2>&1; echo "rc=$?" >> "$T/detach.out" )
     assert_grep "detach returns immediately" "$T/detach.out" '^stack: detached \(pid [0-9]+\), session root .* log .*stack-d.log'

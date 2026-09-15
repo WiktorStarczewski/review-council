@@ -31,6 +31,7 @@ preflight and probe
   -> apply confirmed fixes and run project gates
   -> four-bundle verification
   -> repeat only for new P0/P1 risk or another nontrivial fix
+  -> publish the canonical PR review when an open PR is associated
   -> seal receipts, profile usage, and write the report
 ```
 
@@ -49,6 +50,10 @@ Key properties:
   capacity failures.
 - Later panels review a safe semantic delta only after a valid predecessor receipt.
 - Status and usage are read from session artifacts without another model call.
+- Completed PR reviews use one deterministic `COMMENTED` review format with the
+  badge, verdict tip, decisions, fixes, verified-sound, coverage, and footer sections.
+  Identical retries do not create duplicate posts. Local branches and document
+  reviews without an associated open PR do not post.
 
 ## Install
 

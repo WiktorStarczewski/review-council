@@ -71,6 +71,14 @@ remains. It stops after the minimum, two consecutive rounds without a new P0/P1,
 open P0/P1, and gates at baseline or better. Plan panels do not count. Actual reviewer
 calls consume the corresponding provider's usage.
 
+When a code review is associated with an open PR, completion publishes the canonical
+badge, verdict tip, decisions, fixes, verified-sound, coverage, and footer as a
+`COMMENTED` GitHub review. Read-only code reviews publish too. A local branch or
+document review without an associated open PR does not post. An identical body is not
+posted twice, and other publication failures keep the review incomplete with a retry
+command. Stack sessions publish after their final squash and push; `NO_PUSH=1`
+suppresses publication.
+
 Adaptive code panels use hashed scope manifests and semantic dependency components.
 Mechanical lockfiles, generated output, snapshots, and locale copies go to one named
 full-state seat. Specialists receive component patches, and later fixes return to the

@@ -1,5 +1,25 @@
 # Token-Efficient Review Council
 
+## 0.4.4 PR review publication
+
+- [x] Capture the canonical PR #3856 review template and approve the behavior.
+- [x] Establish a clean frozen-tree verification baseline in an isolated worktree.
+- [x] Add failing renderer, publisher, duplicate, failure, and no-PR tests.
+- [x] Implement deterministic rendering and GitHub PR review publication.
+- [x] Require publication at successful PR-review completion on both hosts.
+- [x] Document the workflow and prepare the 0.4.4 release metadata.
+- [x] Run focused tests, the complete frozen-tree gate, and plugin validators.
+- [x] Pressure-test the edited skills against normal, read-only, and stack-failure scenarios.
+- [ ] Run Review Council and fix every finding.
+- [ ] Push, open and merge the PR, publish 0.4.4, install it, and verify discovery.
+
+### Review
+
+- Pressure tests: the baseline skipped required publication in 2 of 3 scenarios;
+  all 3 evaluators followed the new contract when the edited skills were loaded.
+- Frozen-tree verifier passed shell tests, Python tests, both Claude validators, and
+  the Codex marketplace validator.
+
 ## Wall-time optimization spike
 
 - [x] Measure phase and seat elapsed time across preserved optimizer sessions.

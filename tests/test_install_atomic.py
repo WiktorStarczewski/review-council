@@ -36,6 +36,10 @@ class AtomicInstallTests(unittest.TestCase):
         output = self.builder.build(self.home / 'standalone/review-council')
         built = json.loads((output / '.codex-plugin/plugin.json').read_text())
         self.assertEqual(built['version'], source['version'])
+        self.assertEqual(
+            (output / 'docs/pr-review.md').read_bytes(),
+            (REPO / 'plugins/review-council/docs/pr-review.md').read_bytes(),
+        )
 
     def test_real_exchange_swaps_two_nonempty_directories(self):
         left = self.home / 'left'
