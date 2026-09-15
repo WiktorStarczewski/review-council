@@ -4,7 +4,7 @@
 
 **Goal:** Keep ordinary Review Council reviews adaptive while making the plugin's own release review use a previous-stable engine, at most two P0/P1 review generations, a deterministic candidate gate, and changed-subsystem canaries.
 
-**Architecture:** Retain the small global safety repairs at existing session boundaries, then add one repository-owned release authority outside the review engine. `session_inputs.py` seals preflight inputs, the host skills compose adversarial assignments into normal panels, and `verify-release-lane.py` binds a clean candidate commit to an exact signed N-1 installation, stable review receipts, deterministic verification, and required canaries. There is no generic convergence state machine and the candidate never reviews itself as a release gate.
+**Architecture:** Retain the small global safety repairs at existing session boundaries, then add one repository-owned release authority outside the review engine. `session_inputs.py` seals preflight inputs, the host skills compose adversarial assignments into normal panels, and `verify-release-lane.py` binds immutable stable review decisions and canary receipts into one final certificate. There is no generic or release-specific mutable convergence database, and the candidate never reviews itself as a release gate.
 
 **Tech Stack:** Python 3 standard library, Bash 3.2-compatible shell, Git, existing shell test harness, `unittest`, Claude Code and Codex plugin manifests.
 
@@ -40,7 +40,7 @@
 | `plugins/review-council/scripts/rev-evidence.py` | Hold the session-input lock through manifest publication. |
 | `plugins/review-council/skills/rev/SKILL.md` | Claude Code composite red-team and promoted coverage contract. |
 | `plugins/review-council/codex-skills/rev/SKILL.md` | Codex contract matching the Claude Code behavior. |
-| `scripts/verify-release-lane.py` | Dedicated two-generation stable release state and final receipt validator. |
+| `scripts/verify-release-lane.py` | Immutable stable review, canary, and final release receipt validator. |
 | `tests/test_release_lane.py` | Stable identity, generation, receipt, canary, and certification tests. |
 | `docs/release.md` | Operator sequence for stable review, P0/P1 repair, canaries, merge, tag, and install. |
 | `README.md` | Short link and release-lane summary. |
@@ -351,24 +351,21 @@ git commit -m "feat(rev): promote adversarial panel coverage"
 - Produces:
 
 ```text
-verify-release-lane.py init --root ROOT --candidate-commit SHA --stable-plugin PATH --stable-tag TAG --state STATE
-verify-release-lane.py record-review --state STATE --session SESSION --new-p0 N --new-p1 N --open-p0 N --open-p1 N
-verify-release-lane.py run-canary --state STATE --id ID --out RECEIPT -- COMMAND [ARG ...]
-verify-release-lane.py certify --state STATE --verification-receipt PATH --canary ID=PATH --out RECEIPT
-verify-release-lane.py status --state STATE
+verify-release-lane.py requirements --root ROOT --candidate-commit SHA --stable-tag TAG
+verify-release-lane.py record-review --root ROOT --candidate-commit SHA --stable-plugin PATH --stable-tag TAG --session SESSION --new-p0 N --new-p1 N --open-p0 N --open-p1 N --out RECEIPT
+verify-release-lane.py run-canary --root ROOT --stable-tag TAG --id ID --out RECEIPT -- COMMAND [ARG ...]
+verify-release-lane.py certify --root ROOT --candidate-commit SHA --stable-plugin PATH --stable-tag TAG --review RECEIPT [--review RECEIPT] --verification-receipt PATH --canary ID=PATH --out RECEIPT
 ```
 
-Canonical state contains:
+Canonical review decision contains:
 
 ```json
 {
   "schema_version": 1,
-  "root": "<canonical path>",
   "stable": {"tag": "review-council--v0.4.3", "commit": "<sha>", "tree": "<tree>", "plugin_identity": "<sha256>"},
-  "candidate": {"version": "0.4.4", "initial_commit": "<sha>", "current_commit": "<sha>", "tree": "<tree>"},
-  "required_canaries": ["host-claude", "host-codex"],
-  "reviews": [],
-  "status": "initialized"
+  "candidate": {"version": "0.4.4", "commit": "<sha>", "tree": "<tree>"},
+  "review": {"session_identity": "<sha256>", "new_p0": 0, "new_p1": 0, "open_p0": 0, "open_p1": 0},
+  "status": "clean"
 }
 ```
 
@@ -377,7 +374,7 @@ Canonical state contains:
 Create temporary Git repositories and installed plugin copies. Cover signed-tag command
 failure, tag commit mismatch, byte mutation, mode mutation, forged version, dirty
 candidate, moved `HEAD`, equal or lower candidate version, unsafe paths, and exact
-idempotent initialization.
+idempotent receipt publication.
 
 - [ ] **Step 2: Run identity tests and capture RED**
 
@@ -387,7 +384,7 @@ python3 -m unittest tests.test_release_lane.ReleaseLaneIdentityTests -v
 
 Expected: import or executable missing.
 
-- [ ] **Step 3: Implement canonical identity and state publication**
+- [ ] **Step 3: Implement canonical identity and receipt publication**
 
 Use only the standard library. Enumerate the stable tag subtree with
 `git ls-tree -rz`, read blobs with `git cat-file blob`, and compare kind, relative path,
@@ -395,15 +392,14 @@ mode, size, and SHA-256 with the installed plugin. Reject extra installed files 
 documented generated cache metadata outside the plugin root. Run `git verify-tag` and
 resolve `TAG^{commit}` explicitly.
 
-Use canonical JSON with sorted keys and compact separators. Validate direct paths,
-regular one-link receipts, and a private no-follow lock. Publish state with a
-same-directory mode-0600 temporary and collision refusal.
+Use canonical JSON with sorted keys and compact separators. Validate direct paths and
+regular one-link receipts. Publish with a same-directory mode-0600 temporary and
+collision refusal.
 
 - [ ] **Step 4: Add generation and stable-session tests**
 
-Cover valid generation 1, clean first generation, one correction transition, valid
-generation 2 on a new commit, same-tree correction refusal, generation 3 refusal,
-open P0/P1 block, infrastructure marker block, stable checker failure, wrong executor,
+Cover a clean first review, a correction-required first review, a clean delta on a new
+commit, open P0/P1, infrastructure marker, stable checker failure, wrong executor,
 roster mutation, contract mutation, missing coverage, coverage hash mutation, and
 reviewed tree mismatch.
 
@@ -417,11 +413,10 @@ candidate root and use its base and `roster.json` to invoke the installed stable
 Validate `coverage-head.json`, its named coverage receipt, all receipt hashes, the
 latest reviewed snapshot tree, `state.json`, and `findings.md`. Hash the complete
 decision artifact set into the review record. Counts must be nonnegative integers.
-Generation 1 records `clean` only when all four counts are zero. A nonzero verified
-P0/P1 count with a matching nonzero open count records `correction-required`.
-Generation 2 records `clean` only when all four counts are zero; otherwise it records
-`blocked`. A session stop marker records `infrastructure-blocked` and accepts no
-product counts.
+All four zero counts record `clean`; any new or open P0/P1 records
+`correction-required`. A session stop marker records `infrastructure-blocked` and
+accepts no product counts. The final certificate, not this command, decides whether a
+first correction-required receipt is followed by one clean delta.
 
 - [ ] **Step 6: Add canary selection and execution tests**
 
@@ -430,29 +425,33 @@ paths, exact command-vector execution, nonzero exit, output limit, signal termin
 stale path identity, malformed receipt, receipt collision, missing required receipt,
 and unknown extra canary.
 
-- [ ] **Step 7: Implement `run-canary` and trigger identity**
+- [ ] **Step 7: Implement `requirements`, `run-canary`, and trigger identity**
 
 Hardcode the spec matrix as data. Derive changed paths from `stable.tag..candidate`
-with `git diff --name-only -z --no-renames`. `run-canary` accepts only an ID required by
-the state, invokes the exact argument vector without a shell, captures stdout and
-stderr to a private bounded log, terminates the process group on timeout, and writes a
-receipt only for exit 0. Bind the ID, trigger path identities, command vector, log hash,
-and any evidence paths emitted in canonical JSON by the command.
+with `git diff --name-only -z --no-renames`. `requirements` prints their canary IDs as
+canonical JSON. `run-canary` accepts only a currently required ID, invokes the exact
+argument vector without a shell, captures stdout and stderr to a private bounded log,
+terminates the process group on timeout, and writes a receipt only for exit 0. Bind the
+ID, trigger path identities, command vector, log hash, and any evidence paths emitted
+in canonical JSON by the command.
 
 - [ ] **Step 8: Add deterministic receipt and final certification tests**
 
 Cover verifier tree mismatch, key mismatch, missing command, failed or truncated log,
 log hash mismatch, nonregular log, dirty or moved final candidate, stale stable bundle,
-unclean latest review, and successful immutable final receipt.
+zero or three review receipts, an unnecessary second review, same-commit delta, unclean
+latest review, and successful one- and two-review final receipts.
 
-- [ ] **Step 9: Implement `certify` and `status`**
+- [ ] **Step 9: Implement `certify`**
 
 Recompute the final clean candidate identity. Validate the verifier receipt schema,
 `identity.tree`, `key`, exact default command set, every log path, size, hash, terminal
 JSON footer, and exit 0. Require the latest stable review tree to equal the final Git
-tree, state status `clean`, all and only current required canaries, and no session stop.
-Write a receipt binding the full candidate, stable, review, verification, and canary
-hashes. `status` prints one canonical JSON object and never mutates state.
+tree, all and only current required canaries, and no session stop. Accept one or two
+review decision receipts only. One clean initial receipt succeeds. One
+`correction-required` initial receipt requires one later clean receipt on a different
+candidate commit. Reject every other transition. Write a receipt binding the full
+candidate, stable, review, verification, and canary hashes.
 
 - [ ] **Step 10: Run GREEN and commit**
 
@@ -488,13 +487,15 @@ git commit -m "feat(release): verify with the previous stable council"
 The document includes these commands with real arguments:
 
 ```bash
-python3 scripts/verify-release-lane.py init --root . \
+python3 scripts/verify-release-lane.py requirements --root . \
+  --candidate-commit "$(git rev-parse HEAD)" \
+  --stable-tag review-council--v0.4.3
+python3 scripts/verify-review-council.py --root .
+python3 scripts/verify-release-lane.py certify --root . \
   --candidate-commit "$(git rev-parse HEAD)" \
   --stable-plugin "$STABLE_PLUGIN" \
   --stable-tag review-council--v0.4.3 \
-  --state "$RELEASE_STATE"
-python3 scripts/verify-review-council.py --root .
-python3 scripts/verify-release-lane.py certify --state "$RELEASE_STATE" \
+  --review "$FINAL_REVIEW_RECEIPT" \
   --verification-receipt "$VERIFY_RECEIPT" \
   --canary host-claude="$CLAUDE_CANARY" \
   --canary host-codex="$CODEX_CANARY" \
@@ -502,7 +503,7 @@ python3 scripts/verify-release-lane.py certify --state "$RELEASE_STATE" \
 ```
 
 It states that `record-review` is run immediately after each stable read-only review,
-before another review launch, and that a blocked state ends the lane.
+before another review launch, and that a nonclean second receipt ends the lane.
 
 - [ ] **Step 2: Add release documentation tests or static assertions**
 
@@ -535,12 +536,12 @@ bundle manifests and verifier receipt to exist.
 
 - [ ] **Step 5: Run the stable 0.4.3 release lane**
 
-Initialize the lane against the exact installed 0.4.3 bundle. Use its `rev` skill and
-scripts for one read-only complete release panel with the four composite assignments.
-Verify and apply only P0/P1. Record generation 1 immediately. If code changed, rerun
-focused and full deterministic gates, then run one stable read-only delta panel and
-record generation 2. Do not launch another panel if the state is blocked or
-infrastructure-blocked.
+Record the required canary set against the exact installed 0.4.3 bundle. Use its `rev`
+skill and scripts for one read-only complete release panel with the four composite
+assignments. Verify and apply only P0/P1. Write the immutable generation-1 decision
+receipt immediately. If code changed, rerun focused and full deterministic gates, then
+run one stable read-only delta panel and write generation 2. Do not launch another
+panel if generation 2 is nonclean or infrastructure-blocked.
 
 - [ ] **Step 6: Certify the final candidate and commit records**
 
@@ -591,6 +592,6 @@ review.
   generation, deterministic gate, canary, and publication requirement maps to a task.
 - Placeholder scan: no TBD, TODO, or unspecified implementation step remains.
 - Interface consistency: Task 3 consumes Task 2's exact lock helpers; Task 6 consumes
-  Task 5's exact five commands and state transitions.
+  Task 5's four immutable receipt commands and transition validation.
 - Scope check: the release authority is one independent repository tool; normal review
   keeps its existing orchestrator and receives only small boundary changes.

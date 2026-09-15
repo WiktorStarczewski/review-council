@@ -188,41 +188,43 @@ missing, failed, malformed, stale, or mismatched required receipt blocks certifi
 Add `scripts/verify-release-lane.py` with these public commands:
 
 ```text
-verify-release-lane.py init --root ROOT --candidate-commit SHA --stable-plugin PATH --stable-tag TAG --state STATE
-verify-release-lane.py record-review --state STATE --session SESSION --new-p0 N --new-p1 N --open-p0 N --open-p1 N
-verify-release-lane.py run-canary --state STATE --id ID --out RECEIPT -- COMMAND [ARG ...]
-verify-release-lane.py certify --state STATE --verification-receipt PATH --canary ID=PATH --out RECEIPT
-verify-release-lane.py status --state STATE
+verify-release-lane.py requirements --root ROOT --candidate-commit SHA --stable-tag TAG
+verify-release-lane.py record-review --root ROOT --candidate-commit SHA --stable-plugin PATH --stable-tag TAG --session SESSION --new-p0 N --new-p1 N --open-p0 N --open-p1 N --out RECEIPT
+verify-release-lane.py run-canary --root ROOT --stable-tag TAG --id ID --out RECEIPT -- COMMAND [ARG ...]
+verify-release-lane.py certify --root ROOT --candidate-commit SHA --stable-plugin PATH --stable-tag TAG --review RECEIPT [--review RECEIPT] --verification-receipt PATH --canary ID=PATH --out RECEIPT
 ```
 
-`init` validates stable and candidate identities before writing immutable generation-1
-state. An exact repeat is idempotent; a different repeat fails.
+`requirements` validates the clean candidate identity and prints the changed-path
+canary set as canonical JSON. It writes nothing.
 
 `record-review` invokes the installed stable engine's
 `scripts/rev-contract-check.py --verify-only` against the session, validates the
 session coverage receipt and source tree, records the supplied P0/P1 decision counts,
-and advances at most once to `correction-required`. The second record may only be for a
-new candidate commit produced by generation-1 P0/P1 repairs. It records `clean`,
-`blocked`, or `infrastructure-blocked` and never authorizes generation 3.
+and writes one immutable decision receipt for that reviewed commit.
 
 P0/P1 counts are explicit host decisions because severity and source verification are
 orchestrator responsibilities. `record-review` also requires the session findings and
 state artifacts to be hash-bound, so the decision cannot later be paired with different
 review bytes.
 
-`run-canary` accepts only a required canary ID, runs the argument vector without a
-shell, captures a bounded log, and writes a receipt only for exit 0. It binds the
-current trigger path identities. It may run before unrelated final commits without
-becoming stale.
+`run-canary` accepts only a canary ID selected by the current changed paths, runs the
+argument vector without a shell, captures a bounded log, and writes a receipt only for
+exit 0. It binds the current trigger path identities. It may run before unrelated final
+commits without becoming stale.
 
 `certify` requires a clean final candidate, the latest review generation to be clean on
 that exact Git tree, a valid deterministic verifier receipt, every required current
-canary, no extra unknown canary, and no session-wide audit stop. It writes one immutable
-`release-receipt.json`. It never pushes, publishes, tags, merges, or installs.
+canary, no extra unknown canary, and no session-wide audit stop. It accepts one or two
+review decision receipts and rejects any other count. One clean initial receipt
+certifies directly. A nonclean initial receipt requires one later clean receipt on a
+different candidate commit; a nonclean second receipt blocks certification. This makes
+a third generation structurally unrepresentable without maintaining another mutable
+orchestration database. It writes one immutable `release-receipt.json`. It never
+pushes, publishes, tags, merges, or installs.
 
-State, review records, canary receipts, and the final receipt use canonical JSON,
-same-directory atomic publication, regular one-link file validation, a no-follow lock,
-and collision refusal.
+Review records, canary receipts, and the final receipt use canonical JSON,
+same-directory atomic publication, regular one-link file validation, and collision
+refusal.
 
 ## Publication and installation
 
