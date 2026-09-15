@@ -174,7 +174,7 @@ def regular(path, nonempty=False):
         return None, f'{path.name} is empty'
     return details, None
 
-report_details, error = regular(session / 'report.md', nonempty=True)
+report_details, error = regular(session / 'stack-report.md', nonempty=True)
 if error:
     print(error)
     raise SystemExit(1)
@@ -189,8 +189,8 @@ try:
 except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
     print(f'state.json is invalid: {exc}')
     raise SystemExit(1)
-if not isinstance(state, dict) or state.get('phase') != 'done':
-    print('state.json does not record phase=done')
+if not isinstance(state, dict) or state.get('phase') != 'stack-ready':
+    print('state.json does not record phase=stack-ready')
     raise SystemExit(1)
 digest = hashlib.sha256(data).hexdigest()
 current = (f'{state_details.st_dev}:{state_details.st_ino}:{state_details.st_size}:'
@@ -271,13 +271,22 @@ ${extra}
 
 ${VACUITY}${resume}"
     fi
-    # A report certifies only the launch that created it. Archive any prior pass or
-    # failed attempt before both host paths start, then require a new report below.
-    local previous_report="$S/report.pass${PASS}.attempt${attempt}.previous.md"
-    if { [ -e "$S/report.md" ] || [ -L "$S/report.md" ]; } && ! mv "$S/report.md" "$previous_report"; then
-      say "!!! $label: could not archive the prior report; refusing to launch"
+    # A ready receipt certifies only the launch that created it. Archive any prior
+    # pass or failed attempt before both host paths start, then require a new one.
+    local previous_report="$S/stack-report.pass${PASS}.attempt${attempt}.previous.md"
+    if { [ -e "$S/stack-report.md" ] || [ -L "$S/stack-report.md" ]; } \
+        && ! mv "$S/stack-report.md" "$previous_report"; then
+      say "!!! $label: could not archive the prior stack-ready report; refusing to launch"
       note_failure "$label" "$repo"
       return 1
+    fi
+    if [ -e "$S/report.md" ] || [ -L "$S/report.md" ]; then
+      local previous_done="$S/report.pass${PASS}.attempt${attempt}.previous.md"
+      if ! mv "$S/report.md" "$previous_done"; then
+        say "!!! $label: could not archive the prior completed report; refusing to launch"
+        note_failure "$label" "$repo"
+        return 1
+      fi
     fi
     local state_before; state_before=$(state_signature "$S/state.json")
     if [ "$state_before" = unsafe ]; then
@@ -336,8 +345,8 @@ ${VACUITY}${resume}"
     if [ "$rc" -eq 0 ] && [ "$stalled" = 0 ]; then
       receipt_error=$(completion_receipt_error "$S" "$state_before")
       if [ "$?" -ne 0 ]; then
-        # A headless leg can exit 0 while its loop is unfinished. The report and
-        # terminal state together are the attempt-local completion receipt.
+        # A headless leg can exit 0 while its loop is unfinished. The stack-ready
+        # report and state together are the attempt-local completion receipt.
         say "!!! $label exited 0 after ${dur}s with invalid completion receipt (${receipt_error}); retrying with resume"; rc=75
       fi
     fi
@@ -410,15 +419,19 @@ finalize_reviews() {
       rc=1
       continue
     }
-    if [ ! -f "$session/report.md" ]; then
-      say "!!! authoritative review session has no completion report: $session"
+    if [ ! -f "$session/stack-report.md" ] && [ ! -f "$session/report.md" ]; then
+      say "!!! authoritative review session has no stack-ready report: $session"
       rc=1
+      note_failure "PR review finalization" "$repo"
       continue
     fi
     set -o pipefail
     python3 "$REV_SCRIPTS/rev-pr-review.py" finalize-stack "$session" \
       --head "$head" --root "$repo" 2>&1 | sed 's/^/    /' | tee -a "$LOG"
-    [ "$?" -eq 0 ] || rc=1
+    if [ "$?" -ne 0 ]; then
+      rc=1
+      note_failure "PR review finalization" "$repo"
+    fi
     set +o pipefail
   done
   return "$rc"
@@ -441,16 +454,52 @@ publish_reviews() {
       rc=1
       continue
     }
-    if [ ! -f "$session/report.md" ]; then
-      say "!!! authoritative review session has no completion report: $session"
+    if [ ! -f "$session/stack-report.md" ] && [ ! -f "$session/report.md" ]; then
+      say "!!! authoritative review session has no stack-ready report: $session"
       rc=1
+      note_failure "PR review publication" "$repo"
       continue
     fi
     set -o pipefail
     python3 "$REV_SCRIPTS/rev-pr-review.py" publish "$session" 2>&1 \
       | sed 's/^/    /' | tee -a "$LOG"
-    [ "$?" -eq 0 ] || rc=1
+    if [ "$?" -ne 0 ]; then
+      rc=1
+      note_failure "PR review publication" "$repo"
+    fi
     set +o pipefail
+  done
+  return "$rc"
+}
+
+complete_reviews() {
+  local repo session rc=0
+  for repo in $REPOS_SEEN; do
+    case " $FAILED_REPOS " in *" $repo "*) continue;; esac
+    session=$(session_for_repo "$repo") || {
+      say "!!! no authoritative session to complete for $(basename "$repo")"
+      rc=1
+      note_failure "PR review completion" "$repo"
+      continue
+    }
+    if [ -f "$session/stack-report.md" ]; then
+      if ! mv "$session/stack-report.md" "$session/report.md"; then
+        say "!!! cannot promote the stack-ready report: $session"
+        rc=1
+        note_failure "PR review completion" "$repo"
+        continue
+      fi
+    elif [ ! -f "$session/report.md" ]; then
+      say "!!! authoritative session has no report to complete: $session"
+      rc=1
+      note_failure "PR review completion" "$repo"
+      continue
+    fi
+    if ! "$REV_SCRIPTS/rev-state.sh" "$session" phase=done; then
+      say "!!! cannot mark the published review complete: $session"
+      rc=1
+      note_failure "PR review completion" "$repo"
+    fi
   done
   return "$rc"
 }
@@ -464,9 +513,11 @@ say "ALL PHASE 1 COMPLETE"
 if [ -n "$SEAM_REPO" ]; then PASS=seam; say "########## PHASE 2 - CROSS-REPO SEAMS ##########"; run_leg "$SEAM_REPO" 2 seams "$SEAM_PREMISE"; else say "PHASE 2 skipped (SEAM_REPO unset)"; fi
 if [ -n "$CRITIC_REPO" ]; then PASS=critic; say "########## PHASE 3 - COMPLETENESS CRITIC ##########"; run_leg "$CRITIC_REPO" 1 critic "$CRITIC_PREMISE"; else say "PHASE 3 skipped (CRITIC_REPO unset)"; fi
 say "########## FINISH - squash + push per repo ##########"; finish_repos
-if [ -n "$FAILED_LABELS" ]; then say "COMPLETE WITH FAILURES:$FAILED_LABELS"; exit 1; fi
 say "########## FINALIZE - reconcile post-squash review links ##########"
-finalize_reviews || { say "COMPLETE WITH FAILURES: PR review finalization"; exit 1; }
+finalize_reviews || true
 say "########## PUBLISH - one PR review per completed repository ##########"
-publish_reviews || { say "COMPLETE WITH FAILURES: PR review publication"; exit 1; }
+publish_reviews || true
+say "########## COMPLETE - promote stack-ready review receipts ##########"
+complete_reviews || true
+if [ -n "$FAILED_LABELS" ]; then say "COMPLETE WITH FAILURES:$FAILED_LABELS"; exit 1; fi
 say "ALL PHASES COMPLETE"

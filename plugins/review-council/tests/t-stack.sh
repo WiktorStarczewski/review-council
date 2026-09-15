@@ -11,6 +11,7 @@ test_stack() {
     # The stack depends on the roster status and brief cause, so the double controls both.
     local RS="$T/rs"; mkdir -p "$RS"
     ln -sf "$SCRIPTS/rev-status.sh" "$RS/rev-status.sh"; ln -sf "$SCRIPTS/rev-squash.sh" "$RS/rev-squash.sh"
+    ln -sf "$SCRIPTS/rev-state.sh" "$RS/rev-state.sh"
     # lib/ comes along: the copy must run in the shipped configuration, portability layer and all, or the
     # REV_SCRIPTS-default case below would exercise a stack.sh whose compat.sh never loaded.
     ln -sfn "$SCRIPTS/lib" "$RS/lib"
@@ -130,6 +131,10 @@ RSEOF
     assert_eq "stack publication failure fails the workflow" "$?" 1
     assert_grep "stack publication failure is terminal" "$LOG" \
       'COMPLETE WITH FAILURES: PR review publication'
+    assert_exit "failed publication leaves no completed report" 0 \
+      test ! -e "$ROOT/legpub/report.md"
+    assert_exit "failed publication preserves the stack-ready report" 0 \
+      test -s "$ROOT/legpub/stack-report.md"
     assert_nogrep "failed stack publication never reports completion" "$LOG" \
       'ALL PHASES COMPLETE'
     unset STACK_PUBLISH_RC
@@ -162,6 +167,10 @@ SH
     assert_eq "failed stack finalization fails the workflow" "$?" 1
     assert_exit "failed stack finalization preserves authoritative session state" 0 \
       test -s "$ROOT/repo-sessions.tsv"
+    assert_exit "failed finalization leaves no completed report" 0 \
+      test ! -e "$ROOT/legsquash/report.md"
+    assert_exit "failed finalization preserves the stack-ready report" 0 \
+      test -s "$ROOT/legsquash/stack-report.md"
     assert_nogrep "failed stack finalization does not publish" "$STACK_PUBLISH_CALLS" '^publish '
     unset STACK_FINALIZE_RC
     : > "$STACK_PUBLISH_CALLS"
@@ -237,6 +246,28 @@ SH
       "$(grep "^publish $ROOT/secondary " "$STACK_PUBLISH_CALLS")" \
       "publish $ROOT/secondary local=$publish_head remote=$publish_head"
 
+    local RF="$T/stk-partial-fail" RG="$T/stk-partial-good"
+    mkrepo "$RF"; git -C "$RF" checkout -qb feat
+    mkrepo "$RG"; git -C "$RG" checkout -qb feat
+    git init -q --bare "$T/stk-partial-good-remote.git"
+    git -C "$RG" remote add origin "$T/stk-partial-good-remote.git"
+    git -C "$RG" push -q -u origin feat
+    echo good > "$RG/good.txt"; git -C "$RG" add good.txt
+    git -C "$RG" commit -qm 'fix(rev): successful repository'
+    printf 'legs() { run_leg "%s" 1 failed "failed"; run_leg "%s" 1 good "good"; }\n' \
+      "$RF" "$RG" > "$T/stack-partial.cfg"
+    export ROOT="$T/stack-partial-root" LOG="$T/stack-partial.log" NO_SQUASH=1 NO_PUSH=0
+    export MAX_ATTEMPTS=1 MAX_INFRA_RETRIES=0 SHIM_FAIL_CWD="$RF"
+    export STACK_PUBLISH_CALLS="$T/stack-partial.calls"
+    : > "$STACK_PUBLISH_CALLS"
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-partial.cfg" \
+      > "$T/stack-partial.out" 2>&1
+    assert_eq "partial multi-repository failure remains nonzero" "$?" 1
+    assert_grep "successful repository still publishes after a sibling failure" \
+      "$STACK_PUBLISH_CALLS" "^publish $ROOT/good "
+    assert_grep "partial failure remains explicit" "$LOG" 'COMPLETE WITH FAILURES: failed'
+    unset SHIM_FAIL_CWD
+
     local RR="$T/stk-resume-order"
     mkrepo "$RR"; git -C "$RR" checkout -qb feat
     git init -q --bare "$T/stk-resume-order-remote.git"
@@ -301,10 +332,11 @@ SH
     SHIM_MODE=fail "$STACK/stack.sh" "$T/stack.cfg" > /dev/null 2>&1
     assert_grep "fast fail treated as infra once" "$LOG" 'failed in [0-9]+s - infrastructure'
     assert_grep "then gives up" "$LOG" 'GAVE UP on leg1'
-    # exit 0 without report.md is NOT done: retried with resume, then gives up
+    # exit 0 without stack-report.md is NOT ready: retried with resume, then gives up
     export ROOT="$T/stack-root4" LOG="$T/stack4.log" MAX_ATTEMPTS=2 MAX_INFRA_RETRIES=0 FAST_FAIL_SECS=1
     SHIM_MODE=noreport "$STACK/stack.sh" "$T/stack.cfg" > /dev/null 2>&1
-    assert_grep "incomplete leg detected" "$LOG" 'invalid completion receipt \(report.md is missing\)'
+    assert_grep "incomplete leg detected" "$LOG" \
+      'invalid completion receipt \(stack-report.md is missing\)'
     assert_nogrep "incomplete leg never marked DONE" "$LOG" '=== DONE leg1'
     assert_eq "incomplete leg retried up to MAX_ATTEMPTS" "$(grep -c '=== START leg1 pass1' "$LOG")" "2"
     assert_grep "incomplete leg gives up" "$LOG" 'GAVE UP on leg1'
@@ -500,14 +532,16 @@ printf 'command=%s pass=%s count=%s session=%s\n' "$(basename "$0")" "${PASS:-}"
 case "$STALE_REPORT_MODE" in
   later-pass)
     if [ "${PASS:-}" = 1 ]; then
-      echo '# pass 1 report' > "$session/report.md"
+      echo '# pass 1 report' > "$session/stack-report.md"
+      printf '%s\n' '{"phase":"stack-ready"}' > "$session/state.json"
       echo '# findings' > "$session/findings.md"
     fi
     exit 0
     ;;
   retry)
     if [ "$count" = 1 ]; then
-      echo '# failed attempt report' > "$session/report.md"
+      echo '# failed attempt report' > "$session/stack-report.md"
+      printf '%s\n' '{"phase":"stack-ready"}' > "$session/state.json"
       echo '# findings' > "$session/findings.md"
       exit 1
     fi
@@ -539,7 +573,8 @@ SH
       assert_eq "$host later pass rejects a stale report" "$rc" 1
       assert_nogrep "$host later pass is never certified" "$LOG" '=== DONE leg pass2'
       assert_grep "$host later pass invokes both attempts" "$ATTEMPT_COUNT.trace" 'count=2 '
-      assert_grep "$host later pass archives the prior report" "$ROOT/leg/report.pass2.attempt1.previous.md" 'pass 1 report'
+      assert_grep "$host later pass archives the prior report" \
+        "$ROOT/leg/stack-report.pass2.attempt1.previous.md" 'pass 1 report'
 
       export PASSES=1 MAX_ATTEMPTS=2 ROOT="$T/attempt-$host-retry" LOG="$T/attempt-$host-retry.log"
       export ATTEMPT_COUNT="$T/attempt-$host-retry.count" STALE_REPORT_MODE=retry
@@ -548,7 +583,8 @@ SH
       assert_eq "$host retry rejects a stale report" "$rc" 1
       assert_nogrep "$host retry is never certified" "$LOG" '=== DONE leg pass1'
       assert_grep "$host retry invokes both attempts" "$ATTEMPT_COUNT.trace" 'count=2 '
-      assert_grep "$host retry archives the failed attempt report" "$ROOT/leg/report.pass1.attempt2.previous.md" 'failed attempt report'
+      assert_grep "$host retry archives the failed attempt report" \
+        "$ROOT/leg/stack-report.pass1.attempt2.previous.md" 'failed attempt report'
     done
   )
 }
