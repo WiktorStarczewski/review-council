@@ -82,6 +82,7 @@ t-pr-review.sh::test_pr_review_duplicate_and_no_pr	1	normal
 t-pr-review.sh::test_pr_review_empty_sections	1	normal
 t-pr-review.sh::test_pr_review_clean_identity	1	normal
 t-pr-review.sh::test_pr_review_commit_deduplication	1	normal
+t-pr-review.sh::test_pr_review_concurrent_publication	2	normal
 t-pr-review.sh::test_pr_review_finalization_integrity	1	normal
 t-pr-review.sh::test_pr_review_frozen_publication	1	normal
 t-pr-review.sh::test_pr_review_publish	1	normal

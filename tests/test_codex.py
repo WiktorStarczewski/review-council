@@ -1216,8 +1216,8 @@ Path(os.environ['CAPTURE']).write_text(json.dumps({'args':sys.argv[1:], 'prompt'
 session = Path(re.search(r'use (.+) as the session dir', prompt).group(1))
 (session/'findings.md').write_text('ledger')
 if not (os.environ.get('MISS_SECOND') == '1' and os.environ.get('PASS') == '2'):
-    (session/'report.md').write_text('completed review')
-    (session/'state.json').write_text(json.dumps({'phase':'done'}))
+    (session/'stack-report.md').write_text('completed review')
+    (session/'state.json').write_text(json.dumps({'phase':'stack-ready'}))
 print('completed')
 ''')
         cli.chmod(0o755)
@@ -1252,7 +1252,7 @@ print('completed')
     def test_old_receipt_cannot_complete_new_stack_pass(self):
         proc, _ = self.run_stack(missing_second_receipt=True)
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
-        self.assertIn('invalid completion receipt (report.md is missing)', proc.stdout)
+        self.assertIn('invalid completion receipt (stack-report.md is missing)', proc.stdout)
         self.assertIn('COMPLETE WITH FAILURES', proc.stdout)
 
 
