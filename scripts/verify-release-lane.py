@@ -992,7 +992,13 @@ def validate_review_session(session_path, root, candidate, stable_plugin, stable
         raise ReleaseError("stable contract receipt is invalid")
     contract_identity = contract.get("identity")
     executor = contract_identity.get("executor") if isinstance(contract_identity, dict) else None
-    if not isinstance(executor, dict) or executor.get("plugin") != str(stable_plugin):
+    runner_name = "tests/run-tests.sh"
+    runner_snapshot = stable_snapshot.get(runner_name)
+    if (not isinstance(executor, dict) or not isinstance(runner_snapshot, bytes)
+            or executor.get("policy") != "checker-owned"
+            or executor.get("plugin") != str(stable_plugin)
+            or executor.get("runner") != str(stable_plugin / runner_name)
+            or executor.get("runner_sha256") != digest(runner_snapshot)):
         raise ReleaseError("contract executor is not the verified stable plugin")
     head_raw = session_file(session, "coverage-head.json", "coverage head", captured)
     head = parse_json(head_raw, "coverage head")

@@ -61,10 +61,14 @@ class ReleaseLaneFixture(unittest.TestCase):
         executable.chmod(0o755)
         helper = self.plugin / "scripts" / "checker_fixture_helper.py"
         helper.write_text("IDENTITY = 'stable checker helper'\n")
+        runner = self.plugin / "tests" / "run-tests.sh"
+        runner.parent.mkdir(parents=True)
+        runner.write_text("#!/bin/sh\nexit 0\n")
+        runner.chmod(0o755)
         checker = self.plugin / "scripts" / "rev-contract-check.py"
         checker.write_text(
             "#!/usr/bin/env python3\n"
-            "import argparse, json, os, pathlib, sys\n"
+            "import argparse, hashlib, json, os, pathlib, sys\n"
             "from checker_fixture_helper import IDENTITY\n"
             "assert IDENTITY == 'stable checker helper'\n"
             "parser = argparse.ArgumentParser()\n"
@@ -85,11 +89,15 @@ class ReleaseLaneFixture(unittest.TestCase):
             "if len(paths) != 1:\n"
             "    raise SystemExit(2)\n"
             "receipt = json.loads(paths[0].read_text())\n"
+            "runner = pathlib.Path(__file__).resolve().parents[1] / 'tests' / 'run-tests.sh'\n"
+            "runner_hash = hashlib.sha256(runner.read_bytes()).hexdigest()\n"
             "roster = json.loads(pathlib.Path(args.roster).read_text())\n"
             "core = [{k: row.get(k) for k in ('seat', 'adapter', 'model', 'effort')} "
             "        for row in roster['seats'] if not row.get('extra', False)]\n"
+            "executor = receipt.get('identity', {}).get('executor', {})\n"
             "if (receipt.get('key') != paths[0].stem.removeprefix('contract-pass-') "
-            "        or receipt.get('identity', {}).get('core_roster') != core):\n"
+            "        or receipt.get('identity', {}).get('core_roster') != core "
+            "        or executor.get('runner_sha256') != runner_hash):\n"
             "    raise SystemExit(2)\n"
             "print(paths[0])\n"
         )
@@ -214,12 +222,25 @@ class ReleaseLaneFixture(unittest.TestCase):
         key = "1" * 64
         core = [{name: row.get(name) for name in ("seat", "adapter", "model", "effort")}
                 for row in roster["seats"]]
+        stable_plugin = self.installed.resolve()
+        stable_runner = stable_plugin / "tests" / "run-tests.sh"
         contract = {
             "schema_version": 2,
             "key": key,
             "identity": {
                 "schema_version": 2,
-                "executor": {"plugin": str(self.installed.resolve()), "runner_sha256": "2" * 64},
+                "executor": {
+                    "policy": "checker-owned",
+                    "plugin": str(stable_plugin),
+                    "runner": str(stable_runner),
+                    "runner_sha256": hashlib.sha256(stable_runner.read_bytes()).hexdigest(),
+                    "execution": {
+                        "shared_deadline_seconds": 300,
+                        "output_bytes": 4 * 1024 * 1024,
+                        "diagnostic_bytes": 8192,
+                        "term_grace_seconds": 2,
+                    },
+                },
                 "core_roster": core,
                 "boundaries": {},
                 "provider_versions": {},
@@ -677,6 +698,80 @@ class ReleaseLaneReviewTests(ReleaseLaneFixture):
         self.assertTrue(raced)
         self.assertTrue(output.exists())
         self.assertFalse(marker.exists())
+
+    def test_contract_runner_identity_must_match_the_verified_stable_snapshot(self):
+        session = self.make_session()
+        output = self.base / "review.json"
+        stable_plugin = self.installed.resolve()
+        checker = stable_plugin / "scripts" / "rev-contract-check.py"
+        runner = stable_plugin / "tests" / "run-tests.sh"
+        backup = stable_plugin / "tests" / ".run-tests.original"
+        replacement = b"#!/bin/sh\nexit 23\n"
+        contract_path = next(session.glob("contract-pass-*.json"))
+        contract = json.loads(contract_path.read_text())
+        contract["identity"]["executor"]["runner_sha256"] = hashlib.sha256(
+            replacement,
+        ).hexdigest()
+        contract_path.write_text(canonical(contract))
+        manifest_path = session / "r1-evidence.manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["inputs"][contract_path.name] = hashlib.sha256(
+            contract_path.read_bytes(),
+        ).hexdigest()
+        manifest_path.write_text(canonical(manifest))
+        coverage_path = session / "r1-coverage.receipt.json"
+        coverage = json.loads(coverage_path.read_text())
+        coverage["manifest_sha256"] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+        coverage_path.write_text(canonical(coverage))
+        head_path = session / "coverage-head.json"
+        head = json.loads(head_path.read_text())
+        head["sha256"] = hashlib.sha256(coverage_path.read_bytes()).hexdigest()
+        head_path.write_text(canonical(head))
+        module = load_module()
+        arguments = module.parser().parse_args([
+            "record-review", "--root", str(self.root),
+            "--candidate-commit", self.candidate_commit,
+            "--stable-plugin", str(self.installed), "--stable-tag", TAG,
+            "--session", str(session), "--new-p0", "0", "--new-p1", "0",
+            "--open-p0", "0", "--open-p1", "0", "--out", str(output),
+        ])
+        subprocess_run = module.subprocess.run
+        raced = False
+        checker_accepted = False
+
+        def replace_at_launch(command, *args, **kwargs):
+            nonlocal raced, checker_accepted
+            vector = [str(value) for value in command] if isinstance(command, list) else []
+            if not raced and vector[:1] == [sys.executable] and str(checker) in vector:
+                raced = True
+                os.replace(runner, backup)
+                runner.write_bytes(replacement)
+                runner.chmod(0o755)
+                try:
+                    result = subprocess_run(command, *args, **kwargs)
+                    checker_accepted = result.returncode == 0
+                    return result
+                finally:
+                    runner.unlink()
+                    os.replace(backup, runner)
+            return subprocess_run(command, *args, **kwargs)
+
+        module.subprocess.run = replace_at_launch
+        try:
+            with self.assertRaisesRegex(
+                    module.ReleaseError, "contract executor is not the verified stable plugin"):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    module.record_review(arguments)
+        finally:
+            module.subprocess.run = subprocess_run
+            if backup.exists():
+                if runner.exists():
+                    runner.unlink()
+                os.replace(backup, runner)
+
+        self.assertTrue(raced)
+        self.assertTrue(checker_accepted)
+        self.assertFalse(output.exists())
 
     def test_clean_first_review_records_canonical_decision_and_exact_checker_call(self):
         session = self.make_session()
