@@ -1530,6 +1530,7 @@ test_pr_review_publish_failure() {
   cp "$session/pr-review.json" "$T/pr-failure-input.json"
   cp "$session/pr-review.md" "$T/pr-failure-rendered.md"
   cp "$session/pr-review-target.json" "$T/pr-failure-target.json"
+  cp "$session/scope.env" "$T/pr-failure-scope.env"
   PATH="$bin:$PATH" GH_MODE=fail-post GH_CALLS="$T/pr-failure.calls" \
     GH_POSTED_BODY="$T/pr-failure-body" \
     python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
@@ -1607,6 +1608,50 @@ test_pr_review_publish_failure() {
   assert_eq "no-push retry is a clean skip" "$?" 0
   assert_exit "no-push retry clears the stale failure receipt" 0 \
     test ! -e "$session/incomplete.md"
+
+  local artifact original
+  for artifact in scope.env pr-review-target.json pr-review.md; do
+    case "$artifact" in
+      scope.env) original="$T/pr-failure-scope.env";;
+      pr-review-target.json) original="$T/pr-failure-target.json";;
+      pr-review.md) original="$T/pr-failure-rendered.md";;
+    esac
+    printf '\377' > "$session/$artifact"
+    cp "$session/$artifact" "$T/pr-failure-invalid-bytes"
+    : > "$T/pr-failure.calls"
+    PATH="$bin:$PATH" GH_CALLS="$T/pr-failure.calls" \
+      python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+      > "$T/pr-failure-invalid-text.out" 2> "$T/pr-failure-invalid-text.err"
+    assert_eq "invalid UTF-8 in $artifact fails publication cleanly" "$?" 1
+    assert_nogrep "invalid UTF-8 in $artifact emits no traceback" \
+      "$T/pr-failure-invalid-text.err" 'Traceback'
+    assert_nogrep "invalid UTF-8 in $artifact never posts" \
+      "$T/pr-failure.calls" '^api --method POST '
+    assert_grep "invalid UTF-8 in $artifact writes the exact retry" \
+      "$session/incomplete.md" "retry: .*rev-pr-review.py publish $session$"
+    assert_exit "invalid UTF-8 in $artifact remains unchanged" 0 \
+      cmp -s "$session/$artifact" "$T/pr-failure-invalid-bytes"
+    cp "$original" "$session/$artifact"
+  done
+
+  printf "REV_BASE='unterminated\n" > "$session/scope.env"
+  cp "$session/scope.env" "$T/pr-failure-invalid-scope.env"
+  : > "$T/pr-failure.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-failure.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" publish "$session" \
+    > "$T/pr-failure-invalid-scope.out" 2> "$T/pr-failure-invalid-scope.err"
+  assert_eq "unterminated scope value fails publication cleanly" "$?" 1
+  assert_nogrep "unterminated scope value emits no traceback" \
+    "$T/pr-failure-invalid-scope.err" 'Traceback'
+  assert_nogrep "unterminated scope value never posts" \
+    "$T/pr-failure.calls" '^api --method POST '
+  assert_grep "unterminated scope value writes the parse failure" \
+    "$session/incomplete.md" 'No closing quotation'
+  assert_grep "unterminated scope value writes the exact retry" \
+    "$session/incomplete.md" "retry: .*rev-pr-review.py publish $session$"
+  assert_exit "unterminated scope value remains unchanged" 0 \
+    cmp -s "$session/scope.env" "$T/pr-failure-invalid-scope.env"
+  cp "$T/pr-failure-scope.env" "$session/scope.env"
 
   local missing="$T/pr-failure-missing-session"
   PATH="$bin:$PATH" GH_CALLS="$T/pr-failure.calls" \

@@ -146,6 +146,8 @@ Any other nonzero publish exit leaves the PR review incomplete. Preserve
 `incomplete.md` with the failure and exact retry command. Direct success or a clean
 skip clears stale publication failure state. Stack publication retains it until the
 done state and final report promotion both succeed, including on a no-push retry.
+Malformed UTF-8 or quoted scope values use the same failure receipt instead of escaping
+with a traceback.
 
 In `REV_STACK_LEG=1`, render and inspect the body but do not publish it. The stack
 leg records `phase=stack-ready` and writes `stack-report.md`, not `phase=done` or

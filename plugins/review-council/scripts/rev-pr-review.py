@@ -776,7 +776,7 @@ def publication_transaction(session, scope, retry):
             yield
             if os.environ.get("REV_STACK_PUBLICATION") != "1":
                 clear_incomplete(session)
-        except (OSError, ReviewError, subprocess.SubprocessError) as error:
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
             message = str(error)
             if session.is_dir():
                 try:
@@ -936,7 +936,7 @@ def main():
             validate_stack(session, args.head, args.root, args.push_url)
         else:
             publish(session, Path(__file__).resolve())
-    except (OSError, ReviewError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
         message = str(error)
         if args.command == "publish" and "\npr-review: retry: " not in message:
             retry = publication_retry(session, Path(__file__).resolve())
