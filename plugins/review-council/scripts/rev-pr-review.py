@@ -26,11 +26,12 @@ BLOB_ID_URL = re.compile(
     r"^https://github\.com/([^/]+/[^/]+)/blob/([0-9a-f]{7,40})/.*$", re.IGNORECASE)
 COMMIT_ID_URL = re.compile(
     r"^https://github\.com/([^/]+/[^/]+)/commit/([0-9a-f]{7,40})/?$", re.IGNORECASE)
-GITHUB_REMOTE = re.compile(
-    r"^(?:(?:https?|git)://|ssh://git@|git@)github\.com[:/]"
-    r"([^/\s]+/[^/\s]+?)(?:\.git)?/?$",
-    re.IGNORECASE,
-)
+GITHUB_REMOTES = tuple(re.compile(pattern, re.IGNORECASE) for pattern in (
+    r"^(?:https?|git)://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?$",
+    r"^git@github\.com:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?$",
+    r"^ssh://git@github\.com(?::[0-9]+)?/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?$",
+    r"^ssh://git@ssh\.github\.com:443/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?$",
+))
 OID = re.compile(r"^[0-9a-f]{40}$")
 REPOSITORY = re.compile(r"^[^/\s]+/[^/\s]+$")
 
@@ -296,6 +297,14 @@ def run_git(arguments, root):
     return result.stdout.strip()
 
 
+def github_repository(url):
+    for pattern in GITHUB_REMOTES:
+        match = pattern.fullmatch(url.strip())
+        if match is not None:
+            return match.group(1).lower()
+    return None
+
+
 def github_repositories(root):
     remotes = subprocess.run(["git", "remote"], cwd=root, text=True,
                              capture_output=True, timeout=30)
@@ -308,9 +317,9 @@ def github_repositories(root):
         if urls.returncode != 0:
             raise ReviewError("cannot inspect git remote " + name + ": " + urls.stderr.strip())
         for url in urls.stdout.splitlines():
-            match = GITHUB_REMOTE.fullmatch(url.strip())
-            if match is not None:
-                repositories.add(match.group(1).lower())
+            repository = github_repository(url)
+            if repository is not None:
+                repositories.add(repository)
     return sorted(repositories)
 
 
