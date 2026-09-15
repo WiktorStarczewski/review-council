@@ -435,6 +435,35 @@ terminates the process group on timeout, and writes a receipt only for exit 0. B
 ID, trigger path identities, command vector, log hash, and any evidence paths emitted
 in canonical JSON by the command.
 
+Use these exact candidate-relative triggers:
+
+```python
+DIRECT_CANARIES = {
+    "scripts/seats.d/codex.sh": ("provider-codex",),
+    "scripts/seats.d/claude.sh": ("provider-claude",),
+    "scripts/seats.d/gemini.sh": ("provider-gemini",),
+    "scripts/lib/review-read-audit.py": ("provider-codex", "provider-claude"),
+    "scripts/lib/stream-summary.py": ("provider-codex", "provider-claude"),
+    "scripts/lib/codex-review-to-findings.py": ("provider-codex",),
+    "scripts/rev-pr-review.py": ("github-publication",),
+    "scripts/stack.sh": ("github-publication",),
+    "docs/pr-review.md": ("github-publication",),
+}
+PREFIX_CANARIES = {
+    "skills/rev/": ("host-claude",),
+    "skills/stack/": ("host-claude",),
+    "codex-skills/rev/": ("host-codex",),
+    "codex-skills/stack/": ("host-codex",),
+    "hooks/": ("host-claude",),
+}
+```
+
+Treat an unknown changed `scripts/seats.d/*.sh` as an unmapped provider boundary and
+fail closed. Other unmatched paths require no live canary because the complete
+deterministic gate still covers them. The active release roster excludes Gemini, so a
+shared-auditor change requires Codex and Claude canaries; a direct Gemini adapter
+change still requires its own canary before release.
+
 - [ ] **Step 8: Add deterministic receipt and final certification tests**
 
 Cover verifier tree mismatch, key mismatch, missing command, failed or truncated log,
