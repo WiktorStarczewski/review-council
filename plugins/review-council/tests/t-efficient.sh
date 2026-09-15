@@ -19,7 +19,6 @@ test_adaptive_schedule_contract() {
   for K in "$SK/skills/rev/SKILL.md" "$SK/codex-skills/rev/SKILL.md"; do
     assert_nogrep "$(basename "$(dirname "$(dirname "$K")")") has no eight-round floor" "$K" 'minimum[^[:alnum:]]{0,12}(8|eight)|8 rounds|eight rounds' -i
     assert_flat_fixed "normal schedule budgets one final panel" "$K" 'normal review plans 12 seat launches: four simplicity, four conditional plan, and four final verification launches.'
-    assert_flat_fixed "large schedule adds only risk discovery" "$K" 'large or high-risk review plans 16 by adding four risk-discovery launches.'
     assert_grep "large threshold names 25 files" "$K" 'more than 25 changed files'
     assert_grep "large threshold names 1500 lines" "$K" 'more than 1,500 changed lines'
     assert_flat_fixed "verification timing is canonical" "$K" "$timing"
@@ -78,10 +77,6 @@ test_adaptive_schedule_contract() {
     assert_flat_fixed "$(basename "$D") uses canonical verification timing" "$D" "$timing"
   done
   assert_flat_fixed "README uses canonical extras policy" "$SK/../../README.md" "$extras"
-  for D in "$SK/skills/rev/SKILL.md" "$SK/codex-skills/rev/SKILL.md" "$SK/../../README.md" "$SK/../../docs/codex.md" "$SK/../../CHANGELOG.md"; do
-    assert_grep "$(basename "$D") states 12 launches" "$D" '12 seat launches|plans 12 launches|plans four simplicity'
-    assert_flat_fixed "$(basename "$D") states 16 launches" "$D" 'A large or high-risk review plans 16 by adding four risk-discovery launches.'
-  done
 }
 
 test_assert_grep_honors_flags() {

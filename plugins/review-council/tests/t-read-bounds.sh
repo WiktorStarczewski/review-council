@@ -2259,7 +2259,7 @@ JSON
 }
 
 test_evidence_audit_failure_modes() {
-  ( seat_env; local S="$T/audit-failure-modes"; seat_roster "$S"
+  ( seat_env; local S="$T/audit-failure-malformed"; seat_roster "$S"
     cat > "$S/malformed-evidence.md" <<'EOF'
 Evidence manifest SHA-256: 000000000000000000000000000000000000000000000000000000000000000
 Assigned scope: semantic
@@ -2279,6 +2279,7 @@ EOF
     assert_nogrep "malformed evidence is never treated as legacy" \
       "$S/rmalformed-codex-sol.log" 'legacy review; result retained as advisory'
 
+    S="$T/audit-failure-full"; seat_roster "$S"
     cat > "$S/full-evidence.md" <<'EOF'
 Evidence manifest SHA-256: 0000000000000000000000000000000000000000000000000000000000000000
 Assigned scope: full
@@ -2296,6 +2297,7 @@ EOF
     assert_nogrep "full-scope evidence failure does not request a retry" \
       "$S/rfull-codex-sol.log" 'retry|rerun'
 
+    S="$T/audit-failure-legacy"; seat_roster "$S"
     printf 'Assigned scope: full\n' > "$S/legacy.md"
     SHIM_MODE=unbounded "$SCRIPTS/rev-seat.sh" codex-sol "$S" legacy "$S/legacy.md" \
       > "$T/legacy.out" 2>&1
@@ -2329,6 +2331,8 @@ SH
     local audit_mode
     for audit_mode in missing malformed inconsistent; do
       local audit_label="metadata-$audit_mode"
+      S="$T/audit-failure-$audit_label"; seat_roster "$S"
+      printf 'Assigned scope: full\n' > "$S/legacy.md"
       PATH="$audit_python:$real_python" REAL_PYTHON_PATH="$real_python" \
         AUDIT_SCRIPT="$SCRIPTS/lib/review-read-audit.py" AUDIT_SHIM_MODE="$audit_mode" \
         SHIM_MODE=unbounded "$SCRIPTS/rev-seat.sh" codex-sol "$S" "$audit_label" \
