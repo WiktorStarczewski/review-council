@@ -876,8 +876,8 @@ Full reference: [docs/config.md](docs/config.md).
 ## Development and release verification
 
 The bounded 0.4.4 operator sequence is documented in the [release procedure](docs/release.md).
-It uses the installed 0.4.3 bundle for N-1 review, a deterministic candidate gate,
-P0/P1-only repairs, and at most one clean delta generation.
+It uses a signed-tag 0.4.3 worktree for N-1 review, the existing deterministic
+candidate gate, P0/P1-only repairs, and at most one clean delta generation.
 
 Fast name-filtered shell tests:
 
@@ -906,7 +906,7 @@ checks command logs for terminal success, and publishes a hash-bound receipt onl
 every stage refers to the same source tree.
 
 Tests use local CLI shims and do not contact live provider accounts. Live compatibility
-checks use preserved provider-envelope replay and explicit certification runs.
+checks use preserved provider-envelope replay and the signed previous-stable review.
 
 Local Codex bundle:
 

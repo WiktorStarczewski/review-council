@@ -27,13 +27,13 @@
 - [x] Diagnose the unbounded self-host review loop and unreliable evidence-session boundaries.
 - [x] Compare the plugin release with the ordinary `/rev` population.
 - [x] Reject a global correction cap for a release-specific failure mode.
-- [x] Approve and document previous-stable review, deterministic candidate gates, and targeted canaries.
+- [x] Approve previous-stable review, the existing deterministic candidate gate, and a two-generation cap.
 - [x] Implement and re-review the session-wide hard-audit stop.
-- [x] Document the executable release sequence and add static release-documentation assertions.
-- [ ] Seal and serialize the four evidence-session inputs.
-- [ ] Promote composite red-team, compatibility, recovery, security, and integration coverage in normal panels.
-- [ ] Implement the two-generation previous-stable release authority.
-- [ ] Pressure-test both host skills and run the complete frozen-tree gate.
+- [x] Seal and serialize the four evidence-session inputs.
+- [x] Promote composite red-team, compatibility, recovery, security, and integration coverage in normal panels.
+- [x] Remove the custom release authority and document the signed-tag procedural lane.
+- [x] Pressure-test both host skills.
+- [ ] Repair the three stale shell fixtures and run the complete frozen-tree gate.
 - [ ] Run the stable 0.4.3 P0/P1-only release lane for 0.4.4.
 - [ ] Squash-merge PR #6, publish 0.4.4, reinstall, and verify fresh-session discovery.
 

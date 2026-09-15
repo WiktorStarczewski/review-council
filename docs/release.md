@@ -1,106 +1,92 @@
 # Review Council release procedure
 
-This is the operator sequence for certifying candidate `0.4.4` against the exact
-installed `0.4.3` bundle. The candidate is never its own reviewer: the stable
-`rev` skill and stable scripts perform the N-1 review, while candidate scripts are
-used only for the deterministic gate and final certification.
+Review candidate N with the signed source of stable N-1. The candidate supplies the
+deterministic gate and publication formatter, but never reviews or approves itself.
 
-## Release lane contract
+## Prepare the candidate and stable engine
 
-- Review candidate N with the verified previous stable N-1 bundle, tagged
-  `review-council--v0.4.3`.
-- Apply P0/P1-only repairs. P2 and P3 findings are recorded as deferred and never
-  block this release lane.
-- Allow a two-generation cap: generation 1 is the initial stable review; generation 2
-  is one stable read-only delta review after a repair. A nonclean second receipt ends
-  the lane. Do not launch generation 3.
-- Run the deterministic gate on the candidate tree and run targeted canaries against
-  the stable bundle for every changed boundary.
-- A clean certification receipt authorizes the later squash merge, signed tag, and
-  fresh-session discovery checks. Those publication and installation actions are
-  separate from certification.
-
-## Prepare and inspect the candidate
-
-Run from the candidate repository root on a clean checkout. Before trusting the N-1
-bundle or setting `STABLE_PLUGIN`, verify the signed stable tag and stop if signature
-verification fails:
+Start from a clean candidate commit with matching Claude and Codex manifest versions.
+Verify the stable tag before using any stable code:
 
 ```bash
+git status --short
 git verify-tag review-council--v0.4.3
+STABLE_PARENT=$(mktemp -d /tmp/review-council-stable.XXXXXX)
+STABLE_TREE="$STABLE_PARENT/review-council-0.4.3"
+git worktree add --detach "$STABLE_TREE" review-council--v0.4.3
+STABLE_PLUGIN="$STABLE_TREE/plugins/review-council"
 ```
 
-Only after that check, set `STABLE_PLUGIN` to the direct path of the installed, exact
-`0.4.3` plugin bundle. Keep the review session and receipt paths outside the
-repository, and make each receipt immutable after it is written.
+The release roster is exactly Sol, Terra, Opus, and Sonnet at maximum effort. Grok and
+Astra are excluded. Stop if a configured model is unavailable rather than substituting
+another model.
 
-First ask the release authority which canaries are required for the candidate:
-
-```bash
-python3 scripts/verify-release-lane.py requirements --root . \
-  --candidate-commit "$(git rev-parse HEAD)" \
-  --stable-tag review-council--v0.4.3
-```
-
-Run every returned canary with `run-canary`, using the stable bundle's scripts and
-recording each receipt before certification. The `host-claude` and `host-codex`
-receipts are required when their host skill boundaries changed.
-
-Run the candidate's deterministic verifier once over the same clean tree:
+Run the existing deterministic candidate gate:
 
 ```bash
 python3 scripts/verify-review-council.py --root .
 ```
 
-The verifier receipt must be retained as `$VERIFY_RECEIPT`. A failed or incomplete
-gate stops the lane and is fixed before another review generation.
+Any failure stops the release until the candidate is fixed and the complete gate passes.
 
-## Stable N-1 review and receipts
+## Run the stable review
 
-Launch one complete read-only review with the exact installed `0.4.3` bundle. The
-reviewer must not load the candidate's scripts, skills, or receipts. The review covers
-all four composite assignments and is the candidate non-self-review boundary.
+Load and follow `$STABLE_PLUGIN/codex-skills/rev/SKILL.md` with
+`REVIEW_COUNCIL_HOST=codex` on every runner invocation. Review the candidate read-only
+and keep the session outside both worktrees. Use one four-seat panel with these composite
+assignments:
 
-Immediately after each stable read-only review, before another review launch, record
-its decision from the session artifacts:
+1. correctness and boundaries, plus attacker behavior and trust boundaries;
+2. security, state, and API, plus rollback and recovery;
+3. concurrency, resources, and performance, plus duplication and exhaustion;
+4. tests, observability, and regression, plus compatibility and integration.
 
-```bash
-python3 scripts/verify-release-lane.py record-review --root . \
-  --candidate-commit "$(git rev-parse HEAD)" \
-  --stable-plugin "$STABLE_PLUGIN" \
-  --stable-tag review-council--v0.4.3 \
-  --session "$REVIEW_SESSION" \
-  --new-p0 "$NEW_P0" --new-p1 "$NEW_P1" \
-  --open-p0 "$OPEN_P0" --open-p1 "$OPEN_P1" \
-  --out "$REVIEW_RECEIPT"
-```
+Require valid results, audits, coverage, profiling, and a final report. Verify every
+claim against candidate source. Only verified P0 and P1 findings may change or block
+this release. Record P2 and P3 findings for follow-up without expanding the release.
 
-The first receipt is either clean or authorizes P0/P1-only repairs. If it authorizes
-repairs, apply them, rerun the deterministic gate and affected targeted canaries, then
-launch exactly one stable read-only delta review on the new candidate commit. Record
-generation 2 immediately. A nonclean second receipt, an infrastructure-blocked
-receipt, or any new P0/P1 after generation 2 ends the lane without certification.
+If the first review has no verified P0/P1, do not run another review. If it has a
+verified P0/P1, add a regression, apply the minimal repair, commit it, rerun the complete
+candidate gate, and run exactly one stable read-only delta review. The delta covers the
+repair, prior P0/P1 decisions, and one full-state integration assignment. Stop if that
+review has a new or open P0/P1. Never launch a third generation.
 
-## Certify the candidate
+An invalid audit, missing result, provider failure, or unavailable configured model ends
+the current release attempt. It does not authorize a broader panel or candidate-powered
+review.
 
-With one clean receipt, use `$FINAL_REVIEW_RECEIPT`; with a repair followed by a clean
-delta, use the two receipts in order as repeated `--review` arguments. The final
-candidate must still equal `HEAD`, and all receipts must identify the same stable tag,
-candidate tree, verifier receipt, and canary set.
+## Publish, merge, and release
+
+After the stable decision is clean, build `pr-review.json` from the verified decisions
+and stable session artifacts according to [the PR review contract](../plugins/review-council/docs/pr-review.md).
+Render and publish the canonical review on the open pull request:
 
 ```bash
-python3 scripts/verify-release-lane.py certify --root . \
-  --candidate-commit "$(git rev-parse HEAD)" \
-  --stable-plugin "$STABLE_PLUGIN" \
-  --stable-tag review-council--v0.4.3 \
-  --review "$FINAL_REVIEW_RECEIPT" \
-  --verification-receipt "$VERIFY_RECEIPT" \
-  --canary host-claude="$CLAUDE_CANARY" \
-  --canary host-codex="$CODEX_CANARY" \
-  --out "$RELEASE_RECEIPT"
+python3 plugins/review-council/scripts/rev-pr-review.py render "$REVIEW_SESSION"
+python3 plugins/review-council/scripts/rev-pr-review.py publish "$REVIEW_SESSION"
 ```
 
-Certification is the deterministic release gate. It must be clean before the later
-squash merge. After the merge, verify the signed tag and then perform fresh-session
-discovery for both hosts: each must discover `rev` and `stack`, report version `0.4.4`,
-and match the released file and mode identity.
+Read back the GitHub review and require the rendered body and reviewed commit to match.
+Then push the candidate, wait for required CI, and squash-merge the pull request.
+
+From a clean checkout of the merged commit, publish the signed release:
+
+```bash
+git tag -s review-council--v0.4.4 -m "review-council 0.4.4" "$MERGE_COMMIT"
+git push origin review-council--v0.4.4
+git verify-tag review-council--v0.4.4
+gh release create review-council--v0.4.4 --verify-tag \
+  --title "review-council 0.4.4" --generate-notes
+```
+
+Reinstall `review-council@review-council`. In fresh Claude and Codex sessions, require
+both hosts to discover `rev` and `stack` at version `0.4.4`, and compare installed file
+and mode identity with the released tag.
+
+Finally remove the stable worktree while preserving external review and verifier
+artifacts:
+
+```bash
+git worktree remove "$STABLE_TREE"
+rmdir "$STABLE_PARENT"
+```
