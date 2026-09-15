@@ -1,265 +1,192 @@
-# Review Council Stable Release Lane Design
+# Review Council Procedural Stable Release Lane Design
 
 ## Goal
 
-Keep ordinary Review Council reviews adaptive while making Review Council's own
-releases bounded, independently reviewed, and reproducible. The candidate plugin must
-never certify the reviewer machinery that is deciding whether that candidate may ship.
+Release Review Council without letting a candidate review itself and without building a
+second review platform. Candidate releases use the existing deterministic verifier and a
+short operator procedure driven by the signed previous-stable tag.
 
-The repair also keeps three generally useful improvements discovered during the
-incident: a session-wide hard-audit stop, immutable evidence-session inputs, and more
-adversarial coverage inside normal panels.
+Ordinary Review Council behavior remains adaptive. The session-wide hard-audit stop,
+immutable evidence-session inputs, promoted adversarial coverage, and canonical GitHub
+review publication remain part of 0.4.4.
 
 ## Incident finding
 
-The 0.4.4 feature-to-release path spent 15 hours 27 minutes across 26 panel
-generations, 89 paid calls, and 128,164,553 processed tokens. The complete frozen-tree
-gate took about 10 minutes and was stable. Most avoidable time came from the candidate
-reviewing changes to its own prompt, audit, evidence, and orchestration machinery,
-then reviewing the repairs created by those reviews.
+The original 0.4.4 review path became a self-amplifying loop. The first correction then
+introduced a separate 2,870-line release authority that validated stable installations,
+translated review and canary receipts, and composed a final certificate. That control
+plane took longer to build and review than the release behavior it governed.
 
-Ordinary `/rev` runs did not show the same median behavior. Their median was four
-panels and about 2.84 hours, although some outliers existed. A global two-generation
-convergence controller would therefore optimize the exceptional self-host release
-case by constraining a generally healthy review workflow.
+The existing frozen-tree verifier already supplies the deterministic candidate proof.
+The signed previous-stable tag already supplies the independent review engine. A custom
+authority between those boundaries duplicates both systems without improving the release
+decision enough to justify its surface.
 
 ## Chosen architecture
 
-Use two different policies:
+Use a procedural bootstrapping lane:
 
-1. Ordinary review keeps the current adaptive and numeric schedules. It gains the
-   general safety and review-coverage improvements in this design, but no new global
-   correction cap or publication receipt.
-2. Review Council releases use a dedicated stateful lane. The installed previous
-   stable release reviews the candidate read-only. Candidate code runs deterministic
-   gates and only the runtime canaries selected by changed subsystem paths.
+1. Verify the signature on the previous-stable tag.
+2. Materialize that exact tag in a temporary detached worktree.
+3. Run the candidate's existing frozen-tree verifier.
+4. Use the stable worktree's review skill and scripts for one complete read-only P0/P1
+   review of the candidate.
+5. If verified P0/P1 repairs are required, rerun the verifier and allow exactly one
+   stable delta review.
+6. Stop if the delta has a new or open P0/P1 or if either review is incomplete.
+7. Publish the canonical review on the pull request, wait for CI, squash-merge, sign and
+   publish the release tag, reinstall, and verify fresh-session discovery.
 
-The release lane permits one initial stable review generation and, only after verified
-P0/P1 repairs, one stable delta generation. A remaining P0/P1 or infrastructure failure
-blocks the release. It never creates a third review generation under another label.
+There is no release authority script, mutable release database, custom review-receipt
+translation, canary-receipt format, or final release certificate.
 
-## Global safety improvements
+## Stable engine boundary
 
-### Session-wide hard-audit stop
+The stable review engine comes directly from the signed tag, not from a cache whose
+identity must be reconstructed.
 
-A hard evidence-audit failure writes an immutable session marker under the existing
-attempt lock. Every later `check` and `reserve`, regardless of panel label, reads that
-marker before creating a provider reservation. Existing production
-`r*-*.read-audit.json` hard failures also stop legacy sessions.
+For 0.4.4, the previous stable tag is `review-council--v0.4.3`. The operator runs
+`git verify-tag review-council--v0.4.3` before creating a detached worktree at that tag.
+Review prompts, provider launchers, evidence builders, and receipt validators all come
+from that worktree.
 
-Seats already reserved may finish or be canceled. No unreserved seat may start. The
-diagnostic requires a fresh review session and preserves every invalid result, audit,
-stream, and sibling receipt.
+The review target remains the candidate checkout. Stable scripts may read candidate
+source and write session artifacts outside both worktrees. Candidate review scripts do
+not make or certify the release decision.
 
-### Immutable session inputs
+The release roster is exactly Sol, Terra, Opus, and Sonnet at maximum effort. Grok and
+Astra remain excluded. An unavailable configured model is a blocker rather than an
+implicit substitution.
 
-The four session inputs are `scope.env`, `roster.json`, `files.txt`, and
-`untracked.txt`. Preflight stages all four and installs them while holding one
-session-input lock. Any evidence manifest, including a malformed one, seals them.
+## Candidate boundary
 
-`rev-evidence.py prepare` holds the same lock from its first input read through
-manifest publication. Input installation therefore finishes before evidence capture
-or fails after the manifest seals the prior complete generation. A manifest cannot
-bind a mixed input set.
-
-An initialized session reuses its complete inputs without another provider probe.
-Partial or unsafe inputs stop incomplete. Quota fallback keeps using a fresh sibling
-session.
-
-### Promoted adversarial coverage
-
-Every code panel assigns one existing seat a composite red-team emphasis. This adds no
-provider call and never replaces the seat's canonical lens or bundle.
-
-The verification owner always traces the cumulative change through consumers and
-integration boundaries. Other emphases are composed when relevant:
-
-- compatibility and consumer contracts for public APIs, protocols, schemas,
-  serialization, CLI output, and cross-repository interfaces;
-- recovery and idempotency for persistence, external writes, migrations, retries,
-  concurrency, CI orchestration, and partial failure;
-- security and trust boundaries for authentication, authorization, signatures,
-  secrets, untrusted input, and privilege changes.
-
-Large, high-risk, user-marked-important, or explicitly adversarial adaptive reviews
-run exactly one full red-team panel before planning. A change is high-risk when it crosses a security, persistence,
-concurrency, transaction, protocol, public API, or irreversible mutation boundary.
-Explicit numeric schedules do not silently gain another panel, but their final code
-panel still contains the composite red-team assignment.
-
-## Stable release lane
-
-### Engine boundary
-
-Release candidate N is reviewed only by an installed copy of stable release N-1. The
-lane verifies all of the following before accepting a review artifact:
-
-- the stable tag is an annotated tag whose signature passes `git verify-tag`;
-- the stable tag resolves to the commit named by the lane;
-- the installed stable plugin's regular files, symlinks, and executable modes exactly
-  match `plugins/review-council` in that tag;
-- both installed plugin manifests name the stable version;
-- the stable contract receipt identifies that installed plugin path, its runner hash,
-  provider CLI versions, exact ordered roster, touched candidate boundaries, and
-  candidate boundary hashes.
-
-Version strings alone are never engine identity. A cachebuster suffix may be ignored
-only in a generated version field when the installed bundle otherwise matches the tag.
-The 0.4.3 Codex cache currently matches the signed 0.4.3 tag byte for byte, so no
-exception is needed for this release.
-
-### Candidate boundary
-
-Every release generation names an exact candidate commit. The candidate worktree must
-be clean, `HEAD` must equal that commit, and both plugin manifests must carry the same
-candidate version. The candidate version must be greater than the stable version and
-must correspond to the release tag name.
-
-The candidate identity includes the commit, Git tree, full frozen-tree key used by
-`verify-review-council.py`, and hashes and modes for every path changed from N-1.
-
-### Two generations
-
-Generation 1 is one read-only stable review of the complete candidate. Its four seats
-cover the four verification bundles, with these adversarial compositions:
-
-1. correctness and boundaries plus attacker behavior and trust boundaries;
-2. security, state, and API plus rollback and recovery;
-3. concurrency, resources, and performance plus duplication and exhaustion;
-4. tests, observability, and regression plus consumer compatibility and integration.
-
-The orchestrator verifies every finding against candidate source. Only verified P0 and
-P1 findings may change the release candidate. P2 and P3 are recorded for later and do
-not expand the release scope.
-
-If generation 1 has no verified P0/P1, its reviewed tree is the final review tree and
-the lane needs no second generation. If P0/P1 repairs change the tree, generation 2 is
-one read-only stable delta review. It receives the repair delta, prior P0/P1 decisions,
-and one full-state integration assignment. If generation 2 has a new or open P0/P1,
-the lane records `blocked`. The release must be redesigned or started as a new lane;
-the current lane cannot authorize another panel.
-
-Provider execution, evidence, or hard-audit failure records `infrastructure-blocked`.
-It is not a product finding and does not authorize a retry or a broader panel in the
-same lane.
-
-### Deterministic candidate gate
-
-The final candidate runs:
+The candidate is a clean commit with matching Claude and Codex manifest versions. Its
+deterministic gate is the existing command:
 
 ```text
 python3 scripts/verify-review-council.py --root .
 ```
 
-The release lane validates the verifier receipt rather than trusting terminal prose.
-It recomputes the frozen source key from the clean final commit, verifies the receipt
-identity and key, and verifies every command log is regular, hash-matching, complete,
-and exit 0. The exact candidate tree may reuse an existing valid receipt.
+That verifier freezes one source tree, reconciles the shell-test inventory, runs shell
+and Python suites, builds the Codex bundle, validates plugin manifests and static
+contracts, checks command logs, and emits its existing hash-bound receipt. No second
+program revalidates or wraps that receipt.
 
-### Targeted canaries
+CI runs the same verifier on macOS and Linux. Local verification proves the candidate
+before review; hosted CI proves the pushed branch before merge.
 
-Canaries prove only runtime boundaries whose candidate implementation changed. They do
-not review the candidate and cannot create product findings. Each canary receipt binds
-the canary ID, the hashes and modes of its trigger paths, the command, an exit-0 log,
-and any referenced evidence artifacts. A receipt remains reusable across unrelated
-commits while its trigger-path identities stay exact.
+## Review generations
 
-The initial trigger matrix is:
+Generation 1 is one complete read-only review using the stable worktree. The four seats
+cover these composite assignments:
 
-| Canary ID | Changed path trigger | Runtime proof |
-| --- | --- | --- |
-| `provider-codex` | `scripts/seats.d/codex.sh`, or shared read-audit and stream parsing | one Codex adapter envelope and valid evidence audit |
-| `provider-claude` | `scripts/seats.d/claude.sh`, or shared read-audit and stream parsing | one Claude adapter envelope and valid evidence audit |
-| `provider-gemini` | `scripts/seats.d/gemini.sh`, or shared read-audit and stream parsing | one Gemini adapter envelope and valid evidence audit |
-| `github-publication` | `rev-pr-review.py`, `stack.sh`, or `docs/pr-review.md` | one disposable pending-to-commented transaction or an exact hash-bound replay when GitHub behavior was not changed |
-| `host-claude` | `skills/rev/**`, `skills/stack/**`, `POLICY.md`, or Claude hooks | behavioral pressure test with the candidate Claude skill loaded |
-| `host-codex` | `codex-skills/rev/**` or `codex-skills/stack/**` | behavioral pressure test with the candidate Codex skill loaded |
+1. correctness and boundaries, plus attacker behavior and trust boundaries;
+2. security, state, and API, plus rollback and recovery;
+3. concurrency, resources, and performance, plus duplication and exhaustion;
+4. tests, observability, and regression, plus compatibility and integration.
 
-Provider adapter files always require their provider canary. Shared auditor or stream
-parser changes require one canary for each configured live adapter. Other provider
-orchestration changes use the existing preserved-envelope contract replay unless that
-replay cannot establish the newly exposed model-visible behavior.
+Every finding is verified against candidate source. Only verified P0 and P1 findings
+may change or block this release. P2 and P3 findings are recorded for follow-up and do
+not expand the release.
 
-The matrix is fail closed. A triggering path without a known canary mapping or a
-missing, failed, malformed, stale, or mismatched required receipt blocks certification.
+If generation 1 is clean, no second review runs. If P0/P1 repairs change the candidate,
+the deterministic verifier runs again and generation 2 reviews the exact repair delta,
+prior P0/P1 decisions, and one full-state integration assignment. Generation 2 is the
+last permitted review. A new or open P0/P1 stops the release.
 
-## Release authority
+An incomplete roster, invalid audit, provider failure, or missing receipt stops the
+current release attempt. It does not authorize a broader panel or a third generation.
 
-Add `scripts/verify-release-lane.py` with these public commands:
+## Runtime proof
 
-```text
-verify-release-lane.py requirements --root ROOT --candidate-commit SHA --stable-tag TAG
-verify-release-lane.py record-review --root ROOT --candidate-commit SHA --stable-plugin PATH --stable-tag TAG --session SESSION --new-p0 N --new-p1 N --open-p0 N --open-p1 N --out RECEIPT
-verify-release-lane.py run-canary --root ROOT --stable-tag TAG --id ID --out RECEIPT -- COMMAND [ARG ...]
-verify-release-lane.py certify --root ROOT --candidate-commit SHA --stable-plugin PATH --stable-tag TAG --review RECEIPT [--review RECEIPT] --verification-receipt PATH --canary ID=PATH --out RECEIPT
-```
+The release does not precompute a changed-path canary matrix or create custom canary
+receipts.
 
-`requirements` validates the clean candidate identity and prints the changed-path
-canary set as canonical JSON. It writes nothing.
+Runtime behavior is proved at the natural boundaries:
 
-`record-review` invokes the installed stable engine's
-`scripts/rev-contract-check.py --verify-only` against the session, validates the
-session coverage receipt and source tree, records the supplied P0/P1 decision counts,
-and writes one immutable decision receipt for that reviewed commit.
+- host workflow behavior is covered by the candidate test suite and the stable review;
+- GitHub publication is exercised by posting the actual canonical review to the release
+  pull request after the stable decision is clean;
+- installation is exercised after publication by installing the tagged release;
+- fresh Claude and Codex sessions must discover `rev` and `stack` at version `0.4.4`.
 
-P0/P1 counts are explicit host decisions because severity and source verification are
-orchestrator responsibilities. `record-review` also requires the session findings and
-state artifacts to be hash-bound, so the decision cannot later be paired with different
-review bytes.
+The candidate publication code formats and transmits the already-made stable review
+decision. It does not act as a reviewer or authorize the release.
 
-`run-canary` accepts only a canary ID selected by the current changed paths, runs the
-argument vector without a shell, captures a bounded log, and writes a receipt only for
-exit 0. It binds the current trigger path identities. It may run before unrelated final
-commits without becoming stale.
+## Release sequence
 
-`certify` requires a clean final candidate, the latest review generation to be clean on
-that exact Git tree, a valid deterministic verifier receipt, every required current
-canary, no extra unknown canary, and no session-wide audit stop. It accepts one or two
-review decision receipts and rejects any other count. One clean initial receipt
-certifies directly. A nonclean initial receipt requires one later clean receipt on a
-different candidate commit; a nonclean second receipt blocks certification. This makes
-a third generation structurally unrepresentable without maintaining another mutable
-orchestration database. It writes one immutable `release-receipt.json`. It never
-pushes, publishes, tags, merges, or installs.
+The operator checklist is authoritative and intentionally short:
 
-Review records, canary receipts, and the final receipt use canonical JSON,
-same-directory atomic publication, regular one-link file validation, and collision
-refusal.
+1. Confirm a clean candidate commit and matching `0.4.4` manifests.
+2. Verify the signed `review-council--v0.4.3` tag.
+3. Create a temporary detached worktree at that tag.
+4. Run the existing candidate verifier.
+5. Run generation 1 with the stable worktree and exact four-seat roster.
+6. Apply only verified P0/P1 repairs. If repairs occur, rerun the verifier and run one
+   delta generation.
+7. Publish the canonical review on the pull request exactly once.
+8. Push, wait for required CI, and squash-merge.
+9. Create and verify the signed `review-council--v0.4.4` tag, then publish the release.
+10. Reinstall 0.4.4 and verify fresh-session discovery on both hosts.
+11. Remove the temporary stable worktree.
 
-## Publication and installation
+Session artifacts and verifier receipts stay outside the candidate repository. They are
+diagnostic evidence, not inputs to another authority.
 
-After certification, the normal human-authorized sequence remains:
+## Failure handling
 
-1. push the feature branch and wait for green CI;
-2. squash-merge the PR;
-3. verify version and changelog from the merged commit;
-4. create and verify the signed release tag;
-5. publish the GitHub release;
-6. update the local plugin cache through the plugin-creator install flow;
-7. start a fresh host session and verify discovery.
+- Invalid previous-stable signature: stop before review.
+- Dirty candidate or mismatched manifests: stop before verification.
+- Deterministic verifier failure: fix the candidate and restart from verification.
+- Initial review P0/P1: repair once, reverify, and run the one delta generation.
+- Delta review P0/P1: stop the release.
+- Review infrastructure failure: stop the release attempt without widening or silently
+  substituting the roster.
+- GitHub publication failure: preserve the existing durable retry state and use its exact
+  retry command without rerunning the review.
+- CI failure: diagnose and fix before merge.
+- Installation or discovery failure: keep the published evidence and repair through a
+  new release rather than mutating the tag.
 
-Post-release discovery is a smoke check, not another release review generation. A P0
-or P1 found after publication causes a follow-up release or yank decision. It never
-rewrites the already published candidate in place.
+## Removed subsystem
 
-## Compatibility and non-goals
+Delete these authority-only files:
 
-- Ordinary adaptive, numeric, read-only, document, and stack convergence rules remain
-  unchanged except for the global safety and composite red-team additions above.
-- No generic `rev-convergence.py` is added.
-- PR review rendering and publication keep the canonical badge, headings, tip,
-  decisions section, and collapsible sections exactly as already implemented.
-- Existing release artifacts remain readable. Only new releases use the lane state.
-- The lane does not decide whether a finding is true or assign severity.
-- The lane does not grant push, merge, tag, release, or installation authority.
+- `scripts/verify-release-lane.py`
+- `tests/test_release_lane.py`
 
-## Tests
+Rewrite these references around the procedural lane:
 
-Every behavior change follows red-green TDD. Focused tests cover hard-stop races,
-session-input sealing and lock order, composite red-team wording, stable engine byte
-and mode identity, signed-tag and version mismatches, dirty or moved candidates,
-review-generation limits, stable contract and coverage tampering, deterministic
-receipt and log validation, canary selection and staleness, output collisions, and
-final certification.
+- `docs/release.md`
+- `README.md`
+- `CHANGELOG.md`
+- `tasks/todo.md`
+- this design and its implementation plan
 
-The complete frozen-tree verifier remains the final deterministic gate.
+No production module imports or invokes the deleted authority, so removal needs no
+compatibility layer or migration.
+
+## Verification strategy
+
+Do not add a brittle test that asserts documentation prose or merely checks that deleted
+files remain absent.
+
+Verification consists of:
+
+- correcting the three already-red stale shell fixtures;
+- running their focused tests to green;
+- scanning the tracked tree for remaining `verify-release-lane` references;
+- running the complete existing frozen-tree verifier;
+- running the stable signed-tag review with P0/P1 as the release threshold;
+- verifying the actual GitHub publication, CI, signed tag, installation, and fresh-session
+  discovery at their natural release boundaries.
+
+## Success criteria
+
+- The 2,870-line authority and its custom receipt formats are gone.
+- No tracked file invokes or documents `verify-release-lane.py`.
+- Ordinary review safety and adversarial-coverage improvements remain.
+- The complete deterministic gate passes without errors.
+- The signed 0.4.3 worktree produces a complete release review with no open P0/P1.
+- PR publication, CI, squash merge, signed 0.4.4 tag, reinstall, and discovery all
+  complete without using candidate review code as the release decision-maker.
