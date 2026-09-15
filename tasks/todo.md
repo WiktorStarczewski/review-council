@@ -1,5 +1,40 @@
 # Token-Efficient Review Council
 
+## 0.4.4 elapsed-time diagnosis
+
+- [x] Stop the release path and verify no current-session reviewer or verifier remains active.
+- [x] Reconstruct wall time from commits, session artifacts, attempts, and receipts.
+- [x] Classify each delay as legitimate P0/P1 discovery, test/gate failure, audit failure, retry, or repeated work.
+- [x] Compare this run with the plugin's measured self-review churn pattern.
+- [x] Identify the smallest root-cause set and report evidence before proposing changes.
+
+### Diagnosis review
+
+- The feature-to-final-gate interval was 15 hours 27 minutes. Reviewer panels occupied
+  6 hours 24 minutes, including 2 hours 30 minutes in incomplete panels.
+- The 26 panel generations made 89 paid calls and processed 128,164,553 tokens. Ten panels
+  were incomplete, and 14 paid calls did not produce a certifying result.
+- The deterministic full gate is slow but stable: the final run passed 229 shell tasks,
+  3,723 assertions, 89 Python tests, and all validators in about 10 minutes.
+- Review work added 4,146 lines after the initial 902-line feature. Of 690 later-removed
+  production and documentation lines, 510, or 73.9 percent, came from earlier review fixes.
+- The primary cause is a self-amplifying review-and-fix loop. Scope expansion created real
+  transaction bugs, brittle evidence audits wasted panel time, and severity policy made each
+  new repair trigger another expensive certification cycle.
+
+## 0.4.4 convergence repair
+
+- [x] Diagnose the unbounded loop and unreliable evidence-session boundaries.
+- [x] Compare contract-only, deterministic circuit-breaker, and runner-rewrite approaches.
+- [x] Get approval for the deterministic circuit-breaker design.
+- [x] Write and self-review the architectural design.
+- [x] Get approval for the written design specification.
+- [x] Write the TDD implementation plan.
+- [ ] Implement immutable session inputs and the session-wide audit stop.
+- [ ] Implement convergence authorization, triage, certification, and completion gating.
+- [ ] Pressure-test both host skills and run the complete frozen-tree gate.
+- [ ] Run one bounded P0/P1 council panel, release 0.4.4, reinstall, and verify discovery.
+
 ## 0.4.4 PR review publication
 
 - [x] Capture the canonical PR #3856 review template and approve the behavior.

@@ -120,15 +120,22 @@ immutable per-panel authorization and triage receipts.
 The public commands are:
 
 ```text
-rev-convergence.py init SESSION --mode adaptive|numeric|read-only [--min-rounds N]
+rev-convergence.py init SESSION --mode adaptive|numeric|read-only [--min-rounds N] [--full-red-team REASON]
+rev-convergence.py init-fallback CHILD_SESSION --parent-session PARENT_SESSION --authorization PATH
 rev-convergence.py authorize SESSION LABEL --kind discovery|risk|red-team|plan|verification|repair --manifest PATH
 rev-convergence.py record SESSION LABEL --coverage-receipt PATH --new-p0 N --new-p1 N --open-p0 N --open-p1 N --origin-original N --origin-fix-of-fix N --origin-unknown N --origin-infrastructure N
 rev-convergence.py certify SESSION
 rev-convergence.py status SESSION
 ```
 
-`init` is idempotent only for the exact same mode and numeric minimum. A mismatch
-fails closed.
+`init` is idempotent only for the exact same mode, numeric minimum, and full-red-team
+reason. A mismatch fails closed.
+
+`--full-red-team` records the nonempty, single-line high-risk, large, important, or
+explicit trigger selected by the host. Without that initialization field, a full
+red-team panel is not authorized. `init-fallback` binds a fresh quota-fallback sibling
+to the parent session identity, authorization, panel kind, generation, and existing
+same-source proof. It cannot create a new semantic allowance.
 
 `authorize` validates the manifest label, phase, snapshot tree, input hashes, and
 session identity. It writes `r<LABEL>-convergence.authorization.json` once. An exact
@@ -162,6 +169,10 @@ The second verification records `clean`, `infrastructure-blocked`, or
 `certify` requires the latest verification decision to be `clean`, zero open P0/P1,
 the latest `coverage-head.json` to match that verification, and no session-wide audit
 stop. It writes immutable `convergence.receipt.json`.
+
+Read-only review instead writes a `reported` convergence receipt after its requested
+coverage completes. It may retain open findings, never claims a clean fixed tree, and
+cannot authorize a plan or repair generation.
 
 `rev-prompt.sh` and `rev-seat.sh` validate the matching authorization before a paid
 adaptive launch. This prevents a relabeled third plan or verification panel even if

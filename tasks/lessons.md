@@ -225,3 +225,4 @@
 - Once an assigned patch is fully byte-proven, a final out-of-range read adds no review evidence and should remain an advisory. The identical read before complete proof stays fatal.
 - For long release convergence, give an hourly checkpoint with concrete artifacts, open blockers, and bounded remaining gates. If an hour passes without source-changing progress, stop and reassess before launching another paid panel.
 - After the user explicitly overrides an incomplete review gate, record the exact waived seat and preserved evidence, then continue to the next meaningful certification. Do not relaunch the failed panel or let the waiver erase valid sibling results.
+- When a small feature spends hours in self-certification, stop before another panel. Reconstruct elapsed time by category and test whether the process is finding independent product defects or repeatedly auditing and repairing its own review infrastructure.
