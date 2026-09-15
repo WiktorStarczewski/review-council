@@ -18,11 +18,41 @@ test_stack() {
     cat > "$RS/rev-pr-review.py" <<'PY'
 import os
 from pathlib import Path
+import shlex
+import subprocess
 import sys
 
+command = sys.argv[1]
+session = Path(sys.argv[2])
+values = {}
+scope = session / 'scope.env'
+if scope.is_file():
+    for line in scope.read_text().splitlines():
+        if '=' in line:
+            key, value = line.split('=', 1)
+            parsed = shlex.split(value)
+            if len(parsed) == 1:
+                values[key] = parsed[0]
+root = values.get('REV_ROOT')
+local = remote = '-'
+if root:
+    local = subprocess.check_output(['git', '-C', root, 'rev-parse', 'HEAD'], text=True).strip()
+    branch = values.get('REV_BRANCH') or subprocess.check_output(
+        ['git', '-C', root, 'branch', '--show-current'], text=True).strip()
+    result = subprocess.run(
+        ['git', '-C', root, 'ls-remote', 'origin', f'refs/heads/{branch}'],
+        text=True, capture_output=True)
+    if result.returncode == 0 and result.stdout.strip():
+        remote = result.stdout.split()[0]
 with Path(os.environ['STACK_PUBLISH_CALLS']).open('a') as stream:
-    stream.write(' '.join(sys.argv[1:]) + '\n')
-raise SystemExit(int(os.environ.get('STACK_PUBLISH_RC', '0')))
+    stream.write(' '.join(sys.argv[1:]) + f' local={local} remote={remote}\n')
+if command == 'publish' and os.environ.get('STACK_REQUIRE_SYNC') == '1' and local != remote:
+    raise SystemExit(9)
+if command == 'finalize-stack':
+    raise SystemExit(int(os.environ.get('STACK_FINALIZE_RC', '0')))
+if command == 'publish':
+    raise SystemExit(int(os.environ.get('STACK_PUBLISH_RC', '0')))
+raise SystemExit(0)
 PY
     cat > "$RS/roster.sh" <<'RSEOF'
 #!/bin/bash
@@ -69,19 +99,17 @@ RSEOF
     assert_exit "REV_ACTIVE refuses" 1 env REV_ACTIVE=1 "$STACK/stack.sh" "$T/stack.cfg"
     assert_exit "missing config refuses" 1 "$STACK/stack.sh"
     local RP="$T/stk-publish"; mkrepo "$RP"; git -C "$RP" checkout -qb feat
-    echo p > "$RP/p.txt"; git -C "$RP" add p.txt; git -C "$RP" commit -qm "feat: publish"
     git init -q --bare "$T/stk-publish-remote.git"
     git -C "$RP" remote add origin "$T/stk-publish-remote.git"
     git -C "$RP" push -q -u origin feat
+    echo p > "$RP/p.txt"; git -C "$RP" add p.txt; git -C "$RP" commit -qm "fix(rev): publish"
     printf 'legs() { run_leg "%s" 1 legpub "publish premise"; }\n' "$RP" > "$T/stack-publish.cfg"
     export ROOT="$T/stack-publish-root" LOG="$T/stack-publish.log" PASSES=1 NO_PUSH=0 NO_SQUASH=1
-    export STACK_PUBLISH_CALLS="$T/stack-publish.calls"
+    export STACK_PUBLISH_CALLS="$T/stack-publish.calls" STACK_REQUIRE_SYNC=1
     SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-publish.cfg" > "$T/stack-publish.out" 2>&1
     assert_eq "completed pushed stack publishes PR review" "$?" 0
     assert_grep "stack publisher receives the completed session" "$STACK_PUBLISH_CALLS" \
-      "^publish $ROOT/legpub$"
-    assert_grep "stack publishes after its push phase" "$LOG" \
-      '^.*PUBLISH - PR review per completed session'
+      "^publish $ROOT/legpub local=([0-9a-f]{40}) remote=\\1$"
 
     export ROOT="$T/stack-publish-fail-root" LOG="$T/stack-publish-fail.log" STACK_PUBLISH_RC=1
     SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-publish.cfg" > "$T/stack-publish-fail.out" 2>&1
@@ -91,7 +119,49 @@ RSEOF
     assert_nogrep "failed stack publication never reports completion" "$LOG" \
       'ALL PHASES COMPLETE'
     unset STACK_PUBLISH_RC
+
+    echo later > "$RP/later.txt"; git -C "$RP" add later.txt
+    git -C "$RP" commit -qm 'fix(rev): rejected push'
+    mkdir -p "$T/stk-publish-remote.git/hooks"
+    cat > "$T/stk-publish-remote.git/hooks/pre-receive" <<'SH'
+#!/bin/sh
+exit 1
+SH
+    chmod +x "$T/stk-publish-remote.git/hooks/pre-receive"
+    export ROOT="$T/stack-push-fail-root" LOG="$T/stack-push-fail.log"
+    : > "$STACK_PUBLISH_CALLS"
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-publish.cfg" > "$T/stack-push-fail.out" 2>&1
+    assert_eq "failed stack push fails the workflow" "$?" 1
+    assert_nogrep "failed stack push invokes no publisher" "$STACK_PUBLISH_CALLS" '^publish '
+    assert_grep "failed stack push is terminal" "$LOG" 'COMPLETE WITH FAILURES'
+    assert_nogrep "failed stack push never reports completion" "$LOG" 'ALL PHASES COMPLETE'
+
+    local RSQ="$T/stk-squash"; mkrepo "$RSQ"; git -C "$RSQ" checkout -qb feat
+    git init -q --bare "$T/stk-squash-remote.git"
+    git -C "$RSQ" remote add origin "$T/stk-squash-remote.git"
+    git -C "$RSQ" push -q -u origin feat
+    for i in 1 2; do echo "$i" > "$RSQ/s$i.txt"; git -C "$RSQ" add "s$i.txt"; git -C "$RSQ" commit -qm "fix(rev): squash $i"; done
+    printf 'legs() { run_leg "%s" 1 legsquash "squash premise"; }\n' "$RSQ" > "$T/stack-squash.cfg"
+    export ROOT="$T/stack-squash-root" LOG="$T/stack-squash.log" NO_SQUASH=0
+    export STACK_PUBLISH_CALLS="$T/stack-squash.calls" STACK_FINALIZE_RC=1
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-squash.cfg" > "$T/stack-squash.out" 2>&1
+    assert_eq "failed stack finalization fails the workflow" "$?" 1
+    assert_exit "failed stack finalization preserves its recovery map" 0 \
+      test -s "$ROOT/squash-map.tsv"
+    assert_nogrep "failed stack finalization does not publish" "$STACK_PUBLISH_CALLS" '^publish '
+    unset STACK_FINALIZE_RC
+    : > "$STACK_PUBLISH_CALLS"
+    SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-squash.cfg" > "$T/stack-squash-retry.out" 2>&1
+    assert_eq "stack finalization retry publishes" "$?" 0
+    assert_grep "stack finalizes links after a changed-head squash" "$STACK_PUBLISH_CALLS" \
+      "^finalize-stack $ROOT/legsquash --head [0-9a-f]{40} --root $RSQ local="
+    assert_grep "stack publishes the remote aggregate head" "$STACK_PUBLISH_CALLS" \
+      "^publish $ROOT/legsquash local=([0-9a-f]{40}) remote=\\1$"
+    assert_exit "successful stack finalization clears its recovery map" 0 \
+      test ! -s "$ROOT/squash-map.tsv"
+
     export ROOT="$T/stack-root" LOG="$T/stack.log" PASSES=2 NO_PUSH=1 NO_SQUASH=0
+    unset STACK_REQUIRE_SYNC
     # default = detach: returns at once, names the log, and the detached run completes on its own
     ( unset REV_STACK_FOREGROUND; export ROOT="$T/stack-root-d" LOG="$T/stack-d.log"; SHIM_MODE=ok "$STACK/stack.sh" "$T/stack.cfg" > "$T/detach.out" 2>&1; echo "rc=$?" >> "$T/detach.out" )
     assert_grep "detach returns immediately" "$T/detach.out" '^stack: detached \(pid [0-9]+\), session root .* log .*stack-d.log'

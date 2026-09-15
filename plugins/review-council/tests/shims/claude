@@ -13,6 +13,8 @@ for a in "$@"; do [ "$prev" = "-p" ] && PROMPT=$a; prev=$a; done
 S=$(printf '%s\n' "$PROMPT" | sed -n 's/.*use \([^ ]*\) as the session dir.*/\1/p' | head -1)
 finish() { mkdir -p "$S"; echo "# report (pass ${PASS:-?})" > "$S/report.md"; echo "# ledger" > "$S/findings.md"
            printf '%s\n' '{}' > "$S/pr-review.json"
+           printf "REV_ROOT='%s'\nREV_BRANCH='%s'\nREV_BASE_BRANCH='main'\n" "$PWD" \
+             "$(git branch --show-current 2>/dev/null || printf feat)" > "$S/scope.env"
            printf '%s\n' '{"phase":"done"}' > "$S/state.json"
            echo '{"type":"result","subtype":"success","is_error":false}'; exit 0; }
 case "${SHIM_MODE:-ok}" in

@@ -68,6 +68,8 @@ REPOS_SEEN=""
 FAILED_LABELS=""      # every leg that ended without a completed review
 FAILED_REPOS=""       # …and the repos they belong to: those are NOT squashed at the end
 mkdir -p "$ROOT"
+SQUASH_MAP="$ROOT/squash-map.tsv"
+[ -f "$SQUASH_MAP" ] || : > "$SQUASH_MAP"
 
 say() { echo "$(date '+%m-%d %H:%M') $*" | tee -a "$LOG"; }
 note_failure() {  # <label> <repo-dir> - a failed leg must not be reported as a complete run
@@ -323,11 +325,16 @@ ${VACUITY}${resume}"
 }
 
 finish_repos() {
-  local d srq
+  local d srq before after push_rc map_tmp
   for d in $REPOS_SEEN; do
     case " $FAILED_REPOS " in *" $d "*)
       say "--- skipping $(basename "$d") - a leg on it failed; its review is not complete"; continue;; esac
     say "--- finishing $(basename "$d")"
+    before=$(cd "$d" && git rev-parse HEAD 2>/dev/null) || {
+      say "!!! cannot read pre-squash head for $(basename "$d")"
+      note_failure "finish:$(basename "$d")" "$d"
+      continue
+    }
     set -o pipefail
     ( cd "$d" && if [ "$NO_SQUASH" = 1 ]; then echo "(NO_SQUASH=1: keeping review commits)"; else "$REV_SCRIPTS/rev-squash.sh" --apply; fi ) 2>&1 | sed 's/^/    /' | tee -a "$LOG"
     srq=$?
@@ -335,8 +342,49 @@ finish_repos() {
     # A refused squash is not a reason to withhold the push: the round commits are real work and CI
     # must see them. Squash and push are therefore independent steps, not one && chain.
     [ "$srq" -eq 0 ] || say "!!! squash refused for $(basename "$d") - pushing the un-collapsed review commits"
+    after=$(cd "$d" && git rev-parse HEAD 2>/dev/null) || {
+      say "!!! cannot read final head for $(basename "$d")"
+      note_failure "finish:$(basename "$d")" "$d"
+      continue
+    }
+    if [ "$NO_PUSH" != 1 ] && [ "$srq" -eq 0 ] && [ "$before" != "$after" ]; then
+      map_tmp="$SQUASH_MAP.tmp.$$"
+      awk -F '\t' -v repo="$d" '$1 != repo' "$SQUASH_MAP" > "$map_tmp" || {
+        say "!!! cannot update squash recovery map for $(basename "$d")"
+        note_failure "finish:$(basename "$d")" "$d"
+        continue
+      }
+      printf '%s\t%s\n' "$d" "$after" >> "$map_tmp"
+      mv "$map_tmp" "$SQUASH_MAP"
+    fi
+    set -o pipefail
     ( cd "$d" && if [ "$NO_PUSH" = 1 ]; then echo "(NO_PUSH=1: not pushing)"; else git push; fi ) 2>&1 | sed 's/^/    /' | tee -a "$LOG"
+    push_rc=$?
+    set +o pipefail
+    if [ "$NO_PUSH" != 1 ] && [ "$push_rc" -ne 0 ]; then
+      say "!!! push failed for $(basename "$d")"
+      note_failure "push:$(basename "$d")" "$d"
+      continue
+    fi
   done
+}
+
+finalize_reviews() {
+  local repo head session rc=0
+  [ -s "$SQUASH_MAP" ] || return 0
+  while IFS="$(printf '\t')" read -r repo head; do
+    [ -n "$repo" ] && [ -n "$head" ] || continue
+    for session in "$ROOT"/*; do
+      [ -d "$session" ] && [ -f "$session/report.md" ] || continue
+      set -o pipefail
+      python3 "$REV_SCRIPTS/rev-pr-review.py" finalize-stack "$session" \
+        --head "$head" --root "$repo" 2>&1 | sed 's/^/    /' | tee -a "$LOG"
+      [ "$?" -eq 0 ] || rc=1
+      set +o pipefail
+    done
+  done < "$SQUASH_MAP"
+  [ "$rc" -ne 0 ] || : > "$SQUASH_MAP"
+  return "$rc"
 }
 
 publish_reviews() {
@@ -351,11 +399,6 @@ publish_reviews() {
   }
   for session in "$ROOT"/*; do
     [ -d "$session" ] && [ -f "$session/report.md" ] || continue
-    if [ ! -f "$session/pr-review.json" ]; then
-      say "!!! $(basename "$session"): completed review has no pr-review.json"
-      rc=1
-      continue
-    fi
     set -o pipefail
     python3 "$REV_SCRIPTS/rev-pr-review.py" publish "$session" 2>&1 \
       | sed 's/^/    /' | tee -a "$LOG"
@@ -375,6 +418,8 @@ if [ -n "$SEAM_REPO" ]; then PASS=seam; say "########## PHASE 2 - CROSS-REPO SEA
 if [ -n "$CRITIC_REPO" ]; then PASS=critic; say "########## PHASE 3 - COMPLETENESS CRITIC ##########"; run_leg "$CRITIC_REPO" 1 critic "$CRITIC_PREMISE"; else say "PHASE 3 skipped (CRITIC_REPO unset)"; fi
 say "########## FINISH - squash + push per repo ##########"; finish_repos
 if [ -n "$FAILED_LABELS" ]; then say "COMPLETE WITH FAILURES:$FAILED_LABELS"; exit 1; fi
+say "########## FINALIZE - reconcile post-squash review links ##########"
+finalize_reviews || { say "COMPLETE WITH FAILURES: PR review finalization"; exit 1; }
 say "########## PUBLISH - PR review per completed session ##########"
 publish_reviews || { say "COMPLETE WITH FAILURES: PR review publication"; exit 1; }
 say "ALL PHASES COMPLETE"
