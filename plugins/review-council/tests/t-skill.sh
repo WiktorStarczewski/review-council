@@ -109,6 +109,12 @@ test_skill_contract() {
   # C-13 and C-14: both hosts keep panel state exact and numeric mode compatible.
   local H
   for H in "$K" "$CK"; do
+    assert_grep "host recognizes a fresh input session" "$H" \
+      '`fresh`: none of the four inputs exists, so preflight may run once'
+    assert_grep "host recognizes an initialized input session" "$H" \
+      '`initialized`: all four safe inputs exist, so validate and reuse them without probing'
+    assert_grep "host rejects an invalid input session" "$H" \
+      '`invalid`: a partial or unsafe set exists, so stop incomplete and use a fresh session'
     assert_grep "host forbids cherry-picking the workflow" "$H" \
       'executable workflow contract.*Do not cherry-pick'
     assert_grep "host refuses certification without required artifacts" "$H" \

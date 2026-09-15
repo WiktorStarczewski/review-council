@@ -53,14 +53,26 @@ mkdir -p "$S"
 S=$(cd "$S" && pwd -P)
 ```
 
-For code, run from the repository root:
+Before any preflight or provider probe, classify a code session by inspecting
+`scope.env`, `files.txt`, `untracked.txt`, and `roster.json` with `lstat`:
+
+- `fresh`: none of the four inputs exists, so preflight may run once
+- `initialized`: all four safe inputs exist, so validate and reuse them without probing
+- `invalid`: a partial or unsafe set exists, so stop incomplete and use a fresh session
+
+For `initialized`, import `validate_standard_inputs` from
+`$PLUGIN/scripts/lib/session_inputs.py`, call
+`validate_standard_inputs(Path(S), require_all=True)`, and continue with those exact
+bytes. Never rerun preflight or repair inputs in that session. Any validation failure
+makes the state `invalid`; preserve that session untouched and choose a fresh session
+before retrying. Only a `fresh` code session runs this from the repository root:
 
 ```bash
 REVIEW_COUNCIL_HOST=codex "$PLUGIN/scripts/rev-preflight.sh" \
   --scope branch --write "$S"
 ```
 
-Substitute the resolved scope and append `--base <ref>` when specified. This writes
+Substitute the resolved scope and append `--base <ref>` when specified. Fresh preflight writes
 `scope.env`, `files.txt`, `untracked.txt`, and the **probed** `roster.json`. Preflight
 refuses empty scopes or shared branches; use a worktree if a code review needs one.
 For documents, write absolute paths to `S/docs.txt`, set `REV_REPO` to their root,

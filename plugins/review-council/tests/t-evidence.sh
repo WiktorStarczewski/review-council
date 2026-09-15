@@ -114,6 +114,8 @@ with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
     write('image.bin', 'opaque extension with text content\n')
     (root / 'shortcut').symlink_to('main.py')
     (session / 'scope.env').write_text(f"REV_BASE='{base}'\nREV_ROOT='{root}'\nREV_SCOPE='branch'\n")
+    (session / 'files.txt').write_text('')
+    (session / 'untracked.txt').write_text('')
     seats = ['sol', 'terra', 'opus', 'sonnet']
     bundles = ['correctness-boundaries', 'security-state-api', 'concurrency-resources-performance', 'tests-observability-maintenance-regression']
     (session / 'roster.json').write_text(json.dumps({'seats': [{'seat': s, 'extra': False, 'adapter': 'agent'} for s in seats]}))
@@ -235,6 +237,264 @@ PY
     if [ "$rc" -eq 0 ]; then ok "evidence state machine contract"; else fail "evidence state machine contract" "exit $rc"; fi
   fi
   return "$rc"
+}
+
+test_prepare_and_input_install_are_serialized() {
+  python3 - "$SCRIPTS/rev-evidence.py" "$T/evidence-input-lock" <<'PY'
+import argparse
+from contextlib import contextmanager
+import fcntl
+import hashlib
+import importlib.util
+import json
+import multiprocessing
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+evidence_path = Path(sys.argv[1])
+base = Path(sys.argv[2])
+lib_dir = evidence_path.parent / 'lib'
+sys.path.insert(0, str(lib_dir))
+import session_inputs
+
+spec = importlib.util.spec_from_file_location('rev_evidence_input_lock_test', evidence_path)
+evidence = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(evidence)
+standard_inputs = session_inputs.STANDARD_INPUTS
+context = multiprocessing.get_context('fork')
+
+
+def wait_for(*paths):
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        for path in paths:
+            if path.exists():
+                return path
+        time.sleep(0.01)
+    raise AssertionError('synchronization marker was not published: ' + ', '.join(map(str, paths)))
+
+
+def join(process):
+    process.join(10)
+    if process.is_alive():
+        process.terminate()
+        process.join()
+        raise AssertionError('worker did not exit')
+
+
+def write_status(path, error=None):
+    path.write_text('ok' if error is None else 'error:' + type(error).__name__ + ':' + str(error))
+
+
+def observed_lock(session, blocked, acquired):
+    @contextmanager
+    def lock(_session):
+        descriptor = os.open(Path(session) / '.session-inputs.lock', os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                blocked.touch()
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+            else:
+                acquired.touch()
+            yield Path(session) / '.session-inputs.lock'
+        finally:
+            os.close(descriptor)
+    return lock
+
+
+def prepare_args(session, label):
+    return argparse.Namespace(
+        session=str(session), label=label, phase='discovery', head=None, assignment=[],
+        full_seat=None, plan=None, plan_sha256=None, parent_assignment=None)
+
+
+def install_while_holding(session, staging, locked, release, status):
+    original = session_inputs.assert_unsealed
+    def pause(path):
+        locked.touch()
+        wait_for(release)
+        return original(path)
+    session_inputs.assert_unsealed = pause
+    try:
+        values = session_inputs.validate_standard_inputs(staging, require_all=True)
+        session_inputs.install_inputs(session, values, complete=True)
+    except Exception as error:
+        write_status(status, error)
+    else:
+        write_status(status)
+
+
+def prepare_with_observed_lock(session, label, blocked, acquired, status):
+    evidence.session_input_lock = observed_lock(session, blocked, acquired)
+    try:
+        evidence.prepare(prepare_args(session, label))
+    except Exception as error:
+        write_status(status, error)
+    else:
+        write_status(status)
+
+
+def prepare_while_holding(session, label, locked, release, status):
+    original = evidence.Repository
+    def pause(path):
+        locked.touch()
+        wait_for(release)
+        return original(path)
+    evidence.Repository = pause
+    try:
+        evidence.prepare(prepare_args(session, label))
+    except Exception as error:
+        write_status(status, error)
+    else:
+        write_status(status)
+
+
+def install_with_observed_lock(session, roster, blocked, acquired, status):
+    session_inputs.session_input_lock = observed_lock(session, blocked, acquired)
+    try:
+        session_inputs.install_inputs(
+            session, {'roster.json': roster.read_bytes()}, complete=False)
+    except Exception as error:
+        write_status(status, error)
+    else:
+        write_status(status)
+
+
+def make_repository(path):
+    path.mkdir(parents=True)
+    subprocess.run(['git', '-C', str(path), 'init', '-q'], check=True)
+    subprocess.run(['git', '-C', str(path), 'config', 'user.name', 'Test'], check=True)
+    subprocess.run(['git', '-C', str(path), 'config', 'user.email', 'test@example.invalid'], check=True)
+    subprocess.run(['git', '-C', str(path), 'config', 'commit.gpgsign', 'false'], check=True)
+    subprocess.run(['git', '-C', str(path), 'config', 'core.hooksPath', '/dev/null'], check=True)
+    (path / 'a.txt').write_text('old\n')
+    subprocess.run(['git', '-C', str(path), 'add', 'a.txt'], check=True)
+    subprocess.run(['git', '-C', str(path), 'commit', '-qm', 'base'], check=True)
+    base_ref = subprocess.check_output(['git', '-C', str(path), 'rev-parse', 'HEAD'], text=True).strip()
+    (path / 'a.txt').write_text('changed\n')
+    return base_ref
+
+
+def input_generation(root, base_ref, generation):
+    return {
+        'scope.env': (f"REV_BASE='{base_ref}'\nREV_ROOT='{root}'\nREV_SCOPE='branch'\n"
+                      f'# {generation}\n').encode(),
+        'roster.json': json.dumps({'generation': generation, 'seats': [
+            {'seat': 'sol', 'adapter': 'codex'},
+            {'seat': 'terra', 'adapter': 'codex'},
+            {'seat': 'opus', 'adapter': 'claude'},
+            {'seat': 'sonnet', 'adapter': 'claude'},
+        ]}, separators=(',', ':')).encode(),
+        'files.txt': b'a.txt\n' if generation == 'old' else b'a.txt\n\n',
+        'untracked.txt': b'' if generation == 'old' else b'\n',
+    }
+
+
+def write_generation(path, values):
+    path.mkdir(parents=True)
+    for name, value in values.items():
+        (path / name).write_bytes(value)
+
+
+def manifest_hashes(session, label):
+    return json.loads((session / f'r{label}-evidence.manifest.json').read_text())['inputs']
+
+
+base.mkdir(parents=True)
+root = base / 'repo'
+base_ref = make_repository(root)
+old = input_generation(root, base_ref, 'old')
+new = input_generation(root, base_ref, 'new')
+
+install_first = base / 'install-first'
+staging = base / 'new-inputs'
+install_first.mkdir()
+write_generation(staging, new)
+install_locked = base / 'install-first.locked'
+install_release = base / 'install-first.release'
+install_status = base / 'install-first.status'
+prepare_blocked = base / 'install-first.prepare-blocked'
+prepare_acquired = base / 'install-first.prepare-acquired'
+prepare_status = base / 'install-first.prepare-status'
+installer = context.Process(target=install_while_holding, args=(
+    install_first, staging, install_locked, install_release, install_status))
+preparer = context.Process(target=prepare_with_observed_lock, args=(
+    install_first, 'install-first', prepare_blocked, prepare_acquired, prepare_status))
+try:
+    installer.start()
+    wait_for(install_locked)
+    preparer.start()
+    wait_for(prepare_blocked, prepare_status)
+finally:
+    install_release.touch()
+join(installer)
+join(preparer)
+assert install_status.read_text() == 'ok', install_status.read_text()
+assert prepare_status.read_text() == 'ok', prepare_status.read_text()
+assert prepare_blocked.exists() and not prepare_acquired.exists()
+assert manifest_hashes(install_first, 'install-first') == {
+    name: hashlib.sha256(value).hexdigest() for name, value in new.items()}
+
+prepare_first = base / 'prepare-first'
+replacement = base / 'replacement-roster.json'
+write_generation(prepare_first, old)
+replacement.write_bytes(new['roster.json'])
+prepare_locked = base / 'prepare-first.locked'
+prepare_release = base / 'prepare-first.release'
+prepare_status = base / 'prepare-first.prepare-status'
+install_blocked = base / 'prepare-first.install-blocked'
+install_acquired = base / 'prepare-first.install-acquired'
+install_status = base / 'prepare-first.install-status'
+preparer = context.Process(target=prepare_while_holding, args=(
+    prepare_first, 'prepare-first', prepare_locked, prepare_release, prepare_status))
+installer = context.Process(target=install_with_observed_lock, args=(
+    prepare_first, replacement, install_blocked, install_acquired, install_status))
+try:
+    preparer.start()
+    wait_for(prepare_locked)
+    installer.start()
+    wait_for(install_blocked, install_status)
+finally:
+    prepare_release.touch()
+join(preparer)
+join(installer)
+assert prepare_status.read_text() == 'ok', prepare_status.read_text()
+assert install_status.read_text().startswith('error:SessionInputsSealedError:'), install_status.read_text()
+assert install_blocked.exists() and not install_acquired.exists()
+assert {name: (prepare_first / name).read_bytes() for name in standard_inputs} == old
+assert manifest_hashes(prepare_first, 'prepare-first') == {
+    name: hashlib.sha256(value).hexdigest() for name, value in old.items()}
+PY
+  local rc=$?
+  if [ "$rc" -eq 0 ]; then
+    ok "evidence preparation and input installation are serialized"
+  else
+    fail "evidence preparation and input installation are serialized" "exit $rc"
+  fi
+  return "$rc"
+}
+
+test_malformed_manifest_seals_inputs() {
+  ( local B="$T/evidence-malformed-seal" S G name
+    S="$B/session"; G="$B/generation"
+    mkdir -p "$S" "$G"
+    for name in scope.env roster.json files.txt untracked.txt; do
+      printf 'new-%s' "$name" > "$G/$name"
+    done
+    printf '{' > "$S/rbroken-evidence.manifest.json"
+    python3 "$SCRIPTS/lib/session_inputs.py" install "$S" "$G" > "$B/out" 2> "$B/err"
+    assert_eq "malformed evidence manifest seals session inputs" "$?" 1
+    assert_grep "malformed seal refusal names the evidence seal" "$B/err" \
+      'sealed by rbroken-evidence\.manifest\.json'
+    for name in scope.env roster.json files.txt untracked.txt; do
+      assert_exit "malformed seal publishes no $name" 1 test -e "$S/$name"
+    done
+  )
 }
 
 test_evidence_source_identity_match() {
@@ -550,6 +810,8 @@ def fixture(name='repo', object_format=None):
         write('package.json', '{"scripts":{"test":"pytest"}}\n')
         git('add', '.'); git('commit', '-qm', 'base'); base = git('rev-parse', 'HEAD')
         (session / 'scope.env').write_text(''.join(k + '=' + shlex.quote(v) + '\n' for k, v in [('REV_BASE', base), ('REV_ROOT', str(root)), ('REV_SCOPE', 'branch')]))
+        (session / 'files.txt').write_text('')
+        (session / 'untracked.txt').write_text('')
         (session / 'roster.json').write_text(json.dumps({'seats': [{'seat': s, 'extra': False, 'adapter': 'agent'} for s in seats]}))
         write('main.py', (root / 'main.py').read_text().replace('return 1', 'return 2'))
         yield root, session, git, write, call, prepare, finish

@@ -79,11 +79,23 @@ Codex host.
    mkdir -p "$S"
    S=$(cd "$S" && pwd -P)
    ```
-   Then run:
+   Before any preflight or provider probe, classify a code session by inspecting
+   `scope.env`, `files.txt`, `untracked.txt`, and `roster.json` with `lstat`:
+
+   - `fresh`: none of the four inputs exists, so preflight may run once
+   - `initialized`: all four safe inputs exist, so validate and reuse them without probing
+   - `invalid`: a partial or unsafe set exists, so stop incomplete and use a fresh session
+
+   For `initialized`, import `validate_standard_inputs` from
+   `${CLAUDE_PLUGIN_ROOT}/scripts/lib/session_inputs.py`, call
+   `validate_standard_inputs(Path(S), require_all=True)`, and continue with those exact
+   bytes. Never rerun preflight or repair inputs in that session. Any validation failure
+   makes the state `invalid`; preserve that session untouched and choose a fresh session
+   before retrying. Only `fresh` runs:
    ```bash
    ${CLAUDE_PLUGIN_ROOT}/scripts/rev-preflight.sh --scope <branch|uncommitted|path> --write $S
    ```
-   Non-zero → relay the one-line reason verbatim. Exit 5 is retryable. Preserve the
+   For a fresh session, non-zero → relay the one-line reason verbatim. Exit 5 is retryable. Preserve the
    session and retry after the temporary provider availability problem clears. Exit 6 is permanent.
    Stop because the scope or strict roster contract cannot run as asked. A thin
    roster is not one of those; it is
@@ -91,8 +103,9 @@ Codex host.
    `base_branch` (the open PR's base, else the nearest fork point) and re-run with `--base <ref>`
    if it is wrong, since a wrong base reviews someone else's commits - the roster
    line, and, when the panel is degraded, a second line `preflight: WARNING - <sentence>`;
-   carry that sentence into the report. `$S/scope.env`, `$S/files.txt`,
-   `$S/untracked.txt` and `$S/roster.json` now exist. Source `scope.env` for
+   carry that sentence into the report. After fresh initialization, or immediately for a
+   validated initialized session, `$S/scope.env`, `$S/files.txt`, `$S/untracked.txt` and
+   `$S/roster.json` exist. Source `scope.env` for
    `REV_BASE`, `REV_ROOT`, `REV_SCOPE` - every value in it is single-quoted, so a
    branch name or path with shell metacharacters is inert data.
    Arm the recursion guard once preflight has passed (it refuses when `REV_ACTIVE` is
