@@ -21,6 +21,8 @@ BAD_INLINE = re.compile(r"[\r\n]")
 PR_URL = re.compile(r"^https://github\.com/([^/]+/[^/]+)/pull/([1-9][0-9]*)/?$")
 BLOB_URL = re.compile(r"^(https://github\.com/[^/]+/[^/]+/blob/)[0-9a-f]{7,40}(/.*)$")
 COMMIT_URL = re.compile(r"^(https://github\.com/[^/]+/[^/]+/commit/)[0-9a-f]{7,40}/?$")
+BLOB_ID_URL = re.compile(
+    r"^https://github\.com/([^/]+/[^/]+)/blob/([0-9a-f]{7,40})/.*$", re.IGNORECASE)
 COMMIT_ID_URL = re.compile(
     r"^https://github\.com/([^/]+/[^/]+)/commit/([0-9a-f]{7,40})/?$", re.IGNORECASE)
 GITHUB_REMOTE = re.compile(
@@ -52,12 +54,15 @@ def count(value, field, positive=False):
     return value
 
 
-def link(value, field, code=False):
+def link(value, field, code=False, pattern=None, kind=None):
     require(isinstance(value, dict), f"{field} must be an object")
     label = inline(value.get("label"), f"{field}.label")
     url = inline(value.get("url"), f"{field}.url")
     require(url.startswith("https://") and " " not in url and ")" not in url,
             f"{field}.url must be an HTTPS URL without spaces or closing parentheses")
+    if pattern is not None:
+        require(pattern.fullmatch(url) is not None,
+                f"{field}.url must be a {kind or 'supported'} GitHub URL")
     require("]" not in label and (not code or "`" not in label),
             f"{field}.label contains Markdown delimiters")
     return f"[`{label}`]({url})" if code else f"[{label}]({url})"
@@ -120,7 +125,8 @@ def render(data, date):
         require(isinstance(decision, dict), f"{field} must be an object")
         title = inline(decision.get("title"), f"{field}.title")
         require("**" not in title, f"{field}.title contains a Markdown delimiter")
-        location = link(decision.get("location"), f"{field}.location", code=True)
+        location = link(decision.get("location"), f"{field}.location", code=True,
+                        pattern=BLOB_URL, kind="SHA-pinned blob")
         decision_rows.append(f"- **{title}** · {location}")
         decision_details.append(
             f"{index + 1}. **{title}** {inline(decision.get('detail'), f'{field}.detail')}"
@@ -136,7 +142,8 @@ def render(data, date):
                 f"{field}.severity must be P0, P1, P2, or P3")
         summary = inline(fix.get("summary"), f"{field}.summary").replace("|", "\\|")
         commit = fix.get("commit")
-        commit_link = link(commit, f"{field}.commit", code=True)
+        commit_link = link(commit, f"{field}.commit", code=True,
+                           pattern=COMMIT_URL, kind="SHA-pinned commit")
         identity = commit_identity(inline(commit.get("url"), f"{field}.commit.url"))
         if not any(same_commit(identity, existing) for existing in commit_identities):
             commit_identities.append(identity)
@@ -148,7 +155,8 @@ def render(data, date):
     fixed_phrase = f"{fixed} fixed"
     if data.get("fixed_in") is not None:
         require(fixed > 0, "fixed_in requires at least one fix")
-        fixed_phrase += " in " + link(data["fixed_in"], "fixed_in")
+        fixed_phrase += " in " + link(
+            data["fixed_in"], "fixed_in", pattern=PR_URL, kind="pull-request")
     commit_count = len(commit_identities)
     commit_word = "commit" if commit_count == 1 else "commits"
     if not decision_rows:
@@ -243,6 +251,7 @@ def parse_scope(path):
 def run_gh(arguments, root, input_data=None):
     environment = os.environ.copy()
     environment.pop("GH_REPO", None)
+    environment["GH_HOST"] = "github.com"
     return subprocess.run(["gh", *arguments], cwd=root, text=True,
                           capture_output=True, timeout=120, env=environment,
                           input=input_data)
@@ -529,6 +538,35 @@ def git_is_ancestor(ancestor, descendant, root):
     return result.returncode == 0
 
 
+def validate_publication_links(data, repositories, head, root):
+    allowed = {repository.lower() for repository in repositories}
+    head = head.lower()
+    for index, decision in enumerate(data.get("decisions", [])):
+        field = f"decisions[{index}].location.url"
+        url = inline(decision.get("location", {}).get("url"), field)
+        match = BLOB_ID_URL.fullmatch(url)
+        require(match is not None, f"{field} must be a SHA-pinned blob GitHub URL")
+        require(match.group(1).lower() in allowed,
+                f"{field} points outside the reviewed repository")
+        require(head.startswith(match.group(2).lower()),
+                f"{field} does not point at the reviewed head")
+
+    if data.get("fixed_in") is None:
+        for index, fix in enumerate(data.get("fixes", [])):
+            field = f"fixes[{index}].commit.url"
+            url = inline(fix.get("commit", {}).get("url"), field)
+            match = COMMIT_ID_URL.fullmatch(url)
+            require(match is not None, f"{field} must be a SHA-pinned commit GitHub URL")
+            require(match.group(1).lower() in allowed,
+                    f"{field} points outside the reviewed repository")
+            commit = run_git(
+                ["rev-parse", "--verify", f"{match.group(2)}^{{commit}}"], root)
+            require(commit.lower().startswith(match.group(2).lower()),
+                    f"{field} does not resolve to its displayed commit")
+            require(git_is_ancestor(commit, head, root),
+                    f"{field} is not an ancestor of the reviewed head")
+
+
 def wait_for_expected_head(target, root, expected, initial):
     live = initial
     for delay in (0, 1, 2, 4, 8, 15):
@@ -568,6 +606,9 @@ def render_session(session, date):
             scope, resolved, body, date, session,
             allow_unpushed=os.environ.get("REV_STACK_LEG") == "1",
         )
+        repositories = github_repositories(scope["root"])
+        if repositories:
+            validate_publication_links(data, repositories, target["head"], scope["root"])
     output = session / "pr-review.md"
     write_atomic(output, body)
     if target is not None:
@@ -643,7 +684,7 @@ def replace_sha_url(url, pattern, head, field):
     return match.group(1) + head + (match.group(2) if match.lastindex == 2 else "")
 
 
-def finalized_body(data, date, head):
+def finalized_data(data, head):
     updated = json.loads(json.dumps(data))
     for index, decision in enumerate(updated.get("decisions", [])):
         location = decision.get("location", {})
@@ -656,7 +697,7 @@ def finalized_body(data, date, head):
             commit["label"] = head[:min(len(label), len(head))]
             commit["url"] = replace_sha_url(
                 commit.get("url"), COMMIT_URL, head, f"fixes[{index}].commit.url")
-    return render(updated, date)
+    return updated
 
 
 def finalize_stack(session, head, expected_root=None):
@@ -688,7 +729,9 @@ def finalize_stack(session, head, expected_root=None):
 
     data = load_input(session / "pr-review.json")
     source_body = render(data, target["date"])
-    body = finalized_body(data, target["date"], head)
+    updated = finalized_data(data, head)
+    validate_publication_links(updated, github_repositories(root), head, root)
+    body = render(updated, target["date"])
     output = session / "pr-review.md"
     require(output.is_file(), f"rendered PR review is missing: {output}")
     current_body = output.read_text()

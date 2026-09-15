@@ -39,6 +39,27 @@ pr_review_input() {
 JSON
 }
 
+pin_pr_review_links() {
+  local session=$1 root=$2 head
+  head=$(git -C "$root" rev-parse HEAD)
+  python3 - "$session/pr-review.json" "$head" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+for decision in data['decisions']:
+    decision['location']['url'] = (
+        f'https://github.com/acme/repo/blob/{sys.argv[2]}/src/api.rs#L10-L14')
+if data.get('fixed_in') is None:
+    for fix in data['fixes']:
+        fix['commit']['label'] = sys.argv[2][:7]
+        fix['commit']['url'] = f'https://github.com/acme/repo/commit/{sys.argv[2]}'
+path.write_text(json.dumps(data))
+PY
+}
+
 pr_review_expected() {
   cat <<'MARKDOWN'
 [![Reviewed by review-council](https://img.shields.io/badge/reviewed_by-review--council-5b21b6?style=flat-square)](https://github.com/WiktorStarczewski/review-council)
@@ -100,6 +121,7 @@ pr_review_session() {
     "$base" "$root" \
     > "$session/scope.env"
   pr_review_input > "$session/pr-review.json"
+  pin_pr_review_links "$session" "$root"
 }
 
 pr_review_gh_shim() {
@@ -108,6 +130,7 @@ pr_review_gh_shim() {
   cat > "$bin/gh" <<'SH'
 #!/bin/bash
 printf '%s\n' "$*" >> "$GH_CALLS"
+[ -z "${GH_HOST_CAPTURE:-}" ] || printf '%s\n' "${GH_HOST:-}" >> "$GH_HOST_CAPTURE"
 head=${GH_HEAD_OID:-$(git rev-parse HEAD 2>/dev/null || printf '%040d' 0)}
 base_oid=${GH_BASE_OID:-$(git rev-parse main 2>/dev/null || printf '%040d' 0)}
 if [ "${1:-} ${2:-}" = "pr view" ]; then
@@ -297,6 +320,121 @@ PY
   done
 }
 
+test_pr_review_rejects_untrusted_links() {
+  local field session="$T/pr-untrusted-links"
+  for field in fixed_in decisions fixes; do
+    rm -rf "$session"
+    mkdir -p "$session"
+    pr_review_input > "$session/pr-review.json"
+    python3 - "$session/pr-review.json" "$field" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+field = sys.argv[2]
+if field == 'fixed_in':
+    data[field]['url'] = 'https://example.com/acme/repo/pull/9'
+elif field == 'decisions':
+    data[field][0]['location']['url'] = 'https://github.com/acme/repo/blob/main/src/api.rs'
+else:
+    data[field][0]['commit']['url'] = 'https://example.com/acme/repo/commit/abc1234'
+path.write_text(json.dumps(data))
+PY
+    python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 \
+      > "$T/pr-untrusted-$field.out" 2> "$T/pr-untrusted-$field.err"
+    assert_eq "$field rejects an untrusted review link" "$?" 1
+    assert_grep "$field names its GitHub URL requirement" "$T/pr-untrusted-$field.err" \
+      'must be a .*GitHub URL'
+  done
+}
+
+test_pr_review_binds_links_to_reviewed_state() {
+  local session="$T/pr-bound-links" root="$T/pr-bound-links-repo" bin="$T/pr-bound-links-bin"
+  local unrelated
+  pr_review_session "$session" "$root"
+  pr_review_gh_shim "$bin"
+
+  python3 - "$session/pr-review.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data['decisions'][0]['location']['url'] = data['decisions'][0]['location']['url'].replace(
+    'github.com/acme/repo/', 'github.com/evil/repo/')
+path.write_text(json.dumps(data))
+PY
+  : > "$T/pr-bound-links.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-bound-links.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 \
+    > "$T/pr-bound-links.out" 2> "$T/pr-bound-links.err"
+  assert_eq "decision links outside the reviewed repository fail closed" "$?" 1
+  assert_grep "decision repository mismatch is explicit" "$T/pr-bound-links.err" \
+    'outside the reviewed repository'
+  assert_exit "invalid bound links write no review" 0 test ! -e "$session/pr-review.md"
+
+  pr_review_session "$session-fix" "$root-fix"
+  python3 - "$session-fix/pr-review.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data.pop('fixed_in')
+data['fixes'][0]['commit']['url'] = data['fixes'][0]['commit']['url'].replace(
+    'github.com/acme/repo/', 'github.com/evil/repo/')
+path.write_text(json.dumps(data))
+PY
+  : > "$T/pr-bound-fix.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-bound-fix.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$session-fix" --date 2026-09-15 \
+    > "$T/pr-bound-fix.out" 2> "$T/pr-bound-fix.err"
+  assert_eq "same-PR fix links outside the reviewed repository fail closed" "$?" 1
+  assert_grep "fix repository mismatch is explicit" "$T/pr-bound-fix.err" \
+    'outside the reviewed repository'
+
+  pr_review_session "$session-ancestry" "$root-ancestry"
+  unrelated=$(printf 'unrelated fix\n' | git -C "$root-ancestry" \
+    commit-tree "$(git -C "$root-ancestry" rev-parse 'HEAD^{tree}')")
+  python3 - "$session-ancestry/pr-review.json" "$unrelated" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data.pop('fixed_in')
+data['fixes'][0]['commit']['url'] = f'https://github.com/acme/repo/commit/{sys.argv[2]}'
+path.write_text(json.dumps(data))
+PY
+  : > "$T/pr-bound-ancestry.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-bound-ancestry.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$session-ancestry" --date 2026-09-15 \
+    > "$T/pr-bound-ancestry.out" 2> "$T/pr-bound-ancestry.err"
+  assert_eq "same-PR fix links outside reviewed ancestry fail closed" "$?" 1
+  assert_grep "fix ancestry mismatch is explicit" "$T/pr-bound-ancestry.err" \
+    'not an ancestor of the reviewed head'
+}
+
+test_pr_review_pins_github_host() {
+  local session="$T/pr-host" root="$T/pr-host-repo" bin="$T/pr-host-bin"
+  pr_review_session "$session" "$root"
+  pr_review_gh_shim "$bin"
+  : > "$T/pr-host.calls"
+  : > "$T/pr-host.capture"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-host.calls" GH_HOST_CAPTURE="$T/pr-host.capture" \
+    GH_HOST=attacker.example \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 \
+    > "$T/pr-host.out" 2> "$T/pr-host.err"
+  assert_eq "ambient GH_HOST cannot redirect PR discovery" "$?" 0
+  assert_exit "every GitHub call is pinned to github.com" 0 \
+    sh -c 'test -s "$1" && test "$(sort -u "$1")" = github.com' sh "$T/pr-host.capture"
+}
+
 test_pr_review_clean_identity() {
   local bin="$T/pr-clean-bin" mode session root
   pr_review_gh_shim "$bin"
@@ -342,6 +480,7 @@ test_pr_review_clean_identity() {
     "$(git -C "$nested_root" rev-parse main)" "$nested_root" \
     > "$nested/scope.env"
   pr_review_input > "$nested/pr-review.json"
+  pin_pr_review_links "$nested" "$nested_root"
   : > "$T/pr-nested.calls"
   PATH="$bin:$PATH" GH_CALLS="$T/pr-nested.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" render "$nested" --date 2026-09-15 \
@@ -371,6 +510,7 @@ test_pr_review_clean_identity() {
   echo committed > "$stack_root/committed.txt"
   git -C "$stack_root" add committed.txt
   git -C "$stack_root" commit -qm 'fix(rev): local stack fix'
+  pin_pr_review_links "$stack" "$stack_root"
   remote_head=$(git -C "$stack_root" rev-parse HEAD^)
   : > "$T/pr-clean-stack.calls"
   PATH="$bin:$PATH" GH_HEAD_OID="$remote_head" GH_CALLS="$T/pr-clean-stack.calls" \
@@ -751,6 +891,7 @@ data = json.loads(path.read_text())
 data.pop('fixed_in')
 path.write_text(json.dumps(data))
 PY
+  pin_pr_review_links "$session" "$root"
   cp "$session/pr-review.json" "$T/pr-finalize-original.json"
   : > "$T/pr-finalize.calls"
   PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize.calls" \
@@ -818,6 +959,7 @@ PY
   git -C "$separate_root" commit -qm 'fix(rev): separate one'
   echo two > "$separate_root/two.txt"; git -C "$separate_root" add two.txt
   git -C "$separate_root" commit -qm 'fix(rev): separate two'
+  pin_pr_review_links "$separate" "$separate_root"
   : > "$T/pr-finalize-separate.calls"
   PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize-separate.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" render "$separate" --date 2026-09-15 >/dev/null
@@ -837,6 +979,7 @@ PY
   pr_review_session "$lag" "$lag_root"
   echo lag > "$lag_root/lag.txt"; git -C "$lag_root" add lag.txt
   git -C "$lag_root" commit -qm 'fix(rev): lag one'
+  pin_pr_review_links "$lag" "$lag_root"
   lag_before=$(git -C "$lag_root" rev-parse HEAD)
   : > "$T/pr-finalize-lag.calls"
   PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize-lag.calls" \

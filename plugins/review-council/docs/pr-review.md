@@ -76,6 +76,8 @@ Rules:
 - Omit `fixed_in` when the fixes are on the reviewed PR. Include it only when they
   landed in a separate PR, as in the canonical review.
 - Use immutable pushed commit links and source links pinned to the reviewed head SHA.
+  The renderer rejects other link types, and publication binds same-PR links to a
+  reviewed GitHub remote and commit ancestry.
 - Keep every string on one line. Put depth in the decision details, verified-sound
   bullets, and coverage bullets while preserving the renderer's fixed structure.
 - State measured gates and test counts. Do not use an adjective in place of a result.
@@ -93,6 +95,7 @@ test total against the completed session and pushed head. Do not edit the Markdo
 Correct `pr-review.json` and render again when anything is wrong.
 
 For an associated PR, render resolves the branch and base recorded by preflight,
+pins every GitHub CLI call to `github.com`,
 requires an open PR at the reviewed local head, and freezes that PR, branch, base,
 head, tree, date, and body hash in the target envelope. Rendering fails when the
 repository has staged, unstaged, or untracked bytes outside the exact active session
