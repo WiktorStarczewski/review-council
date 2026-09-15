@@ -22,18 +22,19 @@
   transaction bugs, brittle evidence audits wasted panel time, and severity policy made each
   new repair trigger another expensive certification cycle.
 
-## 0.4.4 convergence repair
+## 0.4.4 stable release lane
 
-- [x] Diagnose the unbounded loop and unreliable evidence-session boundaries.
-- [x] Compare contract-only, deterministic circuit-breaker, and runner-rewrite approaches.
-- [x] Get approval for the deterministic circuit-breaker design.
-- [x] Write and self-review the architectural design.
-- [x] Get approval for the written design specification.
-- [x] Write the TDD implementation plan.
-- [ ] Implement immutable session inputs and the session-wide audit stop.
-- [ ] Implement convergence authorization, triage, certification, and completion gating.
+- [x] Diagnose the unbounded self-host review loop and unreliable evidence-session boundaries.
+- [x] Compare the plugin release with the ordinary `/rev` population.
+- [x] Reject a global correction cap for a release-specific failure mode.
+- [x] Approve and document previous-stable review, deterministic candidate gates, and targeted canaries.
+- [x] Implement and re-review the session-wide hard-audit stop.
+- [ ] Seal and serialize the four evidence-session inputs.
+- [ ] Promote composite red-team, compatibility, recovery, security, and integration coverage in normal panels.
+- [ ] Implement the two-generation previous-stable release authority.
 - [ ] Pressure-test both host skills and run the complete frozen-tree gate.
-- [ ] Run one bounded P0/P1 council panel, release 0.4.4, reinstall, and verify discovery.
+- [ ] Run the stable 0.4.3 P0/P1-only release lane for 0.4.4.
+- [ ] Squash-merge PR #6, publish 0.4.4, reinstall, and verify fresh-session discovery.
 
 ## 0.4.4 PR review publication
 

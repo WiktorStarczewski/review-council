@@ -1,331 +1,263 @@
-# Review Council Convergence Repair Design
+# Review Council Stable Release Lane Design
 
 ## Goal
 
-Make adaptive Review Council runs converge or stop within a bounded number of paid
-panel generations, without hiding P0/P1 findings or weakening final verification.
+Keep ordinary Review Council reviews adaptive while making Review Council's own
+releases bounded, independently reviewed, and reproducible. The candidate plugin must
+never certify the reviewer machinery that is deciding whether that candidate may ship.
 
-The repair also makes the session inputs used by evidence manifests immutable and
-turns a hard evidence-audit failure into a session-wide stop.
+The repair also keeps three generally useful improvements discovered during the
+incident: a session-wide hard-audit stop, immutable evidence-session inputs, and more
+adversarial coverage inside normal panels.
 
-## Problem
+## Incident finding
 
-The current workflow has three interacting failure modes:
+The 0.4.4 feature-to-release path spent 15 hours 27 minutes across 26 panel
+generations, 89 paid calls, and 128,164,553 processed tokens. The complete frozen-tree
+gate took about 10 minutes and was stable. Most avoidable time came from the candidate
+reviewing changes to its own prompt, audit, evidence, and orchestration machinery,
+then reviewing the repairs created by those reviews.
 
-1. A new P0/P1 or any nontrivial repair can repeat plan, fix, and verification with
-   no correction ceiling.
-2. A hard audit failure blocks only one panel label. A fresh label can launch another
-   paid generation in the same broken session.
-3. Preflight and direct roster writes can replace `roster.json`, `scope.env`,
-   `files.txt`, or `untracked.txt` after evidence manifests have hashed them.
+Ordinary `/rev` runs did not show the same median behavior. Their median was four
+panels and about 2.84 hours, although some outliers existed. A global two-generation
+convergence controller would therefore optimize the exceptional self-host release
+case by constraining a generally healthy review workflow.
 
-The publication feature exposed the result: 26 panel generations, 89 paid calls,
-and 73.9 percent of later-rewritten production and documentation lines originating
-in earlier review fixes.
+## Chosen architecture
 
-## Principles
+Use two different policies:
 
-- Preserve every P0/P1. The circuit breaker stops incomplete instead of declaring a
-  risky tree clean.
-- Bound semantic correction generations, not elapsed time. Provider latency alone
-  must not terminate an otherwise valid panel.
-- Treat review infrastructure failures separately from findings about the product
-  being reviewed.
-- Make launch authorization and completion machine-checkable. Prose remains the host
-  contract, not the only enforcement point.
-- Keep the repair smaller than a full orchestration rewrite.
+1. Ordinary review keeps the current adaptive and numeric schedules. It gains the
+   general safety and review-coverage improvements in this design, but no new global
+   correction cap or publication receipt.
+2. Review Council releases use a dedicated stateful lane. The installed previous
+   stable release reviews the candidate read-only. Candidate code runs deterministic
+   gates and only the runtime canaries selected by changed subsystem paths.
 
-## Modes
+The release lane permits one initial stable review generation and, only after verified
+P0/P1 repairs, one stable delta generation. A remaining P0/P1 or infrastructure failure
+blocks the release. It never creates a third review generation under another label.
 
-### Adaptive code review
+## Global safety improvements
 
-Adaptive review gets two material fix generations:
+### Session-wide hard-audit stop
 
-1. The initial generation batches accepted findings from discovery, optional risk
-   discovery, and conditional full red-team discovery, runs at most one plan panel,
-   applies the coherent fix batch, and runs the first verification panel.
-2. If that verification has a new or open P0/P1, one correction generation may run:
-   at most one correction plan panel, one coherent fix batch, and one final
-   verification panel.
+A hard evidence-audit failure writes an immutable session marker under the existing
+attempt lock. Every later `check` and `reserve`, regardless of panel label, reads that
+marker before creating a provider reservation. Existing production
+`r*-*.read-audit.json` hard failures also stop legacy sessions.
 
-If the final verification has any new or open P0/P1, the session becomes
-`nonconvergent`. It cannot launch another semantic panel, publish a review, or write
-a success report. The unresolved findings and receipts remain available for a
-redesign or a user-authorized fresh review.
+Seats already reserved may finish or be canceled. No unreserved seat may start. The
+diagnostic requires a fresh review session and preserves every invalid result, audit,
+stream, and sibling receipt.
 
-P2 and P3 findings remain reportable. They do not trigger a correction generation.
-During an explicit P0/P1-only release convergence run, they are deferred without
-changing the candidate tree.
+### Immutable session inputs
 
-Every code review gives at least one seat an explicit red-team assignment in addition
-to its canonical lens or risk bundle. This adds no provider call. Large, high-risk,
-or user-marked-important adaptive changes receive one full red-team discovery panel
-before the plan and fix batch. Docs-only reviews skip it unless requested.
+The four session inputs are `scope.env`, `roster.json`, `files.txt`, and
+`untracked.txt`. Preflight stages all four and installs them while holding one
+session-input lock. Any evidence manifest, including a malformed one, seals them.
 
-A change is high-risk when it crosses a security, persistence, concurrency,
-transaction, protocol, public API, or irreversible external-mutation boundary.
-Authentication, authorization, signatures, secrets, untrusted input, migrations,
-serialization, and cross-repository contracts are explicit examples.
+`rev-evidence.py prepare` holds the same lock from its first input read through
+manifest publication. Input installation therefore finishes before evidence capture
+or fails after the manifest seals the prior complete generation. A manifest cannot
+bind a mixed input set.
 
-### Numeric code review
+An initialized session reuses its complete inputs without another provider probe.
+Partial or unsafe inputs stop incomplete. Quota fallback keeps using a fresh sibling
+session.
 
-Numeric mode runs the exact user-requested minimum numbered panels. Generic
-"nontrivial fix" language does not extend it. After the minimum, it may use the same
-single P0/P1 correction generation. A remaining P0/P1 then stops incomplete.
-At least one seat in its final requested code panel receives the composite red-team
-assignment. A full red-team panel runs when the numeric schedule reaches that phase
-or the user explicitly requests it; the adaptive high-risk trigger does not silently
-increase an explicit numeric panel count.
+### Promoted adversarial coverage
 
-### Read-only and document review
+Every code panel assigns one existing seat a composite red-team emphasis. This adds no
+provider call and never replaces the seat's canonical lens or bundle.
 
-Read-only and document reviews run their requested panel count and never enter the
-fix-generation state machine. Session-input sealing and session-wide audit stops
-still apply. Read-only code review gives one seat a composite red-team assignment.
-Document review does not unless requested.
+The verification owner always traces the cumulative change through consumers and
+integration boundaries. Other emphases are composed when relevant:
 
-### Stack review
+- compatibility and consumer contracts for public APIs, protocols, schemas,
+  serialization, CLI output, and cross-repository interfaces;
+- recovery and idempotency for persistence, external writes, migrations, retries,
+  concurrency, CI orchestration, and partial failure;
+- security and trust boundaries for authentication, authorization, signatures,
+  secrets, untrusted input, and privilege changes.
 
-Each stack leg owns its convergence state. A nonconvergent or infrastructure-blocked
-leg remains incomplete and prevents a clean stack result. Other successfully reviewed
-legs retain their receipts and may publish according to the existing partial-stack
-contract.
+Large, high-risk, or user-marked-important adaptive reviews may add one full red-team
+panel before planning. A change is high-risk when it crosses a security, persistence,
+concurrency, transaction, protocol, public API, or irreversible mutation boundary.
+Explicit numeric schedules do not silently gain another panel, but their final code
+panel still contains the composite red-team assignment.
 
-## Finding admission
+## Stable release lane
 
-The orchestrator continues to verify every finding against source before accepting
-it. Every accepted or deferred finding records one origin:
+### Engine boundary
 
-- `original-scope`: proven on the immutable snapshot that existed before review fixes.
-- `fix-of-fix`: absent on the initial snapshot and introduced by a recorded review-fix
-  tree transition.
-- `unknown`: causal origin is not proven. Unknown P0/P1 remains blocking.
-- `review-infrastructure`: an audit, transport, evidence compiler, or gate problem in
-  the current review attempt. This blocks certification but never expands the product
-  change under review.
+Release candidate N is reviewed only by an installed copy of stable release N-1. The
+lane verifies all of the following before accepting a review artifact:
 
-A missing test is P2 unless source or a failing behavioral regression demonstrates a
-reachable incorrect behavior or broken public contract. Severity is assigned from
-impact, not from the amount of work required to prove or fix it.
+- the stable tag is an annotated tag whose signature passes `git verify-tag`;
+- the stable tag resolves to the commit named by the lane;
+- the installed stable plugin's regular files, symlinks, and executable modes exactly
+  match `plugins/review-council` in that tag;
+- both installed plugin manifests name the stable version;
+- the stable contract receipt identifies that installed plugin path, its runner hash,
+  provider CLI versions, exact ordered roster, touched candidate boundaries, and
+  candidate boundary hashes.
 
-The Markdown ledger adds `Origin:` to each entry. Machine state stores aggregate P0/P1
-counts by origin. This release does not replace the findings ledger with a new
-database or attempt to infer behavioral causality from `git blame`.
+Version strings alone are never engine identity. A cachebuster suffix may be ignored
+only in a generated version field when the installed bundle otherwise matches the tag.
+The 0.4.3 Codex cache currently matches the signed 0.4.3 tag byte for byte, so no
+exception is needed for this release.
 
-## Convergence authority
+### Candidate boundary
 
-Add `scripts/rev-convergence.py`. It owns a lock-protected `convergence.json` and
-immutable per-panel authorization and triage receipts.
+Every release generation names an exact candidate commit. The candidate worktree must
+be clean, `HEAD` must equal that commit, and both plugin manifests must carry the same
+candidate version. The candidate version must be greater than the stable version and
+must correspond to the release tag name.
 
-The public commands are:
+The candidate identity includes the commit, Git tree, full frozen-tree key used by
+`verify-review-council.py`, and hashes and modes for every path changed from N-1.
+
+### Two generations
+
+Generation 1 is one read-only stable review of the complete candidate. Its four seats
+cover the four verification bundles, with these adversarial compositions:
+
+1. correctness and boundaries plus attacker behavior and trust boundaries;
+2. security, state, and API plus rollback and recovery;
+3. concurrency, resources, and performance plus duplication and exhaustion;
+4. tests, observability, and regression plus consumer compatibility and integration.
+
+The orchestrator verifies every finding against candidate source. Only verified P0 and
+P1 findings may change the release candidate. P2 and P3 are recorded for later and do
+not expand the release scope.
+
+If generation 1 has no verified P0/P1, its reviewed tree is the final review tree and
+the lane needs no second generation. If P0/P1 repairs change the tree, generation 2 is
+one read-only stable delta review. It receives the repair delta, prior P0/P1 decisions,
+and one full-state integration assignment. If generation 2 has a new or open P0/P1,
+the lane records `blocked`. The release must be redesigned or started as a new lane;
+the current lane cannot authorize another panel.
+
+Provider execution, evidence, or hard-audit failure records `infrastructure-blocked`.
+It is not a product finding and does not authorize a retry or a broader panel in the
+same lane.
+
+### Deterministic candidate gate
+
+The final candidate runs:
 
 ```text
-rev-convergence.py init SESSION --mode adaptive|numeric|read-only [--min-rounds N] [--full-red-team REASON]
-rev-convergence.py init-fallback CHILD_SESSION --parent-session PARENT_SESSION --authorization PATH
-rev-convergence.py authorize SESSION LABEL --kind discovery|risk|red-team|plan|verification|repair --manifest PATH
-rev-convergence.py record SESSION LABEL --coverage-receipt PATH --new-p0 N --new-p1 N --open-p0 N --open-p1 N --origin-original N --origin-fix-of-fix N --origin-unknown N --origin-infrastructure N
-rev-convergence.py certify SESSION
-rev-convergence.py status SESSION
+python3 scripts/verify-review-council.py --root .
 ```
 
-`init` is idempotent only for the exact same mode, numeric minimum, and full-red-team
-reason. A mismatch fails closed.
+The release lane validates the verifier receipt rather than trusting terminal prose.
+It recomputes the frozen source key from the clean final commit, verifies the receipt
+identity and key, and verifies every command log is regular, hash-matching, complete,
+and exit 0. The exact candidate tree may reuse an existing valid receipt.
 
-`--full-red-team` records the nonempty, single-line high-risk, large, important, or
-explicit trigger selected by the host. Without that initialization field, a full
-red-team panel is not authorized. `init-fallback` binds a fresh quota-fallback sibling
-to the parent session identity, authorization, panel kind, generation, and existing
-same-source proof. It cannot create a new semantic allowance.
+### Targeted canaries
 
-`authorize` validates the manifest label, phase, snapshot tree, input hashes, and
-session identity. It writes `r<LABEL>-convergence.authorization.json` once. An exact
-repeat is idempotent; a different repeat fails. Adaptive limits are:
+Canaries prove only runtime boundaries whose candidate implementation changed. They do
+not review the candidate and cannot create product findings. Each canary receipt binds
+the canary ID, the hashes and modes of its trigger paths, the command, an exit-0 log,
+and any referenced evidence artifacts. A receipt remains reusable across unrelated
+commits while its trigger-path identities stay exact.
 
-| Semantic panel kind | Maximum generations |
-| --- | ---: |
-| Discovery | 1 |
-| Risk discovery | 1 |
-| Full red-team discovery | 1 when large, high-risk, important, or explicitly requested |
-| Plan | 2 |
-| Verification | 2 |
-| Coverage repair | Existing one-seat repair only |
+The initial trigger matrix is:
 
-The second plan and verification authorizations require the first verification
-triage decision to be `correction-required`. A clean first verification permits
-certification, not another panel. An incomplete or hard-audit-failed panel permits no
-replacement generation.
+| Canary ID | Changed path trigger | Runtime proof |
+| --- | --- | --- |
+| `provider-codex` | `scripts/seats.d/codex.sh`, or shared read-audit and stream parsing | one Codex adapter envelope and valid evidence audit |
+| `provider-claude` | `scripts/seats.d/claude.sh`, or shared read-audit and stream parsing | one Claude adapter envelope and valid evidence audit |
+| `provider-gemini` | `scripts/seats.d/gemini.sh`, or shared read-audit and stream parsing | one Gemini adapter envelope and valid evidence audit |
+| `github-publication` | `rev-pr-review.py`, `stack.sh`, or `docs/pr-review.md` | one disposable pending-to-commented transaction or an exact hash-bound replay when GitHub behavior was not changed |
+| `host-claude` | `skills/rev/**`, `skills/stack/**`, `POLICY.md`, or Claude hooks | behavioral pressure test with the candidate Claude skill loaded |
+| `host-codex` | `codex-skills/rev/**` or `codex-skills/stack/**` | behavioral pressure test with the candidate Codex skill loaded |
 
-`record` validates the coverage receipt and binds the triage counts to its manifest,
-snapshot tree, and result set. New P0/P1 origin counts must sum to the new P0/P1
-total. The first verification records one of:
+Provider adapter files always require their provider canary. Shared auditor or stream
+parser changes require one canary for each configured live adapter. Other provider
+orchestration changes use the existing preserved-envelope contract replay unless that
+replay cannot establish the newly exposed model-visible behavior.
 
-- `clean`: no new or open P0/P1.
-- `correction-required`: a P0/P1 remains and the single correction allowance is free.
-- `infrastructure-blocked`: current review infrastructure is not certifying.
+The matrix is fail closed. A triggering path without a known canary mapping or a
+missing, failed, malformed, stale, or mismatched required receipt blocks certification.
 
-The second verification records `clean`, `infrastructure-blocked`, or
-`nonconvergent`. It never records another correction allowance.
+## Release authority
 
-`certify` requires the latest verification decision to be `clean`, zero open P0/P1,
-the latest `coverage-head.json` to match that verification, and no session-wide audit
-stop. It writes immutable `convergence.receipt.json`.
+Add `scripts/verify-release-lane.py` with these public commands:
 
-Read-only review instead writes a `reported` convergence receipt after its requested
-coverage completes. It may retain open findings, never claims a clean fixed tree, and
-cannot authorize a plan or repair generation.
+```text
+verify-release-lane.py init --root ROOT --candidate-commit SHA --stable-plugin PATH --stable-tag TAG --state STATE
+verify-release-lane.py record-review --state STATE --session SESSION --new-p0 N --new-p1 N --open-p0 N --open-p1 N
+verify-release-lane.py run-canary --state STATE --id ID --out RECEIPT -- COMMAND [ARG ...]
+verify-release-lane.py certify --state STATE --verification-receipt PATH --canary ID=PATH --out RECEIPT
+verify-release-lane.py status --state STATE
+```
 
-`rev-prompt.sh` and `rev-seat.sh` validate the matching authorization before a paid
-adaptive launch. This prevents a relabeled third plan or verification panel even if
-host prose is ignored. Legacy sessions without convergence state cannot resume a
-write-capable adaptive run under the new plugin; they require a fresh session.
+`init` validates stable and candidate identities before writing immutable generation-1
+state. An exact repeat is idempotent; a different repeat fails.
 
-## Immutable session inputs
+`record-review` invokes the installed stable engine's
+`scripts/rev-contract-check.py --verify-only` against the session, validates the
+session coverage receipt and source tree, records the supplied P0/P1 decision counts,
+and advances at most once to `correction-required`. The second record may only be for a
+new candidate commit produced by generation-1 P0/P1 repairs. It records `clean`,
+`blocked`, or `infrastructure-blocked` and never authorizes generation 3.
 
-Add `scripts/lib/session_inputs.py` with a shared session-input lock and these
-responsibilities:
+P0/P1 counts are explicit host decisions because severity and source verification are
+orchestrator responsibilities. `record-review` also requires the session findings and
+state artifacts to be hash-bound, so the decision cannot later be paired with different
+review bytes.
 
-- Define the four standard inputs: `scope.env`, `roster.json`, `files.txt`, and
-  `untracked.txt`.
-- Stage and atomically install those inputs while holding the lock.
-- Treat any session evidence manifest as a seal, including a malformed manifest.
-- Refuse an input replacement after sealing without changing existing bytes.
-- Reject symlinks, nonregular files, and redirected lock paths.
+`run-canary` accepts only a required canary ID, runs the argument vector without a
+shell, captures a bounded log, and writes a receipt only for exit 0. It binds the
+current trigger path identities. It may run before unrelated final commits without
+becoming stale.
 
-`rev-preflight.sh` builds all four inputs in a private staging directory, then installs
-them through this helper. It checks for a sealed target before the paid roster probe.
+`certify` requires a clean final candidate, the latest review generation to be clean on
+that exact Git tree, a valid deterministic verifier receipt, every required current
+canary, no extra unknown canary, and no session-wide audit stop. It writes one immutable
+`release-receipt.json`. It never pushes, publishes, tags, merges, or installs.
 
-`roster.py --write` uses the same helper when its destination is a session
-`roster.json`.
+State, review records, canary receipts, and the final receipt use canonical JSON,
+same-directory atomic publication, regular one-link file validation, a no-follow lock,
+and collision refusal.
 
-`rev-evidence.py prepare` holds the shared lock from its first input read through
-manifest publication. Therefore input installation either finishes before evidence
-preparation or is rejected after the manifest seals the old bytes. A manifest can
-never bind a mixed input generation.
+## Publication and installation
 
-An initialized session resumes from its existing inputs. It never reruns preflight or
-provider probing. Quota fallback continues to use a fresh sibling session and the
-existing byte and content-addressed source comparisons.
+After certification, the normal human-authorized sequence remains:
 
-## Session-wide hard audit stop
+1. push the feature branch and wait for green CI;
+2. squash-merge the PR;
+3. verify version and changelog from the merged commit;
+4. create and verify the signed release tag;
+5. publish the GitHub release;
+6. update the local plugin cache through the plugin-creator install flow;
+7. start a fresh host session and verify discovery.
 
-Change `scripts/lib/rev-attempt.py` so a hard evidence-audit failure writes a
-session-wide stop marker under a session lock as well as the panel diagnostic.
+Post-release discovery is a smoke check, not another release review generation. A P0
+or P1 found after publication causes a follow-up release or yank decision. It never
+rewrites the already published candidate in place.
 
-Every later `check` and `reserve`, for every label, reads the session marker before
-reserving a provider call. Existing evidence-scoped invalid audits also count as a
-session stop for backward compatibility. The diagnostic says to use a fresh session,
-not a fresh panel label.
+## Compatibility and non-goals
 
-Seats already running when a sibling fails may finish or be canceled by the host.
-No seat that has not yet reserved a call may start afterward.
-
-Legacy full-scope audit advisories do not create the hard-stop marker.
-
-## Promoted review coverage
-
-Promoted coverage normally changes assignments inside an existing panel rather than
-adding another panel generation.
-
-- `Regression and integration`: the full-state verification owner always rereads the
-  cumulative diff and traces the changed behavior through its consumers end to end.
-- `Contract and consumer compatibility`: add this emphasis when public APIs,
-  protocols, schemas, serialization, CLI output, or cross-repository interfaces
-  change.
-- `Recovery and idempotency`: add this emphasis for persistence, external writes,
-  migrations, retries, concurrency, CI orchestration, and partial failure.
-- `Security and trust boundaries`: add this emphasis for authentication,
-  authorization, signatures, secrets, untrusted input, and privilege transitions.
-
-The one always-present red-team assignment is composed with the most relevant
-verification seat. It never replaces a canonical risk bundle.
-
-The full high-risk red-team panel uses four distinct adversarial assignments:
-
-1. Attacker behavior and trust boundaries.
-2. State corruption, rollback, and recovery.
-3. Concurrency, duplication, and resource exhaustion.
-4. Consumer contracts and compatibility.
-
-Red-team findings join the initial root-cause clusters and fix plan. The full panel
-runs before code changes so it cannot create an extra post-verification repair cycle.
-It never grants another correction generation.
-
-## Verification and publication
-
-Focused tests run after each edit. The evidence fixture runs after a coherent contract
-cluster. The complete local gate runs once for each final candidate tree, and an exact
-unchanged tree reuses its existing verification receipt.
-
-`rev-pr-review.py` refuses to render or publish a successful code-review report unless
-`convergence.receipt.json` is valid and matches the latest coverage and reviewed
-snapshot. Stack finalization applies the same requirement to each publishable leg.
-
-Publication failure remains independently recoverable under the existing pending
-review transaction. Convergence certification does not authorize pushing,
-publication, or merging.
-
-## Compatibility
-
-- Existing evidence manifests seal their sessions immediately.
-- An existing write-capable session without convergence state cannot be certified by
-  the new release. Start a fresh session so the correction budget is unambiguous.
-- Existing read-only artifacts remain readable and reportable.
-- No change is required to the provider findings schema.
-- Quota fallback remains one fresh full-panel restart and inherits the logical panel
-  authorization from its parent receipt. It cannot reset the correction allowance.
+- Ordinary adaptive, numeric, read-only, document, and stack convergence rules remain
+  unchanged except for the global safety and composite red-team additions above.
+- No generic `rev-convergence.py` is added.
+- PR review rendering and publication keep the canonical badge, headings, tip,
+  decisions section, and collapsible sections exactly as already implemented.
+- Existing release artifacts remain readable. Only new releases use the lane state.
+- The lane does not decide whether a finding is true or assign severity.
+- The lane does not grant push, merge, tag, release, or installation authority.
 
 ## Tests
 
-All behavior changes use red-green TDD.
+Every behavior change follows red-green TDD. Focused tests cover hard-stop races,
+session-input sealing and lock order, composite red-team wording, stable engine byte
+and mode identity, signed-tag and version mismatches, dirty or moved candidates,
+review-generation limits, stable contract and coverage tampering, deterministic
+receipt and log validation, canary selection and staleness, output collisions, and
+final certification.
 
-### Session inputs
-
-- A sealed preflight rerun fails before the roster stub and preserves all four hashes.
-- Direct `roster.py --write` cannot replace a sealed roster.
-- A deterministic race between input installation and evidence preparation produces
-  either the complete old generation or the complete new generation, never a mix.
-- A resumed evidence-bearing session performs no provider probe.
-
-### Audit stop
-
-- A hard audit failure in label `r1` prevents a provider reservation under label `r2`.
-- The refusal preserves the original invalid result and audit bytes.
-- Concurrent reservations observe a single session stop state.
-- A legacy advisory does not stop the session.
-
-### Convergence
-
-- Initial plan and verification authorizations succeed.
-- Every verification contains one red-team assignment without losing a canonical
-  risk bundle.
-- High-risk and user-marked-important changes permit exactly one full red-team panel
-  before the initial plan, while ordinary changes permit none unless requested.
-- The full red-team panel carries all four distinct adversarial assignments.
-- Contract, recovery, security, and regression promotions route into existing panels
-  without increasing their generation count.
-- A clean first verification refuses another plan or verification.
-- A first-verification P0/P1 permits exactly one correction plan and verification.
-- A clean correction verification certifies.
-- A correction verification with a new or open P0/P1 becomes nonconvergent and refuses
-  every later semantic panel.
-- P2/P3-only triage never consumes the correction allowance.
-- Origin counts must balance and unknown P0/P1 stays blocking.
-- A quota-fallback sibling cannot reset the parent allowance.
-- Numeric mode honors its explicit minimum without generic automatic extension.
-
-### Completion
-
-- Missing, stale, tampered, nonconvergent, or infrastructure-blocked convergence
-  receipts prevent normal and stack publication.
-- A receipt matching the final coverage head and snapshot permits the existing
-  publication transaction.
-- Pressure scenarios confirm both host skills stop after the correction verification
-  instead of inventing a new label or continuing because the fix is nontrivial.
-
-## Non-goals
-
-- Replacing the skill-driven host with a monolithic runner.
-- Automatically deciding whether a behavioral defect is a fix-of-fix.
-- Lowering reviewer effort, roster size, or four-bundle final coverage.
-- Adding arbitrary wall-clock, token, or cost termination thresholds.
-- Changing GitHub review formatting or publication transaction semantics.
+The complete frozen-tree verifier remains the final deterministic gate.
