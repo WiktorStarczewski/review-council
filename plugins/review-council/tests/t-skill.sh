@@ -412,7 +412,7 @@ test_skill_contract() {
     assert_grep "stack distinguishes permanent roster status" "$H" 'Exit 6 is permanent'
   done
   assert_grep "Claude stack documents post-push PR review publication" "$ST" \
-    '[Pp]ublishes each completed$'
+    'only then is each completed review published'
   assert_grep "Codex stack documents post-push PR review publication" "$CST" \
     '[Pp]ublishes each completed session'
 
@@ -434,8 +434,20 @@ test_skill_contract() {
     '^  "decisions": \[$'
   assert_grep "PR review publisher uses a COMMENTED review" "$PRDOC" \
     '`gh pr review --comment`'
-  assert_grep "PR review publication keeps exact-body idempotence" "$PRDOC" \
-    '[Ii]dentical body is success without a duplicate post'
+  assert_grep "PR review publication keeps the inspected bytes" "$PRDOC" \
+    'reads the saved Markdown without rerendering'
+  local first_report_line
+  first_report_line=$(awk '/^## Report/{inside=1; next} inside && NF{print; exit}' "$K")
+  assert_eq "Claude report schema is not nested under publication" \
+    "${first_report_line%%,*}" '1. **Outcome**'
+  assert_grep "shared publication contract freezes the reviewed target" "$PRDOC" \
+    'frozen.*PR.*head'
+  assert_grep "shared publication contract requires COMMENTED-state idempotence" "$PRDOC" \
+    'exact `COMMENTED` review'
+  assert_grep "shared publication contract requires the stack push barrier" "$PRDOC" \
+    'every completed repository.*push'
+  assert_grep "shared publication contract requires post-squash final rendering" "$PRDOC" \
+    'squash.*render'
   assert_nogrep "Codex host does not prohibit required PR publication" "$CK" \
     'not authorize pushing, publishing'
   assert_grep "Codex host limits publication authority to the canonical review" "$CK" \

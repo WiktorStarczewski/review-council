@@ -76,8 +76,10 @@ badge, verdict tip, decisions, fixes, verified-sound, coverage, and footer as a
 `COMMENTED` GitHub review. Read-only code reviews publish too. A local branch or
 document review without an associated open PR does not post. An identical body is not
 posted twice, and other publication failures keep the review incomplete with a retry
-command. Stack sessions publish after their final squash and push; `NO_PUSH=1`
-suppresses publication.
+command. The inspected body and PR target are frozen for exact retries. Stack sessions
+publish only after every completed repository pushes; a changed-head squash must
+preserve the inspected tree and rerender SHA links against the pushed aggregate
+commit. `NO_PUSH=1` suppresses publication.
 
 Adaptive code panels use hashed scope manifests and semantic dependency components.
 Mechanical lockfiles, generated output, snapshots, and locale copies go to one named

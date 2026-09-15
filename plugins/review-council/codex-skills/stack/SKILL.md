@@ -54,6 +54,9 @@ Inspect completion receipts, not just process exit codes. A missing `report.md`,
 failed leg, or `COMPLETE WITH FAILURES` means the stack is incomplete. Never label a
 partial stack clean. Summarize per-repository results, seam findings, critic findings,
 actual provider coverage, tests, commit/publication status, and the session-root path.
-The stack publishes each completed session's canonical PR review only after its final
-squash and push. No associated open PR skips cleanly; missing review input or a GitHub
-publication failure makes the stack incomplete. `NO_PUSH=1` suppresses publication.
+The stack follows `docs/pr-review.md` and publishes each completed session's canonical
+PR review only after every completed repository pushes successfully. A changed-head
+squash must preserve the inspected tree, maps fix and decision SHA links to the pushed
+aggregate commit, and renders the final body before publication. No associated open
+PR skips cleanly; a push, finalization, missing-input, or publication failure makes
+the stack incomplete. `NO_PUSH=1` suppresses publication.

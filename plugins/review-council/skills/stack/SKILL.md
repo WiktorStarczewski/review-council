@@ -140,11 +140,13 @@ refused squash is logged (`!!! squash refused for <repo>`) and the push still ha
 because the round commits are real work that CI has to see. If a repo prints
 "refusing: … only N unpushed", something was pushed mid-run - leave that history alone.
 
-After every completed repository is pushed, `stack.sh` publishes each completed
-session's canonical `pr-review.md` through `rev-pr-review.py`. It skips sessions with
-no associated open PR and suppresses an identical prior review. A missing input or
-publication failure makes the stack incomplete. `NO_PUSH=1` also suppresses external
-review publication.
+After every completed repository is pushed successfully, `stack.sh` follows
+`docs/pr-review.md`: a changed-head squash must preserve the inspected tree, both fix
+and decision SHA links are mapped to the pushed aggregate commit, the canonical body
+is rendered again, and only then is each completed review published. It skips
+sessions with no associated open PR and suppresses an exact prior `COMMENTED` review.
+A push, finalization, missing-input, or publication failure makes the stack incomplete.
+`NO_PUSH=1` suppresses external review publication.
 
 A repo whose leg never completed is **not** finished: it is skipped (no squash, no
 push) and the run ends `COMPLETE WITH FAILURES: <labels>` with a non-zero exit instead

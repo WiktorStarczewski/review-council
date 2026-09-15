@@ -869,18 +869,19 @@ Action:   Fixed in round 3 (a1b2c3d) - retry only on 5xx and network errors.
 Status ∈ `OPEN | FIXED | REJECTED (reason) | DEFERRED (reason)`. Every finding ends
 in one of them; never drop one silently. Round blocks append after the entries.
 
-## Report (`$S/report.md` and in chat)
-
-### PR review publication
+## PR review publication
 
 For every completed code review, read
 `${CLAUDE_PLUGIN_ROOT}/docs/pr-review.md` and follow it exactly. Write the structured
 `$S/pr-review.json`, render the canonical `$S/pr-review.md`, inspect its facts, and
 publish it as a `COMMENTED` GitHub PR review. This applies to normal and read-only
 code reviews. A branch with no associated open PR skips cleanly. Document reviews do
-not post. In stack-leg mode, prepare and render the body but leave publication to the
-stack after its final squash and push. A required publication failure writes
+not post. In stack-leg mode, prepare and render the body but leave guarded
+finalization, final rendering, and publication to the stack after its final squash and push.
+A required publication failure writes
 `incomplete.md` and blocks `phase=done` and `report.md`.
+
+## Report (`$S/report.md` and in chat)
 
 1. **Outcome**, in prose, first: what was wrong with the code and whether the change
    is sound now. When `roster.json` has `"degraded": true`, open with `Degraded panel:`
@@ -900,7 +901,7 @@ shallow review is the one failure this skill exists to prevent.
 ## Session directory
 
 ```
-scope.env  files.txt  untracked.txt  roster.json  00-baseline.patch  baseline.md  findings.md  rejected.md  state.json  pr-review.json  pr-review.md  report.md
+scope.env  files.txt  untracked.txt  roster.json  00-baseline.patch  baseline.md  findings.md  rejected.md  state.json  pr-review.json  pr-review.md  pr-review-target.json  report.md
 r<N>-<seat>.prompt.md   r<N>-<seat>.json   r<N>-<seat>.log   r<N>-<seat>.stream.ndjson   r<N>-<seat>.exit
 fix-plan.md   context.md   r<N>p-<seat>.prompt.md   r<N>p-<seat>.json
 ```

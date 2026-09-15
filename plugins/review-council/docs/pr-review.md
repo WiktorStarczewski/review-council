@@ -5,7 +5,9 @@ one `COMMENTED` review before the run reports success. Reviews without an associ
 open PR do not post. Document reviews do not post.
 
 The renderer owns the exact Markdown structure. Do not hand-build, reorder, rename,
-remove, or add sections in `pr-review.md`.
+remove, or add sections in `pr-review.md`. It also writes
+`pr-review-target.json`, which freezes the associated PR, reviewed head and tree,
+footer date, and exact body hash.
 
 Set `PLUGIN_ROOT` to the plugin root already resolved by the host: `PLUGIN` on Codex
 or `CLAUDE_PLUGIN_ROOT` on Claude Code.
@@ -90,6 +92,12 @@ Read `$S/pr-review.md` and check every claim, count, model, link, commit, gate, 
 test total against the completed session and pushed head. Do not edit the Markdown.
 Correct `pr-review.json` and render again when anything is wrong.
 
+For an associated PR, render resolves the branch and base recorded by preflight,
+requires an open PR at the reviewed local head, and freezes that PR and head in the
+target envelope. A normal or read-only review therefore renders only after its final
+authorized push. Stack legs may render their unpushed reviewed head because the stack
+performs the guarded final transition below.
+
 For a normal or read-only code review, publish before setting `phase=done` or writing
 `report.md`:
 
@@ -97,14 +105,20 @@ For a normal or read-only code review, publish before setting `phase=done` or wr
 python3 "$PLUGIN_ROOT/scripts/rev-pr-review.py" publish "$S"
 ```
 
-The publisher resolves the current branch's open PR, skips cleanly when none exists,
-checks all existing PR reviews for an identical body, and posts with
-`gh pr review --comment`. An identical body is success without a duplicate post.
+The publisher reads the saved Markdown without rerendering it, verifies its body hash,
+and revalidates the frozen PR identity, open state, branch, and head. It checks all
+existing reviews and treats only an exact `COMMENTED` review body as idempotent
+success, then posts with `gh pr review --comment`. A real no-PR association skips
+cleanly; missing session scope or artifacts for an associated PR fail closed.
 
 Any other nonzero exit leaves the PR review incomplete. Preserve `pr-review.json` and
 `pr-review.md`, write `incomplete.md` with the failure and retry command, and do not
 set `phase=done` or write the success receipt.
 
 In `REV_STACK_LEG=1`, render and inspect the body but do not publish it. The stack
-publishes completed session bodies only after its final squash and push phase. A
-stack publication failure makes the stack incomplete.
+does not publish anything until every completed repository has pushed successfully.
+When a squash changes commit identity, guarded final rendering first proves that the pushed
+aggregate commit has the inspected tree, maps both fix commit links and decision blob
+links to that aggregate SHA, and runs the sole renderer again with the frozen date.
+Read the final body before reporting success. A push, tree check, finalization, or
+publication failure makes the stack incomplete and suppresses the completion marker.

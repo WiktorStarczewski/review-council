@@ -530,8 +530,9 @@ Before completing any code review, read `$PLUGIN/docs/pr-review.md` and follow i
 exactly. Write `S/pr-review.json`, render and inspect `S/pr-review.md`, and publish it
 as a `COMMENTED` GitHub PR review. This applies to normal and read-only code reviews.
 A branch with no associated open PR skips cleanly. Document reviews do not post. In
-`REV_STACK_LEG=1`, prepare and render the body but leave publication to the stack
-after its final squash and push. A required publication failure writes
+`REV_STACK_LEG=1`, prepare and render the body but leave guarded finalization, final
+rendering, and publication to the stack after its final squash and push. A required
+publication failure writes
 `incomplete.md` and blocks `phase=done` and `report.md`.
 
 After publication succeeds or cleanly skips, set `phase=done` and write `S/report.md`

@@ -52,8 +52,9 @@ Key properties:
 - Status and usage are read from session artifacts without another model call.
 - Completed PR reviews use one deterministic `COMMENTED` review format with the
   badge, verdict tip, decisions, fixes, verified-sound, coverage, and footer sections.
-  Identical retries do not create duplicate posts. Local branches and document
-  reviews without an associated open PR do not post.
+  The inspected body, open PR, and reviewed head are frozen for exact retries, and
+  only an identical `COMMENTED` review suppresses a duplicate post. Local branches
+  and document reviews without an associated open PR do not post.
 
 ## Install
 
