@@ -279,3 +279,24 @@ test_seat_process_group_cancellation_preserves_partial_stream() {
     "$S/rkill-codex-sol.stream.ndjson" '"type":"item.started"'
   seat_env_reset "$_path"
 }
+
+test_session_audit_stop_serializes_reservations() {
+  ( local session="$T/session-stop-reservations" prompt="$T/session-stop.prompt.md"
+    mkdir -p "$session"; printf 'review\n' > "$prompt"
+    python3 "$SCRIPTS/lib/rev-attempt.py" stop "$session" r1 --reason "hard evidence audit failed" &
+    local stop_pid=$!
+    local i=0
+    while [ ! -e "$session/attempts/session.stopped.json" ] && kill -0 "$stop_pid" 2>/dev/null && [ "$i" -lt 100 ]; do
+      sleep 0.02; i=$((i + 1))
+    done
+    wait "$stop_pid"; assert_eq "hard evidence audit stop completes" "$?" 0
+    python3 "$SCRIPTS/lib/rev-attempt.py" reserve "$session" r2 codex-sol "$prompt" >/dev/null 2>&1 &
+    local r2_pid=$!
+    python3 "$SCRIPTS/lib/rev-attempt.py" reserve "$session" r3 codex-terra "$prompt" >/dev/null 2>&1 &
+    local r3_pid=$!
+    wait "$r2_pid"; assert_eq "first post-stop reservation is refused" "$?" 2
+    wait "$r3_pid"; assert_eq "second post-stop reservation is refused" "$?" 2
+    assert_eq "post-stop reservations create no attempt state" \
+      "$(find "$session/attempts" -type f -name '*.json' ! -name '*stopped.json' -print -quit)" ""
+  )
+}

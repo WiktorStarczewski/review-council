@@ -2208,7 +2208,7 @@ EOF
     assert_eq "hard-audit relaunch refusal preserves the invalid audit" \
       "$(shasum -a 256 "$S/r1-codex-sol.read-audit.json" | awk '{print $1}')" "$audit_hash"
     assert_grep "hard-audit relaunch refusal names the existing marker" \
-      "$T/narrow-relaunch.out" 'prior hard audit failure.*fresh panel label'
+      "$T/narrow-relaunch.out" 'review session stopped after a hard evidence audit failure.*fresh review session'
     SHIM_MODE=ok SHIM_CALLS_FILE="$T/narrow-refusal.calls" \
       "$SCRIPTS/rev-seat.sh" codex-terra "$S" 1 "$S/p.md" > "$T/sibling-relaunch.out" 2>&1
     assert_eq "hard-audit marker refuses a sibling under the same panel label" "$?" 2
@@ -2217,7 +2217,28 @@ EOF
     assert_exit "sibling hard-audit refusal creates no attempt reservation" 1 \
       grep -R -q -- '"seat":"codex-terra"' "$S/attempts"
     assert_grep "sibling hard-audit refusal names the stopped panel" \
-      "$T/sibling-relaunch.out" 'prior hard audit failure.*fresh panel label'
+      "$T/sibling-relaunch.out" 'review session stopped after a hard evidence audit failure.*fresh review session'
+  )
+}
+
+test_session_audit_stop_crosses_panel_labels() {
+  ( seat_env; local session="$T/session-audit-stop"; seat_roster "$session"
+    printf 'review\n' > "$session/r2-codex-sol.prompt.md"
+    printf 'invalid result\n' > "$session/r1-codex-sol.invalid.json"
+    printf 'invalid audit\n' > "$session/r1-codex-sol.audit.json"
+    : > "$SHIM_ARGS_FILE"
+    python3 "$SCRIPTS/lib/rev-attempt.py" stop "$session" r1 --reason "hard evidence audit failed"
+    assert_eq "hard evidence audit stop persists" "$?" 0
+    local before
+    before=$(sha256sum "$session/r1-codex-sol.invalid.json" "$session/r1-codex-sol.audit.json")
+    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$session" r2 "$session/r2-codex-sol.prompt.md" \
+      >"$T/session-stop.out" 2>"$T/session-stop.err"
+    assert_eq "a different label cannot bypass the hard stop" "$?" 2
+    assert_eq "the stopped session launches no provider" "$(wc -l < "$SHIM_ARGS_FILE" | tr -d ' ')" 0
+    assert_eq "hard-audit evidence stays byte-identical" \
+      "$(sha256sum "$session/r1-codex-sol.invalid.json" "$session/r1-codex-sol.audit.json")" "$before"
+    assert_grep "the refusal requires a fresh session" "$T/session-stop.err" \
+      'hard evidence audit failed.*fresh review session'
   )
 }
 

@@ -93,7 +93,7 @@ preserve_audit_invalid_result() {
   fi
 }
 stop_panel_generation() {
-  python3 "$HERE/lib/rev-attempt.py" stop "$SESSION" "$ROUND" >>"$LOG" 2>&1
+  python3 "$HERE/lib/rev-attempt.py" stop "$SESSION" "$ROUND" --reason "hard evidence audit failed" >>"$LOG" 2>&1
 }
 
 finish() {  # <code> - validate on 0, record, print the one-line summary, exit
@@ -140,11 +140,11 @@ has_tool_call() {
 # one WITHOUT reading anything, even when the prompt says to run tools first (seen live: summary "I'll
 # inspect the diff…", zero findings, zero tool calls). An answer with no tool calls is not a review: retry
 # once at the same effort, then fail the seat so the orchestrator's retry/skip rule applies.
-python3 "$HERE/lib/rev-attempt.py" check "$SESSION" "$ROUND" >/dev/null 2>&1
+PANEL_CHECK_ERROR=$(python3 "$HERE/lib/rev-attempt.py" check "$SESSION" "$ROUND" 2>&1)
 PANEL_CHECK_RC=$?
 if [ "$PANEL_CHECK_RC" -eq 2 ]; then
-  echo "prior hard audit failure blocks this seat generation; use a fresh panel label" >> "$LOG"
-  echo "rev-seat: prior hard audit failure blocks this seat generation; use a fresh panel label" >&2
+  echo "$PANEL_CHECK_ERROR" >> "$LOG"
+  printf 'rev-seat: %s\n' "$PANEL_CHECK_ERROR" >&2
   finish 2
 elif [ "$PANEL_CHECK_RC" -ne 0 ]; then
   echo "cannot validate panel attempt state" >> "$LOG"
