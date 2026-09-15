@@ -81,8 +81,8 @@ integration boundaries. Other emphases are composed when relevant:
 - security and trust boundaries for authentication, authorization, signatures,
   secrets, untrusted input, and privilege changes.
 
-Large, high-risk, or user-marked-important adaptive reviews may add one full red-team
-panel before planning. A change is high-risk when it crosses a security, persistence,
+Large, high-risk, user-marked-important, or explicitly adversarial adaptive reviews
+run exactly one full red-team panel before planning. A change is high-risk when it crosses a security, persistence,
 concurrency, transaction, protocol, public API, or irreversible mutation boundary.
 Explicit numeric schedules do not silently gain another panel, but their final code
 panel still contains the composite red-team assignment.

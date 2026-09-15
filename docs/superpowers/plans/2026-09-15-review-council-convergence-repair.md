@@ -14,7 +14,7 @@
 
 - Ordinary adaptive, numeric, read-only, document, and stack stopping rules remain unchanged.
 - Every code panel gets one composite red-team assignment without adding a provider call.
-- Large, high-risk, important, or explicitly adversarial adaptive reviews may add one full red-team panel before planning.
+- Large, high-risk, important, or explicitly adversarial adaptive reviews run exactly one full red-team panel before planning.
 - Release review uses the installed signed N-1 plugin, never the candidate plugin.
 - Release review gets one complete read-only generation and at most one read-only delta generation after P0/P1 repairs.
 - Only P0 and P1 findings change or block the release. P2 and P3 are recorded and deferred.
@@ -289,7 +289,7 @@ For both host skills, assert:
 one existing seat receives composite red-team emphasis in every code panel
 the emphasis never replaces the canonical lens or bundle
 numeric mode adds no panel for the composite assignment
-large, high-risk, important, or explicit adaptive review may run one full red-team panel before planning
+large, high-risk, important, or explicit adaptive review runs exactly one full red-team panel before planning
 the four full-panel adversarial assignments are distinct
 compatibility, recovery, security, and integration routing is explicit
 ordinary stopping rules remain unchanged
