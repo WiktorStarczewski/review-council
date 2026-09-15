@@ -1420,6 +1420,7 @@ class ReleaseDocumentationTests(unittest.TestCase):
             "targeted canaries",
             "squash merge",
             "signed tag",
+            "git verify-tag review-council--v0.4.3",
             "fresh-session discovery",
             "python3 scripts/verify-release-lane.py requirements --root .",
             "python3 scripts/verify-review-council.py --root .",

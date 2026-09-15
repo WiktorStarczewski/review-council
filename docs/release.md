@@ -22,10 +22,17 @@ used only for the deterministic gate and final certification.
 
 ## Prepare and inspect the candidate
 
-Run from the candidate repository root on a clean checkout. Set `STABLE_PLUGIN` to
-the direct path of the installed, exact `0.4.3` plugin bundle. Keep the review session
-and receipt paths outside the repository, and make each receipt immutable after it is
-written.
+Run from the candidate repository root on a clean checkout. Before trusting the N-1
+bundle or setting `STABLE_PLUGIN`, verify the signed stable tag and stop if signature
+verification fails:
+
+```bash
+git verify-tag review-council--v0.4.3
+```
+
+Only after that check, set `STABLE_PLUGIN` to the direct path of the installed, exact
+`0.4.3` plugin bundle. Keep the review session and receipt paths outside the
+repository, and make each receipt immutable after it is written.
 
 First ask the release authority which canaries are required for the candidate:
 
