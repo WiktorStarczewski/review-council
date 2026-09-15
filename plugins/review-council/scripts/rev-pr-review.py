@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import datetime
 import fcntl
 import hashlib
+import html
 import json
 import os
 from pathlib import Path
@@ -49,6 +50,29 @@ def inline(value, field):
     return value.strip()
 
 
+def prose(value, field):
+    value = inline(value, field)
+    rendered = []
+    start = 0
+    cursor = 0
+    while cursor < len(value):
+        if value[cursor] != "`":
+            cursor += 1
+            continue
+        end = cursor + 1
+        while end < len(value) and value[end] == "`":
+            end += 1
+        ticks = value[cursor:end]
+        closer = re.compile(r"(?<!`)" + re.escape(ticks) + r"(?!`)").search(value, end)
+        require(closer is not None, f"{field} contains an unmatched backtick delimiter")
+        rendered.append(html.escape(value[start:cursor], quote=False))
+        rendered.append(value[cursor:closer.end()])
+        cursor = closer.end()
+        start = cursor
+    rendered.append(html.escape(value[start:], quote=False))
+    return "".join(rendered)
+
+
 def count(value, field, positive=False):
     require(isinstance(value, int) and not isinstance(value, bool), f"{field} must be an integer")
     require(value >= (1 if positive else 0), f"{field} is out of range")
@@ -66,13 +90,19 @@ def link(value, field, code=False, pattern=None, kind=None):
                 f"{field}.url must be a {kind or 'supported'} GitHub URL")
     require("]" not in label and (not code or "`" not in label),
             f"{field}.label contains Markdown delimiters")
-    return f"[`{label}`]({url})" if code else f"[{label}]({url})"
+    return f"[`{label}`]({url})" if code else f"[{prose(label, f'{field}.label')}]({url})"
 
 
 def inline_list(value, field):
     require(isinstance(value, list), f"{field} must be a list")
     require(value, f"{field} must not be empty")
     return [inline(item, f"{field}[{index}]") for index, item in enumerate(value)]
+
+
+def prose_list(value, field):
+    require(isinstance(value, list), f"{field} must be a list")
+    require(value, f"{field} must not be empty")
+    return [prose(item, f"{field}[{index}]") for index, item in enumerate(value)]
 
 
 def load_input(path):
@@ -102,19 +132,19 @@ def same_commit(left, right):
 def render(data, date):
     verdict = data.get("verdict")
     require(isinstance(verdict, dict), "verdict must be an object")
-    headline = inline(verdict.get("headline"), "verdict.headline")
-    detail = inline(verdict.get("detail"), "verdict.detail")
+    headline = prose(verdict.get("headline"), "verdict.headline")
+    detail = prose(verdict.get("detail"), "verdict.detail")
     require("**" not in headline, "verdict.headline contains a Markdown delimiter")
     panels = count(data.get("panels"), "panels", positive=True)
     rejected = count(data.get("rejected"), "rejected")
-    gates = inline(data.get("gates"), "gates")
-    panel = inline_list(data.get("panel"), "panel")
+    gates = prose(data.get("gates"), "gates")
+    panel = prose_list(data.get("panel"), "panel")
     decisions = data.get("decisions")
     fixes = data.get("fixes")
     require(isinstance(decisions, list), "decisions must be a list")
     require(isinstance(fixes, list), "fixes must be a list")
-    verified = inline_list(data.get("verified_sound"), "verified_sound")
-    coverage = inline_list(data.get("coverage"), "coverage")
+    verified = prose_list(data.get("verified_sound"), "verified_sound")
+    coverage = prose_list(data.get("coverage"), "coverage")
     date = inline(date, "date")
     require(re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", date) is not None,
             "date must use YYYY-MM-DD")
@@ -124,13 +154,13 @@ def render(data, date):
     for index, decision in enumerate(decisions):
         field = f"decisions[{index}]"
         require(isinstance(decision, dict), f"{field} must be an object")
-        title = inline(decision.get("title"), f"{field}.title")
+        title = prose(decision.get("title"), f"{field}.title")
         require("**" not in title, f"{field}.title contains a Markdown delimiter")
         location = link(decision.get("location"), f"{field}.location", code=True,
                         pattern=BLOB_URL, kind="SHA-pinned blob")
         decision_rows.append(f"- **{title}** · {location}")
         decision_details.append(
-            f"{index + 1}. **{title}** {inline(decision.get('detail'), f'{field}.detail')}"
+            f"{index + 1}. **{title}** {prose(decision.get('detail'), f'{field}.detail')}"
         )
 
     fix_rows = []
@@ -141,7 +171,7 @@ def render(data, date):
         severity = inline(fix.get("severity"), f"{field}.severity")
         require(re.fullmatch(r"P[0-3]", severity) is not None,
                 f"{field}.severity must be P0, P1, P2, or P3")
-        summary = inline(fix.get("summary"), f"{field}.summary").replace("|", "\\|")
+        summary = prose(fix.get("summary"), f"{field}.summary").replace("|", "\\|")
         commit = fix.get("commit")
         commit_link = link(commit, f"{field}.commit", code=True,
                            pattern=COMMIT_URL, kind="SHA-pinned commit")

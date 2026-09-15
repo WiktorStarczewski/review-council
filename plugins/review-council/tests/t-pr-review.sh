@@ -289,6 +289,68 @@ test_pr_review_render() {
   assert_nogrep "PR review renderer emits no diagnostics" "$T/pr-render.err" '.'
 }
 
+test_pr_review_escapes_html_contexts() {
+  local session="$T/pr-html" unmatched="$T/pr-html-unmatched"
+  mkdir -p "$session" "$unmatched"
+  pr_review_input > "$session/pr-review.json"
+  python3 - "$session/pr-review.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+attack = '</details><details>&x'
+data['verdict']['headline'] = f'Safe {attack} and `code <kept>&`'
+data['verdict']['detail'] = attack
+data['gates'] = attack
+data['panel'] = [attack]
+data['decisions'][0]['title'] = attack
+data['decisions'][0]['detail'] = attack
+data['decisions'][0]['location']['label'] = attack
+data['decisions'][0]['location']['url'] = (
+    'https://github.com/acme/repo/blob/0123456/src/a&b.rs')
+data['fixes'][0]['summary'] = attack
+data['fixes'][0]['commit']['label'] = attack
+data['fixed_in']['label'] = attack
+data['verified_sound'] = [attack]
+data['coverage'] = [attack]
+path.write_text(json.dumps(data))
+PY
+  python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 \
+    > "$T/pr-html.out" 2> "$T/pr-html.err"
+  assert_eq "HTML-bearing review prose renders safely" "$?" 0
+  assert_eq "hostile prose cannot add collapsible sections" \
+    "$(grep -c '^<details>$' "$session/pr-review.md")" 4
+  assert_grep "ordinary prose escapes raw HTML" "$session/pr-review.md" \
+    '&lt;/details&gt;&lt;details&gt;&amp;x'
+  assert_grep "balanced inline code remains byte-identical" "$session/pr-review.md" \
+    '`code <kept>&`'
+  assert_grep "decision code labels remain byte-identical" "$session/pr-review.md" \
+    '\[`</details><details>&x`\]\(https://github.com/acme/repo/blob/0123456/src/a&b.rs\)'
+  assert_grep "commit code labels remain byte-identical" "$session/pr-review.md" \
+    '\[`</details><details>&x`\]\(https://github.com/acme/repo/commit/abc1234\)'
+  assert_grep "validated link URLs remain byte-identical" "$session/pr-review.md" \
+    'https://github.com/acme/repo/blob/0123456/src/a&b.rs'
+
+  cp "$session/pr-review.json" "$unmatched/pr-review.json"
+  python3 - "$unmatched/pr-review.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data['decisions'][0]['title'] = 'unmatched ` code'
+path.write_text(json.dumps(data))
+PY
+  python3 "$SCRIPTS/rev-pr-review.py" render "$unmatched" --date 2026-09-15 \
+    > "$T/pr-html-unmatched.out" 2> "$T/pr-html-unmatched.err"
+  assert_eq "unmatched prose backticks fail closed" "$?" 1
+  assert_grep "unmatched backtick failure names the field" \
+    "$T/pr-html-unmatched.err" 'decisions\[0\]\.title.*backtick'
+}
+
 test_pr_review_empty_sections() {
   local session="$T/pr-empty"
   mkdir -p "$session"

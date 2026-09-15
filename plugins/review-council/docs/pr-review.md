@@ -81,6 +81,8 @@ Rules:
   reviewed GitHub remote and commit ancestry.
 - Keep every string on one line. Put depth in the decision details, verified-sound
   bullets, and coverage bullets while preserving the renderer's fixed structure.
+- Free prose may use balanced Markdown code spans. Raw HTML outside those spans is
+  escaped, unmatched backticks are rejected, and URL values are never rewritten.
 - State measured gates and test counts. Do not use an adjective in place of a result.
 
 ## Render, inspect, and publish
