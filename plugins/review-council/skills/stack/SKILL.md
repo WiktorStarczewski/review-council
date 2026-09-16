@@ -89,9 +89,10 @@ the log is the record.
 
 Legs run with `REV_STACK_LEG=1`, so a leg never squashes or pushes; the orchestrator
 does both once per repo at the end (`NO_PUSH=1` to skip the push). Give every
-working branch an upstream of the same name first (`git push -u origin HEAD`): a
-branch created from `origin/main` tracks `main`, and the final `git push` is only
-saved from targeting it by `push.default=simple`. `ROOT` (session root, one
+working branch an upstream of the same name first (`git push -u origin HEAD`). The
+stack fails closed before squash or push when the upstream destination differs from
+the reviewed branch, including a branch created while tracking `origin/main`.
+`ROOT` (session root, one
 `<leg>/` dir each), `LOG`, `PASSES`, `STALL_SECS`, `MAX_ATTEMPTS` are env knobs; see
 the script header.
 
@@ -132,13 +133,31 @@ under sweep load, a "hung" suite that was debug-mode proving, and an E2E spec dy
 `Deadline expired`. Any failure whose text mentions a timeout or deadline is suspect:
 re-run it idle before touching code.
 
-## Finishing: squash, push, then promote
+## Finishing: squash, push, publish, then promote
 
 Each leg commits per round as crash recovery; the orchestrator collapses each repo's run
 with `${CLAUDE_PLUGIN_ROOT}/scripts/rev-squash.sh --apply` and pushes once. Squash and push are **independent**: a
 refused squash is logged (`!!! squash refused for <repo>`) and the push still happens,
 because the round commits are real work that CI has to see. If a repo prints
 "refusing: … only N unpushed", something was pushed mid-run - leave that history alone.
+Before squash, the orchestrator reconciles the validated upstream tracking ref from
+the captured literal push URL. After a pinned push succeeds, it records the immutable
+pushed commit in that ref before checking whether the local branch moved. A retry can
+therefore recognize remote success without rewriting an already-pushed review commit.
+
+After every completed repository is pushed successfully, `stack.sh` follows
+`docs/pr-review.md`: a changed-head squash must preserve the inspected tree, decision
+links and reviewed-PR fix links are mapped to the pushed aggregate commit, the
+canonical body is rendered again, and only then is the latest completed review for
+each canonical repository published. Separate-PR fix links stay pinned. A pushed
+retry derives the transition from the frozen target and current head. It skips
+sessions with no associated open PR and suppresses an exact prior `COMMENTED` review.
+A failed repository is skipped while every successful repository still finalizes and
+publishes; the overall run remains failed. Legs leave `stack-report.md` with
+`phase=stack-ready`. Only successful publication or an explicit no-push skip promotes
+that file to `report.md` and sets `phase=done`. A push, finalization, missing-input,
+or publication failure keeps that repository's ready receipt unpromoted. `NO_PUSH=1`
+suppresses every external GitHub call made by rendering, finalization, and publication.
 
 A repo whose leg never completed is **not** finished: it is skipped (no squash, no
 push) and the run ends `COMPLETE WITH FAILURES: <labels>` with a non-zero exit instead
@@ -159,7 +178,8 @@ generating motion on the consumers.
 
 ## Reading the output
 
-Each leg leaves `<ROOT>/<leg>/report.md` and `findings.md`. Findings cluster into
+Each ready leg leaves `<ROOT>/<leg>/stack-report.md` and `findings.md`; after successful
+stack completion, the ready report is promoted to `report.md`. Findings cluster into
 shapes worth naming when you summarise:
 
 - **Tests that cannot fail** - assertions satisfied by the call under test, fixtures

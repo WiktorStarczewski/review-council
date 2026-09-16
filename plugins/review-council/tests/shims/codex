@@ -4,8 +4,8 @@
 # guard) and must run against the repo root - neither is visible in the arguments alone.
 [ -n "${SHIM_ARGS_FILE:-}" ] && printf '%s\n' "$@" > "$SHIM_ARGS_FILE"
 [ -z "${SHIM_CALLS_FILE:-}" ] || printf '%s\n' call >> "$SHIM_CALLS_FILE"
-[ -n "${SHIM_ARGS_FILE:-}" ] && printf 'REV_ACTIVE=%s\ncwd=%s\nHOME=%s\nCODEX_HOME=%s\nCODEX_AUTH_LINK=%s\n' \
-  "${REV_ACTIVE:-unset}" "$PWD" "$HOME" "${CODEX_HOME:-unset}" \
+[ -n "${SHIM_ARGS_FILE:-}" ] && printf 'REV_ACTIVE=%s\nNO_PUSH=%s\nNO_SQUASH=%s\ncwd=%s\nHOME=%s\nCODEX_HOME=%s\nCODEX_AUTH_LINK=%s\n' \
+  "${REV_ACTIVE:-unset}" "${NO_PUSH:-unset}" "${NO_SQUASH:-unset}" "$PWD" "$HOME" "${CODEX_HOME:-unset}" \
   "$([ -L "${CODEX_HOME:-/missing}/auth.json" ] && echo yes || echo no)" >> "$SHIM_ARGS_FILE.env"
 if [ "${1:-}" = login ] && [ "${2:-}" = status ]; then
   [ "${SHIM_MODE:-ok}" = notauth ] && { echo "Not logged in"; exit 1; }

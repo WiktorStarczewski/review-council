@@ -109,6 +109,18 @@ test_skill_contract() {
   # C-13 and C-14: both hosts keep panel state exact and numeric mode compatible.
   local H
   for H in "$K" "$CK"; do
+    assert_grep "host recognizes a fresh input session" "$H" \
+      '`fresh`: none of the four inputs exists, so preflight may run once'
+    assert_grep "host recognizes an initialized input session" "$H" \
+      '`initialized`: all four safe inputs exist, so validate and reuse them without probing'
+    assert_grep "host rejects an invalid input session" "$H" \
+      '`invalid`: a partial or unsafe set exists, so stop incomplete and use a fresh session'
+    assert_nogrep "host never rebuilds an initialized session roster" "$H" \
+      '[Rr]oster is rebuilt every run'
+    assert_grep "fresh session rebuilds the roster once" "$H" \
+      '[Aa] fresh session rebuilds its roster once during preflight'
+    assert_grep "roster configuration changes require a fresh session" "$H" \
+      '[Rr]oster configuration changes require a fresh session'
     assert_grep "host forbids cherry-picking the workflow" "$H" \
       'executable workflow contract.*Do not cherry-pick'
     assert_grep "host refuses certification without required artifacts" "$H" \
@@ -180,6 +192,46 @@ test_skill_contract() {
       '[Ww]ith four core seats.*one canonical bundle per seat'
     assert_grep "composite bundles use one canonical assignment" "$H" \
       'join.*bundle names with `\+`'
+    assert_grep "every code panel receives one composite red-team seat" "$H" \
+      'Every code panel, including explicit numeric and read-only code panels, gives one existing core seat a composite red-team emphasis'
+    assert_grep "composite red-team emphasis preserves canonical coverage" "$H" \
+      'supplements and never replaces the canonical lens, bundle, fixed numeric lens, or evidence assignment'
+    assert_grep "composite red-team ownership rotates deterministically" "$H" \
+      'Select it deterministically from stable roster order and rotate it across code panels'
+    assert_grep "numeric mode adds no composite panel" "$H" \
+      'Numeric mode adds no panel for this composite assignment'
+    assert_grep "qualifying adaptive reviews run one full red-team panel before planning" "$H" \
+      'Large, high-risk, user-marked-important, or explicitly adversarial adaptive reviews run exactly one full red-team panel before planning'
+    assert_grep "full red-team reuses risk evidence and canonical bundles" "$H" \
+      'PANEL_PHASE=risk.*existing four canonical bundle assignments'
+    assert_grep "full red-team assignments are explicitly distinct" "$H" \
+      'four distinct composed adversarial assignments'
+    assert_grep "full red-team covers attacker behavior and trust boundaries" "$H" \
+      'correctness and boundaries plus attacker behavior and trust boundaries'
+    assert_grep "full red-team covers rollback and recovery" "$H" \
+      'security, state, and API plus rollback and recovery'
+    assert_grep "full red-team covers duplication and exhaustion" "$H" \
+      'concurrency, resources, and performance plus duplication and exhaustion'
+    assert_grep "full red-team covers compatibility and integration" "$H" \
+      'tests, observability, and regression plus consumer compatibility and integration'
+    assert_grep "full red-team concatenates multi-bundle emphases" "$H" \
+      '[Ww]hen a core seat carries multiple canonical bundles.*concatenate.*matching adversarial emphases.*single prompt'
+    assert_grep "full red-team cycles surplus-seat emphases" "$H" \
+      '[Ff]or surplus seats.*cycle.*mapped adversarial emphasis.*canonical bundle'
+    assert_grep "verification owner traces integration boundaries" "$H" \
+      '[Vv]erification owner always traces the cumulative change through consumers and integration boundaries'
+    assert_grep "compatibility routing is explicit" "$H" \
+      'compatibility and consumer contracts for public APIs, protocols, schemas'
+    assert_grep "recovery routing is explicit" "$H" \
+      'recovery and idempotency for persistence, external writes, migrations, retries'
+    assert_grep "security routing is explicit" "$H" \
+      'security and trust boundaries for authentication, authorization, signatures'
+    assert_grep "red-team findings join initial clusters without another cycle" "$H" \
+      'joins the same initial finding clusters and does not grant another correction cycle'
+    assert_grep "ordinary stopping rules remain unchanged" "$H" \
+      'The ordinary adaptive and numeric stopping rules remain unchanged'
+    assert_grep "document reviews exclude automatic red-team coverage" "$H" \
+      'Document panels receive no automatic red-team assignment unless the user explicitly requests an adversarial document review'
     assert_grep "evidence owns component assignment" "$H" \
       '`rev-evidence\.py` owns semantic component assignment'
     assert_grep "components retain specialist and integration coverage" "$H" \
@@ -410,7 +462,96 @@ test_skill_contract() {
     assert_grep "stack excludes plan panels from numeric count" "$H" '[Pp]lan panels do not count'
     assert_grep "stack distinguishes retryable roster status" "$H" 'Exit 5 is retryable'
     assert_grep "stack distinguishes permanent roster status" "$H" 'Exit 6 is permanent'
+    assert_grep "stack names the upstream destination" "$H" \
+      'upstream destination|destination ref'
+    assert_grep "stack binds that destination to the reviewed branch" "$H" \
+      'reviewed branch'
+    assert_grep "stack reconciles before squash" "$H" '[Bb]efore squash'
+    assert_grep "stack reconciles the tracking ref" "$H" 'tracking ref'
+    assert_grep "stack records successful pinned pushes" "$H" \
+      '[Aa]fter a pinned push succeeds'
+    assert_grep "stack checks branch movement after recording" "$H" \
+      'before checking'
   done
+  assert_grep "Claude stack documents post-push PR review publication" "$ST" \
+    'latest completed review for'
+  assert_grep "Codex stack documents post-push PR review publication" "$CST" \
+    'latest actually completed session'
+
+  local PRDOC="$SK/docs/pr-review.md"
+  assert_exit "canonical PR review instructions are shipped" 0 test -f "$PRDOC"
+  for H in "$K" "$CK"; do
+    assert_grep "host requires the canonical PR review instructions" "$H" \
+      'docs/pr-review\.md'
+    assert_grep "host applies publication to read-only code reviews" "$H" \
+      'normal and read-only'
+    assert_grep "host skips branches without an open PR" "$H" \
+      'no associated open PR skips cleanly'
+    assert_grep "host blocks success when required publication fails" "$H" \
+      'blocks `phase=done` and `report\.md`'
+    assert_grep "host leaves stack publication until after push" "$H" \
+      'final squash and push'
+    assert_grep "host gives stack legs a ready report" "$H" 'stack-report\.md'
+    assert_grep "host gives stack legs a ready phase" "$H" 'phase=stack-ready'
+    assert_grep "host keeps associated review sessions outside the checkout" "$H" \
+      'associated with an open PR.*outside the reviewed'
+  done
+  assert_grep "PR review input preserves the decisions section" "$PRDOC" \
+    '^  "decisions": \[$'
+  assert_grep "PR review publisher uses a commit-pinned COMMENTED review" "$PRDOC" \
+    'commit_id.*COMMENT'
+  assert_grep "PR review publication keeps the inspected bytes" "$PRDOC" \
+    'reads the saved Markdown without rerendering'
+  local first_report_line
+  first_report_line=$(awk '/^## Report/{inside=1; next} inside && NF{print; exit}' "$K")
+  assert_eq "Claude report schema is not nested under publication" \
+    "${first_report_line%%,*}" '1. **Outcome**'
+  assert_grep "shared publication contract freezes the reviewed target" "$PRDOC" \
+    'freezes the associated PR, reviewed merge base'
+  assert_grep "shared publication contract binds a clean committed tree" "$PRDOC" \
+    'staged, unstaged, or untracked bytes'
+  assert_grep "shared publication contract rejects overlapping associated sessions" "$PRDOC" \
+    'publication-capable sessions outside the reviewed checkout'
+  assert_grep "shared publication contract revalidates the PR base" "$PRDOC" \
+    'branch, base branch, reviewed merge base, and'
+  assert_grep "shared publication contract binds discovery to reviewed remotes" "$PRDOC" \
+    "restricted to repositories named by the reviewed checkout's"
+  assert_grep "shared publication contract enforces NO_PUSH before GitHub" "$PRDOC" \
+    'no-push gate'
+  assert_grep "shared publication contract requires COMMENTED-state idempotence" "$PRDOC" \
+    'exact `COMMENTED` review'
+  assert_grep "shared publication contract makes confirmation the success boundary" "$PRDOC" \
+    'later live-state check'
+  assert_grep "shared publication contract uses the remote pending-review transaction" "$PRDOC" \
+    'PENDING.*COMMENTED'
+  assert_grep "shared publication contract limits pending recovery to safe owned drafts" "$PRDOC" \
+    'owned.*no inline comments'
+  assert_grep "shared publication contract requires the stack push barrier" "$PRDOC" \
+    'every completed repository.*push'
+  assert_grep "shared publication contract binds the stack destination branch" "$PRDOC" \
+    'destination ref must equal the reviewed branch ref'
+  assert_grep "shared publication contract reconciles prior pinned pushes before squash" "$PRDOC" \
+    'tracking ref.*reconciled.*before squash'
+  assert_grep "shared publication contract records a successful pinned push before branch checks" "$PRDOC" \
+    'successful pinned push.*tracking ref.*before.*branch movement'
+  assert_grep "shared publication contract requires post-squash final rendering" "$PRDOC" \
+    'squash.*render'
+  assert_grep "shared publication contract selects one stack session per repository" "$PRDOC" \
+    'latest completed session for each repository'
+  assert_grep "shared publication contract preserves separate-PR fix links" "$PRDOC" \
+    '`fixed_in` remain pinned'
+  assert_grep "shared publication contract derives finalization recovery durably" "$PRDOC" \
+    'derives finalization from the frozen target'
+  assert_nogrep "Codex host does not prohibit required PR publication" "$CK" \
+    'not authorize pushing, publishing'
+  assert_grep "Codex host limits publication authority to the canonical review" "$CK" \
+    'authorizes only the canonical `COMMENTED` PR review'
+
+  local read_only_section="$T/claude-read-only-section.md"
+  awk '/^## Read-only panel$/{inside=1} inside && /^## / && $0 != "## Read-only panel"{exit} inside{print}' \
+    "$K" > "$read_only_section"
+  assert_grep "Claude read-only code path reaches PR review publication" \
+    "$read_only_section" 'Follow \*\*PR review publication\*\*'
 
   # B1 - a resumed leg's ledger must be read, never truncated
   assert_grep "findings.md created only if absent" "$K" '\[ -f \$S/findings\.md \] \|\| printf'

@@ -70,6 +70,7 @@ test_prompt_evidence_contract() {
     printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
       "$base" "$ROOT" > "$S/scope.env"
     printf 'a.txt\npackage-lock.json\n' > "$S/files.txt"
+    : > "$S/untracked.txt"
     printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
 
     local assignments=(

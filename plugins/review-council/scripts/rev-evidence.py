@@ -28,6 +28,7 @@ from review_limits import (CLAUDE_MAX_TURNS, MANDATORY_REPOSITORY_READ_LIMIT,
                            PROVIDER_TURN_RESERVE, READ_LINES,
                            REPOSITORY_EXPANSION_CALL_LIMIT,
                            REPOSITORY_REFUTATION_CALL_RESERVE)
+from session_inputs import session_input_lock, validate_standard_inputs
 
 BUNDLES = ('correctness-boundaries', 'security-state-api',
            'concurrency-resources-performance', 'tests-observability-maintenance-regression')
@@ -4144,7 +4145,14 @@ def current_coverage_head(session):
 
 
 def prepare(args):
-    session = Path(args.session).resolve(); repo = Repository(session)
+    session = Path(args.session).resolve()
+    with session_input_lock(session):
+        validate_standard_inputs(session, require_all=True)
+        return _prepare_locked(args, session)
+
+
+def _prepare_locked(args, session):
+    repo = Repository(session)
     roster = read_json(session / 'roster.json')
     validate_live_roster_adapters(roster)
     parent_assignment = None

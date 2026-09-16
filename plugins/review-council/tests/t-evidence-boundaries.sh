@@ -63,6 +63,8 @@ with tempfile.TemporaryDirectory(prefix='deleted-symbol-') as tmp:
         {'seat': 'opus', 'adapter': 'claude'},
         {'seat': 'sonnet', 'adapter': 'claude'},
     ]}))
+    (session / 'files.txt').write_text('')
+    (session / 'untracked.txt').write_text('')
     env = dict(git_env, REV_PATCH_CHUNKS='1', REV_SOURCE_CONTEXT='1')
     subprocess.run(
         [sys.executable, script, 'prepare', str(session), '1', '--phase', 'discovery'],

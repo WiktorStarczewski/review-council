@@ -125,6 +125,41 @@ PY
   )
 }
 
+test_roster_write_refuses_sealed_session() {
+  ( local B="$T/roster-sealed"; roster_env "$B/bin" codex
+    local S="$B/session" name; mkdir -p "$S" "$B/original"
+    for name in scope.env roster.json files.txt untracked.txt; do
+      printf 'old-%s' "$name" > "$S/$name"
+      cp "$S/$name" "$B/original/$name"
+    done
+    printf '{' > "$S/r1-evidence.manifest.json"
+    export SHIM_ARGS_FILE="$B/provider.args"
+    "$SCRIPTS/roster.sh" --probe --write "$S/roster.json" > "$B/out" 2> "$B/err"
+    assert_eq "sealed session roster write is refused" "$?" 1
+    assert_exit "sealed roster refusal happens before provider discovery or probes" 0 test ! -e "$SHIM_ARGS_FILE"
+    for name in scope.env roster.json files.txt untracked.txt; do
+      assert_exit "sealed roster refusal preserves $name byte-for-byte" 0 cmp -s "$S/$name" "$B/original/$name"
+    done
+  )
+}
+
+test_unsealed_legacy_roster_upgrade_remains_supported() {
+  ( local B="$T/roster-legacy-upgrade"; roster_env "$B/bin" codex
+    local S="$B/session"; mkdir -p "$S"
+    printf 'REV_BASE=old\n' > "$S/scope.env"
+    printf '%s' '{"seats":[]}' > "$S/roster.json"
+    printf 'old.txt\n' > "$S/files.txt"
+    : > "$S/untracked.txt"
+    printf '%s' '{"summary":"legacy","findings":[]}' > "$S/r1-opus.json"
+    "$SCRIPTS/roster.sh" --write "$S/roster.json" > "$B/out" 2> "$B/err"
+    assert_eq "unsealed legacy roster upgrade exits 0" "$?" 0
+    assert_exit "unsealed legacy roster upgrade publishes the rendered roster" 0 cmp -s "$S/roster.json" "$B/out"
+    assert_grep "legacy roster upgrade records the old result boundary" "$S/roster.json" '"r1-opus.json"'
+    assert_grep "legacy roster upgrade preserves the frozen scope" "$S/scope.env" '^REV_BASE=old$'
+    assert_grep "legacy roster upgrade preserves the frozen file list" "$S/files.txt" '^old.txt$'
+  )
+}
+
 test_roster_invalid_receipt_policy_fails_closed() {
   ( local B="$T/roster-invalid-receipts"; roster_env "$B" codex
     mkdir -p "$B/session"

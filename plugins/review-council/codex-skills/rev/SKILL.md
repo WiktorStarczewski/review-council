@@ -11,7 +11,8 @@ You are the orchestrator. Independent CLI reviewers inspect the scope; you verif
 claims against evidence, fix actionable defects within the user's scope, and repeat.
 Agreement is a signal, never proof. Preserve the user's requested scope and prior
 authorization. A request for report-only review remains report-only. This skill does
-not authorize pushing, publishing, rewriting history, or changing unrelated files.
+not authorize pushing, rewriting history, or changing unrelated files. The completion
+contract authorizes only the canonical `COMMENTED` PR review for an associated open PR.
 Do not start a council automatically after unrelated implementation work.
 
 ## Locate and set up
@@ -30,17 +31,22 @@ are relative to that absolute `PLUGIN`; quote paths and use arrays for arguments
   Respect an explicit `--base`. Do not fabricate a base when it cannot be resolved.
 - The default code fix loop is adaptive. With the configured four-seat panel, a
   normal review plans 12 seat launches: four simplicity, four conditional plan, and
-  four final verification launches. A large or high-risk review plans 16 by adding
-  four risk-discovery launches.
+  four final verification launches. A large or high-risk review plans 20 by adding
+  four risk-discovery and four full red-team launches. An important or explicitly
+  adversarial review that is not otherwise large or high-risk plans 16 by adding
+  four full red-team launches.
   An explicit round count is a minimum override and exclusively selects the
   legacy numbered schedule. `--read-only` and
   document or plan reviews default to one panel with no edits or commits.
 - A change is large with more than 25 changed files or more than 1,500 changed lines.
   It is high-risk when it crosses a security, persistence, concurrency,
-  transaction, or public API boundary. Either condition adds risk discovery.
+  transaction, protocol, public API, or irreversible mutation boundary. Large or
+  high-risk changes add risk discovery and the full red-team panel.
 - Reuse a requested session directory; otherwise make one with `mktemp -d
   /tmp/rev-XXXXXX`. Call it `S`. Read any existing ledger before continuing. Keep all
   logs, prompts, reviewer outputs, and ledgers there, away from the reviewed files.
+- For a code review associated with an open PR, `S` must resolve outside the reviewed repository.
+  An unassociated local render may remain inside, but it cannot publish.
 
 Immediately after selecting the session, canonicalize it once. This makes macOS `/tmp` and `/private/tmp`
 share one manifest identity:
@@ -50,14 +56,26 @@ mkdir -p "$S"
 S=$(cd "$S" && pwd -P)
 ```
 
-For code, run from the repository root:
+Before any preflight or provider probe, classify a code session by inspecting
+`scope.env`, `files.txt`, `untracked.txt`, and `roster.json` with `lstat`:
+
+- `fresh`: none of the four inputs exists, so preflight may run once
+- `initialized`: all four safe inputs exist, so validate and reuse them without probing
+- `invalid`: a partial or unsafe set exists, so stop incomplete and use a fresh session
+
+For `initialized`, import `validate_standard_inputs` from
+`$PLUGIN/scripts/lib/session_inputs.py`, call
+`validate_standard_inputs(Path(S), require_all=True)`, and continue with those exact
+bytes. Never rerun preflight or repair inputs in that session. Any validation failure
+makes the state `invalid`; preserve that session untouched and choose a fresh session
+before retrying. Only a `fresh` code session runs this from the repository root:
 
 ```bash
 REVIEW_COUNCIL_HOST=codex "$PLUGIN/scripts/rev-preflight.sh" \
   --scope branch --write "$S"
 ```
 
-Substitute the resolved scope and append `--base <ref>` when specified. This writes
+Substitute the resolved scope and append `--base <ref>` when specified. Fresh preflight writes
 `scope.env`, `files.txt`, `untracked.txt`, and the **probed** `roster.json`. Preflight
 refuses empty scopes or shared branches; use a worktree if a code review needs one.
 For documents, write absolute paths to `S/docs.txt`, set `REV_REPO` to their root,
@@ -73,6 +91,10 @@ scope or strict roster contract cannot run as asked.
 Configuration is `~/.config/review-council/config.json` (or `REVIEW_COUNCIL_CONFIG`):
 `exclude`, `pin`, `codex_models`, `claude_seat`, `claude_seats`, `extras`,
 `min_labs`, and `quota_fallback` are shared with Claude Code.
+A fresh session rebuilds its roster once during preflight. An initialized session validates
+and reuses its frozen roster without probing.
+Roster configuration changes require a fresh session, whose preflight applies the new
+configuration once.
 See [configuration](https://github.com/WiktorStarczewski/review-council/blob/main/docs/config.md) for the full format.
 
 Read repository instructions, inspect the diff and consumers, and record existing
@@ -93,8 +115,11 @@ rounds. Run these panels in order:
    misses.
 2. **Risk discovery:** only for a large or high-risk change. Deal the four bundles
    below across the full panel.
-3. **Plan:** apply the plan gate below before a nontrivial edit.
-4. **Verification:** deal the four bundles across one full panel over the latest
+3. **Full red team:** exactly once for a large, high-risk, user-marked-important, or
+   explicitly adversarial adaptive review. Run it before planning under the promoted
+   adversarial coverage contract below.
+4. **Plan:** apply the plan gate below before a nontrivial edit.
+5. **Verification:** deal the four bundles across one full panel over the latest
    material state. Prioritize changes
    since the last completed panel and trace their consumers; re-read cumulative code
    where the interaction requires it.
@@ -157,6 +182,42 @@ With four core seats, use one canonical bundle per seat; this assignment is unch
 With five or more core seats, cycle through `BUNDLES` again for surplus seats.
 When a seat receives multiple bundles, join the bundle names with `+` in one
 `--assignment`. Set its risk or verification lens to the same canonical composite.
+
+### Promoted adversarial coverage
+
+Every code panel, including explicit numeric and read-only code panels, gives one existing core seat a composite red-team emphasis without another provider call.
+Select it deterministically from stable roster order and rotate it across code panels:
+for zero-based code-panel ordinal `j` and `n` core seats, use seat `j mod n`.
+Derive `j` from the planned panel order so a retry keeps the same owner. Append the
+red-team instruction to that seat's normal emphasis before rendering: assume the
+change is wrong and try to prove it by finding the input, timing, state, attacker,
+failure, or consumer boundary that breaks it. This supplements and never replaces the canonical lens, bundle, fixed numeric lens, or evidence assignment.
+Numeric mode adds no panel for this composite assignment.
+
+Large, high-risk, user-marked-important, or explicitly adversarial adaptive reviews run exactly one full red-team panel before planning.
+For this panel, set `PANEL_PHASE=risk` and reuse the existing four canonical bundle assignments without changing `rev-evidence.py` or its schema. The panel has these four distinct composed adversarial assignments, in bundle order:
+
+1. correctness and boundaries plus attacker behavior and trust boundaries;
+2. security, state, and API plus rollback and recovery;
+3. concurrency, resources, and performance plus duplication and exhaustion;
+4. tests, observability, and regression plus consumer compatibility and integration.
+
+Map each entry above to its canonical bundle. When a core seat carries multiple canonical bundles, concatenate the matching adversarial emphases into that seat's single prompt emphasis in canonical bundle order.
+For surplus seats, cycle the mapped adversarial emphasis with the canonical bundle, so
+each repeated bundle repeats its matching emphasis. Keep the result in the existing
+seat prompt; neither case changes the canonical topology or adds a provider call.
+
+The full panel joins the same initial finding clusters and does not grant another correction cycle.
+The ordinary adaptive and numeric stopping rules remain unchanged. Document panels receive no automatic red-team assignment unless the user explicitly requests an adversarial document review.
+
+The verification owner always traces the cumulative change through consumers and integration boundaries. Compose these additional emphases when relevant:
+
+- compatibility and consumer contracts for public APIs, protocols, schemas,
+  serialization, CLI output, and cross-repository interfaces;
+- recovery and idempotency for persistence, external writes, migrations, retries,
+  concurrency, CI orchestration, and partial failure;
+- security and trust boundaries for authentication, authorization, signatures,
+  secrets, untrusted input, and privilege changes.
 
 The first core seat is the discovery full-state owner. The first seat in roster order
 that carries `tests-observability-maintenance-regression` is the full-state owner for
@@ -525,8 +586,23 @@ the authorized branch. In `REV_STACK_LEG=1`, never squash or push; the stack con
 those actions. If blocked in a headless leg, record `phase=blocked` and exit without
 a completion receipt; do not guess approval or report success.
 
-On completion set `phase=done` and write `S/report.md` with scope/base, actual roster
-and degradation, rounds/lenses, accepted/rejected/deferred findings and evidence,
-changes/commits, baseline/final gates, and remaining limitations. `report.md` is the
-stack's success receipt: write it only for a completed review. Interrupted/blocked
+Before completing any code review, read `$PLUGIN/docs/pr-review.md` and follow it
+exactly. Write `S/pr-review.json`, render and inspect `S/pr-review.md`, and publish it
+as a `COMMENTED` GitHub PR review. This applies to normal and read-only code reviews.
+A branch with no associated open PR skips cleanly. Document reviews do not post. In
+`REV_STACK_LEG=1`, prepare and render the body but leave guarded finalization, final
+rendering, and publication to the stack after its final squash and push. A completed
+leg sets `phase=stack-ready` and writes `S/stack-report.md`, not `phase=done` or
+`S/report.md`; the stack promotes the ready receipt only after publication. A required
+publication failure writes
+`incomplete.md` and blocks `phase=done` and `report.md`.
+When `NO_PUSH=1`, render and inspect the body but let the publisher's no-push gate
+skip every external GitHub call.
+
+After publication succeeds or cleanly skips, set `phase=done` and write `S/report.md`
+with scope/base, actual roster and degradation, rounds/lenses,
+accepted/rejected/deferred findings and evidence, changes/commits, baseline/final
+gates, and remaining limitations. Outside stack-leg mode, write `report.md` only for
+a completed review. In stack-leg mode, put the same content in `stack-report.md` and
+leave its promotion to the stack. Interrupted/blocked
 runs write `incomplete.md`. End with the substantive results and report path.

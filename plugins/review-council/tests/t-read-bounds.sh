@@ -2208,7 +2208,7 @@ EOF
     assert_eq "hard-audit relaunch refusal preserves the invalid audit" \
       "$(shasum -a 256 "$S/r1-codex-sol.read-audit.json" | awk '{print $1}')" "$audit_hash"
     assert_grep "hard-audit relaunch refusal names the existing marker" \
-      "$T/narrow-relaunch.out" 'prior hard audit failure.*fresh panel label'
+      "$T/narrow-relaunch.out" 'review session stopped after a hard evidence audit failure.*fresh review session'
     SHIM_MODE=ok SHIM_CALLS_FILE="$T/narrow-refusal.calls" \
       "$SCRIPTS/rev-seat.sh" codex-terra "$S" 1 "$S/p.md" > "$T/sibling-relaunch.out" 2>&1
     assert_eq "hard-audit marker refuses a sibling under the same panel label" "$?" 2
@@ -2217,12 +2217,75 @@ EOF
     assert_exit "sibling hard-audit refusal creates no attempt reservation" 1 \
       grep -R -q -- '"seat":"codex-terra"' "$S/attempts"
     assert_grep "sibling hard-audit refusal names the stopped panel" \
-      "$T/sibling-relaunch.out" 'prior hard audit failure.*fresh panel label'
+      "$T/sibling-relaunch.out" 'review session stopped after a hard evidence audit failure.*fresh review session'
+  )
+}
+
+test_session_audit_stop_crosses_panel_labels() {
+  ( seat_env; local session="$T/session-audit-stop"; seat_roster "$session"
+    printf 'review\n' > "$session/r2-codex-sol.prompt.md"
+    printf 'invalid result\n' > "$session/r1-codex-sol.invalid.json"
+    printf 'invalid audit\n' > "$session/r1-codex-sol.audit.json"
+    : > "$SHIM_ARGS_FILE"
+    python3 "$SCRIPTS/lib/rev-attempt.py" stop "$session" r1 --reason "hard evidence audit failed"
+    assert_eq "hard evidence audit stop persists" "$?" 0
+    local before
+    before=$(sha256sum "$session/r1-codex-sol.invalid.json" "$session/r1-codex-sol.audit.json")
+    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$session" r2 "$session/r2-codex-sol.prompt.md" \
+      >"$T/session-stop.out" 2>"$T/session-stop.err"
+    assert_eq "a different label cannot bypass the hard stop" "$?" 2
+    assert_eq "the stopped session launches no provider" "$(wc -l < "$SHIM_ARGS_FILE" | tr -d ' ')" 0
+    assert_eq "hard-audit evidence stays byte-identical" \
+      "$(sha256sum "$session/r1-codex-sol.invalid.json" "$session/r1-codex-sol.audit.json")" "$before"
+    assert_grep "the refusal requires a fresh session" "$T/session-stop.err" \
+      'hard evidence audit failed.*fresh review session'
+  )
+}
+
+test_session_audit_stop_recognizes_legacy_read_audit() {
+  ( local session="$T/session-audit-legacy" prompt="$T/session-audit-legacy.prompt.md"
+    mkdir -p "$session"; printf 'review\n' > "$prompt"
+    cat > "$session/r1-codex-sol.read-audit.json" <<'JSON'
+{"schema_version":2,"status":"invalid","evidence_scoped":true}
+JSON
+    python3 "$SCRIPTS/lib/rev-attempt.py" reserve "$session" r2 codex-sol "$prompt" \
+      >"$T/session-audit-legacy.out" 2>"$T/session-audit-legacy.err"
+    assert_eq "legacy hard audit stops another panel label" "$?" 2
+    assert_eq "legacy hard audit creates no reservation" \
+      "$(find "$session/attempts" -type f -name '*.json' -print -quit)" ""
+    assert_grep "legacy hard audit requires a fresh session" "$T/session-audit-legacy.err" \
+      'fresh review session'
+  )
+}
+
+test_session_audit_stop_survives_partial_marker_state() {
+  ( local session="$T/session-audit-partial" prompt="$T/session-audit-partial.prompt.md"
+    mkdir -p "$session/attempts"; printf 'review\n' > "$prompt"
+    local panel_key
+    panel_key=$(printf r1 | shasum -a 256 | awk '{print $1}')
+    printf 'conflicting marker\n' > "$session/attempts/panel-$panel_key.stopped.json"
+    python3 "$SCRIPTS/lib/rev-attempt.py" stop "$session" r1 --reason "hard evidence audit failed" \
+      >"$T/session-audit-partial-stop.out" 2>"$T/session-audit-partial-stop.err"
+    assert_eq "a conflicting panel marker reports an incomplete stop write" "$?" 1
+    assert_exit "the authoritative session stop is still persisted" 0 \
+      test -s "$session/attempts/session.stopped.json"
+    python3 "$SCRIPTS/lib/rev-attempt.py" reserve "$session" r2 codex-sol "$prompt" \
+      >"$T/session-audit-partial.out" 2>"$T/session-audit-partial.err"
+    assert_eq "a partial panel stop cannot reopen the session" "$?" 2
+
+    session="$T/session-audit-invalid-fallback"
+    mkdir -p "$session"; printf 'invalid findings\n' > "$session/r1-codex-sol.audit-invalid.json"
+    python3 "$SCRIPTS/lib/rev-attempt.py" reserve "$session" r2 codex-sol "$prompt" \
+      >"$T/session-audit-invalid-fallback.out" \
+      2>"$T/session-audit-invalid-fallback.err"
+    assert_eq "a preserved invalid-audit result stops another panel label" "$?" 2
+    assert_grep "invalid-audit fallback requires a fresh session" \
+      "$T/session-audit-invalid-fallback.err" 'fresh review session'
   )
 }
 
 test_evidence_audit_failure_modes() {
-  ( seat_env; local S="$T/audit-failure-modes"; seat_roster "$S"
+  ( seat_env; local S="$T/audit-failure-malformed"; seat_roster "$S"
     cat > "$S/malformed-evidence.md" <<'EOF'
 Evidence manifest SHA-256: 000000000000000000000000000000000000000000000000000000000000000
 Assigned scope: semantic
@@ -2242,6 +2305,7 @@ EOF
     assert_nogrep "malformed evidence is never treated as legacy" \
       "$S/rmalformed-codex-sol.log" 'legacy review; result retained as advisory'
 
+    S="$T/audit-failure-full"; seat_roster "$S"
     cat > "$S/full-evidence.md" <<'EOF'
 Evidence manifest SHA-256: 0000000000000000000000000000000000000000000000000000000000000000
 Assigned scope: full
@@ -2259,6 +2323,7 @@ EOF
     assert_nogrep "full-scope evidence failure does not request a retry" \
       "$S/rfull-codex-sol.log" 'retry|rerun'
 
+    S="$T/audit-failure-legacy"; seat_roster "$S"
     printf 'Assigned scope: full\n' > "$S/legacy.md"
     SHIM_MODE=unbounded "$SCRIPTS/rev-seat.sh" codex-sol "$S" legacy "$S/legacy.md" \
       > "$T/legacy.out" 2>&1
@@ -2286,12 +2351,19 @@ if [ "$1" = "$AUDIT_SCRIPT" ] && [ "$2" = audit ]; then
       exit 2;;
   esac
 fi
+if [ -n "${ATTEMPT_SCRIPT:-}" ] && [ "$1" = "$ATTEMPT_SCRIPT" ] && [ "$2" = stop ]; then
+  printf '%s\n' "$$" > "$STOP_PID_FILE"
+  : > "$STOP_READY_FILE"
+  while :; do sleep 0.05; done
+fi
 PATH="$REAL_PYTHON_PATH" exec python3 "$@"
 SH
     chmod +x "$audit_python/python3"
     local audit_mode
     for audit_mode in missing malformed inconsistent; do
       local audit_label="metadata-$audit_mode"
+      S="$T/audit-failure-$audit_label"; seat_roster "$S"
+      printf 'Assigned scope: full\n' > "$S/legacy.md"
       PATH="$audit_python:$real_python" REAL_PYTHON_PATH="$real_python" \
         AUDIT_SCRIPT="$SCRIPTS/lib/review-read-audit.py" AUDIT_SHIM_MODE="$audit_mode" \
         SHIM_MODE=unbounded "$SCRIPTS/rev-seat.sh" codex-sol "$S" "$audit_label" \
@@ -2305,6 +2377,33 @@ SH
         "$S/r$audit_label-codex-sol.log" \
         'bounded-read audit metadata is missing, malformed, or inconsistent'
     done
+
+    S="$T/audit-failure-interrupted-stop"; seat_roster "$S"
+    printf 'Assigned scope: full\n' > "$S/legacy.md"
+    : > "$SHIM_ARGS_FILE"
+    local stop_ready="$T/interrupted-stop.ready" stop_pid_file="$T/interrupted-stop.pid"
+    PATH="$audit_python:$real_python" REAL_PYTHON_PATH="$real_python" \
+      AUDIT_SCRIPT="$SCRIPTS/lib/review-read-audit.py" AUDIT_SHIM_MODE=malformed \
+      ATTEMPT_SCRIPT="$SCRIPTS/lib/rev-attempt.py" STOP_READY_FILE="$stop_ready" \
+      STOP_PID_FILE="$stop_pid_file" SHIM_MODE=unbounded \
+      "$SCRIPTS/rev-seat.sh" codex-sol "$S" interrupted "$S/legacy.md" \
+      > "$T/audit-interrupted-stop.out" 2>&1 &
+    local seat_pid=$! i=0
+    while [ ! -e "$stop_ready" ] && kill -0 "$seat_pid" 2>/dev/null && [ "$i" -lt 100 ]; do
+      sleep 0.02; i=$((i + 1))
+    done
+    assert_exit "hard-stop interruption fixture reaches the blocked helper" 0 test -s "$stop_pid_file"
+    assert_exit "invalid findings are preserved before the stop helper can finish" 0 \
+      test -s "$S/rinterrupted-codex-sol.audit-invalid.json"
+    kill -TERM "$(cat "$stop_pid_file")" 2>/dev/null || true
+    wait "$seat_pid"; assert_eq "interrupted stop still fails the evidence seat" "$?" 2
+    local provider_calls
+    provider_calls=$(wc -l < "$SHIM_ARGS_FILE" | tr -d ' ')
+    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" later "$S/legacy.md" \
+      > "$T/audit-interrupted-relaunch.out" 2>&1
+    assert_eq "preserved invalid findings stop a later panel label" "$?" 2
+    assert_eq "interrupted hard stop permits no second provider launch" \
+      "$(wc -l < "$SHIM_ARGS_FILE" | tr -d ' ')" "$provider_calls"
   )
 }
 

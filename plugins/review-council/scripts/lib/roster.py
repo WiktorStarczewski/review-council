@@ -28,6 +28,10 @@ import sys
 import threading
 import time
 from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from session_inputs import SessionInputsError, assert_unsealed, install_inputs
 
 EFFORTS = ('max', 'xhigh', 'high')   # highest first; a mid tier is never seated
 PANEL = 3                            # seats a round needs; a thinner roster is padded, never refused
@@ -1383,17 +1387,35 @@ def main(argv):
 
     if quota_failed_seats and not do_probe:
         return usage('--quota-failed-seat requires --probe')
+    session_write = None
+    if write:
+        write_path = Path(write)
+        resolved_write = write_path.resolve()
+        if write_path.name == 'roster.json':
+            session_write = write_path
+        elif resolved_write.name == 'roster.json':
+            session_write = resolved_write
+        if session_write is not None:
+            try:
+                assert_unsealed(session_write.parent)
+            except SessionInputsError as exc:
+                sys.stderr.write('roster: cannot write %s: %s\n' % (write, exc))
+                return 1
     roster, adapter_of, strict_class = build(do_probe, quota_failed_seats)
     if write:
         roster['result_receipts'] = result_receipt_policy(write)
     text = json.dumps(roster, indent=2, ensure_ascii=False) + '\n'
     if write:
-        tmp = write + '.new'
         try:
-            with open(tmp, 'w', encoding='utf-8') as f:
-                f.write(text)
-            os.replace(tmp, write)
-        except OSError as exc:
+            if session_write is not None:
+                install_inputs(session_write.parent, {'roster.json': text.encode('utf-8')},
+                               complete=False)
+            else:
+                tmp = write + '.new'
+                with open(tmp, 'w', encoding='utf-8') as f:
+                    f.write(text)
+                os.replace(tmp, write)
+        except (OSError, SessionInputsError) as exc:
             sys.stderr.write('roster: cannot write %s: %s\n' % (write, exc))
             return 1
     sys.stdout.write(text if fmt == 'json' else brief_line(roster, adapter_of) + '\n')

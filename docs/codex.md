@@ -61,15 +61,31 @@ Use review-council to review the SDK and wallet branches as a dependency stack.
 
 Code fix loops use adaptive discovery, plan, fix, and verification panels. With four
 core seats, normal changes plan 12 seat launches: four simplicity, four conditional
-plan, and four final verification launches. A large or high-risk review plans 16 by
-adding four risk-discovery launches. One four-bundle verification panel reviews the
-latest material state: directly after discovery when no nontrivial fix follows, or
-after the latest nontrivial fix. Read-only reviews default to one panel. Explicit round counts remain minimum
+plan, and four final verification launches. A large or high-risk review plans 20 by
+adding four risk-discovery and four full red-team launches. An important or explicitly
+adversarial review that is not otherwise large or high-risk plans 16 by adding four
+full red-team launches. One four-bundle verification panel reviews the latest material
+state: directly after discovery when no nontrivial fix follows, or after the latest
+nontrivial fix. Read-only reviews default to one panel. Explicit round counts remain minimum
 overrides and select the Codex host's legacy numbered schedule. Numeric mode continues
 while a new or open P0/P1, a nontrivial last fix, or an unreviewed lens or major file
 remains. It stops after the minimum, two consecutive rounds without a new P0/P1, no
 open P0/P1, and gates at baseline or better. Plan panels do not count. Actual reviewer
 calls consume the corresponding provider's usage.
+
+When a code review is associated with an open PR, completion publishes the canonical
+badge, verdict tip, decisions, fixes, verified-sound, coverage, and footer as a
+`COMMENTED` GitHub review. Read-only code reviews publish too. A local branch or
+document review without an associated open PR does not post. An identical body is not
+posted twice, and other publication failures keep the review incomplete with a retry
+command. The inspected body and PR target are frozen for exact retries. Stack sessions
+publish only after every completed repository pushes, with only the latest completed
+session authoritative for each canonical repository. A changed-head squash must
+preserve the inspected tree and rerender SHA links against the pushed aggregate commit.
+Separate-PR fix links remain pinned to their own repository. Publication also
+revalidates the frozen base branch and tip, restricts PR discovery to reviewed GitHub
+remotes, and refuses reviewed local bytes absent from the PR head. `NO_PUSH=1`
+suppresses publication.
 
 Adaptive code panels use hashed scope manifests and semantic dependency components.
 Mechanical lockfiles, generated output, snapshots, and locale copies go to one named

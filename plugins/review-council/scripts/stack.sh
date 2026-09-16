@@ -26,6 +26,7 @@ export PATH="$PATH:$HOME/.nvm/versions/node/v22.22.0/bin:$HOME/.local/bin"
 [ -z "${REV_ACTIVE:-}${REV_STACK_LEG:-}" ] || { echo "stack: refusing to nest (REV_ACTIVE or REV_STACK_LEG is set)" >&2; exit 1; }
 CONFIG=${1:?usage: stack.sh <config.sh>   (template: stack.example.sh next to this script)}
 [ -f "$CONFIG" ] || { echo "stack: config not found: $CONFIG" >&2; exit 1; }
+CONFIG=$(cd "$(dirname "$CONFIG")" && pwd)/$(basename "$CONFIG")
 ROOT=${ROOT:-/tmp/review-council-stack-$(date +%s)}
 LOG=${LOG:-/tmp/review-council-stack.log}
 # DETACH BY DEFAULT. A run lasts hours; anything still inside the launching tool's process tree dies with it -
@@ -58,6 +59,7 @@ else
   NO_PUSH=${NO_PUSH:-0}
   NO_SQUASH=${NO_SQUASH:-0}
 fi
+export NO_PUSH NO_SQUASH
 REV_SCRIPTS=${REV_SCRIPTS:-$HERE}   # roster.sh, rev-status.sh and rev-squash.sh live beside this script
 SEAM_REPO=${SEAM_REPO:-}
 SEAM_PREMISE=${SEAM_PREMISE:-"Review the SEAMS between the PRs in this stack, not the code again: what each PR promises the others, what each assumes of the others, and every claim that a sibling PR invalidates."}
@@ -68,11 +70,34 @@ REPOS_SEEN=""
 FAILED_LABELS=""      # every leg that ended without a completed review
 FAILED_REPOS=""       # …and the repos they belong to: those are NOT squashed at the end
 mkdir -p "$ROOT"
+SESSION_MAP="$ROOT/repo-sessions.tsv"
+[ -f "$SESSION_MAP" ] || : > "$SESSION_MAP"
 
 say() { echo "$(date '+%m-%d %H:%M') $*" | tee -a "$LOG"; }
 note_failure() {  # <label> <repo-dir> - a failed leg must not be reported as a complete run
   FAILED_LABELS="$FAILED_LABELS $1"
   case " $FAILED_REPOS " in *" $2 "*) ;; *) FAILED_REPOS="$FAILED_REPOS $2";; esac
+}
+stack_retry_command() {
+  printf 'REVIEW_COUNCIL_HOST=%q NO_PUSH=%q NO_SQUASH=%q ROOT=%q LOG=%q REV_SCRIPTS=%q REV_STACK_FOREGROUND=1 %q %q' \
+    "${REVIEW_COUNCIL_HOST:-claude}" "$NO_PUSH" "$NO_SQUASH" "$ROOT" "$LOG" \
+    "$REV_SCRIPTS" "$HERE/stack.sh" "$CONFIG"
+}
+replace_tab_row() {  # <file> <key> <value> - replace one tab-separated row atomically
+  local file=$1 key=$2 value=$3 temporary="$1.tmp.$$"
+  if ! awk -F '\t' -v wanted="$key" '$1 != wanted' "$file" > "$temporary" \
+      || ! printf '%s\t%s\n' "$key" "$value" >> "$temporary" \
+      || ! mv "$temporary" "$file"; then
+    rm -f "$temporary"
+    return 1
+  fi
+}
+session_for_repo() {  # <canonical-repo> - print its one authoritative completed session
+  local repo=$1 rows count
+  rows=$(awk -F '\t' -v wanted="$repo" '$1 == wanted { print $2 }' "$SESSION_MAP") || return 1
+  count=$(printf '%s\n' "$rows" | grep -c .)
+  [ "$count" -eq 1 ] || return 1
+  printf '%s\n' "$rows"
 }
 leg_group() {  # the leg's own process-group id, and only when it leads that group (see leg_tree)
   local g; g=$(ps -o pgid= -p "$1" 2>/dev/null | tr -d ' ')
@@ -156,7 +181,7 @@ def regular(path, nonempty=False):
         return None, f'{path.name} is empty'
     return details, None
 
-report_details, error = regular(session / 'report.md', nonempty=True)
+report_details, error = regular(session / 'stack-report.md', nonempty=True)
 if error:
     print(error)
     raise SystemExit(1)
@@ -171,8 +196,8 @@ try:
 except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
     print(f'state.json is invalid: {exc}')
     raise SystemExit(1)
-if not isinstance(state, dict) or state.get('phase') != 'done':
-    print('state.json does not record phase=done')
+if not isinstance(state, dict) or state.get('phase') != 'stack-ready':
+    print('state.json does not record phase=stack-ready')
     raise SystemExit(1)
 digest = hashlib.sha256(data).hexdigest()
 current = (f'{state_details.st_dev}:{state_details.st_ino}:{state_details.st_size}:'
@@ -207,9 +232,19 @@ wait_for_auth() {
 }
 
 run_leg() {  # <repo-path> <rounds> <label> "<premise>"
-  local dir="$1" rounds="$2" label="$3" extra="$4"
+  local dir="$1" rounds="$2" label="$3" extra="$4" repo
   local S="$ROOT/$label" attempt=1 infra=0 roster_rc
-  case " $REPOS_SEEN " in *" $dir "*) ;; *) REPOS_SEEN="$REPOS_SEEN $dir";; esac
+  repo=$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null) || {
+    if [ "$NO_PUSH" = 1 ]; then
+      repo=$(cd "$dir" 2>/dev/null && pwd -P) || repo=""
+    fi
+    if [ -z "$repo" ]; then
+      say "!!! $label: cannot resolve repository root for $dir"
+      note_failure "$label" "$dir"
+      return 1
+    fi
+  }
+  case " $REPOS_SEEN " in *" $repo "*) ;; *) REPOS_SEEN="$REPOS_SEEN $repo";; esac
   # Resume keys on THIS run's session root as well as the label: a different stack sharing the default LOG must
   # never skip a leg it has not actually run (that would fall straight through to the squash + push phase).
   grep -qF "=== DONE $label pass${PASS} exit=0 root=$ROOT" "$LOG" 2>/dev/null && { say "=== SKIP $label pass${PASS} (already done in $LOG)"; return 0; }
@@ -218,9 +253,9 @@ run_leg() {  # <repo-path> <rounds> <label> "<premise>"
     wait_for_auth; roster_rc=$?
     case "$roster_rc" in
       0) ;;
-      5) say "!!! $label: reviewer availability never recovered; skipping: ${ROSTER_BRIEF:-no cause reported}"; note_failure "$label" "$dir"; return 1;;
-      6) say "!!! $label: roster configuration is invalid; skipping: ${ROSTER_BRIEF:-no cause reported}"; note_failure "$label" "$dir"; return 1;;
-      *) say "!!! $label: roster check failed (exit $roster_rc); skipping: ${ROSTER_BRIEF:-no cause reported}"; note_failure "$label" "$dir"; return 1;;
+      5) say "!!! $label: reviewer availability never recovered; skipping: ${ROSTER_BRIEF:-no cause reported}"; note_failure "$label" "$repo"; return 1;;
+      6) say "!!! $label: roster configuration is invalid; skipping: ${ROSTER_BRIEF:-no cause reported}"; note_failure "$label" "$repo"; return 1;;
+      *) say "!!! $label: roster check failed (exit $roster_rc); skipping: ${ROSTER_BRIEF:-no cause reported}"; note_failure "$label" "$repo"; return 1;;
     esac
     local resume=""
     [ -f "$S/findings.md" ] && resume="
@@ -235,7 +270,7 @@ ${extra}
 ${VACUITY}${resume}"
     if [ "${REVIEW_COUNCIL_HOST:-claude}" = codex ]; then
       local skill="$HERE/../codex-skills/rev/SKILL.md"
-      [ -f "$skill" ] || { say "!!! missing Codex rev skill: $skill"; note_failure "$label" "$dir"; return 1; }
+      [ -f "$skill" ] || { say "!!! missing Codex rev skill: $skill"; note_failure "$label" "$repo"; return 1; }
       prompt="Read and follow the Codex review-council skill at $skill.
 Review branch $rounds rounds; use $S as the session dir. This is a stack leg: do not squash or push.
 
@@ -243,18 +278,27 @@ ${extra}
 
 ${VACUITY}${resume}"
     fi
-    # A report certifies only the launch that created it. Archive any prior pass or
-    # failed attempt before both host paths start, then require a new report below.
-    local previous_report="$S/report.pass${PASS}.attempt${attempt}.previous.md"
-    if { [ -e "$S/report.md" ] || [ -L "$S/report.md" ]; } && ! mv "$S/report.md" "$previous_report"; then
-      say "!!! $label: could not archive the prior report; refusing to launch"
-      note_failure "$label" "$dir"
+    # A ready receipt certifies only the launch that created it. Archive any prior
+    # pass or failed attempt before both host paths start, then require a new one.
+    local previous_report="$S/stack-report.pass${PASS}.attempt${attempt}.previous.md"
+    if { [ -e "$S/stack-report.md" ] || [ -L "$S/stack-report.md" ]; } \
+        && ! mv "$S/stack-report.md" "$previous_report"; then
+      say "!!! $label: could not archive the prior stack-ready report; refusing to launch"
+      note_failure "$label" "$repo"
       return 1
+    fi
+    if [ -e "$S/report.md" ] || [ -L "$S/report.md" ]; then
+      local previous_done="$S/report.pass${PASS}.attempt${attempt}.previous.md"
+      if ! mv "$S/report.md" "$previous_done"; then
+        say "!!! $label: could not archive the prior completed report; refusing to launch"
+        note_failure "$label" "$repo"
+        return 1
+      fi
     fi
     local state_before; state_before=$(state_signature "$S/state.json")
     if [ "$state_before" = unsafe ]; then
       say "!!! $label: unsafe state.json; refusing to launch"
-      note_failure "$label" "$dir"
+      note_failure "$label" "$repo"
       return 1
     fi
     set -m   # give the leg its own process group, so the CPU veto and the kill can address the whole tree
@@ -308,26 +352,122 @@ ${VACUITY}${resume}"
     if [ "$rc" -eq 0 ] && [ "$stalled" = 0 ]; then
       receipt_error=$(completion_receipt_error "$S" "$state_before")
       if [ "$?" -ne 0 ]; then
-        # A headless leg can exit 0 while its loop is unfinished. The report and
-        # terminal state together are the attempt-local completion receipt.
+        # A headless leg can exit 0 while its loop is unfinished. The stack-ready
+        # report and state together are the attempt-local completion receipt.
         say "!!! $label exited 0 after ${dur}s with invalid completion receipt (${receipt_error}); retrying with resume"; rc=75
       fi
     fi
-    if [ "$rc" -eq 0 ] && [ "$stalled" = 0 ]; then say "=== DONE $label pass${PASS} exit=0 root=$ROOT (${dur}s)"; return 0; fi
+    if [ "$rc" -eq 0 ] && [ "$stalled" = 0 ]; then
+      if ! replace_tab_row "$SESSION_MAP" "$repo" "$S"; then
+        say "!!! $label: cannot record the authoritative review session"
+        note_failure "$label" "$repo"
+        return 1
+      fi
+      say "=== DONE $label pass${PASS} exit=0 root=$ROOT (${dur}s)"
+      return 0
+    fi
     if [ "$stalled" = 0 ] && [ "$dur" -lt "$FAST_FAIL_SECS" ] && [ "$infra" -lt "$MAX_INFRA_RETRIES" ]; then
       infra=$(( infra + 1 )); say "    $label failed in ${dur}s - infrastructure; sleeping ${INFRA_SLEEP_SECS}s"; sleep "$INFRA_SLEEP_SECS"; continue
     fi
     say "=== $label ended rc=$rc after ${dur}s (attempt $attempt)"; attempt=$(( attempt + 1 ))
   done
-  say "=== GAVE UP on $label"; note_failure "$label" "$dir"; return 1
+  say "=== GAVE UP on $label"; note_failure "$label" "$repo"; return 1
 }
 
 finish_repos() {
-  local d srq
+  local d srq push_rc session head branch_ref tracking_ref tracking_before
+  local push_remote push_ref push_urls push_url remote_head upstream
+  local -a validate_args
   for d in $REPOS_SEEN; do
     case " $FAILED_REPOS " in *" $d "*)
       say "--- skipping $(basename "$d") - a leg on it failed; its review is not complete"; continue;; esac
     say "--- finishing $(basename "$d")"
+    if ! git -C "$d" rev-parse --show-toplevel >/dev/null 2>&1; then
+      if [ "$NO_PUSH" = 1 ]; then
+        say "--- $(basename "$d") is not a git repository; NO_PUSH=1 skips squash and push (NO_SQUASH=$NO_SQUASH)"
+        continue
+      fi
+      say "!!! cannot finish $(basename "$d"): not a git repository"
+      note_failure "finish:$(basename "$d")" "$d"
+      continue
+    fi
+    session=$(session_for_repo "$d") || {
+      say "!!! no authoritative completed review session for $(basename "$d")"
+      note_failure "PR review validation" "$d"
+      continue
+    }
+    if [ "$NO_PUSH" != 1 ]; then
+      branch_ref=$(git -C "$d" symbolic-ref -q HEAD 2>/dev/null) || {
+        say "!!! cannot capture the reviewed push branch for $(basename "$d")"
+        note_failure "PR review validation" "$d"
+        continue
+      }
+      upstream=$(git -C "$d" for-each-ref \
+        --format='%(upstream)%09%(upstream:remotename)%09%(upstream:remoteref)' \
+        "$branch_ref")
+      IFS=$'\t' read -r tracking_ref push_remote push_ref <<< "$upstream"
+      case "$tracking_ref:$push_remote:$push_ref" in
+        :*|*::*|*:)
+          say "!!! cannot resolve one upstream push destination for $(basename "$d")"
+          note_failure "PR review validation" "$d"
+          continue
+          ;;
+      esac
+      if [ "$push_ref" != "$branch_ref" ]; then
+        say "!!! upstream push ref does not match the reviewed branch for $(basename "$d")"
+        note_failure "PR review validation" "$d"
+        continue
+      fi
+      case "$tracking_ref" in
+        "refs/remotes/$push_remote/"*) ;;
+        *)
+          say "!!! upstream tracking ref is outside the selected remote for $(basename "$d")"
+          note_failure "PR review validation" "$d"
+          continue
+          ;;
+      esac
+      push_urls=$(git -C "$d" remote get-url --push --all "$push_remote" 2>/dev/null) || {
+        say "!!! cannot resolve the push URL for $(basename "$d")"
+        note_failure "PR review validation" "$d"
+        continue
+      }
+      if [ "$(printf '%s\n' "$push_urls" | grep -c .)" -ne 1 ]; then
+        say "!!! cannot resolve exactly one push URL for $(basename "$d")"
+        note_failure "PR review validation" "$d"
+        continue
+      fi
+      push_url=$push_urls
+      set -o pipefail
+      python3 "$REV_SCRIPTS/rev-pr-review.py" validate-stack-destination "$session" \
+        --root "$d" --push-url "$push_url" --push-ref "$push_ref" 2>&1 \
+        | sed 's/^/    /' | tee -a "$LOG"
+      push_rc=$?
+      set +o pipefail
+      if [ "$push_rc" -ne 0 ]; then
+        note_failure "PR review validation" "$d"
+        continue
+      fi
+      tracking_before=$(git -C "$d" rev-parse "$tracking_ref" 2>/dev/null) || {
+        say "!!! cannot read the upstream tracking ref for $(basename "$d")"
+        note_failure "PR review validation" "$d"
+        continue
+      }
+      if ! git -C "$d" fetch -q --no-tags "$push_url" "$push_ref"; then
+        say "!!! cannot reconcile the upstream push destination for $(basename "$d")"
+        note_failure "PR review validation" "$d"
+        continue
+      fi
+      remote_head=$(git -C "$d" rev-parse FETCH_HEAD 2>/dev/null) || {
+        say "!!! cannot read the upstream push destination for $(basename "$d")"
+        note_failure "PR review validation" "$d"
+        continue
+      }
+      if ! git -C "$d" update-ref "$tracking_ref" "$remote_head" "$tracking_before"; then
+        say "!!! cannot reconcile the upstream tracking ref for $(basename "$d")"
+        note_failure "PR review validation" "$d"
+        continue
+      fi
+    fi
     set -o pipefail
     ( cd "$d" && if [ "$NO_SQUASH" = 1 ]; then echo "(NO_SQUASH=1: keeping review commits)"; else "$REV_SCRIPTS/rev-squash.sh" --apply; fi ) 2>&1 | sed 's/^/    /' | tee -a "$LOG"
     srq=$?
@@ -335,8 +475,167 @@ finish_repos() {
     # A refused squash is not a reason to withhold the push: the round commits are real work and CI
     # must see them. Squash and push are therefore independent steps, not one && chain.
     [ "$srq" -eq 0 ] || say "!!! squash refused for $(basename "$d") - pushing the un-collapsed review commits"
-    ( cd "$d" && if [ "$NO_PUSH" = 1 ]; then echo "(NO_PUSH=1: not pushing)"; else git push; fi ) 2>&1 | sed 's/^/    /' | tee -a "$LOG"
+    head=$(git -C "$d" rev-parse HEAD 2>/dev/null) || {
+      say "!!! cannot capture the reviewed head for $(basename "$d")"
+      note_failure "PR review validation" "$d"
+      continue
+    }
+    validate_args=(validate-stack "$session" --head "$head" --root "$d")
+    if [ "$NO_PUSH" != 1 ]; then
+      validate_args+=(--push-url "$push_url" --push-ref "$push_ref")
+    fi
+    set -o pipefail
+    python3 "$REV_SCRIPTS/rev-pr-review.py" "${validate_args[@]}" 2>&1 \
+      | sed 's/^/    /' | tee -a "$LOG"
+    push_rc=$?
+    set +o pipefail
+    if [ "$push_rc" -ne 0 ]; then
+      note_failure "PR review validation" "$d"
+      continue
+    fi
+    if [ "$NO_PUSH" = 1 ]; then
+      say "    (NO_PUSH=1: not pushing)"
+      continue
+    fi
+    set -o pipefail
+    git -C "$d" push "$push_url" "$head:$push_ref" 2>&1 \
+      | sed 's/^/    /' | tee -a "$LOG"
+    push_rc=$?
+    set +o pipefail
+    if [ "$push_rc" -ne 0 ]; then
+      say "!!! push failed for $(basename "$d")"
+      note_failure "push:$(basename "$d")" "$d"
+      continue
+    fi
+    if ! git -C "$d" update-ref "$tracking_ref" "$head" "$remote_head"; then
+      say "!!! cannot record the successful pinned push for $(basename "$d")"
+      note_failure "push tracking:$(basename "$d")" "$d"
+      continue
+    fi
+    if [ "$(git -C "$d" rev-parse HEAD 2>/dev/null)" != "$head" ]; then
+      say "!!! branch moved while pushing $(basename "$d")"
+      note_failure "push:$(basename "$d")" "$d"
+      continue
+    fi
   done
+}
+
+finalize_reviews() {
+  local repo head session rc=0
+  if [ "$NO_PUSH" = 1 ]; then
+    say "--- NO_PUSH=1: deferring PR review finalization"
+    return 0
+  fi
+  for repo in $REPOS_SEEN; do
+    case " $FAILED_REPOS " in *" $repo "*) continue;; esac
+    session=$(session_for_repo "$repo") || {
+      say "!!! no authoritative completed review session for $(basename "$repo")"
+      rc=1
+      note_failure "PR review finalization" "$repo"
+      continue
+    }
+    head=$(git -C "$repo" rev-parse HEAD 2>/dev/null) || {
+      say "!!! cannot read final review head for $(basename "$repo")"
+      rc=1
+      note_failure "PR review finalization" "$repo"
+      continue
+    }
+    if [ ! -f "$session/stack-report.md" ] && [ ! -f "$session/report.md" ]; then
+      say "!!! authoritative review session has no stack-ready report: $session"
+      rc=1
+      note_failure "PR review finalization" "$repo"
+      continue
+    fi
+    set -o pipefail
+    python3 "$REV_SCRIPTS/rev-pr-review.py" finalize-stack "$session" \
+      --head "$head" --root "$repo" 2>&1 | sed 's/^/    /' | tee -a "$LOG"
+    if [ "$?" -ne 0 ]; then
+      rc=1
+      note_failure "PR review finalization" "$repo"
+    fi
+    set +o pipefail
+  done
+  return "$rc"
+}
+
+publish_reviews() {
+  local repo session retry rc=0
+  if [ "$NO_PUSH" = 1 ]; then
+    say "--- NO_PUSH=1: not publishing PR reviews"
+    return 0
+  fi
+  [ -f "$REV_SCRIPTS/rev-pr-review.py" ] || {
+    say "!!! PR review publisher is missing: $REV_SCRIPTS/rev-pr-review.py"
+    for repo in $REPOS_SEEN; do
+      case " $FAILED_REPOS " in *" $repo "*) continue;; esac
+      note_failure "PR review publication" "$repo"
+    done
+    return 1
+  }
+  for repo in $REPOS_SEEN; do
+    case " $FAILED_REPOS " in *" $repo "*) continue;; esac
+    session=$(session_for_repo "$repo") || {
+      say "!!! no authoritative review session for $(basename "$repo")"
+      rc=1
+      note_failure "PR review publication" "$repo"
+      continue
+    }
+    if [ ! -f "$session/stack-report.md" ] && [ ! -f "$session/report.md" ]; then
+      say "!!! authoritative review session has no stack-ready report: $session"
+      rc=1
+      note_failure "PR review publication" "$repo"
+      continue
+    fi
+    retry=$(stack_retry_command)
+    set -o pipefail
+    REV_STACK_PUBLICATION=1 REVIEW_COUNCIL_RETRY_COMMAND="$retry" \
+      python3 "$REV_SCRIPTS/rev-pr-review.py" publish "$session" 2>&1 \
+      | sed 's/^/    /' | tee -a "$LOG"
+    if [ "$?" -ne 0 ]; then
+      rc=1
+      note_failure "PR review publication" "$repo"
+    fi
+    set +o pipefail
+  done
+  return "$rc"
+}
+
+complete_reviews() {
+  local repo session rc=0
+  for repo in $REPOS_SEEN; do
+    case " $FAILED_REPOS " in *" $repo "*) continue;; esac
+    session=$(session_for_repo "$repo") || {
+      say "!!! no authoritative session to complete for $(basename "$repo")"
+      rc=1
+      note_failure "PR review completion" "$repo"
+      continue
+    }
+    if [ ! -f "$session/stack-report.md" ] && [ ! -f "$session/report.md" ]; then
+      say "!!! authoritative session has no report to complete: $session"
+      rc=1
+      note_failure "PR review completion" "$repo"
+      continue
+    fi
+    if ! "$REV_SCRIPTS/rev-state.sh" "$session" phase=done; then
+      say "!!! cannot mark the published review complete: $session"
+      rc=1
+      note_failure "PR review completion" "$repo"
+      continue
+    fi
+    if [ -f "$session/stack-report.md" ] \
+        && ! mv "$session/stack-report.md" "$session/report.md"; then
+      say "!!! cannot promote the stack-ready report: $session"
+      rc=1
+      note_failure "PR review completion" "$repo"
+      continue
+    fi
+    if [ -e "$session/incomplete.md" ] && ! rm -f -- "$session/incomplete.md"; then
+      say "!!! cannot clear the completed review failure receipt: $session"
+      rc=1
+      note_failure "PR review completion" "$repo"
+    fi
+  done
+  return "$rc"
 }
 
 # shellcheck disable=SC1090
@@ -348,5 +647,11 @@ say "ALL PHASE 1 COMPLETE"
 if [ -n "$SEAM_REPO" ]; then PASS=seam; say "########## PHASE 2 - CROSS-REPO SEAMS ##########"; run_leg "$SEAM_REPO" 2 seams "$SEAM_PREMISE"; else say "PHASE 2 skipped (SEAM_REPO unset)"; fi
 if [ -n "$CRITIC_REPO" ]; then PASS=critic; say "########## PHASE 3 - COMPLETENESS CRITIC ##########"; run_leg "$CRITIC_REPO" 1 critic "$CRITIC_PREMISE"; else say "PHASE 3 skipped (CRITIC_REPO unset)"; fi
 say "########## FINISH - squash + push per repo ##########"; finish_repos
+say "########## FINALIZE - reconcile post-squash review links ##########"
+finalize_reviews || true
+say "########## PUBLISH - one PR review per completed repository ##########"
+publish_reviews || true
+say "########## COMPLETE - promote stack-ready review receipts ##########"
+complete_reviews || true
 if [ -n "$FAILED_LABELS" ]; then say "COMPLETE WITH FAILURES:$FAILED_LABELS"; exit 1; fi
 say "ALL PHASES COMPLETE"

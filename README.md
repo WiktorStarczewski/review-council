@@ -31,6 +31,7 @@ preflight and probe
   -> apply confirmed fixes and run project gates
   -> four-bundle verification
   -> repeat only for new P0/P1 risk or another nontrivial fix
+  -> publish the canonical PR review when an open PR is associated
   -> seal receipts, profile usage, and write the report
 ```
 
@@ -49,6 +50,16 @@ Key properties:
   capacity failures.
 - Later panels review a safe semantic delta only after a valid predecessor receipt.
 - Status and usage are read from session artifacts without another model call.
+- Completed PR reviews use one deterministic `COMMENTED` review format with the
+  badge, verdict tip, decisions, fixes, verified-sound, coverage, and footer sections.
+  The inspected body, open PR, merge base, observed base tip, and clean reviewed head
+  are frozen for exact retries. Publication rebinds that state to the reviewed scope,
+  accepts base-tip movement only while the merge base is unchanged, serializes local
+  retries, and creates a `COMMENTED` review pinned to the reviewed commit. Only an
+  identical review on that commit suppresses a duplicate post. Discovery stays within
+  the reviewed checkout's GitHub remotes.
+  Local branches and document reviews without an associated open PR do not post. A
+  stack publishes only the latest actually completed session for each canonical repository.
 
 ## Install
 
@@ -249,12 +260,13 @@ external CLI seats and refuses when no usable external CLI remains.
 | --- | --- | --- |
 | simplicity discovery | always | every core seat asks whether the change can be smaller through reuse or deletion |
 | risk discovery | more than 25 files, more than 1,500 lines, or a high-risk boundary | the four risk bundles across the full panel |
+| full red team | exactly once for a large, high-risk, user-marked-important, or explicitly adversarial adaptive review | four distinct adversarial compositions over the existing risk bundles, before planning |
 | plan | before each nontrivial accepted fix cluster | completeness, soundness, simplicity, and falsifiable tests |
 | fix and gates | after accepted and plan-approved findings | root-cause clusters, relevant regression tests, project gates at baseline or better |
 | verification | after discovery when no nontrivial fix follows, or after the latest nontrivial fix | all four risk bundles over the latest material state |
 
-High-risk boundaries include security, persistence, concurrency, transactions, and
-public APIs.
+High-risk boundaries include security, persistence, concurrency, transactions,
+protocols, public APIs, and irreversible mutations.
 
 For the four-seat council:
 
@@ -262,12 +274,14 @@ For the four-seat council:
 | --- | ---: |
 | ordinary, no nontrivial fix | 8 |
 | ordinary, with one plan panel | 12 |
-| large or high-risk, no nontrivial fix | 12 |
-| large or high-risk, with one plan panel | 16 |
+| large or high-risk, no nontrivial fix | 16 |
+| large or high-risk, with one plan panel | 20 |
 
 With four core seats, a normal review plans 12 seat launches: four simplicity, four
 conditional plan, and four final verification launches. A large or high-risk review
-plans 16 by adding four risk-discovery launches.
+plans 20 by adding four risk-discovery and four full red-team launches. An important
+or explicitly adversarial review that is not otherwise large or high-risk adds the
+four full red-team launches.
 
 One four-bundle verification panel reviews the latest material state: directly after
 discovery when no nontrivial fix follows, or after the latest nontrivial fix. Adaptive
@@ -292,6 +306,14 @@ Every risk and verification panel covers all four bundles:
 With four seats, each seat receives one bundle. With three seats, one seat receives
 two. Surplus seats cycle the bundles. The regression bundle owns the full cumulative
 state during risk and verification.
+
+Every code panel also composes red-team emphasis into one existing core seat, selected
+from stable roster order and rotated across panels. This preserves the seat's normal
+lens and bundle and adds no provider call or panel, including in numeric and read-only
+code reviews. The conditional full red-team panel reuses the four bundles with distinct
+attacker and trust-boundary, rollback and recovery, duplication and exhaustion, and
+consumer compatibility and integration emphases. Document panels are excluded unless
+the user explicitly requests adversarial document review.
 
 ### Why simplicity runs first
 
@@ -624,6 +646,7 @@ rejected.md
 fix-plan.md
 context.md
 state.json
+stack-report.md
 report.md
 r<label>-evidence.manifest.json
 r<label>-<seat>.prompt.md
@@ -644,7 +667,8 @@ Receipt roles:
 | exit | the specific seat generation terminated successfully |
 | read audit | the transcript completed its hash-bound evidence obligations |
 | panel | one immutable valid generation covers every assignment |
-| `report.md` | the review completed; stack legs use it as their success receipt |
+| `stack-report.md` | a stack leg completed locally and is ready for finalization and publication |
+| `report.md` | publication succeeded or cleanly skipped and the review completed |
 
 Interrupted or blocked runs write `incomplete.md`. They do not write a success report.
 Current sessions require successful receipts. Compatible historical receiptless results
@@ -701,12 +725,14 @@ The stack runner:
 
 1. Runs one Review Council leg per repository in dependency order.
 2. Uses isolated repository paths or worktrees supplied by the config.
-3. Keeps one session root with per-leg ledgers, logs, and completion reports.
+3. Keeps one session root with per-leg ledgers, logs, and stack-ready reports.
 4. Detects stalls from both log activity and process-tree CPU before retrying.
 5. Resumes a leg from its existing session instead of discarding verified work.
 6. Runs cross-repository seam passes after repository-local review.
 7. Runs a final completeness critic when configured.
-8. Treats a missing `report.md`, failed leg, or `COMPLETE WITH FAILURES` as incomplete.
+8. Promotes `stack-report.md` to `report.md` only after publication or a no-push skip.
+9. Publishes successful repositories even when a sibling fails, while preserving the
+   overall nonzero stack result.
 
 Claude Code stack legs use `claude -p`. Codex stack legs use `codex exec` with
 workspace-write for authorized fixes, network access for reviewer providers, and write
@@ -740,7 +766,7 @@ Other fail-closed conditions include:
 - plan task exceeds compiled provider capacity;
 - project gate falls below baseline;
 - squash safety check refuses;
-- stack leg exits without a fresh `report.md`.
+- stack leg exits without a fresh `stack-report.md` and `phase=stack-ready` state.
 
 A hard read-audit failure stops the current run before another reviewer launch. It is
 reported as an evidence compiler or contract defect, with valid siblings and partial
@@ -849,6 +875,10 @@ Full reference: [docs/config.md](docs/config.md).
 
 ## Development and release verification
 
+The bounded 0.4.4 operator sequence is documented in the [release procedure](docs/release.md).
+It uses a signed-tag 0.4.3 worktree for N-1 review, the existing deterministic
+candidate gate, P0/P1-only repairs, and at most one clean delta generation.
+
 Fast name-filtered shell tests:
 
 ```bash
@@ -876,7 +906,7 @@ checks command logs for terminal success, and publishes a hash-bound receipt onl
 every stage refers to the same source tree.
 
 Tests use local CLI shims and do not contact live provider accounts. Live compatibility
-checks use preserved provider-envelope replay and explicit certification runs.
+checks use preserved provider-envelope replay and the signed previous-stable review.
 
 Local Codex bundle:
 

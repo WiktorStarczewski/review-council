@@ -1,5 +1,132 @@
 # Token-Efficient Review Council
 
+## 0.4.4 elapsed-time diagnosis
+
+- [x] Stop the release path and verify no current-session reviewer or verifier remains active.
+- [x] Reconstruct wall time from commits, session artifacts, attempts, and receipts.
+- [x] Classify each delay as legitimate P0/P1 discovery, test/gate failure, audit failure, retry, or repeated work.
+- [x] Compare this run with the plugin's measured self-review churn pattern.
+- [x] Identify the smallest root-cause set and report evidence before proposing changes.
+
+### Diagnosis review
+
+- The feature-to-final-gate interval was 15 hours 27 minutes. Reviewer panels occupied
+  6 hours 24 minutes, including 2 hours 30 minutes in incomplete panels.
+- The 26 panel generations made 89 paid calls and processed 128,164,553 tokens. Ten panels
+  were incomplete, and 14 paid calls did not produce a certifying result.
+- The deterministic full gate is slow but stable: the final run passed 229 shell tasks,
+  3,723 assertions, 89 Python tests, and all validators in about 10 minutes.
+- Review work added 4,146 lines after the initial 902-line feature. Of 690 later-removed
+  production and documentation lines, 510, or 73.9 percent, came from earlier review fixes.
+- The primary cause is a self-amplifying review-and-fix loop. Scope expansion created real
+  transaction bugs, brittle evidence audits wasted panel time, and severity policy made each
+  new repair trigger another expensive certification cycle.
+
+## 0.4.4 stable release lane
+
+- [x] Diagnose the unbounded self-host review loop and unreliable evidence-session boundaries.
+- [x] Compare the plugin release with the ordinary `/rev` population.
+- [x] Reject a global correction cap for a release-specific failure mode.
+- [x] Approve previous-stable review, the existing deterministic candidate gate, and a two-generation cap.
+- [x] Implement and re-review the session-wide hard-audit stop.
+- [x] Seal and serialize the four evidence-session inputs.
+- [x] Promote composite red-team, compatibility, recovery, security, and integration coverage in normal panels.
+- [x] Remove the custom release authority and document the signed-tag procedural lane.
+- [x] Pressure-test both host skills.
+- [x] Repair the three stale shell fixtures and run the complete frozen-tree gate.
+- [x] Run the initial stable 0.4.3 P0/P1-only release panel for 0.4.4.
+- [x] Repair its three accepted P1 groups with focused regression coverage.
+- [x] Pass the repaired frozen-tree gate and run the one permitted stable final panel.
+- [x] Repair the final panel's two independently verified P1 findings.
+- [ ] Run focused regressions and the complete frozen-tree gate without another panel generation.
+- [ ] Squash-merge PR #6, publish 0.4.4, reinstall, and verify fresh-session discovery.
+
+## 0.4.4 PR review publication
+
+- [x] Capture the canonical PR #3856 review template and approve the behavior.
+- [x] Establish a clean frozen-tree verification baseline in an isolated worktree.
+- [x] Add failing renderer, publisher, duplicate, failure, and no-PR tests.
+- [x] Implement deterministic rendering and GitHub PR review publication.
+- [x] Require publication at successful PR-review completion on both hosts.
+- [x] Document the workflow and prepare the 0.4.4 release metadata.
+- [x] Run focused tests, the complete frozen-tree gate, and plugin validators.
+- [x] Pressure-test the edited skills against normal, read-only, and stack-failure scenarios.
+- [x] Bind PR discovery and base identity to the reviewed repository and merge base.
+- [x] Make no-push publication and stack finalization durable across retries.
+- [x] Preserve separate-PR fix links and normalize commit counting.
+- [x] Record authoritative stack sessions only after completion.
+- [x] Add body-hash and non-git stack regressions.
+- [x] Run a fresh complete council pass after the r9 audit-invalid panel.
+- [x] Fix the final publication, stack-push, rendering, and remote-normalization findings.
+- [ ] Run the complete exact-roster verification panel on the repaired tree.
+- [ ] Push, open and merge the PR, publish 0.4.4, install it, and verify discovery.
+
+### Final-panel repairs
+
+- [x] Add red regressions for no-push rendering, copied target state, commit-pinned posts,
+  base movement, stack propagation, literal session paths, and invalid empty review pages.
+- [x] Add red regressions for stack-leg ready receipts, partial multi-repository failure,
+  merge-base preservation, and dirty-path diagnostics.
+- [x] Bind every target back to its reviewed scope and create reviews against the frozen commit.
+- [x] Let safe base-tip movement and brief post-push propagation recover without weakening
+  base-branch or reviewed merge-base validation.
+- [x] Give stack legs a pre-publication receipt and publish successful repositories even when a
+  different repository failed.
+- [x] Run focused gates, the complete frozen-tree gate, and a fresh exact-roster council panel.
+
+### Final convergence repairs
+
+- [x] Add red regressions for failure-atomic completion and a missing publisher.
+- [x] Add the local stack validator and immutable commit, URL, and destination push.
+- [x] Escape raw HTML outside balanced Markdown code spans without changing the template.
+- [x] Close direct-publication head races and make the negative fixtures non-vacuous.
+- [x] Accept all documented GitHub remote forms without widening host trust.
+- [x] Contain malformed session text in durable failure receipts.
+- [x] Validate original, finalized, and recoverable stack review states before completion.
+- [x] Run focused tests and the full frozen-tree gate on the repaired implementation.
+- [ ] Run the final exact-roster panel.
+- [x] Reject mismatched stack push refs before any remote mutation.
+- [x] Refresh the exact upstream tracking ref after a successful literal-URL push.
+- [x] Add non-vacuous regressions for wrong-ref refusal and post-push tracking state.
+- [ ] Rerun focused, frozen-tree, and exact-roster verification on the repaired tree.
+- [x] Make publication a recoverable GitHub pending-review transaction.
+- [x] Prove concurrent identical publication across separate clones submits one review.
+- [x] Preserve exact COMMENTED-review idempotence and ambiguous-write recovery.
+- [x] Triage the final P1 plan with three valid seats and preserve the invalid Sonnet audit.
+- [x] Record the explicit override of the incomplete fourth plan seat without retrying it.
+- [x] Reject publication sessions that overlap an associated PR checkout.
+- [x] Make terminal write-boundary closure and post-confirmation head movement idempotent.
+- [ ] Run focused gates and one final P0/P1 delta panel.
+- [ ] Squash-merge PR #6, release 0.4.4, reinstall it, and verify plugin discovery.
+
+### Review
+
+- Pressure tests: the baseline skipped required publication in 2 of 3 scenarios;
+  all 3 evaluators followed the new contract when the edited skills were loaded.
+- Frozen-tree verifier passed shell tests, Python tests, both Claude validators, and
+  the Codex marketplace validator.
+- Post-r9 repair gate passed 222 shell tasks, 3,386 assertions, 89 Python tests,
+  both Claude validators, and the Codex marketplace validator.
+- The destination repair passed 302 PR-publication assertions, 282 stack assertions,
+  and 447 skill-contract assertions.
+- A live disposable draft on PR #6 confirmed GitHub rejects a second pending review
+  for the same authenticated user and exposes the first draft through the review list.
+- The remote transaction repair passed 332 PR-publication assertions and 449
+  skill-contract assertions, including independent-clone serialization and safe cleanup.
+- The final P1 repairs passed 350 PR-publication assertions and 453 skill-contract
+  assertions, including red-green coverage for all three write-boundary races.
+- The signed 0.4.3 release panel completed all four exact-roster seats with a valid
+  evidence receipt and no audit violations. Three P1 repair groups were accepted.
+- The release-panel repairs passed 19 neighboring audit-stop assertions, 354
+  PR-publication assertions, retry and serialization coverage for immutable session
+  inputs, Python compilation, and shell syntax checks.
+- The final stable panel produced three valid seat audits and one invalid legacy audit.
+  Independent source verification accepted two P1s: interrupted hard-stop durability
+  and pre-push stack merge-base validation. The two-generation policy forbids a third panel.
+- The final P1 repairs passed 33 evidence-audit failure assertions, 22 audit-stop
+  assertions, 357 PR-review assertions, and 285 stack assertions. Both Python files
+  compile, all edited shell files parse, and the edited files contain no Unicode dashes.
+
 ## Wall-time optimization spike
 
 - [x] Measure phase and seat elapsed time across preserved optimizer sessions.

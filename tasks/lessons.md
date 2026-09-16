@@ -1,5 +1,8 @@
 # Lessons
 
+- PR review automation needs an explicit association boundary. If the reviewed
+  branch has no open PR, skip cleanly; never infer or choose another publication target.
+
 - Optimize repeated reviewer launches before reducing independent discovery
   breadth. Held-out results show that four simplicity seats recover findings a
   single seat misses.
@@ -220,3 +223,9 @@
 - Do not label a mandatory source read optional anywhere else in the same prompt. Put one required post-index target after the index instruction so the model sees an executable sequence instead of competing priorities.
 - Claude Code may treat a long skill as guidance unless the entry states its execution contract directly. Put the contract in the always-loaded policy and the skill body, require an exact reason for every omitted step, and make missing evidence audits or receipts non-certifying.
 - Once an assigned patch is fully byte-proven, a final out-of-range read adds no review evidence and should remain an advisory. The identical read before complete proof stays fatal.
+- For long release convergence, give an hourly checkpoint with concrete artifacts, open blockers, and bounded remaining gates. If an hour passes without source-changing progress, stop and reassess before launching another paid panel.
+- After the user explicitly overrides an incomplete review gate, record the exact waived seat and preserved evidence, then continue to the next meaningful certification. Do not relaunch the failed panel or let the waiver erase valid sibling results.
+- When a small feature spends hours in self-certification, stop before another panel. Reconstruct elapsed time by category and test whether the process is finding independent product defects or repeatedly auditing and repairing its own review infrastructure.
+- Before changing a healthy generic workflow to cure one pathological mode, compare that mode with the rest of the population. A plugin must not use the candidate version to certify its own reviewer machinery; pin release review to the prior stable version and test the candidate with deterministic gates and targeted canaries.
+- A release-process repair is not converging when its control plane becomes larger than the product change. Set an explicit implementation budget before coding, keep the previous-stable review lane mostly procedural, and stop for user review when release-authority code or tests exceed that budget instead of continuing to harden the hardener.
+- When adding shell test functions, update the exact scheduler inventory in `test-costs.tsv` before running the frozen-tree verifier. Focused filters bypass that reconciliation, so they cannot prove the aggregate shell gate will launch the new tests.

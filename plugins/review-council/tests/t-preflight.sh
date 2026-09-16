@@ -42,8 +42,60 @@ STUB
     chmod +x "$D/roster.sh"
     ln -sf "$SCRIPTS/rev-preflight.sh" "$D/rev-preflight.sh"
     ln -sf "$SCRIPTS/rev-contract-check.py" "$D/rev-contract-check.py"
+    mkdir -p "$D/lib"
+    ln -sf "$SCRIPTS/lib/session_inputs.py" "$D/lib/session_inputs.py"
   fi
   printf '%s' "$D"
+}
+
+test_preflight_refuses_sealed_session_inputs() {
+  ( local B="$T/pf-sealed"; seat_env; local PF; PF="$(pf_bin)/rev-preflight.sh"
+    export RSTUB_ARGS="$B/roster.args"
+    local R="$B/repo" S="$B/session" name
+    mkrepo "$R"; git -C "$R" checkout -qb feat
+    printf 'changed\n' > "$R/change.txt"; git -C "$R" add change.txt; git -C "$R" commit -qm change
+    mkdir -p "$S" "$B/original"
+    for name in scope.env roster.json files.txt untracked.txt; do
+      printf 'old-%s' "$name" > "$S/$name"
+      cp "$S/$name" "$B/original/$name"
+    done
+    printf '{' > "$S/r1-evidence.manifest.json"
+    (cd "$R" && "$PF" --write "$S") > "$B/out" 2> "$B/err"
+    assert_eq "sealed session preflight is refused" "$?" 1
+    assert_exit "sealed refusal happens before the roster probe" 0 test ! -e "$RSTUB_ARGS"
+    for name in scope.env roster.json files.txt untracked.txt; do
+      assert_exit "sealed refusal preserves $name byte-for-byte" 0 cmp -s "$S/$name" "$B/original/$name"
+    done
+  )
+}
+
+test_preflight_installs_complete_staged_generation() {
+  ( local B="$T/pf-generation"; seat_env; local PF; PF="$(pf_bin)/rev-preflight.sh"
+    export RSTUB_ARGS="$B/roster.args"
+    local R="$B/repo" S="$B/session" roster_target
+    mkrepo "$R"; git -C "$R" checkout -qb feat
+    printf 'tracked\n' > "$R/tracked.txt"; git -C "$R" add tracked.txt; git -C "$R" commit -qm tracked
+    printf 'untracked\n' > "$R/untracked.txt"
+    (cd "$R" && "$PF" --write "$S") > "$B/out" 2> "$B/err"
+    assert_eq "complete staged generation preflight exits 0" "$?" 0
+    roster_target=$(awk 'previous == "--write" { print; exit } { previous=$0 }' "$RSTUB_ARGS")
+    case "$roster_target" in
+      "$S"/*) fail "the roster is staged outside the live session" "$roster_target";;
+      *) ok "the roster is staged outside the live session";;
+    esac
+    assert_exit "the private staging directory is removed" 1 test -e "$(dirname "$roster_target")"
+    assert_grep "the complete generation installs scope.env" "$S/scope.env" '^REV_BASE='
+    assert_grep "the complete generation installs roster.json" "$S/roster.json" '"seat": "codex-sol"'
+    assert_grep "the complete generation installs files.txt" "$S/files.txt" '^tracked.txt$'
+    assert_grep "the complete generation installs untracked.txt" "$S/untracked.txt" '^untracked.txt$'
+    python3 - "$S" <<'PY'
+import pathlib, stat, sys
+session = pathlib.Path(sys.argv[1])
+assert all(stat.S_IMODE((session / name).stat().st_mode) == 0o600
+           for name in ('scope.env', 'roster.json', 'files.txt', 'untracked.txt'))
+PY
+    assert_eq "installed generation files are private" "$?" 0
+  )
 }
 pf_strict_roster() {  # a padded single-lab panel that a config min_labs floor refuses (roster exit 5)
   cat <<'J'
@@ -103,7 +155,12 @@ test_preflight() {
   assert_nogrep "roster JSON never reaches stdout" "$T/pf.out" '"seats"'
   assert_grep "roster is probed" "$T/rstub.args" '^--probe$'
   assert_grep "roster is written" "$T/rstub.args" '^--write$'
-  assert_grep "…into the session dir" "$T/rstub.args" "^$T/pf-sess/roster.json$"
+  local first_roster
+  first_roster=$(awk 'previous == "--write" { print; exit } { previous=$0 }' "$T/rstub.args")
+  case "$first_roster" in
+    "$T/pf-sess"/*) fail "the roster is staged before publication" "$first_roster";;
+    *) ok "the roster is staged before publication";;
+  esac
   # one call, not two: the printed line comes from the same probed roster the JSON was built from
   assert_grep "the line is asked for in the same call" "$T/rstub.args" '^--brief$'
   assert_eq "the roster is consulted exactly once" "$(wc -l < "$T/rstub.args" | tr -d ' ')" "4"
@@ -180,11 +237,13 @@ PY
   "$PF" --quota-failed-seat opus --quota-failed-seat sonnet \
     --write "$T/pf-quota-handoff" > "$T/pf.out" 2> "$T/pf.err"
   assert_eq "preflight accepts classified quota handoffs" "$?" 0
+  local quota_roster
+  quota_roster=$(awk 'previous == "--write" { print; exit } { previous=$0 }' "$RSTUB_ARGS")
   cat > "$T/pf-quota-expected.args" <<EOF
 --probe
 --brief
 --write
-$T/pf-quota-handoff/roster.json
+$quota_roster
 --quota-failed-seat
 opus
 --quota-failed-seat
