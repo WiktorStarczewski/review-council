@@ -221,21 +221,21 @@ PY
   AUDIT_META_RC=$?
   if [ "$AUDIT_META_RC" -ne 0 ]; then
     echo "bounded-read audit metadata is missing, malformed, or inconsistent" >> "$LOG"
-    stop_panel_generation || echo "cannot persist panel hard-stop state" >> "$LOG"
     preserve_audit_invalid_result
+    stop_panel_generation || echo "cannot persist panel hard-stop state" >> "$LOG"
     finish 2
   fi
   if [ "$AUDIT_RC" -ne 0 ]; then
     case "$AUDIT_SCOPE" in
       full)
         echo "bounded-read audit rejected full-scope evidence review; stop the panel before another reviewer launch" >> "$LOG"
-        stop_panel_generation || echo "cannot persist panel hard-stop state" >> "$LOG"
         preserve_audit_invalid_result
+        stop_panel_generation || echo "cannot persist panel hard-stop state" >> "$LOG"
         finish 2;;
       narrow)
         echo "bounded-read audit rejected narrowed review; stop the panel before another reviewer launch" >> "$LOG"
-        stop_panel_generation || echo "cannot persist panel hard-stop state" >> "$LOG"
         preserve_audit_invalid_result
+        stop_panel_generation || echo "cannot persist panel hard-stop state" >> "$LOG"
         finish 2;;
       legacy)
         echo "bounded-read audit found violations in a legacy review; result retained as advisory" >> "$LOG";;

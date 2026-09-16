@@ -333,5 +333,47 @@ for reservation in attempts.glob('*.json'):
     if reservation.stat().st_mtime_ns > marker_time:
         raise SystemExit(1)
 PY
+
+    session="$T/session-stop-panel-lock"
+    lock="$session/attempts/.panel-$(printf r1 | shasum -a 256 | awk '{print $1}').lock"
+    ready="$T/session-panel-stop.ready"
+    release="$T/session-panel-stop.release"
+    mkdir -p "$session/attempts"
+    python3 - "$lock" "$ready" "$release" <<'PY' &
+import fcntl
+import os
+from pathlib import Path
+import sys
+import time
+
+lock, ready, release = map(Path, sys.argv[1:])
+descriptor = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+fcntl.flock(descriptor, fcntl.LOCK_EX)
+ready.touch()
+while not release.exists():
+    time.sleep(0.01)
+PY
+    lock_pid=$!
+    i=0
+    while [ ! -e "$ready" ] && kill -0 "$lock_pid" 2>/dev/null && [ "$i" -lt 100 ]; do
+      sleep 0.02; i=$((i + 1))
+    done
+    python3 "$SCRIPTS/lib/rev-attempt.py" stop "$session" r1 \
+      --reason "hard evidence audit failed" >/dev/null 2>&1 &
+    stop_pid=$!
+    i=0
+    while [ ! -e "$session/attempts/session.stopped.json" ] \
+        && kill -0 "$stop_pid" 2>/dev/null && [ "$i" -lt 100 ]; do
+      sleep 0.02; i=$((i + 1))
+    done
+    assert_exit "session stop is durable before the panel lock is acquired" 0 \
+      test -s "$session/attempts/session.stopped.json"
+    kill -TERM "$stop_pid" 2>/dev/null || true
+    wait "$stop_pid" 2>/dev/null || true
+    : > "$release"
+    wait "$lock_pid"; assert_eq "held panel lock releases after stop interruption" "$?" 0
+    python3 "$SCRIPTS/lib/rev-attempt.py" reserve "$session" r2 codex-sol "$prompt" \
+      >"$T/session-panel-stop.out" 2>"$T/session-panel-stop.err"
+    assert_eq "interrupted panel-marker write leaves the session stopped" "$?" 2
   )
 }

@@ -1098,6 +1098,11 @@ def validate_stack(session, head, expected_root=None, push_url=None, push_ref=No
     require(git_is_ancestor(target["base"], head, root),
             "stack validation head does not preserve the reviewed base")
     require_clean_review_tree(root, session)
+    if not no_push:
+        target, live, _ = bind_target(
+            scope, target, session, allow_rewritten_head=True)
+        if live is not None and live["state"] == "OPEN":
+            require_reviewed_merge_base(target, head, live["base_head"], root)
 
     state, _, _, _, _ = stack_review_state(session, target, head)
     require(state in ("original", "finalized") or (state == "interrupted" and not no_push),

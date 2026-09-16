@@ -128,6 +128,11 @@ def main():
         return 1
     with os.fdopen(session_descriptor, 'r+', encoding='utf-8') as session_lock:
         fcntl.flock(session_lock, fcntl.LOCK_EX)
+        session_written = None
+        if command == 'stop':
+            session_raw = json.dumps({'panel': panel, 'reason': reason, 'stopped': True},
+                                     sort_keys=True, separators=(',', ':')) + '\n'
+            session_written = write_immutable(session_stop_path(session), session_raw)
         panel_key = hashlib.sha256(panel.encode()).hexdigest()
         try:
             panel_descriptor, _ = open_private(directory / ('.panel-' + panel_key + '.lock'))
@@ -139,9 +144,6 @@ def main():
             if command == 'stop':
                 raw = json.dumps({'panel': panel, 'stopped': True}, sort_keys=True,
                                  separators=(',', ':')) + '\n'
-                session_raw = json.dumps({'panel': panel, 'reason': reason, 'stopped': True},
-                                         sort_keys=True, separators=(',', ':')) + '\n'
-                session_written = write_immutable(session_stop_path(session), session_raw)
                 panel_written = write_immutable(stopped, raw)
                 return 0 if session_written and panel_written else 1
             prior = prior_hard_audit(session)

@@ -36,7 +36,9 @@
 - [x] Repair the three stale shell fixtures and run the complete frozen-tree gate.
 - [x] Run the initial stable 0.4.3 P0/P1-only release panel for 0.4.4.
 - [x] Repair its three accepted P1 groups with focused regression coverage.
-- [ ] Pass the repaired frozen-tree gate and the one permitted stable delta panel.
+- [x] Pass the repaired frozen-tree gate and run the one permitted stable final panel.
+- [x] Repair the final panel's two independently verified P1 findings.
+- [ ] Run focused regressions and the complete frozen-tree gate without another panel generation.
 - [ ] Squash-merge PR #6, publish 0.4.4, reinstall, and verify fresh-session discovery.
 
 ## 0.4.4 PR review publication
@@ -118,6 +120,12 @@
 - The release-panel repairs passed 19 neighboring audit-stop assertions, 354
   PR-publication assertions, retry and serialization coverage for immutable session
   inputs, Python compilation, and shell syntax checks.
+- The final stable panel produced three valid seat audits and one invalid legacy audit.
+  Independent source verification accepted two P1s: interrupted hard-stop durability
+  and pre-push stack merge-base validation. The two-generation policy forbids a third panel.
+- The final P1 repairs passed 33 evidence-audit failure assertions, 22 audit-stop
+  assertions, 357 PR-review assertions, and 285 stack assertions. Both Python files
+  compile, all edited shell files parse, and the edited files contain no Unicode dashes.
 
 ## Wall-time optimization spike
 

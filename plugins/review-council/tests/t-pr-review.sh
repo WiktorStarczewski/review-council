@@ -1352,7 +1352,7 @@ PY
 
 test_pr_review_validate_stack() {
   local session="$T/pr-validate" root="$T/pr-validate-repo" bin="$T/pr-validate-bin"
-  local head next
+  local head next newer_base rewritten
   pr_review_session "$session" "$root"
   pr_review_gh_shim "$bin"
   : > "$T/pr-validate.calls"
@@ -1405,7 +1405,8 @@ test_pr_review_validate_stack() {
     --push-ref 'refs/heads/feat' \
     > "$T/pr-validate.out" 2> "$T/pr-validate.err"
   assert_eq "local stack validation accepts the frozen review" "$?" 0
-  assert_nogrep "local stack validation makes no GitHub calls" "$T/pr-validate.calls" '.'
+  assert_grep "real-push stack validation revalidates the current PR" \
+    "$T/pr-validate.calls" '^pr view '
 
   PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" validate-stack-destination "$session" \
@@ -1441,6 +1442,26 @@ test_pr_review_validate_stack() {
     > "$T/pr-validate-same-tree.out" 2> "$T/pr-validate-same-tree.err"
   assert_eq "local stack validation accepts a same-tree aggregate commit" "$?" 0
 
+  newer_base=$(printf 'newer base\n' | git -C "$root" commit-tree \
+    "$(git -C "$root" rev-parse 'main^{tree}')" -p "$(git -C "$root" rev-parse main)")
+  rewritten=$(printf 'same tree, newer base parent\n' | git -C "$root" commit-tree \
+    "$(git -C "$root" rev-parse 'HEAD^{tree}')" -p "$next" -p "$newer_base")
+  git -C "$root" reset -q --hard "$rewritten"
+  : > "$T/pr-validate.calls"
+  PATH="$bin:$PATH" GH_HEAD_OID="$head" GH_LIVE_BASE_OID="$newer_base" \
+    GH_CALLS="$T/pr-validate.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" \
+    --head "$rewritten" --root "$root" --push-url 'https://github.com/acme/repo.git' \
+    --push-ref 'refs/heads/feat' \
+    > "$T/pr-validate-new-base.out" 2> "$T/pr-validate-new-base.err"
+  assert_eq "same-tree rewrite with a newer base parent fails before push" "$?" 1
+  assert_grep "rewritten-head failure names the reviewed merge base" \
+    "$T/pr-validate-new-base.err" 'PR merge base does not match the reviewed merge base'
+  assert_grep "real-push validation revalidates the current PR" \
+    "$T/pr-validate.calls" '^pr view '
+  git -C "$root" reset -q --hard "$next"
+  : > "$T/pr-validate.calls"
+
   echo dirty > "$root/dirty.txt"
   PATH="$bin:$PATH" GH_CALLS="$T/pr-validate.calls" \
     python3 "$SCRIPTS/rev-pr-review.py" validate-stack "$session" \
@@ -1470,7 +1491,8 @@ test_pr_review_validate_stack() {
   assert_eq "local stack validation rejects a tampered rendered body" "$?" 1
   assert_grep "tampered validation names the frozen body" \
     "$T/pr-validate-body.err" 'frozen body hash'
-  assert_nogrep "every local validation path avoids GitHub" "$T/pr-validate.calls" '.'
+  assert_nogrep "stack validation never mutates GitHub" \
+    "$T/pr-validate.calls" '^api --method (POST|DELETE) '
 }
 
 test_pr_review_stack_finalization() {

@@ -2351,6 +2351,11 @@ if [ "$1" = "$AUDIT_SCRIPT" ] && [ "$2" = audit ]; then
       exit 2;;
   esac
 fi
+if [ -n "${ATTEMPT_SCRIPT:-}" ] && [ "$1" = "$ATTEMPT_SCRIPT" ] && [ "$2" = stop ]; then
+  printf '%s\n' "$$" > "$STOP_PID_FILE"
+  : > "$STOP_READY_FILE"
+  while :; do sleep 0.05; done
+fi
 PATH="$REAL_PYTHON_PATH" exec python3 "$@"
 SH
     chmod +x "$audit_python/python3"
@@ -2372,6 +2377,33 @@ SH
         "$S/r$audit_label-codex-sol.log" \
         'bounded-read audit metadata is missing, malformed, or inconsistent'
     done
+
+    S="$T/audit-failure-interrupted-stop"; seat_roster "$S"
+    printf 'Assigned scope: full\n' > "$S/legacy.md"
+    : > "$SHIM_ARGS_FILE"
+    local stop_ready="$T/interrupted-stop.ready" stop_pid_file="$T/interrupted-stop.pid"
+    PATH="$audit_python:$real_python" REAL_PYTHON_PATH="$real_python" \
+      AUDIT_SCRIPT="$SCRIPTS/lib/review-read-audit.py" AUDIT_SHIM_MODE=malformed \
+      ATTEMPT_SCRIPT="$SCRIPTS/lib/rev-attempt.py" STOP_READY_FILE="$stop_ready" \
+      STOP_PID_FILE="$stop_pid_file" SHIM_MODE=unbounded \
+      "$SCRIPTS/rev-seat.sh" codex-sol "$S" interrupted "$S/legacy.md" \
+      > "$T/audit-interrupted-stop.out" 2>&1 &
+    local seat_pid=$! i=0
+    while [ ! -e "$stop_ready" ] && kill -0 "$seat_pid" 2>/dev/null && [ "$i" -lt 100 ]; do
+      sleep 0.02; i=$((i + 1))
+    done
+    assert_exit "hard-stop interruption fixture reaches the blocked helper" 0 test -s "$stop_pid_file"
+    assert_exit "invalid findings are preserved before the stop helper can finish" 0 \
+      test -s "$S/rinterrupted-codex-sol.audit-invalid.json"
+    kill -TERM "$(cat "$stop_pid_file")" 2>/dev/null || true
+    wait "$seat_pid"; assert_eq "interrupted stop still fails the evidence seat" "$?" 2
+    local provider_calls
+    provider_calls=$(wc -l < "$SHIM_ARGS_FILE" | tr -d ' ')
+    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" later "$S/legacy.md" \
+      > "$T/audit-interrupted-relaunch.out" 2>&1
+    assert_eq "preserved invalid findings stop a later panel label" "$?" 2
+    assert_eq "interrupted hard stop permits no second provider launch" \
+      "$(wc -l < "$SHIM_ARGS_FILE" | tr -d ' ')" "$provider_calls"
   )
 }
 
