@@ -331,7 +331,8 @@ PHASE_PROMPT_ARGS=()
 `--panel` loads the evidence manifest once, writes every `r<label>-<seat>.prompt.md`,
 prints their paths in order, and publishes none when any seat fails. Render a single
 `<N>x` repair seat with the per-seat form
-`"$PLUGIN/scripts/rev-prompt.sh" "$S" "$PANEL_LABEL" "$SEAT" "$LENS" "$EMPHASIS" "${PHASE_PROMPT_ARGS[@]}" "${EVIDENCE_PROMPT_ARGS[@]}"`.
+`"$PLUGIN/scripts/rev-prompt.sh" "$S" "$PANEL_LABEL" "$SEAT" "$LENS" "$EMPHASIS" --phase "$COVERED_PHASE" "${EVIDENCE_PROMPT_ARGS[@]}"`,
+where `COVERED_PHASE` is the phase of the panel it repairs (`risk` or `verification`).
 An exact seat retry reuses its already-rendered prompt.
 
 If any evidence prompt render fails, discard the narrowed panel.

@@ -201,14 +201,18 @@ fi
 if [ -n "$EVIDENCE" ] && [ -n "$PANEL" ]; then
   FRAGMENTS=$(mktemp -d "$S/.rev-evidence-fragment.XXXXXX") || die "cannot create evidence fragments in $S"
   # The manifest phase is authoritative; render-panel rejects a conflicting --phase.
-  PHASE=$(render_evidence_panel) || die "cannot render panel evidence from $EVIDENCE"
+  EVIDENCE_PHASE=$(render_evidence_panel) || die "cannot render panel evidence from $EVIDENCE"
+  PHASE=${PHASE:-$EVIDENCE_PHASE}
 elif [ -n "$EVIDENCE" ]; then
   SEAT=${SEATS[0]}
   EVIDENCE_PHASE=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["phase"])' \
     "$EVIDENCE") || die "cannot read evidence manifest phase: $EVIDENCE"
-  [ -z "$PHASE" ] || [ "$PHASE" = "$EVIDENCE_PHASE" ] \
-    || die "evidence manifest phase is $EVIDENCE_PHASE, not $PHASE: $EVIDENCE"
-  PHASE=$EVIDENCE_PHASE
+  # A repair seat may name the phase of the panel it covers.
+  case "$EVIDENCE_PHASE:$PHASE" in
+    *:|repair:risk|repair:verification) ;;
+    *) [ "$PHASE" = "$EVIDENCE_PHASE" ] || die "evidence manifest phase is $EVIDENCE_PHASE, not $PHASE: $EVIDENCE";;
+  esac
+  PHASE=${PHASE:-$EVIDENCE_PHASE}
   EVIDENCE_TMP=$(mktemp "$S/.rev-evidence-fragment.XXXXXX") || die "cannot create evidence fragment in $S"
   render_evidence > "$EVIDENCE_TMP"
   EVIDENCE_RC=$?

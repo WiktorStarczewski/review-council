@@ -4592,7 +4592,8 @@ def render_panel(args):
         raise ValueError('fragment output is not a directory')
     if len(set(args.seats)) != len(args.seats):
         raise ValueError('duplicate panel seat')
-    if args.phase is not None and args.phase != manifest['phase']:
+    covered = manifest['phase'] == 'repair' and args.phase in ('risk', 'verification')
+    if args.phase is not None and args.phase != manifest['phase'] and not covered:
         raise ValueError('evidence manifest phase is ' + str(manifest['phase']) + ', not ' + args.phase)
     mh = digest(raw)
     for seat in args.seats:

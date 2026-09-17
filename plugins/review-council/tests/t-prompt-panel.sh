@@ -104,6 +104,19 @@ test_panel_verification_prompts_carry_sibling_site_check() {
     assert_grep "phase conflict names the manifest phase" "$T/panel-sibling-conflict.err" \
       'evidence manifest phase is risk, not verification'
     assert_exit "phase conflict removes the stale prompt" 1 test -e "$S/r3-sol.prompt.md"
+
+    local repair
+    repair=$(REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 4x \
+      --phase repair --assignment sol=correctness-boundaries --full-seat sol) || return
+    prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 4x sol correctness-boundaries 'round focus' --phase verification \
+      --evidence "$repair") || return
+    assert_eq "a repair of a verification panel keeps the sibling-site check" \
+      "$(grep -Fxc -- "Round emphasis: round focus $check" "$prompt")" 1
+    prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 4x sol correctness-boundaries 'round focus' --phase risk \
+      --evidence "$repair") || return
+    assert_eq "a repair of a risk panel has no sibling-site check" "$(grep -Fc 'Sibling-site completeness:' "$prompt")" 0
+    assert_exit "a repair seat cannot claim a plan phase" 1 \
+      "$SCRIPTS/rev-prompt.sh" "$S" 4x sol correctness-boundaries 'round focus' --phase plan --evidence "$repair"
     assert_exit "panel --phase that conflicts with the manifest is rejected" 1 \
       "$SCRIPTS/rev-prompt.sh" "$S" 3 --panel "$TSV" --phase verification --evidence "$risk"
     for seat in sol terra opus sonnet; do

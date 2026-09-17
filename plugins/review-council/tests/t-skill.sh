@@ -632,7 +632,7 @@ skill_adapter_and_plan_gate_contract() {
     assert_grep "$host renders the plan panel with --panel" "$H" \
       'rev-prompt\.sh"? "\$S" "\$PANEL_LABEL" --panel "\$S/r\$PANEL_LABEL-panel\.tsv" \\$'
     assert_grep "$host keeps the per-seat form for a repair seat" "$H" \
-      'rev-prompt\.sh"? "\$S" "\$PANEL_LABEL" "\$SEAT" "\$LENS" "\$EMPHASIS" "\$\{PHASE_PROMPT_ARGS\[@\]\}" "\$\{EVIDENCE_PROMPT_ARGS\[@\]\}"'
+      'rev-prompt\.sh"? "\$S" "\$PANEL_LABEL" "\$SEAT" "\$LENS" "\$EMPHASIS" --phase "\$COVERED_PHASE" "\$\{EVIDENCE_PROMPT_ARGS\[@\]\}"'
     assert_nogrep "$host has no per-seat panel render left" "$H" '"\$EMPHASIS" "\$\{EVIDENCE_PROMPT_ARGS'
     assert_nogrep "$host has no per-seat plan render left" "$H" '<seat> <plan-lens>'
     # The plan gate must be stated before the host is told to enter the fix phase.
