@@ -226,21 +226,36 @@ def evidence_manifest_declaration(prompt_lines):
 
 
 def validate_prompt(args):
+    """Validate the manifest once, then bind each --seat to the --prompt at the same position."""
     root = Path(args.root).resolve()
     session = Path(args.session).resolve()
-    prompt = Path(args.prompt).resolve()
     manifest_path = Path(args.manifest).resolve()
-    try:
-        metadata = prompt.lstat()
-    except OSError as error:
-        raise ValueError('prompt is unavailable') from error
-    if prompt.is_symlink() or not prompt.is_file() or metadata.st_nlink != 1:
-        raise ValueError('prompt must be one regular file')
+    if len(args.seat) != len(args.prompt) or len(set(args.seat)) != len(args.seat):
+        raise ValueError('prompts need one distinct seat each')
+    prompts = [Path(prompt).resolve() for prompt in args.prompt]
+    for prompt in prompts:
+        try:
+            metadata = prompt.lstat()
+        except OSError as error:
+            raise ValueError('prompt is unavailable') from error
+        if prompt.is_symlink() or not prompt.is_file() or metadata.st_nlink != 1:
+            raise ValueError('prompt must be one regular file')
     manifest, manifest_hash = _load_evidence_module().validated_manifest(
         manifest_path, replay_plan_searches=False)
     if Path(manifest['session']).resolve() != session:
         raise ValueError('prompt session does not match the evidence manifest')
-    if args.seat not in manifest['assignments']:
+    for seat, prompt in zip(args.seat, prompts):
+        try:
+            validate_seat_prompt(manifest, manifest_hash, seat, prompt, root, session)
+        except ValueError as error:
+            raise ValueError(seat + ': ' + str(error)) from error
+    for prompt in prompts:
+        print(prompt)
+    return 0
+
+
+def validate_seat_prompt(manifest, manifest_hash, seat, prompt, root, session):
+    if seat not in manifest['assignments']:
         raise ValueError('prompt seat is absent from evidence manifest')
     lines = prompt.read_text().splitlines()
     if lines.count('## Scope') != 1:
@@ -248,11 +263,9 @@ def validate_prompt(args):
     evidence_scoped, declared_hash = evidence_manifest_declaration(lines)
     if not evidence_scoped or declared_hash != manifest_hash:
         raise ValueError('prompt does not bind the evidence manifest exactly once')
-    validate_assignment_prompt_binding(manifest, args.seat, lines)
-    validate_plan_prompt_binding(manifest, args.seat, prompt, _load_evidence_module())
-    validate_prompt_artifact_set(manifest, args.seat, prompt, root, session)
-    print(prompt)
-    return 0
+    validate_assignment_prompt_binding(manifest, seat, lines)
+    validate_plan_prompt_binding(manifest, seat, prompt, _load_evidence_module())
+    validate_prompt_artifact_set(manifest, seat, prompt, root, session)
 
 
 def session_path_allowed(path, session, authorized, dependency=None):
@@ -2590,8 +2603,8 @@ def main():
     prompts.add_argument('--root', required=True)
     prompts.add_argument('--session', required=True)
     prompts.add_argument('--manifest', required=True)
-    prompts.add_argument('--seat', required=True)
-    prompts.add_argument('--prompt', required=True)
+    prompts.add_argument('--seat', required=True, action='append')
+    prompts.add_argument('--prompt', required=True, action='append')
     audits = commands.add_parser('audit')
     audits.add_argument('--adapter', required=True, choices=('codex', 'grok', 'gemini', 'claude', 'agent'))
     audits.add_argument('--raw', required=True)
