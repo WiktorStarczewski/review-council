@@ -73,17 +73,19 @@ test_roster_adapter_agent_matches_legacy_golden() {
   )
 }
 
-roster_adapter_claude() {  # roster_adapter_claude <bin> - a claude CLI that logs sign-in checks and probes
+roster_adapter_claude() {  # roster_adapter_claude <bin> - a claude CLI that logs sign-in checks, probes and their env
   cat > "$1/claude" <<'SH'
 #!/bin/bash
 if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
   printf 'auth\n' >> "$RA_CALLS"
+  env | cut -d= -f1 | sort > "$RA_CALLS.auth-env"
   printf '{"loggedIn":%s}\n' "${RA_LOGGED_IN:-true}"
   exit 0
 fi
 model=''
 for value in "$@"; do case "$value" in opus|sonnet) model=$value;; esac; done
 printf 'probe:%s\n' "$model" >> "$RA_CALLS"
+env | cut -d= -f1 | sort > "$RA_CALLS.probe-env"
 [ "$model" != "${RA_FAIL_MODEL:-}" ] || { echo 'provider transport failed' >&2; exit 1; }
 echo OK
 SH
@@ -151,6 +153,21 @@ test_roster_adapter_resolution() {
     roster_lines "$B/invalid-env.json" "$B/invalid-env"
     assert_grep "invalid environment names the variable" "$B/invalid-env" \
       '^strict_reason invalid REVIEW_COUNCIL_CLAUDE_ADAPTER: expected cli, agent or auto$'
+
+    : > "$RA_CALLS"
+    CLAUDECODE=1 CLAUDE_CODE_ENTRYPOINT=cli CLAUDE_CODE_SESSION_ID=parent CLAUDE_PID=1 \
+      CLAUDE_CODE_OAUTH_TOKEN=token ANTHROPIC_API_KEY=key CLAUDE_CONFIG_DIR="$B.home" CLAUDE_CODE_USE_BEDROCK=1 \
+      "$SCRIPTS/roster.sh" --probe > "$B/scrub.json"
+    assert_eq "a nested roster probe exits 0" "$?" 0
+    local stage var
+    for stage in auth probe; do
+      for var in CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION_ID CLAUDE_PID; do
+        assert_nogrep "the $stage check does not inherit $var" "$RA_CALLS.$stage-env" "^$var\$"
+      done
+      for var in CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY CLAUDE_CONFIG_DIR CLAUDE_CODE_USE_BEDROCK; do
+        assert_grep "the $stage check keeps $var" "$RA_CALLS.$stage-env" "^$var\$"
+      done
+    done
 
     printf '%s' '{"claude_adapter":"agent","claude_models":["opus","sonnet"],"extras":false}' > "$REVIEW_COUNCIL_CONFIG"
     REVIEW_COUNCIL_HOST=codex "$SCRIPTS/roster.sh" > "$B/codex-agent.json"

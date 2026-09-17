@@ -51,6 +51,14 @@ NAMES = {'codex': 'codex', 'gemini': 'gemini', 'agent': 'claude', 'claude': 'cla
 ORDER = ('codex', 'gemini', 'claude')
 # (adapter, seat, mode, round) - an extra pass is seated whenever its lab has a seat
 EXTRAS = (('codex', 'codex-review', 'review', 3),)
+# Parent Claude Code session identity. A nested `claude -p` that inherits it acts as part of that
+# session; auth and provider selection (ANTHROPIC_*, CLAUDE_CONFIG_DIR, CLAUDE_CODE_USE_*) must survive.
+CLAUDE_SESSION_ENV = (
+    'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_CHILD_SESSION',
+    'CLAUDE_CODE_SESSION_ATTENDED', 'CLAUDE_CODE_BRIDGE_SESSION_ID', 'CLAUDE_CODE_MESSAGING_SOCKET',
+    'CLAUDE_CODE_MESSAGING_TOKEN', 'CLAUDE_CODE_EXECPATH', 'CLAUDE_CODE_SSE_PORT', 'CLAUDE_PID',
+    'CLAUDE_EFFORT', 'CLAUDE_PLUGIN_DATA', 'CLAUDE_PLUGIN_ROOT',
+)
 
 GEN = re.compile(r'^gpt-(\d+)(?:\.(\d+))?(?:-|$)')  # gpt-6-astra and gpt-5.6-sol
 
@@ -111,11 +119,14 @@ def run(cmd, timeout):
     if output_limit < 256 or output_limit > 64 * 1024 * 1024:
         output_limit = 1024 * 1024
     p = None
+    env = None
+    if cmd[0] == 'claude':
+        env = {k: v for k, v in os.environ.items() if k not in CLAUDE_SESSION_ENV}
     begin_process_launch()
     try:
         try:
             p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE, start_new_session=True)
+                                 stderr=subprocess.PIPE, start_new_session=True, env=env)
             registered = register_process(p)
         finally:
             finish_process_launch()

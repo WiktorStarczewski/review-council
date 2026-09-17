@@ -209,6 +209,7 @@ t-runner.sh::test_runner_metadata_reconciles_exact_inventory	4	normal
 t-runner.sh::test_runner_public_substring_and_internal_exact_selection	4	normal
 t-runner.sh::test_runner_writable_fixture_copies_from_frozen_sources	1	normal
 t-scopeenv.sh::test_scopeenv	1	normal
+t-seat-claude.sh::test_seat_claude_cli_scrubs_parent_session	1	normal
 t-seat.sh::test_seat_codex	1	normal
 t-seat.sh::test_seat_process_group_cancellation_preserves_partial_stream	4	exclusive
 t-seat.sh::test_seat_rejects_retired_grok_adapter	1	normal
