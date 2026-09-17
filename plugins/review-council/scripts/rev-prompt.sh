@@ -201,8 +201,7 @@ fi
 if [ -n "$EVIDENCE" ] && [ -n "$PANEL" ]; then
   FRAGMENTS=$(mktemp -d "$S/.rev-evidence-fragment.XXXXXX") || die "cannot create evidence fragments in $S"
   # The manifest phase is authoritative; render-panel rejects a conflicting --phase.
-  EVIDENCE_PHASE=$(render_evidence_panel) || die "cannot render panel evidence from $EVIDENCE"
-  PHASE=${PHASE:-$EVIDENCE_PHASE}
+  PHASE=$(render_evidence_panel) || die "cannot render panel evidence from $EVIDENCE"
 elif [ -n "$EVIDENCE" ]; then
   SEAT=${SEATS[0]}
   EVIDENCE_PHASE=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["phase"])' \
