@@ -217,6 +217,7 @@ t-stack.sh::test_stack_real_roster_strict_classes	1	normal
 t-stack.sh::test_stack_report_is_attempt_local	1	normal
 t-stack.sh::test_stack_status_never_blank	1	normal
 t-state.sh::test_state	1	normal
+t-state.sh::test_state_fix_gate	1	normal
 t-status.sh::test_status	1	normal
 t-status.sh::test_status_agent_transcripts	1	normal
 t-status.sh::test_status_overflow	1	normal
