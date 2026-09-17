@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import selectors
 import shlex
+import shutil
 import signal
 import stat
 import subprocess
@@ -1346,6 +1347,27 @@ def plan_search_argv(contract):
     return ['grep', '--exclude-dir=.git', '--null', '-r', '-n', '--', pattern, '.']
 
 
+def ripgrep_executable(environment):
+    """The binary plan searches execute as `rg`: REV_RG, then PATH, then Claude Code's embedded ripgrep."""
+    if environment.get('REV_RG'):
+        return environment['REV_RG']
+    found = shutil.which('rg', path=environment.get('PATH'))
+    if found:
+        return found
+    # In Claude Code `rg` is a shell function that runs the claude binary under argv0 `rg`.
+    embedded = environment.get('CLAUDE_CODE_EXECPATH')
+    if embedded:
+        try:
+            version = subprocess.run(['rg', '--version'], executable=embedded, env=environment,
+                                     stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            version = None
+        if version is not None and any(line.startswith(b'ripgrep')
+                                       for line in version.stdout.splitlines()):
+            return embedded
+    raise ValueError('ripgrep binary not found on PATH; set REV_RG to a ripgrep executable')
+
+
 def plan_search_paths(raw):
     try:
         text = raw.decode('utf-8')
@@ -1419,7 +1441,7 @@ def plan_search_signal_handlers():
             signal.signal(signum, handler)
 
 
-def run_plan_search(command, directory, environment, deadline):
+def run_plan_search(command, directory, environment, deadline, executable=None):
     process = None
     selector = selectors.DefaultSelector()
     completed = False
@@ -1429,8 +1451,8 @@ def run_plan_search(command, directory, environment, deadline):
                          if change_mask is not None else None)
         try:
             process = subprocess.Popen(
-                command, cwd=directory, env=environment, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, start_new_session=True)
+                command, executable=executable, cwd=directory, env=environment,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
             ACTIVE_PLAN_SEARCHES.add(process)
         finally:
             if previous_mask is not None:
@@ -1491,6 +1513,8 @@ def prepare_plan_searches(repo, snapshot, clusters, prefix, base_tree=None):
     search_env = {key: value for key, value in repo.env.items()
                   if key not in ('GREP_OPTIONS', 'GREP_COLORS', 'RIPGREP_CONFIG_PATH')}
     search_env.update(NO_COLOR='1', TERM='dumb')
+    ripgrep = (ripgrep_executable(search_env)
+               if any(cluster['search_contract']['engine'] == 'rg' for cluster in clusters) else None)
     timeout = plan_search_timeout(os.environ)
     with tempfile.TemporaryDirectory(prefix='.evidence-search-', dir=repo.session) as directory:
         root = Path(directory)
@@ -1510,8 +1534,10 @@ def prepare_plan_searches(repo, snapshot, clusters, prefix, base_tree=None):
                 search_roots.append(base_root)
         deadline = time.monotonic() + timeout
         for cluster in clusters:
+            contract = cluster['search_contract']
             results = [run_plan_search(
-                plan_search_argv(cluster['search_contract']), search_root, search_env, deadline)
+                plan_search_argv(contract), search_root, search_env, deadline,
+                ripgrep if contract['engine'] == 'rg' else None)
                        for search_root in search_roots]
             body = b''.join(sorted(
                 line for raw, _ in results for line in split_lf_lines(raw)))
