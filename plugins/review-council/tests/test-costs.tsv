@@ -118,6 +118,7 @@ t-profile.sh::test_profile_invalid_sessions	5	normal
 t-profile.sh::test_profile_keeps_null_effort_complete_only_for_gemini	5	normal
 t-profile.sh::test_profile_labels_roster_comparability	5	normal
 t-profile.sh::test_profile_plan_label_classification	5	normal
+t-profile.sh::test_profile_reports_panel_render_timing	5	normal
 t-profile.sh::test_profile_rejects_invalid_usage_numbers	5	normal
 t-profile.sh::test_profile_requires_complete_evidence_patch_proofs	5	normal
 t-profile.sh::test_profile_retry_streams	5	normal
@@ -126,6 +127,9 @@ t-profile.sh::test_session_profile	5	normal
 t-prompt-evidence.sh::test_prompt_artifact_set_validator	1	normal
 t-prompt-evidence.sh::test_prompt_evidence_contract	1	normal
 t-prompt-inputs.sh::test_prompt_inputs	1	normal
+t-prompt-panel.sh::test_panel_source_snapshot_lists_each_tree_once	1	normal
+t-prompt-panel.sh::test_panel_render_matches_per_seat_and_validates_manifest_once	2	normal
+t-prompt-panel.sh::test_panel_verification_prompts_carry_sibling_site_check	2	normal
 t-provider-contract.sh::test_provider_contract_bounded_executor	10	exclusive
 t-provider-contract.sh::test_provider_contract_execution_policy_identity	1	normal
 t-provider-contract.sh::test_provider_contract_registration_race	4	exclusive

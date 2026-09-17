@@ -1010,3 +1010,33 @@ for name in ('r1-sol.prompt.md','r1-performance.json','r2-planner.stream.ndjson'
 PY
   assert_eq "profile recognizes plan fallback labels without code false positives" "$?" 0
 }
+
+test_profile_reports_panel_render_timing() {
+  ( local S="$T/profile-render-timing"; mkdir -p "$S"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"opus","adapter":"claude"}]}' > "$S/roster.json"
+    printf '%s\n' '{"schema_version": 1, "seats": {"sol": 40, "opus": 60}, "total_ms": 900}' > "$S/r1-render.json"
+    printf '%s\n' '{"schema_version": 1, "seats": {"sol": 5}, "total_ms": 20}' > "$S/r2p-render.json"
+    printf '%s\n' '{"schema_version": 1, "seats": {"sol": -1}, "total_ms": 20}' > "$S/r3-render.json"
+    "$SCRIPTS/rev-profile.py" --json "$S" > "$T/profile-render-timing.json" || return
+    python3 - "$T/profile-render-timing.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+timing = d['sessions'][0]['render_timing']
+assert timing['panels'] == [
+    {'label': '1', 'seats': {'sol': 40, 'opus': 60}, 'total_ms': 900},
+    {'label': '2p', 'seats': {'sol': 5}, 'total_ms': 20},
+], timing
+assert timing['invalid'] == [{'timing': 'r3-render.json', 'reason': 'invalid render timing'}], timing
+assert d['totals']['render_timing'] == {'panels': 2, 'total_ms': 920, 'seat_ms': 105, 'invalid': 1}, d['totals']
+assert d['sessions'][0]['prompts']['code']['count'] == 0, d['sessions'][0]['prompts']
+PY
+    assert_eq "profile reports per-seat panel render time" "$?" 0
+    "$SCRIPTS/rev-profile.py" "$S" > "$T/profile-render-timing.txt" || return
+    assert_grep "text profile lists each panel's seat render time" "$T/profile-render-timing.txt" \
+      '^  render_timing=1:total_ms:900,sol:40,opus:60;2p:total_ms:20,sol:5$'
+    assert_grep "text profile names invalid render timing" "$T/profile-render-timing.txt" \
+      '^  render_timing_invalid_detail=r3-render\.json: invalid render timing$'
+    assert_grep "text profile totals render time" "$T/profile-render-timing.txt" \
+      '^TOTAL_RENDER_TIMING panels=2 total_ms=920 seat_ms=105 invalid=1$'
+  )
+}

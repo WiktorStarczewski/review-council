@@ -4,9 +4,10 @@ import argparse
 import ast
 from bisect import bisect_right
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from difflib import SequenceMatcher
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -2765,7 +2766,10 @@ def validate_source_context_snapshot(repo, session, manifest):
 
     def expected_bytes(row):
         tree = row['blob_tree']
-        entries = entries_by_tree.setdefault(tree, repo.entries(tree))
+        # Not setdefault: its eager default ran a whole-tree ls-tree per source row.
+        if tree not in entries_by_tree:
+            entries_by_tree[tree] = repo.entries(tree)
+        entries = entries_by_tree[tree]
         if entries.get(row['path']) != (row['blob_mode'], row['blob_oid']):
             raise ValueError('source context blob identity mismatch: ' + row['path'])
         key = (row['blob_mode'], row['blob_oid'])
@@ -4572,23 +4576,49 @@ def render(args):
     manifest, mh = validated_manifest(
         args.manifest, fresh=not args.offline, offline=args.offline,
         replay_plan_searches=False)
-    assignment = manifest['assignments'].get(args.seat)
+    render_seat(manifest, mh, args.seat, args.plan_source)
+
+
+def render_panel(args):
+    """Render every seat from one manifest read; validate-prompt binds the embedded hash."""
+    raw = Path(args.manifest).read_bytes()
+    manifest = json.loads(raw)
+    output = Path(args.output_dir)
+    if output.is_symlink() or not output.is_dir():
+        raise ValueError('fragment output is not a directory')
+    if len(set(args.seats)) != len(args.seats):
+        raise ValueError('duplicate panel seat')
+    if args.phase is not None and args.phase != manifest['phase']:
+        raise ValueError('evidence manifest phase is ' + str(manifest['phase']) + ', not ' + args.phase)
+    mh = digest(raw)
+    for seat in args.seats:
+        if not SAFE_NAME.fullmatch(seat):
+            raise ValueError('invalid panel seat: ' + seat)
+        fragment = io.StringIO()
+        with redirect_stdout(fragment):
+            render_seat(manifest, mh, seat, args.plan_source)
+        (output / seat).write_bytes(fragment.getvalue().encode(sys.stdout.encoding, sys.stdout.errors))
+    print(manifest['phase'])
+
+
+def render_seat(manifest, mh, seat, plan_source):
+    assignment = manifest['assignments'].get(seat)
     if assignment is None:
         raise ValueError('seat not assigned')
     expected_plan = (Path(manifest['session']) / manifest['plan']['artifact']
                      if manifest['phase'] == 'plan' else None)
     if expected_plan is None:
-        if args.plan_source:
+        if plan_source:
             raise ValueError('--plan-source belongs only to plan evidence')
-    elif not args.plan_source or Path(args.plan_source).resolve() != expected_plan:
+    elif not plan_source or Path(plan_source).resolve() != expected_plan:
         raise ValueError('plan evidence requires its immutable plan snapshot')
     print('Evidence manifest SHA-256: ' + mh)
     print('Assigned scope: ' + assignment['scope'])
     print('Assigned risk bundle: ' + assignment['bundle'])
     patch_mode = assignment['patch_read_mode']
-    context = manifest['source_context']['seats'][args.seat]
+    context = manifest['source_context']['seats'][seat]
     if (manifest['schema_version'] == 4 and manifest['phase'] == 'plan'
-            and args.seat != manifest['mechanical_owner']):
+            and seat != manifest['mechanical_owner']):
         primary = None
         if assignment['patch_bytes']:
             if patch_mode == 'chunks':
@@ -4918,6 +4948,10 @@ def main():
     rend = commands.add_parser('render'); rend.add_argument('manifest'); rend.add_argument('seat')
     rend.add_argument('--offline', action='store_true')
     rend.add_argument('--plan-source')
+    rend_panel = commands.add_parser('render-panel')
+    rend_panel.add_argument('manifest'); rend_panel.add_argument('seats', nargs='+')
+    rend_panel.add_argument('--output-dir', required=True)
+    rend_panel.add_argument('--plan-source'); rend_panel.add_argument('--phase')
     check = commands.add_parser('verify'); check.add_argument('manifest')
     source = commands.add_parser('same-source')
     source.add_argument('parent'); source.add_argument('candidate')
@@ -4930,7 +4964,8 @@ def main():
         if hasattr(args, 'label') and not SAFE_NAME.fullmatch(args.label):
             raise ValueError('invalid label')
         with plan_search_signal_handlers():
-            {'prepare': prepare, 'render': render, 'verify': verify, 'same-source': same_source,
+            {'prepare': prepare, 'render': render, 'render-panel': render_panel,
+             'verify': verify, 'same-source': same_source,
              'verify-panel': verify_panel, 'receipt': receipt}[args.command](args)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError, RecursionError) as error:
         print('evidence: ' + str(error), file=sys.stderr)
