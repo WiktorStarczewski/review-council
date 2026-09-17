@@ -527,7 +527,7 @@ def detect_claude(cfg):
     seats, reason = claude_seats('claude', cfg)
     if reason:
         return [], reason
-    reason = build_claude_cli_reason()
+    reason = _RESOLVED['cli'] if 'cli' in _RESOLVED else claude_cli_reason()
     if reason:
         return [], reason
     return seats, None
@@ -552,9 +552,9 @@ def anthropic_adapter(cfg):
         return 'claude'
     if 'adapter' not in _RESOLVED:
         setting, _ = claude_adapter_setting(cfg)
-        _RESOLVED['adapter'] = ('claude' if setting == 'cli'
-                                or setting == 'auto' and build_claude_cli_reason() is None
-                                else 'agent')
+        # `cli` checks too, so detection and padding reuse the one sign-in answer.
+        cli_ready = setting in ('cli', 'auto') and build_claude_cli_reason() is None
+        _RESOLVED['adapter'] = 'claude' if setting == 'cli' or cli_ready else 'agent'
     return _RESOLVED['adapter']
 
 
