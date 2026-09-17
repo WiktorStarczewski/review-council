@@ -60,11 +60,12 @@ Use review-council to review the SDK and wallet branches as a dependency stack.
 ```
 
 Code fix loops use adaptive discovery, plan, fix, and verification panels. With four
-core seats, normal changes plan 12 seat launches: four simplicity, four conditional
-plan, and four final verification launches. A large or high-risk review plans 20 by
+core seats, normal changes plan 9 seat launches: four simplicity, one conditional
+plan, and four final verification launches. A large or high-risk review plans 17 by
 adding four risk-discovery and four full red-team launches. An important or explicitly
-adversarial review that is not otherwise large or high-risk plans 16 by adding four
-full red-team launches. One four-bundle verification panel reviews the latest material
+adversarial review that is not otherwise large or high-risk plans 13 by adding four
+full red-team launches. With `plan_seats: "all"`, every plan panel launches all four
+core seats instead of one. One four-bundle verification panel reviews the latest material
 state: directly after discovery when no nontrivial fix follows, or after the latest
 nontrivial fix. Read-only reviews default to one panel. Explicit round counts remain minimum
 overrides and select the Codex host's legacy numbered schedule. Numeric mode continues
@@ -110,10 +111,11 @@ sibling generations while rejecting any changed snapshot, roster, bundle, model,
 effort, prompt, or result. Panel-global failures still restore full scope for the whole
 panel. Numeric and document reviews keep full scope.
 
-Adaptive plan panels hash-bind every parsed fix-plan cluster. The plan-completeness
-seat keeps the full cumulative patch and every cluster. Each cluster also goes to one
-specialist with its named sites, tests, regression paths, and changed local-import
-boundaries. Every seat still reads the complete plan and navigation index. Preparation
+Adaptive plan panels hash-bind every parsed fix-plan cluster and run after triage,
+before any edit. The plan-completeness seat keeps the full cumulative patch and every
+cluster; by default it is the whole panel. With `plan_seats: "all"`, each cluster also
+goes to one specialist with its named sites, tests, regression paths, and changed
+local-import boundaries. Every seat still reads the complete plan and navigation index. Preparation
 runs each cluster's bounded repository-root sibling search once against the frozen
 snapshot and routes its hash-bound result to the assigned readers. Reviewers run another
 search only for a concrete unresolved question and prove the named source ranges. Each search is one
@@ -135,9 +137,9 @@ Agent extras remain available outside the core plan assignments.
 
 | Behavior | Claude Code | Codex |
 | --- | --- | --- |
-| Anthropic seat | Built-in Opus agent | Installed, signed-in Claude CLI |
+| Anthropic seat | Signed-in Claude CLI, else built-in Opus agent (`claude_adapter`) | Installed, signed-in Claude CLI |
 | Other seats | Detected Codex/Gemini CLIs | Same |
-| Thin-panel padding | Opus agents | Repeated surviving CLI runs, reported as degraded |
+| Thin-panel padding | Opus seats on the resolved Claude adapter | Repeated surviving CLI runs, reported as degraded |
 | No usable external CLI | Built-in Claude panel | Refuse if no actual provider survives |
 | Session policy | Claude SessionStart hook | Native skills, no global review hook |
 | Stack engine | `claude -p` | `codex exec` |

@@ -251,8 +251,9 @@ degraded. Padded seats receive different lenses but do not count as another lab.
 `min_labs` turns provider diversity into a hard floor. Exact positive model or seat
 counts are checked before padding.
 
-Claude Code can pad with built-in Opus Agent seats. Codex can pad only from surviving
-external CLI seats and refuses when no usable external CLI remains.
+Claude Code pads with Opus seats on the resolved Claude adapter: the Claude CLI, or
+built-in Agent seats. Codex can pad only from surviving external CLI seats and refuses
+when no usable external CLI remains.
 
 ## Adaptive phases
 
@@ -261,9 +262,9 @@ external CLI seats and refuses when no usable external CLI remains.
 | simplicity discovery | always | every core seat asks whether the change can be smaller through reuse or deletion |
 | risk discovery | more than 25 files, more than 1,500 lines, or a high-risk boundary | the four risk bundles across the full panel |
 | full red team | exactly once for a large, high-risk, user-marked-important, or explicitly adversarial adaptive review | four distinct adversarial compositions over the existing risk bundles, before planning |
-| plan | before each nontrivial accepted fix cluster | completeness, soundness, simplicity, and falsifiable tests |
-| fix and gates | after accepted and plan-approved findings | root-cause clusters, relevant regression tests, project gates at baseline or better |
-| verification | after discovery when no nontrivial fix follows, or after the latest nontrivial fix | all four risk bundles over the latest material state |
+| plan | after triage and before any edit, when an accepted fix is nontrivial | one plan-completeness seat; `plan_seats: "all"` adds soundness, simplicity, and falsifiable tests |
+| fix and gates | after accepted and plan-approved findings, or a recorded plan skip | root-cause clusters, relevant regression tests, project gates at baseline or better |
+| verification | after discovery when no nontrivial fix follows, or after the latest nontrivial fix | all four risk bundles over the latest material state, plus a sibling-site check of every fix commit |
 
 High-risk boundaries include security, persistence, concurrency, transactions,
 protocols, public APIs, and irreversible mutations.
@@ -273,15 +274,19 @@ For the four-seat council:
 | Change shape | Planned seat launches |
 | --- | ---: |
 | ordinary, no nontrivial fix | 8 |
-| ordinary, with one plan panel | 12 |
+| ordinary, with one plan panel | 9 |
 | large or high-risk, no nontrivial fix | 16 |
-| large or high-risk, with one plan panel | 20 |
+| large or high-risk, with one plan panel | 17 |
 
-With four core seats, a normal review plans 12 seat launches: four simplicity, four
+With four core seats, a normal review plans 9 seat launches: four simplicity, one
 conditional plan, and four final verification launches. A large or high-risk review
-plans 20 by adding four risk-discovery and four full red-team launches. An important
+plans 17 by adding four risk-discovery and four full red-team launches. An important
 or explicitly adversarial review that is not otherwise large or high-risk adds the
-four full red-team launches.
+four full red-team launches. With `plan_seats: "all"`, every plan panel launches all
+four core seats instead of one.
+
+`rev-state.sh` refuses `phase=fix` while P0-P2 findings are open until the round's plan
+panel completed or `findings.md` records `Plan panel r<N>p - SKIPPED: <reason>`.
 
 One four-bundle verification panel reviews the latest material state: directly after
 discovery when no nontrivial fix follows, or after the latest nontrivial fix. Adaptive
@@ -445,8 +450,9 @@ never earns a completeness proof.
 
 Plan routing:
 
-- `plan-completeness` receives the full cumulative patch and every cluster.
-- Each cluster also goes to one specialist.
+- `plan-completeness` receives the full cumulative patch and every cluster. By default
+  it is the whole plan panel: the first core seat whose adapter is not `agent`.
+- With `plan_seats: "all"`, each cluster also goes to one specialist.
 - Specialists receive a valid receipt-relative fix delta when available.
 - Otherwise specialists receive the cumulative closure for their clusters.
 - Every seat receives the complete inline plan and navigation index.
@@ -485,8 +491,9 @@ requires:
 
 Claude CLI seats receive only `Read` and `Grep`, with bounded pre-tool and post-tool
 checks. Inherited settings, plugins, MCP configuration, and editing tools are disabled.
-Codex seats use the read-only sandbox. Claude Code Agent seats disable editing tools,
-but their native read hooks cannot satisfy schema-4 plan evidence.
+Codex seats use the read-only sandbox. Agent-adapter seats (`claude_adapter: agent`, or
+`auto` without a signed-in Claude CLI) disable editing tools, but their native read hooks
+cannot satisfy evidence mode or schema-4 plan evidence.
 
 Nonfinal Claude CLI responses carry a continuation instruction: while required review
 work remains, the response must include the next allowed read or search. Progress text
@@ -811,9 +818,9 @@ Codex uses native skills and does not install this session hook.
 
 | Behavior | Claude Code | Codex |
 | --- | --- | --- |
-| Anthropic core seats | built-in Agent seats | signed-in Claude CLI |
+| Anthropic core seats | signed-in Claude CLI, else built-in Agent seats (`claude_adapter`) | signed-in Claude CLI |
 | OpenAI seats | Codex CLI | Codex CLI |
-| thin roster padding | Opus Agent seats | surviving external CLI seats |
+| thin roster padding | Opus seats on the resolved Claude adapter | surviving external CLI seats |
 | no usable external CLI | can run a visibly degraded Agent panel | refuses |
 | session startup policy | plugin hook | native skill discovery |
 | stack leg | `claude -p` | `codex exec` |
@@ -832,6 +839,8 @@ and receipt implementation.
 | `claude_models` | absent | require exact `opus` and/or `sonnet` families |
 | `claude_seats` | `1` | legacy count of independent Opus seats, mutually exclusive with `claude_models` |
 | `claude_seat` | `true` | disable detected Claude seats when false |
+| `claude_adapter` | `auto` | Claude Code seats Claude rows on the CLI (`cli`), Agent subagents (`agent`), or the CLI when signed in (`auto`) |
+| `plan_seats` | `completeness` | one plan-completeness seat per plan panel, or `all` for the four-lens plan panel |
 | `extras` | `true` | expose `codex-review` to explicit numeric schedules |
 | `min_labs` | `1` | minimum detected provider labs before padding |
 | `quota_fallback` | `false` | permit explicit temporary cross-provider quota substitution |
@@ -857,8 +866,8 @@ Full reference: [docs/config.md](docs/config.md).
   cache.
 - Quota fallback covers quota and capacity only. It does not hide authentication,
   configuration, model, adapter, or unknown failures.
-- A schema-4 plan panel cannot use a Claude Code Agent core seat because that adapter
-  cannot provide the enforced receipt-relative read transcript.
+- A schema-4 plan panel cannot run while a core roster row uses the `agent` adapter,
+  because that adapter cannot provide the enforced receipt-relative read transcript.
 - Explicit numeric code reviews and document reviews retain full scope instead of
   adaptive evidence narrowing.
 - Evidence chunks prove complete change reads but do not replace source reads for
