@@ -1307,6 +1307,11 @@ def validate_plan_prompt_binding(manifest, seat, prompt, module):
             required_once.append(
                 'Required cluster source: ' + cluster_id + ' ' + location
                 + ' resolution ' + row['resolution'] + ' field ' + row['field'])
+    for row in module.plan_mandatory_source_windows(
+            manifest, manifest['source_context']['seats'][seat]):
+        required_once.append(
+            'Mandatory cluster source window: ' + row['path'] + ':'
+            + str(row['line_start']) + '-' + str(row['line_end']))
     if any(not token or text.count(token) != 1 for token in required_once):
         raise ValueError('prompt omits or duplicates bound plan evidence')
     if first_call is not None:
@@ -1314,7 +1319,8 @@ def validate_plan_prompt_binding(manifest, seat, prompt, module):
         first_index = prompt_lines.index(first_call)
         competing = (
             'Prepared cluster sibling search:', 'Required cluster sibling search:',
-            'Required cluster source:', 'Assigned patch read mode:',
+            'Required cluster source:', 'Mandatory cluster source window:',
+            'Assigned patch read mode:',
             'Canonical assigned patch:', 'Read the entire assigned patch',
             'Source context packet:', 'Required source segment ',
             'Evidence navigation index:',

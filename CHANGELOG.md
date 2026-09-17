@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.6
+
+- Tell a plan seat which cluster source windows it must open. Preparation already bounds the cited plan rows a seat opens by hand to at most `MANDATORY_REPOSITORY_READ_LIMIT` merged windows, but the prompt listed only the cited rows, so a seat had to derive the window set itself; two plan panels on a 112-file review each stopped a few windows short and failed the audit with `missing-plan-cluster-source` after a full paid run. The seat packet now publishes `mandatory_source_windows`, the plan prompt renders one `Mandatory cluster source window: <path>:<start>-<end>` line per window, and the auditor binds those lines so a prompt cannot drop or duplicate one. Manifest validation checks the rows for shape, scope, line bounds, the window limit, and that they still close the plan, so a stale list fails preparation instead of a panel. The field is optional, so manifests written before it still validate, and a plan panel prepared with source context disabled publishes the same list.
+
 ## 0.4.5
 
 - Seat Claude Code's Opus and Sonnet rows on the `claude` CLI adapter when the CLI is signed in, so plan panels and evidence-mode code panels run from a Claude Code host. `claude_adapter` (`auto`, `cli`, `agent`; env `REVIEW_COUNCIL_CLAUDE_ADAPTER`) controls the choice, and `agent` keeps the previous roster byte for byte. Padding falls back to Agent seats when the CLI is unusable, and `roster.json` records why `auto` fell back. Every nested `claude -p` (seat, probe, or stack leg) drops the parent session's identity variables and keeps auth and provider variables.

@@ -2203,6 +2203,17 @@ def hunk_binding(component_ids, component_by_id, hunks_by_path):
     ]))
 
 
+def plan_mandatory_source_windows(manifest, packet):
+    """Cluster source windows the seat opens itself, in the order the prompt lists them.
+
+    Every cited cluster row is either delivered as a prepared segment or a packet entry, or
+    falls inside one of these windows, so reading them all closes the cluster obligation.
+    """
+    if manifest.get('phase') != 'plan':
+        return []
+    return list(packet.get('mandatory_source_windows') or [])
+
+
 def merge_repository_windows(ranges):
     by_path = {}
     for path, start, end in ranges:
@@ -2263,6 +2274,15 @@ def uncovered_plan_ranges(assignment, plan_clusters, delivered):
 def mandatory_repository_windows(assignment, plan_clusters, delivered):
     return merge_repository_windows(
         uncovered_plan_ranges(assignment, plan_clusters, delivered))
+
+
+def published_mandatory_windows(assignment, plan_clusters, delivered):
+    """The cluster source windows a plan seat opens itself, as published manifest rows."""
+    if not plan_clusters:
+        return []
+    return [{'path': path, 'line_start': start, 'line_end': end}
+            for path, start, end in mandatory_repository_windows(
+                assignment, plan_clusters, delivered)]
 
 
 def grouped_plan_source_promotions(assignment, plan_clusters, delivered, omitted,
@@ -2381,6 +2401,8 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
                                      'shards': [], 'omitted': {kind: 0 for kind in SOURCE_CONTEXT_REASONS},
                                      'omitted_source_ranges': [],
                                      'required_source_ranges': [],
+                                     'mandatory_source_windows': published_mandatory_windows(
+                                         assignment, plan_clusters, []),
                                      'source_read_required': bool(component_ids)}
             continue
         tiers = {kind: [] for kind in SOURCE_CONTEXT_REASONS}
@@ -2685,11 +2707,17 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
                 raw = b''.join(source_lines[segment['line_start'] - 1:segment['line_end']])
                 segment['artifact'] = name
                 artifacts[name] = raw
+        # The promotion loop above already bounded what the seat must still open by hand.
+        # Publish that exact window list: deriving it from every cited cluster row is what
+        # two plan seats got wrong, each stopping a few windows short of the obligation.
+        mandatory_source_windows = published_mandatory_windows(
+            assignment, plan_clusters, delivered)
         result['seats'][seat] = {'role': 'integration' if seat == integration else 'specialist',
                                  'components': sorted(component_ids), 'hunk_sha256': hunk_ids,
                                  'shards': shard_rows, 'omitted': omitted,
                                  'omitted_source_ranges': omitted_source_ranges,
                                  'required_source_ranges': required_ranges,
+                                 'mandatory_source_windows': mandatory_source_windows,
                                  'source_read_required': any(omitted.values()) or any(
                                      'declaration:changed-line-anchor' in row['reasons']
                                      for row in context_entries)}
@@ -2988,10 +3016,23 @@ def validate_source_context(session, manifest, evidence):
     binding_cache = {}
     for seat, assignment in assigned.items():
         packet = context['seats'].get(seat)
-        if not isinstance(packet, dict) or set(packet) != {
+        # mandatory_source_windows is optional, so a manifest written before it existed
+        # (a stored fixture, or a restored receipt) still validates.
+        if not isinstance(packet, dict) or set(packet) - {'mandatory_source_windows'} != {
                 'role', 'components', 'hunk_sha256', 'shards', 'omitted',
                 'omitted_source_ranges', 'required_source_ranges', 'source_read_required'}:
             raise ValueError('invalid source context seat: ' + seat)
+        if 'mandatory_source_windows' in packet:
+            windows = packet['mandatory_source_windows']
+            if not isinstance(windows, list) or len(windows) > MANDATORY_REPOSITORY_READ_LIMIT:
+                raise ValueError('invalid mandatory source windows: ' + seat)
+            for row in windows:
+                if (not isinstance(row, dict) or set(row) != {'path', 'line_start', 'line_end'}
+                        or not within(row['path'], manifest['scope'])
+                        or type(row['line_start']) is not int or type(row['line_end']) is not int
+                        or row['line_start'] < 1 or row['line_end'] < row['line_start']
+                        or row['line_end'] - row['line_start'] + 1 > READ_LINES):
+                    raise ValueError('invalid mandatory source window: ' + seat)
         expected_components = sorted(assignment['components'])
         relevant = [component for component in components if component['id'] in expected_components]
         expected_hunks = sorted({value for component in relevant for path in component['files']
@@ -3490,6 +3531,17 @@ def validate_plan(session, manifest, evidence, check_source, replay_searches=Tru
         expected_closure = plan_closure_paths(clusters, evidence['dependencies'], manifest['paths'])
         if expected_closure != closure_paths:
             raise ValueError('plan closure dependency mismatch')
+    # The prompt renders these windows verbatim as read instructions and the audit enforces
+    # the obligation they close, so a stale or trimmed list fails here rather than after a
+    # whole plan panel has run.
+    for seat, packet in manifest['source_context']['seats'].items():
+        if 'mandatory_source_windows' not in packet:
+            continue
+        delivered = packet['required_source_ranges'] + [
+            dict(row) for shard in packet['shards'] for row in shard['ranges']]
+        if packet['mandatory_source_windows'] != published_mandatory_windows(
+                manifest['assignments'][seat], clusters, delivered):
+            raise ValueError('mandatory source windows do not close the plan: ' + seat)
 
 
 def validated_manifest(path, fresh=True, seen=None, offline=False, replay_plan_searches=True):
@@ -4681,6 +4733,9 @@ def render_seat(manifest, mh, seat, plan_source):
                         location += '-' + str(row['line_end'])
                 print('Required cluster source: ' + cluster['id'] + ' ' + location
                       + ' resolution ' + row['resolution'] + ' field ' + row['field'])
+        for row in plan_mandatory_source_windows(manifest, context):
+            print('Mandatory cluster source window: ' + row['path'] + ':'
+                  + str(row['line_start']) + '-' + str(row['line_end']))
     print('Assigned patch read mode: ' + patch_mode)
     first_action = None
     if patch_mode == 'chunks':
