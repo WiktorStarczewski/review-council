@@ -103,6 +103,7 @@ test_roster_adapter_resolution() {
     assert_eq "auto checks sign-in once for resolution and detection" "$(grep -c '^auth$' "$RA_CALLS")" 1
     "$SCRIPTS/roster.sh" --brief > "$B/auto.brief"
     assert_grep "a CLI seat reads like the Agent seat in the banner" "$B/auto.brief" 'claude ✓ \(opus@max\)'
+    assert_nogrep "a signed-in auto records no fallback" "$B/auto" '^excluded claude_adapter '
 
     : > "$RA_CALLS"
     RA_LOGGED_IN=false "$SCRIPTS/roster.sh" > "$B/signed-out.json"
@@ -110,12 +111,15 @@ test_roster_adapter_resolution() {
     assert_grep "auto falls back to agent when the CLI is signed out" "$B/signed-out" '^seat opus anthropic agent opus max false'
     assert_grep "auto pads signed-out hosts with agent seats" "$B/signed-out" '^seat claude-2 anthropic agent opus max false'
     assert_eq "a signed-out CLI is checked once" "$(grep -c '^auth$' "$RA_CALLS")" 1
+    assert_grep "auto records why it fell back to agent" "$B/signed-out" \
+      '^excluded claude_adapter -> auto -> agent \(claude CLI not signed in\): no evidence mode or plan panels$'
 
     mv "$B/claude" "$B/claude.off"; : > "$RA_CALLS"
     "$SCRIPTS/roster.sh" > "$B/missing.json"
     roster_lines "$B/missing.json" "$B/missing"
     assert_grep "auto falls back to agent when the CLI is not installed" "$B/missing" '^seat opus anthropic agent opus max false'
-    assert_eq "a missing CLI is never run" "$(wc -c < "$RA_CALLS" | tr -d ' ')" 0
+    assert_grep "auto records a missing CLI as its fallback reason" "$B/missing" \
+      '^excluded claude_adapter -> auto -> agent \(claude CLI not installed\): no evidence mode or plan panels$'
     printf '%s' '{"claude_adapter":"cli"}' > "$REVIEW_COUNCIL_CONFIG"
     "$SCRIPTS/roster.sh" > "$B/cli-missing.json"
     roster_lines "$B/cli-missing.json" "$B/cli-missing"
