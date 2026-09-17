@@ -605,8 +605,8 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
 
    `Sites` is the part that matters: enumerate by searching, not by memory, and list every
    arm, realm, caller and copy (JSDoc, README, CHANGELOG, `.d.ts`) the rule reaches.
-2. Choose the plan seats from the roster. By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` and `PLAN_SEATS` to the first surviving non-extra seat in roster order whose adapter is not `agent`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.
-   When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to every surviving non-extra seat, even when the preceding code
+2. Choose the plan seats from the roster. By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order whose adapter is not `agent`, `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.
+   When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat, even when the preceding code
    panel included an extra or a one-seat repair, and deal the plan lenses by the same
    rule (`lenses = [plan-completeness,
    plan-soundness, plan-simplicity, plan-tests]`). Build one assignment per seat,

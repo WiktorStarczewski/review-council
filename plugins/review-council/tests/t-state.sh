@@ -56,6 +56,11 @@ test_state_fix_gate() {
 
   S="$T/gate-one-seat-plan"
   "$ST" "$S" round=4 phase=triage open.P0=1 open.P1=2 >/dev/null
+  before=$(cksum < "$S/state.json")
+  "$ST" "$S" phase=plan round=4p seats=codex-sol > /dev/null 2> "$T/plan-seats.err"; rc=$?
+  assert_eq "a bare plan seat name is refused at launch" "$rc" 2
+  assert_eq "a refused plan launch leaves state unchanged" "$(cksum < "$S/state.json")" "$before"
+  assert_grep "the plan launch refusal names the JSON array form" "$T/plan-seats.err" 'seats must be a JSON array of seat names'
   "$ST" "$S" phase=plan round=4p 'seats=["codex-sol"]' >/dev/null
   assert_eq "plan launch persists its seats" \
     "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plans"]["4p"])' "$S/state.json")" "['codex-sol']"

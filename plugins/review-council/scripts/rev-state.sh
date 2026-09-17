@@ -44,6 +44,9 @@ for kv in kvs:
     assigned.add(k)
 
 
+SEAT_NAME = r'[A-Za-z0-9][A-Za-z0-9._-]*'
+
+
 def refuse(message):
     print(f"rev-state: {message}", file=sys.stderr)
     sys.exit(2)
@@ -62,7 +65,7 @@ def plan_completed(label):
     if not isinstance(seats, list) or not seats:
         return False
     for seat in seats:
-        if not isinstance(seat, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', seat):
+        if not isinstance(seat, str) or not re.fullmatch(SEAT_NAME, seat):
             return False
         if not receipt_file(f'r{label}-{seat}.json') or not receipt_file(f'r{label}-{seat}.exit'):
             return False
@@ -84,8 +87,11 @@ def plan_skipped(label):
 phase = state.get('phase')
 if 'phase' in assigned and phase == 'plan' and {'round', 'seats'} <= assigned:
     label, seats = state.get('round'), state.get('seats')
-    if (isinstance(label, str) and re.fullmatch(r'[0-9]+p', label) and isinstance(seats, list)
-            and all(isinstance(seat, str) for seat in seats)):
+    if isinstance(label, str) and re.fullmatch(r'[0-9]+p', label):
+        if (not isinstance(seats, list) or not seats
+                or not all(isinstance(seat, str) and re.fullmatch(SEAT_NAME, seat) for seat in seats)):
+            refuse(f"refusing phase=plan round={label}: seats must be a JSON array of seat names, "
+                   f"for example 'seats=[\"codex-sol\"]', not {seats!r}")
         plans = state.setdefault('plans', {})
         if not isinstance(plans, dict):
             print("rev-state: 'plans' is not an object", file=sys.stderr); sys.exit(1)

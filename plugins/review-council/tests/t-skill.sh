@@ -597,8 +597,8 @@ skill_adapter_and_plan_gate_contract() {
   local adapter_choice='`claude_adapter` decides whether a Claude Code host seats Claude rows on `agent`; a Codex host always seats them on `claude`.'
   local plan_refusal='Plan preparation instead fails before publishing artifacts when any non-extra roster row uses adapter `agent`.'
   local refusal_skip="record that refusal as the plan panel's skip reason."
-  local plan_default='By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` and `PLAN_SEATS` to the first surviving non-extra seat in roster order whose adapter is not `agent`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.'
-  local plan_all='When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to every surviving non-extra seat'
+  local plan_default='By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order whose adapter is not `agent`, `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.'
+  local plan_all='When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat'
   local minimum='adaptive `<N>x` coverage repair and the default one-seat plan panel are the only exceptions.'
   local verify_one='`verify-panel` certifies the one-seat plan panel once that seat returns'
   local before_code='The plan panel runs after triage and before any edit of the working tree.'

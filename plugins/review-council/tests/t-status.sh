@@ -27,6 +27,11 @@ test_status() {
   echo 4 > "$S/r2-sonnet.exit"; echo "$("$SCRIPTS/rev-status.sh" "$S")" > "$T/line"
   assert_grep "failed seat" "$T/line" 'sonnet: failed exit=4'
   assert_exit "missing session → 1" 1 "$SCRIPTS/rev-status.sh" "$T/nope"
+  "$SCRIPTS/rev-state.sh" "$S" seats=codex-sol >/dev/null
+  echo "$("$SCRIPTS/rev-status.sh" "$S")" > "$T/line"
+  assert_grep "a bare seats string is one seat" "$T/line" 'sol: done 1f'
+  assert_nogrep "a bare seats string is never split into characters" "$T/line" '\| c: '
+  "$SCRIPTS/rev-state.sh" "$S" 'seats=["codex-sol","codex-terra","sonnet","opus"]' >/dev/null
   mkdir -p "$T/empty-sess"; echo "$("$SCRIPTS/rev-status.sh" "$T/empty-sess")" > "$T/line"
   assert_grep "no state yet is still one line" "$T/line" '^r\?/\? setup'
 }

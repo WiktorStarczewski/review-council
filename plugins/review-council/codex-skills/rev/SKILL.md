@@ -490,8 +490,8 @@ When the plan panel is skipped, append a line beginning `Plan panel r<N>p - SKIP
 `rev-state.sh` refuses `phase=fix` for code round `<N>` while `open.P0 + open.P1 + open.P2` is above zero, unless that skip line exists or every seat recorded by `phase=plan round=<N>p` has `r<N>p-<seat>.json` and a `0` exit.
 An incomplete plan panel is not a skip: stop the run incomplete before any edit.
 
-By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` and `PLAN_SEATS` to the first surviving non-extra seat in roster order whose adapter is not `agent`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.
-When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to every surviving non-extra seat, including after an extra or a
+By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order whose adapter is not `agent`, `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.
+When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat, including after an extra or a
 one-seat repair, and deal `plan-completeness`, `plan-soundness`, `plan-simplicity`, and
 `plan-tests` in stable roster order. Build one `--assignment` per seat and use the
 plan-completeness seat as `--full-seat`. For three seats, combine

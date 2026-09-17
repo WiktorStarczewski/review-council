@@ -18,6 +18,7 @@ if os.path.exists(p):
 now = time.time()
 rnd = st.get('round', '?'); mn = st.get('min_rounds', '?'); phase = st.get('phase', 'setup')
 seats = st.get('seats') or []
+if not isinstance(seats, list): seats = [seats]   # a bare name is one seat, not one per character
 dropped = set(st.get('dropped') or [])
 SHORT = {'codex-sol': 'sol', 'codex-terra': 'terra', 'codex-review': 'cx-rev'}
 
