@@ -595,7 +595,7 @@ skill_adapter_and_plan_gate_contract() {
   local host_evidence="Evidence mode depends on each launched row's adapter, never on the host."
   local cli_rows='Rows on adapters `codex`, `gemini`, and `claude` launch through `rev-seat.sh` and keep evidence mode.'
   local adapter_choice='`claude_adapter` decides whether a Claude Code host seats Claude rows on `agent`; a Codex host always seats them on `claude`.'
-  local plan_refusal='Plan preparation instead fails before publishing artifacts when any non-extra roster row uses adapter `agent`.'
+  local plan_refusal='Plan preparation instead fails before publishing artifacts when an assigned plan seat uses adapter `agent`.'
   local refusal_skip="record that refusal as the plan panel's skip reason."
   local plan_default='By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order whose adapter is not `agent`, `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.'
   local plan_all='When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat'

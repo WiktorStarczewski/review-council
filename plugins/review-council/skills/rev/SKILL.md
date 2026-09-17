@@ -285,8 +285,8 @@ by evidence mode. Render and launch every code seat at full legacy scope under t
 panel label. Rows on adapters `codex`, `gemini`, and `claude` launch through
 `rev-seat.sh` and keep evidence mode.
 `claude_adapter` decides whether a Claude Code host seats Claude rows on `agent`; a Codex host always seats them on `claude`.
-Plan preparation instead fails before publishing artifacts when any non-extra roster
-row uses adapter `agent`. Report that plan review is unavailable with an Agent seat
+Plan preparation instead fails before publishing artifacts when an assigned plan
+seat uses adapter `agent`. Report that plan review is unavailable with an Agent seat
 and requires a roster whose seats use enforceable Codex or Claude CLI adapters, and
 record that refusal as the plan panel's skip reason. Do not replace the schema-4 plan
 with a legacy full-scope task.

@@ -4241,9 +4241,6 @@ def _prepare_locked(args, session):
         if args.head is not None and args.head != parent_head:
             raise ValueError('explicit source selector conflicts with parent assignment')
         source_head = parent_head
-    if args.phase == 'plan' and any(row.get('adapter') == 'agent' and not row.get('extra')
-                                    for row in roster['seats']):
-        raise ValueError('agent adapter cannot enforce receipt-relative plan specialist scope')
     if args.phase == 'plan':
         if not getattr(args, 'plan', None) or not getattr(args, 'plan_sha256', None):
             raise ValueError('plan phase requires --plan and --plan-sha256')
@@ -4266,6 +4263,13 @@ def _prepare_locked(args, session):
             raise ValueError('--plan belongs only to the plan phase')
         plan_source = None; plan_raw = None
     chosen, owner = assignments(args, roster)
+    if args.phase == 'plan':
+        # Only seats that run the plan must supply an enforced read transcript.
+        agent_seats = [row['seat'] for row in roster['seats']
+                       if row.get('adapter') == 'agent' and row.get('seat') in chosen]
+        if agent_seats:
+            raise ValueError('agent adapter cannot enforce plan evidence for assigned seat: '
+                             + ', '.join(agent_seats))
     if parent_manifest is not None:
         parent = parent_manifest['assignments'][parent_seat]
         if chosen != {parent_seat: parent['bundle']}:

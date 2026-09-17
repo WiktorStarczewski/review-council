@@ -889,7 +889,7 @@ EOF
       > "$T/plan-agent.out" 2> "$T/plan-agent.err"
     assert_eq "agent plan routing fails before launch" "$?" 2
     assert_grep "agent failure names the unenforceable restricted contract" \
-      "$T/plan-agent.err" 'agent adapter cannot enforce receipt-relative plan specialist scope'
+      "$T/plan-agent.err" 'agent adapter cannot enforce plan evidence for assigned seat: sol$'
     assert_eq "agent failure publishes no artifacts" \
       "$(find "$S" -maxdepth 1 -name 'r3p-*' | wc -l | tr -d ' ')" 0
     printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"},{"seat":"agent-extra","adapter":"agent","extra":true}]}' > "$S/roster.json"
@@ -898,6 +898,19 @@ EOF
       --assignment opus=plan-simplicity --assignment sonnet=plan-tests)
     assert_exit "an extra Agent seat does not block a CLI-backed core plan panel" 0 \
       python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 3p-extra "${valid_args[@]}"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"agent"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+    assert_exit "an unassigned core Agent seat does not block a one-seat CLI plan" 0 \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 3p-mixed --phase plan --plan "$S/fix-plan.md" \
+      --plan-sha256 "$hash" --full-seat sol --assignment sol=plan-completeness
+    python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 3p-mixed-agent --phase plan --plan "$S/fix-plan.md" \
+      --plan-sha256 "$hash" --full-seat opus --assignment opus=plan-completeness \
+      > "$T/plan-mixed-agent.out" 2> "$T/plan-mixed-agent.err"
+    assert_eq "an assigned Agent plan seat still fails before launch" "$?" 2
+    assert_grep "the refusal names the assigned Agent seat" \
+      "$T/plan-mixed-agent.err" 'agent adapter cannot enforce plan evidence for assigned seat: opus$'
+    assert_eq "the assigned Agent refusal publishes no artifacts" \
+      "$(find "$S" -maxdepth 1 -name 'r3p-mixed-agent-*' | wc -l | tr -d ' ')" 0
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"},{"seat":"agent-extra","adapter":"agent","extra":true}]}' > "$S/roster.json"
     assert_exit "stale plan hash rejects adaptive plan preparation" 2 \
       python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 4p "${valid_args[@]/$hash/0000000000000000000000000000000000000000000000000000000000000000}"
     ln "$S/fix-plan.md" "$S/hardlinked-plan.md"

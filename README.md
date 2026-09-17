@@ -866,8 +866,8 @@ Full reference: [docs/config.md](docs/config.md).
   cache.
 - Quota fallback covers quota and capacity only. It does not hide authentication,
   configuration, model, adapter, or unknown failures.
-- A schema-4 plan panel cannot run while a core roster row uses the `agent` adapter,
-  because that adapter cannot provide the enforced receipt-relative read transcript.
+- A schema-4 plan panel cannot seat a reviewer on the `agent` adapter, because that
+  adapter cannot provide the enforced read transcript; other roster rows may use it.
 - Explicit numeric code reviews and document reviews retain full scope instead of
   adaptive evidence narrowing.
 - Evidence chunks prove complete change reads but do not replace source reads for
