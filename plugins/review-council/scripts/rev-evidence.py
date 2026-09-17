@@ -1859,10 +1859,11 @@ def assignments(args, roster):
         raise ValueError('plan panel requires explicit canonical assignments')
     if not chosen:
         chosen = {s: 'simplicity' if args.phase == 'discovery' else 'unassigned' for s in seats}
-    if args.phase != 'repair' and set(chosen) != set(seats):
+    if args.phase not in ('repair', 'plan') and set(chosen) != set(seats):
         raise ValueError('panel assignments must include every core seat')
     owner = args.full_seat
     chosen = {s: chosen[s] for s in seats if s in chosen}
+    validate_assignment_topology(chosen, seats, args.phase)
     bundles = phase_bundles(args.phase)
     regression_owner = next((s for s, b in chosen.items() if bundles[-1] in b.split('+')), None)
     if args.phase == 'plan':
@@ -1875,16 +1876,18 @@ def assignments(args, roster):
             owner = next(iter(chosen))
     if owner is not None and owner not in chosen:
         raise ValueError('full seat must be assigned')
-    if args.phase == 'discovery' and any(b != 'simplicity' for b in chosen.values()):
-        raise ValueError('discovery assignments must use simplicity')
     if args.phase == 'repair' and len(chosen) != 1:
         raise ValueError('repair requires exactly one full seat')
-    validate_assignment_topology(chosen, seats, args.phase)
     return chosen, owner
 
 
 def bundle_coverage(chosen, bundles=BUNDLES):
     return set(b for value in chosen.values() for b in value.split('+')) == set(bundles)
+
+
+def single_seat_plan(chosen):
+    """A one-seat plan panel is one plan-completeness seat that owns every cluster."""
+    return list(chosen.values()) == [PLAN_BUNDLES[0]]
 
 
 def canonical_bundle_topology(seats, bundles=BUNDLES):
@@ -1907,13 +1910,20 @@ def canonical_bundle_topology(seats, bundles=BUNDLES):
 def validate_assignment_topology(chosen, seats, phase):
     if phase == 'repair':
         return
+    if phase == 'plan':
+        expected = canonical_bundle_topology(seats, PLAN_BUNDLES)
+        if single_seat_plan(chosen) or chosen == expected:
+            return
+        panel = ' '.join(seat + '=' + bundle for seat, bundle in (expected or {}).items())
+        raise ValueError('plan assignment does not match canonical seat topology; expected '
+                         + (panel + ' or ' if panel else '') + 'one <seat>=' + PLAN_BUNDLES[0])
     if len(seats) < 3:
         raise ValueError('review panel requires at least three core seats')
     if phase == 'discovery':
         if chosen != {seat: 'simplicity' for seat in seats}:
             raise ValueError('invalid discovery seat topology')
         return
-    if set(chosen.values()) == {'unassigned'} and phase != 'plan':
+    if set(chosen.values()) == {'unassigned'}:
         return
     if chosen != canonical_bundle_topology(seats, phase_bundles(phase)):
         raise ValueError('risk bundle assignment does not match canonical seat topology')
@@ -2048,11 +2058,9 @@ def components_for(patches, dependencies, chosen, owner, findings=None):
 
 def plan_cluster_assignments(chosen, owner, clusters):
     specialists = [seat for seat in chosen if seat != owner]
-    if not specialists:
-        raise ValueError('plan requires an independent specialist')
     assigned = {seat: [] for seat in chosen}
     assigned[owner] = [cluster['id'] for cluster in clusters]
-    for index, cluster in enumerate(clusters):
+    for index, cluster in enumerate(clusters if specialists else []):
         assigned[specialists[index % len(specialists)]].append(cluster['id'])
     return assigned
 
@@ -2090,7 +2098,7 @@ def plan_delta_paths(chosen, owner, clusters, delta_assignments, dependencies, c
 def plan_components_for(patches, dependencies, chosen, owner, clusters, routed=True,
                         cluster_assignments=None):
     components = components_for(patches, dependencies, chosen, owner)
-    if not routed:
+    if not routed or len(chosen) == 1:
         specialists = [seat for seat in chosen if seat != owner]
         required = {row['path'] for cluster in clusters for row in cluster['paths']}
         for component in components:
@@ -2830,7 +2838,8 @@ def validate_components(session, manifest, evidence):
         raise ValueError('invalid dependency components')
     assigned = manifest['assignments']; owner = manifest['mechanical_owner']
     ordered = {row['seat']: assigned[row['seat']] for row in read_json(session / 'roster.json')['seats'] if row['seat'] in assigned}
-    adaptive = not manifest['fallback_reason'] and manifest['phase'] != 'repair'
+    adaptive = (not manifest['fallback_reason'] and manifest['phase'] != 'repair'
+                and len(assigned) > 1)
     if manifest['phase'] == 'plan':
         routed_plan = any('plan_clusters' in assignment for assignment in assigned.values())
         closure_paths = manifest.get('plan', {}).get('closure_paths', [])
@@ -3399,7 +3408,7 @@ def validate_plan(session, manifest, evidence, check_source, replay_searches=Tru
                                 for segment in source_range['segments'])
                 if assignment.get('required_artifacts') != sorted(required):
                     raise ValueError('invalid plan assignment artifact set: ' + seat)
-        if all('search_proof' in cluster for cluster in clusters):
+        if len(assignments) > 1 and all('search_proof' in cluster for cluster in clusters):
             clusters_by_id = {cluster['id']: cluster for cluster in clusters}
             prepared_bytes = sum(
                 clusters_by_id[cluster_id]['search_proof']['bytes']
@@ -3543,7 +3552,10 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         raise ValueError('provider contract input changed after prepare')
     core = {s['seat'] for s in roster['seats'] if not s.get('extra')}
     core_order = [s['seat'] for s in roster['seats'] if not s.get('extra')]
-    if not set(assigned) <= core or (manifest['phase'] != 'repair' and set(assigned) != core):
+    bundles_by_seat = {seat: assignment['bundle'] for seat, assignment in assigned.items()}
+    if not set(assigned) <= core or (
+            manifest['phase'] != 'repair' and set(assigned) != core
+            and not (manifest['phase'] == 'plan' and single_seat_plan(bundles_by_seat))):
         raise ValueError('assignment roster mismatch')
     adapters = {s['seat']: s.get('adapter', '') for s in roster['seats']}
     if any(a.get('adapter') != adapters[s] for s, a in assigned.items()):
@@ -3631,8 +3643,8 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         raise ValueError('repair must have one full-state seat')
     if phase == 'plan':
         completeness = [s for s in adapters if s in assigned and PLAN_BUNDLES[0] in assigned[s]['bundles']]
-        if (fallback or not bundle_coverage({s: a['bundle'] for s, a in assigned.items()}, PLAN_BUNDLES)
-                or completeness != [owner]):
+        if (fallback or completeness != [owner] or not (
+                bundle_coverage(bundles_by_seat, PLAN_BUNDLES) or single_seat_plan(bundles_by_seat))):
             raise ValueError('invalid plan assignment coverage')
         specialist_scope = ('closure' if manifest['schema_version'] == 3 else
                             'delta' if manifest['plan']['delta_mode'] == 'receipt-delta'
@@ -3779,11 +3791,10 @@ def validate_panel_coverage(manifest):
     bundles = [a['bundle'] for a in manifest['assignments'].values()]
     if phase == 'repair':
         raise ValueError('standalone repair cannot certify parent panel coverage')
-    if phase == 'plan' and not bundle_coverage(
-            {s: a['bundle'] for s, a in manifest['assignments'].items()}, PLAN_BUNDLES):
-        raise ValueError('plan validation requires all four plan lenses')
-    if phase not in ('discovery', 'plan') and not bundle_coverage(
-            {s: a['bundle'] for s, a in manifest['assignments'].items()}):
+    chosen = {s: a['bundle'] for s, a in manifest['assignments'].items()}
+    if phase == 'plan' and not (bundle_coverage(chosen, PLAN_BUNDLES) or single_seat_plan(chosen)):
+        raise ValueError('plan validation requires all four plan lenses or one plan-completeness seat')
+    if phase not in ('discovery', 'plan') and not bundle_coverage(chosen):
         raise ValueError('coverage requires all four bundles')
 
 
@@ -4424,8 +4435,8 @@ def _prepare_locked(args, session):
                 raw = plan_search_artifacts[proof['artifact']]
                 prepared_search_bytes += len(raw)
                 prepared_search_words += len(raw.split())
-        if (sum(len(body) for body in patch_bodies.values()) + prepared_search_bytes
-                > len(full) * len(chosen) * 9 // 10):
+        if len(chosen) > 1 and (sum(len(body) for body in patch_bodies.values()) + prepared_search_bytes
+                                > len(full) * len(chosen) * 9 // 10):
             raise ValueError('routed plan inputs save less than 10 percent')
     data['assignments'] = scopes
     predecessor = (previous['coverage_reference']

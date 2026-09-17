@@ -1608,8 +1608,143 @@ for count in (3,4,5,6):
     assert list(chosen)==seats and owner==seats[0]
     assert sum('plan-completeness' in bundles.split('+') for bundles in chosen.values())==1
     assert set(bundle for bundles in chosen.values() for bundle in bundles.split('+'))==set(module.PLAN_BUNDLES)
+seats=['sol','terra','opus','sonnet']
+roster={'seats':[{'seat':seat,'adapter':'codex'} for seat in seats]}
+for seat in seats:
+    for full_seat in (seat, None):
+        args=types.SimpleNamespace(phase='plan', full_seat=full_seat,
+                                   assignment=[seat+'=plan-completeness'])
+        assert module.assignments(args,roster)==({seat:'plan-completeness'},seat)
+    module.validate_assignment_topology({seat:'plan-completeness'},[seat],'plan')
+expected=('plan assignment does not match canonical seat topology; expected '
+          'sol=plan-completeness terra=plan-soundness opus=plan-simplicity sonnet=plan-tests '
+          'or one <seat>=plan-completeness')
+rejected=[
+    ('sol',['sol=plan-soundness']),
+    ('sol',['sol=plan-completeness+plan-tests']),
+    ('sol',['sol=plan-completeness','terra=plan-soundness']),
+    ('terra',['sol=plan-soundness','terra=plan-completeness','opus=plan-simplicity','sonnet=plan-tests']),
+]
+for full_seat, values in rejected:
+    try:
+        module.assignments(types.SimpleNamespace(phase='plan', full_seat=full_seat, assignment=values), roster)
+    except ValueError as error:
+        assert str(error)==expected, (values, str(error))
+    else:
+        raise AssertionError(values)
+try:
+    module.validate_assignment_topology({'sol':'plan-completeness','terra':'plan-tests'},['sol','terra'],'plan')
+except ValueError as error:
+    assert str(error).endswith('expected one <seat>=plan-completeness'), str(error)
+else:
+    raise AssertionError('two-seat plan topology accepted')
 PY
-  assert_eq "three through six seat plan topologies keep completeness unique" "$?" 0
+  assert_eq "plan topologies keep completeness unique and accept one completeness seat" "$?" 0
+}
+
+test_plan_single_seat_panel_certifies() {
+  ( local R="$T/plan-single-root" S="$T/plan-single-session"
+    mkrepo "$R"; mkdir -p "$R/src" "$R/tests" "$S"
+    printf 'export function helper() { return 1; }\n' > "$R/src/helper.ts"
+    printf 'import { helper } from "./helper";\nexport function runService() { return helper(); }\n' > "$R/src/service.ts"
+    printf 'import { runService } from "../src/service";\ntest("service", () => runService());\n' > "$R/tests/service.test.ts"
+    git -C "$R" add . && git -C "$R" commit -qm "single plan base"
+    local base; base=$(git -C "$R" rev-parse HEAD)
+    replace_literal "$R/src/helper.ts" 'return 1' 'return 2' || return
+    replace_literal "$R/src/service.ts" 'helper();' 'helper() + 1;' || return
+    printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+      "$base" "$R" > "$S/scope.env"
+    printf '%s\n' src/helper.ts src/service.ts > "$S/files.txt"; : > "$S/untracked.txt"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+    cat > "$S/fix-plan.md" <<'EOF'
+## C-01 - keep service results stable
+Findings: F-001 (P1)
+Rule: Wait 600 ms, then 3 s, before client.sync; keep try/catch around onStage('submitting')/markSubmitting.
+Sites: src/service.ts:1-2, src/helper.ts:1 (found by: grep --exclude-dir=.git --null -r -n -- 'helper' .)
+Must not: Change unrelated exports.
+Test: tests/service.test.ts:1-2 - client.sync after 600 ms skips try/catch in onStage(a)/b (fails today).
+EOF
+    local hash manifest
+    hash=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/fix-plan.md")
+    local args=(--phase plan --plan "$S/fix-plan.md" --plan-sha256 "$hash")
+    REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 0p \
+      "${args[@]}" --full-seat sol --assignment sol=plan-soundness \
+      > "$T/plan-single-lens.out" 2> "$T/plan-single-lens.err"
+    assert_eq "one-seat plan with a non-completeness lens is refused" "$?" 2
+    assert_grep "one-seat lens refusal prints the expected plan topology" "$T/plan-single-lens.err" \
+      'expected sol=plan-completeness terra=plan-soundness opus=plan-simplicity sonnet=plan-tests or one <seat>=plan-completeness'
+    manifest=$(REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 1p \
+      "${args[@]}" --full-seat sol --assignment sol=plan-completeness) || return
+    python3 - "$manifest" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+assert list(m['assignments']) == ['sol'], m['assignments']
+sol = m['assignments']['sol']
+assert sol['scope'] == 'full' and sol['plan_clusters'] == ['C-01'] and sol['delta_clusters'] == []
+assert m['mechanical_owner'] == 'sol' and m['components']
+assert all(component['specialists'] == [] for component in m['components'])
+assert sol['components'] == [component['id'] for component in m['components']]
+assert m['source_context']['seats']['sol']['role'] == 'integration'
+assert [row['token'] for row in m['plan']['clusters'][0]['paths']] == [
+    'src/service.ts', 'src/helper.ts', 'tests/service.test.ts']
+PY
+    assert_eq "one-seat plan evidence routes every cluster to the completeness seat" "$?" 0
+    local prompt
+    prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 1p sol plan-completeness plan \
+      --plan "$S/r1p-plan.md" --evidence "$manifest") || return
+    printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r1p-sol.json"
+    printf '0\n' > "$S/r1p-sol.exit"
+    python3 - "$manifest" "$S/r1p-sol.stream.ndjson" "$R" <<'PY'
+import json, pathlib, sys
+m = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2]); root = pathlib.Path(sys.argv[3])
+session = pathlib.Path(sys.argv[1]).parent; assignment = m['assignments']['sol']; events = []
+def call(identity, path, output, command=None):
+    command = command or 'cat -- ' + str(path)
+    events.extend([
+        {'type':'item.started','item':{'id':identity,'type':'command_execution','command':command}},
+        {'type':'item.completed','item':{'id':identity,'type':'command_execution','command':command,
+                                         'aggregated_output':output,'exit_code':0}},
+    ])
+if assignment['patch_read_mode'] == 'chunks':
+    for row in m['patch_sets'][assignment['patch_set']]['chunks']:
+        path = session / row['artifact']; call('patch-' + str(row['index']), path, path.read_text())
+else:
+    patch = pathlib.Path(assignment['patch']); lines = patch.read_text().splitlines(keepends=True)
+    for start in range(1, len(lines) + 1, 240):
+        end = min(len(lines), start + 239)
+        call('patch-' + str(start), patch, ''.join(lines[start - 1:end]),
+             "sed -n '%d,%dp' %s" % (start, end, patch))
+context = m['source_context']['seats']['sol']
+for index, shard in enumerate(context['shards'], 1):
+    path = session / shard['artifact']; call('packet-' + str(index), path, path.read_text())
+for index, row in enumerate(context['required_source_ranges'], 1):
+    for segment in row['segments']:
+        path = session / segment['artifact']
+        call('segment-%d-%d' % (index, segment['index']), path, path.read_text())
+index = session / 'r1p-evidence.md'; call('evidence-index', index, index.read_text())
+if context['source_read_required']:
+    path = root / 'src/service.ts'
+    call('source', path, ''.join(path.read_text().splitlines(keepends=True)[:2]),
+         "sed -n '1,2p' " + str(path))
+out.write_text(''.join(json.dumps(event) + '\n' for event in events))
+PY
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+      --raw "$S/r1p-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
+      --out "$S/r1p-sol.read-audit.json" >/dev/null || return
+    assert_exit "one-seat plan prompt authorizes exactly its manifest artifacts" 0 \
+      python3 "$SCRIPTS/lib/review-read-audit.py" validate-prompt \
+        --root "$R" --session "$S" --manifest "$manifest" --seat sol --prompt "$prompt"
+    python3 "$SCRIPTS/rev-evidence.py" verify-panel "$S" 1p > "$T/plan-single-verify.out" \
+      2> "$T/plan-single-verify.err"
+    assert_eq "verify-panel certifies a one-seat plan panel" "$?" 0
+    python3 - "$T/plan-single-verify.out" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+assert data['phase'] == 'plan'
+assert sorted({name.split('.', 1)[0] for name in data['results']}) == ['r1p-sol'], data['results']
+PY
+    assert_eq "one-seat certification binds only the assigned seat's results" "$?" 0
+  )
 }
 
 test_plan_source_capacity_compiles_to_bounded_reads() {
