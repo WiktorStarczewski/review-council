@@ -229,3 +229,8 @@
 - Before changing a healthy generic workflow to cure one pathological mode, compare that mode with the rest of the population. A plugin must not use the candidate version to certify its own reviewer machinery; pin release review to the prior stable version and test the candidate with deterministic gates and targeted canaries.
 - A release-process repair is not converging when its control plane becomes larger than the product change. Set an explicit implementation budget before coding, keep the previous-stable review lane mostly procedural, and stop for user review when release-authority code or tests exceed that budget instead of continuing to harden the hardener.
 - When adding shell test functions, update the exact scheduler inventory in `test-costs.tsv` before running the frozen-tree verifier. Focused filters bypass that reconciliation, so they cannot prove the aggregate shell gate will launch the new tests.
+- Rewording pinned skill prose must be followed by a search of every test for the old
+  sentence, not only the test filter named after the skill. A schedule contract in another
+  file kept the old wording and failed the full gate.
+- Apply a subprocess-environment rule to every launch site of that binary in the same change.
+  Scrubbing the parent session for seats and probes but not stack legs left the third site open.

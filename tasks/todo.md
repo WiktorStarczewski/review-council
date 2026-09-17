@@ -6,7 +6,15 @@
 - [x] WP3 #8 evidence: one-seat plan topology, verify-panel for one seat, parser reads paths only in `Sites:` and the first `Test:` token, refusals name cluster/field/token/fix, capacity refusal retries with chunks.
 - [x] WP4 #8 prompts: `--phase` flag and verification sibling-site sentence; `--panel` render in one process with one manifest load; per-seat render time in rev-profile.
 - [x] WP5 #8/#7 skills: both host skills (CLI claude rows via rev-seat.sh, evidence gated on agent rows only, one-seat plan default, plan before code, verification sentence, panel render); rev-state.sh refuses `phase=fix` without a plan or a recorded skip.
-- [ ] Merge, CHANGELOG, full suite, fast review panel, PR.
+- [x] Merge, CHANGELOG, full suite, fast review panel.
+- [ ] PR.
+
+### Review
+
+- Four parallel packages merged; the one spec deviation is issue #8 section 5: `mandatory source reads exceed repository capacity` never depends on patch chunks, so plan prepare now passes `REV_SOURCE_CONTEXT=1` like code panels instead of a chunk retry that cannot clear it.
+- The 5-19 minute renders came from `dict.setdefault(tree, repo.entries(tree))` evaluating its default per source row (a whole-tree `git ls-tree -r` each time).
+- Live smoke from Claude Code: a Sonnet seat on the `claude` adapter through `rev-seat.sh` exited 0 with a valid evidence read audit.
+- User-authorized fast review: Anthropic-only panel (Opus, Sonnet, Sonnet), one four-bundle risk panel, one verification panel, one bounded Sonnet delta seat; 11 findings, 10 fixed, 1 deferred (eval harness `claude -p` sites).
 
 # Token-Efficient Review Council
 
