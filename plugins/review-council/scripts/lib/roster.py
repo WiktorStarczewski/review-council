@@ -1355,7 +1355,7 @@ def build(do_probe, quota_failed_seats=()):
     if (not CODEX_HOST and _RESOLVED.get('cli') and claude_adapter_setting(cfg)[0] == 'auto'
             and any(s['adapter'] == 'agent' for s in kept)):
         excluded.append({'cli': 'claude_adapter',
-                         'reason': 'auto -> agent (claude CLI %s): no evidence mode or plan panels'
+                         'reason': 'auto -> agent (claude CLI %s): agent seats get no evidence mode or plan panel'
                                    % _RESOLVED['cli']})
     padded = len([s for s in kept if not s['extra'] and s.get('padded')])
     labs, degraded, sentence = degradation(kept, padded)
