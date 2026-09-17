@@ -163,6 +163,10 @@ t-read-bounds.sh::test_required_source_range_coverage	3	normal
 t-read-bounds.sh::test_search_helpers_reuse_declared_command_set	3	normal
 t-read-bounds.sh::test_specialist_required_range_uses_session_artifacts	3	normal
 t-rev-reviewer.sh::test_rev_reviewer	1	normal
+t-roster-adapter.sh::test_roster_adapter_agent_matches_legacy_golden	3	normal
+t-roster-adapter.sh::test_roster_adapter_padding_follows_probe	1	normal
+t-roster-adapter.sh::test_roster_adapter_resolution	2	normal
+t-roster-adapter.sh::test_roster_plan_seats_setting	1	normal
 t-roster.sh::test_roster_config	1	normal
 t-roster.sh::test_roster_effort_steps_down	1	normal
 t-roster.sh::test_roster_exact_active_pins_and_static_probe_gate	1	normal

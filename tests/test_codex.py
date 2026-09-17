@@ -30,7 +30,8 @@ class CodexTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.env = dict(os.environ, REVIEW_COUNCIL_HOST='codex', HOME=str(self.root),
-                        REVIEW_COUNCIL_CONFIG=str(self.root / 'absent'))
+                        REVIEW_COUNCIL_CONFIG=str(self.root / 'absent'),
+                        REVIEW_COUNCIL_CLAUDE_ADAPTER='agent')
         self.roster = module(SCRIPTS / 'lib/roster.py')
         self.roster.CODEX_HOST = True
         self.roster.ORDER = ('codex', 'gemini', 'claude')

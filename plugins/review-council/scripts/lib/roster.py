@@ -41,12 +41,14 @@ _ACTIVE_PROCESSES = {}
 _ACTIVE_LOCK = threading.RLock()
 _CANCELLED = threading.Event()
 _LAUNCH_STATE = threading.local()
+_RESOLVED = {}   # one build()'s Anthropic adapter, and the claude CLI check `auto` ran to choose it
 
 CODEX_HOST = os.environ.get('REVIEW_COUNCIL_HOST') == 'codex'
 LABS = {'codex': 'openai', 'gemini': 'google', 'agent': 'anthropic', 'claude': 'anthropic'}
 # the name an adapter answers to in the --brief line, in `excluded[].cli` and in config `exclude`
 NAMES = {'codex': 'codex', 'gemini': 'gemini', 'agent': 'claude', 'claude': 'claude'}
-ORDER = ('codex', 'gemini', 'claude' if CODEX_HOST else 'agent')
+# detection order; build() seats the Anthropic slot on anthropic_adapter()
+ORDER = ('codex', 'gemini', 'claude')
 # (adapter, seat, mode, round) - an extra pass is seated whenever its lab has a seat
 EXTRAS = (('codex', 'codex-review', 'review', 3),)
 
@@ -488,22 +490,68 @@ def detect_agent(cfg):
     return claude_seats('agent', cfg)
 
 
+def claude_cli_reason():
+    """None when the claude CLI is installed and signed in, else why it cannot seat a reviewer."""
+    if shutil.which('claude') is None:
+        return 'not installed'
+    rc, out, _ = run(['claude', 'auth', 'status', '--json'], LOGIN_TIMEOUT)
+    if rc is None:
+        return 'sign-in check timed out'
+    try:
+        status = json.loads(out)
+    except ValueError:
+        return 'sign-in check failed'
+    if rc != 0 or not isinstance(status, dict) or status.get('loggedIn') is not True:
+        return 'not signed in'
+    return None
+
+
 def detect_claude(cfg):
     seats, reason = claude_seats('claude', cfg)
     if reason:
         return [], reason
-    if shutil.which('claude') is None:
-        return [], 'not installed'
-    rc, out, _ = run(['claude', 'auth', 'status', '--json'], LOGIN_TIMEOUT)
-    if rc is None:
-        return [], 'sign-in check timed out'
-    try:
-        status = json.loads(out)
-    except ValueError:
-        return [], 'sign-in check failed'
-    if rc != 0 or not isinstance(status, dict) or status.get('loggedIn') is not True:
-        return [], 'not signed in'
+    reason = _RESOLVED['cli'] if 'cli' in _RESOLVED else claude_cli_reason()
+    if reason:
+        return [], reason
     return seats, None
+
+
+def claude_adapter_setting(cfg):
+    """Return cli, agent or auto (REVIEW_COUNCIL_CLAUDE_ADAPTER wins) and a permanent config error."""
+    name = 'REVIEW_COUNCIL_CLAUDE_ADAPTER'
+    value = os.environ.get(name)
+    if not value:
+        name, value = 'claude_adapter', cfg.get('claude_adapter', 'auto')
+    if value not in ('cli', 'agent', 'auto'):
+        return None, 'invalid %s: expected cli, agent or auto' % name
+    return value, None
+
+
+def anthropic_adapter(cfg):
+    """The adapter this build seats Anthropic reviewers on: `claude` (the CLI) or `agent` (the host's
+    Agent tool). A Codex host has no Agent tool. `auto` prefers a signed-in CLI, whose evidence the
+    host can audit, and checks it once per build."""
+    if CODEX_HOST:
+        return 'claude'
+    if 'adapter' not in _RESOLVED:
+        setting, _ = claude_adapter_setting(cfg)
+        if setting == 'auto':
+            _RESOLVED['cli'] = claude_cli_reason()
+        _RESOLVED['adapter'] = ('claude' if setting == 'cli'
+                                or setting == 'auto' and _RESOLVED['cli'] is None else 'agent')
+    return _RESOLVED['adapter']
+
+
+def provider_order(cfg):
+    return tuple(anthropic_adapter(cfg) if LABS[adapter] == 'anthropic' else adapter
+                 for adapter in ORDER)
+
+
+def plan_seats_setting(cfg):
+    value = cfg.get('plan_seats', 'completeness')
+    if value not in ('completeness', 'all'):
+        return None, 'invalid plan_seats: expected completeness or all'
+    return value, None
 
 
 DETECT = {'codex': detect_codex, 'gemini': detect_gemini,
@@ -573,7 +621,7 @@ def enforce_claude_models(cfg, seats, excluded):
     allowed, config_error = claude_models_setting(cfg)
     if allowed is None or config_error:
         return seats
-    adapter = 'claude' if CODEX_HOST else 'agent'
+    adapter = anthropic_adapter(cfg)
     required = dict(zip(claude_model_seat_names(allowed), allowed))
     kept, seen = [], set()
     for seat in seats:
@@ -741,7 +789,7 @@ def configured_lab_capacity(cfg):
     """Conservative maximum number of real labs permitted by static configuration."""
     dropped = excluded_names(cfg)
     labs = set()
-    for adapter in ORDER:
+    for adapter in provider_order(cfg):
         lab = LABS[adapter]
         if {NAMES[adapter], adapter, lab} & dropped:
             continue
@@ -848,6 +896,13 @@ def enforce_exact_seats(cfg, seats, excluded):
         reason = 'min_labs=%d exceeds %d configured lab(s)' % (floor, capacity)
         append_exclusion(excluded, 'min_labs', 'strict: %s' % reason)
         strict_class, strict_reason = 'config', reason
+    for key, setting in (('claude_adapter', claude_adapter_setting),
+                         ('plan_seats', plan_seats_setting)):
+        _, setting_error = setting(cfg)
+        if setting_error:
+            append_exclusion(excluded, key, 'strict: %s' % setting_error)
+            strict_class, strict_reason = strict_winner(
+                strict_class, strict_reason, 'config', setting_error)
     allowed, config_error = codex_models_setting(cfg)
     if config_error:
         append_exclusion(excluded, 'codex_models', 'strict: %s' % config_error)
@@ -901,7 +956,7 @@ def enforce_exact_seats(cfg, seats, excluded):
         strict_class, strict_reason = strict_winner(
             strict_class, strict_reason, 'config', claude_models_error)
     elif allowed_claude is not None:
-        adapter = 'claude' if CODEX_HOST else 'agent'
+        adapter = anthropic_adapter(cfg)
         pin_conflict = claude_models_pin_conflict(cfg, allowed_claude)
         if pin_conflict:
             append_exclusion(excluded, pin_conflict[0], pin_conflict[1])
@@ -957,7 +1012,7 @@ def enforce_exact_seats(cfg, seats, excluded):
             strict_class, strict_reason, 'config', reason)
     valid_positive = ('claude_models' not in cfg and valid_claude and raw_claude > 0)
     if valid_positive and not claude_disabled:
-        adapter = 'claude' if CODEX_HOST else 'agent'
+        adapter = anthropic_adapter(cfg)
         pin_conflict = claude_pin_conflict(cfg, raw_claude)
         if pin_conflict:
             append_exclusion(excluded, pin_conflict[0], pin_conflict[1])
@@ -1052,7 +1107,7 @@ def result_receipt_policy(roster_path):
     return {'version': 1, 'legacy_no_exit_sha256': legacy}
 
 
-def pad(seats, excluded, cfg):
+def pad(seats, excluded, cfg, probe_results):
     """Top the panel up to PANEL non-extra seats with Claude seats. → the number added.
 
     A machine with only Claude Code installed still gets a panel; it gets a WORSE one, and saying so is
@@ -1095,6 +1150,11 @@ def pad(seats, excluded, cfg):
         off = None
     if off:
         excluded.append({'cli': 'padding', 'reason': '%s - a panel needs %d seats' % (off, PANEL)})
+    # The Agent tool needs no sign-in, so a CLI whose Opus probe just failed never pads the floor.
+    adapter = anthropic_adapter(cfg)
+    probe = probe_results.get(('claude', 'opus', 'max'))
+    if adapter == 'claude' and probe is not None and probe[0] is not None:
+        adapter = 'agent'
     used = {s['seat'] for s in seats}
     n = 0
     for _ in range(missing):
@@ -1104,7 +1164,7 @@ def pad(seats, excluded, cfg):
             n += 1
             name = 'claude-%d' % n
         used.add(name)
-        seat = make_seat(name, 'agent', 'opus', 'max')
+        seat = make_seat(name, adapter, 'opus', 'max')
         seat['padded'] = True
         seats.append(seat)
     return missing
@@ -1154,11 +1214,12 @@ def build(do_probe, quota_failed_seats=()):
             'excluded': [{'cli': 'config', 'reason': cfg_error}],
         }
         return roster, {}, 'config'
+    _RESOLVED.clear()
     excluded = []
     dropped = excluded_names(cfg)
     seats, adapter_of = [], {}
 
-    for adapter in ORDER:
+    for adapter in provider_order(cfg):
         name = NAMES[adapter]
         if {name, adapter, LABS[adapter]} & dropped:
             excluded.append({'cli': name, 'reason': 'excluded by config'})
@@ -1197,6 +1258,7 @@ def build(do_probe, quota_failed_seats=()):
     if handoff_error:
         append_exclusion(excluded, 'quota_fallback', 'strict: ' + handoff_error)
     static_class = None
+    probe_results = {}
     if do_probe:
         static_excluded = [dict(entry) for entry in excluded]
         static_class, _ = enforce_exact_seats(cfg, kept, static_excluded)
@@ -1270,7 +1332,7 @@ def build(do_probe, quota_failed_seats=()):
 
     # Padding comes LAST - after config, after exclusions, after the probe - so it replaces the seats
     # those steps actually removed rather than a count taken before they ran.
-    pad(kept, excluded, cfg)
+    pad(kept, excluded, cfg, probe_results)
     padded = len([s for s in kept if not s['extra'] and s.get('padded')])
     labs, degraded, sentence = degradation(kept, padded)
 
@@ -1305,6 +1367,8 @@ def build(do_probe, quota_failed_seats=()):
               'seats': kept, 'labs': labs, 'padded': padded, 'degraded': degraded}
     if degraded:
         roster['degradation'] = sentence
+    if plan_seats_setting(cfg)[0] == 'all':
+        roster['plan_seats'] = 'all'
     if strict_class:
         roster['strict_class'] = strict_class
         roster['strict_reason'] = strict_reason
@@ -1321,18 +1385,19 @@ def brief_line(roster, adapter_of):
         name = NAMES[adapter]
         # padded seats are not something this lab was detected offering - they belong to the DEGRADED clause
         seated = [s for s in roster['seats']
-                  if s['adapter'] == adapter and not s['extra'] and not s.get('padded')]
+                  if NAMES[s['adapter']] == name and not s['extra'] and not s.get('padded')]
         if seated:
             models = ', '.join(s['model'] + ('@' + s['effort'] if s['effort'] else '') for s in seated)
             parts.append('%s ✓ (%s)' % (name, models))
         else:
             reason = by_cli.get(name) or next(
-                (e['reason'] for e in roster['excluded'] if adapter_of.get(e['cli']) == adapter),
+                (e['reason'] for e in roster['excluded']
+                 if NAMES.get(adapter_of.get(e['cli'])) == name),
                 'unavailable')
             # `claude ✗ disabled` beside `DEGRADED: only Claude is available` reads as a contradiction:
             # the detected seat IS off and padded seats of that lab are in the panel. Name them here.
             n = len([s for s in roster['seats']
-                     if s['adapter'] == adapter and not s['extra'] and s.get('padded')])
+                     if NAMES[s['adapter']] == name and not s['extra'] and s.get('padded')])
             if n:
                 reason += ' (%d padded seat%s)' % (n, '' if n == 1 else 's')
             parts.append('%s ✗ %s' % (name, reason))
