@@ -4,15 +4,17 @@ import argparse
 import ast
 from bisect import bisect_right
 from collections import Counter
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stdout
 from difflib import SequenceMatcher
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import re
 import selectors
 import shlex
+import shutil
 import signal
 import stat
 import subprocess
@@ -1346,6 +1348,27 @@ def plan_search_argv(contract):
     return ['grep', '--exclude-dir=.git', '--null', '-r', '-n', '--', pattern, '.']
 
 
+def ripgrep_executable(environment):
+    """The binary plan searches execute as `rg`: REV_RG, then PATH, then Claude Code's embedded ripgrep."""
+    if environment.get('REV_RG'):
+        return environment['REV_RG']
+    found = shutil.which('rg', path=environment.get('PATH'))
+    if found:
+        return found
+    # In Claude Code `rg` is a shell function that runs the claude binary under argv0 `rg`.
+    embedded = environment.get('CLAUDE_CODE_EXECPATH')
+    if embedded:
+        try:
+            version = subprocess.run(['rg', '--version'], executable=embedded, env=environment,
+                                     stdin=subprocess.DEVNULL, capture_output=True, timeout=10)
+        except (OSError, subprocess.SubprocessError):
+            version = None
+        if version is not None and any(line.startswith(b'ripgrep')
+                                       for line in version.stdout.splitlines()):
+            return embedded
+    raise ValueError('ripgrep binary not found on PATH; set REV_RG to a ripgrep executable')
+
+
 def plan_search_paths(raw):
     try:
         text = raw.decode('utf-8')
@@ -1419,7 +1442,7 @@ def plan_search_signal_handlers():
             signal.signal(signum, handler)
 
 
-def run_plan_search(command, directory, environment, deadline):
+def run_plan_search(command, directory, environment, deadline, executable=None):
     process = None
     selector = selectors.DefaultSelector()
     completed = False
@@ -1429,8 +1452,8 @@ def run_plan_search(command, directory, environment, deadline):
                          if change_mask is not None else None)
         try:
             process = subprocess.Popen(
-                command, cwd=directory, env=environment, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, start_new_session=True)
+                command, executable=executable, cwd=directory, env=environment,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
             ACTIVE_PLAN_SEARCHES.add(process)
         finally:
             if previous_mask is not None:
@@ -1491,6 +1514,8 @@ def prepare_plan_searches(repo, snapshot, clusters, prefix, base_tree=None):
     search_env = {key: value for key, value in repo.env.items()
                   if key not in ('GREP_OPTIONS', 'GREP_COLORS', 'RIPGREP_CONFIG_PATH')}
     search_env.update(NO_COLOR='1', TERM='dumb')
+    ripgrep = (ripgrep_executable(search_env)
+               if any(cluster['search_contract']['engine'] == 'rg' for cluster in clusters) else None)
     timeout = plan_search_timeout(os.environ)
     with tempfile.TemporaryDirectory(prefix='.evidence-search-', dir=repo.session) as directory:
         root = Path(directory)
@@ -1510,8 +1535,10 @@ def prepare_plan_searches(repo, snapshot, clusters, prefix, base_tree=None):
                 search_roots.append(base_root)
         deadline = time.monotonic() + timeout
         for cluster in clusters:
+            contract = cluster['search_contract']
             results = [run_plan_search(
-                plan_search_argv(cluster['search_contract']), search_root, search_env, deadline)
+                plan_search_argv(contract), search_root, search_env, deadline,
+                ripgrep if contract['engine'] == 'rg' else None)
                        for search_root in search_roots]
             body = b''.join(sorted(
                 line for raw, _ in results for line in split_lf_lines(raw)))
@@ -1559,14 +1586,14 @@ def plan_search_pattern(text):
     return plan_search_contract(text)['pattern']
 
 
-def validate_plan_range(line_start, line_end, line_count=None, path=None):
+def validate_plan_range(line_start, line_end, line_count=None, location=None):
     if line_start is None and line_end is None:
         return
     if (type(line_start) is not int or type(line_end) is not int
             or line_start < 1 or line_end < line_start):
-        raise ValueError('plan field contains an invalid line range')
+        raise ValueError(f'invalid line range "{location}"')
     if line_count is not None and line_end > line_count:
-        raise ValueError('plan site line range is outside pinned source: ' + str(path))
+        raise ValueError(f'line range is outside pinned source "{location}"')
 
 
 def plan_path_boundary(text, start, end):
@@ -1594,18 +1621,19 @@ def plan_path_resolution(token, entries):
     if token in entries:
         return token, 'direct'
     if '/' in token:
-        raise ValueError('plan path does not exist in pinned snapshot: ' + token)
+        raise ValueError(f'path does not exist in pinned snapshot "{token}"')
     candidates = sorted(path for path in entries if Path(path).name == token)
     if len(candidates) != 1:
         reason = 'ambiguous' if candidates else 'missing'
-        raise ValueError(reason + ' plan basename in pinned snapshot: ' + token)
+        raise ValueError(f'{reason} basename in pinned snapshot "{token}"')
     return candidates[0], 'basename'
 
 
 def plan_field_paths(text, entries):
     """Resolve every path-like token in a plan field against the pinned tree."""
-    if re.search(r'(?<![\w@.-])(?:/|\.\.?/)', text):
-        raise ValueError('plan field contains a path escape')
+    escape = re.search(r'(?<!\S)\S*?(?<![\w@.-])(?:/|\.\.?/)\S*', text)
+    if escape:
+        raise ValueError(f'path escape "{escape.group(0)}"')
     entries = set(entries)
     candidates = []
     protected = []
@@ -1627,7 +1655,7 @@ def plan_field_paths(text, entries):
             if '/' in token or '.' in token:
                 raise
             continue
-        validate_plan_range(line_start, line_end)
+        validate_plan_range(line_start, line_end, location=quoted.group(0))
         candidates.append((quoted.start(), quoted.end(), token, path, resolution,
                            line_start, line_end))
 
@@ -1644,7 +1672,7 @@ def plan_field_paths(text, entries):
             if (not any(left <= start < right or left < end <= right
                         for left, right in occupied)
                     and plan_path_boundary(text, start, end)):
-                validate_plan_range(line_start, line_end)
+                validate_plan_range(line_start, line_end, location=text[start:end])
                 candidates.append((start, end, token, token, 'direct', line_start, line_end))
                 occupied.append((start, end))
             start = path_end
@@ -1665,8 +1693,8 @@ def plan_field_paths(text, entries):
                     and plan_path_boundary(text, start, end)):
                 paths = sorted(basename_paths[token])
                 if len(paths) != 1:
-                    raise ValueError('ambiguous plan basename in pinned snapshot: ' + token)
-                validate_plan_range(line_start, line_end)
+                    raise ValueError(f'ambiguous basename in pinned snapshot "{token}"')
+                validate_plan_range(line_start, line_end, location=text[start:end])
                 candidates.append((start, end, token, paths[0], 'basename',
                                    line_start, line_end))
                 occupied.append((start, end))
@@ -1682,7 +1710,7 @@ def plan_field_paths(text, entries):
             continue
         token = match.group(1)
         plan_path_resolution(token, entries)
-        raise ValueError('plan field contains an unparsed path: ' + token)
+        raise ValueError(f'unparsed path "{token}"')
 
     rows = []
     bound_spans = []
@@ -1700,13 +1728,13 @@ def plan_field_paths(text, entries):
             bound_spans.append((end + shorthand.start(), end + shorthand.end()))
             extra_start = int(shorthand.group(1))
             extra_end = int(shorthand.group(2)) if shorthand.group(2) else extra_start
-            validate_plan_range(extra_start, extra_end)
+            validate_plan_range(extra_start, extra_end, location=shorthand.group(0).lstrip(',; '))
             extra = dict(row, line_start=extra_start, line_end=extra_end)
             if extra not in rows:
                 rows.append(extra)
     for number in re.finditer(r'(?<![\w.]):?\d+(?:-\d+)?(?![\w.])', text):
         if not any(start <= number.start() and number.end() <= end for start, end in bound_spans):
-            raise ValueError('plan field contains an unparsed line range')
+            raise ValueError(f'unparsed line range "{number.group(0)}"')
     return rows
 
 
@@ -1714,15 +1742,25 @@ def validate_plan_source_location(repo, entries, row):
     try:
         entry = entries[row['path']]
     except KeyError as error:
-        raise ValueError('plan site is absent from pinned source: ' + row['path']) from error
+        raise ValueError(f'path is absent from pinned source "{row["path"]}"') from error
     body = repo.blob(entry)
     if (entry[0] not in ('100644', '100755') or body is OVERSIZED_BLOB or b'\0' in body):
-        raise ValueError('plan site is opaque or oversized: ' + row['path'])
+        raise ValueError(f'path is opaque or oversized "{row["path"]}"')
     try:
         lines = split_lf_text(body.decode('utf-8'))
     except UnicodeDecodeError as error:
-        raise ValueError('plan site is not UTF-8: ' + row['path']) from error
-    validate_plan_range(row['line_start'], row['line_end'], len(lines), row['path'])
+        raise ValueError(f'path is not UTF-8 "{row["path"]}"') from error
+    location = f"{row['path']}:{row['line_start']}"
+    if row['line_end'] != row['line_start']:
+        location += f"-{row['line_end']}"
+    validate_plan_range(row['line_start'], row['line_end'], len(lines), location)
+
+
+def plan_field_refusal(cluster_id, field, error):
+    name = field.capitalize()
+    form = ('<path>[:<start>[-<end>]], ... (found by: <search>)' if field == 'sites'
+            else '<path> - <what fails today>')
+    return ValueError(f'plan cluster {cluster_id} field {name}: {error}; expected {name}: {form}')
 
 
 def reject_plan_artifact_collision(entries, label):
@@ -1770,9 +1808,15 @@ def parse_plan(raw, entries):
                 search = re.search(r'\(\s*found\s+by:', field_text, re.I)
                 if search:
                     field_text = field_text[:search.start()].rstrip()
-            resolved = plan_field_paths(field_text, entries)
-            if not resolved:
-                raise ValueError('plan cluster field contains no resolvable path: ' + field_name)
+            else:
+                # Only the leading test path is a location; the rest of the field is prose.
+                field_text = re.match(r'(?:`[^`\n]+`\S*|\S+)?', field_text).group(0)
+            try:
+                resolved = plan_field_paths(field_text, entries)
+                if not resolved:
+                    raise ValueError(f'no resolvable path "{field_text}"')
+            except ValueError as error:
+                raise plan_field_refusal(heading.group(1), field_name, error) from None
             for row in resolved:
                 item = dict(row, field=field_name)
                 if item not in path_rows:
@@ -1842,10 +1886,11 @@ def assignments(args, roster):
         raise ValueError('plan panel requires explicit canonical assignments')
     if not chosen:
         chosen = {s: 'simplicity' if args.phase == 'discovery' else 'unassigned' for s in seats}
-    if args.phase != 'repair' and set(chosen) != set(seats):
+    if args.phase not in ('repair', 'plan') and set(chosen) != set(seats):
         raise ValueError('panel assignments must include every core seat')
     owner = args.full_seat
     chosen = {s: chosen[s] for s in seats if s in chosen}
+    validate_assignment_topology(chosen, seats, args.phase)
     bundles = phase_bundles(args.phase)
     regression_owner = next((s for s, b in chosen.items() if bundles[-1] in b.split('+')), None)
     if args.phase == 'plan':
@@ -1858,16 +1903,18 @@ def assignments(args, roster):
             owner = next(iter(chosen))
     if owner is not None and owner not in chosen:
         raise ValueError('full seat must be assigned')
-    if args.phase == 'discovery' and any(b != 'simplicity' for b in chosen.values()):
-        raise ValueError('discovery assignments must use simplicity')
     if args.phase == 'repair' and len(chosen) != 1:
         raise ValueError('repair requires exactly one full seat')
-    validate_assignment_topology(chosen, seats, args.phase)
     return chosen, owner
 
 
 def bundle_coverage(chosen, bundles=BUNDLES):
     return set(b for value in chosen.values() for b in value.split('+')) == set(bundles)
+
+
+def single_seat_plan(chosen):
+    """A one-seat plan panel is one plan-completeness seat that owns every cluster."""
+    return list(chosen.values()) == [PLAN_BUNDLES[0]]
 
 
 def canonical_bundle_topology(seats, bundles=BUNDLES):
@@ -1890,13 +1937,20 @@ def canonical_bundle_topology(seats, bundles=BUNDLES):
 def validate_assignment_topology(chosen, seats, phase):
     if phase == 'repair':
         return
+    if phase == 'plan':
+        expected = canonical_bundle_topology(seats, PLAN_BUNDLES)
+        if single_seat_plan(chosen) or chosen == expected:
+            return
+        panel = ' '.join(seat + '=' + bundle for seat, bundle in (expected or {}).items())
+        raise ValueError('plan assignment does not match canonical seat topology; expected '
+                         + (panel + ' or ' if panel else '') + 'one <seat>=' + PLAN_BUNDLES[0])
     if len(seats) < 3:
         raise ValueError('review panel requires at least three core seats')
     if phase == 'discovery':
         if chosen != {seat: 'simplicity' for seat in seats}:
             raise ValueError('invalid discovery seat topology')
         return
-    if set(chosen.values()) == {'unassigned'} and phase != 'plan':
+    if set(chosen.values()) == {'unassigned'}:
         return
     if chosen != canonical_bundle_topology(seats, phase_bundles(phase)):
         raise ValueError('risk bundle assignment does not match canonical seat topology')
@@ -2031,11 +2085,9 @@ def components_for(patches, dependencies, chosen, owner, findings=None):
 
 def plan_cluster_assignments(chosen, owner, clusters):
     specialists = [seat for seat in chosen if seat != owner]
-    if not specialists:
-        raise ValueError('plan requires an independent specialist')
     assigned = {seat: [] for seat in chosen}
     assigned[owner] = [cluster['id'] for cluster in clusters]
-    for index, cluster in enumerate(clusters):
+    for index, cluster in enumerate(clusters if specialists else []):
         assigned[specialists[index % len(specialists)]].append(cluster['id'])
     return assigned
 
@@ -2073,7 +2125,7 @@ def plan_delta_paths(chosen, owner, clusters, delta_assignments, dependencies, c
 def plan_components_for(patches, dependencies, chosen, owner, clusters, routed=True,
                         cluster_assignments=None):
     components = components_for(patches, dependencies, chosen, owner)
-    if not routed:
+    if not routed or len(chosen) == 1:
         specialists = [seat for seat in chosen if seat != owner]
         required = {row['path'] for cluster in clusters for row in cluster['paths']}
         for component in components:
@@ -2714,7 +2766,10 @@ def validate_source_context_snapshot(repo, session, manifest):
 
     def expected_bytes(row):
         tree = row['blob_tree']
-        entries = entries_by_tree.setdefault(tree, repo.entries(tree))
+        # Not setdefault: its eager default ran a whole-tree ls-tree per source row.
+        if tree not in entries_by_tree:
+            entries_by_tree[tree] = repo.entries(tree)
+        entries = entries_by_tree[tree]
         if entries.get(row['path']) != (row['blob_mode'], row['blob_oid']):
             raise ValueError('source context blob identity mismatch: ' + row['path'])
         key = (row['blob_mode'], row['blob_oid'])
@@ -2813,7 +2868,8 @@ def validate_components(session, manifest, evidence):
         raise ValueError('invalid dependency components')
     assigned = manifest['assignments']; owner = manifest['mechanical_owner']
     ordered = {row['seat']: assigned[row['seat']] for row in read_json(session / 'roster.json')['seats'] if row['seat'] in assigned}
-    adaptive = not manifest['fallback_reason'] and manifest['phase'] != 'repair'
+    adaptive = (not manifest['fallback_reason'] and manifest['phase'] != 'repair'
+                and len(assigned) > 1)
     if manifest['phase'] == 'plan':
         routed_plan = any('plan_clusters' in assignment for assignment in assigned.values())
         closure_paths = manifest.get('plan', {}).get('closure_paths', [])
@@ -3382,7 +3438,7 @@ def validate_plan(session, manifest, evidence, check_source, replay_searches=Tru
                                 for segment in source_range['segments'])
                 if assignment.get('required_artifacts') != sorted(required):
                     raise ValueError('invalid plan assignment artifact set: ' + seat)
-        if all('search_proof' in cluster for cluster in clusters):
+        if len(assignments) > 1 and all('search_proof' in cluster for cluster in clusters):
             clusters_by_id = {cluster['id']: cluster for cluster in clusters}
             prepared_bytes = sum(
                 clusters_by_id[cluster_id]['search_proof']['bytes']
@@ -3417,8 +3473,12 @@ def validate_plan(session, manifest, evidence, check_source, replay_searches=Tru
                 {key: value for key, value in cluster.items() if key != 'search_proof'}
                 for cluster in clusters]:
             raise ValueError('plan cluster parse changed')
-        for row in (row for cluster in parsed for row in cluster['paths']):
-            validate_plan_source_location(repo, entry_map, row)
+        for cluster in parsed:
+            for row in cluster['paths']:
+                try:
+                    validate_plan_source_location(repo, entry_map, row)
+                except ValueError as error:
+                    raise plan_field_refusal(cluster['id'], row['field'], error) from None
         if replay_searches and all('search_proof' in cluster for cluster in clusters):
             expected_clusters, expected_artifacts = prepare_plan_searches(
                 repo, manifest['snapshot_tree'], parsed, f"r{manifest['label']}",
@@ -3522,7 +3582,10 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         raise ValueError('provider contract input changed after prepare')
     core = {s['seat'] for s in roster['seats'] if not s.get('extra')}
     core_order = [s['seat'] for s in roster['seats'] if not s.get('extra')]
-    if not set(assigned) <= core or (manifest['phase'] != 'repair' and set(assigned) != core):
+    bundles_by_seat = {seat: assignment['bundle'] for seat, assignment in assigned.items()}
+    if not set(assigned) <= core or (
+            manifest['phase'] != 'repair' and set(assigned) != core
+            and not (manifest['phase'] == 'plan' and single_seat_plan(bundles_by_seat))):
         raise ValueError('assignment roster mismatch')
     adapters = {s['seat']: s.get('adapter', '') for s in roster['seats']}
     if any(a.get('adapter') != adapters[s] for s, a in assigned.items()):
@@ -3610,8 +3673,8 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         raise ValueError('repair must have one full-state seat')
     if phase == 'plan':
         completeness = [s for s in adapters if s in assigned and PLAN_BUNDLES[0] in assigned[s]['bundles']]
-        if (fallback or not bundle_coverage({s: a['bundle'] for s, a in assigned.items()}, PLAN_BUNDLES)
-                or completeness != [owner]):
+        if (fallback or completeness != [owner] or not (
+                bundle_coverage(bundles_by_seat, PLAN_BUNDLES) or single_seat_plan(bundles_by_seat))):
             raise ValueError('invalid plan assignment coverage')
         specialist_scope = ('closure' if manifest['schema_version'] == 3 else
                             'delta' if manifest['plan']['delta_mode'] == 'receipt-delta'
@@ -3758,11 +3821,10 @@ def validate_panel_coverage(manifest):
     bundles = [a['bundle'] for a in manifest['assignments'].values()]
     if phase == 'repair':
         raise ValueError('standalone repair cannot certify parent panel coverage')
-    if phase == 'plan' and not bundle_coverage(
-            {s: a['bundle'] for s, a in manifest['assignments'].items()}, PLAN_BUNDLES):
-        raise ValueError('plan validation requires all four plan lenses')
-    if phase not in ('discovery', 'plan') and not bundle_coverage(
-            {s: a['bundle'] for s, a in manifest['assignments'].items()}):
+    chosen = {s: a['bundle'] for s, a in manifest['assignments'].items()}
+    if phase == 'plan' and not (bundle_coverage(chosen, PLAN_BUNDLES) or single_seat_plan(chosen)):
+        raise ValueError('plan validation requires all four plan lenses or one plan-completeness seat')
+    if phase not in ('discovery', 'plan') and not bundle_coverage(chosen):
         raise ValueError('coverage requires all four bundles')
 
 
@@ -4179,9 +4241,6 @@ def _prepare_locked(args, session):
         if args.head is not None and args.head != parent_head:
             raise ValueError('explicit source selector conflicts with parent assignment')
         source_head = parent_head
-    if args.phase == 'plan' and any(row.get('adapter') == 'agent' and not row.get('extra')
-                                    for row in roster['seats']):
-        raise ValueError('agent adapter cannot enforce receipt-relative plan specialist scope')
     if args.phase == 'plan':
         if not getattr(args, 'plan', None) or not getattr(args, 'plan_sha256', None):
             raise ValueError('plan phase requires --plan and --plan-sha256')
@@ -4204,6 +4263,13 @@ def _prepare_locked(args, session):
             raise ValueError('--plan belongs only to the plan phase')
         plan_source = None; plan_raw = None
     chosen, owner = assignments(args, roster)
+    if args.phase == 'plan':
+        # Only seats that run the plan must supply an enforced read transcript.
+        agent_seats = [row['seat'] for row in roster['seats']
+                       if row.get('adapter') == 'agent' and row.get('seat') in chosen]
+        if agent_seats:
+            raise ValueError('agent adapter cannot enforce plan evidence for assigned seat: '
+                             + ', '.join(agent_seats))
     if parent_manifest is not None:
         parent = parent_manifest['assignments'][parent_seat]
         if chosen != {parent_seat: parent['bundle']}:
@@ -4251,10 +4317,14 @@ def _prepare_locked(args, session):
         plan_entry_map = dict(base_entries); plan_entry_map.update(snapshot_entries)
         reject_plan_artifact_collision(plan_entry_map, args.label)
         plan_clusters = parse_plan(plan_raw, set(plan_entry_map))
-        for row in (row for cluster in plan_clusters for row in cluster['paths']):
-            if not repo.scoped(row['path']):
-                raise ValueError('plan site is outside literal scope: ' + row['path'])
-            validate_plan_source_location(repo, plan_entry_map, row)
+        for cluster in plan_clusters:
+            for row in cluster['paths']:
+                try:
+                    if not repo.scoped(row['path']):
+                        raise ValueError(f'path is outside literal scope "{row["path"]}"')
+                    validate_plan_source_location(repo, plan_entry_map, row)
+                except ValueError as error:
+                    raise plan_field_refusal(cluster['id'], row['field'], error) from None
         if snapshot_unsafe:
             raise ValueError('unsupported snapshot cannot support receipt-relative plan evidence')
     data['instructions'], instruction_packet = instructions(
@@ -4399,8 +4469,8 @@ def _prepare_locked(args, session):
                 raw = plan_search_artifacts[proof['artifact']]
                 prepared_search_bytes += len(raw)
                 prepared_search_words += len(raw.split())
-        if (sum(len(body) for body in patch_bodies.values()) + prepared_search_bytes
-                > len(full) * len(chosen) * 9 // 10):
+        if len(chosen) > 1 and (sum(len(body) for body in patch_bodies.values()) + prepared_search_bytes
+                                > len(full) * len(chosen) * 9 // 10):
             raise ValueError('routed plan inputs save less than 10 percent')
     data['assignments'] = scopes
     predecessor = (previous['coverage_reference']
@@ -4510,23 +4580,49 @@ def render(args):
     manifest, mh = validated_manifest(
         args.manifest, fresh=not args.offline, offline=args.offline,
         replay_plan_searches=False)
-    assignment = manifest['assignments'].get(args.seat)
+    render_seat(manifest, mh, args.seat, args.plan_source)
+
+
+def render_panel(args):
+    """Render every seat from one manifest read; validate-prompt binds the embedded hash."""
+    raw = Path(args.manifest).read_bytes()
+    manifest = json.loads(raw)
+    output = Path(args.output_dir)
+    if output.is_symlink() or not output.is_dir():
+        raise ValueError('fragment output is not a directory')
+    if len(set(args.seats)) != len(args.seats):
+        raise ValueError('duplicate panel seat')
+    if args.phase is not None and args.phase != manifest['phase']:
+        raise ValueError('evidence manifest phase is ' + str(manifest['phase']) + ', not ' + args.phase)
+    mh = digest(raw)
+    for seat in args.seats:
+        if not SAFE_NAME.fullmatch(seat):
+            raise ValueError('invalid panel seat: ' + seat)
+        fragment = io.StringIO()
+        with redirect_stdout(fragment):
+            render_seat(manifest, mh, seat, args.plan_source)
+        (output / seat).write_bytes(fragment.getvalue().encode(sys.stdout.encoding, sys.stdout.errors))
+    print(manifest['phase'])
+
+
+def render_seat(manifest, mh, seat, plan_source):
+    assignment = manifest['assignments'].get(seat)
     if assignment is None:
         raise ValueError('seat not assigned')
     expected_plan = (Path(manifest['session']) / manifest['plan']['artifact']
                      if manifest['phase'] == 'plan' else None)
     if expected_plan is None:
-        if args.plan_source:
+        if plan_source:
             raise ValueError('--plan-source belongs only to plan evidence')
-    elif not args.plan_source or Path(args.plan_source).resolve() != expected_plan:
+    elif not plan_source or Path(plan_source).resolve() != expected_plan:
         raise ValueError('plan evidence requires its immutable plan snapshot')
     print('Evidence manifest SHA-256: ' + mh)
     print('Assigned scope: ' + assignment['scope'])
     print('Assigned risk bundle: ' + assignment['bundle'])
     patch_mode = assignment['patch_read_mode']
-    context = manifest['source_context']['seats'][args.seat]
+    context = manifest['source_context']['seats'][seat]
     if (manifest['schema_version'] == 4 and manifest['phase'] == 'plan'
-            and args.seat != manifest['mechanical_owner']):
+            and seat != manifest['mechanical_owner']):
         primary = None
         if assignment['patch_bytes']:
             if patch_mode == 'chunks':
@@ -4856,6 +4952,10 @@ def main():
     rend = commands.add_parser('render'); rend.add_argument('manifest'); rend.add_argument('seat')
     rend.add_argument('--offline', action='store_true')
     rend.add_argument('--plan-source')
+    rend_panel = commands.add_parser('render-panel')
+    rend_panel.add_argument('manifest'); rend_panel.add_argument('seats', nargs='+')
+    rend_panel.add_argument('--output-dir', required=True)
+    rend_panel.add_argument('--plan-source'); rend_panel.add_argument('--phase')
     check = commands.add_parser('verify'); check.add_argument('manifest')
     source = commands.add_parser('same-source')
     source.add_argument('parent'); source.add_argument('candidate')
@@ -4868,7 +4968,8 @@ def main():
         if hasattr(args, 'label') and not SAFE_NAME.fullmatch(args.label):
             raise ValueError('invalid label')
         with plan_search_signal_handlers():
-            {'prepare': prepare, 'render': render, 'verify': verify, 'same-source': same_source,
+            {'prepare': prepare, 'render': render, 'render-panel': render_panel,
+             'verify': verify, 'same-source': same_source,
              'verify-panel': verify_panel, 'receipt': receipt}[args.command](args)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError, RecursionError) as error:
         print('evidence: ' + str(error), file=sys.stderr)

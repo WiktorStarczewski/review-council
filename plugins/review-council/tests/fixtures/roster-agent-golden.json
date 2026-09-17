@@ -1,0 +1,425 @@
+{
+  "claude-only": {
+    "brief": "review-council seats: codex ✗ not installed · gemini ✗ not installed · claude ✓ (opus@max) · DEGRADED: only Claude is available - 3 Claude seats, no cross-lab decorrelation\n",
+    "brief_exit": 0,
+    "json_exit": 0,
+    "roster": {
+      "degradation": "only Claude is available - 3 Claude seats, no cross-lab decorrelation",
+      "degraded": true,
+      "excluded": [
+        {
+          "cli": "codex",
+          "reason": "not installed"
+        },
+        {
+          "cli": "gemini",
+          "reason": "not installed"
+        }
+      ],
+      "labs": [
+        "anthropic"
+      ],
+      "padded": 2,
+      "seats": [
+        {
+          "adapter": "agent",
+          "effort": "max",
+          "extra": false,
+          "lab": "anthropic",
+          "model": "opus",
+          "seat": "opus"
+        },
+        {
+          "adapter": "agent",
+          "effort": "max",
+          "extra": false,
+          "lab": "anthropic",
+          "model": "opus",
+          "padded": true,
+          "seat": "claude-1"
+        },
+        {
+          "adapter": "agent",
+          "effort": "max",
+          "extra": false,
+          "lab": "anthropic",
+          "model": "opus",
+          "padded": true,
+          "seat": "claude-2"
+        }
+      ]
+    }
+  },
+  "claude-seat-false-min-labs": {
+    "brief": "review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@max) · gemini ✗ not installed · claude ✗ disabled (1 padded seat) · DEGRADED: only openai, anthropic available - padded with 1 Claude seat · STRICT availability: 1 lab(s) available, min_labs=2\n",
+    "brief_exit": 5,
+    "json_exit": 5,
+    "roster": {
+      "degradation": "only openai, anthropic available - padded with 1 Claude seat",
+      "degraded": true,
+      "excluded": [
+        {
+          "cli": "gemini",
+          "reason": "not installed"
+        },
+        {
+          "cli": "claude",
+          "reason": "disabled"
+        },
+        {
+          "cli": "padding",
+          "reason": "claude_seat: false overridden - a panel needs 3 seats"
+        },
+        {
+          "cli": "min_labs",
+          "reason": "strict: 1 lab(s) available, min_labs=2"
+        }
+      ],
+      "labs": [
+        "openai",
+        "anthropic"
+      ],
+      "padded": 1,
+      "seats": [
+        {
+          "adapter": "codex",
+          "effort": "max",
+          "extra": false,
+          "lab": "openai",
+          "model": "gpt-5.6-sol",
+          "seat": "codex-sol"
+        },
+        {
+          "adapter": "codex",
+          "effort": "max",
+          "extra": false,
+          "lab": "openai",
+          "model": "gpt-5.6-terra",
+          "seat": "codex-terra"
+        },
+        {
+          "adapter": "codex",
+          "effort": "max",
+          "extra": true,
+          "lab": "openai",
+          "mode": "review",
+          "model": "gpt-5.6-sol",
+          "round": 3,
+          "seat": "codex-review"
+        },
+        {
+          "adapter": "agent",
+          "effort": "max",
+          "extra": false,
+          "lab": "anthropic",
+          "model": "opus",
+          "padded": true,
+          "seat": "claude-1"
+        }
+      ],
+      "strict_class": "availability",
+      "strict_reason": "1 lab(s) available, min_labs=2"
+    }
+  },
+  "claude-seats-excluded": {
+    "brief": "review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@max) · gemini ✗ not installed · claude ✓ (opus@max) · STRICT config: opus-2: excluded by config\n",
+    "brief_exit": 6,
+    "json_exit": 6,
+    "roster": {
+      "degraded": false,
+      "excluded": [
+        {
+          "cli": "gemini",
+          "reason": "not installed"
+        },
+        {
+          "cli": "opus-2",
+          "reason": "excluded by config"
+        },
+        {
+          "cli": "claude_seats",
+          "reason": "strict: claude_seats requires 2 matching seat(s), 1 survived"
+        }
+      ],
+      "labs": [
+        "openai",
+        "anthropic"
+      ],
+      "padded": 0,
+      "seats": [
+        {
+          "adapter": "codex",
+          "effort": "max",
+          "extra": false,
+          "lab": "openai",
+          "model": "gpt-5.6-sol",
+          "seat": "codex-sol"
+        },
+        {
+          "adapter": "codex",
+          "effort": "max",
+          "extra": false,
+          "lab": "openai",
+          "model": "gpt-5.6-terra",
+          "seat": "codex-terra"
+        },
+        {
+          "adapter": "agent",
+          "effort": "max",
+          "extra": false,
+          "lab": "anthropic",
+          "model": "opus",
+          "seat": "opus"
+        },
+        {
+          "adapter": "codex",
+          "effort": "max",
+          "extra": true,
+          "lab": "openai",
+          "mode": "review",
+          "model": "gpt-5.6-sol",
+          "round": 3,
+          "seat": "codex-review"
+        }
+      ],
+      "strict_class": "config",
+      "strict_reason": "opus-2: excluded by config"
+    }
+  },
+  "exact-probe": {
+    "brief": "review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@max) · gemini ✗ not installed · claude ✓ (opus@max, sonnet@max)\n",
+    "brief_exit": 0,
+    "json_exit": 0,
+    "roster": {
+      "degraded": false,
+      "excluded": [
+        {
+          "cli": "gemini",
+          "reason": "not installed"
+        }
+      ],
+      "labs": [
+        "openai",
+        "anthropic"
+      ],
+      "padded": 0,
+      "seats": [
+        {
+          "adapter": "codex",
+          "effort": "max",
+          "extra": false,
+          "lab": "openai",
+          "model": "gpt-5.6-sol",
+          "seat": "codex-sol"
+        },
+        {
+          "adapter": "codex",
+          "effort": "max",
+          "extra": false,
+          "lab": "openai",
+          "model": "gpt-5.6-terra",
+          "seat": "codex-terra"
+        },
+        {
+          "adapter": "agent",
+          "effort": "max",
+          "extra": false,
+          "lab": "anthropic",
+          "model": "opus",
+          "seat": "opus"
+        },
+        {
+          "adapter": "agent",
+          "effort": "max",
+          "extra": false,
+          "lab": "anthropic",
+          "model": "sonnet",
+          "seat": "sonnet"
+        }
+      ]
+    }
+  },
+  "exclude-agent": {
+    "brief": "review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@max) · gemini ✗ not installed · claude ✗ excluded by config (1 padded seat) · DEGRADED: only openai, anthropic available - padded with 1 Claude seat\n",
+    "brief_exit": 0,
+    "json_exit": 0,
+    "roster": {
+      "degradation": "only openai, anthropic available - padded with 1 Claude seat",
+      "degraded": true,
+      "excluded": [
+        {
+          "cli": "gemini",
+          "reason": "not installed"
+        },
+        {
+          "cli": "claude",
+          "reason": "excluded by config"
+        },
+        {
+          "cli": "padding",
+          "reason": "claude excluded by config, overridden - a panel needs 3 seats"
+        }
+      ],
+      "labs": [
+        "openai",
+        "anthropic"
+      ],
+      "padded": 1,
+      "seats": [
+        {
+          "adapter": "codex",
+          "effort": "max",
+          "extra": false,
+          "lab": "openai",
+          "model": "gpt-5.6-sol",
+          "seat": "codex-sol"
+        },
+        {
+          "adapter": "codex",
+          "effort": "max",
+          "extra": false,
+          "lab": "openai",
+          "model": "gpt-5.6-terra",
+          "seat": "codex-terra"
+        },
+        {
+          "adapter": "codex",
+          "effort": "max",
+          "extra": true,
+          "lab": "openai",
+          "mode": "review",
+          "model": "gpt-5.6-sol",
+          "round": 3,
+          "seat": "codex-review"
+        },
+        {
+          "adapter": "agent",
+          "effort": "max",
+          "extra": false,
+          "lab": "anthropic",
+          "model": "opus",
+          "padded": true,
+          "seat": "claude-1"
+        }
+      ]
+    }
+  },
+  "full": {
+    "brief": "review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@max) · gemini ✓ (gemini-2.5-pro) · claude ✓ (opus@max)\n",
+    "brief_exit": 0,
+    "json_exit": 0,
+    "roster": {
+      "degraded": false,
+      "excluded": [],
+      "labs": [
+        "openai",
+        "google",
+        "anthropic"
+      ],
+      "padded": 0,
+      "seats": [
+        {
+          "adapter": "codex",
+          "effort": "max",
+          "extra": false,
+          "lab": "openai",
+          "model": "gpt-5.6-sol",
+          "seat": "codex-sol"
+        },
+        {
+          "adapter": "codex",
+          "effort": "max",
+          "extra": false,
+          "lab": "openai",
+          "model": "gpt-5.6-terra",
+          "seat": "codex-terra"
+        },
+        {
+          "adapter": "gemini",
+          "effort": null,
+          "extra": false,
+          "lab": "google",
+          "model": "gemini-2.5-pro",
+          "seat": "gemini"
+        },
+        {
+          "adapter": "agent",
+          "effort": "max",
+          "extra": false,
+          "lab": "anthropic",
+          "model": "opus",
+          "seat": "opus"
+        },
+        {
+          "adapter": "codex",
+          "effort": "max",
+          "extra": true,
+          "lab": "openai",
+          "mode": "review",
+          "model": "gpt-5.6-sol",
+          "round": 3,
+          "seat": "codex-review"
+        }
+      ]
+    }
+  },
+  "pin-conflict": {
+    "brief": "review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@max) · gemini ✗ not installed · claude ✓ (opus@max) · STRICT config: sonnet: pinned model opus does not match required model sonnet\n",
+    "brief_exit": 6,
+    "json_exit": 6,
+    "roster": {
+      "degraded": false,
+      "excluded": [
+        {
+          "cli": "gemini",
+          "reason": "not installed"
+        },
+        {
+          "cli": "sonnet",
+          "reason": "pinned model opus does not match required model sonnet"
+        },
+        {
+          "cli": "codex_models",
+          "reason": "strict: codex_models conflicts with pin configuration"
+        },
+        {
+          "cli": "claude_models",
+          "reason": "strict: claude_models requires 2 matching seat(s), 1 survived"
+        }
+      ],
+      "labs": [
+        "openai",
+        "anthropic"
+      ],
+      "padded": 0,
+      "seats": [
+        {
+          "adapter": "codex",
+          "effort": "max",
+          "extra": false,
+          "lab": "openai",
+          "model": "gpt-5.6-sol",
+          "seat": "codex-sol"
+        },
+        {
+          "adapter": "codex",
+          "effort": "max",
+          "extra": false,
+          "lab": "openai",
+          "model": "gpt-5.6-terra",
+          "seat": "codex-terra"
+        },
+        {
+          "adapter": "agent",
+          "effort": "max",
+          "extra": false,
+          "lab": "anthropic",
+          "model": "opus",
+          "seat": "opus"
+        }
+      ],
+      "strict_class": "config",
+      "strict_reason": "sonnet: pinned model opus does not match required model sonnet"
+    }
+  }
+}

@@ -7,6 +7,13 @@ assert_flat_fixed() {
   grep -Fq -- "$expected" "$flat" && ok "$name" || fail "$name" "missing fixed text in $file"
 }
 
+assert_flat_absent() {
+  local name=$1 file=$2 pattern=$3 flat
+  flat="$T/flat-absent-$(basename "$file")-$RANDOM"
+  tr '\n' ' ' < "$file" | tr -s ' ' > "$flat"
+  grep -Eq -- "$pattern" "$flat" && fail "$name" "found /$pattern/ in $file" || ok "$name"
+}
+
 test_adaptive_schedule_contract() {
   local K
   local timing='One four-bundle verification panel reviews the latest material state: directly after discovery when no nontrivial fix follows, or after the latest nontrivial fix.'
@@ -18,7 +25,11 @@ test_adaptive_schedule_contract() {
   local receipt='Current-session completion and finding yield require a schema-valid result with a successful exit receipt. Only exact hashed receiptless results recorded in a versioned legacy roster policy may omit one. Usage-bearing failed attempts remain metered.'
   for K in "$SK/skills/rev/SKILL.md" "$SK/codex-skills/rev/SKILL.md"; do
     assert_nogrep "$(basename "$(dirname "$(dirname "$K")")") has no eight-round floor" "$K" 'minimum[^[:alnum:]]{0,12}(8|eight)|8 rounds|eight rounds' -i
-    assert_flat_fixed "normal schedule budgets one final panel" "$K" 'normal review plans 12 seat launches: four simplicity, four conditional plan, and four final verification launches.'
+    assert_flat_fixed "normal schedule budgets one final panel" "$K" 'normal review plans 9 seat launches: four simplicity, one conditional plan, and four final verification launches.'
+    assert_flat_fixed "large schedule budgets one plan seat" "$K" 'A large or high-risk review plans 17 by adding four risk-discovery and four full red-team launches.'
+    assert_flat_fixed "important schedule budgets one plan seat" "$K" 'adversarial review that is not otherwise large or high-risk plans 13 by adding four full red-team launches.'
+    assert_flat_fixed "all-lens plan panels restore four plan launches" "$K" 'With `"plan_seats": "all"`, every plan panel launches all four core seats instead of one.'
+    assert_flat_absent "four-seat plan counts are gone" "$K" 'plans 12 seat launches|four conditional plan|plans 20 by|plans 16 by'
     assert_grep "large threshold names 25 files" "$K" 'more than 25 changed files'
     assert_grep "large threshold names 1500 lines" "$K" 'more than 1,500 changed lines'
     assert_flat_fixed "verification timing is canonical" "$K" "$timing"
@@ -39,7 +50,8 @@ test_adaptive_schedule_contract() {
     assert_grep "code launch records exact seats" "$K" 'phase=fan-out round=<N> "seats=\$LAUNCHED_SEATS"'
     assert_grep "repair launch records exact seats" "$K" 'phase=repair round=<N>x "seats=\$REPAIR_SEATS"'
     assert_grep "plan launch records exact seats" "$K" 'phase=plan round=<N>p "seats=\$PLAN_SEATS"'
-    assert_grep "plan panel restores every surviving core seat" "$K" 'PLAN_SEATS.*every surviving non-extra seat|every surviving non-extra seat.*PLAN_SEATS'
+    assert_grep "all-lens plan panel restores every surviving core seat" "$K" '"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat'
+    assert_grep "default plan panel is one non-agent seat" "$K" '`PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order whose adapter is not `agent`, `PLAN_SEATS` to the JSON array `\["<that seat>"\]`'
     assert_grep "seat lists are rebuilt rather than accumulated" "$K" '[Rr]ebuild.*seat.*list.*before every|[Ee]xtra.*absent from the next panel'
     assert_grep "collect state retains exact seats" "$K" 'phase=collect round=<N> "seats=\$LAUNCHED_SEATS"'
     assert_grep "exit 5 is documented as retryable" "$K" '[Ee]xit 5 is retryable'
@@ -77,6 +89,13 @@ test_adaptive_schedule_contract() {
     assert_flat_fixed "$(basename "$D") uses canonical verification timing" "$D" "$timing"
   done
   assert_flat_fixed "README uses canonical extras policy" "$SK/../../README.md" "$extras"
+  assert_flat_fixed "README budgets one plan seat" "$SK/../../README.md" 'a normal review plans 9 seat launches: four simplicity, one conditional plan, and four final verification launches.'
+  assert_flat_fixed "Codex guide budgets one plan seat" "$SK/../../docs/codex.md" 'normal changes plan 9 seat launches: four simplicity, one conditional plan, and four final verification launches.'
+  for D in "$SK/../../README.md" "$SK/../../docs/codex.md"; do
+    assert_flat_absent "$(basename "$D") has no four-seat plan counts" "$D" 'plan 12 seat launches|plans 12 seat launches|four conditional plan|plans 20 by|plans 16 by'
+  done
+  assert_grep "README table budgets one plan seat for ordinary changes" "$SK/../../README.md" '^\| ordinary, with one plan panel \| 9 \|$'
+  assert_grep "README table budgets one plan seat for large changes" "$SK/../../README.md" '^\| large or high-risk, with one plan panel \| 17 \|$'
 }
 
 test_assert_grep_honors_flags() {

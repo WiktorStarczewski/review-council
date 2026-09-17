@@ -4,10 +4,15 @@
 # `slowstart` is silent for longer than STALL_SECS and THEN finishes normally (the check-then-kill race).
 # Records the ENV and CWD next to argv: a leg must be marked REV_STACK_LEG=1 (so it skips squash + push, the whole
 # point of rev-stack) and must run inside the repo it reviews - neither is visible in the arguments.
+# `auth status` answers signed in before anything is recorded: roster sign-in checks are not legs.
+if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
+  echo '{"loggedIn":true}'; exit 0
+fi
 if [ -n "${SHIM_CLAUDE_ARGS_FILE:-}" ]; then
   printf '%s\n' "$@" >> "$SHIM_CLAUDE_ARGS_FILE"
-  printf 'REV_STACK_LEG=%s\nNO_PUSH=%s\nNO_SQUASH=%s\ncwd=%s\n' \
+  printf 'REV_STACK_LEG=%s\nNO_PUSH=%s\nNO_SQUASH=%s\ncwd=%s\nCLAUDECODE=%s\nCLAUDE_CODE_SESSION_ID=%s\nCLAUDE_CONFIG_DIR=%s\n' \
     "${REV_STACK_LEG:-unset}" "${NO_PUSH:-unset}" "${NO_SQUASH:-unset}" "$PWD" \
+    "${CLAUDECODE:-unset}" "${CLAUDE_CODE_SESSION_ID:-unset}" "${CLAUDE_CONFIG_DIR:-unset}" \
     >> "$SHIM_CLAUDE_ARGS_FILE"
 fi
 PROMPT=""; prev=""

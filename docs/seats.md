@@ -14,7 +14,7 @@ A "seat" is one reviewer in the `/review-council:rev` panel: a lab (`openai`, `g
     { "seat": "codex-sol",   "lab": "openai",    "adapter": "codex",  "model": "gpt-5.6-sol",   "effort": "max",   "extra": false },
     { "seat": "codex-terra", "lab": "openai",    "adapter": "codex",  "model": "gpt-5.6-terra", "effort": "max",   "extra": false },
     { "seat": "gemini",      "lab": "google",    "adapter": "gemini", "model": "gemini-2.5-pro","effort": null,    "extra": false },
-    { "seat": "opus",        "lab": "anthropic", "adapter": "agent",  "model": "opus",          "effort": "max",   "extra": false },
+    { "seat": "opus",        "lab": "anthropic", "adapter": "claude", "model": "opus",          "effort": "max",   "extra": false },
     { "seat": "codex-review","lab": "openai",    "adapter": "codex",  "mode": "review",         "extra": true, "round": 3 }
   ],
   "excluded": [ { "cli": "gemini", "reason": "not installed" } ]
@@ -23,7 +23,7 @@ A "seat" is one reviewer in the `/review-council:rev` panel: a lab (`openai`, `g
 
 `result_receipts` makes current completion depend on a successful sibling `.exit` file. When an older session is first reopened, `legacy_no_exit_sha256` records only the exact receiptless result bytes that predate this contract; an overwritten or new result needs a receipt. `strict_class` and `strict_reason` are absent when the roster can run. A refusal records `availability` for retryable exit 5 or `config` for permanent exit 6, plus the reason for the winning class. The `--brief` line carries both. Config wins if both causes occur.
 
-Every non-agent seat names an `adapter` - the script in `scripts/seats.d/` that knows how to drive that CLI. Several seats can share one adapter (`codex-sol`, `codex-terra` and the `codex-review` extra all use `seats.d/codex.sh`, distinguished by `model` and `mode`).
+Claude rows use adapter `claude` (the Claude CLI) or `agent` (Claude Code subagents): `claude_adapter` chooses on a Claude Code host, and a Codex host always uses `claude`. Every non-agent seat names an `adapter` - the script in `scripts/seats.d/` that knows how to drive that CLI. Several seats can share one adapter (`codex-sol`, `codex-terra` and the `codex-review` extra all use `seats.d/codex.sh`, distinguished by `model` and `mode`).
 
 ## `rev-seat.sh`: the dispatcher
 

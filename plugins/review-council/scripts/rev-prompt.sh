@@ -1,18 +1,32 @@
 #!/bin/bash
-# rev-prompt.sh <session-dir> <round> <seat> "<lens>" "<round emphasis>" [--vacuity] [--read-only <list-file>] [--plan <fix-plan-file>] [--pr <title-and-body-file>] [--evidence <manifest>]
-# Render one compact reviewer prompt. Provider adapters supply the output schema. Prints the path.
+# rev-prompt.sh <session-dir> <round> <seat> "<lens>" "<round emphasis>" [flags]
+# rev-prompt.sh <session-dir> <round> --panel <assignments.tsv> [flags]
+# flags: [--phase <phase>] [--vacuity] [--read-only <list-file>] [--plan <fix-plan-file>] [--pr <title-and-body-file>] [--evidence <manifest>]
+# Render compact reviewer prompts. Provider adapters supply the output schema. Prints each path.
+# A panel TSV holds one `<seat><TAB><lens><TAB><emphasis>` line per seat. The panel publishes every prompt or
+# none, reads its evidence manifest once, and records per-seat render milliseconds in r<round>-render.json.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd); SCHEMA="$HERE/../schema/findings.schema.json"
-[ $# -ge 5 ] || { echo "usage: rev-prompt.sh <session> <round> <seat> <lens> <emphasis> [--vacuity] [--read-only <list-file>] [--plan <fix-plan-file>] [--pr <file>] [--evidence <manifest>]" >&2; exit 1; }
-S=$1; N=$2; SEAT=$3; LENS=$4; EMPH=$5; shift 5
-OUT="$S/r${N}-${SEAT}.prompt.md"
-TMP=""; EVIDENCE_TMP=""; EVIDENCE_CHECK_TMP=""; RULES_TMP=""; PATCH_TMP=""; PUBLISHED=0
+now_ms() { python3 -c 'import time; print(time.time_ns() // 1000000)'; }
+if [ $# -ge 4 ] && [ "$3" = --panel ]; then
+  S=$1; N=$2; PANEL=$4; shift 4
+elif [ $# -ge 5 ] && [ "$3" != --panel ]; then
+  S=$1; N=$2; PANEL=""; SEATS=("$3"); LENSES=("$4"); EMPHASES=("$5"); shift 5
+else
+  echo "usage: rev-prompt.sh <session> <round> <seat> <lens> <emphasis> [flags] | rev-prompt.sh <session> <round> --panel <assignments.tsv> [flags]; flags: [--phase <phase>] [--vacuity] [--read-only <list-file>] [--plan <fix-plan-file>] [--pr <file>] [--evidence <manifest>]" >&2
+  exit 1
+fi
+OUTS=(); TMPS=(); EVIDENCE_TMP=""; EVIDENCE_CHECK_TMP=""; FRAGMENTS=""; RULES_TMP=""; PATCH_TMP=""
+RENDER_OUT=""; TIMING_TMP=""; PUBLISHED=0
 cleanup_prompt() {
   rm -f -- "${EVIDENCE_TMP:-}" 2>/dev/null || true
   rm -f -- "${EVIDENCE_CHECK_TMP:-}" 2>/dev/null || true
   rm -f -- "${RULES_TMP:-}" 2>/dev/null || true
   rm -f -- "${PATCH_TMP:-}" 2>/dev/null || true
-  [ "$PUBLISHED" = 1 ] || rm -f -- "${TMP:-}" "$OUT" 2>/dev/null || true
+  rm -f -- "${TIMING_TMP:-}" 2>/dev/null || true
+  [ -z "${FRAGMENTS:-}" ] || rm -rf -- "$FRAGMENTS" 2>/dev/null || true
+  [ "$PUBLISHED" = 1 ] \
+    || rm -f -- ${TMPS[@]+"${TMPS[@]}"} ${OUTS[@]+"${OUTS[@]}"} "${RENDER_OUT:-}" 2>/dev/null || true
 }
 die() {
   cleanup_prompt
@@ -20,11 +34,35 @@ die() {
   exit 1
 }
 trap cleanup_prompt EXIT
+if [ -n "$PANEL" ]; then
+  PANEL_STARTED=$(now_ms) || die "cannot read the clock"
+  [ -f "$PANEL" ] && [ -r "$PANEL" ] || die "panel assignments is not a readable regular file: $PANEL"
+  SEATS=(); LENSES=(); EMPHASES=(); TAB=$(printf '\t'); line=""
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      *"$TAB"*"$TAB"*) ;;
+      *) die "panel assignment is not <seat><TAB><lens><TAB><emphasis>: $line";;
+    esac
+    seat=${line%%"$TAB"*}; line=${line#*"$TAB"}; lens=${line%%"$TAB"*}
+    [ -n "$seat" ] && [ -n "$lens" ] || die "panel assignment needs a seat and a lens: $seat"
+    for seen in ${SEATS[@]+"${SEATS[@]}"}; do
+      [ "$seen" != "$seat" ] || die "duplicate panel seat: $seat"
+    done
+    SEATS+=("$seat"); LENSES+=("$lens"); EMPHASES+=("${line#*"$TAB"}")
+  done < "$PANEL"
+  [ "${#SEATS[@]}" -gt 0 ] || die "panel assignments are empty: $PANEL"
+  RENDER_OUT="$S/r${N}-render.json"
+fi
+for SEAT in "${SEATS[@]}"; do OUTS+=("$S/r${N}-${SEAT}.prompt.md"); done
 # A failed same-label rerender must not leave the prior prompt looking current.
-rm -f -- "$OUT" 2>/dev/null || die "cannot remove stale prompt: $OUT"
-VAC=0; RO=""; PLAN=""; PRF=""; EVIDENCE=""
+for OUT in "${OUTS[@]}" ${RENDER_OUT:+"$RENDER_OUT"}; do
+  rm -f -- "$OUT" 2>/dev/null || die "cannot remove stale prompt: $OUT"
+done
+PHASE=""; VAC=0; RO=""; PLAN=""; PRF=""; EVIDENCE=""
+SIBLING_SITE_CHECK="Sibling-site completeness: for each fix commit since the base, name the rule it applies and search the repository for sites, arms, realms, callers and copies (tests, JSDoc, docs) the rule reaches but the commit missed."
 while [ $# -gt 0 ]; do
   case "$1" in
+    --phase) PHASE=${2:?}; shift 2;;
     --vacuity) VAC=1; shift;;
     --read-only) RO=${2:?}; shift 2;;
     --plan) PLAN=${2:?}; shift 2;;
@@ -33,6 +71,10 @@ while [ $# -gt 0 ]; do
     *) die "unknown argument $1";;
   esac
 done
+case "$PHASE" in
+  ''|discovery|risk|verification|repair|plan) ;;
+  *) die "--phase must be discovery, risk, verification, repair, or plan: $PHASE";;
+esac
 if [ -n "$RO" ] && [ -n "$EVIDENCE" ]; then
   die "--evidence applies to code and plan prompts, not --read-only document prompts"
 fi
@@ -100,33 +142,46 @@ if [ -n "$PRF" ] && [ -s "$PRF" ]; then SHOW_PR=1; fi
 if [ -z "$RO" ] && [ "$HAS_UNTRACKED" = 1 ] && [ -s "$S/untracked.txt" ]; then SHOW_UNTRACKED=1; fi
 if [ "$HAS_REJECTED" = 1 ] && [ -s "$S/rejected.md" ]; then SHOW_REJECTED=1; fi
 if [ "$HAS_CONTEXT" = 1 ] && [ -s "$S/context.md" ]; then SHOW_CONTEXT=1; fi
-ADAPTER=agent; INLINE_SCHEMA=1
+ADAPTERS=()
 if is_present "$S/roster.json"; then
   require_regular "$S/roster.json" "roster"
-  ADAPTER=$(python3 - "$S/roster.json" "$SEAT" <<'PY' 2>/dev/null
+  ROSTER_ADAPTERS=$(python3 - "$S/roster.json" "${SEATS[@]}" <<'PY' 2>/dev/null
 import json, sys
 with open(sys.argv[1], encoding='utf-8') as source:
     doc = json.load(source)
 if not isinstance(doc, dict) or not isinstance(doc.get('seats'), list):
     raise SystemExit(1)
-matches = [item for item in doc['seats']
-           if isinstance(item, dict) and item.get('seat') == sys.argv[2]
-           and isinstance(item.get('adapter'), str) and item['adapter']]
-if not matches:
-    raise SystemExit(1)
-print(matches[0]['adapter'])
+for seat in sys.argv[2:]:
+    matches = [item for item in doc['seats']
+               if isinstance(item, dict) and item.get('seat') == seat
+               and isinstance(item.get('adapter'), str) and item['adapter']]
+    if not matches:
+        raise SystemExit(1)
+    print(matches[0]['adapter'])
 PY
-) || die "roster is invalid or does not contain selected seat $SEAT: $S/roster.json"
-  INLINE_SCHEMA=0
-  case "$ADAPTER" in agent|gemini) INLINE_SCHEMA=1;; esac
+) || die "roster is invalid or does not contain every selected seat (${SEATS[*]}): $S/roster.json"
+  while IFS= read -r ADAPTER; do ADAPTERS+=("$ADAPTER"); done <<< "$ROSTER_ADAPTERS"
+else
+  for SEAT in "${SEATS[@]}"; do ADAPTERS+=(agent); done
 fi
-if [ "$INLINE_SCHEMA" = 1 ]; then require_regular "$SCHEMA" "findings schema"; fi
+NEEDS_SCHEMA=0
+for ADAPTER in "${ADAPTERS[@]}"; do case "$ADAPTER" in agent|gemini) NEEDS_SCHEMA=1;; esac; done
+if [ "$NEEDS_SCHEMA" = 1 ]; then require_regular "$SCHEMA" "findings schema"; fi
 check_read() { cat -- "$1" >/dev/null || die "cannot read $2: $1"; }
 render_evidence() {
   if [ -n "$PLAN" ]; then
     python3 "$HERE/rev-evidence.py" render "$EVIDENCE" "$SEAT" --plan-source "$PLAN"
   else
     python3 "$HERE/rev-evidence.py" render "$EVIDENCE" "$SEAT"
+  fi
+}
+render_evidence_panel() {
+  if [ -n "$PLAN" ]; then
+    python3 "$HERE/rev-evidence.py" render-panel --output-dir "$FRAGMENTS" ${PHASE:+--phase "$PHASE"} \
+      --plan-source "$PLAN" -- "$EVIDENCE" "${SEATS[@]}"
+  else
+    python3 "$HERE/rev-evidence.py" render-panel --output-dir "$FRAGMENTS" ${PHASE:+--phase "$PHASE"} \
+      -- "$EVIDENCE" "${SEATS[@]}"
   fi
 }
 if [ -n "$RO" ]; then
@@ -142,13 +197,28 @@ fi
 [ "$HAS_BASELINE" = 0 ] || check_read "$S/baseline.md" "baseline"
 [ "$HAS_REJECTED" = 0 ] || check_read "$S/rejected.md" "rejected-findings digest"
 [ "$HAS_CONTEXT" = 0 ] || check_read "$S/context.md" "decision digest"
-[ "$INLINE_SCHEMA" = 0 ] || check_read "$SCHEMA" "findings schema"
-if [ -n "$EVIDENCE" ]; then
+[ "$NEEDS_SCHEMA" = 0 ] || check_read "$SCHEMA" "findings schema"
+if [ -n "$EVIDENCE" ] && [ -n "$PANEL" ]; then
+  FRAGMENTS=$(mktemp -d "$S/.rev-evidence-fragment.XXXXXX") || die "cannot create evidence fragments in $S"
+  # The manifest phase is authoritative; render-panel rejects a conflicting --phase.
+  PHASE=$(render_evidence_panel) || die "cannot render panel evidence from $EVIDENCE"
+elif [ -n "$EVIDENCE" ]; then
+  SEAT=${SEATS[0]}
+  EVIDENCE_PHASE=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["phase"])' \
+    "$EVIDENCE") || die "cannot read evidence manifest phase: $EVIDENCE"
+  # A repair seat may name the phase of the panel it covers.
+  case "$EVIDENCE_PHASE:$PHASE" in
+    *:|repair:risk|repair:verification) ;;
+    *) [ "$PHASE" = "$EVIDENCE_PHASE" ] || die "evidence manifest phase is $EVIDENCE_PHASE, not $PHASE: $EVIDENCE";;
+  esac
+  PHASE=${PHASE:-$EVIDENCE_PHASE}
   EVIDENCE_TMP=$(mktemp "$S/.rev-evidence-fragment.XXXXXX") || die "cannot create evidence fragment in $S"
   render_evidence > "$EVIDENCE_TMP"
   EVIDENCE_RC=$?
   [ "$EVIDENCE_RC" = 0 ] || die "cannot render evidence for $SEAT from $EVIDENCE"
   [ -s "$EVIDENCE_TMP" ] || die "empty evidence fragment for $SEAT from $EVIDENCE"
+fi
+if [ -n "$EVIDENCE" ]; then
   INSTRUCTIONS="$S/r${N}-instructions.md"
   require_regular "$INSTRUCTIONS" "repository instruction snapshot"
   check_read "$INSTRUCTIONS" "repository instruction snapshot"
@@ -443,28 +513,68 @@ EOV
     echo '```json'; cat "$SCHEMA"; echo '```'
   fi
 )
-TMP=$(mktemp "$S/.rev-prompt.XXXXXX") || die "cannot create temporary prompt in $S"
-render_prompt > "$TMP"
-RENDER_RC=$?
-[ "$RENDER_RC" = 0 ] || die "cannot render prompt: $OUT"
-WORDS=$(wc -w < "$TMP" | tr -d ' ') || die "cannot measure prompt: $OUT"
-if [ -n "$PLAN" ]; then KIND=plan; LIMIT=3000; else KIND=code; LIMIT=1800; fi
-if [ "$WORDS" -gt "$LIMIT" ]; then
-  echo "rev-prompt: WARNING: $KIND prompt has $WORDS words and exceeds $LIMIT words" >&2
+SEAT_MS=(); VALIDATE_ARGS=()
+for i in "${!SEATS[@]}"; do
+  [ -z "$PANEL" ] || SEAT_STARTED=$(now_ms) || die "cannot read the clock"
+  SEAT=${SEATS[$i]}; LENS=${LENSES[$i]}; EMPH=${EMPHASES[$i]}; ADAPTER=${ADAPTERS[$i]}; OUT=${OUTS[$i]}
+  case "$ADAPTER" in agent|gemini) INLINE_SCHEMA=1;; *) INLINE_SCHEMA=0;; esac
+  [ "$PHASE" != verification ] || EMPH="${EMPH:+$EMPH }$SIBLING_SITE_CHECK"
+  if [ -n "$FRAGMENTS" ]; then
+    EVIDENCE_TMP="$FRAGMENTS/$SEAT"
+    [ -s "$EVIDENCE_TMP" ] || die "empty evidence fragment for $SEAT from $EVIDENCE"
+  fi
+  TMP=$(mktemp "$S/.rev-prompt.XXXXXX") || die "cannot create temporary prompt in $S"
+  TMPS+=("$TMP")
+  render_prompt > "$TMP"
+  RENDER_RC=$?
+  [ "$RENDER_RC" = 0 ] || die "cannot render prompt: $OUT"
+  WORDS=$(wc -w < "$TMP" | tr -d ' ') || die "cannot measure prompt: $OUT"
+  if [ -n "$PLAN" ]; then KIND=plan; LIMIT=3000; else KIND=code; LIMIT=1800; fi
+  if [ "$WORDS" -gt "$LIMIT" ]; then
+    echo "rev-prompt: WARNING: $KIND prompt has $WORDS words and exceeds $LIMIT words" >&2
+  fi
+  if [ -n "$EVIDENCE" ] && [ -n "$PANEL" ]; then
+    VALIDATE_ARGS+=(--seat "$SEAT" --prompt "$TMP")
+  elif [ -n "$EVIDENCE" ]; then
+    EVIDENCE_CHECK_TMP=$(mktemp "$S/.rev-evidence-fragment.XXXXXX") \
+      || die "cannot create evidence recheck fragment in $S"
+    render_evidence > "$EVIDENCE_CHECK_TMP"
+    EVIDENCE_RC=$?
+    [ "$EVIDENCE_RC" = 0 ] || die "evidence changed while rendering prompt: $EVIDENCE"
+    cmp -s -- "$EVIDENCE_TMP" "$EVIDENCE_CHECK_TMP" \
+      || die "evidence changed while rendering prompt: $EVIDENCE"
+    python3 "$HERE/lib/review-read-audit.py" validate-prompt \
+      --root "$REV_ROOT" --session "$S" --manifest "$EVIDENCE" --seat "$SEAT" \
+      --prompt "$TMP" >/dev/null \
+      || die "rendered prompt does not match its evidence assignment: $SEAT"
+  fi
+  if [ -n "$PANEL" ]; then
+    SEAT_DONE=$(now_ms) || die "cannot read the clock"
+    SEAT_MS+=("$SEAT" "$((SEAT_DONE - SEAT_STARTED))")
+  fi
+done
+if [ -n "$PANEL" ]; then
+  if [ -n "$EVIDENCE" ]; then
+    # Validates the manifest once, freshly, and binds every prompt to the hash its fragment was rendered from.
+    python3 "$HERE/lib/review-read-audit.py" validate-prompt \
+      --root "$REV_ROOT" --session "$S" --manifest "$EVIDENCE" "${VALIDATE_ARGS[@]}" >/dev/null \
+      || die "rendered prompts do not match their evidence assignments: ${SEATS[*]}"
+  fi
+  TIMING_TMP=$(mktemp "$S/.rev-render.XXXXXX") || die "cannot create render timing in $S"
+  python3 - "$TIMING_TMP" "$PANEL_STARTED" "${SEAT_MS[@]}" <<'PY' || die "cannot record render timing: $RENDER_OUT"
+import json, sys, time
+path, started, pairs = sys.argv[1], int(sys.argv[2]), sys.argv[3:]
+seats = {seat: int(ms) for seat, ms in zip(pairs[0::2], pairs[1::2])}
+with open(path, 'w', encoding='utf-8') as stream:
+    json.dump({'schema_version': 1, 'seats': seats,
+               'total_ms': time.time_ns() // 1000000 - started}, stream)
+    stream.write('\n')
+PY
+  mv -f -- "$TIMING_TMP" "$RENDER_OUT" || die "cannot publish render timing: $RENDER_OUT"
+  TIMING_TMP=""
 fi
-if [ -n "$EVIDENCE" ]; then
-  EVIDENCE_CHECK_TMP=$(mktemp "$S/.rev-evidence-fragment.XXXXXX") \
-    || die "cannot create evidence recheck fragment in $S"
-  render_evidence > "$EVIDENCE_CHECK_TMP"
-  EVIDENCE_RC=$?
-  [ "$EVIDENCE_RC" = 0 ] || die "evidence changed while rendering prompt: $EVIDENCE"
-  cmp -s -- "$EVIDENCE_TMP" "$EVIDENCE_CHECK_TMP" \
-    || die "evidence changed while rendering prompt: $EVIDENCE"
-  python3 "$HERE/lib/review-read-audit.py" validate-prompt \
-    --root "$REV_ROOT" --session "$S" --manifest "$EVIDENCE" --seat "$SEAT" \
-    --prompt "$TMP" >/dev/null \
-    || die "rendered prompt does not match its evidence assignment: $SEAT"
-fi
-mv -f -- "$TMP" "$OUT" || die "cannot publish prompt: $OUT"
-TMP=""; PUBLISHED=1
-echo "$OUT"
+for i in "${!SEATS[@]}"; do
+  mv -f -- "${TMPS[$i]}" "${OUTS[$i]}" || die "cannot publish prompt: ${OUTS[$i]}"
+done
+PUBLISHED=1
+printf '%s\n' "${OUTS[@]}"

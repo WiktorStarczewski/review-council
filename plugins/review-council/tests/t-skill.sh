@@ -370,6 +370,10 @@ test_skill_contract() {
       '[Dd]ocument.*read every supplied document in full'
     assert_grep "plan preparation hash-binds the source plan" "$H" \
       '--phase plan --plan .*--plan-sha256'
+    assert_grep "plan preparation keeps source context like code panels" "$H" \
+      'REV_SOURCE_CONTEXT=\$\{REV_SOURCE_CONTEXT:-1\} python3 .*prepare "\$S" "\$PANEL_LABEL" \\$'
+    assert_grep "plan locations are read only from Sites and the test path" "$H" \
+      'Locations are read only from `Sites` and the first'
     assert_grep "plan completeness owns full-state coverage" "$H" \
       'plan-completeness seat receives'
     assert_grep "surplus plan seats never duplicate completeness" "$H" \
@@ -383,7 +387,7 @@ test_skill_contract() {
     assert_grep "plan specialists may receive three source shards" "$H" \
       'up to three'
     assert_grep "plan prompts are compiled before publication" "$H" \
-      'validates its rendered plan prompt against the schema-4'
+      'validates each rendered plan prompt against the schema-4'
     assert_grep "plan specialists receive one exact first read" "$H" \
       'mandatory first native read'
     assert_grep "plan tasks forbid malformed first shell actions" "$H" \
@@ -433,6 +437,7 @@ test_skill_contract() {
     assert_grep "Agent plan panels report the enforceable roster requirement" "$H" \
       'requires a roster whose seats use enforceable Codex or Claude CLI adapters'
   done
+  skill_adapter_and_plan_gate_contract "$K" "$CK" "$T"
   assert_nogrep "Claude Agent output transcript is not treated as enforced evidence" "$K" \
     'audit every Agent `output_file` as adapter `agent`'
   assert_grep "Claude Agent transcript is retained for profiling" "$K" \
@@ -581,4 +586,87 @@ test_skill_contract() {
   # A7 - the stack's verdict and finish semantics
   assert_grep "failed leg blocks its repo's finish" "$ST" 'COMPLETE WITH FAILURES'
   assert_grep "squash and push are independent" "$ST" 'squash refused for <repo>'
+}
+
+# C-7 and C-8: evidence mode follows each row's adapter, the plan gate defaults to one seat and runs
+# before code, verification seats check sibling sites, and evidence panels render in one --panel call.
+skill_adapter_and_plan_gate_contract() {
+  local K=$1 CK=$2 W=$3 H host flat
+  local host_evidence="Evidence mode depends on each launched row's adapter, never on the host."
+  local cli_rows='Rows on adapters `codex`, `gemini`, and `claude` launch through `rev-seat.sh` and keep evidence mode.'
+  local adapter_choice='`claude_adapter` decides whether a Claude Code host seats Claude rows on `agent`; a Codex host always seats them on `claude`.'
+  local plan_refusal='Plan preparation instead fails before publishing artifacts when an assigned plan seat uses adapter `agent`.'
+  local refusal_skip="record that refusal as the plan panel's skip reason."
+  local plan_default='By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order whose adapter is not `agent`, `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.'
+  local plan_all='When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat'
+  local minimum='adaptive `<N>x` coverage repair and the default one-seat plan panel are the only exceptions.'
+  local verify_one='`verify-panel` certifies the one-seat plan panel once that seat returns'
+  local before_code='The plan panel runs after triage and before any edit of the working tree.'
+  local skip_line='When the plan panel is skipped, append a line beginning `Plan panel r<N>p - SKIPPED: <reason>` to `$S/findings.md` before `phase=fix`.'
+  local gate='`rev-state.sh` refuses `phase=fix` for code round `<N>` while `open.P0 + open.P1 + open.P2` is above zero, unless that skip line exists or every seat recorded by `phase=plan round=<N>p` has `r<N>p-<seat>.json` and a `0` exit.'
+  local incomplete='An incomplete plan panel is not a skip: stop the run incomplete before any edit.'
+  local sibling='Sibling-site completeness: for each fix commit since the base, name the rule it applies and search the repository for sites, arms, realms, callers and copies (tests, JSDoc, docs) the rule reaches but the commit missed.'
+  # Host-tied evidence wording that must never return: an evidence or plan decision keyed on the
+  # host instead of a launched row's adapter.
+  local host_tied='Claude Code host[^.]*(skip|legacy|refuse|unavailable)|(skip|refuse|unavailable)[^.]*on a Claude Code host'
+  for H in "$K" "$CK"; do
+    host=$(basename "$(dirname "$(dirname "$H")")")
+    assert_flat_fixed "$host ties evidence mode to adapters, not the host" "$H" "$host_evidence"
+    assert_flat_fixed "$host keeps evidence mode for CLI rows" "$H" "$cli_rows"
+    assert_flat_fixed "$host names claude_adapter as the agent-row control" "$H" "$adapter_choice"
+    assert_flat_fixed "$host refuses plan prep only for non-extra agent rows" "$H" "$plan_refusal"
+    assert_flat_fixed "$host records a plan prep refusal as the skip reason" "$H" "$refusal_skip"
+    assert_nogrep "$host has no host-tied evidence rule" "$H" "$host_tied"
+    assert_flat_fixed "$host defaults to one plan-completeness seat" "$H" "$plan_default"
+    assert_grep "$host restores every core seat with plan_seats all" "$H" "$(printf '%s' "$plan_all" | sed 's/[][\.*^$|+?(){}]/\\&/g')"
+    assert_flat_fixed "$host exempts the one-seat plan from the three-seat minimum" "$H" "$minimum"
+    assert_flat_fixed "$host certifies a one-seat plan panel" "$H" "$verify_one"
+    assert_flat_fixed "$host runs the plan panel before code" "$H" "$before_code"
+    assert_flat_fixed "$host records a skipped plan panel" "$H" "$skip_line"
+    assert_flat_fixed "$host states the rev-state fix gate" "$H" "$gate"
+    assert_flat_fixed "$host stops on an incomplete plan panel" "$H" "$incomplete"
+    assert_flat_fixed "$host verification seats check sibling sites" "$H" "$sibling"
+    assert_grep "$host renders a panel in one --panel call" "$H" \
+      'rev-prompt\.sh"? "\$S" "\$PANEL_LABEL" --panel "\$S/r\$PANEL_LABEL-panel\.tsv" "\$\{PHASE_PROMPT_ARGS\[@\]\}" "\$\{EVIDENCE_PROMPT_ARGS\[@\]\}"$'
+    assert_grep "$host passes the panel phase to renders" "$H" 'PHASE_PROMPT_ARGS=\(--phase "\$PANEL_PHASE"\)'
+    assert_grep "$host renders the plan panel with --panel" "$H" \
+      'rev-prompt\.sh"? "\$S" "\$PANEL_LABEL" --panel "\$S/r\$PANEL_LABEL-panel\.tsv" \\$'
+    assert_grep "$host keeps the per-seat form for a repair seat" "$H" \
+      'rev-prompt\.sh"? "\$S" "\$PANEL_LABEL" "\$SEAT" "\$LENS" "\$EMPHASIS" --phase "\$COVERED_PHASE" "\$\{EVIDENCE_PROMPT_ARGS\[@\]\}"'
+    assert_nogrep "$host has no per-seat panel render left" "$H" '"\$EMPHASIS" "\$\{EVIDENCE_PROMPT_ARGS'
+    assert_nogrep "$host has no per-seat plan render left" "$H" '<seat> <plan-lens>'
+    # The plan gate must be stated before the host is told to enter the fix phase.
+    local gate_line fix_line
+    gate_line=$(grep -n 'The plan panel runs after triage and before any edit of the working tree' "$H" | head -1 | cut -d: -f1)
+    fix_line=$(grep -nE '^`\$\{CLAUDE_PLUGIN_ROOT\}/scripts/rev-state\.sh \$S phase=fix`|^Before the first edit, write `rev-state\.sh "\$S" phase=fix`' "$H" | head -1 | cut -d: -f1)
+    if [ -n "$gate_line" ] && [ -n "$fix_line" ] && [ "$gate_line" -lt "$fix_line" ]; then
+      ok "$host states the plan gate before entering phase=fix"
+    else
+      fail "$host states the plan gate before entering phase=fix" "gate line '$gate_line', fix line '$fix_line'"
+    fi
+  done
+  # Plant each forbidden host-tied form so the negative assertion above cannot pass vacuously.
+  printf 'On a Claude Code host, skip evidence preparation.\n' > "$W/planted-host-tied-1.md"
+  printf 'Plan review is unavailable on a Claude Code host.\n' > "$W/planted-host-tied-2.md"
+  for flat in "$W/planted-host-tied-1.md" "$W/planted-host-tied-2.md"; do
+    assert_grep "planted host-tied rule is detected: $(basename "$flat")" "$flat" "$host_tied"
+  done
+
+  assert_grep "Claude host documents claude_adapter values and override" "$K" \
+    '`claude_adapter` \(`cli`, `agent`, or `auto`, default'
+  assert_grep "Claude host names the adapter environment override" "$K" 'REVIEW_COUNCIL_CLAUDE_ADAPTER` wins'
+  assert_flat_fixed "Claude host pads on the resolved adapter" "$K" \
+    'roster appends Claude seats - `claude-1`, `claude-2`, … , on the resolved Claude adapter (`claude` or `agent`), marked `"padded": true`'
+  assert_nogrep "Claude padding no longer pins the agent adapter" "$K" 'adapter `agent`, marked'
+  assert_nogrep "Claude host no longer calls every Claude seat a subagent" "$K" 'configured Claude subagents'
+  assert_flat_fixed "Claude fan-out launches claude rows through rev-seat.sh" "$K" \
+    'per seat whose adapter is `codex`, `gemini`, or `claude` - each launches through `rev-seat.sh` - and one `Agent` call per seat whose adapter is `agent`.'
+  assert_nogrep "Claude fan-out has no adapter-script shorthand" "$K" 'an adapter script'
+  assert_flat_fixed "Claude records transcripts only for agent rows" "$K" \
+    'for each row whose adapter is `agent`, record its Agent result path under its seat name'
+  assert_flat_fixed "Claude stack legs poll every rev-seat.sh row" "$K" \
+    'Launch every `rev-seat.sh` row - `codex`, `gemini`, and `claude` alike - with `run_in_background` as usual, then **wait for them with a foreground poll**'
+  assert_grep "Codex host writes phase=fix before its first edit" "$CK" \
+    '^Before the first edit, write `rev-state\.sh "\$S" phase=fix`\.$'
+  assert_grep "Codex host shares the plan_seats key" "$CK" '`plan_seats`, and `quota_fallback` are shared with Claude Code'
 }

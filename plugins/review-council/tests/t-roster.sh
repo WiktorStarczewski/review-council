@@ -13,7 +13,8 @@ roster_env() {   # roster_env <bin-dir> [shim …] - install the named shims and
   export REVIEW_COUNCIL_CODEX_MODELS_CACHE="$FX/roster-codex-cache-full.json"
   export REVIEW_COUNCIL_CONFIG="$HOME/no-such-config.json"
   export REVIEW_COUNCIL_GEMINI_CREDS="$HOME/.gemini/oauth_creds.json"
-  unset GEMINI_API_KEY REVIEW_COUNCIL_GEMINI_MODEL REVIEW_COUNCIL_CLAUDE_SEAT SHIM_MODE SHIM_ARGS_FILE
+  unset GEMINI_API_KEY REVIEW_COUNCIL_GEMINI_MODEL REVIEW_COUNCIL_CLAUDE_SEAT REVIEW_COUNCIL_CLAUDE_ADAPTER \
+        SHIM_MODE SHIM_ARGS_FILE
 }
 roster_creds() { mkdir -p "$(dirname "$REVIEW_COUNCIL_GEMINI_CREDS")"; echo '{"access_token":"x"}' > "$REVIEW_COUNCIL_GEMINI_CREDS"; }
 roster_lines() {  # roster_lines <json> <out> - flatten the roster into greppable lines
