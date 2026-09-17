@@ -550,7 +550,8 @@ never there.
 ### Triage
 
 `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=triage`. Read every
-`$S/r<N>-*.json` (they are small). For each finding:
+launched seat's `$S/r<N>-<seat>.json` (they are small; manifests, audits and
+`r<N>-render.json` are not results). For each finding:
 
 1. **Deduplicate** across seats; record how many independently found it. Agreement is
    signal, not proof.
