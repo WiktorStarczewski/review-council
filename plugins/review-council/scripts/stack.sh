@@ -309,6 +309,10 @@ ${VACUITY}${resume}"
         printf '%s\n' "$prompt" | codex exec --ephemeral -s workspace-write \
           -c sandbox_workspace_write.network_access=true --add-dir "$ROOT" --json -
       else
+        # The leg is its own headless session, not a turn of the Claude Code session that started the stack.
+        SESSION_ENV=$(cd "$HERE/lib" && python3 -c \
+          'from roster import CLAUDE_SESSION_ENV; print(" ".join(CLAUDE_SESSION_ENV))') || exit 1
+        unset $SESSION_ENV
         claude -p "$prompt" --permission-mode bypassPermissions --effort max --output-format stream-json --verbose </dev/null
       fi
     ) > "$S/run.log" 2>&1 &

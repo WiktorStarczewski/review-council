@@ -105,6 +105,7 @@ RSEOF
     chmod +x "$RS/roster.sh"
     export REV_SCRIPTS="$RS" FAKE_ROSTER_ARGS="$T/roster-args"
     export SHIM_CLAUDE_ARGS_FILE="$T/claude-args" REV_STACK_FOREGROUND=1
+    export CLAUDECODE=1 CLAUDE_CODE_SESSION_ID=parent-session CLAUDE_CONFIG_DIR="$T/claude-config"
     export STACK_PUBLISH_CALLS="$T/stack.calls"
     : > "$STACK_PUBLISH_CALLS"
     local R="$T/stk"; mkrepo "$R"; git -C "$R" checkout -qb feat; echo w > "$R/w.txt"; git -C "$R" add w.txt; git -C "$R" commit -qm "feat: w"
@@ -121,6 +122,9 @@ RSEOF
     assert_grep "leg inherits no-push mode" "$T/claude-args" '^NO_PUSH=1$'
     assert_grep "leg inherits no-squash mode" "$T/claude-args" '^NO_SQUASH=0$'
     assert_grep "leg runs in the repo" "$T/claude-args" "^cwd=$R$"
+    assert_grep "leg drops the parent Claude Code session marker" "$T/claude-args" '^CLAUDECODE=unset$'
+    assert_grep "leg drops the parent session id" "$T/claude-args" '^CLAUDE_CODE_SESSION_ID=unset$'
+    assert_grep "leg keeps the Claude config directory" "$T/claude-args" "^CLAUDE_CONFIG_DIR=$T/claude-config$"
     assert_grep "bypass permissions" "$T/claude-args" '^bypassPermissions$'
     assert_grep "stream-json" "$T/claude-args" '^stream-json$'
     assert_grep "effort max" "$T/claude-args" '^max$'
