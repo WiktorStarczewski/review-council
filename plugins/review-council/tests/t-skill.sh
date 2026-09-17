@@ -370,6 +370,10 @@ test_skill_contract() {
       '[Dd]ocument.*read every supplied document in full'
     assert_grep "plan preparation hash-binds the source plan" "$H" \
       '--phase plan --plan .*--plan-sha256'
+    assert_grep "plan preparation keeps source context like code panels" "$H" \
+      'REV_SOURCE_CONTEXT=\$\{REV_SOURCE_CONTEXT:-1\} python3 .*prepare "\$S" "\$PANEL_LABEL" \\$'
+    assert_grep "plan locations are read only from Sites and the test path" "$H" \
+      'Locations are read only from `Sites` and the first'
     assert_grep "plan completeness owns full-state coverage" "$H" \
       'plan-completeness seat receives'
     assert_grep "surplus plan seats never duplicate completeness" "$H" \

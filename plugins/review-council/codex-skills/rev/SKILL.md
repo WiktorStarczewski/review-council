@@ -511,15 +511,16 @@ flags cover every regular worktree file except `.git`. Do not add other globs, t
 exclusions, path operands, maximum depth, redirects, or filename suppression. Keep the
 result below 80 lines. It must include every path named in `Sites`; native text search
 cannot certify this proof.
-Locations may use `path:line`, `path:start-end`, or a shorthand `:start-end` after
-a path.
+Locations are read only from `Sites` and the first token of a test field
+(`Test: <path> - <what fails today>`); every other field is prose. Locations may use
+`path:line`, `path:start-end`, or a shorthand `:start-end` after a path.
 Write `$S/r<N>p-panel.tsv` with one line per plan seat, then bind and prepare the
 immutable plan before rendering:
 
 ```bash
 PANEL_LABEL=<N>p
 PLAN_HASH=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/fix-plan.md")
-MANIFEST=$(python3 "$PLUGIN/scripts/rev-evidence.py" prepare "$S" "$PANEL_LABEL" \
+MANIFEST=$(REV_PATCH_CHUNKS=${REV_PATCH_CHUNKS:-auto} REV_SOURCE_CONTEXT=${REV_SOURCE_CONTEXT:-1} python3 "$PLUGIN/scripts/rev-evidence.py" prepare "$S" "$PANEL_LABEL" \
   --phase plan --plan "$S/fix-plan.md" --plan-sha256 "$PLAN_HASH" \
   --full-seat "$PLAN_COMPLETENESS_SEAT" "${PLAN_EVIDENCE_ARGS[@]}")
 PLAN_SNAPSHOT="$S/r$PANEL_LABEL-plan.md"

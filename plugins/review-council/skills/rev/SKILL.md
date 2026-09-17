@@ -622,7 +622,7 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    ```bash
    PANEL_LABEL=<N>p
    PLAN_HASH=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/fix-plan.md")
-   MANIFEST=$(python3 "${CLAUDE_PLUGIN_ROOT}/scripts/rev-evidence.py" prepare "$S" "$PANEL_LABEL" \
+   MANIFEST=$(REV_PATCH_CHUNKS=${REV_PATCH_CHUNKS:-auto} REV_SOURCE_CONTEXT=${REV_SOURCE_CONTEXT:-1} python3 "${CLAUDE_PLUGIN_ROOT}/scripts/rev-evidence.py" prepare "$S" "$PANEL_LABEL" \
      --phase plan --plan "$S/fix-plan.md" --plan-sha256 "$PLAN_HASH" \
      --full-seat "$PLAN_COMPLETENESS_SEAT" "${PLAN_EVIDENCE_ARGS[@]}")
    PLAN_SNAPSHOT="$S/r$PANEL_LABEL-plan.md"
@@ -636,7 +636,9 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    one embedded manifest hash to match before fan-out.
    The parser requires every cluster to have `Findings`, `Rule`, `Sites`, and at
    least one of `Test`, `Tests`, or `Regression`. Every path must resolve in the
-   pinned repository snapshot. Locations may use `path:line`, `path:start-end`,
+   pinned repository snapshot. Locations are read only from `Sites` and the first
+   token of a test field (`Test: <path> - <what fails today>`); every other field is prose.
+   Locations may use `path:line`, `path:start-end`,
    or a shorthand `:start-end` after a path. `Sites` must include one bounded query in
    either exact form: `found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'PATTERN' .`
    or `found by: grep --exclude-dir=.git --null -r -n -- 'PATTERN' .`. These fixed
