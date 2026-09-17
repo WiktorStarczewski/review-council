@@ -1744,6 +1744,14 @@ assert data['phase'] == 'plan'
 assert sorted({name.split('.', 1)[0] for name in data['results']}) == ['r1p-sol'], data['results']
 PY
     assert_eq "one-seat certification binds only the assigned seat's results" "$?" 0
+    "$SCRIPTS/rev-profile.py" --json "$S" > "$T/plan-single-profile.json" || return
+    python3 - "$T/plan-single-profile.json" <<'PY'
+import json, sys
+profile = json.load(open(sys.argv[1]))['sessions'][0]['scope_projection']
+assert profile['valid_manifests'] == 1 and not profile['invalid_manifests'], profile
+assert profile['plan_specialist_patch_words'] == 0, profile
+PY
+    assert_eq "profile reads a one-seat plan manifest" "$?" 0
   )
 }
 
