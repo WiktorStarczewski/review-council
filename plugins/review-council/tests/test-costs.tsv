@@ -116,6 +116,7 @@ t-profile.sh::test_profile_invalid_sessions	5	normal
 t-profile.sh::test_profile_keeps_null_effort_complete_only_for_gemini	5	normal
 t-profile.sh::test_profile_labels_roster_comparability	5	normal
 t-profile.sh::test_profile_plan_label_classification	5	normal
+t-profile.sh::test_profile_reports_panel_render_timing	5	normal
 t-profile.sh::test_profile_rejects_invalid_usage_numbers	5	normal
 t-profile.sh::test_profile_requires_complete_evidence_patch_proofs	5	normal
 t-profile.sh::test_profile_retry_streams	5	normal

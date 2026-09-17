@@ -15,6 +15,7 @@ from pathlib import Path
 
 TERMINAL_TYPES = {"result", "turn.completed", "end"}
 REVIEW_ARTIFACT = re.compile(r"^r[A-Za-z0-9][A-Za-z0-9_.-]*-")
+RENDER_TIMING = re.compile(r"^r([A-Za-z0-9][A-Za-z0-9_.-]*)-render\.json$")
 VALIDATOR = Path(__file__).resolve().parent / "lib" / "validate-findings.py"
 EVIDENCE_SCRIPT = Path(__file__).resolve().parent / "rev-evidence.py"
 USAGE_FIELDS = (
@@ -600,6 +601,33 @@ def evidence_words(path, validate):
     }
 
 
+def is_milliseconds(value):
+    return type(value) is int and value >= 0
+
+
+def render_timing(directory):
+    """Read the per-panel render timing that rev-prompt.sh --panel records."""
+    timing = {"panels": [], "invalid": []}
+    for path in sorted(directory.glob("r*-render.json")):
+        match = RENDER_TIMING.match(path.name)
+        if match is None:
+            continue
+        try:
+            document = json.loads(path.read_text(errors="replace"))
+        except (OSError, ValueError):
+            document = None
+        seats = document.get("seats") if isinstance(document, dict) else None
+        if (not isinstance(seats, dict) or not seats or type(document.get("schema_version")) is not int
+                or document["schema_version"] != 1
+                or not all(is_milliseconds(value) for value in seats.values())
+                or not is_milliseconds(document.get("total_ms"))):
+            timing["invalid"].append({"timing": path.name, "reason": "invalid render timing"})
+            continue
+        timing["panels"].append({
+            "label": match.group(1), "seats": seats, "total_ms": document["total_ms"]})
+    return timing
+
+
 def profile_evidence(directory):
     projection = empty_scope_projection()
     try:
@@ -724,6 +752,7 @@ def profile_session(directory):
         "invalid_usage": invalid_usage,
         "read_activity": read_activity(directory, adapters),
         "scope_projection": profile_evidence(directory),
+        "render_timing": render_timing(directory),
     }
 
 
@@ -739,7 +768,14 @@ def main():
     totals["invalid_usage"] = 0
     scope_totals = empty_scope_projection(with_names=False)
     read_totals = empty_read_activity(with_names=False)
+    render_totals = {"panels": 0, "total_ms": 0, "seat_ms": 0, "invalid": 0}
     for session in sessions:
+        timing = session["render_timing"]
+        render_totals["panels"] += len(timing["panels"])
+        render_totals["invalid"] += len(timing["invalid"])
+        for panel in timing["panels"]:
+            render_totals["total_ms"] += panel["total_ms"]
+            render_totals["seat_ms"] += sum(panel["seats"].values())
         usage = session["usage"]
         totals["calls"] += usage["calls"]
         for key in USAGE_FIELDS:
@@ -774,6 +810,7 @@ def main():
             scope_totals[key] += projection[key]
     totals["scope_projection"] = scope_totals
     totals["read_activity"] = read_totals
+    totals["render_timing"] = render_totals
     roster_groups = []
     roster_group_indexes = {}
     for session in sessions:
@@ -843,6 +880,13 @@ def main():
         )
         for invalid in activity["invalid_audits"]:
             print("  read_audit_invalid_detail=%s: %s" % (invalid["audit"], invalid["reason"]))
+        timing = session["render_timing"]
+        print("  render_timing=%s" % (";".join(
+            "%s:total_ms:%d,%s" % (panel["label"], panel["total_ms"], ",".join(
+                "%s:%d" % item for item in panel["seats"].items()))
+            for panel in timing["panels"]) or "none"))
+        for invalid in timing["invalid"]:
+            print("  render_timing_invalid_detail=%s: %s" % (invalid["timing"], invalid["reason"]))
     print(
         "COMPARABILITY mixed_core_rosters=%s roster_signatures=%d"
         % (str(comparison["mixed_core_rosters"]).lower(), len(roster_groups))
@@ -879,6 +923,11 @@ def main():
             read_totals["opened_patch_chunks"], read_totals["window_seats"],
             read_totals["chunk_seats"],
         )
+    )
+    print(
+        "TOTAL_RENDER_TIMING panels=%d total_ms=%d seat_ms=%d invalid=%d"
+        % (render_totals["panels"], render_totals["total_ms"], render_totals["seat_ms"],
+           render_totals["invalid"])
     )
 
 
