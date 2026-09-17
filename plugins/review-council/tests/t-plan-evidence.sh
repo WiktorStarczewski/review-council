@@ -190,7 +190,8 @@ first = next(index for index, line in enumerate(lines)
              if line.startswith('Plan specialist first-call contract: '))
 competing = (
     'Prepared cluster sibling search:', 'Required cluster sibling search:',
-    'Required cluster source:', 'Assigned patch read mode:',
+    'Required cluster source:', 'Mandatory cluster source window:',
+    'Assigned patch read mode:',
     'Canonical assigned patch:', 'Read the entire assigned patch',
     'Source context packet:', 'Required source segment ',
     'Evidence navigation index:',
@@ -414,6 +415,47 @@ EOF
     done
     assert_exit "per-seat prompt validation does not replay panel searches" 1 \
       test -e "$T/plan-prompt-search-replay.log"
+    assert_exit "schema-4 manifest publishes the cluster source windows the seat must open" 0 \
+      python3 - "$manifest" "$SCRIPTS/rev-evidence.py" <<'WINDOWS_PUBLISHED'
+import importlib.util, json, sys
+
+spec = importlib.util.spec_from_file_location('reve', sys.argv[2])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+manifest = json.load(open(sys.argv[1]))
+plan = manifest['plan']
+for seat, assignment in manifest['assignments'].items():
+    packet = manifest['source_context']['seats'][seat]
+    published = [(row['path'], row['line_start'], row['line_end'])
+                 for row in packet['mandatory_source_windows']]
+    delivered = packet['required_source_ranges'] + [
+        dict(row) for shard in packet['shards'] for row in shard['ranges']]
+    expected = list(module.merge_repository_windows(
+        module.uncovered_plan_ranges(assignment, plan['clusters'], delivered)))
+    assert published == expected, (seat, published, expected)
+    assert len(published) <= module.MANDATORY_REPOSITORY_READ_LIMIT, (seat, len(published))
+    for _, start, end in published:
+        assert end - start + 1 <= module.READ_LINES, (seat, start, end)
+WINDOWS_PUBLISHED
+
+    for seat in sol terra opus sonnet; do
+      assert_exit "$seat prompt lists each mandatory cluster source window exactly once" 0 \
+        python3 - "$manifest" "$seat" "$S/r1p-$seat.prompt.md" <<'WINDOWS_RENDERED'
+import json, sys
+from pathlib import Path
+
+manifest = json.load(open(sys.argv[1]))
+windows = manifest['source_context']['seats'][sys.argv[2]]['mandatory_source_windows']
+text = Path(sys.argv[3]).read_text()
+for row in windows:
+    line = ('Mandatory cluster source window: ' + row['path'] + ':'
+            + str(row['line_start']) + '-' + str(row['line_end']))
+    assert text.count(line) == 1, (sys.argv[2], line, text.count(line))
+assert text.count('Mandatory cluster source window: ') == len(windows)
+WINDOWS_RENDERED
+    done
+
+
     cp "$S/r1p-terra.prompt.md" "$T/plan-prompt-artifacts.valid"
     replace_literal "$S/r1p-terra.prompt.md" \
       'Read the entire assigned patch in bounded windows' \
