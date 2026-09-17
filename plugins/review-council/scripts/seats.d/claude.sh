@@ -1,12 +1,15 @@
 #!/bin/bash
-# External Anthropic seat for a Codex-hosted council. No inherited plugins/MCPs;
-# only native read tools audited against the current evidence contract.
+# External Anthropic seat run through the claude CLI, on either host. No inherited plugins/MCPs and no
+# parent Claude Code session identity; only native read tools audited against the current evidence contract.
 set -u
 [ -n "${EFFORT:-}" ] || { echo "claude adapter: missing receipted effort" >&2; exit 1; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 SESSION=$(dirname "$OUT")
 MAX_TURNS=$(PYTHONPATH="$HERE/../lib" python3 -c \
   'from review_limits import CLAUDE_MAX_TURNS; print(CLAUDE_MAX_TURNS)') || exit 1
+SESSION_ENV=$(cd "$HERE/../lib" && python3 -c \
+  'from roster import CLAUDE_SESSION_ENV; print(" ".join(CLAUDE_SESSION_ENV))') || exit 1
+unset $SESSION_ENV
 SETTINGS=$(python3 - "$HERE/../lib/review-read-audit.py" \
   "$ROOT" "$SESSION" "$PROMPT" "${REV_DEPS_DIR:-}" <<'PY'
 import json, shlex, sys

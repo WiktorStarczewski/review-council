@@ -80,15 +80,16 @@ def session_input_lock(session: Path) -> Iterator[Path]:
     except OSError as exc:
         raise SessionInputsError(f"cannot open session input lock: {exc}") from exc
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
-        opened = os.fstat(descriptor)
-        current = lock_path.lstat()
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            opened = os.fstat(descriptor)
+            current = lock_path.lstat()
+        except OSError as exc:
+            raise SessionInputsError(f"cannot validate session input lock: {exc}") from exc
         if (not stat.S_ISREG(opened.st_mode) or opened.st_nlink != 1
                 or opened.st_uid != os.getuid() or not _same_file(opened, current)):
             raise SessionInputsError('session input lock is not a safe regular file')
         yield lock_path
-    except OSError as exc:
-        raise SessionInputsError(f"cannot validate session input lock: {exc}") from exc
     finally:
         os.close(descriptor)
 

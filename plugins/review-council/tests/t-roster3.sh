@@ -213,6 +213,7 @@ PY
 test_roster_quota_handoff_replaces_agent_seats_with_terra() {
   ( local B="$T/roster-quota-handoff-agent"; roster_env "$B" codex
     quota_provider_shims "$B"
+    export REVIEW_COUNCIL_CLAUDE_ADAPTER=agent
     export REVIEW_COUNCIL_CONFIG="$B.home/cfg.json" RC_PROBE_LOG="$B/probes"
     printf '%s' '{"codex_models":["gpt-5.6-sol","gpt-5.6-terra"],"claude_models":["opus","sonnet"],"extras":false,"quota_fallback":true}' > "$REVIEW_COUNCIL_CONFIG"
     cp "$REVIEW_COUNCIL_CONFIG" "$B/config.before"
@@ -261,6 +262,7 @@ PY
 test_roster_quota_handoff_rejects_invalid_or_recursive_requests() {
   ( local B="$T/roster-quota-handoff-strict"; roster_env "$B" codex gemini; roster_creds
     quota_provider_shims "$B"
+    export REVIEW_COUNCIL_CLAUDE_ADAPTER=agent
     export REVIEW_COUNCIL_CONFIG="$B.home/cfg.json" RC_PROBE_LOG="$B/probes"
     local config='{"codex_models":["gpt-5.6-sol","gpt-5.6-terra"],"claude_models":["opus","sonnet"],"extras":true,"quota_fallback":true}'
     printf '%s' "$config" > "$REVIEW_COUNCIL_CONFIG"
