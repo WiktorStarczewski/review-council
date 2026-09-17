@@ -2714,7 +2714,10 @@ def validate_source_context_snapshot(repo, session, manifest):
 
     def expected_bytes(row):
         tree = row['blob_tree']
-        entries = entries_by_tree.setdefault(tree, repo.entries(tree))
+        # Not setdefault: its eager default ran a whole-tree ls-tree per source row.
+        if tree not in entries_by_tree:
+            entries_by_tree[tree] = repo.entries(tree)
+        entries = entries_by_tree[tree]
         if entries.get(row['path']) != (row['blob_mode'], row['blob_oid']):
             raise ValueError('source context blob identity mismatch: ' + row['path'])
         key = (row['blob_mode'], row['blob_oid'])
