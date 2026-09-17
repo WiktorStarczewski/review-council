@@ -517,11 +517,17 @@ def claude_cli_reason():
     return None
 
 
+def build_claude_cli_reason():
+    if 'cli' not in _RESOLVED:
+        _RESOLVED['cli'] = claude_cli_reason()
+    return _RESOLVED['cli']
+
+
 def detect_claude(cfg):
     seats, reason = claude_seats('claude', cfg)
     if reason:
         return [], reason
-    reason = _RESOLVED['cli'] if 'cli' in _RESOLVED else claude_cli_reason()
+    reason = build_claude_cli_reason()
     if reason:
         return [], reason
     return seats, None
@@ -546,10 +552,9 @@ def anthropic_adapter(cfg):
         return 'claude'
     if 'adapter' not in _RESOLVED:
         setting, _ = claude_adapter_setting(cfg)
-        if setting == 'auto':
-            _RESOLVED['cli'] = claude_cli_reason()
         _RESOLVED['adapter'] = ('claude' if setting == 'cli'
-                                or setting == 'auto' and _RESOLVED['cli'] is None else 'agent')
+                                or setting == 'auto' and build_claude_cli_reason() is None
+                                else 'agent')
     return _RESOLVED['adapter']
 
 
@@ -1161,10 +1166,12 @@ def pad(seats, excluded, cfg, probe_results):
         off = None
     if off:
         excluded.append({'cli': 'padding', 'reason': '%s - a panel needs %d seats' % (off, PANEL)})
-    # The Agent tool needs no sign-in, so a CLI whose Opus probe just failed never pads the floor.
+    # The Agent tool needs no sign-in, so a CLI that is unusable or whose Opus probe just failed
+    # never pads the floor, even under an explicit `claude_adapter: cli`.
     adapter = anthropic_adapter(cfg)
     probe = probe_results.get(('claude', 'opus', 'max'))
-    if adapter == 'claude' and probe is not None and probe[0] is not None:
+    if adapter == 'claude' and (build_claude_cli_reason() is not None
+                                or probe is not None and probe[0] is not None):
         adapter = 'agent'
     used = {s['seat'] for s in seats}
     n = 0

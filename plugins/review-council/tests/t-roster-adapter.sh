@@ -205,6 +205,15 @@ test_roster_adapter_padding_follows_probe() {
       '^seat claude-1 anthropic agent opus max false'
     assert_grep "…for the whole floor" "$B/opus-failed" '^seat claude-3 anthropic agent opus max false'
     assert_nogrep "no CLI seat survives a failed Opus probe" "$B/opus-failed" '^seat .* claude opus '
+
+    printf '%s' '{"claude_adapter":"cli"}' > "$REVIEW_COUNCIL_CONFIG"
+    RA_LOGGED_IN=false "$SCRIPTS/roster.sh" > "$B/cli-signed-out.json"
+    assert_eq "an explicit CLI adapter without a signed-in CLI still builds a panel" "$?" 0
+    roster_lines "$B/cli-signed-out.json" "$B/cli-signed-out"
+    assert_grep "explicit cli reports the signed-out CLI" "$B/cli-signed-out" '^excluded claude -> not signed in$'
+    assert_grep "explicit cli pads a signed-out host with agent seats" "$B/cli-signed-out" \
+      '^seat claude-1 anthropic agent opus max false'
+    assert_nogrep "explicit cli never pads with a CLI that cannot sign in" "$B/cli-signed-out" '^seat .* claude opus '
   )
 }
 
