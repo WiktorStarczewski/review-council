@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.5
+
+- Seat Claude Code's Opus and Sonnet rows on the `claude` CLI adapter when the CLI is signed in, so plan panels and evidence-mode code panels run from a Claude Code host. `claude_adapter` (`auto`, `cli`, `agent`; env `REVIEW_COUNCIL_CLAUDE_ADAPTER`) controls the choice, `agent` keeps the previous roster byte for byte, and padding falls back to Agent seats when the CLI is unusable. A nested `claude -p` seat or probe drops the parent session's identity variables and keeps auth and provider variables.
+- Resolve ripgrep once for plan searches: `REV_RG`, then `PATH`, then Claude Code's embedded ripgrep, else `ripgrep binary not found on PATH; set REV_RG to a ripgrep executable`. The session input lock no longer relabels errors raised inside it.
+- Make the plan panel one plan-completeness seat by default (`plan_seats: "all"` restores four lenses), run it after triage and before any edit, and refuse `rev-state.sh phase=fix` while P0-P2 findings are open until the plan panel completes or `findings.md` records `Plan panel r<N>p - SKIPPED: <reason>`. Plan preparation uses source context like code panels. A normal adaptive review now plans 9 launches, a large or high-risk one 17, and an important one 13.
+- Read plan locations only from `Sites:` and the first token of a test field, so prose such as `600`, `client.sync`, `try/catch` and `onStage(a)/b` no longer fails preparation. Every plan refusal names the cluster, field and token and suggests the fix.
+- Add a sibling-site completeness sentence to every verification prompt, render a whole panel with `rev-prompt.sh --panel` and one manifest validation, and report per-seat render time in `rev-profile.py`.
+- Stop listing the same git tree once per source-context row during evidence validation. On a 7,680-line synthetic change one seat's evidence render drops from 35.6 s to 0.72 s and `verify` from 33.4 s to 0.55 s.
+
 ## 0.4.4
 
 - Document the bounded release lane: N-1 review from the signed 0.4.3 tag, the existing

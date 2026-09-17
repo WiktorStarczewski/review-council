@@ -1,11 +1,11 @@
 # CLI Claude seats and a fast plan gate (#7, #8)
 
-- [ ] WP1 #7 roster: `claude_adapter` (cli/agent/auto) + env override, one resolver, padding follows it; `plan_seats` config recorded in roster.json only when `all`.
-- [ ] WP1 #7 seat: nested `claude -p` scrubs parent-session env; flags test; live Sonnet smoke from Claude Code.
-- [ ] WP1 #7 ripgrep: one resolver (REV_RG, PATH, Claude Code embedded ripgrep), clear failure; session input lock stops relabelling body errors.
-- [ ] WP3 #8 evidence: one-seat plan topology, verify-panel for one seat, parser reads paths only in `Sites:` and the first `Test:` token, refusals name cluster/field/token/fix, capacity refusal retries with chunks.
-- [ ] WP4 #8 prompts: `--phase` flag and verification sibling-site sentence; `--panel` render in one process with one manifest load; per-seat render time in rev-profile.
-- [ ] WP5 #8/#7 skills: both host skills (CLI claude rows via rev-seat.sh, evidence gated on agent rows only, one-seat plan default, plan before code, verification sentence, panel render); rev-state.sh refuses `phase=fix` without a plan or a recorded skip.
+- [x] WP1 #7 roster: `claude_adapter` (cli/agent/auto) + env override, one resolver, padding follows it; `plan_seats` config recorded in roster.json only when `all`.
+- [x] WP1 #7 seat: nested `claude -p` scrubs parent-session env; flags test; live Sonnet smoke from Claude Code.
+- [x] WP1 #7 ripgrep: one resolver (REV_RG, PATH, Claude Code embedded ripgrep), clear failure; session input lock stops relabelling body errors.
+- [x] WP3 #8 evidence: one-seat plan topology, verify-panel for one seat, parser reads paths only in `Sites:` and the first `Test:` token, refusals name cluster/field/token/fix, capacity refusal retries with chunks.
+- [x] WP4 #8 prompts: `--phase` flag and verification sibling-site sentence; `--panel` render in one process with one manifest load; per-seat render time in rev-profile.
+- [x] WP5 #8/#7 skills: both host skills (CLI claude rows via rev-seat.sh, evidence gated on agent rows only, one-seat plan default, plan before code, verification sentence, panel render); rev-state.sh refuses `phase=fix` without a plan or a recorded skip.
 - [ ] Merge, CHANGELOG, full suite, fast review panel, PR.
 
 # Token-Efficient Review Council
