@@ -74,6 +74,7 @@ t-plan-evidence.sh::test_plan_generated_name_collision	8	normal
 t-plan-evidence.sh::test_plan_location_domain	8	normal
 t-plan-evidence.sh::test_plan_location_range_revalidated_fresh	8	normal
 t-plan-evidence.sh::test_plan_parser_handles_literal_searches_and_special_paths	8	normal
+t-plan-evidence.sh::test_plan_parser_reads_locations_only_in_sites_and_test_path	8	normal
 t-plan-evidence.sh::test_plan_parser_rejects_incomplete_and_escaping_clusters	8	normal
 t-plan-evidence.sh::test_plan_receipt_relative_routing	8	normal
 t-plan-evidence.sh::test_plan_search_domain_covers_worktree_without_following_symlinks	8	normal

@@ -1171,16 +1171,73 @@ bad = [
     b'''## C-01 - bare range before path\nFindings: F-001\nRule: Keep value stable.\nSites: 4-6, src/value.ts:1 (found by: rg -n value .)\nTest: tests/value.test.ts:1\n''',
     b'''## C-01 - missing regression\nFindings: F-001\nRule: Keep value stable.\nSites: src/value.ts:1 (found by: rg -n value .)\n''',
 ]
+sites_form = '; expected Sites: <path>[:<start>[-<end>]], ... (found by: <search>)'
+messages = {
+    b'escaping path': 'plan cluster C-01 field Sites: path escape "../src/value.ts:1"' + sites_form,
+    b'reversed range': 'plan cluster C-01 field Sites: invalid line range "src/value.ts:4-2"' + sites_form,
+    b'bare range after': 'plan cluster C-01 field Sites: unparsed line range "4-6"' + sites_form,
+    b'bare range before': 'plan cluster C-01 field Sites: unparsed line range "4-6"' + sites_form,
+}
 for raw in bad:
     try:
         module.parse_plan(raw, entries)
     except ValueError as error:
-        if b'bare range' in raw:
-            assert str(error) == 'plan field contains an unparsed line range', str(error)
+        for name, message in messages.items():
+            if name in raw:
+                assert str(error) == message, str(error)
         continue
     raise AssertionError(raw.decode())
 PY
   assert_eq "plan parser fails closed on incomplete and escaping clusters" "$?" 0
+}
+
+test_plan_parser_reads_locations_only_in_sites_and_test_path() {
+  python3 - "$SCRIPTS/rev-evidence.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('rev_evidence', sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+entries = {'src/client.ts', 'tests/client.test.ts'}
+search = " (found by: grep --exclude-dir=.git --null -r -n -- 'sync' .)"
+def plan(rule, test, sites='src/client.ts:1', field='Test'):
+    return (f'## C-07 - prose\nFindings: F-001\nRule: {rule}\nSites: {sites}{search}\n'
+            f'Must not: retry after 600 ms or touch client.sync.\n{field}: {test}\n').encode()
+prose = ['600', '3 s', 'client.sync', "onStage('submitting')/markSubmitting",
+         'onStage(a)/b', 'try/catch', 'failure/cancellation']
+for text in prose:
+    for field in ('Test', 'Tests', 'Regression'):
+        rows = module.parse_plan(plan(text, 'tests/client.test.ts:1 - ' + text + ' fails today', field=field),
+                                 entries)[0]['paths']
+        assert [(row['path'], row['line_start'], row['field']) for row in rows] == [
+            ('src/client.ts', 1, 'sites'), ('tests/client.test.ts', 1, field.lower())], (text, rows)
+combined = plan('wait 600 ms, then 3 s, for client.sync inside try/catch around onStage(a)/b.',
+                'tests/client.test.ts - client.sync after 600 ms skips try/catch in onStage(a)/b.')
+assert [row['path'] for row in module.parse_plan(combined, entries)[0]['paths']] == [
+    'src/client.ts', 'tests/client.test.ts']
+test_form = '; expected Test: <path> - <what fails today>'
+sites_form = '; expected Sites: <path>[:<start>[-<end>]], ... (found by: <search>)'
+refused = {
+    plan('ok', 'manager - rejects a late call'):
+        'plan cluster C-07 field Test: no resolvable path "manager"' + test_form,
+    plan('ok', 'client.sync - rejects a late call'):
+        'plan cluster C-07 field Test: missing basename in pinned snapshot "client.sync"' + test_form,
+    plan('ok', 'tests/client.test.ts', sites='src/missing.ts:1'):
+        'plan cluster C-07 field Sites: path does not exist in pinned snapshot "src/missing.ts"' + sites_form,
+    plan('ok', 'tests/client.test.ts', sites='src/client.ts:1 inside try/catch'):
+        'plan cluster C-07 field Sites: path does not exist in pinned snapshot "try/catch"' + sites_form,
+    plan('ok', 'tests/client.test.ts', sites='src/client.ts:1 after 600 ms'):
+        'plan cluster C-07 field Sites: unparsed line range "600"' + sites_form,
+    plan('ok', 'tests/client.test.ts', sites="onStage('submitting')/markSubmitting"):
+        'plan cluster C-07 field Sites: path escape "onStage(\'submitting\')/markSubmitting"' + sites_form,
+}
+for raw, message in refused.items():
+    try:
+        module.parse_plan(raw, entries)
+    except ValueError as error:
+        assert str(error) == message, str(error)
+    else:
+        raise AssertionError(raw.decode())
+PY
+  assert_eq "plan parser treats prose outside Sites and the leading test path as prose" "$?" 0
 }
 
 test_plan_search_parser_rejects_ambiguous_commands() {
@@ -1656,7 +1713,7 @@ raw = b'''## C-01 - canonical locations
 Findings: F-001
 Rule: Keep every exact location stable.
 Sites: src/value.ts.generated:2, `src/nested value.ts`:1-2, src/\xc3\xbcber value.ts:3, unique.test.ts:4, README.md:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'value' .)
-Test: `src/uber value.ts:5-6`; src/value.ts:7
+Test: `src/uber value.ts:5-6`; src/value.ts:7 stays prose
 '''
 rows = module.parse_plan(raw, entries)[0]['paths']
 assert [(row['path'], row['line_start'], row['line_end'], row['resolution']) for row in rows] == [
@@ -1666,12 +1723,11 @@ assert [(row['path'], row['line_start'], row['line_end'], row['resolution']) for
     ('tests/unique.test.ts', 4, 4, 'basename'),
     ('README.md', 1, 1, 'basename'),
     ('src/uber value.ts', 5, 6, 'direct'),
-    ('src/value.ts', 7, 7, 'direct'),
 ], rows
 try:
     module.plan_field_paths('prefixsrc/value.ts.generated.extra', entries)
 except ValueError as error:
-    assert str(error).endswith('prefixsrc/value.ts.generated.extra'), error
+    assert str(error).endswith('"prefixsrc/value.ts.generated.extra"'), error
 else:
     raise AssertionError('embedded path fragment unexpectedly resolved')
 
@@ -1693,7 +1749,7 @@ for name, field in bad_fields.items():
 try:
     module.validate_plan_range(1, 1, 0, 'src/empty.ts')
 except ValueError as error:
-    assert str(error).endswith('src/empty.ts'), error
+    assert str(error).endswith('"src/empty.ts"'), error
 else:
     raise AssertionError('empty-file line unexpectedly resolved')
 PY
@@ -1733,7 +1789,7 @@ EOF
       > "$T/plan-location-prepare.out" 2> "$T/plan-location-prepare.err"
     assert_eq "past-EOF plan range fails before publication" "$?" 2
     assert_grep "past-EOF preparation reports the canonical range error" \
-      "$T/plan-location-prepare.err" 'plan site line range is outside pinned source: src/value\.ts'
+      "$T/plan-location-prepare.err" 'plan cluster C-01 field Sites: line range is outside pinned source "src/value\.ts:2"; expected Sites: '
     assert_eq "past-EOF preparation leaves no label artifacts" \
       "$(find "$S" -maxdepth 1 -name 'rbad-*' | wc -l | tr -d ' ')" 0
 
@@ -1746,7 +1802,7 @@ EOF
       > "$T/plan-location-empty.out" 2> "$T/plan-location-empty.err"
     assert_eq "a location in an empty file fails before publication" "$?" 2
     assert_grep "empty-file location reports the canonical range error" \
-      "$T/plan-location-empty.err" 'plan site line range is outside pinned source: src/empty\.ts'
+      "$T/plan-location-empty.err" 'plan cluster C-01 field Sites: line range is outside pinned source "src/empty\.ts:1"; expected Sites: '
     assert_eq "empty-file location leaves no label artifacts" \
       "$(find "$S" -maxdepth 1 -name 'rempty-*' | wc -l | tr -d ' ')" 0
 
@@ -1781,6 +1837,6 @@ PY
       > "$T/plan-location-verify.out" 2> "$T/plan-location-verify.err"
     assert_eq "fresh verification rechecks plan ranges against pinned source" "$?" 2
     assert_grep "fresh verification reports the canonical range error" \
-      "$T/plan-location-verify.err" 'plan site line range is outside pinned source: src/value\.ts'
+      "$T/plan-location-verify.err" 'plan cluster C-01 field Sites: line range is outside pinned source "src/value\.ts:2"; expected Sites: '
   )
 }

@@ -1559,14 +1559,14 @@ def plan_search_pattern(text):
     return plan_search_contract(text)['pattern']
 
 
-def validate_plan_range(line_start, line_end, line_count=None, path=None):
+def validate_plan_range(line_start, line_end, line_count=None, location=None):
     if line_start is None and line_end is None:
         return
     if (type(line_start) is not int or type(line_end) is not int
             or line_start < 1 or line_end < line_start):
-        raise ValueError('plan field contains an invalid line range')
+        raise ValueError(f'invalid line range "{location}"')
     if line_count is not None and line_end > line_count:
-        raise ValueError('plan site line range is outside pinned source: ' + str(path))
+        raise ValueError(f'line range is outside pinned source "{location}"')
 
 
 def plan_path_boundary(text, start, end):
@@ -1594,18 +1594,19 @@ def plan_path_resolution(token, entries):
     if token in entries:
         return token, 'direct'
     if '/' in token:
-        raise ValueError('plan path does not exist in pinned snapshot: ' + token)
+        raise ValueError(f'path does not exist in pinned snapshot "{token}"')
     candidates = sorted(path for path in entries if Path(path).name == token)
     if len(candidates) != 1:
         reason = 'ambiguous' if candidates else 'missing'
-        raise ValueError(reason + ' plan basename in pinned snapshot: ' + token)
+        raise ValueError(f'{reason} basename in pinned snapshot "{token}"')
     return candidates[0], 'basename'
 
 
 def plan_field_paths(text, entries):
     """Resolve every path-like token in a plan field against the pinned tree."""
-    if re.search(r'(?<![\w@.-])(?:/|\.\.?/)', text):
-        raise ValueError('plan field contains a path escape')
+    escape = re.search(r'(?<!\S)\S*?(?<![\w@.-])(?:/|\.\.?/)\S*', text)
+    if escape:
+        raise ValueError(f'path escape "{escape.group(0)}"')
     entries = set(entries)
     candidates = []
     protected = []
@@ -1627,7 +1628,7 @@ def plan_field_paths(text, entries):
             if '/' in token or '.' in token:
                 raise
             continue
-        validate_plan_range(line_start, line_end)
+        validate_plan_range(line_start, line_end, location=quoted.group(0))
         candidates.append((quoted.start(), quoted.end(), token, path, resolution,
                            line_start, line_end))
 
@@ -1644,7 +1645,7 @@ def plan_field_paths(text, entries):
             if (not any(left <= start < right or left < end <= right
                         for left, right in occupied)
                     and plan_path_boundary(text, start, end)):
-                validate_plan_range(line_start, line_end)
+                validate_plan_range(line_start, line_end, location=text[start:end])
                 candidates.append((start, end, token, token, 'direct', line_start, line_end))
                 occupied.append((start, end))
             start = path_end
@@ -1665,8 +1666,8 @@ def plan_field_paths(text, entries):
                     and plan_path_boundary(text, start, end)):
                 paths = sorted(basename_paths[token])
                 if len(paths) != 1:
-                    raise ValueError('ambiguous plan basename in pinned snapshot: ' + token)
-                validate_plan_range(line_start, line_end)
+                    raise ValueError(f'ambiguous basename in pinned snapshot "{token}"')
+                validate_plan_range(line_start, line_end, location=text[start:end])
                 candidates.append((start, end, token, paths[0], 'basename',
                                    line_start, line_end))
                 occupied.append((start, end))
@@ -1682,7 +1683,7 @@ def plan_field_paths(text, entries):
             continue
         token = match.group(1)
         plan_path_resolution(token, entries)
-        raise ValueError('plan field contains an unparsed path: ' + token)
+        raise ValueError(f'unparsed path "{token}"')
 
     rows = []
     bound_spans = []
@@ -1700,13 +1701,13 @@ def plan_field_paths(text, entries):
             bound_spans.append((end + shorthand.start(), end + shorthand.end()))
             extra_start = int(shorthand.group(1))
             extra_end = int(shorthand.group(2)) if shorthand.group(2) else extra_start
-            validate_plan_range(extra_start, extra_end)
+            validate_plan_range(extra_start, extra_end, location=shorthand.group(0).lstrip(',; '))
             extra = dict(row, line_start=extra_start, line_end=extra_end)
             if extra not in rows:
                 rows.append(extra)
     for number in re.finditer(r'(?<![\w.]):?\d+(?:-\d+)?(?![\w.])', text):
         if not any(start <= number.start() and number.end() <= end for start, end in bound_spans):
-            raise ValueError('plan field contains an unparsed line range')
+            raise ValueError(f'unparsed line range "{number.group(0)}"')
     return rows
 
 
@@ -1714,15 +1715,25 @@ def validate_plan_source_location(repo, entries, row):
     try:
         entry = entries[row['path']]
     except KeyError as error:
-        raise ValueError('plan site is absent from pinned source: ' + row['path']) from error
+        raise ValueError(f'path is absent from pinned source "{row["path"]}"') from error
     body = repo.blob(entry)
     if (entry[0] not in ('100644', '100755') or body is OVERSIZED_BLOB or b'\0' in body):
-        raise ValueError('plan site is opaque or oversized: ' + row['path'])
+        raise ValueError(f'path is opaque or oversized "{row["path"]}"')
     try:
         lines = split_lf_text(body.decode('utf-8'))
     except UnicodeDecodeError as error:
-        raise ValueError('plan site is not UTF-8: ' + row['path']) from error
-    validate_plan_range(row['line_start'], row['line_end'], len(lines), row['path'])
+        raise ValueError(f'path is not UTF-8 "{row["path"]}"') from error
+    location = f"{row['path']}:{row['line_start']}"
+    if row['line_end'] != row['line_start']:
+        location += f"-{row['line_end']}"
+    validate_plan_range(row['line_start'], row['line_end'], len(lines), location)
+
+
+def plan_field_refusal(cluster_id, field, error):
+    name = field.capitalize()
+    form = ('<path>[:<start>[-<end>]], ... (found by: <search>)' if field == 'sites'
+            else '<path> - <what fails today>')
+    return ValueError(f'plan cluster {cluster_id} field {name}: {error}; expected {name}: {form}')
 
 
 def reject_plan_artifact_collision(entries, label):
@@ -1770,9 +1781,15 @@ def parse_plan(raw, entries):
                 search = re.search(r'\(\s*found\s+by:', field_text, re.I)
                 if search:
                     field_text = field_text[:search.start()].rstrip()
-            resolved = plan_field_paths(field_text, entries)
-            if not resolved:
-                raise ValueError('plan cluster field contains no resolvable path: ' + field_name)
+            else:
+                # Only the leading test path is a location; the rest of the field is prose.
+                field_text = re.match(r'(?:`[^`\n]+`\S*|\S+)?', field_text).group(0)
+            try:
+                resolved = plan_field_paths(field_text, entries)
+                if not resolved:
+                    raise ValueError(f'no resolvable path "{field_text}"')
+            except ValueError as error:
+                raise plan_field_refusal(heading.group(1), field_name, error) from None
             for row in resolved:
                 item = dict(row, field=field_name)
                 if item not in path_rows:
@@ -3417,8 +3434,12 @@ def validate_plan(session, manifest, evidence, check_source, replay_searches=Tru
                 {key: value for key, value in cluster.items() if key != 'search_proof'}
                 for cluster in clusters]:
             raise ValueError('plan cluster parse changed')
-        for row in (row for cluster in parsed for row in cluster['paths']):
-            validate_plan_source_location(repo, entry_map, row)
+        for cluster in parsed:
+            for row in cluster['paths']:
+                try:
+                    validate_plan_source_location(repo, entry_map, row)
+                except ValueError as error:
+                    raise plan_field_refusal(cluster['id'], row['field'], error) from None
         if replay_searches and all('search_proof' in cluster for cluster in clusters):
             expected_clusters, expected_artifacts = prepare_plan_searches(
                 repo, manifest['snapshot_tree'], parsed, f"r{manifest['label']}",
@@ -4251,10 +4272,14 @@ def _prepare_locked(args, session):
         plan_entry_map = dict(base_entries); plan_entry_map.update(snapshot_entries)
         reject_plan_artifact_collision(plan_entry_map, args.label)
         plan_clusters = parse_plan(plan_raw, set(plan_entry_map))
-        for row in (row for cluster in plan_clusters for row in cluster['paths']):
-            if not repo.scoped(row['path']):
-                raise ValueError('plan site is outside literal scope: ' + row['path'])
-            validate_plan_source_location(repo, plan_entry_map, row)
+        for cluster in plan_clusters:
+            for row in cluster['paths']:
+                try:
+                    if not repo.scoped(row['path']):
+                        raise ValueError(f'path is outside literal scope "{row["path"]}"')
+                    validate_plan_source_location(repo, plan_entry_map, row)
+                except ValueError as error:
+                    raise plan_field_refusal(cluster['id'], row['field'], error) from None
         if snapshot_unsafe:
             raise ValueError('unsupported snapshot cannot support receipt-relative plan evidence')
     data['instructions'], instruction_packet = instructions(
