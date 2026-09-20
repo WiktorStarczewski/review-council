@@ -22,8 +22,9 @@ print("block" if d.get("decision") == "block" else "allow")
 ' "$1"
 }
 
-mk_rev_session() {  # mk_rev_session <dir> <phase> [round] - writes a state.json the guard will read
+mk_rev_session() {  # mk_rev_session <dir> <phase> [round] [root] - state.json (+ scope.env if root)
   mkdir -p "$1"
+  [ -n "${4:-}" ] && printf "REV_ROOT='%s'\n" "$4" > "$1/scope.env"
   python3 -c '
 import json, sys
 json.dump({"round": sys.argv[3], "phase": sys.argv[2], "seats": [], "open": {"P0": 0, "P1": 1, "P2": 0}},
@@ -33,7 +34,7 @@ json.dump({"round": sys.argv[3], "phase": sys.argv[2], "seats": [], "open": {"P0
 
 test_stop_guard_allows_with_no_session() {
   ( local C="$T/sg-none-count"
-    REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" > "$T/sg1.json" 2>"$T/sg1.err"; local rc=$?
+    REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" </dev/null > "$T/sg1.json" 2>"$T/sg1.err"; local rc=$?
     assert_eq "exits 0 with no review session" "$rc" 0
     assert_eq "allows with no review session" "$(stop_guard_decision "$T/sg1.json")" allow )
 }
@@ -41,7 +42,7 @@ test_stop_guard_allows_with_no_session() {
 test_stop_guard_allows_when_phase_done() {
   ( local D; D=$(mktemp -d /tmp/rev-sgdone.XXXXXX); local C="$T/sg-done-count"
     mk_rev_session "$D" done
-    REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" > "$T/sg2.json" 2>/dev/null
+    REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" </dev/null > "$T/sg2.json" 2>/dev/null
     assert_eq "allows when the newest live session is done" "$(stop_guard_decision "$T/sg2.json")" allow
     rm -rf "$D" )
 }
@@ -49,7 +50,7 @@ test_stop_guard_allows_when_phase_done() {
 test_stop_guard_blocks_mid_run() {
   ( local D; D=$(mktemp -d /tmp/rev-sgrun.XXXXXX); local C="$T/sg-run-count"
     mk_rev_session "$D" fix 2
-    REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" > "$T/sg3.json" 2>/dev/null
+    REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" </dev/null > "$T/sg3.json" 2>/dev/null
     assert_eq "blocks while a session is mid-run" "$(stop_guard_decision "$T/sg3.json")" block
     if grep -q 'phase=fix' "$T/sg3.json"; then ok "names the phase in the reason"
     else fail "names the phase in the reason" "$(cat "$T/sg3.json")"; fi
@@ -61,7 +62,7 @@ test_stop_guard_releases_at_the_cap() {
     mk_rev_session "$D" fix 2
     local last=block
     for _ in 1 2 3 4; do
-      REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" > "$T/sg4.json" 2>/dev/null
+      REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" </dev/null > "$T/sg4.json" 2>/dev/null
       last=$(stop_guard_decision "$T/sg4.json")
     done
     assert_eq "allows once the consecutive-block cap is reached" "$last" allow
@@ -74,8 +75,51 @@ test_stop_guard_allows_when_counter_unwritable() {
   ( local D; D=$(mktemp -d /tmp/rev-sgro.XXXXXX); local C="$T/sg-ro/state"
     mk_rev_session "$D" fix 2
     mkdir -p "$T/sg-ro"; : > "$T/sg-ro/state"   # a FILE where the hook wants a directory
-    REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" > "$T/sg5.json" 2>/dev/null
+    REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" </dev/null > "$T/sg5.json" 2>/dev/null
     assert_eq "allows when the counter cannot be persisted" "$(stop_guard_decision "$T/sg5.json")" allow
+    rm -rf "$D" )
+}
+
+test_stop_guard_ignores_a_review_of_another_tree() {
+  # This machine runs concurrent sessions and /tmp is shared, so an unscoped guard blocks every
+  # session for as long as ANY review is open anywhere. Observed live: a review of one repository
+  # blocked a stop in an unrelated one.
+  ( local D; D=$(mktemp -d /tmp/rev-sgother.XXXXXX); local C="$T/sg-other-count"
+    local other="$T/other-tree"; mkdir -p "$other" "$T/my-tree"
+    mk_rev_session "$D" collect 3 "$other"
+    printf '{"cwd":"%s","hook_event_name":"Stop"}' "$T/my-tree" \
+      | REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" > "$T/sg6.json" 2>/dev/null
+    assert_eq "allows when the live review is of another working tree" \
+      "$(stop_guard_decision "$T/sg6.json")" allow
+    printf '{"cwd":"%s","hook_event_name":"Stop"}' "$other" \
+      | REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" > "$T/sg7.json" 2>/dev/null
+    assert_eq "still blocks inside the reviewed tree" \
+      "$(stop_guard_decision "$T/sg7.json")" block
+    rm -rf "$D" )
+}
+
+test_stop_guard_keeps_a_session_with_no_scope_env() {
+  # Dropping a session whose scope.env is unreadable would silently disarm the guard, so an
+  # unattributable review still blocks.
+  ( local D; D=$(mktemp -d /tmp/rev-sgnoscope.XXXXXX); local C="$T/sg-noscope-count"
+    mk_rev_session "$D" fix 2
+    printf '{"cwd":"%s","hook_event_name":"Stop"}' "$T" \
+      | REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" > "$T/sg8.json" 2>/dev/null
+    assert_eq "blocks for a review with no readable scope.env" \
+      "$(stop_guard_decision "$T/sg8.json")" block
+    rm -rf "$D" )
+}
+
+test_stop_guard_does_not_hang_without_a_payload() {
+  # The hook reads its cwd from the Stop payload on stdin. An unbounded read turns a missing or
+  # never-closed stdin into a hang that burns the hook's whole timeout, so the read is bounded.
+  ( local D; D=$(mktemp -d /tmp/rev-sghang.XXXXXX); local C="$T/sg-hang-count"
+    mk_rev_session "$D" fix 2
+    local start; start=$(date +%s)
+    REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" </dev/null > "$T/sg9.json" 2>/dev/null
+    local elapsed=$(( $(date +%s) - start ))
+    if [ "$elapsed" -le 5 ]; then ok "returns promptly with no payload (${elapsed}s)"
+    else fail "returns promptly with no payload" "took ${elapsed}s"; fi
     rm -rf "$D" )
 }
 

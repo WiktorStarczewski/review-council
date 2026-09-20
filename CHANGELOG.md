@@ -8,8 +8,13 @@
   open findings. It fails open in every ambiguous case - no session, a session untouched for six
   hours, unreadable state, no `python3`, or a counter it cannot persist - releases after three
   consecutive blocks, and allows a genuine wait where the round is parked on unanswered seats,
-  every returned seat is triaged and the tree is clean. Hosts that already installed the guard by
-  hand should remove their personal `Stop` entry, or it runs twice against two counters.
+  every returned seat is triaged and the tree is clean. It is scoped to the stopping session's
+  working tree: review sessions share a `/tmp` namespace, so an unscoped guard blocks every
+  concurrent session on the machine for as long as one review is open anywhere, which was observed
+  live. A review whose `scope.env` cannot be read still blocks, since dropping it would disarm the
+  guard. The stdin read is bounded, so a missing or never-closed payload cannot hang the hook to
+  its timeout. Hosts that already installed the guard by hand should remove their personal `Stop`
+  entry, or it runs twice against two counters.
 
 ## 0.4.6
 

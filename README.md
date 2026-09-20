@@ -831,6 +831,11 @@ allows after three consecutive blocks so it can never loop, and it allows a genu
 the round is parked on seats that have not answered, every returned seat is triaged and the
 tree is clean. It makes no model call and never touches the repository.
 
+It is scoped to the working tree the stopping session is in, matched against each review's
+recorded `REV_ROOT`, because review sessions share one `/tmp` namespace and concurrent sessions
+are normal. A review whose `scope.env` cannot be read still blocks, since dropping it would
+disarm the guard.
+
 The consecutive-block counter lives in `$XDG_STATE_HOME/review-council` (or
 `~/.local/state/review-council`); `REVIEW_COUNCIL_STATE_DIR` overrides it.
 

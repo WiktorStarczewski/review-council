@@ -29,9 +29,39 @@ command -v python3 >/dev/null 2>&1 || allow
 touch "$COUNT_FILE" 2>/dev/null || exit 0     # unwritable counter: allow, never block uncapped
 [ -w "$COUNT_FILE" ] || exit 0                 # (touch must not truncate it - the count is the cap)
 
+# This machine runs many sessions at once, and review sessions live in a shared /tmp namespace, so
+# "is any review running" is the wrong question - it blocks every unrelated session for as long as
+# one review is open anywhere. Scope to reviews of THIS working tree: the hook payload carries the
+# stopping session's cwd, and each review records its repository root in scope.env.
+# Bounded: a Stop hook that hangs is worse than one that guesses. Claude Code writes the payload
+# and closes stdin, so this returns at once in practice; an inherited pipe that never closes costs
+# two seconds instead of the hook's whole timeout.
+HOOK_PAYLOAD=""
+IFS= read -r -t 2 -d '' HOOK_PAYLOAD 2>/dev/null || true
+HOOK_CWD=$(printf '%s' "$HOOK_PAYLOAD" | python3 -c '
+import json, sys
+try:
+    print(json.load(sys.stdin).get("cwd", "") or "")
+except Exception:
+    print("")
+' 2>/dev/null)
+HOOK_CWD=${HOOK_CWD:-$PWD}
+
 # Newest live review session, if any. Both /tmp and /private/tmp: macOS resolves one to the other.
 STATE=$(find /private/tmp /tmp -maxdepth 2 -name state.json -path '*/rev-*' \
           -mmin "-${STATE_MAX_AGE_MIN}" 2>/dev/null | head -20 | tr '\n' ' ')
+[ -z "${STATE// /}" ] && allow
+
+# Keep only sessions whose REV_ROOT contains, or is contained by, this session's cwd. A review with
+# no readable scope.env is kept, because dropping it would silently disarm the guard.
+MINE=""
+for st in $STATE; do
+  root=$(sed -n "s/^REV_ROOT='\(.*\)'$/\1/p" "$(dirname "$st")/scope.env" 2>/dev/null)
+  if [ -z "$root" ]; then MINE="$MINE $st"; continue; fi
+  case "$HOOK_CWD/" in "$root"/*) MINE="$MINE $st"; continue ;; esac
+  case "$root/" in "$HOOK_CWD"/*) MINE="$MINE $st" ;; esac
+done
+STATE=$MINE
 [ -z "${STATE// /}" ] && allow
 
 # Pick the newest session that is NOT done. More than one review can exist on this machine, and a
