@@ -827,17 +827,22 @@ phase and open findings in its reason.
 It is built to be wrong in the safe direction, because a guard that wrongly blocks is worse
 than one that misses: it allows whenever there is no session, the session is over six hours
 old, the state is unreadable, `python3` is missing, or its own counter cannot be persisted. It
-allows after three consecutive blocks so it can never loop, and it allows a genuine wait, where
-the round is parked on seats that have not answered, every returned seat is triaged and the
-tree is clean. It makes no model call and never touches the repository.
+allows after three consecutive blocks so it can never loop, and once released it stays released
+for that session until the review is done. It allows a genuine wait, where the round is parked on
+seats that have not answered, every returned seat is triaged and the tree is clean. It makes no
+model call and never touches the repository.
 
 It is scoped to the working tree the stopping session is in, matched against each review's
 recorded `REV_ROOT`, because review sessions share one `/tmp` namespace and concurrent sessions
 are normal. A review whose `scope.env` cannot be read still blocks, since dropping it would
-disarm the guard.
+disarm the guard. Only session directories owned by the current user count, because `/tmp` is
+world-writable.
 
 The consecutive-block counter lives in `$XDG_STATE_HOME/review-council` (or
-`~/.local/state/review-council`); `REVIEW_COUNCIL_STATE_DIR` overrides it.
+`~/.local/state/review-council`), one file per stopping session, so another session's outcome
+cannot move it - a single shared counter is not a cap, because every allow path resets it.
+`REVIEW_COUNCIL_STATE_DIR` overrides that directory, and `REVIEW_COUNCIL_SESSION_ROOTS` overrides
+where sessions are discovered so a test can own the state it reads.
 
 ## Host differences
 
