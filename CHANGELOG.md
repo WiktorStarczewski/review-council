@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.7
 
 - Install a `Stop` hook that refuses to end a turn while a review session is mid-run. The
   recurring failure is stopping on a status summary with queue items left, so the hook reads the
