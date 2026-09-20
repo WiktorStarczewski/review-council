@@ -91,7 +91,7 @@ SESSION_ROOTS=${REVIEW_COUNCIL_SESSION_ROOTS:-"/private/tmp /tmp"}
 # shellcheck disable=SC2086
 GUARD_UID=${REVIEW_COUNCIL_TEST_UID:-$(id -u)}
 STATE=$(find $SESSION_ROOTS -maxdepth 2 -name state.json -path '*/rev-*' \
-          -user "$GUARD_UID" -mmin "-${STATE_MAX_AGE_MIN}" 2>/dev/null | head -20 | tr '\n' ' ')
+          -user "$GUARD_UID" -mmin "-${STATE_MAX_AGE_MIN}" 2>/dev/null | tr '\n' ' ')
 [ -z "${STATE// /}" ] && allow
 
 # Keep only sessions whose REV_ROOT contains, or is contained by, this session's cwd. A review with
@@ -106,13 +106,21 @@ for st in $STATE; do
   case "$HOOK_CWD" in "$HOME"|/|"") continue ;; esac
   case "$root/" in "$HOOK_CWD"/*) MINE="$MINE $st" ;; esac
 done
-STATE=$MINE
+# Cap here, AFTER scoping: capping the find output spent the budget in readdir order on sessions
+# that may all belong to other trees, so the one live in-scope review could be dropped and the
+# guard would silently allow. The age window already bounds this list.
+STATE=$(printf '%s' "$MINE" | tr ' ' '\n' | grep -v '^$' | head -40 | tr '\n' ' ')
 [ -z "${STATE// /}" ] && allow
 
 # Pick the newest session that is NOT done. More than one review can exist on this machine, and a
 # finished one can easily carry the newer mtime, so "newest file" is the wrong question - "is any
 # live review unfinished" is the right one.
-read -r PHASE ROUND OPEN WAITING SESSDIR < <(python3 - $STATE <<'PY' 2>/dev/null
+# One field per LINE, never positional: phase and round are attacker-writable, and a single space
+# in either shifted every later field - SESSDIR absorbed the waiting flag, the stored key could
+# then never match, COUNT was forced to 0 and the cap became unreachable, so the guard blocked
+# forever. Display fields have newlines collapsed; the counter is keyed on a hex digest, so no
+# session-controlled text can reach it at all.
+GUARD_FIELDS=$(python3 - $STATE <<'PY' 2>/dev/null
 import json, sys, os, glob
 # A run can end without ever reaching "done": skills/rev/SKILL.md requires a stack leg to finish at
 # phase=stack-ready and forbids it to set done, and a required-publication failure ends at
@@ -128,15 +136,22 @@ for p in sys.argv[1:]:
         d = json.load(open(p))
         if str(d.get("phase", "done")) in TERMINAL:
             continue
-        if any(os.path.exists(os.path.join(os.path.dirname(p), r)) for r in RECEIPTS):
+        # A receipt is a NON-EMPTY REGULAR FILE, the definition scripts/rev-state.sh already uses.
+        # Bare existence let `touch report.md` disarm the guard for the rest of a live review.
+        _d = os.path.dirname(p)
+        if any(os.path.isfile(os.path.join(_d, r)) and os.path.getsize(os.path.join(_d, r)) > 0
+               for r in RECEIPTS):
             continue
         m = os.path.getmtime(p)
         if m > mtime:
             best, bestdir, mtime = d, os.path.dirname(p), m
     except Exception:
         pass
+def line(v):
+    return " ".join(str(v).split())          # a field can never span lines
 if best is None:
-    print("done 0 0 no -")
+    for _v in ("done", "0", "0", "no", "-", "-"):
+        print(_v)
 else:
     o = best.get("open", {}) or {}
     n = sum(v for v in o.values() if isinstance(v, int))
@@ -151,9 +166,26 @@ else:
                  if os.path.exists(os.path.join(bestdir, f"r{rnd}-{s}.json"))
                  and not os.path.exists(os.path.join(bestdir, f"r{rnd}-{s}.exit"))]
     waiting = phase in ("fan-out", "collect") and outstanding and not untriaged
-    print(f'{phase} {rnd} {n} {"yes" if waiting else "no"} {bestdir}')
+    import hashlib
+    print(line(phase))
+    print(line(rnd))
+    print(line(n))
+    print("yes" if waiting else "no")
+    # A hex digest, not the path: the counter file stores "<key> <count>" and splits on the first
+    # space, so a session directory containing one would corrupt the key. Defence in depth rather
+    # than a tested path - discovery joins candidates with spaces too (see STATE), so a spaced
+    # session directory never reaches here in the first place. Real sessions are /tmp/rev-<epoch>.
+    print(hashlib.sha256(bestdir.encode()).hexdigest()[:16])
+    print(line(bestdir))
 PY
 ) || allow
+[ -n "$GUARD_FIELDS" ] || allow
+PHASE=$(printf '%s\n' "$GUARD_FIELDS" | sed -n '1p')
+ROUND=$(printf '%s\n' "$GUARD_FIELDS" | sed -n '2p')
+OPEN=$(printf '%s\n' "$GUARD_FIELDS" | sed -n '3p')
+WAITING=$(printf '%s\n' "$GUARD_FIELDS" | sed -n '4p')
+SESSKEY=$(printf '%s\n' "$GUARD_FIELDS" | sed -n '5p')
+SESSDIR=$(printf '%s\n' "$GUARD_FIELDS" | sed -n '6p')
 
 # A clean tree is part of "nothing of mine outstanding": uncommitted bytes are work in progress.
 if [ "${WAITING:-no}" = "yes" ]; then
@@ -175,20 +207,20 @@ case "$PHASE" in done|stack-ready|blocked) allow ;; esac
 # session, a release earned against one review silently carried into the next, leaving a fresh
 # review unguarded from its first stop.
 STORED=$(cat "$COUNT_FILE" 2>/dev/null || true)
-STORED_DIR=${STORED%% *}
+STORED_KEY=${STORED%% *}
 COUNT=${STORED##* }
-[ "$STORED_DIR" = "$SESSDIR" ] || COUNT=0      # a different review re-arms the cap
+[ "$STORED_KEY" = "$SESSKEY" ] || COUNT=0      # a different review re-arms the cap
 case "$COUNT" in ''|*[!0-9]*) COUNT=0 ;; esac
 
 if [ "$COUNT" -ge "$MAX_CONSECUTIVE" ]; then
   # Cap reached: allow, and STAY released for THIS review. Resetting to 0 here made the cap a toll
   # rather than a release - every later stop cost another three blocked turns for as long as the
   # review stayed open.
-  printf '%s %s\n' "$SESSDIR" "$MAX_CONSECUTIVE" > "$COUNT_FILE" 2>/dev/null
+  printf '%s %s\n' "$SESSKEY" "$MAX_CONSECUTIVE" > "$COUNT_FILE" 2>/dev/null
   json_message "rev-session-guard: allowing stop after $MAX_CONSECUTIVE consecutive blocks (cap reached; review still at phase=$PHASE)."
   exit 0
 fi
-printf '%s %s\n' "$SESSDIR" "$((COUNT + 1))" > "$COUNT_FILE" 2>/dev/null
+printf '%s %s\n' "$SESSKEY" "$((COUNT + 1))" > "$COUNT_FILE" 2>/dev/null
 
 json_block "$ROUND" "$PHASE" "$OPEN" "$MAX_CONSECUTIVE"
 exit 0

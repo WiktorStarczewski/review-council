@@ -212,7 +212,7 @@ test_stop_guard_allows_terminal_phases() {
     # and a non-terminal phase that has already written its receipt
     rm -rf "$R"; mkdir -p "$R"
     mk_rev_session "$R/rev-receipt" fix 2 "$T/my-tree"
-    : > "$R/rev-receipt/incomplete.md"
+    printf 'publication failed\n' > "$R/rev-receipt/incomplete.md"   # a receipt is a non-empty file
     guard "$C" "$R" "$T/my-tree" > "$T/sg18.json"
     assert_eq "allows when the run has written a receipt" \
       "$(stop_guard_decision "$T/sg18.json")" allow )
@@ -261,6 +261,54 @@ test_stop_guard_release_is_keyed_to_the_review() {
     guard "$C" "$R" "$T/my-tree" K > "$T/sg23.json"
     assert_eq "a NEW review re-arms the cap for the same session" \
       "$(stop_guard_decision "$T/sg23.json")" block )
+}
+
+test_stop_guard_cap_survives_whitespace_in_state() {
+  # phase and round are attacker-writable. Passed as positional fields, one space shifted every
+  # later field, the stored counter key could never match, and the cap became unreachable - the
+  # guard blocked forever, the one outcome the cap exists to prevent.
+  ( local C="$T/sg-ws-count" R="$T/sg-ws-root"; mkdir -p "$R/rev-ws"
+    printf "REV_ROOT='%s'\n" "$T/my-tree" > "$R/rev-ws/scope.env"
+    python3 -c '
+import json, sys
+json.dump({"round": "2 x", "phase": "fix now", "seats": [], "open": {"P1": 1}},
+          open(sys.argv[1], "w"))
+' "$R/rev-ws/state.json"
+    local seq="" i=1
+    while [ "$i" -le 4 ]; do
+      guard "$C" "$R" "$T/my-tree" WS > "$T/sg24.json"
+      seq="$seq$(stop_guard_decision "$T/sg24.json") "
+      i=$((i + 1))
+    done
+    assert_eq "the cap is still reachable with whitespace in phase and round" \
+      "$seq" "block block block allow " )
+}
+
+test_stop_guard_receipt_must_be_a_real_file() {
+  # Bare existence let `touch report.md` disarm the guard for the rest of a live review.
+  ( local C="$T/sg-rc-count" R="$T/sg-rc-root"; mkdir -p "$R"
+    mk_rev_session "$R/rev-rc" fix 2 "$T/my-tree"
+    : > "$R/rev-rc/report.md"
+    guard "$C" "$R" "$T/my-tree" RC1 > "$T/sg25.json"
+    assert_eq "a zero-byte receipt does not end a live review" \
+      "$(stop_guard_decision "$T/sg25.json")" block
+    printf 'real content\n' > "$R/rev-rc/report.md"
+    guard "$C" "$R" "$T/my-tree" RC2 > "$T/sg26.json"
+    assert_eq "a non-empty receipt does end it" \
+      "$(stop_guard_decision "$T/sg26.json")" allow )
+}
+
+test_stop_guard_caps_candidates_after_scoping() {
+  # The candidate cap ran BEFORE the scope filter and find emits readdir order, so enough
+  # out-of-scope sessions could push the one live in-scope review out of the list and the guard
+  # would silently allow.
+  ( local C="$T/sg-many-count" R="$T/sg-many-root"; mkdir -p "$R" "$T/other-tree"
+    local i=1
+    while [ "$i" -le 30 ]; do mk_rev_session "$R/rev-noise$i" fix 1 "$T/other-tree"; i=$((i + 1)); done
+    mk_rev_session "$R/rev-live" fix 2 "$T/my-tree"
+    guard "$C" "$R" "$T/my-tree" MANY > "$T/sg27.json"
+    assert_eq "the in-scope review is found among many out-of-scope ones" \
+      "$(stop_guard_decision "$T/sg27.json")" block )
 }
 
 test_stop_guard_is_declared_in_hooks_json() {
