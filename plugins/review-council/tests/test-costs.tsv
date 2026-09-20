@@ -241,6 +241,7 @@ t-status.sh::test_status_source_fallthrough	1	normal
 t-status.sh::test_status_unmapped_opus_cli_logs	1	normal
 t-stop-guard.sh::test_stop_guard_allows_on_a_stale_session	1	normal
 t-stop-guard.sh::test_stop_guard_allows_on_unreadable_state	1	normal
+t-stop-guard.sh::test_stop_guard_allows_terminal_phases	1	normal
 t-stop-guard.sh::test_stop_guard_allows_when_counter_unwritable	1	normal
 t-stop-guard.sh::test_stop_guard_allows_when_phase_done	1	normal
 t-stop-guard.sh::test_stop_guard_allows_with_no_session	1	normal
@@ -249,10 +250,13 @@ t-stop-guard.sh::test_stop_guard_blocks_mid_run	1	normal
 t-stop-guard.sh::test_stop_guard_cap_is_per_session	1	normal
 t-stop-guard.sh::test_stop_guard_does_not_hang_on_an_open_pipe	1	normal
 t-stop-guard.sh::test_stop_guard_does_not_match_a_sibling_prefix	1	normal
+t-stop-guard.sh::test_stop_guard_escapes_session_controlled_text	1	normal
+t-stop-guard.sh::test_stop_guard_handles_a_path_with_spaces	1	normal
 t-stop-guard.sh::test_stop_guard_ignores_a_review_of_another_tree	1	normal
 t-stop-guard.sh::test_stop_guard_ignores_another_users_session	1	normal
 t-stop-guard.sh::test_stop_guard_is_declared_in_hooks_json	1	normal
 t-stop-guard.sh::test_stop_guard_keeps_a_session_with_no_scope_env	1	normal
+t-stop-guard.sh::test_stop_guard_release_is_keyed_to_the_review	1	normal
 t-stop-guard.sh::test_stop_guard_releases_at_the_cap_and_stays_released	1	normal
 t-update.sh::test_update_bad_inputs_are_silent	1	normal
 t-update.sh::test_update_cache_dir_respects_xdg	1	normal

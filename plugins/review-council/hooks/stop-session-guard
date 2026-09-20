@@ -26,13 +26,28 @@ mkdir -p "$COUNT_DIR" 2>/dev/null
 # is not a cap: every allow path resets it, so any OTHER session ending a turn with no review in its
 # tree zeroes the count of a session that is being blocked, and the blocked one never reaches the
 # cap. Observed live - a session was blocked four times against a cap of three.
-COUNT_FILE="$COUNT_DIR/stop-guard-count"
+COUNT_FILE=
 
-allow() { echo 0 > "$COUNT_FILE" 2>/dev/null; exit 0; }
+# Without python3 nothing below can read a session at all, so there is nothing to guard. Say so,
+# because an allow that emits nothing is indistinguishable from every other allow.
+command -v python3 >/dev/null 2>&1 || {
+  printf '{"systemMessage":"rev-session-guard: allowing stop - python3 is unavailable, so no review state can be read."}\n'
+  exit 0
+}
 
-command -v python3 >/dev/null 2>&1 || allow
-touch "$COUNT_FILE" 2>/dev/null || exit 0     # unwritable counter: allow, never block uncapped
-[ -w "$COUNT_FILE" ] || exit 0                 # (touch must not truncate it - the count is the cap)
+# Emitters. Session state is DATA: round and phase come from a /tmp file any same-uid process can
+# write, so they are never interpolated into the JSON by hand - python builds the object.
+json_message() { python3 -c 'import json,sys; print(json.dumps({"systemMessage": sys.argv[1]}))' "$1"; }
+json_block() {  # json_block <round> <phase> <open> <max>
+  python3 -c 'import json,sys
+r, p, o, m = sys.argv[1:5]
+print(json.dumps({"decision": "block", "reason":
+  "A review-council session is still mid-run: round %s, phase=%s, %s findings open. Finishing a "
+  "round, a cluster or a commit is not a handoff point - continue the queue in this same turn. "
+  "Permitted stops are only: the user asked a question, the whole agreed queue is finished, a "
+  "decision genuinely needs the user, or a gate needs their authorisation. If this is one of "
+  "those, say so and stop again (the guard allows after %s consecutive blocks)." % (r, p, o, m)}))' "$@"
+}
 
 # This machine runs many sessions at once, and review sessions live in a shared /tmp namespace, so
 # "is any review running" is the wrong question - it blocks every unrelated session for as long as
@@ -43,30 +58,40 @@ touch "$COUNT_FILE" 2>/dev/null || exit 0     # unwritable counter: allow, never
 # two seconds instead of the hook's whole timeout.
 HOOK_PAYLOAD=""
 IFS= read -r -t 2 -d '' HOOK_PAYLOAD 2>/dev/null || true
-read -r HOOK_CWD HOOK_SESSION <<EOF_IDS
-$(printf '%s' "$HOOK_PAYLOAD" | python3 -c '
+# One field per line: packing both into one whitespace-split line forced cwd's spaces to be
+# rewritten, and a mangled cwd can never match REV_ROOT, which silently disarms the guard in any
+# working tree whose path contains a space. Only session_id is sanitised - it becomes a filename.
+IDS=$(printf '%s' "$HOOK_PAYLOAD" | python3 -c '
 import json, re, sys
 try:
     d = json.load(sys.stdin)
 except Exception:
     d = {}
-cwd = str(d.get("cwd") or "").replace(" ", "_") or "-"
-sid = re.sub(r"[^A-Za-z0-9_.-]", "", str(d.get("session_id") or ""))[:64] or "-"
-print(cwd, sid)
+print(str(d.get("cwd") or ""))
+print(re.sub(r"[^A-Za-z0-9_.-]", "", str(d.get("session_id") or ""))[:64])
 ' 2>/dev/null)
-EOF_IDS
-[ "${HOOK_CWD:--}" = "-" ] && HOOK_CWD=$PWD
+HOOK_CWD=$(printf '%s\n' "$IDS" | sed -n '1p')
+HOOK_SESSION=$(printf '%s\n' "$IDS" | sed -n '2p')
+[ -n "$HOOK_CWD" ] || HOOK_CWD=$PWD
 # Per-session counter: another session's outcome must not move this session's count.
-[ "${HOOK_SESSION:--}" = "-" ] && HOOK_SESSION=$(id -u)
+[ -n "$HOOK_SESSION" ] || HOOK_SESSION=$(id -u)
 COUNT_FILE="$COUNT_DIR/stop-guard-$HOOK_SESSION"
+
+# Only now is the counter named, so this is where its writability is checked. Guarding the
+# pre-rename path left the real counter unchecked: an unwritable one reads 0 forever, and the
+# guard then blocks with no reachable cap - the failure this check exists to prevent.
+allow() { : > "$COUNT_FILE" 2>/dev/null; exit 0; }
+touch "$COUNT_FILE" 2>/dev/null || exit 0
+[ -w "$COUNT_FILE" ] || exit 0
 
 # Newest live review session, if any. Both /tmp and /private/tmp: macOS resolves one to the other.
 # Roots are overridable so a test can own the sessions it reads; only same-uid directories count,
 # because /tmp is world-writable and a foreign rev-*/state.json must not be able to block anyone.
 SESSION_ROOTS=${REVIEW_COUNCIL_SESSION_ROOTS:-"/private/tmp /tmp"}
 # shellcheck disable=SC2086
+GUARD_UID=${REVIEW_COUNCIL_TEST_UID:-$(id -u)}
 STATE=$(find $SESSION_ROOTS -maxdepth 2 -name state.json -path '*/rev-*' \
-          -user "$(id -u)" -mmin "-${STATE_MAX_AGE_MIN}" 2>/dev/null | head -20 | tr '\n' ' ')
+          -user "$GUARD_UID" -mmin "-${STATE_MAX_AGE_MIN}" 2>/dev/null | head -20 | tr '\n' ' ')
 [ -z "${STATE// /}" ] && allow
 
 # Keep only sessions whose REV_ROOT contains, or is contained by, this session's cwd. A review with
@@ -89,11 +114,21 @@ STATE=$MINE
 # live review unfinished" is the right one.
 read -r PHASE ROUND OPEN WAITING SESSDIR < <(python3 - $STATE <<'PY' 2>/dev/null
 import json, sys, os, glob
+# A run can end without ever reaching "done": skills/rev/SKILL.md requires a stack leg to finish at
+# phase=stack-ready and forbids it to set done, and a required-publication failure ends at
+# incomplete.md. A terminal session must not be selected, or it masks a genuinely live one.
+# A tuple, NOT a set literal: `{"a", "b"}` inside this heredoc is brace-expanded by the shell
+# before python ever sees it, because the heredoc sits inside a process substitution. The failure
+# is a bare "ambiguous redirect" on the `read` line, which points nowhere near the real cause.
+TERMINAL = ("done", "stack-ready", "blocked")
+RECEIPTS = ("report.md", "stack-report.md", "incomplete.md")
 best, bestdir, mtime = None, None, -1
 for p in sys.argv[1:]:
     try:
         d = json.load(open(p))
-        if str(d.get("phase", "done")) == "done":
+        if str(d.get("phase", "done")) in TERMINAL:
+            continue
+        if any(os.path.exists(os.path.join(os.path.dirname(p), r)) for r in RECEIPTS):
             continue
         m = os.path.getmtime(p)
         if m > mtime:
@@ -126,30 +161,34 @@ if [ "${WAITING:-no}" = "yes" ]; then
   if [ -n "${ROOT:-}" ] && [ -d "$ROOT" ]; then
     DIRTY=$(cd "$ROOT" && git status --porcelain 2>/dev/null | head -1)
     [ -z "$DIRTY" ] && {
-      echo 0 > "$COUNT_FILE" 2>/dev/null
-      printf '{"systemMessage":"rev-session-guard: allowing stop - round %s is parked on seats that have not answered, every returned seat is triaged, and the tree is clean."}\n' "$ROUND"
+      # Deliberately does NOT touch the counter: a wait neither earns a release nor destroys one.
+      json_message "rev-session-guard: allowing stop - round $ROUND is parked on seats that have not answered, every returned seat is triaged, and the tree is clean."
       exit 0
     }
   fi
 fi
 
 [ -z "${PHASE:-}" ] && allow
-[ "$PHASE" = "done" ] && allow
+case "$PHASE" in done|stack-ready|blocked) allow ;; esac
 
-COUNT=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
+# The count belongs to a REVIEW, not just to a session: "<session-dir> <count>". Keyed only by
+# session, a release earned against one review silently carried into the next, leaving a fresh
+# review unguarded from its first stop.
+STORED=$(cat "$COUNT_FILE" 2>/dev/null || true)
+STORED_DIR=${STORED%% *}
+COUNT=${STORED##* }
+[ "$STORED_DIR" = "$SESSDIR" ] || COUNT=0      # a different review re-arms the cap
 case "$COUNT" in ''|*[!0-9]*) COUNT=0 ;; esac
+
 if [ "$COUNT" -ge "$MAX_CONSECUTIVE" ]; then
-  # Cap reached: allow, and STAY released for this session. Resetting to 0 here made the cap a toll
+  # Cap reached: allow, and STAY released for THIS review. Resetting to 0 here made the cap a toll
   # rather than a release - every later stop cost another three blocked turns for as long as the
-  # review stayed open. The count is cleared by allow() once the review is done or gone, so a
-  # future review re-arms normally.
-  echo "$MAX_CONSECUTIVE" > "$COUNT_FILE" 2>/dev/null
-  printf '{"systemMessage":"rev-session-guard: allowing stop after %d consecutive blocks (cap reached; review still at phase=%s)."}\n' \
-    "$MAX_CONSECUTIVE" "$PHASE"
+  # review stayed open.
+  printf '%s %s\n' "$SESSDIR" "$MAX_CONSECUTIVE" > "$COUNT_FILE" 2>/dev/null
+  json_message "rev-session-guard: allowing stop after $MAX_CONSECUTIVE consecutive blocks (cap reached; review still at phase=$PHASE)."
   exit 0
 fi
-echo $((COUNT + 1)) > "$COUNT_FILE" 2>/dev/null
+printf '%s %s\n' "$SESSDIR" "$((COUNT + 1))" > "$COUNT_FILE" 2>/dev/null
 
-printf '{"decision":"block","reason":"A review-council session is still mid-run: round %s, phase=%s, %s findings open. Finishing a round, a cluster or a commit is not a handoff point - continue the queue in this same turn. Permitted stops are only: the user asked a question, the whole agreed queue is finished, a decision genuinely needs the user, or a gate needs their authorisation. If this is one of those, say so and stop again (the guard allows after %d consecutive blocks)."}\n' \
-  "$ROUND" "$PHASE" "$OPEN" "$MAX_CONSECUTIVE"
+json_block "$ROUND" "$PHASE" "$OPEN" "$MAX_CONSECUTIVE"
 exit 0
