@@ -28,7 +28,13 @@
   made the guard allow the stop, claiming every returned seat was triaged, at the exact moment the
   contract requires an immediate retry or a halt. A result sitting untriaged is outstanding work
   too. Receipts are matched with `lstat`, the call `rev-state.sh` itself uses, so a symlink is not
-  a receipt in either place. It is scoped to the stopping session's
+  a receipt in either place. State is untrusted in SHAPE as well as content: rev-state.sh stores a
+  value that is not JSON as a bare string, so `seats=sol` arrived as a string whose every character
+  read as an unanswered seat and produced a false "genuine wait" during a live panel; a seats list
+  the hook cannot parse is now never a wait. Plan and repair panels park on seats with the same
+  receipt shape, so they count as waits too. The candidate cap keeps the newest sessions rather than
+  whatever order the filesystem returned, and a `git status` that fails is no longer read as a clean
+  tree. It is scoped to the stopping session's
   working tree: review sessions share a `/tmp` namespace, so an unscoped guard blocks every
   concurrent session on the machine for as long as one review is open anywhere, which was observed
   live. A review whose `scope.env` cannot be read still blocks, since dropping it would disarm the

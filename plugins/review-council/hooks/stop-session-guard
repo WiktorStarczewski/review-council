@@ -109,7 +109,13 @@ done
 # Cap here, AFTER scoping: capping the find output spent the budget in readdir order on sessions
 # that may all belong to other trees, so the one live in-scope review could be dropped and the
 # guard would silently allow. The age window already bounds this list.
-STATE=$(printf '%s' "$MINE" | tr ' ' '\n' | grep -v '^$' | head -40 | tr '\n' ' ')
+# Newest first, THEN cap: head over readdir order discarded arbitrary candidates, so above the cap
+# the live review could be dropped while stale ones survived - and it made the cap-ordering
+# regression only probabilistically detectable. Sorting makes the stated "newest session" invariant
+# hold at any candidate count.
+STATE=$(printf '%s' "$MINE" | tr ' ' '\n' | grep -v '^$' \
+          | xargs -I{} stat -f '%m {}' {} 2>/dev/null \
+          | sort -rn | head -40 | cut -d' ' -f2- | tr '\n' ' ')
 [ -z "${STATE// /}" ] && allow
 
 # Pick the newest session that is NOT done. More than one review can exist on this machine, and a
@@ -158,11 +164,17 @@ if best is None:
     for _v in ("done", "0", "0", "no", "-", "-"):
         print(_v)
 else:
-    o = best.get("open", {}) or {}
+    o = best.get("open")
+    o = o if isinstance(o, dict) else {}       # a non-dict would raise past the per-file try
     n = sum(v for v in o.values() if isinstance(v, int))
     phase = str(best.get("phase", "done"))
     rnd = str(best.get("round", "?"))
-    seats = best.get("seats") or []
+    # Untrusted in SHAPE, not just in content: rev-state.sh stores a value that is not JSON as a
+    # bare string, so `seats=sol` lands here as "sol" and iterating it yields one phantom seat per
+    # CHARACTER - none of which has a result file, so every one looks unanswered and the guard
+    # claims a genuine wait during a live panel. A seat list we cannot read proves nothing.
+    _seats = best.get("seats")
+    seats = [x for x in _seats if isinstance(x, str)] if isinstance(_seats, list) else None
     # "Genuinely waiting" = parked on seats that have not answered, with nothing of mine outstanding:
     # every seat that HAS answered is already processed (has an exit), and at least one is still out.
     # Anything else - a result sitting untriaged, or an actionable phase - is work, not a wait.
@@ -180,12 +192,18 @@ else:
     # Both clauses are deliberate belt and braces: needs_work below already catches a failed seat
     # by its non-zero .exit, so mutating either one alone leaves behaviour correct. Keep both - the
     # .exit half is what makes "outstanding" mean "never answered" rather than "no result file".
+    seats = seats or []
     outstanding = [s for s in seats
                    if not os.path.exists(_p(s, "json")) and not os.path.exists(_p(s, "exit"))]
     needs_work = [s for s in seats
                   if (_exit_code(s) not in (None, "0"))                      # answered, but failed
                   or (os.path.exists(_p(s, "json")) and not os.path.exists(_p(s, "exit")))]
-    waiting = phase in ("fan-out", "collect") and outstanding and not needs_work
+    # plan (<N>p) and repair (<N>x) park on seats with the identical receipt shape rev-state.sh
+    # reads, so a legitimate wait there is a wait here too. A seats list we could not parse is
+    # never a wait.
+    waiting = (seats is not None
+               and phase in ("fan-out", "collect", "plan", "repair")
+               and outstanding and not needs_work)
     import hashlib
     print(line(phase))
     print(line(rnd))
@@ -211,7 +229,9 @@ SESSDIR=$(printf '%s\n' "$GUARD_FIELDS" | sed -n '6p')
 if [ "${WAITING:-no}" = "yes" ]; then
   ROOT=$(sed -n "s/^REV_ROOT='\(.*\)'$/\1/p" "${SESSDIR}/scope.env" 2>/dev/null)
   if [ -n "${ROOT:-}" ] && [ -d "$ROOT" ]; then
-    DIRTY=$(cd "$ROOT" && git status --porcelain 2>/dev/null | head -1)
+    # A failed git is NOT a clean tree: this branch is the one place the guard gives up its block,
+    # so an unanswerable question must fall on the blocking side.
+    DIRTY=$(cd "$ROOT" && git status --porcelain 2>/dev/null) || DIRTY="git-failed"
     [ -z "$DIRTY" ] && {
       # Deliberately does NOT touch the counter: a wait neither earns a release nor destroys one.
       json_message "rev-session-guard: allowing stop - round $ROUND is parked on seats that have not answered, every returned seat is triaged, and the tree is clean."

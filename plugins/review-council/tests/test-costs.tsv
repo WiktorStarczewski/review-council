@@ -259,10 +259,14 @@ t-stop-guard.sh::test_stop_guard_ignores_a_review_of_another_tree	1	normal
 t-stop-guard.sh::test_stop_guard_ignores_another_users_session	1	normal
 t-stop-guard.sh::test_stop_guard_is_declared_in_hooks_json	1	normal
 t-stop-guard.sh::test_stop_guard_keeps_a_session_with_no_scope_env	1	normal
+t-stop-guard.sh::test_stop_guard_picks_the_newest_above_the_cap	1	normal
 t-stop-guard.sh::test_stop_guard_receipt_is_not_a_symlink	1	normal
 t-stop-guard.sh::test_stop_guard_receipt_must_be_a_real_file	1	normal
+t-stop-guard.sh::test_stop_guard_rejects_malformed_session_shapes	1	normal
 t-stop-guard.sh::test_stop_guard_release_is_keyed_to_the_review	1	normal
 t-stop-guard.sh::test_stop_guard_releases_at_the_cap_and_stays_released	1	normal
+t-stop-guard.sh::test_stop_guard_wait_needs_a_clean_tree	1	normal
+t-stop-guard.sh::test_stop_guard_waits_on_plan_seats	1	normal
 t-update.sh::test_update_bad_inputs_are_silent	1	normal
 t-update.sh::test_update_cache_dir_respects_xdg	1	normal
 t-update.sh::test_update_fresh_cache_is_honoured	1	normal

@@ -358,6 +358,104 @@ test_stop_guard_receipt_is_not_a_symlink() {
       "$(stop_guard_decision "$T/sg31.json")" block )
 }
 
+test_stop_guard_rejects_malformed_session_shapes() {
+  # rev-state.sh stores a value that is not JSON as a bare string, so `seats=sol` reaches the hook
+  # as "sol". Iterated, every CHARACTER became a phantom unanswered seat and the guard claimed a
+  # genuine wait during a live panel.
+  ( local C="$T/sg-shape-count" R="$T/sg-shape-root"; mkdir -p "$R/rev-sh" "$T/clean2"
+    ( cd "$T/clean2" && git init -q . && git commit -q --allow-empty -m x ) >/dev/null 2>&1
+    printf "REV_ROOT='%s'\n" "$T/clean2" > "$R/rev-sh/scope.env"
+    write_state() { python3 -c '
+import json, sys
+json.dump(json.loads(sys.argv[2]), open(sys.argv[1], "w"))
+' "$R/rev-sh/state.json" "$1"; }
+    write_state '{"round":"2","phase":"collect","seats":"sol","open":{"P1":0}}'
+    guard "$C" "$R" "$T/clean2" SH1 > "$T/sg33.json"
+    assert_eq "a seats string is not a seat list" "$(stop_guard_decision "$T/sg33.json")" block
+    write_state '{"round":"2","phase":"collect","seats":[{"seat":"sol"}],"open":{"P1":0}}'
+    guard "$C" "$R" "$T/clean2" SH2 > "$T/sg34.json"
+    assert_eq "a roster-shaped seat list is not a seat list" \
+      "$(stop_guard_decision "$T/sg34.json")" block
+    write_state '{"round":"2","phase":"fix","seats":[],"open":3}'
+    guard "$C" "$R" "$T/clean2" SH3 > "$T/sg35.json"
+    assert_eq "a non-dict open still yields a decision" \
+      "$(stop_guard_decision "$T/sg35.json")" block )
+}
+
+test_stop_guard_wait_needs_a_clean_tree() {
+  # The clean-tree half of the wait was pinned by nothing: deleting it made every parked wait allow
+  # regardless of uncommitted work, and a git that cannot answer read as "clean".
+  ( local C="$T/sg-dirty-count" R="$T/sg-dirty-root"; mkdir -p "$R/rev-d" "$T/dirty-tree"
+    ( cd "$T/dirty-tree" && git init -q . && git commit -q --allow-empty -m x ) >/dev/null 2>&1
+    printf "REV_ROOT='%s'\n" "$T/dirty-tree" > "$R/rev-d/scope.env"
+    python3 -c '
+import json, sys
+json.dump({"round": "2", "phase": "collect", "seats": ["a", "b"], "open": {"P1": 0}},
+          open(sys.argv[1], "w"))
+' "$R/rev-d/state.json"
+    printf "{}" > "$R/rev-d/r2-a.json"; printf "0\n" > "$R/rev-d/r2-a.exit"
+    guard "$C" "$R" "$T/dirty-tree" D1 > "$T/sg36.json"
+    assert_eq "a clean tree parked on seats allows" "$(stop_guard_decision "$T/sg36.json")" allow
+    printf 'uncommitted\n' > "$T/dirty-tree/scratch.txt"
+    guard "$C" "$R" "$T/dirty-tree" D2 > "$T/sg37.json"
+    assert_eq "uncommitted work is not a genuine wait" \
+      "$(stop_guard_decision "$T/sg37.json")" block
+    rm -f "$T/dirty-tree/scratch.txt"
+    # a REV_ROOT that is not a repository at all: git cannot answer, so this is not "clean"
+    mkdir -p "$T/not-a-repo"
+    printf "REV_ROOT='%s'\n" "$T/not-a-repo" > "$R/rev-d/scope.env"
+    guard "$C" "$R" "$T/not-a-repo" D3 > "$T/sg38.json"
+    assert_eq "a tree git cannot read is not a clean tree" \
+      "$(stop_guard_decision "$T/sg38.json")" block )
+}
+
+test_stop_guard_waits_on_plan_seats() {
+  # plan (<N>p) and repair (<N>x) park on seats with the identical receipt shape.
+  ( local C="$T/sg-plan-count" R="$T/sg-plan-root"; mkdir -p "$R/rev-p" "$T/clean3"
+    ( cd "$T/clean3" && git init -q . && git commit -q --allow-empty -m x ) >/dev/null 2>&1
+    printf "REV_ROOT='%s'\n" "$T/clean3" > "$R/rev-p/scope.env"
+    python3 -c '
+import json, sys
+json.dump({"round": "2p", "phase": "plan", "seats": ["a", "b"], "open": {"P1": 0}},
+          open(sys.argv[1], "w"))
+' "$R/rev-p/state.json"
+    printf "{}" > "$R/rev-p/r2p-a.json"; printf "0\n" > "$R/rev-p/r2p-a.exit"
+    guard "$C" "$R" "$T/clean3" PL > "$T/sg39.json"
+    assert_eq "a plan panel parked on seats is a genuine wait" \
+      "$(stop_guard_decision "$T/sg39.json")" allow )
+}
+
+test_stop_guard_picks_the_newest_above_the_cap() {
+  # The cap discards candidates, so it must discard the OLDEST. Unsorted it discarded in readdir
+  # order, and the hook's stated invariant - "the newest session that is NOT done" - then held only
+  # while the candidate count stayed under the cap.
+  #
+  # LIMIT, stated so nobody mistakes this for full coverage: this pins the BEHAVIOUR (the newest
+  # session is the one reported, with more candidates than the cap) but it cannot reliably kill a
+  # mutation that moves `head -40` before the `sort -rn`. find walks the filesystem's own order -
+  # measured on APFS it is a hash order, so rev-n50 can land second and survive an unsorted cap by
+  # chance. No fixture naming fixes that. The production bug the sort closes is real regardless:
+  # without it the surviving 40 are arbitrary, so above the cap the live review can be dropped.
+  ( local C="$T/sg-new-count" R="$T/sg-new-root"; mkdir -p "$R" "$T/clean4"
+    ( cd "$T/clean4" && git init -q . && git commit -q --allow-empty -m x ) >/dev/null 2>&1
+    local i=1
+    while [ "$i" -le 50 ]; do
+      # Zero-padded so directory order matches numeric order: unpadded, rev-n50 sorts right after
+      # rev-n5 and survives an unsorted cap by accident, which hides the very regression this pins.
+      local pad; pad=$(printf '%02d' "$i")
+      mk_rev_session "$R/rev-n$pad" fix "$i" "$T/clean4"
+      touch -t "$(date -v-$((60 - i))M +%Y%m%d%H%M 2>/dev/null || date -d "$((60 - i)) minutes ago" +%Y%m%d%H%M)" \
+        "$R/rev-n$pad/state.json" 2>/dev/null || true
+      i=$((i + 1))
+    done
+    guard "$C" "$R" "$T/clean4" NEW > "$T/sg40.json"
+    assert_eq "still decides with more candidates than the cap" \
+      "$(stop_guard_decision "$T/sg40.json")" block
+    if grep -q 'round 50,' "$T/sg40.json"; then
+      ok "the NEWEST session is the one reported, not an arbitrary survivor"
+    else fail "the newest session is the one reported" "$(head -c 160 "$T/sg40.json")"; fi )
+}
+
 test_stop_guard_is_declared_in_hooks_json() {
   ( local decl; decl=$(python3 -c '
 import json
