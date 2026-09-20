@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- Install a `Stop` hook that refuses to end a turn while a review session is mid-run. The
+  recurring failure is stopping on a status summary with queue items left, so the hook reads the
+  newest session's `state.json` and blocks while it is not `done`, naming the round, phase and
+  open findings. It fails open in every ambiguous case - no session, a session untouched for six
+  hours, unreadable state, no `python3`, or a counter it cannot persist - releases after three
+  consecutive blocks, and allows a genuine wait where the round is parked on unanswered seats,
+  every returned seat is triaged and the tree is clean. Hosts that already installed the guard by
+  hand should remove their personal `Stop` entry, or it runs twice against two counters.
+
 ## 0.4.6
 
 - Tell a plan seat which cluster source windows it must open. Preparation already bounds the cited plan rows a seat opens by hand to at most `MANDATORY_REPOSITORY_READ_LIMIT` merged windows, but the prompt listed only the cited rows, so a seat had to derive the window set itself; two plan panels on a 112-file review each stopped a few windows short and failed the audit with `missing-plan-cluster-source` after a full paid run. The seat packet now publishes `mandatory_source_windows`, the plan prompt renders one `Mandatory cluster source window: <path>:<start>-<end>` line per window, and the auditor binds those lines so a prompt cannot drop or duplicate one. Manifest validation checks the rows for shape, scope, line bounds, the window limit, and that they still close the plan, so a stale list fails preparation instead of a panel. The field is optional, so manifests written before it still validate, and a plan panel prepared with source context disabled publishes the same list.

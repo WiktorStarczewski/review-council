@@ -1,0 +1,102 @@
+#!/bin/bash
+# Stop-hook guard: refuse to end a turn while a review-council session is mid-run.
+#
+# Why: the recurring failure is ending a turn on a status summary while queue items remain - a
+# round, a cluster or a commit reads like a handoff point and is not one. An instruction only
+# reminds; this makes it structural.
+#
+# Installed by the review-council plugin (.claude-plugin/hooks.json, Stop). It reads only
+# rev session state under /tmp and never touches the repository.
+#
+# Fails OPEN in every ambiguous case - no session, stale session, unreadable state, missing python.
+# A guard that wrongly blocks is worse than one that misses, because the only escape is the cap.
+set -u
+
+STATE_MAX_AGE_MIN=360   # ignore review sessions untouched for 6h - they are abandoned, not active
+MAX_CONSECUTIVE=3       # after this many blocks in a row, allow, so it can never loop forever
+
+# The counter is what makes the cap work, so a counter we cannot persist is not a minor
+# degradation: COUNT would read 0 on every invocation, the cap would never be reached, and the
+# guard would block every stop with no escape. So the directory is created, and if the counter is
+# not writable afterwards the hook allows rather than blocks.
+COUNT_DIR="${REVIEW_COUNCIL_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/review-council}"
+COUNT_FILE="$COUNT_DIR/stop-guard-count"
+mkdir -p "$COUNT_DIR" 2>/dev/null
+
+allow() { echo 0 > "$COUNT_FILE" 2>/dev/null; exit 0; }
+
+command -v python3 >/dev/null 2>&1 || allow
+touch "$COUNT_FILE" 2>/dev/null || exit 0     # unwritable counter: allow, never block uncapped
+[ -w "$COUNT_FILE" ] || exit 0                 # (touch must not truncate it - the count is the cap)
+
+# Newest live review session, if any. Both /tmp and /private/tmp: macOS resolves one to the other.
+STATE=$(find /private/tmp /tmp -maxdepth 2 -name state.json -path '*/rev-*' \
+          -mmin "-${STATE_MAX_AGE_MIN}" 2>/dev/null | head -20 | tr '\n' ' ')
+[ -z "${STATE// /}" ] && allow
+
+# Pick the newest session that is NOT done. More than one review can exist on this machine, and a
+# finished one can easily carry the newer mtime, so "newest file" is the wrong question - "is any
+# live review unfinished" is the right one.
+read -r PHASE ROUND OPEN WAITING SESSDIR < <(python3 - $STATE <<'PY' 2>/dev/null
+import json, sys, os, glob
+best, bestdir, mtime = None, None, -1
+for p in sys.argv[1:]:
+    try:
+        d = json.load(open(p))
+        if str(d.get("phase", "done")) == "done":
+            continue
+        m = os.path.getmtime(p)
+        if m > mtime:
+            best, bestdir, mtime = d, os.path.dirname(p), m
+    except Exception:
+        pass
+if best is None:
+    print("done 0 0 no -")
+else:
+    o = best.get("open", {}) or {}
+    n = sum(v for v in o.values() if isinstance(v, int))
+    phase = str(best.get("phase", "done"))
+    rnd = str(best.get("round", "?"))
+    seats = best.get("seats") or []
+    # "Genuinely waiting" = parked on seats that have not answered, with nothing of mine outstanding:
+    # every seat that HAS answered is already processed (has an exit), and at least one is still out.
+    # Anything else - a result sitting untriaged, or an actionable phase - is work, not a wait.
+    outstanding = [s for s in seats if not os.path.exists(os.path.join(bestdir, f"r{rnd}-{s}.json"))]
+    untriaged = [s for s in seats
+                 if os.path.exists(os.path.join(bestdir, f"r{rnd}-{s}.json"))
+                 and not os.path.exists(os.path.join(bestdir, f"r{rnd}-{s}.exit"))]
+    waiting = phase in ("fan-out", "collect") and outstanding and not untriaged
+    print(f'{phase} {rnd} {n} {"yes" if waiting else "no"} {bestdir}')
+PY
+) || allow
+
+# A clean tree is part of "nothing of mine outstanding": uncommitted bytes are work in progress.
+if [ "${WAITING:-no}" = "yes" ]; then
+  ROOT=$(sed -n "s/^REV_ROOT='\(.*\)'$/\1/p" "${SESSDIR}/scope.env" 2>/dev/null)
+  if [ -n "${ROOT:-}" ] && [ -d "$ROOT" ]; then
+    DIRTY=$(cd "$ROOT" && git status --porcelain 2>/dev/null | head -1)
+    [ -z "$DIRTY" ] && {
+      echo 0 > "$COUNT_FILE" 2>/dev/null
+      printf '{"systemMessage":"rev-session-guard: allowing stop - round %s is parked on seats that have not answered, every returned seat is triaged, and the tree is clean."}\n' "$ROUND"
+      exit 0
+    }
+  fi
+fi
+
+[ -z "${PHASE:-}" ] && allow
+[ "$PHASE" = "done" ] && allow
+
+COUNT=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
+case "$COUNT" in ''|*[!0-9]*) COUNT=0 ;; esac
+if [ "$COUNT" -ge "$MAX_CONSECUTIVE" ]; then
+  # Cap reached. Allow, and say why, so a genuine stop is never trapped.
+  echo 0 > "$COUNT_FILE" 2>/dev/null
+  printf '{"systemMessage":"rev-session-guard: allowing stop after %d consecutive blocks (cap reached; review still at phase=%s)."}\n' \
+    "$MAX_CONSECUTIVE" "$PHASE"
+  exit 0
+fi
+echo $((COUNT + 1)) > "$COUNT_FILE" 2>/dev/null
+
+printf '{"decision":"block","reason":"A review-council session is still mid-run: round %s, phase=%s, %s findings open. Finishing a round, a cluster or a commit is not a handoff point - continue the queue in this same turn. Permitted stops are only: the user asked a question, the whole agreed queue is finished, a decision genuinely needs the user, or a gate needs their authorisation. If this is one of those, say so and stop again (the guard allows after %d consecutive blocks)."}\n' \
+  "$ROUND" "$PHASE" "$OPEN" "$MAX_CONSECUTIVE"
+exit 0
