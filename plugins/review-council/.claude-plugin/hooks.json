@@ -10,6 +10,19 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop-session-guard",
+            "timeout": 15,
+            "statusMessage": "Checking for an unfinished review"
+          }
+        ]
+      }
     ]
   }
 }

@@ -800,7 +800,11 @@ streams preserved for diagnosis.
 - Reviewers never execute findings. The host session independently verifies each claim
   before changing code.
 
-## Claude Code session hook
+## Claude Code hooks
+
+The Claude Code plugin installs two hooks. Codex uses native skills and installs neither.
+
+### Session hook
 
 On `startup`, `clear`, and `compact`, the Claude Code plugin performs cheap local work:
 
@@ -812,7 +816,28 @@ The hook makes no model call. Update checks are off by default, cached for one d
 bounded to three seconds, and silent on failure. The hook reports an update but never
 replaces the plugin directory it is running from.
 
-Codex uses native skills and does not install this session hook.
+### Stop hook
+
+A review is a queue, and the recurring failure is ending a turn on a status summary while
+items remain: finishing a round, a cluster or a commit reads like a handoff point and is not
+one. The `Stop` hook makes that structural rather than advisory. It reads the newest review
+session's `state.json` and blocks the stop while that session is not `done`, naming the round,
+phase and open findings in its reason.
+
+It is built to be wrong in the safe direction, because a guard that wrongly blocks is worse
+than one that misses: it allows whenever there is no session, the session is over six hours
+old, the state is unreadable, `python3` is missing, or its own counter cannot be persisted. It
+allows after three consecutive blocks so it can never loop, and it allows a genuine wait, where
+the round is parked on seats that have not answered, every returned seat is triaged and the
+tree is clean. It makes no model call and never touches the repository.
+
+It is scoped to the working tree the stopping session is in, matched against each review's
+recorded `REV_ROOT`, because review sessions share one `/tmp` namespace and concurrent sessions
+are normal. A review whose `scope.env` cannot be read still blocks, since dropping it would
+disarm the guard.
+
+The consecutive-block counter lives in `$XDG_STATE_HOME/review-council` (or
+`~/.local/state/review-council`); `REVIEW_COUNCIL_STATE_DIR` overrides it.
 
 ## Host differences
 
