@@ -20,8 +20,13 @@ MAX_CONSECUTIVE=3       # after this many blocks in a row, allow, so it can neve
 # guard would block every stop with no escape. So the directory is created, and if the counter is
 # not writable afterwards the hook allows rather than blocks.
 COUNT_DIR="${REVIEW_COUNCIL_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/review-council}"
-COUNT_FILE="$COUNT_DIR/stop-guard-count"
 mkdir -p "$COUNT_DIR" 2>/dev/null
+
+# COUNT_FILE is keyed per stopping session below, once the payload is read. A single shared counter
+# is not a cap: every allow path resets it, so any OTHER session ending a turn with no review in its
+# tree zeroes the count of a session that is being blocked, and the blocked one never reaches the
+# cap. Observed live - a session was blocked four times against a cap of three.
+COUNT_FILE="$COUNT_DIR/stop-guard-count"
 
 allow() { echo 0 > "$COUNT_FILE" 2>/dev/null; exit 0; }
 
@@ -38,18 +43,30 @@ touch "$COUNT_FILE" 2>/dev/null || exit 0     # unwritable counter: allow, never
 # two seconds instead of the hook's whole timeout.
 HOOK_PAYLOAD=""
 IFS= read -r -t 2 -d '' HOOK_PAYLOAD 2>/dev/null || true
-HOOK_CWD=$(printf '%s' "$HOOK_PAYLOAD" | python3 -c '
-import json, sys
+read -r HOOK_CWD HOOK_SESSION <<EOF_IDS
+$(printf '%s' "$HOOK_PAYLOAD" | python3 -c '
+import json, re, sys
 try:
-    print(json.load(sys.stdin).get("cwd", "") or "")
+    d = json.load(sys.stdin)
 except Exception:
-    print("")
+    d = {}
+cwd = str(d.get("cwd") or "").replace(" ", "_") or "-"
+sid = re.sub(r"[^A-Za-z0-9_.-]", "", str(d.get("session_id") or ""))[:64] or "-"
+print(cwd, sid)
 ' 2>/dev/null)
-HOOK_CWD=${HOOK_CWD:-$PWD}
+EOF_IDS
+[ "${HOOK_CWD:--}" = "-" ] && HOOK_CWD=$PWD
+# Per-session counter: another session's outcome must not move this session's count.
+[ "${HOOK_SESSION:--}" = "-" ] && HOOK_SESSION=$(id -u)
+COUNT_FILE="$COUNT_DIR/stop-guard-$HOOK_SESSION"
 
 # Newest live review session, if any. Both /tmp and /private/tmp: macOS resolves one to the other.
-STATE=$(find /private/tmp /tmp -maxdepth 2 -name state.json -path '*/rev-*' \
-          -mmin "-${STATE_MAX_AGE_MIN}" 2>/dev/null | head -20 | tr '\n' ' ')
+# Roots are overridable so a test can own the sessions it reads; only same-uid directories count,
+# because /tmp is world-writable and a foreign rev-*/state.json must not be able to block anyone.
+SESSION_ROOTS=${REVIEW_COUNCIL_SESSION_ROOTS:-"/private/tmp /tmp"}
+# shellcheck disable=SC2086
+STATE=$(find $SESSION_ROOTS -maxdepth 2 -name state.json -path '*/rev-*' \
+          -user "$(id -u)" -mmin "-${STATE_MAX_AGE_MIN}" 2>/dev/null | head -20 | tr '\n' ' ')
 [ -z "${STATE// /}" ] && allow
 
 # Keep only sessions whose REV_ROOT contains, or is contained by, this session's cwd. A review with
@@ -59,6 +76,9 @@ for st in $STATE; do
   root=$(sed -n "s/^REV_ROOT='\(.*\)'$/\1/p" "$(dirname "$st")/scope.env" 2>/dev/null)
   if [ -z "$root" ]; then MINE="$MINE $st"; continue; fi
   case "$HOOK_CWD/" in "$root"/*) MINE="$MINE $st"; continue ;; esac
+  # Ancestor direction only for a real project directory: with cwd=$HOME or /, every review on the
+  # machine is "beneath" it, which is the machine-global behaviour the scoping removed.
+  case "$HOOK_CWD" in "$HOME"|/|"") continue ;; esac
   case "$root/" in "$HOOK_CWD"/*) MINE="$MINE $st" ;; esac
 done
 STATE=$MINE
@@ -119,8 +139,11 @@ fi
 COUNT=$(cat "$COUNT_FILE" 2>/dev/null || echo 0)
 case "$COUNT" in ''|*[!0-9]*) COUNT=0 ;; esac
 if [ "$COUNT" -ge "$MAX_CONSECUTIVE" ]; then
-  # Cap reached. Allow, and say why, so a genuine stop is never trapped.
-  echo 0 > "$COUNT_FILE" 2>/dev/null
+  # Cap reached: allow, and STAY released for this session. Resetting to 0 here made the cap a toll
+  # rather than a release - every later stop cost another three blocked turns for as long as the
+  # review stayed open. The count is cleared by allow() once the review is done or gone, so a
+  # future review re-arms normally.
+  echo "$MAX_CONSECUTIVE" > "$COUNT_FILE" 2>/dev/null
   printf '{"systemMessage":"rev-session-guard: allowing stop after %d consecutive blocks (cap reached; review still at phase=%s)."}\n' \
     "$MAX_CONSECUTIVE" "$PHASE"
   exit 0

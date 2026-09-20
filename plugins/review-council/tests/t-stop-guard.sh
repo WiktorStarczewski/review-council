@@ -22,6 +22,15 @@ print("block" if d.get("decision") == "block" else "allow")
 ' "$1"
 }
 
+# Every case runs against a PRIVATE session root. These tests used to mktemp into the shared
+# /tmp/rev-* namespace the hook searches, which raced the suite's own parallel shards and, worse,
+# blocked every unrelated Claude Code session on the machine for as long as the residue lived.
+guard() {  # guard <count-dir> <session-root> <cwd> [session-id] - run the hook, isolated
+  local c=$1 roots=$2 cwd=$3 sid=${4:-test-session}
+  printf '{"cwd":"%s","session_id":"%s","hook_event_name":"Stop"}' "$cwd" "$sid" \
+    | REVIEW_COUNCIL_STATE_DIR="$c" REVIEW_COUNCIL_SESSION_ROOTS="$roots" "$STOP_HOOK_SRC" 2>/dev/null
+}
+
 mk_rev_session() {  # mk_rev_session <dir> <phase> [round] [root] - state.json (+ scope.env if root)
   mkdir -p "$1"
   [ -n "${4:-}" ] && printf "REV_ROOT='%s'\n" "$4" > "$1/scope.env"
@@ -33,94 +42,150 @@ json.dump({"round": sys.argv[3], "phase": sys.argv[2], "seats": [], "open": {"P0
 }
 
 test_stop_guard_allows_with_no_session() {
-  ( local C="$T/sg-none-count"
-    REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" </dev/null > "$T/sg1.json" 2>"$T/sg1.err"; local rc=$?
-    assert_eq "exits 0 with no review session" "$rc" 0
+  ( local C="$T/sg-none-count" R="$T/sg-none-root"; mkdir -p "$R"
+    guard "$C" "$R" "$T/my-tree" > "$T/sg1.json"
     assert_eq "allows with no review session" "$(stop_guard_decision "$T/sg1.json")" allow )
 }
 
 test_stop_guard_allows_when_phase_done() {
-  ( local D; D=$(mktemp -d /tmp/rev-sgdone.XXXXXX); local C="$T/sg-done-count"
-    mk_rev_session "$D" done
-    REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" </dev/null > "$T/sg2.json" 2>/dev/null
-    assert_eq "allows when the newest live session is done" "$(stop_guard_decision "$T/sg2.json")" allow
-    rm -rf "$D" )
+  ( local C="$T/sg-done-count" R="$T/sg-done-root"; mkdir -p "$R"
+    mk_rev_session "$R/rev-done" done 1 "$T/my-tree"
+    guard "$C" "$R" "$T/my-tree" > "$T/sg2.json"
+    assert_eq "allows when the newest live session is done" "$(stop_guard_decision "$T/sg2.json")" allow )
 }
 
 test_stop_guard_blocks_mid_run() {
-  ( local D; D=$(mktemp -d /tmp/rev-sgrun.XXXXXX); local C="$T/sg-run-count"
-    mk_rev_session "$D" fix 2
-    REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" </dev/null > "$T/sg3.json" 2>/dev/null
+  ( local C="$T/sg-run-count" R="$T/sg-run-root"; mkdir -p "$R"
+    mk_rev_session "$R/rev-run" fix 2 "$T/my-tree"
+    guard "$C" "$R" "$T/my-tree" > "$T/sg3.json"
     assert_eq "blocks while a session is mid-run" "$(stop_guard_decision "$T/sg3.json")" block
     if grep -q 'phase=fix' "$T/sg3.json"; then ok "names the phase in the reason"
-    else fail "names the phase in the reason" "$(cat "$T/sg3.json")"; fi
-    rm -rf "$D" )
+    else fail "names the phase in the reason" "$(cat "$T/sg3.json")"; fi )
 }
 
-test_stop_guard_releases_at_the_cap() {
-  ( local D; D=$(mktemp -d /tmp/rev-sgcap.XXXXXX); local C="$T/sg-cap-count"
-    mk_rev_session "$D" fix 2
-    local last=block
-    for _ in 1 2 3 4; do
-      REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" </dev/null > "$T/sg4.json" 2>/dev/null
-      last=$(stop_guard_decision "$T/sg4.json")
+test_stop_guard_releases_at_the_cap_and_stays_released() {
+  # The cap must be a release, not a toll: re-arming to 0 made every later stop cost another three
+  # blocked turns for as long as the review stayed open.
+  ( local C="$T/sg-cap-count" R="$T/sg-cap-root"; mkdir -p "$R"
+    mk_rev_session "$R/rev-cap" fix 2 "$T/my-tree"
+    # Assert the WHOLE sequence, not just the last call: checking only call 4 passes for the wrong
+    # reason, because a cap mutated to 1 yields block,allow,allow,allow and call 4 is still allow.
+    local seq="" i=1
+    while [ "$i" -le 4 ]; do
+      guard "$C" "$R" "$T/my-tree" > "$T/sg4.json"
+      seq="$seq$(stop_guard_decision "$T/sg4.json") "
+      i=$((i + 1))
     done
-    assert_eq "allows once the consecutive-block cap is reached" "$last" allow
-    rm -rf "$D" )
+    assert_eq "blocks three times then allows (cap=3 exactly)" "$seq" "block block block allow "
+    guard "$C" "$R" "$T/my-tree" > "$T/sg4b.json"
+    assert_eq "stays released on the next stop instead of re-arming" \
+      "$(stop_guard_decision "$T/sg4b.json")" allow )
+}
+
+test_stop_guard_cap_is_per_session() {
+  # Observed live: a session was blocked FOUR times against a cap of three, because another
+  # session's allow zeroed the one shared counter between its attempts.
+  ( local C="$T/sg-multi-count" R="$T/sg-multi-root"; mkdir -p "$R" "$T/other-tree"
+    mk_rev_session "$R/rev-multi" fix 2 "$T/my-tree"
+    local last=block
+    for _ in 1 2 3; do
+      last=$(guard "$C" "$R" "$T/my-tree" A > "$T/sg5a.json"; stop_guard_decision "$T/sg5a.json")
+      guard "$C" "$R" "$T/other-tree" B > /dev/null   # a different session allows in between
+    done
+    last=$(guard "$C" "$R" "$T/my-tree" A > "$T/sg5b.json"; stop_guard_decision "$T/sg5b.json")
+    assert_eq "another session's allow cannot reset this session's count" "$last" allow )
 }
 
 test_stop_guard_allows_when_counter_unwritable() {
-  # The cap depends on the counter. If it cannot be persisted the guard must allow, never block
-  # uncapped - this is the case that would otherwise trap a user with no escape.
-  ( local D; D=$(mktemp -d /tmp/rev-sgro.XXXXXX); local C="$T/sg-ro/state"
-    mk_rev_session "$D" fix 2
-    mkdir -p "$T/sg-ro"; : > "$T/sg-ro/state"   # a FILE where the hook wants a directory
-    REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" </dev/null > "$T/sg5.json" 2>/dev/null
-    assert_eq "allows when the counter cannot be persisted" "$(stop_guard_decision "$T/sg5.json")" allow
-    rm -rf "$D" )
+  ( local C="$T/sg-ro/state" R="$T/sg-ro-root"; mkdir -p "$R" "$T/sg-ro"; : > "$T/sg-ro/state"
+    mk_rev_session "$R/rev-ro" fix 2 "$T/my-tree"
+    guard "$C" "$R" "$T/my-tree" > "$T/sg6.json"
+    assert_eq "allows when the counter cannot be persisted" "$(stop_guard_decision "$T/sg6.json")" allow )
 }
 
 test_stop_guard_ignores_a_review_of_another_tree() {
-  # This machine runs concurrent sessions and /tmp is shared, so an unscoped guard blocks every
-  # session for as long as ANY review is open anywhere. Observed live: a review of one repository
-  # blocked a stop in an unrelated one.
-  ( local D; D=$(mktemp -d /tmp/rev-sgother.XXXXXX); local C="$T/sg-other-count"
-    local other="$T/other-tree"; mkdir -p "$other" "$T/my-tree"
-    mk_rev_session "$D" collect 3 "$other"
-    printf '{"cwd":"%s","hook_event_name":"Stop"}' "$T/my-tree" \
-      | REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" > "$T/sg6.json" 2>/dev/null
+  ( local C="$T/sg-other-count" R="$T/sg-other-root"; mkdir -p "$R" "$T/other-tree" "$T/my-tree"
+    mk_rev_session "$R/rev-other" collect 3 "$T/other-tree"
+    guard "$C" "$R" "$T/my-tree" > "$T/sg7.json"
     assert_eq "allows when the live review is of another working tree" \
-      "$(stop_guard_decision "$T/sg6.json")" allow
-    printf '{"cwd":"%s","hook_event_name":"Stop"}' "$other" \
-      | REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" > "$T/sg7.json" 2>/dev/null
-    assert_eq "still blocks inside the reviewed tree" \
-      "$(stop_guard_decision "$T/sg7.json")" block
-    rm -rf "$D" )
+      "$(stop_guard_decision "$T/sg7.json")" allow
+    guard "$C" "$R" "$T/other-tree" > "$T/sg8.json"
+    assert_eq "still blocks inside the reviewed tree" "$(stop_guard_decision "$T/sg8.json")" block )
+}
+
+test_stop_guard_does_not_match_a_sibling_prefix() {
+  ( local C="$T/sg-prefix-count" R="$T/sg-prefix-root"; mkdir -p "$R" "$T/proj" "$T/proj-other"
+    mk_rev_session "$R/rev-prefix" fix 2 "$T/proj"
+    guard "$C" "$R" "$T/proj-other" > "$T/sg9.json"
+    assert_eq "a sibling sharing a path prefix is not the reviewed tree" \
+      "$(stop_guard_decision "$T/sg9.json")" allow )
 }
 
 test_stop_guard_keeps_a_session_with_no_scope_env() {
-  # Dropping a session whose scope.env is unreadable would silently disarm the guard, so an
-  # unattributable review still blocks.
-  ( local D; D=$(mktemp -d /tmp/rev-sgnoscope.XXXXXX); local C="$T/sg-noscope-count"
-    mk_rev_session "$D" fix 2
-    printf '{"cwd":"%s","hook_event_name":"Stop"}' "$T" \
-      | REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" > "$T/sg8.json" 2>/dev/null
+  ( local C="$T/sg-noscope-count" R="$T/sg-noscope-root"; mkdir -p "$R"
+    mk_rev_session "$R/rev-noscope" fix 2
+    guard "$C" "$R" "$T/my-tree" > "$T/sg10.json"
     assert_eq "blocks for a review with no readable scope.env" \
-      "$(stop_guard_decision "$T/sg8.json")" block
-    rm -rf "$D" )
+      "$(stop_guard_decision "$T/sg10.json")" block )
 }
 
-test_stop_guard_does_not_hang_without_a_payload() {
-  # The hook reads its cwd from the Stop payload on stdin. An unbounded read turns a missing or
-  # never-closed stdin into a hang that burns the hook's whole timeout, so the read is bounded.
-  ( local D; D=$(mktemp -d /tmp/rev-sghang.XXXXXX); local C="$T/sg-hang-count"
-    mk_rev_session "$D" fix 2
+test_stop_guard_does_not_hang_on_an_open_pipe() {
+  # /dev/null EOFs instantly whether or not the read is bounded, so it proves nothing about the
+  # bound. A pipe held open is the case the -t 2 exists for.
+  ( local C="$T/sg-hang-count" R="$T/sg-hang-root"; mkdir -p "$R"
+    mk_rev_session "$R/rev-hang" fix 2 "$T/my-tree"
+    # Time the HOOK, not the pipeline: `writer | hook` waits for the writer to exit whatever the
+    # hook does, so a fifo with a separate writer is what isolates the hook's own runtime.
+    local fifo="$T/sg-hang.fifo"; rm -f "$fifo"; mkfifo "$fifo"
+    sleep 20 > "$fifo" & local writer=$!
     local start; start=$(date +%s)
-    REVIEW_COUNCIL_STATE_DIR="$C" "$STOP_HOOK_SRC" </dev/null > "$T/sg9.json" 2>/dev/null
+    REVIEW_COUNCIL_STATE_DIR="$C" REVIEW_COUNCIL_SESSION_ROOTS="$R" \
+      "$STOP_HOOK_SRC" < "$fifo" > "$T/sg11.json" 2>/dev/null || true
     local elapsed=$(( $(date +%s) - start ))
-    if [ "$elapsed" -le 5 ]; then ok "returns promptly with no payload (${elapsed}s)"
-    else fail "returns promptly with no payload" "took ${elapsed}s"; fi
-    rm -rf "$D" )
+    kill "$writer" 2>/dev/null; rm -f "$fifo"
+    if [ "$elapsed" -le 8 ]; then ok "returns on a never-closed stdin (${elapsed}s)"
+    else fail "returns on a never-closed stdin" "took ${elapsed}s"; fi )
+}
+
+test_stop_guard_ignores_another_users_session() {
+  # /tmp is world-writable; a foreign rev-*/state.json must not be able to block anyone.
+  ( local C="$T/sg-uid-count" R="$T/sg-uid-root"; mkdir -p "$R"
+    mk_rev_session "$R/rev-uid" fix 2 "$T/my-tree"
+    if find "$R" -name state.json -user "$(id -u)" | grep -q .; then
+      ok "same-uid session is discoverable (uid filter does not break the normal case)"
+    else fail "same-uid session is discoverable" "uid filter excluded our own session"; fi )
+}
+
+test_stop_guard_allows_without_python3() {
+  # Documented fail-open branch with no cover: no python3 means no state can be read at all.
+  ( local C="$T/sg-nopy-count" R="$T/sg-nopy-root" E="$T/empty-path"; mkdir -p "$R" "$E"
+    mk_rev_session "$R/rev-nopy" fix 2 "$T/my-tree"
+    printf '{"cwd":"%s","session_id":"np","hook_event_name":"Stop"}' "$T/my-tree" \
+      | PATH="$E" REVIEW_COUNCIL_STATE_DIR="$C" REVIEW_COUNCIL_SESSION_ROOTS="$R" \
+        "$STOP_HOOK_SRC" > "$T/sg12.json" 2>/dev/null
+    assert_eq "allows when python3 is unavailable" "$(stop_guard_decision "$T/sg12.json")" allow )
+}
+
+test_stop_guard_allows_on_unreadable_state() {
+  # Documented fail-open branch with no cover: state that cannot be parsed must not block.
+  ( local C="$T/sg-bad-count" R="$T/sg-bad-root"; mkdir -p "$R/rev-bad"
+    printf 'REV_ROOT=%s\n' "'$T/my-tree'" > "$R/rev-bad/scope.env"
+    printf 'not json at all {{{\n' > "$R/rev-bad/state.json"
+    guard "$C" "$R" "$T/my-tree" > "$T/sg13.json"
+    assert_eq "allows when the session state cannot be parsed" \
+      "$(stop_guard_decision "$T/sg13.json")" allow )
+}
+
+test_stop_guard_allows_on_a_stale_session() {
+  # Documented fail-open branch with no cover: a review untouched past the age window is abandoned.
+  ( local C="$T/sg-stale-count" R="$T/sg-stale-root"; mkdir -p "$R"
+    mk_rev_session "$R/rev-stale" fix 2 "$T/my-tree"
+    # 7 hours old, past the 360-minute window
+    touch -t "$(date -v-7H +%Y%m%d%H%M 2>/dev/null || date -d '7 hours ago' +%Y%m%d%H%M)" \
+      "$R/rev-stale/state.json" 2>/dev/null || true
+    guard "$C" "$R" "$T/my-tree" > "$T/sg14.json"
+    assert_eq "allows for a session untouched past the age window" \
+      "$(stop_guard_decision "$T/sg14.json")" allow )
 }
 
 test_stop_guard_is_declared_in_hooks_json() {

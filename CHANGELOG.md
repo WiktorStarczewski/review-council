@@ -8,7 +8,14 @@
   open findings. It fails open in every ambiguous case - no session, a session untouched for six
   hours, unreadable state, no `python3`, or a counter it cannot persist - releases after three
   consecutive blocks, and allows a genuine wait where the round is parked on unanswered seats,
-  every returned seat is triaged and the tree is clean. It is scoped to the stopping session's
+  every returned seat is triaged and the tree is clean. The consecutive-block counter is keyed per
+  stopping session and the release is sticky: one shared counter was not a cap at all, because every
+  allow path resets it, so any other session ending a turn zeroed the count of a session being
+  blocked and it never reached the release - observed live, a session blocked four times against a
+  cap of three. Resetting to zero on release also made the cap a toll rather than a release, costing
+  three more blocked turns on every later stop. Session discovery is limited to directories owned by
+  the current user, since /tmp is world-writable, and accepts a root override so tests can own the
+  state they read instead of planting fixtures in the shared namespace. It is scoped to the stopping session's
   working tree: review sessions share a `/tmp` namespace, so an unscoped guard blocks every
   concurrent session on the machine for as long as one review is open anywhere, which was observed
   live. A review whose `scope.env` cannot be read still blocks, since dropping it would disarm the
