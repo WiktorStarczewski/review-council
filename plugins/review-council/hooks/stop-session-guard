@@ -121,7 +121,7 @@ STATE=$(printf '%s' "$MINE" | tr ' ' '\n' | grep -v '^$' | head -40 | tr '\n' ' 
 # forever. Display fields have newlines collapsed; the counter is keyed on a hex digest, so no
 # session-controlled text can reach it at all.
 GUARD_FIELDS=$(python3 - $STATE <<'PY' 2>/dev/null
-import json, sys, os, glob
+import json, sys, os, glob, stat
 # A run can end without ever reaching "done": skills/rev/SKILL.md requires a stack leg to finish at
 # phase=stack-ready and forbids it to set done, and a required-publication failure ends at
 # incomplete.md. A terminal session must not be selected, or it masks a genuinely live one.
@@ -139,8 +139,13 @@ for p in sys.argv[1:]:
         # A receipt is a NON-EMPTY REGULAR FILE, the definition scripts/rev-state.sh already uses.
         # Bare existence let `touch report.md` disarm the guard for the rest of a live review.
         _d = os.path.dirname(p)
-        if any(os.path.isfile(os.path.join(_d, r)) and os.path.getsize(os.path.join(_d, r)) > 0
-               for r in RECEIPTS):
+        def _receipt(name):
+            try:                      # lstat, NOT isfile: scripts/rev-state.sh uses lstat, so a
+                st = os.lstat(os.path.join(_d, name))   # symlink is not a receipt there either.
+            except OSError:
+                return False
+            return stat.S_ISREG(st.st_mode) and st.st_size > 0
+        if any(_receipt(r) for r in RECEIPTS):
             continue
         m = os.path.getmtime(p)
         if m > mtime:
@@ -161,11 +166,26 @@ else:
     # "Genuinely waiting" = parked on seats that have not answered, with nothing of mine outstanding:
     # every seat that HAS answered is already processed (has an exit), and at least one is still out.
     # Anything else - a result sitting untriaged, or an actionable phase - is work, not a wait.
-    outstanding = [s for s in seats if not os.path.exists(os.path.join(bestdir, f"r{rnd}-{s}.json"))]
-    untriaged = [s for s in seats
-                 if os.path.exists(os.path.join(bestdir, f"r{rnd}-{s}.json"))
-                 and not os.path.exists(os.path.join(bestdir, f"r{rnd}-{s}.exit"))]
-    waiting = phase in ("fan-out", "collect") and outstanding and not untriaged
+    def _p(seat, ext):
+        return os.path.join(bestdir, "r%s-%s.%s" % (rnd, seat, ext))
+    def _exit_code(seat):
+        try:
+            return open(_p(seat, "exit")).read().strip()
+        except Exception:
+            return None
+    # A seat that FAILED has answered: rev-seat.sh writes .exit for every outcome and .json only on
+    # a valid result, so scoring "no .json" as unanswered made a failed seat look like a seat still
+    # running. The guard then allowed the stop and claimed every returned seat was triaged, at the
+    # exact moment the contract requires an immediate retry (exit 1/2) or a halt (exit 3/4).
+    # Both clauses are deliberate belt and braces: needs_work below already catches a failed seat
+    # by its non-zero .exit, so mutating either one alone leaves behaviour correct. Keep both - the
+    # .exit half is what makes "outstanding" mean "never answered" rather than "no result file".
+    outstanding = [s for s in seats
+                   if not os.path.exists(_p(s, "json")) and not os.path.exists(_p(s, "exit"))]
+    needs_work = [s for s in seats
+                  if (_exit_code(s) not in (None, "0"))                      # answered, but failed
+                  or (os.path.exists(_p(s, "json")) and not os.path.exists(_p(s, "exit")))]
+    waiting = phase in ("fan-out", "collect") and outstanding and not needs_work
     import hashlib
     print(line(phase))
     print(line(rnd))

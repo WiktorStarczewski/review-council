@@ -303,12 +303,59 @@ test_stop_guard_caps_candidates_after_scoping() {
   # out-of-scope sessions could push the one live in-scope review out of the list and the guard
   # would silently allow.
   ( local C="$T/sg-many-count" R="$T/sg-many-root"; mkdir -p "$R" "$T/other-tree"
+    # MORE than the hook's head -40, or the test cannot tell cap-before-scoping from cap-after:
+    # with fewer candidates than the cap, both orderings keep everything. NOTE the limit of this
+    # case: find walks readdir order, which no test can control, so moving the cap back before the
+    # scope filter fails this only PROBABILISTICALLY (the in-scope session may still land in the
+    # surviving 40). It pins the behaviour that matters - one live in-scope review among many
+    # out-of-scope ones is still found - not the ordering of the two operations.
     local i=1
-    while [ "$i" -le 30 ]; do mk_rev_session "$R/rev-noise$i" fix 1 "$T/other-tree"; i=$((i + 1)); done
+    while [ "$i" -le 60 ]; do mk_rev_session "$R/rev-noise$i" fix 1 "$T/other-tree"; i=$((i + 1)); done
     mk_rev_session "$R/rev-live" fix 2 "$T/my-tree"
     guard "$C" "$R" "$T/my-tree" MANY > "$T/sg27.json"
     assert_eq "the in-scope review is found among many out-of-scope ones" \
       "$(stop_guard_decision "$T/sg27.json")" block )
+}
+
+test_stop_guard_blocks_when_a_seat_failed() {
+  # rev-seat.sh writes .exit for EVERY outcome and .json only on a valid result, so "no .json" is
+  # not "still running" - it is how a failed seat looks. Scored as outstanding, the guard allowed
+  # the stop and claimed every returned seat was triaged, exactly when the contract requires an
+  # immediate retry (exit 1/2) or a halt (exit 3/4).
+  ( local C="$T/sg-seat-count" R="$T/sg-seat-root"; mkdir -p "$R" "$T/clean-tree"
+    ( cd "$T/clean-tree" && git init -q . && git commit -q --allow-empty -m x ) >/dev/null 2>&1
+    mk_rev_session "$R/rev-seat" collect 2 "$T/clean-tree"
+    python3 -c '
+import json, sys
+json.dump({"round": "2", "phase": "collect", "seats": ["a", "b"], "open": {"P1": 0}},
+          open(sys.argv[1], "w"))
+' "$R/rev-seat/state.json"
+    printf "2\n" > "$R/rev-seat/r2-a.exit"          # seat a failed: exit present, no result
+    guard "$C" "$R" "$T/clean-tree" SEAT1 > "$T/sg29.json"
+    assert_eq "a failed seat is not a genuine wait" \
+      "$(stop_guard_decision "$T/sg29.json")" block
+    # and the real wait still allows: a answered cleanly, b is still out
+    # a result sitting untriaged (.json, no .exit) is MY work outstanding, not a wait
+    rm -f "$R/rev-seat/r2-a.exit"; printf "{}" > "$R/rev-seat/r2-a.json"
+    guard "$C" "$R" "$T/clean-tree" SEAT3 > "$T/sg32.json"
+    assert_eq "an untriaged result is not a genuine wait" \
+      "$(stop_guard_decision "$T/sg32.json")" block
+    # and the real wait still allows: a answered AND is triaged, b is still out
+    printf "0\n" > "$R/rev-seat/r2-a.exit"
+    guard "$C" "$R" "$T/clean-tree" SEAT2 > "$T/sg30.json"
+    assert_eq "a genuine wait still allows" "$(stop_guard_decision "$T/sg30.json")" allow )
+}
+
+test_stop_guard_receipt_is_not_a_symlink() {
+  # scripts/rev-state.sh uses lstat, so a symlink is not a receipt there; isfile follows symlinks
+  # and would have let one end a live review.
+  ( local C="$T/sg-sym-count" R="$T/sg-sym-root"; mkdir -p "$R"
+    mk_rev_session "$R/rev-sym" fix 2 "$T/my-tree"
+    printf 'real content\n' > "$T/real-receipt.md"
+    ln -s "$T/real-receipt.md" "$R/rev-sym/report.md"
+    guard "$C" "$R" "$T/my-tree" SYM > "$T/sg31.json"
+    assert_eq "a symlinked receipt does not end a live review" \
+      "$(stop_guard_decision "$T/sg31.json")" block )
 }
 
 test_stop_guard_is_declared_in_hooks_json() {

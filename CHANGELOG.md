@@ -23,7 +23,12 @@
   required to finish at `stack-ready` - so the terminal set is wider, and a receipt counts only as a
   non-empty regular file (matching `rev-state.sh`), so `touch report.md` cannot end a live review.
   The candidate list is capped after scoping rather than before, so out-of-scope sessions cannot
-  push the live one out of it. It is scoped to the stopping session's
+  push the live one out of it. A seat that FAILED counts as answered: `rev-seat.sh` writes `.exit`
+  for every outcome and `.json` only on a valid result, so scoring "no result" as "still running"
+  made the guard allow the stop, claiming every returned seat was triaged, at the exact moment the
+  contract requires an immediate retry or a halt. A result sitting untriaged is outstanding work
+  too. Receipts are matched with `lstat`, the call `rev-state.sh` itself uses, so a symlink is not
+  a receipt in either place. It is scoped to the stopping session's
   working tree: review sessions share a `/tmp` namespace, so an unscoped guard blocks every
   concurrent session on the machine for as long as one review is open anywhere, which was observed
   live. A review whose `scope.env` cannot be read still blocks, since dropping it would disarm the
