@@ -15,7 +15,15 @@
   cap of three. Resetting to zero on release also made the cap a toll rather than a release, costing
   three more blocked turns on every later stop. Session discovery is limited to directories owned by
   the current user, since /tmp is world-writable, and accepts a root override so tests can own the
-  state they read instead of planting fixtures in the shared namespace. It is scoped to the stopping session's
+  state they read instead of planting fixtures in the shared namespace. Session text never reaches a
+  shell or JSON control channel: the state fields cross one per line rather than positionally,
+  because a single space in an attacker-writable `phase` shifted every later field and made the cap
+  unreachable, and responses are built with `json.dumps` rather than interpolated, so a crafted
+  `phase` cannot inject a decision. A run can also end without reaching `done` - a stack leg is
+  required to finish at `stack-ready` - so the terminal set is wider, and a receipt counts only as a
+  non-empty regular file (matching `rev-state.sh`), so `touch report.md` cannot end a live review.
+  The candidate list is capped after scoping rather than before, so out-of-scope sessions cannot
+  push the live one out of it. It is scoped to the stopping session's
   working tree: review sessions share a `/tmp` namespace, so an unscoped guard blocks every
   concurrent session on the machine for as long as one review is open anywhere, which was observed
   live. A review whose `scope.env` cannot be read still blocks, since dropping it would disarm the
