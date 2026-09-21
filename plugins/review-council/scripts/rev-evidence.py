@@ -3907,6 +3907,21 @@ def validate_results(session, manifest, manifest_hash, seats=None):
             raise ValueError('invalid result: ' + seat)
         result_data = read_json(result)
         assignment = manifest['assignments'][seat]
+        # An agent seat produces no read audit by construction (Claude Code subagents ignore the
+        # hook frontmatter the enforced transcript depends on). Its result, exit status and
+        # prompt-hash binding are still checked above; only the audit is skipped, and the manifest
+        # records the seat as unenforced so no caller can read this panel as certified.
+        if seat in manifest.get('unenforced_seats', []):
+            if assignment['adapter'] != 'agent':
+                raise ValueError('unenforced seat is not an agent adapter: ' + seat)
+            # Everything that DOES exist is still hashed, so the receipt binds the same bytes for
+            # this seat as for any other; only the audit is absent.
+            for artifact in (result, exit_path, prompt):
+                result_hashes[artifact.name] = digest(artifact.read_bytes())
+            agent_stream = Path(str(stem) + '.stream.ndjson')
+            if agent_stream.exists():
+                result_hashes[agent_stream.name] = digest(agent_stream.read_bytes())
+            continue
         audit_path = Path(str(stem) + '.read-audit.json')
         stream = Path(str(stem) + '.stream.ndjson')
         audit = read_json(audit_path)
@@ -4165,9 +4180,10 @@ def result_generation(session, manifest, manifest_hash, seat):
         'model': roster_seat.get('model'),
         'effort': roster_seat.get('effort'),
         'prompt_sha256': hashes[stem + '.prompt.md'],
-        'stream_sha256': hashes[stem + '.stream.ndjson'],
+        'stream_sha256': hashes.get(stem + '.stream.ndjson'),
         'result_sha256': hashes[stem + '.json'],
-        'audit_sha256': hashes[stem + '.read-audit.json'],
+        'audit_sha256': hashes.get(stem + '.read-audit.json'),
+        'enforced': seat not in manifest.get('unenforced_seats', []),
         'exit_sha256': hashes[stem + '.exit'],
     }
     return hashes, row
@@ -4315,13 +4331,14 @@ def _prepare_locked(args, session):
             raise ValueError('--plan belongs only to the plan phase')
         plan_source = None; plan_raw = None
     chosen, owner = assignments(args, roster)
-    if args.phase == 'plan':
-        # Only seats that run the plan must supply an enforced read transcript.
-        agent_seats = [row['seat'] for row in roster['seats']
-                       if row.get('adapter') == 'agent' and row.get('seat') in chosen]
-        if agent_seats:
-            raise ValueError('agent adapter cannot enforce plan evidence for assigned seat: '
-                             + ', '.join(agent_seats))
+    # An agent seat cannot produce an enforced read transcript, so a plan panel that includes one
+    # cannot be CERTIFIED. That is not a reason to refuse the panel: the value of the plan gate is
+    # its schema-4 structure - per-cluster closure obligations, sibling-site search proofs, source
+    # shards - and that structure works on an agent seat. Refusing meant a Claude-only Agent roster
+    # got no fix-design gate at all, which is strictly worse than an unenforced one. The panel runs
+    # and is recorded unenforced, so nothing downstream can mistake it for a certified gate.
+    unenforced_seats = sorted(row['seat'] for row in roster['seats']
+                              if row.get('adapter') == 'agent' and row.get('seat') in chosen)
     if parent_manifest is not None:
         parent = parent_manifest['assignments'][parent_seat]
         if chosen != {parent_seat: parent['bundle']}:
@@ -4616,6 +4633,9 @@ def _prepare_locked(args, session):
                 'artifacts': {name: {'sha256': digest(raw), 'words': len(raw.split())} for name, raw in artifacts.items()}}
     if args.phase == 'plan':
         manifest['plan'] = data['plan']
+    # Recorded on EVERY manifest, so a consumer never has to infer enforcement from the roster.
+    # A non-empty list means those seats cannot supply a read audit and the panel is not certified.
+    manifest['unenforced_seats'] = unenforced_seats
     if parent_assignment is not None:
         manifest['parent_assignment'] = parent_assignment
     manifest_path = session / (prefix + '-evidence.manifest.json')

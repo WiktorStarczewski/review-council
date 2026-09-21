@@ -927,13 +927,17 @@ EOF
       --assignment sol=plan-completeness --assignment terra=plan-soundness
       --assignment opus=plan-simplicity --assignment sonnet=plan-tests)
     printf '%s\n' '{"seats":[{"seat":"sol","adapter":"agent"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+    # An Agent seat cannot supply a read audit, so a plan panel containing one cannot be CERTIFIED.
+    # It still RUNS: refusing left a Claude-only Agent roster with no fix-design gate at all, which
+    # is worse than an unenforced one. The manifest records which seats are unenforced.
     python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 3p "${args[@]}" \
       > "$T/plan-agent.out" 2> "$T/plan-agent.err"
-    assert_eq "agent plan routing fails before launch" "$?" 2
-    assert_grep "agent failure names the unenforceable restricted contract" \
-      "$T/plan-agent.err" 'agent adapter cannot enforce plan evidence for assigned seat: sol$'
-    assert_eq "agent failure publishes no artifacts" \
-      "$(find "$S" -maxdepth 1 -name 'r3p-*' | wc -l | tr -d ' ')" 0
+    assert_eq "an assigned Agent plan seat prepares instead of refusing" "$?" 0
+    assert_eq "the Agent plan panel publishes its manifest" \
+      "$(find "$S" -maxdepth 1 -name 'r3p-evidence.manifest.json' | wc -l | tr -d ' ')" 1
+    assert_eq "the manifest names the unenforced seat" \
+      "$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1]))["unenforced_seats"]))' "$S/r3p-evidence.manifest.json")" \
+      'sol'
     printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"},{"seat":"agent-extra","adapter":"agent","extra":true}]}' > "$S/roster.json"
     local valid_args=(--phase plan --plan "$S/fix-plan.md" --plan-sha256 "$hash" --full-seat sol
       --assignment sol=plan-completeness --assignment terra=plan-soundness
@@ -947,11 +951,13 @@ EOF
     python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 3p-mixed-agent --phase plan --plan "$S/fix-plan.md" \
       --plan-sha256 "$hash" --full-seat opus --assignment opus=plan-completeness \
       > "$T/plan-mixed-agent.out" 2> "$T/plan-mixed-agent.err"
-    assert_eq "an assigned Agent plan seat still fails before launch" "$?" 2
-    assert_grep "the refusal names the assigned Agent seat" \
-      "$T/plan-mixed-agent.err" 'agent adapter cannot enforce plan evidence for assigned seat: opus$'
-    assert_eq "the assigned Agent refusal publishes no artifacts" \
-      "$(find "$S" -maxdepth 1 -name 'r3p-mixed-agent-*' | wc -l | tr -d ' ')" 0
+    assert_eq "a one-seat Agent plan panel prepares" "$?" 0
+    assert_eq "its manifest marks that seat unenforced" \
+      "$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1]))["unenforced_seats"]))' "$S/r3p-mixed-agent-evidence.manifest.json")" \
+      'opus'
+    assert_eq "a CLI-only plan panel records no unenforced seat" \
+      "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["unenforced_seats"]))' "$S/r3p-mixed-evidence.manifest.json")" \
+      0
     printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"},{"seat":"agent-extra","adapter":"agent","extra":true}]}' > "$S/roster.json"
     assert_exit "stale plan hash rejects adaptive plan preparation" 2 \
       python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 4p "${valid_args[@]/$hash/0000000000000000000000000000000000000000000000000000000000000000}"
