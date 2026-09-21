@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.8
+
+- Plan panels now run on an Agent-only roster instead of refusing. An Agent seat cannot supply the
+  enforced read transcript, so such a panel is never certified - but the value of the fix-design
+  gate is its schema-4 structure (per-cluster closure obligations, sibling-site search proofs,
+  source shards), and that structure works on an Agent seat. Refusing meant a Claude-only Agent
+  roster, which is what a degraded panel falls back to, got no plan gate at all unless the host was
+  told to force one by hand. Preparation records the seats in `unenforced_seats`, validation skips
+  only their read audit while still binding their result, exit and prompt hashes, and each receipt
+  row carries `enforced`. The host picks a plan seat from the whole roster rather than only from
+  CLI-backed rows. The list is DERIVED from the roster during manifest validation and compared
+  against the declared one, so a hand-edited manifest cannot name a CLI seat and have its audit
+  skipped, and the relaxation is scoped to the plan phase: an Agent seat reaching a code manifest
+  still has to prove its reads.
+- Republishes the 0.4.7 Stop guard under a new version. 0.4.7's manifest bump landed in the pull
+  request BEFORE its fourteen review fixes, so `main` published version 0.4.7 twice: once with the
+  original guard and once with the repaired one. `claude plugin update` compares version strings,
+  so an install that picked up the first never receives the second. Anyone on 0.4.7 should update.
+
 ## 0.4.7
 
 - Install a `Stop` hook that refuses to end a turn while a review session is mid-run. The

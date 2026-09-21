@@ -432,10 +432,10 @@ test_skill_contract() {
       'core-roster signature'
     assert_grep "mixed rosters bound provider comparisons" "$H" \
       'mixed.*roster.*comparison boundary'
-    assert_grep "Agent plan panels fail before publication" "$H" \
-      'Plan preparation instead fails before publishing artifacts'
-    assert_grep "Agent plan panels report the enforceable roster requirement" "$H" \
-      'requires a roster whose seats use enforceable Codex or Claude CLI adapters'
+    assert_grep "Agent plan panels run rather than refusing" "$H" \
+      'Plan preparation RUNS with an Agent seat and records it as unenforced rather than'
+    assert_grep "an Agent plan panel is never reported as certified" "$H" \
+      'never describe it\s*$|as certified'
   done
   skill_adapter_and_plan_gate_contract "$K" "$CK" "$T"
   assert_nogrep "Claude Agent output transcript is not treated as enforced evidence" "$K" \
@@ -595,9 +595,9 @@ skill_adapter_and_plan_gate_contract() {
   local host_evidence="Evidence mode depends on each launched row's adapter, never on the host."
   local cli_rows='Rows on adapters `codex`, `gemini`, and `claude` launch through `rev-seat.sh` and keep evidence mode.'
   local adapter_choice='`claude_adapter` decides whether a Claude Code host seats Claude rows on `agent`; a Codex host always seats them on `claude`.'
-  local plan_refusal='Plan preparation instead fails before publishing artifacts when an assigned plan seat uses adapter `agent`.'
-  local refusal_skip="record that refusal as the plan panel's skip reason."
-  local plan_default='By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order whose adapter is not `agent`, `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.'
+  local plan_refusal='Plan preparation RUNS with an Agent seat and records it as unenforced rather than'
+  local refusal_skip='Report such a panel as an unenforced plan panel; never describe it'
+  local plan_default='By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order, preferring one whose adapter is not `agent` when the roster has one (an Agent seat runs the panel unenforced), `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.'
   local plan_all='When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat'
   local minimum='adaptive `<N>x` coverage repair and the default one-seat plan panel are the only exceptions.'
   local verify_one='`verify-panel` certifies the one-seat plan panel once that seat returns'

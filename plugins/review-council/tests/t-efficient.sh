@@ -51,7 +51,7 @@ test_adaptive_schedule_contract() {
     assert_grep "repair launch records exact seats" "$K" 'phase=repair round=<N>x "seats=\$REPAIR_SEATS"'
     assert_grep "plan launch records exact seats" "$K" 'phase=plan round=<N>p "seats=\$PLAN_SEATS"'
     assert_grep "all-lens plan panel restores every surviving core seat" "$K" '"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat'
-    assert_grep "default plan panel is one non-agent seat" "$K" '`PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order whose adapter is not `agent`, `PLAN_SEATS` to the JSON array `\["<that seat>"\]`'
+    assert_grep "default plan panel prefers a non-agent seat but does not require one" "$K" '`PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order, preferring one whose adapter is not `agent`'
     assert_grep "seat lists are rebuilt rather than accumulated" "$K" '[Rr]ebuild.*seat.*list.*before every|[Ee]xtra.*absent from the next panel'
     assert_grep "collect state retains exact seats" "$K" 'phase=collect round=<N> "seats=\$LAUNCHED_SEATS"'
     assert_grep "exit 5 is documented as retryable" "$K" '[Ee]xit 5 is retryable'

@@ -284,11 +284,16 @@ by evidence mode. Render and launch every code seat at full legacy scope under t
 panel label. Rows on adapters `codex`, `gemini`, and `claude` launch through
 `rev-seat.sh` and keep evidence mode.
 `claude_adapter` decides whether a Claude Code host seats Claude rows on `agent`; a Codex host always seats them on `claude`.
-Plan preparation instead fails before publishing artifacts when an assigned plan
-seat uses adapter `agent`. Report that plan review is unavailable with an Agent seat
-and requires a roster whose seats use enforceable Codex or Claude CLI adapters, and
-record that refusal as the plan panel's skip reason. Do not replace the schema-4 plan
-with a legacy full-scope task.
+Plan preparation RUNS with an Agent seat and records it as unenforced rather than
+refusing. An Agent seat cannot supply the enforced read transcript, so a plan panel
+containing one is never certified - but the value of the gate is its schema-4
+structure (per-cluster closure obligations, sibling-site search proofs, source
+shards), and that structure works on an Agent seat. Refusing meant a Claude-only
+Agent roster got no fix-design gate at all, which is strictly worse. The manifest
+lists those seats in `unenforced_seats`, validation skips only their read audit
+while still binding their result, exit and prompt hashes, and the receipt row carries
+`enforced: false`. Report such a panel as an unenforced plan panel; never describe it
+as certified. Do not replace the schema-4 plan with a legacy full-scope task.
 
 Before adaptive fan-out, set `PANEL_LABEL` to the artifact label and `PANEL_PHASE` to
 `discovery`, `risk`, `verification`, or `repair`. Build `EVIDENCE_ARGS` from the exact
@@ -491,7 +496,7 @@ When the plan panel is skipped, append a line beginning `Plan panel r<N>p - SKIP
 `rev-state.sh` refuses `phase=fix` for code round `<N>` while `open.P0 + open.P1 + open.P2` is above zero, unless that skip line exists or every seat recorded by `phase=plan round=<N>p` has `r<N>p-<seat>.json` and a `0` exit.
 An incomplete plan panel is not a skip: stop the run incomplete before any edit.
 
-By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order whose adapter is not `agent`, `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.
+By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order, preferring one whose adapter is not `agent` when the roster has one (an Agent seat runs the panel unenforced), `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.
 When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat, including after an extra or a
 one-seat repair, and deal `plan-completeness`, `plan-soundness`, `plan-simplicity`, and
 `plan-tests` in stable roster order. Build one `--assignment` per seat and use the
