@@ -8,7 +8,33 @@
   open findings. It fails open in every ambiguous case - no session, a session untouched for six
   hours, unreadable state, no `python3`, or a counter it cannot persist - releases after three
   consecutive blocks, and allows a genuine wait where the round is parked on unanswered seats,
-  every returned seat is triaged and the tree is clean. It is scoped to the stopping session's
+  every returned seat is triaged and the tree is clean. The consecutive-block counter is keyed per
+  stopping session and the release is sticky: one shared counter was not a cap at all, because every
+  allow path resets it, so any other session ending a turn zeroed the count of a session being
+  blocked and it never reached the release - observed live, a session blocked four times against a
+  cap of three. Resetting to zero on release also made the cap a toll rather than a release, costing
+  three more blocked turns on every later stop. Session discovery is limited to directories owned by
+  the current user, since /tmp is world-writable, and accepts a root override so tests can own the
+  state they read instead of planting fixtures in the shared namespace. Session text never reaches a
+  shell or JSON control channel: the state fields cross one per line rather than positionally,
+  because a single space in an attacker-writable `phase` shifted every later field and made the cap
+  unreachable, and responses are built with `json.dumps` rather than interpolated, so a crafted
+  `phase` cannot inject a decision. A run can also end without reaching `done` - a stack leg is
+  required to finish at `stack-ready` - so the terminal set is wider, and a receipt counts only as a
+  non-empty regular file (matching `rev-state.sh`), so `touch report.md` cannot end a live review.
+  The candidate list is capped after scoping rather than before, so out-of-scope sessions cannot
+  push the live one out of it. A seat that FAILED counts as answered: `rev-seat.sh` writes `.exit`
+  for every outcome and `.json` only on a valid result, so scoring "no result" as "still running"
+  made the guard allow the stop, claiming every returned seat was triaged, at the exact moment the
+  contract requires an immediate retry or a halt. A result sitting untriaged is outstanding work
+  too. Receipts are matched with `lstat`, the call `rev-state.sh` itself uses, so a symlink is not
+  a receipt in either place. State is untrusted in SHAPE as well as content: rev-state.sh stores a
+  value that is not JSON as a bare string, so `seats=sol` arrived as a string whose every character
+  read as an unanswered seat and produced a false "genuine wait" during a live panel; a seats list
+  the hook cannot parse is now never a wait. Plan and repair panels park on seats with the same
+  receipt shape, so they count as waits too. The candidate cap keeps the newest sessions rather than
+  whatever order the filesystem returned, and a `git status` that fails is no longer read as a clean
+  tree. It is scoped to the stopping session's
   working tree: review sessions share a `/tmp` namespace, so an unscoped guard blocks every
   concurrent session on the machine for as long as one review is open anywhere, which was observed
   live. A review whose `scope.env` cannot be read still blocks, since dropping it would disarm the
