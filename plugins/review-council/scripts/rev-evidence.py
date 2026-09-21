@@ -3642,6 +3642,16 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
     adapters = {s['seat']: s.get('adapter', '') for s in roster['seats']}
     if any(a.get('adapter') != adapters[s] for s, a in assigned.items()):
         raise ValueError('assignment adapter mismatch')
+    # unenforced_seats decides whose read audit is skipped, so it is DERIVED here and compared,
+    # never taken on the manifest's word. Declared and untyped, a hand-edited list could name a
+    # CLI seat, or be a bare string whose `in` test degrades to a substring match.
+    expected_unenforced = sorted(seat for seat in assigned
+                                 if manifest['phase'] == 'plan' and adapters[seat] == 'agent')
+    declared_unenforced = manifest.get('unenforced_seats', [])
+    if (not isinstance(declared_unenforced, list)
+            or any(not isinstance(x, str) for x in declared_unenforced)
+            or declared_unenforced != expected_unenforced):
+        raise ValueError('unenforced_seats does not match the roster')
     validate_assignment_topology({seat: assigned[seat]['bundle'] for seat in core_order if seat in assigned},
                                  [seat for seat in core_order if seat in assigned], manifest['phase'])
     for name, meta in manifest['artifacts'].items():
@@ -4337,8 +4347,13 @@ def _prepare_locked(args, session):
     # shards - and that structure works on an agent seat. Refusing meant a Claude-only Agent roster
     # got no fix-design gate at all, which is strictly worse than an unenforced one. The panel runs
     # and is recorded unenforced, so nothing downstream can mistake it for a certified gate.
+    # PLAN ONLY. A code panel containing an agent row skips evidence preparation entirely at the
+    # host, so any agent seat that reaches a code manifest is an anomaly and must still prove its
+    # reads - t-evidence's narrow_agent_requires_proven_reads and full_agent_requires_proven_reads
+    # exist for exactly that. Relaxing this phase-agnostically silently disarmed both.
     unenforced_seats = sorted(row['seat'] for row in roster['seats']
-                              if row.get('adapter') == 'agent' and row.get('seat') in chosen)
+                              if args.phase == 'plan' and row.get('adapter') == 'agent'
+                              and row.get('seat') in chosen)
     if parent_manifest is not None:
         parent = parent_manifest['assignments'][parent_seat]
         if chosen != {parent_seat: parent['bundle']}:

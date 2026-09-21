@@ -958,6 +958,23 @@ EOF
     assert_eq "a CLI-only plan panel records no unenforced seat" \
       "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["unenforced_seats"]))' "$S/r3p-mixed-evidence.manifest.json")" \
       0
+    # The VALIDATION half: preparation alone proves nothing about whether the audit is actually
+    # skipped, whether a non-agent seat could be smuggled into the list, or whether the marker is
+    # taken on the manifest's word.
+    python3 - "$S" <<'PYEDIT'
+import json, sys
+p = sys.argv[1] + '/r3p-mixed-evidence.manifest.json'
+d = json.load(open(p)); d['unenforced_seats'] = ['sol']   # a CLI seat, which must never be listed
+json.dump(d, open(p, 'w'))
+PYEDIT
+    python3 "$SCRIPTS/rev-evidence.py" verify "$S/r3p-mixed-evidence.manifest.json" \
+      > /dev/null 2> "$T/plan-forged.err"; local forged=$?
+    assert_eq "the forged unenforced list fails validation" "$forged" 2
+    assert_grep "the refusal names the derived mismatch" \
+      "$T/plan-forged.err" 'unenforced_seats does not match the roster'
+    assert_eq "a non-plan phase never marks an agent seat unenforced" \
+      "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["unenforced_seats"]))' "$S/r3-evidence.manifest.json" 2>/dev/null || echo 0)" \
+      0
     printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"},{"seat":"agent-extra","adapter":"agent","extra":true}]}' > "$S/roster.json"
     assert_exit "stale plan hash rejects adaptive plan preparation" 2 \
       python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 4p "${valid_args[@]/$hash/0000000000000000000000000000000000000000000000000000000000000000}"

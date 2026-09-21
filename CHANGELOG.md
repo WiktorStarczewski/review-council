@@ -10,7 +10,10 @@
   told to force one by hand. Preparation records the seats in `unenforced_seats`, validation skips
   only their read audit while still binding their result, exit and prompt hashes, and each receipt
   row carries `enforced`. The host picks a plan seat from the whole roster rather than only from
-  CLI-backed rows.
+  CLI-backed rows. The list is DERIVED from the roster during manifest validation and compared
+  against the declared one, so a hand-edited manifest cannot name a CLI seat and have its audit
+  skipped, and the relaxation is scoped to the plan phase: an Agent seat reaching a code manifest
+  still has to prove its reads.
 - Republishes the 0.4.7 Stop guard under a new version. 0.4.7's manifest bump landed in the pull
   request BEFORE its fourteen review fixes, so `main` published version 0.4.7 twice: once with the
   original guard and once with the repaired one. `claude plugin update` compares version strings,
