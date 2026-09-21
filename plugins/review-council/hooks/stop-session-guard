@@ -113,9 +113,20 @@ done
 # the live review could be dropped while stale ones survived - and it made the cap-ordering
 # regression only probabilistically detectable. Sorting makes the stated "newest session" invariant
 # hold at any candidate count.
-STATE=$(printf '%s' "$MINE" | tr ' ' '\n' | grep -v '^$' \
-          | xargs -I{} stat -f '%m {}' {} 2>/dev/null \
-          | sort -rn | head -40 | cut -d' ' -f2- | tr '\n' ' ')
+# Sorted in python, not with `stat`: BSD stat wants -f and GNU stat reads -f as "filesystem
+# status", so the shell form silently produced garbage on Linux, emptied the candidate list and
+# disarmed the guard everywhere. python3 is already required above.
+STATE=$(printf '%s' "$MINE" | tr ' ' '\n' | grep -v '^$' | python3 -c '
+import os, sys
+paths = [p for p in sys.stdin.read().split("\n") if p]
+def mtime(p):
+    try:
+        return os.path.getmtime(p)
+    except OSError:
+        return -1
+for p in sorted(paths, key=mtime, reverse=True)[:40]:
+    print(p)
+' 2>/dev/null | tr '\n' ' ')
 [ -z "${STATE// /}" ] && allow
 
 # Pick the newest session that is NOT done. More than one review can exist on this machine, and a
