@@ -2,19 +2,22 @@
 # rev-mutate.sh <session-dir> <test-command>
 #   Reverts each changed hunk on its own, keeping every other change in the tree, and runs the
 #   test command. A hunk whose revert leaves the command passing is unpinned: no test proves
-#   that line. Exits 0 every hunk pinned, 2 a panel is live or its phase cannot be read, 3 an
-#   unpinned hunk, 4 the run measured nothing (a hunk that would not apply, a revert that
-#   changed no byte, a changed file with no text hunk, or no changed hunk at all).
+#   that line. Exits 0 every hunk pinned, 2 the session is not in a phase known to be panel-free,
+#   3 an unpinned hunk, 4 the run measured nothing (a command that does not pass on the unmutated
+#   tree, a hunk that would not apply, a revert that changed no byte, a changed file that is a
+#   symlink or has no text hunk, or no changed hunk at all).
 #
 #   4 outranks 3: a run that could not revert one hunk has not earned a verdict about the rest.
-#   A mutation that does not apply is the failure this tool exists to prevent, because it reads
-#   exactly like a real measurement, so every revert is proved by hash before its result counts.
+#   A measurement that did not happen is the failure this tool exists to prevent, because it
+#   reads exactly like a real one: every revert is proved by hash, and the command is proved to
+#   pass on the unmutated tree, before any verdict counts.
 #
 #   It refuses while a panel is live because seats read the live tree, and a script that reverts
 #   hunks for seconds at a time shows them a tree that is neither base nor fix.
 #
-#   Scope: unstaged changes to tracked files under REV_ROOT. Each hunk is measured against the
-#   COMPLETE fix: the file is restored from a backup this run took, never from the commit.
+#   Scope: unstaged changes to tracked, non-symlink files under REV_ROOT. Staged and untracked
+#   files are named on stderr and not measured. Each hunk is measured against the COMPLETE fix:
+#   the file is restored from a backup this run took, never from the commit.
 set -u
 S=${1:?usage: rev-mutate.sh <session-dir> <test-command>}
 CMD=${2:?usage: rev-mutate.sh <session-dir> <test-command>}
@@ -33,13 +36,16 @@ except Exception:
     phase = 'unknown'
 print(phase)
 PY
-)
+) || phase=unknown
+# An ALLOWLIST: a spelling this script does not know (fan_out, FAN-OUT, panel, 5, a phase reader
+# that died and left this empty) is not evidence that no seat is reading the tree.
 case "$phase" in
+  fix|triage|verify|commit|done|setup|stack-ready) ;;
   fan-out|collect|plan|repair)
     echo "rev-mutate: refusing while a panel is live (phase=$phase); seats read the live tree" >&2
     exit 2 ;;
-  unknown)
-    echo "rev-mutate: refusing: $S/state.json names no phase, so a live panel cannot be ruled out" >&2
+  *)
+    echo "rev-mutate: refusing: '$phase' is not a phase known to be panel-free, so a live panel cannot be ruled out" >&2
     echo "rev-mutate: record the phase first, e.g. rev-state.sh $S phase=fix" >&2
     exit 2 ;;
 esac
@@ -51,11 +57,12 @@ git rev-parse --is-inside-work-tree >/dev/null 2>&1 \
   || { echo "rev-mutate: $ROOT is not the repository root" >&2; exit 1; }
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/rev-mutate.XXXXXX") || exit 1
-BK="$WORK/backup"; CUR=""
+BK="$WORK/backup"; CUR=""; KEEP_WORK=0
 cleanup() {
-  # A mutated file must never outlive this run, however it ends.
+  # A mutated file must never outlive this run, however it ends, and a backup this run could not
+  # put back is the only copy of that work left: never delete it on the way out.
   [ -z "$CUR" ] || [ ! -f "$BK" ] || cp -p -- "$BK" "$CUR" 2>/dev/null
-  rm -rf "$WORK"
+  [ "$KEEP_WORK" -eq 1 ] || rm -rf "$WORK"
 }
 trap cleanup EXIT
 trap 'exit 130' INT
@@ -68,9 +75,27 @@ git diff --name-only -z > "$WORK/files"
 git ls-files --others --exclude-standard > "$WORK/untracked"
 [ ! -s "$WORK/untracked" ] \
   || echo "rev-mutate: NOTE $(grep -c . < "$WORK/untracked") untracked file(s) are outside this measurement" >&2
+git diff --cached --name-only > "$WORK/staged"
+[ ! -s "$WORK/staged" ] \
+  || echo "rev-mutate: NOTE $(grep -c . < "$WORK/staged") staged file(s) are outside this measurement" >&2
+
+# Prove the command DISCRIMINATES before believing any verdict it gives. A command that fails on
+# the unmutated tree - a typo, a missing binary, an already-red suite, the wrong cwd - reports
+# every hunk as pinned, for a reason that has nothing to do with the mutation.
+if ! ( eval "$CMD" ) </dev/null >/dev/null 2>&1; then
+  echo "rev-mutate: measured nothing: the command does not pass on the unmutated tree" >&2
+  echo "rev-mutate: every hunk would have read as pinned for a reason that is not the mutation" >&2
+  exit 4
+fi
 
 while IFS= read -r -d '' f <&3; do
   [ -n "$f" ] || continue
+  if [ -L "$f" ]; then
+    # cp and git hash-object both follow the link, so measuring it would corrupt the file it
+    # points at and then verify the restore against that same corrupted file.
+    unmeasurable "$f is a symlink"
+    continue
+  fi
   if [ ! -f "$f" ]; then
     unmeasurable "$f is not a regular file in the working tree"
     continue
@@ -104,10 +129,16 @@ while IFS= read -r -d '' f <&3; do
     else
       unmeasurable "hunk $i of $f would not apply"
     fi
-    cp -p -- "$BK" "$f" || { echo "rev-mutate: FATAL cannot restore $f from $BK" >&2; exit 1; }
-    [ "$(git hash-object -- "$f")" = "$fixhash" ] || {
-      echo "rev-mutate: FATAL $f differs from the fix after its restore; the tree is left mutated" >&2
-      exit 1; }
+    if ! cp -p -- "$BK" "$f"; then
+      KEEP_WORK=1
+      echo "rev-mutate: FATAL cannot restore $f; its fix is preserved at $BK" >&2
+      exit 1
+    fi
+    if [ "$(git hash-object -- "$f")" != "$fixhash" ]; then
+      KEEP_WORK=1
+      echo "rev-mutate: FATAL $f differs from the fix after its restore; the fix is preserved at $BK" >&2
+      exit 1
+    fi
     i=$((i + 1))
   done
   CUR=""
