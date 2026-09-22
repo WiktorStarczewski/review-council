@@ -300,3 +300,6 @@ t-plan-evidence.sh::test_plan_proof_reconciliation_is_revalidated_without_replay
 t-state.sh::test_state_fix_gate_refuses_a_stale_open_count	1	normal
 t-state.sh::test_state_fix_gate_ignores_staleness_with_no_seat_exits	1	normal
 t-state.sh::test_state_fix_gate_allows_fix_after_the_plan_panel	1	normal
+t-state.sh::test_state_fix_gate_refuses_when_no_stamp_was_ever_written	1	normal
+t-state.sh::test_state_open_stamp_is_the_newest_exit_mtime	1	normal
+t-state.sh::test_state_fix_gate_counts_a_repair_round_seat_exit	1	normal

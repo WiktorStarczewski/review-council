@@ -152,3 +152,52 @@ test_state_fix_gate_allows_fix_after_the_plan_panel() {
     assert_exit "a plan panel answering after triage is not staleness" 0 \
       "$SCRIPTS/rev-state.sh" "$S" phase=fix round=2 )
 }
+
+test_state_fix_gate_refuses_when_no_stamp_was_ever_written() {
+  ( local S="$T/st-nostamp"; mkdir -p "$S"
+    local out="$T/st-nostamp.err"
+    # open merges per severity, so one severity never arms the stamp at all.
+    "$SCRIPTS/rev-state.sh" "$S" round=2 phase=triage open.P1=1 >/dev/null
+    printf '0\n' > "$S/r2-codex-sol.exit"
+    "$SCRIPTS/rev-state.sh" "$S" phase=fix 2>"$out"
+    assert_eq "an absent stamp refuses phase=fix" "$?" 2
+    assert_grep "an absent stamp refuses for staleness, not for the plan gate" "$out" \
+      "open\.P0=.*open\.P1=.*open\.P2="
+
+    # A session written before this gate existed carries no open_stamp. Its counts are
+    # zeroed, so nothing but the staleness check can refuse it.
+    local R="$T/st-preupgrade"; mkdir -p "$R"
+    printf '{"round": 2, "open": {"P0": 0, "P1": 0, "P2": 0}}\n' > "$R/state.json"
+    printf '0\n' > "$R/r2-codex-sol.exit"
+    local rout="$T/st-preupgrade.err"
+    "$SCRIPTS/rev-state.sh" "$R" phase=fix 2>"$rout"
+    assert_eq "a resumed session with no stamp refuses phase=fix" "$?" 2
+    assert_grep "the resumed refusal names the way out" "$rout" "open\.P0=.*open\.P1=.*open\.P2=" )
+}
+
+test_state_open_stamp_is_the_newest_exit_mtime() {
+  ( local S="$T/st-stamp-value"; mkdir -p "$S"
+    # Backdated exits, with the EARLIEST-created one the greatest-valued: a wall-clock
+    # stamp matches neither, and reading the older exit or the last file seen would both
+    # read 1000000000.0.
+    printf '0\n' > "$S/r3-codex-sol.exit"
+    python3 -c 'import os,sys; os.utime(sys.argv[1], (1200000000, 1200000000))' "$S/r3-codex-sol.exit"
+    printf '0\n' > "$S/r3-opus.exit"
+    python3 -c 'import os,sys; os.utime(sys.argv[1], (1000000000, 1000000000))' "$S/r3-opus.exit"
+    "$SCRIPTS/rev-state.sh" "$S" round=3 phase=triage open.P0=0 open.P1=0 open.P2=0 >/dev/null
+    assert_eq "open_stamp is the greatest exit mtime, not the wall clock" \
+      "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["open_stamp"])' "$S/state.json")" \
+      "1200000000.0" )
+}
+
+test_state_fix_gate_counts_a_repair_round_seat_exit() {
+  ( local S="$T/st-repair"; mkdir -p "$S"
+    "$SCRIPTS/rev-state.sh" "$S" round=2 phase=triage open.P0=0 open.P1=0 open.P2=0 >/dev/null
+    # A coverage-repair panel answers after triage and its findings still need counting,
+    # unlike the plan panel's, which review a triage that already happened.
+    printf '0\n' > "$S/r2x-opus.exit"
+    local out="$T/st-repair.err"
+    "$SCRIPTS/rev-state.sh" "$S" round=2x phase=fix 2>"$out"
+    assert_eq "a repair round's seat exit makes the counts stale" "$?" 2
+    assert_grep "the repair refusal names the way out" "$out" "open\.P0=.*open\.P1=.*open\.P2=" )
+}
