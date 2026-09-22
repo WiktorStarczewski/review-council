@@ -526,8 +526,9 @@ Native text search cannot certify this proof.
 Locations are read only from `Sites` and the first token of a test field
 (`Test: <path> - <what fails today>`); every other field is prose, including
 `Prediction`. A prediction names which test fails, on which arm, at which assertion or
-message, and why; it is checked against what a mutation of the fix actually does, not
-filed and forgotten. Locations may use
+message, and why; it is checked twice - once against the observed pre-fix red run in
+Fix, once against what a mutation of the fix actually does in Verify - not filed and
+forgotten. Locations may use
 `path:line`, `path:start-end`, or a shorthand `:start-end` after a path.
 Write `$S/r<N>p-panel.tsv` with one line per plan seat, then bind and prepare the
 immutable plan before rendering:

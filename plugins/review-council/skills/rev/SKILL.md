@@ -659,8 +659,9 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    pinned repository snapshot. Locations are read only from `Sites` and the first
    token of a test field (`Test: <path> - <what fails today>`); every other field is prose,
    including `Prediction`. A prediction names which test fails, on which arm, at which
-   assertion or message, and why; it is checked against what a mutation of the fix
-   actually does, not filed and forgotten.
+   assertion or message, and why; it is checked twice - once against the observed
+   pre-fix red run in Fix, once against what a mutation of the fix actually does in
+   Verify - not filed and forgotten.
    Locations may use `path:line`, `path:start-end`,
    or a shorthand `:start-end` after a path. `Sites` must include one bounded query in
    either exact form: `found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'PATTERN' .`
