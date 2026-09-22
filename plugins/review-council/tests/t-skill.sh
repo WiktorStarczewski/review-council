@@ -694,3 +694,28 @@ test_skill_requires_a_proven_red_before_the_fix() {
     assert_flat_fixed "rev skill treats a mismatched failure as a stop" "$SK/skills/rev/SKILL.md" "$stop"
     assert_flat_fixed "codex skill treats a mismatched failure as a stop" "$SK/codex-skills/rev/SKILL.md" "$stop" )
 }
+
+# Pins the two IMPORTANT fixes from the fix-contract review: the mutation-check
+# invocation must be runnable (a path plus arguments, not bare prose), and it must
+# run before the commit directive on both hosts - the exact defect a relative-position
+# mirror recreated on Codex (rev-mutate ran with nothing staged, exit 4).
+assert_flat_order() {
+  local name=$1 file=$2 pattern=$3 flat
+  flat="$T/flat-order-$(basename "$file")-$RANDOM"
+  tr '\n' ' ' < "$file" | tr -s ' ' > "$flat"
+  grep -Eq -- "$pattern" "$flat" && ok "$name" || fail "$name" "no /$pattern/ in $file (flattened)"
+}
+
+test_skill_rev_mutate_invocation_is_runnable() {
+  ( assert_flat_fixed "rev skill's mutation check has a runnable invocation" \
+      "$SK/skills/rev/SKILL.md" 'scripts/rev-mutate.sh $S "<the test command>"'
+    assert_flat_fixed "codex skill's mutation check has a runnable invocation" \
+      "$SK/codex-skills/rev/SKILL.md" 'scripts/rev-mutate.sh "$S" "<the test command>"' )
+}
+
+test_skill_rev_mutate_precedes_commit() {
+  ( assert_flat_order "rev skill runs the mutation check before Commit" \
+      "$SK/skills/rev/SKILL.md" 'rev-mutate.*### Commit'
+    assert_flat_order "codex skill runs the mutation check before Commit only when" \
+      "$SK/codex-skills/rev/SKILL.md" 'rev-mutate.*Commit only when' )
+}

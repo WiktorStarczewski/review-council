@@ -586,13 +586,13 @@ cluster's Prediction, not once for the round. Record the observed failure line i
 fix-plan.md beside the Prediction it belongs to: a failure whose message does not
 match the Prediction is a STOP, not a note, because a test that fails for an
 unrelated reason proves nothing about the defect. Apply confirmed fixes in coherent
-clusters. Preserve user changes. Run the relevant gates and bring them to baseline
-or better. Add meaningful regressions when warranted, not tests that merely mirror
-implementation. Run the repository's full gate list, not the subset the diff
-suggests, and record the result in the ledger. Then run rev-mutate.sh over the
-changed hunks before committing: revert each hunk alone and confirm a test notices,
-and compare what failed against the cluster's Prediction:
-`$PLUGIN/scripts/rev-mutate.sh $S "<the test command>"`. Commit only when within
+clusters. Preserve user changes. Run the relevant gates and bring them to
+baseline or better. Add meaningful regressions when warranted, not tests that
+merely mirror implementation. Run the repository's full gate list, not the subset
+the diff suggests, and record the result in the ledger. Then run rev-mutate.sh over
+the changed hunks before committing: revert each hunk alone and confirm a test
+notices, and compare what failed against the cluster's Prediction:
+`$PLUGIN/scripts/rev-mutate.sh "$S" "<the test command>"`. Commit only when within
 the user's requested workflow, with `fix(rev): <concrete change>` and no unrelated
 files. Record uncommitted fixes accurately when commits were not requested.
 Read-only runs skip all fix, commit, squash, push, and post-report editing steps.

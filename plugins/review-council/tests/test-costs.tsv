@@ -305,3 +305,5 @@ t-state.sh::test_state_open_stamp_is_the_newest_exit_mtime	1	normal
 t-state.sh::test_state_fix_gate_counts_a_repair_round_seat_exit	1	normal
 t-skill.sh::test_skill_requires_the_full_gate_list_on_a_fix_commit	1	normal
 t-skill.sh::test_skill_requires_a_proven_red_before_the_fix	1	normal
+t-skill.sh::test_skill_rev_mutate_invocation_is_runnable	1	normal
+t-skill.sh::test_skill_rev_mutate_precedes_commit	1	normal
