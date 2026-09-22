@@ -111,3 +111,44 @@ test_state_fix_gate() {
   "$ST" "$S" phase=plan round=10 'seats=["opus"]' >/dev/null
   assert_nogrep "only a <N>p plan launch records plan seats" "$S/state.json" '"plans"'
 }
+
+test_state_fix_gate_refuses_a_stale_open_count() {
+  ( local S="$T/st-stale"; mkdir -p "$S"
+    "$SCRIPTS/rev-state.sh" "$S" round=1 phase=triage open.P0=0 open.P1=0 open.P2=0 >/dev/null
+    # A seat answers AFTER the counts were written, so the counts are now stale.
+    printf '0\n' > "$S/r2-codex-sol.exit"
+    "$SCRIPTS/rev-state.sh" "$S" round=2 >/dev/null
+    local out="$T/st-stale.err"
+    "$SCRIPTS/rev-state.sh" "$S" phase=fix 2>"$out"
+    assert_eq "a stale open count refuses phase=fix" "$?" 2
+    assert_grep "names the way out" "$out" "open\.P0=.*open\.P1=.*open\.P2="
+
+    # open merges per severity, so one severity alone is no re-count of the round.
+    "$SCRIPTS/rev-state.sh" "$S" open.P2=0 >/dev/null
+    assert_exit "one severity alone does not refresh the count" 2 \
+      "$SCRIPTS/rev-state.sh" "$S" phase=fix
+
+    # Rewriting all three counts after the exit clears it.
+    "$SCRIPTS/rev-state.sh" "$S" open.P0=0 open.P1=0 open.P2=0 >/dev/null
+    assert_exit "a fresh open count passes phase=fix" 0 \
+      "$SCRIPTS/rev-state.sh" "$S" phase=fix )
+}
+
+test_state_fix_gate_ignores_staleness_with_no_seat_exits() {
+  ( local S="$T/st-noexit"; mkdir -p "$S"
+    "$SCRIPTS/rev-state.sh" "$S" round=1 phase=triage open.P0=0 open.P1=0 open.P2=0 >/dev/null
+    assert_exit "no seat exits means nothing to be stale against" 0 \
+      "$SCRIPTS/rev-state.sh" "$S" phase=fix )
+}
+
+test_state_fix_gate_allows_fix_after_the_plan_panel() {
+  ( local S="$T/st-after-plan"; mkdir -p "$S"
+    printf '0\n' > "$S/r2-codex-sol.exit"
+    "$SCRIPTS/rev-state.sh" "$S" round=2 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
+    "$SCRIPTS/rev-state.sh" "$S" phase=plan round=2p 'seats=["codex-sol"]' >/dev/null
+    # The plan panel answers after triage because the contract puts it there. Its exit is
+    # newer than the counts and must not read as staleness.
+    printf '{"findings":[]}\n' > "$S/r2p-codex-sol.json"; printf '0\n' > "$S/r2p-codex-sol.exit"
+    assert_exit "a plan panel answering after triage is not staleness" 0 \
+      "$SCRIPTS/rev-state.sh" "$S" phase=fix round=2 )
+}

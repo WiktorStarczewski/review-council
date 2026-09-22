@@ -485,6 +485,7 @@ opened. Scope cuts are `DEFERRED (scope decision)`, not unrequested product chan
 Maintain a ledger entry per finding: ID, severity P0-P3, status OPEN/FIXED/REJECTED/
 DEFERRED, file and line, claim, evidence, reporting seats, disposition, test result,
 and commit if any. Do not re-raise resolved findings without new evidence.
+Write all three counts in one call after the round's seats have exited: `rev-state.sh` refuses `phase=fix` while `open.P0`, `open.P1` and `open.P2` predate the newest `r<N>-<seat>.exit`, and only all three in one call refresh that stamp. A plan panel's `r<N>p-<seat>.exit` is not a seat exit for this purpose, so triage stays valid across the plan gate.
 
 Run the plan panel when accepted findings require a nontrivial change; skip it when
 there is no accepted fix or every accepted fix is a P3 or one-line P2. Write

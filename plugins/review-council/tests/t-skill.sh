@@ -605,6 +605,7 @@ skill_adapter_and_plan_gate_contract() {
   local skip_line='When the plan panel is skipped, append a line beginning `Plan panel r<N>p - SKIPPED: <reason>` to `$S/findings.md` before `phase=fix`.'
   local gate='`rev-state.sh` refuses `phase=fix` for code round `<N>` while `open.P0 + open.P1 + open.P2` is above zero, unless that skip line exists or every seat recorded by `phase=plan round=<N>p` has `r<N>p-<seat>.json` and a `0` exit.'
   local incomplete='An incomplete plan panel is not a skip: stop the run incomplete before any edit.'
+  local fresh_counts='Write all three counts in one call after the round'"'"'s seats have exited: `rev-state.sh` refuses `phase=fix` while `open.P0`, `open.P1` and `open.P2` predate the newest `r<N>-<seat>.exit`, and only all three in one call refresh that stamp. A plan panel'"'"'s `r<N>p-<seat>.exit` is not a seat exit for this purpose, so triage stays valid across the plan gate.'
   local sibling='Sibling-site completeness: for each fix commit since the base, name the rule it applies and search the repository for sites, arms, realms, callers and copies (tests, JSDoc, docs) the rule reaches but the commit missed.'
   # Host-tied evidence wording that must never return: an evidence or plan decision keyed on the
   # host instead of a launched row's adapter.
@@ -625,6 +626,7 @@ skill_adapter_and_plan_gate_contract() {
     assert_flat_fixed "$host records a skipped plan panel" "$H" "$skip_line"
     assert_flat_fixed "$host states the rev-state fix gate" "$H" "$gate"
     assert_flat_fixed "$host stops on an incomplete plan panel" "$H" "$incomplete"
+    assert_flat_fixed "$host requires counts written after the round's seat exits" "$H" "$fresh_counts"
     assert_flat_fixed "$host verification seats check sibling sites" "$H" "$sibling"
     assert_grep "$host renders a panel in one --panel call" "$H" \
       'rev-prompt\.sh"? "\$S" "\$PANEL_LABEL" --panel "\$S/r\$PANEL_LABEL-panel\.tsv" "\$\{PHASE_PROMPT_ARGS\[@\]\}" "\$\{EVIDENCE_PROMPT_ARGS\[@\]\}"$'

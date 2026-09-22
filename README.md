@@ -286,7 +286,9 @@ four full red-team launches. With `plan_seats: "all"`, every plan panel launches
 four core seats instead of one.
 
 `rev-state.sh` refuses `phase=fix` while P0-P2 findings are open until the round's plan
-panel completed or `findings.md` records `Plan panel r<N>p - SKIPPED: <reason>`.
+panel completed or `findings.md` records `Plan panel r<N>p - SKIPPED: <reason>`. It also
+refuses when the open counts predate the round's newest seat exit, so a counter still
+holding the previous round's zeroes cannot short-circuit the gate.
 
 One four-bundle verification panel reviews the latest material state: directly after
 discovery when no nontrivial fix follows, or after the latest nontrivial fix. Adaptive

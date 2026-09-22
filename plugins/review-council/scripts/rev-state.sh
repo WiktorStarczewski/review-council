@@ -60,6 +60,26 @@ def receipt_file(name):
     return info if stat.S_ISREG(info.st_mode) and info.st_size > 0 else None
 
 
+def newest_seat_exit():
+    # Newest r<N>[x]-<seat>.exit mtime, the moment this round's findings stopped arriving.
+    # rev-seat.sh deletes the receipt before every relaunch, so the mtime is this launch's.
+    # Plan rounds (r<N>p-) are excluded on purpose: the plan panel runs after triage by
+    # design, so counting its exits would refuse every sanctioned triage-plan-fix path.
+    newest = 0.0
+    try:
+        names = os.listdir(session)
+    except OSError:
+        return newest
+    for name in names:
+        if not re.fullmatch(rf'r[0-9]+x?-{SEAT_NAME}\.exit', name):
+            continue
+        try:
+            newest = max(newest, os.lstat(os.path.join(session, name)).st_mtime)
+        except OSError:
+            continue
+    return newest
+
+
 def plan_completed(label):
     seats = (state.get('plans') or {}).get(label) if isinstance(state.get('plans'), dict) else None
     if not isinstance(seats, list) or not seats:
@@ -84,6 +104,9 @@ def plan_skipped(label):
         return any(line.startswith(prefix) and line[len(prefix):].strip() for line in f)
 
 
+if {'open.P0', 'open.P1', 'open.P2'} <= assigned:
+    state['open_stamp'] = newest_seat_exit()
+
 phase = state.get('phase')
 if 'phase' in assigned and phase == 'plan' and {'round', 'seats'} <= assigned:
     label, seats = state.get('round'), state.get('seats')
@@ -105,6 +128,12 @@ if 'phase' in assigned and phase == 'fix':
         if isinstance(count, bool) or not isinstance(count, int) or count < 0:
             refuse(f"refusing phase=fix: open.{severity}={count!r} is not a non-negative integer")
         total += count
+    newest_exit = newest_seat_exit()
+    stamp = state.get('open_stamp')
+    if newest_exit and (not isinstance(stamp, (int, float)) or stamp < newest_exit):
+        refuse("refusing phase=fix: open.P0/P1/P2 have not been written since the last seat "
+               "exit, so the counts are last round's - re-run triage and set "
+               "open.P0=<n> open.P1=<n> open.P2=<n>")
     if total > 0:
         match = re.fullmatch(r'([0-9]+)[px]?', str(state.get('round')))
         if not match:

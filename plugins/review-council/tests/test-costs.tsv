@@ -297,3 +297,6 @@ t-update.sh::test_update_writes_the_cache	1	normal
 t-validate.sh::test_validate	1	normal
 t-plan-evidence.sh::test_plan_search_refuses_an_unreconciled_hit	1	normal
 t-plan-evidence.sh::test_plan_proof_reconciliation_is_revalidated_without_replay	2	normal
+t-state.sh::test_state_fix_gate_refuses_a_stale_open_count	1	normal
+t-state.sh::test_state_fix_gate_ignores_staleness_with_no_seat_exits	1	normal
+t-state.sh::test_state_fix_gate_allows_fix_after_the_plan_panel	1	normal

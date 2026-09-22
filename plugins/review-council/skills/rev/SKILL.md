@@ -577,6 +577,7 @@ launched seat's `$S/r<N>-<seat>.json` (they are small; manifests, audits and
    only member of its cluster is still a cluster.
 
 Update counts: `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S open.P0=<n> open.P1=<n> open.P2=<n> rejected=<n>`.
+Write all three counts in one call after the round's seats have exited: `rev-state.sh` refuses `phase=fix` while `open.P0`, `open.P1` and `open.P2` predate the newest `r<N>-<seat>.exit`, and only all three in one call refresh that stamp. A plan panel's `r<N>p-<seat>.exit` is not a seat exit for this purpose, so triage stays valid across the plan gate.
 
 ### Plan - the fix-design gate
 
