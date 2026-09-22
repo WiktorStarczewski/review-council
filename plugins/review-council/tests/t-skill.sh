@@ -672,3 +672,16 @@ skill_adapter_and_plan_gate_contract() {
     '^Before the first edit, write `rev-state\.sh "\$S" phase=fix`\.$'
   assert_grep "Codex host shares the plan_seats key" "$CK" '`plan_seats`, and `quota_fallback` are shared with Claude Code'
 }
+
+test_skill_requires_the_full_gate_list_on_a_fix_commit() {
+  ( local want="Run the repository's full gate list, not the subset the diff suggests"
+    local mut="run rev-mutate.sh over the changed hunks before committing"
+    assert_flat_fixed "rev skill requires the full gate list" \
+      "$SK/skills/rev/SKILL.md" "$want"
+    assert_flat_fixed "codex skill requires the full gate list" \
+      "$SK/codex-skills/rev/SKILL.md" "$want"
+    assert_flat_fixed "rev skill invokes the mutation check" \
+      "$SK/skills/rev/SKILL.md" "$mut"
+    assert_flat_fixed "codex skill invokes the mutation check" \
+      "$SK/codex-skills/rev/SKILL.md" "$mut" )
+}

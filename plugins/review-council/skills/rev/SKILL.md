@@ -728,7 +728,11 @@ reviewer.
 `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=verify`. Re-run the gates from
 setup. Compare with `baseline.md`: pre-existing failures are not regressions; anything
 newly failing is yours to repair or revert **before** the next round. Never advance on
-an unverified material tree. For review-council self-hosting, run an 8-30 second
+an unverified material tree. Run the repository's full gate list, not the subset the
+diff suggests, and record the result in the ledger. Then run rev-mutate.sh over the
+changed hunks before committing: revert each hunk alone and confirm a test notices,
+and compare what failed against the cluster's Prediction. For review-council
+self-hosting, run an 8-30 second
 focused test after each edit, the roughly three-minute evidence fixture after a
 coherent contract cluster, and the complete suite once for each material tree. Record
 the tree hash and successful command so an unchanged tree reuses that gate result.

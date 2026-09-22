@@ -587,6 +587,11 @@ requested workflow, with `fix(rev): <concrete change>` and no unrelated files. R
 uncommitted fixes accurately when commits were not requested. Read-only runs skip
 all fix, commit, squash, push, and post-report editing steps.
 
+Run the repository's full gate list, not the subset the diff suggests, and record the
+result in the ledger. Then run rev-mutate.sh over the changed hunks before committing:
+revert each hunk alone and confirm a test notices, and compare what failed against the
+cluster's Prediction.
+
 For review-council self-hosting, use tiered verification: run an 8-30 second focused
 test after each edit, the roughly three-minute evidence fixture after a coherent
 contract cluster, and the complete suite once for each material tree. Record the tree
