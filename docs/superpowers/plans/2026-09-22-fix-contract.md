@@ -693,12 +693,24 @@ Append to `plugins/review-council/tests/t-skill.sh`, using the existing flat-tex
 ```bash
 test_skill_requires_the_full_gate_list_on_a_fix_commit() {
   ( local want="Run the repository's full gate list, not the subset the diff suggests"
+    local mut="run rev-mutate.sh over the changed hunks before committing"
     assert_flat_fixed "rev skill requires the full gate list" \
       "$SK/skills/rev/SKILL.md" "$want"
     assert_flat_fixed "codex skill requires the full gate list" \
-      "$SK/codex-skills/rev/SKILL.md" "$want" )
+      "$SK/codex-skills/rev/SKILL.md" "$want"
+    assert_flat_fixed "rev skill invokes the mutation check" \
+      "$SK/skills/rev/SKILL.md" "$mut"
+    assert_flat_fixed "codex skill invokes the mutation check" \
+      "$SK/codex-skills/rev/SKILL.md" "$mut" )
 }
 ```
+
+**Why the second sentence exists.** Task 3 builds `rev-mutate.sh` and nothing in the contract
+invokes it. A gate no instruction runs is inert, which is the defect class this plan exists to
+close, so the call site lands here. It belongs in **Verify, not Commit**: the phase order is Fix
+(714), Verify (725), Commit (741), so at Verify the working tree still carries the fix and
+`git diff` sees the hunks. That also answers the script's scope question without adding a base-ref
+argument it would otherwise need.
 
 - [ ] **Step 2: Add the test-costs row**
 
@@ -716,9 +728,11 @@ Expected: FAIL, the sentence is absent from both files.
 
 - [ ] **Step 4: Add the sentence**
 
-In the Verify section of `skills/rev/SKILL.md` (707-722), add verbatim:
+In the Verify section of `skills/rev/SKILL.md`, add both sentences verbatim:
 
 > Run the repository's full gate list, not the subset the diff suggests, and record the result in the ledger.
+
+> Then run rev-mutate.sh over the changed hunks before committing: revert each hunk alone and confirm a test notices, and compare what failed against the cluster's Prediction.
 
 Mirror it in `codex-skills/rev/SKILL.md`.
 
