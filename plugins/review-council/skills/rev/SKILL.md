@@ -714,7 +714,11 @@ commits implement - nothing outside it lands this round.
 
 ### Fix
 
-`${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=fix`. Implement `fix-plan.md`
+`${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=fix`. Run the test named in
+Prediction before the fix exists and watch it fail. Record the observed failure line
+in the ledger beside the prediction: a failure whose message does not match the
+Prediction is a STOP, not a note, because a test that fails for an unrelated reason
+proves nothing about the defect. Implement `fix-plan.md`
 **one cluster per commit**, P0 clusters first: every enumerated site, arm, realm and copy in the
 same commit. A fix that covers the cited instance and leaves a listed sibling is not done -
 it is next round's finding. Within a cluster, P3 only when trivial and safe. Match the surrounding style; do not reformat

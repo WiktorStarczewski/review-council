@@ -580,6 +580,10 @@ editing. Keep one rule per root-cause cluster with a compact site table, invaria
 and falsifiable tests.
 
 Before the first edit, write `rev-state.sh "$S" phase=fix`.
+Run the test named in Prediction before the fix exists and watch it fail. Record the
+observed failure line in the ledger beside the prediction: a failure whose message
+does not match the Prediction is a STOP, not a note, because a test that fails for an
+unrelated reason proves nothing about the defect.
 Apply confirmed fixes in coherent clusters. Preserve user changes. Run the relevant
 gates and bring them to baseline or better. Add meaningful regressions when warranted,
 not tests that merely mirror implementation. Commit only when within the user's

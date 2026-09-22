@@ -685,3 +685,12 @@ test_skill_requires_the_full_gate_list_on_a_fix_commit() {
     assert_flat_fixed "codex skill invokes the mutation check" \
       "$SK/codex-skills/rev/SKILL.md" "$mut" )
 }
+
+test_skill_requires_a_proven_red_before_the_fix() {
+  ( local red="Run the test named in Prediction before the fix exists and watch it fail"
+    local stop="a failure whose message does not match the Prediction is a STOP, not a note"
+    assert_flat_fixed "rev skill requires a proven red" "$SK/skills/rev/SKILL.md" "$red"
+    assert_flat_fixed "codex skill requires a proven red" "$SK/codex-skills/rev/SKILL.md" "$red"
+    assert_flat_fixed "rev skill treats a mismatched failure as a stop" "$SK/skills/rev/SKILL.md" "$stop"
+    assert_flat_fixed "codex skill treats a mismatched failure as a stop" "$SK/codex-skills/rev/SKILL.md" "$stop" )
+}
