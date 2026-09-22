@@ -122,41 +122,42 @@ Stamp `open` with a seat generation and refuse `phase=fix` when it has not been 
 the round's last seat exit. Derive `open` from `findings.md` so triage and the gate read one
 source.
 
-## Instrument 2: five lint rules for guard and lifecycle protocol
+## Instrument 2: one narrowed lint rule (measured, was five)
 
 Design errors are **not** broadly reachable by targeted detection. Four candidate detectors
-were built and adversarially attacked; all four came back weak. See "Rejected" below, which is
-the most reusable part of this document.
+were built and adversarially attacked; all four came back weak. See "Rejected" below.
 
-What survives is narrow and real. Of one detector's 15 genuine catches, **13 are
-single-function, single-file AST predicates** needing no typestate lattice, no interprocedural
-summary and no second language backend:
+The five lint rules this section originally specified were then measured against 1,726 real
+wallet source files, attributing every hit by blame. **The result retired four of them.**
 
-1. `guard-release-completeness` - a flag raised true on a path that can throw, released only in
-   a `catch` arm rather than a `finally`.
-2. `guard-release-locality` - the clear sits in a different function from the set.
-3. `no-statement-between-raise-and-try` - anything that can throw synchronously between raising
-   a latch and the `try` whose `finally` clears it, including a dereference of a possibly-absent
-   global. This is the shape that left a copy control dead forever.
-4. `latch-armed-before-early-return` - a once-latch whose arming assignment follows an early
-   return rather than dominating entry.
-5. `staleness-token-read-before-await` - a generation token compared against a value re-read
-   after the first `await` instead of captured into a local before it.
+| rule | alerts | defects | verdict |
+|---|---:|---:|---|
+| guard-release-completeness | 19 | 3 | marginal, narrow it |
+| latch-armed-before-early-return | 39 | 0 | retired |
+| guard-release-locality | 26 | 0 | retired |
+| staleness-token-read-before-await | 14 | 0 | retired |
+| no-statement-between-raise-and-try | 4 | 0 | retired |
 
-Plus one standalone script for the discarded check-and-set result.
+102 alerts, 3 defects. The staleness shape does not occur once in the corpus. The locality
+shape fires 26 times because it is the idiom rather than the bug: 9 of its hits are React's
+mount-effect and cleanup pair, whose release the framework guarantees and no rule can see.
 
-**These ship repo-wide as warnings over a suppressed baseline, and can never be hard errors.**
-The corpus contains byte-identical structures with opposite verdicts: after one fix, the same
-ref is still one-write-no-clear and is now correct in its narrowed role as a mount latch.
-Scoping to plan-named symbols controls volume, not precision, and precision is what decides
-whether the operator reads the alert.
+**What survives.** One rule, narrowed. Both live defects share a property none of the 16
+correct sites have: there is no `try`/`catch`/`finally` anywhere in the enclosing function.
+Restricting to "a flag set true, then an await, with no try statement and no `.finally()` in
+the function body" cuts the alert set from 19 to 5 while keeping all 3 defects. Two
+implementation traps the measurement exposed: `Promise.prototype.finally()` must count as a
+release, and a proximity window must not, because two correct sites carry their `finally`
+85-90 lines below the raise.
 
-Why this is worth building despite a weak parent verdict: in one session a single screen's
-lane-and-generation protocol produced findings in rounds 4, 6, 6, 11, 12 and 13. A lint firing
-once at round 1 collapses six panel rounds. And for one of those the ledger records that the
-mutation check could not see it, because the test double settled synchronously - static
-analysis is the only route there. The rules also keep paying for ordinary PR authors long after
-a review ends, which no instrument aimed at the loop itself does.
+**Where it belongs.** 92 of 102 hits are author-written code, and all 3 defects are, the oldest
+from 2024. One hit came from this loop's own fix and was correct. So the shape is not an
+artifact of review fixes, and the rule belongs with the reviewed repository rather than here.
+
+**What it found on the way.** Two live user-facing defects, reported separately: a forgot-password
+confirmation screen that strands on a spinner with no error and no way back when a storage write
+rejects, immediately after local wallet data has been cleared; and a developer-settings Save
+button that spins forever on a storage rejection, on a screen with no save-error UI.
 
 ## Instrument 3: run the gates we already have
 
@@ -214,9 +215,11 @@ Assumed per-class efficacy, which is the part to challenge:
 | VACUOUS | 50 | 1b + 1c | 80% | the check itself can be run wrong |
 | FALSE-PREMISE | 42 | 1a + 3 | 65% | semantic premises resist grep |
 | OTHER | 18 | 1d + 3 | 80% | bookkeeping |
-| DESIGN-ERROR | 79 | 2 + 3 | 20-25% | most of it needs a reasoner |
+| DESIGN-ERROR | 79 | 2 + 3 | ~10% | four of five rules measured worthless |
 
-Central estimate: **55-60% fewer own-fix defects**, range 45-70%.
+Central estimate: **around 55% fewer own-fix defects**, range 45-65%. The headline is
+robust to instrument 2 shrinking, because design error was always the weak leg: dropping
+its efficacy from 25% to 10% moves the total by about four points.
 
 Measurement is already possible from git alone and the two scripts live in
 `churn-analysis-2026-09-06.md`. Report the churn ratio in every run's final report: findings
