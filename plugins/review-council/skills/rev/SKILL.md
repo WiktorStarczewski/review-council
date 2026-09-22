@@ -623,7 +623,10 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    without a reason. You can no longer fix 8 of 10 sites silently: the 2 you skip have to
    be written down, with why.
    `Prediction` states which test fails, on which arm, at which assertion or message, and
-   why - a concrete symptom, not a restatement of `Rule`.
+   why - a concrete symptom, not a restatement of `Rule`. It is read twice, not filed and
+   forgotten: Fix compares it against the observed pre-fix red run, and Verify compares it
+   against the failure line `rev-mutate.sh` prints beside each pinned hunk. Both
+   comparisons are yours - the tool surfaces what failed and never reads a prediction.
 2. Choose the plan seats from the roster. By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order, preferring one whose adapter is not `agent` when the roster has one (an Agent seat runs the panel unenforced), `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.
    When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat, even when the preceding code
    panel included an extra or a one-seat repair, and deal the plan lenses by the same
@@ -658,10 +661,7 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    and at least one of `Test`, `Tests`, or `Regression`. Every path must resolve in the
    pinned repository snapshot. Locations are read only from `Sites` and the first
    token of a test field (`Test: <path> - <what fails today>`); every other field is prose,
-   including `Prediction`. A prediction names which test fails, on which arm, at which
-   assertion or message, and why; it is checked twice - once against the observed
-   pre-fix red run in Fix, once against what a mutation of the fix actually does in
-   Verify - not filed and forgotten.
+   including `Prediction`.
    Locations may use `path:line`, `path:start-end`,
    or a shorthand `:start-end` after a path. `Sites` must include one bounded query in
    either exact form: `found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'PATTERN' .`

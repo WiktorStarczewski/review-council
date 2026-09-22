@@ -695,6 +695,21 @@ test_skill_requires_a_proven_red_before_the_fix() {
     assert_flat_fixed "codex skill treats a mismatched failure as a stop" "$SK/codex-skills/rev/SKILL.md" "$stop" )
 }
 
+# rev-mutate.sh reports a verdict and the failing line; it never reads fix-plan.md, so it cannot
+# check anything against a Prediction. The contract said it did, which is the shape of claim that
+# survives precisely because no test can fail on it. Both hosts carry one definition, word for word.
+test_skill_states_what_a_prediction_is_read_against() {
+  ( local K
+    local want='`Prediction` states which test fails, on which arm, at which assertion or message, and why - a concrete symptom, not a restatement of `Rule`. It is read twice, not filed and forgotten: Fix compares it against the observed pre-fix red run, and Verify compares it against the failure line `rev-mutate.sh` prints beside each pinned hunk. Both comparisons are yours - the tool surfaces what failed and never reads a prediction.'
+    for K in "$SK/skills/rev/SKILL.md" "$SK/codex-skills/rev/SKILL.md"; do
+      assert_flat_fixed "$(basename "$(dirname "$(dirname "$K")")") names both readers of a Prediction" "$K" "$want"
+      assert_flat_absent "$(basename "$(dirname "$(dirname "$K")")") claims no automatic check" "$K" \
+        'checked twice|checked against what a mutation'
+      assert_eq "$(basename "$(dirname "$(dirname "$K")")") defines Prediction exactly once" \
+        "$(tr '\n' ' ' < "$K" | tr -s ' ' | grep -o 'states which test fails' | grep -c .)" 1
+    done )
+}
+
 # Pins the two IMPORTANT fixes from the fix-contract review: the mutation-check
 # invocation must be runnable (a path plus arguments, not bare prose), and it must
 # run before the commit directive on both hosts - the exact defect a relative-position

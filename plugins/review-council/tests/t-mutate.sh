@@ -82,6 +82,22 @@ test_mutate_reports_an_unpinned_hunk() {
     assert_grep "names the unpinned file" "$T/mut-unpinned.out" "f\.txt" )
 }
 
+# "A test noticed" cannot be compared against a Prediction, which names an assertion or a message.
+# Without the failing line in the output, the Verify-phase comparison has nothing to read.
+test_mutate_surfaces_what_failed_on_a_pinned_hunk() {
+  ( local D="$T/mut-detail" S="$T/mut-detail-session"; mkdir -p "$S"
+    mut_repo "$D" || exit 1
+    printf 'REV_ROOT=%s\n' "$D" > "$S/scope.env"
+    mut_phase "$S" fix
+    # Green while the B is in the tree; the revert turns it red with a named assertion.
+    "$MUTATE_SRC" "$S" \
+      'grep -q B f.txt || { echo "FAIL f.txt keeps the uppercase B"; exit 1; }' \
+      > "$T/mut-detail.out" 2>&1
+    assert_eq "a pinned hunk still exits 0" "$?" 0
+    assert_grep "names the pinned hunk" "$T/mut-detail.out" "rev-mutate: PINNED f\.txt hunk 1"
+    assert_grep "prints the line that failed" "$T/mut-detail.out" "FAIL f\.txt keeps the uppercase B" )
+}
+
 test_mutate_passes_when_every_hunk_is_pinned() {
   ( local D="$T/mut-pinned" S="$T/mut-pinned-session" LOG="$T/mut-pinned.log"; mkdir -p "$S"; : > "$LOG"
     mut_repo "$D" || exit 1
@@ -106,8 +122,8 @@ test_mutate_measures_each_hunk_against_the_whole_fix() {
     # and hunk 1 is not - a verdict that is only reachable while the other hunk is still present.
     "$MUTATE_SRC" "$S" "grep -q B f.txt" > "$T/mut-whole.out" 2>&1
     assert_eq "an unpinned second hunk exits 3" "$?" 3
-    assert_grep "names the unpinned second hunk" "$T/mut-whole.out" "f\.txt hunk 2"
-    assert_nogrep "does not blame the pinned first hunk" "$T/mut-whole.out" "f\.txt hunk 1"
+    assert_grep "names the unpinned second hunk" "$T/mut-whole.out" "UNPINNED f\.txt hunk 2"
+    assert_nogrep "does not blame the pinned first hunk" "$T/mut-whole.out" "UNPINNED f\.txt hunk 1"
     assert_nogrep "measures every hunk" "$T/mut-whole.out" "did not apply|would not apply"
     assert_eq "the run leaves the complete fix in the tree" \
       "$(cat "$D/f.txt")" "$(printf 'a\nB\nc\nd\nE\n')" )

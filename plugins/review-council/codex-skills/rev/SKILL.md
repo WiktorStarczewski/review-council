@@ -523,12 +523,14 @@ Semicolons separate entries, so a reason may contain commas, and the reason is m
 An `Excluded` entry naming a path the search did not find is refused, so a cluster can no
 longer fix 8 of 10 sites silently: the 2 it skips have to be written down, with why.
 Native text search cannot certify this proof.
+`Prediction` states which test fails, on which arm, at which assertion or message, and
+why - a concrete symptom, not a restatement of `Rule`. It is read twice, not filed and
+forgotten: Fix compares it against the observed pre-fix red run, and Verify compares it
+against the failure line `rev-mutate.sh` prints beside each pinned hunk. Both
+comparisons are yours - the tool surfaces what failed and never reads a prediction.
 Locations are read only from `Sites` and the first token of a test field
 (`Test: <path> - <what fails today>`); every other field is prose, including
-`Prediction`. A prediction names which test fails, on which arm, at which assertion or
-message, and why; it is checked twice - once against the observed pre-fix red run in
-Fix, once against what a mutation of the fix actually does in Verify - not filed and
-forgotten. Locations may use
+`Prediction`. Locations may use
 `path:line`, `path:start-end`, or a shorthand `:start-end` after a path.
 Write `$S/r<N>p-panel.tsv` with one line per plan seat, then bind and prepare the
 immutable plan before rendering:

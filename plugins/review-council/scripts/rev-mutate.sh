@@ -2,7 +2,10 @@
 # rev-mutate.sh <session-dir> <test-command>
 #   Reverts each changed hunk on its own, keeping every other change in the tree, and runs the
 #   test command. A hunk whose revert leaves the command passing is unpinned: no test proves
-#   that line. Exits 0 every hunk pinned, 2 the session is not in a phase known to be panel-free,
+#   that line. A hunk whose revert turns the command red is pinned, and the first failure line of
+#   that run is printed beside it, because "a test noticed" is not what a cluster's Prediction
+#   says - it names an assertion or a message, and only the caller holds it to compare.
+#   Exits 0 every hunk pinned, 2 the session is not in a phase known to be panel-free,
 #   3 an unpinned hunk, 4 the run measured nothing (a command that does not pass on the unmutated
 #   tree or stops passing by the end of the run, a hunk that would not apply, a revert that
 #   changed no byte, a changed file that is a symlink or has no text hunk, or no changed hunk).
@@ -72,6 +75,17 @@ trap 'exit 143' TERM
 status=0; unmeasured=0; files_seen=0; hunks_seen=0; unpinned_seen=0
 unmeasurable() { echo "rev-mutate: UNMEASURED $*" >&2; unmeasured=1; }
 
+# A cluster's Prediction names a test, an arm and an assertion or message; an exit status cannot
+# be compared against any of that. Surface one line of what the mutated tree printed so the
+# comparison is possible at all. This script never makes it: it has no prediction to read.
+failure_line() {
+  local line
+  line=$(tr -d '\r' < "$1" | grep -m1 -E -i 'fail|error|assert|expect|panic|not ok')
+  [ -n "$line" ] || line=$(tr -d '\r' < "$1" | grep -v '^[[:space:]]*$' | tail -1)
+  [ -n "$line" ] || line='the command failed and printed nothing'
+  printf '%.200s' "$line"
+}
+
 git diff --name-only -z > "$WORK/files"
 git ls-files --others --exclude-standard > "$WORK/untracked"
 [ ! -s "$WORK/untracked" ] \
@@ -122,10 +136,12 @@ while IFS= read -r -d '' f <&3; do
     if git apply --reverse --unidiff-zero --whitespace=nowarn "$WORK/hunk.diff" 2>/dev/null; then
       if [ "$(git hash-object -- "$f")" = "$fixhash" ]; then
         unmeasurable "hunk $i of $f applied without changing a byte; the mutation was inert"
-      elif ( eval "$CMD" ) </dev/null >/dev/null 2>&1; then
+      elif ( eval "$CMD" ) </dev/null > "$WORK/hunk.out" 2>&1; then
         echo "rev-mutate: UNPINNED $f hunk $i - the command passes without it"
         unpinned_seen=$((unpinned_seen + 1))
         status=3
+      else
+        echo "rev-mutate: PINNED $f hunk $i - $(failure_line "$WORK/hunk.out")"
       fi
     else
       unmeasurable "hunk $i of $f would not apply"
