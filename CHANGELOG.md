@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.5.0
+
+- A fix plan now has to say which test fails without it, and the loop has to watch that happen.
+  `Prediction` joins `Findings`, `Rule` and `Sites` as a required plan-cluster field, naming the
+  test, the arm and the assertion or message that fails today. The Fix step then runs that test
+  before the fix exists and records the observed failure line beside the prediction in
+  `fix-plan.md`; a failure whose message does not match is a stop, not a note, because a test that
+  fails for an unrelated reason proves nothing about the defect. Verify reads the prediction a
+  second time, against the failure line `rev-mutate.sh` prints beside each pinned hunk. That
+  comparison is yours to make: nothing in the tool reads a plan, so it surfaces what failed and
+  stops there. The measurement behind this: over twelve fix-doing sessions, 262 of 591 findings
+  were defects in the loop's own earlier fixes, and the single most common shape was a test
+  asserting on the arm the fix touched rather than the arm the defect lived on. That test passes a
+  mutation check and fails a red-first run, which is why both halves ship together rather than
+  either alone.
+
+- A plan's sites are now reconciled against its own search in both directions. The search already
+  had to find every path the plan named; now every path the search finds must be fixed, or listed
+  under `Excluded:` with a reason. Entries separate on `;` so a reason may contain a comma, a bare
+  path with no reason is refused by name, and excluding a path the search never found is itself a
+  refusal, so a typo cannot quietly reconcile a real hit. Reconciliation runs against every path
+  the plan declares, including those in `Test`, `Tests` and `Regression`, so a cluster need not
+  exclude its own test file. Incomplete-sites was the largest script-catchable class in the
+  measurement, 73 of 262: a finding names one call site, the fix covers exactly that, and the next
+  round finds the sibling. Covering eight of ten is no longer possible without writing down the two.
+
+- `scripts/rev-mutate.sh` reverts each changed hunk on its own and checks whether any test notices,
+  and the Verify step now runs it. A hunk whose revert leaves the suite green is unpinned: no test
+  proves that line. It refuses while a panel is live, because seats read the live tree and a script
+  that reverts hunks for seconds shows them a tree that is neither base nor fix. It proves each
+  revert actually changed bytes before counting the verdict, since a mutation that silently fails
+  to apply produces a green run indistinguishable from a real one. And it runs the command once
+  before the loop and once on the restored tree afterwards: the first proves the command can pass
+  at all, the second proves it still can, so a suite that was already red, a missing binary, a
+  poisoned cache or a flake cannot make every hunk read as pinned.
+
+- The fix-design gate no longer accepts a stale counter. It hung entirely off `open` being greater
+  than zero, so a round whose counts still held the previous round's zeroes walked straight
+  through; the stale case is exactly the one that short-circuited. `rev-state.sh` now stamps
+  `open_stamp` when all three severities are written in one call, and refuses `phase=fix` when the
+  counts predate the round's newest seat exit. Freshness is scoped to that round's own receipts,
+  `r<N>-<seat>.exit` and `r<N>x-<seat>.exit`: a repair panel produces findings needing triage so
+  its exits invalidate the counts, while a plan panel reviews a triage that already happened so
+  its exits must not. A session with no seat exits is not stale.
+
+### Upgrading
+
+Three things now refuse where they previously passed. All fail closed and name their way out.
+
+- An existing `fix-plan.md` has no `Prediction` field and will not parse. Add one per cluster.
+- A plan manifest prepared by 0.4.8 fails validation, because `excluded` joins the cluster's
+  structural key set. Re-run `prepare`.
+- A session resumed across the upgrade refuses its first `phase=fix`, because it carries no
+  `open_stamp`. Re-run triage and set `open.P0`, `open.P1` and `open.P2` in one call.
+
 ## 0.4.8
 
 - Plan panels now run on an Agent-only roster instead of refusing. An Agent seat cannot supply the
