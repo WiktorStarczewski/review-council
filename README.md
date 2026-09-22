@@ -607,9 +607,11 @@ The host session applies accepted findings automatically within the authorized s
 1. Apply one root-cause rule across every listed sibling site.
 2. Preserve unrelated user changes.
 3. Add a regression test that fails under the broken behavior when warranted.
-4. Run relevant project gates and restore baseline or better.
-5. Commit coherent clusters only when the workflow authorizes commits.
-6. Run a full four-bundle verification panel after a material fix.
+4. Run the repository's full gate list, not the subset the diff suggests, and
+   restore baseline or better.
+5. Run the mutation check over the changed hunks before committing.
+6. Commit coherent clusters only when the workflow authorizes commits.
+7. Run a full four-bundle verification panel after a material fix.
 
 Adaptive review completes only when:
 
