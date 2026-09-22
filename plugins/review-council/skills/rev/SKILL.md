@@ -715,31 +715,33 @@ commits implement - nothing outside it lands this round.
 ### Fix
 
 `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=fix`. Run the test named in
-Prediction before the fix exists and watch it fail. Record the observed failure line
-in the ledger beside the prediction: a failure whose message does not match the
-Prediction is a STOP, not a note, because a test that fails for an unrelated reason
-proves nothing about the defect. Implement `fix-plan.md`
-**one cluster per commit**, P0 clusters first: every enumerated site, arm, realm and copy in the
-same commit. A fix that covers the cited instance and leaves a listed sibling is not done -
-it is next round's finding. Within a cluster, P3 only when trivial and safe. Match the surrounding style; do not reformat
-untouched code. When two findings conflict, resolve it explicitly in the ledger. A
-finding that is right but out of scope is `DEFERRED (reason)`; wrong is `REJECTED
-(reason)`. Rejecting is a valid outcome - never fix what is not broken to satisfy a
-reviewer.
+Prediction before the fix exists and watch it fail, once per cluster's Prediction,
+not once for the round. Record the observed failure line in fix-plan.md beside the
+Prediction it belongs to: a failure whose message does not match the Prediction is a
+STOP, not a note, because a test that fails for an unrelated reason proves nothing
+about the defect. Implement `fix-plan.md` **one cluster per commit**, P0 clusters
+first: every enumerated site, arm, realm and copy in the same commit. A fix that
+covers the cited instance and leaves a listed sibling is not done - it is next
+round's finding. Within a cluster, P3 only when trivial and safe. Match the
+surrounding style; do not reformat untouched code. When two findings conflict,
+resolve it explicitly in the ledger. A finding that is right but out of scope is
+`DEFERRED (reason)`; wrong is `REJECTED (reason)`. Rejecting is a valid outcome -
+never fix what is not broken to satisfy a reviewer.
 
 ### Verify
 
 `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=verify`. Re-run the gates from
-setup. Compare with `baseline.md`: pre-existing failures are not regressions; anything
-newly failing is yours to repair or revert **before** the next round. Never advance on
-an unverified material tree. Run the repository's full gate list, not the subset the
-diff suggests, and record the result in the ledger. Then run rev-mutate.sh over the
-changed hunks before committing: revert each hunk alone and confirm a test notices,
-and compare what failed against the cluster's Prediction. For review-council
-self-hosting, run an 8-30 second
-focused test after each edit, the roughly three-minute evidence fixture after a
-coherent contract cluster, and the complete suite once for each material tree. Record
-the tree hash and successful command so an unchanged tree reuses that gate result.
+setup. Compare with `baseline.md`: pre-existing failures are not regressions;
+anything newly failing is yours to repair or revert **before** the next round.
+Never advance on an unverified material tree. Run the repository's full gate list,
+not the subset the diff suggests, and record the result in the ledger. Then run
+rev-mutate.sh over the changed hunks before committing: revert each hunk alone and
+confirm a test notices, and compare what failed against the cluster's Prediction:
+`${CLAUDE_PLUGIN_ROOT}/scripts/rev-mutate.sh $S "<the test command>"`. For
+review-council self-hosting, run an 8-30 second focused test after each edit, the
+roughly three-minute evidence fixture after a coherent contract cluster, and the
+complete suite once for each material tree. Record the tree hash and successful
+command so an unchanged tree reuses that gate result.
 Before a paid panel after adapter, prompt, manifest, or audit changes, preflight
 replays the preserved provider envelopes through the current auditor.
 Replay runs after the roster probe and before any reviewer launch.
