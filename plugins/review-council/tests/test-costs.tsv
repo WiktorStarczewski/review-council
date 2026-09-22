@@ -62,6 +62,12 @@ t-isolated-home.sh::test_isolated_home_path_lookup_is_pure	1	exclusive
 t-isolated-home.sh::test_isolated_home_refuses_unsafe_cleanup_targets	1	exclusive
 t-isolated-home.sh::test_isolated_home_rejects_retired_grok_kind	1	normal
 t-isolated-home.sh::test_isolated_home_sweep_uses_leases_not_age	1	exclusive
+t-mutate.sh::test_mutate_fails_a_run_that_measured_nothing	1	normal
+t-mutate.sh::test_mutate_measures_each_hunk_against_the_whole_fix	1	normal
+t-mutate.sh::test_mutate_passes_when_every_hunk_is_pinned	1	normal
+t-mutate.sh::test_mutate_refuses_when_the_phase_cannot_be_read	1	normal
+t-mutate.sh::test_mutate_refuses_while_a_panel_is_live	1	normal
+t-mutate.sh::test_mutate_reports_an_unpinned_hunk	1	normal
 t-patch-chunks.sh::test_patch_chunk_audit_contract	6	normal
 t-patch-chunks.sh::test_patch_chunk_decline_and_switch	6	normal
 t-patch-chunks.sh::test_patch_chunk_manifest_contract	6	normal
