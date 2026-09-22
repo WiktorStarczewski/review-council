@@ -91,7 +91,8 @@ test_mutate_passes_when_every_hunk_is_pinned() {
     # The log pins that it RAN: exit 0 alone cannot tell a real pin from a command never invoked.
     assert_exit "a pinned hunk exits 0" 0 \
       "$MUTATE_SRC" "$S" "printf 'ran\n' >> '$LOG'; grep -q B f.txt"
-    assert_eq "the command ran on the unmutated tree and once per hunk" "$(grep -c . "$LOG")" 2 )
+    assert_eq "the command ran unmutated, once per hunk, and again on the restored tree" \
+      "$(grep -c . "$LOG")" 3 )
 }
 
 # Each hunk must be measured against the COMPLETE fix, not against the commit: restoring with
@@ -110,6 +111,23 @@ test_mutate_measures_each_hunk_against_the_whole_fix() {
     assert_nogrep "measures every hunk" "$T/mut-whole.out" "did not apply|would not apply"
     assert_eq "the run leaves the complete fix in the tree" \
       "$(cat "$D/f.txt")" "$(printf 'a\nB\nc\nd\nE\n')" )
+}
+
+# The t0 baseline is ONE sample. A command that passes once and then fails for its own reasons -
+# a poisoned cache, a leftover lock, a flake, a bound port - makes every hunk read as pinned.
+test_mutate_refuses_a_command_that_stops_passing() {
+  ( local D="$T/mut-drift" S="$T/mut-drift-session"; mkdir -p "$S"
+    mut_repo "$D" $'a\nb\nc\nd\ne\n' $'a\nB\nc\nd\nE\n' || exit 1
+    printf 'REV_ROOT=%s\n' "$D" > "$S/scope.env"
+    mut_phase "$S" fix
+    "$MUTATE_SRC" "$S" \
+      'n=$(cat counter 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > counter; [ "$n" -le 1 ]' \
+      > "$T/mut-drift.out" 2>&1
+    assert_eq "a command that stops passing measures nothing" "$?" 4
+    assert_grep "distinguishes stopping from never passing" "$T/mut-drift.out" \
+      "stopped passing on the restored tree"
+    assert_nogrep "does not report the hunks it could not judge" "$T/mut-drift.out" "unpinned=0"
+    assert_eq "the fix is still in the tree" "$(cat "$D/f.txt")" "$(printf 'a\nB\nc\nd\nE\n')" )
 }
 
 # The one path where the script admits it destroyed uncommitted work must not also delete the

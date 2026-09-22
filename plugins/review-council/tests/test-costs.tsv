@@ -69,6 +69,7 @@ t-mutate.sh::test_mutate_passes_when_every_hunk_is_pinned	1	normal
 t-mutate.sh::test_mutate_preserves_the_backup_when_it_cannot_restore	1	normal
 t-mutate.sh::test_mutate_refuses_a_changed_symlink	1	normal
 t-mutate.sh::test_mutate_refuses_a_command_that_cannot_pass	1	normal
+t-mutate.sh::test_mutate_refuses_a_command_that_stops_passing	1	normal
 t-mutate.sh::test_mutate_refuses_an_unknown_phase_spelling	1	normal
 t-mutate.sh::test_mutate_refuses_when_the_phase_cannot_be_read	1	normal
 t-mutate.sh::test_mutate_refuses_while_a_panel_is_live	1	normal

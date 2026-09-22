@@ -4,13 +4,14 @@
 #   test command. A hunk whose revert leaves the command passing is unpinned: no test proves
 #   that line. Exits 0 every hunk pinned, 2 the session is not in a phase known to be panel-free,
 #   3 an unpinned hunk, 4 the run measured nothing (a command that does not pass on the unmutated
-#   tree, a hunk that would not apply, a revert that changed no byte, a changed file that is a
-#   symlink or has no text hunk, or no changed hunk at all).
+#   tree or stops passing by the end of the run, a hunk that would not apply, a revert that
+#   changed no byte, a changed file that is a symlink or has no text hunk, or no changed hunk).
 #
 #   4 outranks 3: a run that could not revert one hunk has not earned a verdict about the rest.
 #   A measurement that did not happen is the failure this tool exists to prevent, because it
-#   reads exactly like a real one: every revert is proved by hash, and the command is proved to
-#   pass on the unmutated tree, before any verdict counts.
+#   reads exactly like a real one. So: every revert is proved by hash, and the command is proved
+#   to discriminate BOTH before the first revert and again on the restored tree afterwards.
+#   Order: baseline run, hunk loop (each hunk restored and verified), closing run.
 #
 #   It refuses while a panel is live because seats read the live tree, and a script that reverts
 #   hunks for seconds at a time shows them a tree that is neither base nor fix.
@@ -143,6 +144,16 @@ while IFS= read -r -d '' f <&3; do
   done
   CUR=""
 done 3< "$WORK/files"
+
+# The check above was one sample, at t0. A command that passed once and then stopped passing for
+# its own reasons - a poisoned cache, a leftover lock, a flake, a timeout, a port still bound -
+# turned every later revert into a false "pinned", so it has to pass again now that the loop has
+# put the complete fix back.
+if ! ( eval "$CMD" ) </dev/null >/dev/null 2>&1; then
+  echo "rev-mutate: measured nothing: the command stopped passing on the restored tree" >&2
+  echo "rev-mutate: it passed before the first revert, so every verdict above rests on a command that no longer works" >&2
+  exit 4
+fi
 
 if [ "$hunks_seen" -eq 0 ]; then
   echo "rev-mutate: measured nothing: no changed hunk under $ROOT" >&2
