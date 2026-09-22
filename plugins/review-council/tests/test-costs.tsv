@@ -284,3 +284,4 @@ t-update.sh::test_update_unreachable_url_is_silent	1	normal
 t-update.sh::test_update_writes_the_cache	1	normal
 t-validate.sh::test_validate	1	normal
 t-plan-evidence.sh::test_plan_search_refuses_an_unreconciled_hit	1	normal
+t-plan-evidence.sh::test_plan_proof_reconciliation_is_revalidated_without_replay	2	normal

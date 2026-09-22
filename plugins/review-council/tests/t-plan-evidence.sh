@@ -64,7 +64,7 @@ PY
 Findings: F-001 (P1)
 Rule: Apply the helper result exactly once at every service entry.
 Sites: src/service.ts:1-2 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'run(Service|Alias)' .)
-Excluded: src/sibling.ts - runAlias applies no helper result so the rule cannot reach it, tests/service.test.ts - the test that pins the rule is not a fix site
+Excluded: src/sibling.ts - runAlias applies no helper result, so the rule cannot reach it
 Must not: Change unrelated exports.
 Test: tests/service.test.ts:1-2
 Interacts with: none.
@@ -907,7 +907,7 @@ PY
 Findings: F-001
 Rule: Keep value stable.
 Sites: src/value.ts:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'value' .)
-Excluded: one/value.test.ts - a test that pins the rule is not a fix site, two/value.test.ts - a test that pins the rule is not a fix site
+Excluded: two/value.test.ts - a duplicate-basename fixture the rule never reaches
 Test: value.test.ts:1
 Prediction: reverting the guard fails the value test at its assertion on the exported constant, because it reads the mutated value.
 EOF
@@ -1036,7 +1036,6 @@ PY
 Findings: F-001
 Rule: Preserve the service result.
 Sites: src/service.ts:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'service' .)
-Excluded: tests/service.test.ts - the test that pins the rule is not a fix site
 Test: tests/service.test.ts:1-2
 Prediction: reverting the guard fails tests/service.test.ts at "service", because the assertion reads the changed return value.
 EOF
@@ -1169,7 +1168,6 @@ PY
 Findings: F-001
 Rule: Keep the value stable.
 Sites: src/value.ts:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'value' .)
-Excluded: tests/value.test.ts - the test that pins the rule is not a fix site
 Test: tests/value.test.ts:1
 Prediction: reverting the guard fails tests/value.test.ts at its assertion on the exported constant, because it reads the mutated value.
 EOF
@@ -2020,7 +2018,6 @@ PY
 Findings: F-001
 Rule: Keep the value stable.
 Sites: src/value.ts:2 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'value' .)
-Excluded: tests/value.test.ts - the test that pins the rule is not a fix site
 Test: tests/value.test.ts:1
 Prediction: reverting the guard fails the value test at its assertion on the exported constant, because it reads the mutated value.
 EOF
@@ -2144,11 +2141,37 @@ except ValueError as error:
 else:
     raise AssertionError('an exclusion of a non-hit was accepted')
 
+# A path the plan declares under Test/Tests/Regression is already named, so the cluster
+# never has to exclude its own test file by hand.
+assert module.reconcile_plan_sites(
+    sites | {'tests/service.test.ts'}, set(),
+    paths + ['tests/service.test.ts']) == ['src/sibling.ts']
+
 # An Excluded field parses to its paths and drops the reason prose after " - ".
 assert module.plan_excluded_paths('') == set()
 assert module.plan_excluded_paths(
-    '`src/sibling.ts` - a different rule owns it, ./tests/value.test.ts - the test itself'
+    '`src/sibling.ts` - a different rule owns it; ./tests/value.test.ts - the test itself'
 ) == {'src/sibling.ts', 'tests/value.test.ts'}
+
+# Entries are separated by ';', so a reason may contain commas and stays ONE entry.
+assert module.plan_excluded_paths(
+    'src/sibling.ts - a different rule owns it, and it has its own cluster'
+) == {'src/sibling.ts'}
+
+# A bare path is refused: an exclusion without a reason is the discipline evaporating.
+for bare in ('src/sibling.ts', 'src/service.ts - ok; src/sibling.ts', 'src/sibling.ts -   '):
+    try:
+        module.plan_excluded_paths(bare)
+    except ValueError as error:
+        assert str(error) == 'plan cluster excludes a path with no reason: src/sibling.ts', str(error)
+    else:
+        raise AssertionError('an exclusion with no reason was accepted: ' + bare)
+try:
+    module.plan_excluded_paths('``  - a reason with no path')
+except ValueError as error:
+    assert 'malformed Excluded entry' in str(error), str(error)
+else:
+    raise AssertionError('an exclusion with no path was accepted')
 
 # The refusal has to reach preparation, not only the helper: a cluster whose search finds a
 # path it neither fixes nor excludes publishes nothing.
@@ -2179,4 +2202,98 @@ with tempfile.TemporaryDirectory(prefix='plan-reconcile-') as tmp:
         'src/service.ts', 'src/sibling.ts'], prepared
 PY
   assert_eq "plan search reconciles hits against sites and exclusions" "$?" 0
+}
+
+
+# The manifest-side reconciliation: `render` and `verify-panel` validate with the search replay
+# OFF, so validate_plan's cluster loop is the only thing re-checking a stored proof there.
+# Both forgeries rewrite the manifest AND its evidence twin, because validate_plan binds them.
+test_plan_proof_reconciliation_is_revalidated_without_replay() {
+  ( local R="$T/plan-proof-root" S="$T/plan-proof-session"
+    mkrepo "$R"; mkdir -p "$R/src" "$R/tests" "$S"
+    printf 'export function runService() { return 1; }\n' > "$R/src/service.ts"
+    printf 'export function runAlias() { return 1; }\n' > "$R/src/sibling.ts"
+    printf 'import { runService } from "../src/service";\ntest("service", () => runService());\n' \
+      > "$R/tests/service.test.ts"
+    git -C "$R" add . && git -C "$R" commit -qm "plan proof base"
+    local base; base=$(git -C "$R" rev-parse HEAD)
+    printf 'export function runService() { return 2; }\n' > "$R/src/service.ts"
+    printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+      "$base" "$R" > "$S/scope.env"
+    printf 'src/service.ts\n' > "$S/files.txt"; : > "$S/untracked.txt"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"}]}' > "$S/roster.json"
+    cat > "$S/fix-plan.md" <<'EOF'
+## C-01 - keep the service result stable
+Findings: F-001
+Rule: Apply the service result exactly once at every entry.
+Sites: src/service.ts:1 (found by: grep --exclude-dir=.git --null -r -n -- 'run' .)
+Excluded: src/sibling.ts - runAlias returns a constant, so the rule cannot reach it
+Test: tests/service.test.ts:1-2
+Prediction: reverting the guard fails tests/service.test.ts at "service", because the assertion reads the changed return value.
+EOF
+    local hash manifest
+    hash=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/fix-plan.md")
+    manifest=$(REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 python3 "$SCRIPTS/rev-evidence.py" \
+      prepare "$S" 1p --phase plan --plan "$S/fix-plan.md" --plan-sha256 "$hash" \
+      --full-seat sol --assignment sol=plan-completeness) || return
+    cp "$manifest" "$T/plan-proof.manifest"
+    cp "$S/r1p-evidence.json" "$T/plan-proof.evidence"
+    cp "$S/r1p-plan-search-C-01.txt" "$T/plan-proof.search"
+    assert_exit "the reconciled plan renders on the non-replay path" 0 \
+      python3 "$SCRIPTS/rev-evidence.py" render "$manifest" sol --plan-source "$S/r1p-plan.md"
+
+    local forge_case
+    for forge_case in exclusion site; do
+      cp "$T/plan-proof.manifest" "$manifest"
+      cp "$T/plan-proof.evidence" "$S/r1p-evidence.json"
+      cp "$T/plan-proof.search" "$S/r1p-plan-search-C-01.txt"
+      python3 - "$manifest" "$S" "$forge_case" <<'PY'
+import hashlib, json, pathlib, sys
+manifest_path, session, case = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
+evidence_path = session / 'r1p-evidence.json'
+encode = lambda value: json.dumps(value, sort_keys=True, ensure_ascii=True, indent=2) + '\n'
+manifest = json.loads(manifest_path.read_text())
+evidence = json.loads(evidence_path.read_text())
+clusters = [document['plan']['clusters'][0] for document in (manifest, evidence)]
+if case == 'exclusion':
+    # The stored proof still lists src/sibling.ts, which the forged cluster no longer excludes.
+    for cluster in clusters:
+        cluster['excluded'] = []
+else:
+    # An internally consistent proof that has lost a site the cluster names. The stored
+    # word counts are derived from the artifact, so they are repaired too: without that
+    # the forgery stops at an earlier gate and never reaches the one under test.
+    artifact = session / clusters[0]['search_proof']['artifact']
+    original = artifact.read_bytes()
+    body = b''.join(line for line in original.splitlines(keepends=True)
+                    if not line.startswith(b'./src/service.ts\0'))
+    assert body and body != original, original
+    artifact.write_bytes(body)
+    digest = hashlib.sha256(body).hexdigest()
+    for cluster in clusters:
+        cluster['search_proof'].update(
+            bytes=len(body), sha256=digest,
+            paths=['src/sibling.ts', 'tests/service.test.ts'])
+    manifest['artifacts'][artifact.name] = {'sha256': digest, 'words': len(body.split())}
+    counts = manifest['word_counts']
+    seats = len(manifest['assignments'])
+    counts['prepared_search'] = len(body.split())
+    counts['avoided'] = max(0, seats * counts['full'] - counts['assigned_patch']
+                            - seats * counts['evidence'] - counts['source_context']
+                            - counts['prepared_search'])
+evidence_raw = encode(evidence).encode()
+evidence_path.write_bytes(evidence_raw)
+manifest['artifacts'][evidence_path.name] = {
+    'sha256': hashlib.sha256(evidence_raw).hexdigest(), 'words': len(evidence_raw.split())}
+manifest_path.write_text(encode(manifest))
+PY
+      python3 "$SCRIPTS/rev-evidence.py" render "$manifest" sol --plan-source "$S/r1p-plan.md" \
+        > /dev/null 2> "$T/plan-proof-$forge_case.err"
+      assert_eq "a forged $forge_case fails validation with the replay off" "$?" 2
+    done
+    assert_grep "the refusal names the unreconciled cluster" "$T/plan-proof-exclusion.err" \
+      '^evidence: plan search proof leaves a site unreconciled: C-01$'
+    assert_grep "the refusal names the cluster whose site vanished" "$T/plan-proof-site.err" \
+      '^evidence: plan search proof omits a named site: C-01$'
+  )
 }

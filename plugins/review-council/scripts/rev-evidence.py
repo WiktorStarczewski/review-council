@@ -1509,22 +1509,40 @@ def run_plan_search(command, directory, environment, deadline, executable=None):
 
 
 def plan_excluded_paths(fields_text):
-    """Paths named in an Excluded field. Prose after ' - ' on each entry is a reason."""
+    """Paths named in an Excluded field: ';'-separated `<path> - <reason>` entries.
+
+    Semicolons separate entries so a reason may contain commas, which the Sites field
+    already uses to separate locations. A reason is mandatory: a bare path would let an
+    author skip a site without ever saying why, which is the whole point of the field.
+    """
     found = set()
-    for entry in fields_text.split(','):
-        token = entry.strip().split(' - ', 1)[0].strip().strip('`')
-        if token:
-            found.add(token.lstrip('./'))
+    for entry in fields_text.split(';'):
+        entry = entry.strip()
+        if not entry:
+            continue
+        path, _, reason = entry.partition(' -')
+        token = path.strip().strip('`')
+        if not token:
+            raise ValueError('plan cluster has a malformed Excluded entry: ' + entry)
+        if not reason.strip(' -').strip():
+            raise ValueError('plan cluster excludes a path with no reason: ' + token)
+        found.add(token.lstrip('./'))
     return found
 
 
-def reconcile_plan_sites(sites, excluded, paths):
-    """Return search hits named by neither Sites nor Excluded. Raise on a phantom exclusion."""
+def reconcile_plan_sites(declared, excluded, paths):
+    """Return search hits the plan names nowhere. Raise on a phantom exclusion.
+
+    `declared` is every path the cluster names in any field, not only Sites: a cluster's
+    own test file usually matches its search pattern, and it is already declared under
+    Test/Tests/Regression, so making the author exclude it by name would train exclusions
+    to be written mechanically.
+    """
     hits = {path.lstrip('./') for path in paths}
     phantom = sorted(path for path in excluded if path not in hits)
     if phantom:
         raise ValueError('plan cluster excludes a path the search did not find: ' + phantom[0])
-    named = {path.lstrip('./') for path in sites} | set(excluded)
+    named = {path.lstrip('./') for path in declared} | set(excluded)
     return sorted(hit for hit in hits if hit not in named)
 
 
@@ -1569,7 +1587,8 @@ def prepare_plan_searches(repo, snapshot, clusters, prefix, base_tree=None):
             sites = {row['path'] for row in cluster['paths'] if row['field'] == 'sites'}
             if not sites <= set(paths):
                 raise ValueError('plan search output omits a named site')
-            unreconciled = reconcile_plan_sites(sites, cluster.get('excluded', set()), paths)
+            declared = {row['path'] for row in cluster['paths']}
+            unreconciled = reconcile_plan_sites(declared, cluster.get('excluded', set()), paths)
             if unreconciled:
                 raise ValueError('plan search found a site the cluster neither fixes nor excludes: '
                                  + unreconciled[0])
@@ -3472,7 +3491,8 @@ def validate_plan(session, manifest, evidence, check_source, replay_searches=Tru
                 raise ValueError('plan search proof omits a named site: ' + cluster['id'])
             # Re-checked here because the replay that would catch it is skipped on the
             # render and verify-panel paths.
-            if reconcile_plan_sites(sites, cluster['excluded'], proof['paths']):
+            declared = {row['path'] for row in cluster['paths']}
+            if reconcile_plan_sites(declared, cluster['excluded'], proof['paths']):
                 raise ValueError('plan search proof leaves a site unreconciled: ' + cluster['id'])
     if len(ids) != len(set(ids)):
         raise ValueError('duplicate plan cluster identifier')
