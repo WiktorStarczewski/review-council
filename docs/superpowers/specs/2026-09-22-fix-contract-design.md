@@ -46,7 +46,15 @@ margin. Making rounds structurally cheaper is separate work and is not foreclose
 
 ## Instrument 1: the Fix Contract
 
-A fix may not be committed until its plan cluster carries four things, all machine-enforced.
+A fix may not be committed until its plan cluster carries four things. Machine enforcement
+reaches three of them, and only to the depth stated here. Site reconciliation (1a) is fully
+enforced: the tool runs the search and refuses a Sites block that disagrees with it. Counter
+freshness (1d) is half enforced: the gate proves the counts were written after the round's
+newest seat exit, never that they are right. `Prediction` is enforced as a required field only:
+the parser refuses a cluster that lacks one and reads nothing inside it. What a prediction says,
+the red run in 1b, and the comparison of a prediction against what the mutation check reports
+are operator obligations carried in prose. The sentences carrying them are pinned so that a
+later edit cannot quietly weaken them, which protects the text and not the behaviour.
 
 ### 1a. Sites are generated, never authored
 
@@ -212,14 +220,25 @@ Assumed per-class efficacy, which is the part to challenge:
 | class | n | instrument | efficacy | limit |
 |---|---:|---|---:|---|
 | INCOMPLETE-SITES | 73 | 1a | 75% | does not fix a wrong search |
-| VACUOUS | 50 | 1b + 1c | 80% | the check itself can be run wrong |
+| VACUOUS | 50 | 1b + 1c | ~40% | 1c detects an unpinned hunk and compares nothing to the Prediction |
 | FALSE-PREMISE | 42 | 1a + 3 | 65% | semantic premises resist grep |
-| OTHER | 18 | 1d + 3 | 80% | bookkeeping |
+| OTHER | 18 | 1d + 3 | ~50% | 1d proves the counter is fresh, not that it is right |
 | DESIGN-ERROR | 79 | 2 + 3 | ~10% | four of five rules measured worthless |
 
-Central estimate: **around 55% fewer own-fix defects**, range 45-65%. The headline is
-robust to instrument 2 shrinking, because design error was always the weak leg: dropping
-its efficacy from 25% to 10% moves the total by about four points.
+Central estimate: **about 45% fewer own-fix defects**. That is the low end of the 45-65%
+range, not its centre. The headline is robust to instrument 2 shrinking, because design error
+was always the weak leg: dropping its efficacy from 25% to 10% moves the total by about four
+points. It is not robust to 1c shrinking, and 1c is the leg that shrank. Halving VACUOUS
+efficacy took 7.6 points off the total, nearly twice what that instrument 2 drop costs.
+
+The VACUOUS and OTHER figures are post-implementation corrections, not the original estimate.
+VACUOUS fell from 80% because the load-bearing half of 1c did not ship: the mutation check
+detects unpinned hunks, which is real and verified, and performs no comparison against the
+Prediction. OTHER fell from 80% because 1d shipped at half: counts written 0/0/0 in one call
+pass the gate while findings.md holds three open P1s, so what the gate proves is freshness and
+not correctness. Re-running the arithmetic above with those two values gives 118.95/262. The
+non-goal section is left as written: it argues that even a 55% cut does not make rounds rare,
+and 45% only strengthens that.
 
 Measurement is already possible from git alone and the two scripts live in
 `churn-analysis-2026-09-06.md`. Report the churn ratio in every run's final report: findings
