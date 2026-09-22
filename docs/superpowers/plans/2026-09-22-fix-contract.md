@@ -744,6 +744,102 @@ gate did not police that file. Running it is free and decides the question."
 
 ---
 
+### Task 5b: Require a proven RED before the fix, and record what actually failed
+
+**Files:**
+- Modify: `plugins/review-council/skills/rev/SKILL.md` (Fix section, 696-706)
+- Modify: `plugins/review-council/codex-skills/rev/SKILL.md` (mirror)
+- Test: `plugins/review-council/tests/t-skill.sh`
+- Modify: `plugins/review-council/tests/test-costs.tsv`
+
+**Interfaces:**
+- Consumes: the `Prediction` field required by Task 1, which names the test, the arm and the
+  assertion that must fail.
+- Produces: two contract sentences, each pinned verbatim by a test.
+
+**Why this is not redundant with Task 3.** `rev-mutate.sh` reverts a hunk and checks the suite
+goes red, which proves the test is sensitive to THE EDIT. Running the test before the fix exists
+proves it is sensitive to THE DEFECT. Those are different properties and mutation cannot establish
+the second. The corpus failure that recurs most is "I asserted on the arm I was looking at rather
+than the arm the defect lived on": if the fix also touched that arm, reverting the hunk turns the
+test red and the mutation check passes it, while the defect on the other arm stays unfixed. Run
+first, that test goes green immediately and the mistake is visible in seconds.
+
+**Why it is more than an honour system.** "I wrote the test first" is unverifiable. The observed
+failure line is not. The plan already states, in `Prediction`, what should fail; the ledger records
+what did. A reviewer compares two written things, and a mismatch is the same STOP that caught 3 of
+7 and 4 of 7 predictions in the measurements behind this spec.
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `plugins/review-council/tests/t-skill.sh`:
+
+```bash
+test_skill_requires_a_proven_red_before_the_fix() {
+  ( local red="Run the test named in Prediction before the fix exists and watch it fail"
+    local stop="a failure whose message does not match the Prediction is a STOP, not a note"
+    assert_flat_fixed "rev skill requires a proven red" "$SK/skills/rev/SKILL.md" "$red"
+    assert_flat_fixed "codex skill requires a proven red" "$SK/codex-skills/rev/SKILL.md" "$red"
+    assert_flat_fixed "rev skill treats a mismatched failure as a stop" "$SK/skills/rev/SKILL.md" "$stop"
+    assert_flat_fixed "codex skill treats a mismatched failure as a stop" "$SK/codex-skills/rev/SKILL.md" "$stop" )
+}
+```
+
+- [ ] **Step 2: Add the test-costs row**
+
+Append to `plugins/review-council/tests/test-costs.tsv`, tab-separated:
+
+```
+t-skill.sh::test_skill_requires_a_proven_red_before_the_fix	1	normal
+```
+
+- [ ] **Step 3: Run the test to verify it fails**
+
+```bash
+cd /Users/celrisen/review-council
+plugins/review-council/tests/run-tests.sh proven_red
+```
+
+Expected: FAIL, four times. Neither sentence is in either file yet.
+
+- [ ] **Step 4: Add both sentences to the Fix section**
+
+In `plugins/review-council/skills/rev/SKILL.md`, inside the `### Fix` section (696-706), add:
+
+> Run the test named in Prediction before the fix exists and watch it fail. Record the observed
+> failure line in the ledger beside the prediction: a failure whose message does not match the
+> Prediction is a STOP, not a note, because a test that fails for an unrelated reason proves
+> nothing about the defect.
+
+Mirror it verbatim in `plugins/review-council/codex-skills/rev/SKILL.md`.
+
+Both pinned strings must appear EXACTLY as the test spells them, including capitalisation of
+`Prediction` and `STOP`. The helper flattens newlines before matching, so the sentence may wrap.
+
+- [ ] **Step 5: Run the test to verify it passes**
+
+```bash
+plugins/review-council/tests/run-tests.sh proven_red
+plugins/review-council/tests/run-tests.sh skill
+```
+
+Expected: PASS, and the wider skill suite still green.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add plugins/review-council/skills/rev/SKILL.md \
+        plugins/review-council/codex-skills/rev/SKILL.md \
+        plugins/review-council/tests/t-skill.sh \
+        plugins/review-council/tests/test-costs.tsv
+git commit -m "Require a proven red before the fix, and record what failed
+
+Mutation proves a test is sensitive to the edit. Running it before the fix
+exists proves it is sensitive to the defect. The most common vacuity failure
+in the corpus, asserting on the arm the fix touched rather than the arm the
+defect lived on, passes a mutation check and fails a red-first run."
+```
+
 ### Task 6: Full verification and push
 
 - [ ] **Step 1: Run the complete shell suite**
@@ -785,7 +881,7 @@ Per the agreed review strategy, plugin code is verified by the suite with no pan
 
 ## Self-review
 
-**Spec coverage.** Instrument 1a is Task 2. 1b (test-first with a proven red) is the shape of every task here rather than a code change; it needs no plugin support beyond the `Prediction` field. 1c is Tasks 1 and 3. 1d is Task 4. Instrument 3 is Task 5. Instrument 2, the five lint rules, is deliberately out of scope: it is a different subsystem in a different language, its owning repository is still an open question, and a measurement of its real alert-to-defect ratio is in flight. It gets its own plan.
+**Spec coverage.** Instrument 1a is Task 2. 1b (test-first with a proven red) is Task 5b, which makes the red step a contract obligation and turns the observed failure into a recorded artifact rather than a claim; it also remains the shape of every task here. 1c is Tasks 1 and 3. 1d is Task 4. Instrument 3 is Task 5. Instrument 2, the five lint rules, is deliberately out of scope: it is a different subsystem in a different language, its owning repository is still an open question, and a measurement of its real alert-to-defect ratio is in flight. It gets its own plan.
 
 **Gap I am recording rather than hiding.** The spec also asks to derive `open` from `findings.md` so triage and the gate read one source. Task 4 makes a stale counter refuse, which closes the hole that mattered, but it leaves `open` hand-maintained. Deriving it is a larger change to the ledger format and belongs in its own task once the ledger has a machine-readable severity per finding. Not doing it means an orchestrator can still write wrong-but-fresh counts.
 
