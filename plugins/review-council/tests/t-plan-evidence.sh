@@ -67,6 +67,7 @@ Sites: src/service.ts:1-2 (found by: rg --hidden --no-ignore --glob '!.git/**' -
 Must not: Change unrelated exports.
 Test: tests/service.test.ts:1-2
 Interacts with: none.
+Prediction: reverting the guard fails tests/service.test.ts at "service" (assert on runService()), because the doubled helper result changes the return value.
 ## C-02 - keep helper callers visible
 Findings: F-002 (P1)
 Rule: Check every helper caller before changing the helper result.
@@ -74,6 +75,7 @@ Sites: src/helper.ts:1 (found by: grep --exclude-dir=.git --null -r -n -- 'helpe
 Must not: Skip callers outside the service entry.
 Test: tests/service.test.ts:1-2
 Interacts with: C-01.
+Prediction: reverting the guard fails tests/service.test.ts at "service" (assert on runService()), because an unchecked caller re-applies the changed helper result.
 EOF
     local plan_hash manifest
     plan_hash=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/fix-plan.md")
@@ -904,6 +906,7 @@ Findings: F-001
 Rule: Keep value stable.
 Sites: src/value.ts:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'value' .)
 Test: value.test.ts:1
+Prediction: reverting the guard fails the value test at its assertion on the exported constant, because it reads the mutated value.
 EOF
     local hash; hash=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/fix-plan.md")
     local args=(--phase plan --plan "$S/fix-plan.md" --plan-sha256 "$hash" --full-seat sol
@@ -1028,6 +1031,7 @@ Findings: F-001
 Rule: Preserve the service result.
 Sites: src/service.ts:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'service' .)
 Test: tests/service.test.ts:1-2
+Prediction: reverting the guard fails tests/service.test.ts at "service", because the assertion reads the changed return value.
 EOF
     REV_PATCH_CHUNKS=1 REV_SOURCE_CONTEXT=1 python3 - \
       "$SCRIPTS/rev-evidence.py" "$S" "$R" <<'PY'
@@ -1159,6 +1163,7 @@ Findings: F-001
 Rule: Keep the value stable.
 Sites: src/value.ts:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'value' .)
 Test: tests/value.test.ts:1
+Prediction: reverting the guard fails tests/value.test.ts at its assertion on the exported constant, because it reads the mutated value.
 EOF
     local hash; hash=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/fix-plan.md")
     local args=(--phase plan --plan "$S/fix-plan.md" --plan-sha256 "$hash" --full-seat sol
@@ -1209,7 +1214,7 @@ spec = importlib.util.spec_from_file_location('rev_evidence', sys.argv[1])
 module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 audit_spec = importlib.util.spec_from_file_location('read_audit', sys.argv[2])
 audit = importlib.util.module_from_spec(audit_spec); audit_spec.loader.exec_module(audit)
-raw = b'''## C-01 - build entry\nFindings: F-001\nRule: Keep the build target stable.\nSites: Makefile:1-2, :4-5; tests/value.test.ts:1-3 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'src/(value|fake)\\.ts' .)\nRegression: src/value.ts:1\n'''
+raw = b'''## C-01 - build entry\nFindings: F-001\nRule: Keep the build target stable.\nSites: Makefile:1-2, :4-5; tests/value.test.ts:1-3 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'src/(value|fake)\\.ts' .)\nRegression: src/value.ts:1\nPrediction: reverting the guard fails the value regression at its assertion on the build target, because the target reads the mutated value.\n'''
 clusters = module.parse_plan(raw, {'Makefile', 'tests/value.test.ts', 'src/value.ts'})
 assert clusters[0]['search_pattern'] == r'src/(value|fake)\.ts'
 assert clusters[0]['search_contract'] == {
@@ -1219,7 +1224,7 @@ assert [(row['path'], row['resolution']) for row in clusters[0]['paths']] == [
     ('tests/value.test.ts', 'direct'), ('src/value.ts', 'direct')]
 assert [(row['line_start'], row['line_end']) for row in clusters[0]['paths']] == [
     (1, 2), (4, 5), (1, 3), (1, 1)]
-numeric_search = b'''## C-02 - numeric search regex\nFindings: F-002\nRule: Keep numeric search patterns valid.\nSites: src/value.ts:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'value{2}|code80' .)\nTest: tests/value.test.ts:1\n'''
+numeric_search = b'''## C-02 - numeric search regex\nFindings: F-002\nRule: Keep numeric search patterns valid.\nSites: src/value.ts:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'value{2}|code80' .)\nTest: tests/value.test.ts:1\nPrediction: reverting the guard fails the value test at its assertion on the numeric pattern, because it reads the mutated value.\n'''
 assert module.parse_plan(
     numeric_search, {'src/value.ts', 'tests/value.test.ts'})[0]['search_pattern'] == 'value{2}|code80'
 assert module.plan_search_pattern("x (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- -legacy .)") == '-legacy'
@@ -1241,13 +1246,14 @@ import importlib.util, sys
 spec = importlib.util.spec_from_file_location('rev_evidence', sys.argv[1])
 module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 entries = {'src/value.ts', 'tests/value.test.ts'}
+prediction = 'Prediction: reverting the guard fails the value test at its assertion on the exported constant, because it reads the mutated value.\n'
 bad = [
-    b'''## C-01 - missing search\nFindings: F-001\nRule: Keep value stable.\nSites: src/value.ts:1\nTest: tests/value.test.ts:1\n''',
-    b'''## C-01 - escaping path\nFindings: F-001\nRule: Keep value stable.\nSites: ../src/value.ts:1 (found by: rg -n value .)\nTest: tests/value.test.ts:1\n''',
-    b'''## C-01 - reversed range\nFindings: F-001\nRule: Keep value stable.\nSites: src/value.ts:4-2 (found by: rg -n value .)\nTest: tests/value.test.ts:1\n''',
-    b'''## C-01 - bare range after path\nFindings: F-001\nRule: Keep value stable.\nSites: src/value.ts:1, 4-6 (found by: rg -n value .)\nTest: tests/value.test.ts:1\n''',
-    b'''## C-01 - bare range before path\nFindings: F-001\nRule: Keep value stable.\nSites: 4-6, src/value.ts:1 (found by: rg -n value .)\nTest: tests/value.test.ts:1\n''',
-    b'''## C-01 - missing regression\nFindings: F-001\nRule: Keep value stable.\nSites: src/value.ts:1 (found by: rg -n value .)\n''',
+    b'''## C-01 - missing search\nFindings: F-001\nRule: Keep value stable.\nSites: src/value.ts:1\nTest: tests/value.test.ts:1\n''' + prediction.encode(),
+    b'''## C-01 - escaping path\nFindings: F-001\nRule: Keep value stable.\nSites: ../src/value.ts:1 (found by: rg -n value .)\nTest: tests/value.test.ts:1\n''' + prediction.encode(),
+    b'''## C-01 - reversed range\nFindings: F-001\nRule: Keep value stable.\nSites: src/value.ts:4-2 (found by: rg -n value .)\nTest: tests/value.test.ts:1\n''' + prediction.encode(),
+    b'''## C-01 - bare range after path\nFindings: F-001\nRule: Keep value stable.\nSites: src/value.ts:1, 4-6 (found by: rg -n value .)\nTest: tests/value.test.ts:1\n''' + prediction.encode(),
+    b'''## C-01 - bare range before path\nFindings: F-001\nRule: Keep value stable.\nSites: 4-6, src/value.ts:1 (found by: rg -n value .)\nTest: tests/value.test.ts:1\n''' + prediction.encode(),
+    b'''## C-01 - missing regression\nFindings: F-001\nRule: Keep value stable.\nSites: src/value.ts:1 (found by: rg -n value .)\n''' + prediction.encode(),
 ]
 sites_form = '; expected Sites: <path>[:<start>[-<end>]], ... (found by: <search>)'
 messages = {
@@ -1278,7 +1284,9 @@ entries = {'src/client.ts', 'tests/client.test.ts'}
 search = " (found by: grep --exclude-dir=.git --null -r -n -- 'sync' .)"
 def plan(rule, test, sites='src/client.ts:1', field='Test'):
     return (f'## C-07 - prose\nFindings: F-001\nRule: {rule}\nSites: {sites}{search}\n'
-            f'Must not: retry after 600 ms or touch client.sync.\n{field}: {test}\n').encode()
+            f'Must not: retry after 600 ms or touch client.sync.\n{field}: {test}\n'
+            'Prediction: reverting the guard fails the named test at its first assertion, '
+            'because the retry runs again after the parking await.\n').encode()
 prose = ['600', '3 s', 'client.sync', "onStage('submitting')/markSubmitting",
          'onStage(a)/b', 'try/catch', 'failure/cancellation']
 for text in prose:
@@ -1741,6 +1749,7 @@ Rule: Wait 600 ms, then 3 s, before client.sync; keep try/catch around onStage('
 Sites: src/service.ts:1-2, src/helper.ts:1 (found by: grep --exclude-dir=.git --null -r -n -- 'helper' .)
 Must not: Change unrelated exports.
 Test: tests/service.test.ts:1-2 - client.sync after 600 ms skips try/catch in onStage(a)/b (fails today).
+Prediction: reverting the guard fails tests/service.test.ts at "client.sync after 600 ms skips try/catch in onStage(a)/b", because the retry fires again after the parking await.
 EOF
     local hash manifest
     hash=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/fix-plan.md")
@@ -1875,7 +1884,8 @@ for cluster in range(3):
         + f" (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'capacity_marker_(0[0-9]|1[0-7])' .)\n".replace(
             'capacity_marker_(0[0-9]|1[0-7])',
             f'capacity_marker_({start:02d}|{start + 1:02d}|{start + 2:02d}|{start + 3:02d}|{start + 4:02d}|{start + 5:02d}|{start + 6:02d}|{start + 7:02d}|{start + 8:02d}|{start + 9:02d}|{start + 10:02d}|{start + 11:02d}|{start + 12:02d}|{start + 13:02d}|{start + 14:02d}|{start + 15:02d}|{start + 16:02d}|{start + 17:02d})')
-        + f'Test: src/site{start:02d}.py:1\n')
+        + f'Test: src/site{start:02d}.py:1\n'
+        + f'Prediction: reverting the guard fails src/site{start:02d}.py at its capacity-marker assertion, because the marker reads the mutated value.\n')
 Path(sys.argv[1]).write_text(''.join(clusters))
 PY
     local hash manifest
@@ -1935,6 +1945,7 @@ Findings: F-001
 Rule: Keep every exact location stable.
 Sites: src/value.ts.generated:2, `src/nested value.ts`:1-2, src/\xc3\xbcber value.ts:3, unique.test.ts:4, README.md:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'value' .)
 Test: `src/uber value.ts:5-6`; src/value.ts:7 stays prose
+Prediction: reverting the guard fails unique.test.ts at its assertion on the pinned constant, because the location moves.
 '''
 rows = module.parse_plan(raw, entries)[0]['paths']
 assert [(row['path'], row['line_start'], row['line_end'], row['resolution']) for row in rows] == [
@@ -2001,6 +2012,7 @@ Findings: F-001
 Rule: Keep the value stable.
 Sites: src/value.ts:2 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'value' .)
 Test: tests/value.test.ts:1
+Prediction: reverting the guard fails the value test at its assertion on the exported constant, because it reads the mutated value.
 EOF
     local hash; hash=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/fix-plan.md")
     local args=(--phase plan --plan "$S/fix-plan.md" --plan-sha256 "$hash" --full-seat sol
@@ -2060,4 +2072,40 @@ PY
     assert_grep "fresh verification reports the canonical range error" \
       "$T/plan-location-verify.err" 'plan cluster C-01 field Sites: line range is outside pinned source "src/value\.ts:2"; expected Sites: '
   )
+}
+
+test_plan_parser_requires_a_prediction() {
+  python3 - "$SCRIPTS/rev-evidence.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('rev_evidence', sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+
+entries = {'src/value.ts', 'tests/value.test.ts'}
+found = '(found by: `rg --hidden --no-ignore --glob \'!.git/**\' --null -n -- runService .`)'
+
+without = ('## C-01 cluster\n'
+           'Findings: F-001\n'
+           'Rule: every caller checks the result\n'
+           'Sites: src/value.ts:1-2 ' + found + '\n'
+           'Test: tests/value.test.ts - passes today with the bug\n').encode()
+try:
+    module.parse_plan(without, entries)
+except ValueError as error:
+    assert 'incomplete plan cluster: C-01' in str(error), str(error)
+else:
+    raise AssertionError('a cluster with no Prediction was accepted')
+
+with_prediction = ('## C-01 cluster\n'
+                   'Findings: F-001\n'
+                   'Rule: every caller checks the result\n'
+                   'Sites: src/value.ts:1-2 ' + found + '\n'
+                   'Test: tests/value.test.ts - passes today with the bug\n'
+                   'Prediction: reverting the guard fails value.test.ts at '
+                   '"rejects an unchecked result", because the assertion reads the return value\n').encode()
+clusters = module.parse_plan(with_prediction, entries)
+assert len(clusters) == 1, clusters
+assert set(clusters[0]) == {'id', 'search_pattern', 'search_contract', 'paths'}, set(clusters[0])
+assert not any(row['field'] == 'prediction' for row in clusters[0]['paths']), clusters[0]['paths']
+PY
+  assert_eq "plan parser requires a prediction and keeps it prose" "$?" 0
 }

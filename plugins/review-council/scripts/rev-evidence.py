@@ -1796,7 +1796,7 @@ def parse_plan(raw, entries):
                 fields[current] = (fields[current] + ' ' + line.strip()).strip()
             else:
                 raise ValueError('unparsed plan cluster content: ' + heading.group(1))
-        required = {'findings', 'rule', 'sites'}
+        required = {'findings', 'rule', 'sites', 'prediction'}
         if not required <= set(fields) or not any(key in fields for key in ('test', 'tests', 'regression')):
             raise ValueError('incomplete plan cluster: ' + heading.group(1))
         path_rows = []

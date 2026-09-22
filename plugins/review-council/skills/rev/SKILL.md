@@ -607,10 +607,14 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    Must not: change the eviction timing; touch the SW driver (owned by C-04).
    Test:     sync-lock.test.ts - evict mid-await, assert the late call is dropped (fails today).
    Interacts with: C-04 (both touch the ceiling; C-04 lands first).
+   Prediction: reverting the guard fails sync-lock.test.ts at "drops the late call", because
+             the call after the parking await no longer re-checks hold ownership.
    ```
 
    `Sites` is the part that matters: enumerate by searching, not by memory, and list every
    arm, realm, caller and copy (JSDoc, README, CHANGELOG, `.d.ts`) the rule reaches.
+   `Prediction` states which test fails, on which arm, at which assertion or message, and
+   why - a concrete symptom, not a restatement of `Rule`.
 2. Choose the plan seats from the roster. By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order, preferring one whose adapter is not `agent` when the roster has one (an Agent seat runs the panel unenforced), `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.
    When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat, even when the preceding code
    panel included an extra or a one-seat repair, and deal the plan lenses by the same
@@ -641,10 +645,13 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    and the complete authorized artifact set must match exactly. After every plan prompt
    renders, apply the same single ordinary prelaunch verify and require every prompt's
    one embedded manifest hash to match before fan-out.
-   The parser requires every cluster to have `Findings`, `Rule`, `Sites`, and at
-   least one of `Test`, `Tests`, or `Regression`. Every path must resolve in the
+   The parser requires every cluster to have `Findings`, `Rule`, `Sites`, `Prediction`,
+   and at least one of `Test`, `Tests`, or `Regression`. Every path must resolve in the
    pinned repository snapshot. Locations are read only from `Sites` and the first
-   token of a test field (`Test: <path> - <what fails today>`); every other field is prose.
+   token of a test field (`Test: <path> - <what fails today>`); every other field is prose,
+   including `Prediction`. A prediction names which test fails, on which arm, at which
+   assertion or message, and why; it is checked against what a mutation of the fix
+   actually does, not filed and forgotten.
    Locations may use `path:line`, `path:start-end`,
    or a shorthand `:start-end` after a path. `Sites` must include one bounded query in
    either exact form: `found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'PATTERN' .`

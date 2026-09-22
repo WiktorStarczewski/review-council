@@ -509,8 +509,8 @@ Immediately before launch, write
 plan artifacts and its seats instead of the completed code panel.
 
 Every cluster must contain `Findings`,
-`Rule`, `Sites`, and at least one of `Test`, `Tests`, or `Regression`. Its `Sites`
-field must include one bounded query in either exact form:
+`Rule`, `Sites`, `Prediction`, and at least one of `Test`, `Tests`, or `Regression`. Its
+`Sites` field must include one bounded query in either exact form:
 `found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'PATTERN' .`
 or `found by: grep --exclude-dir=.git --null -r -n -- 'PATTERN' .`. These fixed
 flags cover every regular worktree file except `.git`. Do not add other globs, types,
@@ -518,7 +518,10 @@ exclusions, path operands, maximum depth, redirects, or filename suppression. Ke
 result below 80 lines. It must include every path named in `Sites`; native text search
 cannot certify this proof.
 Locations are read only from `Sites` and the first token of a test field
-(`Test: <path> - <what fails today>`); every other field is prose. Locations may use
+(`Test: <path> - <what fails today>`); every other field is prose, including
+`Prediction`. A prediction names which test fails, on which arm, at which assertion or
+message, and why; it is checked against what a mutation of the fix actually does, not
+filed and forgotten. Locations may use
 `path:line`, `path:start-end`, or a shorthand `:start-end` after a path.
 Write `$S/r<N>p-panel.tsv` with one line per plan seat, then bind and prepare the
 immutable plan before rendering:
