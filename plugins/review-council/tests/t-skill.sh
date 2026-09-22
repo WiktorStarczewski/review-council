@@ -716,6 +716,10 @@ test_skill_rev_mutate_invocation_is_runnable() {
 test_skill_rev_mutate_precedes_commit() {
   ( assert_flat_order "rev skill runs the mutation check before Commit" \
       "$SK/skills/rev/SKILL.md" 'rev-mutate.*### Commit'
+    # Anchored on "the test command", not "rev-mutate": that word also appears in
+    # the prose sentence describing the check, so a directive inserted between the
+    # prose and the concrete invocation would still read as "after rev-mutate" and
+    # pass. "the test command" occurs exactly once, inside the invocation itself.
     assert_flat_order "codex skill runs the mutation check before Commit only when" \
-      "$SK/codex-skills/rev/SKILL.md" 'rev-mutate.*Commit only when' )
+      "$SK/codex-skills/rev/SKILL.md" 'the test command.*Commit only when' )
 }
