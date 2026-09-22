@@ -1520,13 +1520,22 @@ def plan_excluded_paths(fields_text):
         entry = entry.strip()
         if not entry:
             continue
-        path, _, reason = entry.partition(' -')
-        token = path.strip().strip('`')
+        # The path is the first whitespace-delimited word and the separator is the ' - '
+        # immediately after it. Anything else is refused by name rather than silently
+        # attributed to a prefix of what the author wrote.
+        words = entry.split(None, 1)
+        token = words[0].strip('`')
         if not token:
-            raise ValueError('plan cluster has a malformed Excluded entry: ' + entry)
-        if not reason.strip(' -').strip():
-            raise ValueError('plan cluster excludes a path with no reason: ' + token)
-        found.add(token.lstrip('./'))
+            raise ValueError(f'no path in excluded entry "{entry}"')
+        separator = re.fullmatch(r'-(?:\s+(.*))?', words[1], re.S) if len(words) > 1 else None
+        if len(words) > 1 and separator is None:
+            raise ValueError(f'excluded entry is not <path> - <reason>: "{entry}"')
+        reason = (separator.group(1) or '') if separator else ''
+        if not reason.strip():
+            raise ValueError(f'no reason for excluded path "{token}"')
+        # A prefix strip, never lstrip('./'): that is a character class and would turn
+        # .github/workflows/ci.yml into a path nobody can find.
+        found.add(re.sub(r'^\./', '', token))
     return found
 
 
@@ -1537,12 +1546,16 @@ def reconcile_plan_sites(declared, excluded, paths):
     own test file usually matches its search pattern, and it is already declared under
     Test/Tests/Regression, so making the author exclude it by name would train exclusions
     to be written mechanically.
+
+    Every set here is already repository-relative - hits through plan_search_paths,
+    declared through plan_field_paths, exclusions through plan_excluded_paths - so nothing
+    is normalized again. A dot-path stays whole and compares as itself.
     """
-    hits = {path.lstrip('./') for path in paths}
+    hits = set(paths)
     phantom = sorted(path for path in excluded if path not in hits)
     if phantom:
         raise ValueError('plan cluster excludes a path the search did not find: ' + phantom[0])
-    named = {path.lstrip('./') for path in declared} | set(excluded)
+    named = set(declared) | set(excluded)
     return sorted(hit for hit in hits if hit not in named)
 
 
@@ -1802,6 +1815,7 @@ def validate_plan_source_location(repo, entries, row):
 def plan_field_refusal(cluster_id, field, error):
     name = field.capitalize()
     form = ('<path>[:<start>[-<end>]], ... (found by: <search>)' if field == 'sites'
+            else '<path> - <reason>; <path> - <reason>' if field == 'excluded'
             else '<path> - <what fails today>')
     return ValueError(f'plan cluster {cluster_id} field {name}: {error}; expected {name}: {form}')
 
@@ -1865,7 +1879,10 @@ def parse_plan(raw, entries):
                 if item not in path_rows:
                     path_rows.append(item)
         search_contract = plan_search_contract(fields['sites'])
-        excluded = plan_excluded_paths(fields.get('excluded', ''))
+        try:
+            excluded = plan_excluded_paths(fields.get('excluded', ''))
+        except ValueError as error:
+            raise plan_field_refusal(heading.group(1), 'excluded', error) from None
         clusters.append({'id': heading.group(1), 'search_pattern': search_contract['pattern'],
                          'search_contract': search_contract, 'paths': path_rows,
                          'excluded': sorted(excluded)})
