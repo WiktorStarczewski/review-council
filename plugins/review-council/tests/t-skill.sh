@@ -673,9 +673,19 @@ skill_adapter_and_plan_gate_contract() {
   assert_grep "Codex host shares the plan_seats key" "$CK" '`plan_seats`, and `quota_fallback` are shared with Claude Code'
 }
 
+# assert_flat_fixed matches a SUBSTRING, so a pin that stops mid-sentence is satisfied by the
+# weakened sentence containing it: appending ", or skip the red run entirely when it is
+# inconvenient" after "watch it fail" inverted this branch's flagship obligation with every
+# assertion green. Each of the four pins below therefore runs through its own sentence terminator
+# and into the opening words of the sentence after it, which is what bounds it - the appended
+# clause now falls inside the pinned span. The four spans interlock in pairs (each pin's tail is
+# the next one's head), so nothing can be inserted between the full-gate sentence and the mutation
+# invocation, or between the red-run sentence and the Implement/Apply directive. The helper is
+# deliberately left alone: the pins elsewhere that share its weakness are a separate task.
 test_skill_requires_the_full_gate_list_on_a_fix_commit() {
-  ( local want="Run the repository's full gate list, not the subset the diff suggests"
-    local mut="run rev-mutate.sh over the changed hunks before committing"
+  ( local tick='`'
+    local want="Run the repository's full gate list, not the subset the diff suggests, and record the result in the ledger. Then run rev-mutate.sh over the changed hunks"
+    local mut="run rev-mutate.sh over the changed hunks before committing: revert each hunk alone and confirm a test notices, and compare what failed against the cluster's Prediction: $tick"
     assert_flat_fixed "rev skill requires the full gate list" \
       "$SK/skills/rev/SKILL.md" "$want"
     assert_flat_fixed "codex skill requires the full gate list" \
@@ -687,12 +697,16 @@ test_skill_requires_the_full_gate_list_on_a_fix_commit() {
 }
 
 test_skill_requires_a_proven_red_before_the_fix() {
-  ( local red="Run the test named in Prediction before the fix exists and watch it fail"
-    local stop="a failure whose message does not match the Prediction is a STOP, not a note"
+  ( local tick='`'
+    local red="Run the test named in Prediction before the fix exists and watch it fail, once per cluster's Prediction, not once for the round. Record the observed failure line in fix-plan.md beside the Prediction it belongs to: a failure whose message"
+    local stop='a failure whose message does not match the Prediction is a STOP, not a note, because a test that fails for an unrelated reason proves nothing about the defect.'
     assert_flat_fixed "rev skill requires a proven red" "$SK/skills/rev/SKILL.md" "$red"
     assert_flat_fixed "codex skill requires a proven red" "$SK/codex-skills/rev/SKILL.md" "$red"
-    assert_flat_fixed "rev skill treats a mismatched failure as a stop" "$SK/skills/rev/SKILL.md" "$stop"
-    assert_flat_fixed "codex skill treats a mismatched failure as a stop" "$SK/codex-skills/rev/SKILL.md" "$stop" )
+    # The sentence after the STOP is the one place the two hosts word this differently.
+    assert_flat_fixed "rev skill treats a mismatched failure as a stop" \
+      "$SK/skills/rev/SKILL.md" "$stop Implement ${tick}fix-plan.md${tick}"
+    assert_flat_fixed "codex skill treats a mismatched failure as a stop" \
+      "$SK/codex-skills/rev/SKILL.md" "$stop Apply confirmed fixes in coherent clusters" )
 }
 
 # rev-mutate.sh reports a verdict and the failing line; it never reads fix-plan.md, so it cannot
