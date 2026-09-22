@@ -515,8 +515,12 @@ Every cluster must contain `Findings`,
 or `found by: grep --exclude-dir=.git --null -r -n -- 'PATTERN' .`. These fixed
 flags cover every regular worktree file except `.git`. Do not add other globs, types,
 exclusions, path operands, maximum depth, redirects, or filename suppression. Keep the
-result below 80 lines. It must include every path named in `Sites`; native text search
-cannot certify this proof.
+result below 80 lines. It must include every path named in `Sites`, and every path it
+finds must be named in `Sites` or in the optional
+`Excluded: <path> - <reason>, <path> - <reason>` field; commas separate entries, so a
+reason carries none. An `Excluded` entry naming a path the search did not find is
+refused, so a cluster can no longer fix 8 of 10 sites silently: the 2 it skips have to be
+written down. Native text search cannot certify this proof.
 Locations are read only from `Sites` and the first token of a test field
 (`Test: <path> - <what fails today>`); every other field is prose, including
 `Prediction`. A prediction names which test fails, on which arm, at which assertion or

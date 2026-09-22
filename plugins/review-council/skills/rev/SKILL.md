@@ -604,6 +604,8 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    Sites:    src/lib/sync/useSyncTrigger.ts:141, :208; src/lib/miden/sdk/miden-client.ts:88;
              worker realm: src/workers/sync.ts:60
              (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'await .*lock' .)
+   Excluded: src/workers/index.ts - re-exports only and never awaits the hold,
+             sync-lock.test.ts - the test that pins the rule is not a fix site
    Must not: change the eviction timing; touch the SW driver (owned by C-04).
    Test:     sync-lock.test.ts - evict mid-await, assert the late call is dropped (fails today).
    Interacts with: C-04 (both touch the ceiling; C-04 lands first).
@@ -612,7 +614,11 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    ```
 
    `Sites` is the part that matters: enumerate by searching, not by memory, and list every
-   arm, realm, caller and copy (JSDoc, README, CHANGELOG, `.d.ts`) the rule reaches.
+   arm, realm, caller and copy (JSDoc, README, CHANGELOG, `.d.ts`) the rule reaches. The
+   search reconciles against the plan in both directions, so every path it finds is either
+   a site the cluster fixes or an `Excluded` entry carrying the reason it is not one, and
+   an `Excluded` entry naming a path the search did not find is refused. You can no longer
+   fix 8 of 10 sites silently: the 2 you skip have to be written down.
    `Prediction` states which test fails, on which arm, at which assertion or message, and
    why - a concrete symptom, not a restatement of `Rule`.
 2. Choose the plan seats from the roster. By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order, preferring one whose adapter is not `agent` when the roster has one (an Agent seat runs the panel unenforced), `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.
@@ -658,8 +664,10 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    or `found by: grep --exclude-dir=.git --null -r -n -- 'PATTERN' .`. These fixed
    flags cover every regular worktree file except `.git`. Do not add other globs,
    types, exclusions, path operands, maximum depth, redirects, or filename suppression.
-   Keep the result below 80 lines. It must include every path named in `Sites`; native
-   text search cannot certify this proof.
+   Keep the result below 80 lines. It must include every path named in `Sites`, and every
+   path it finds must be named in `Sites` or in the optional
+   `Excluded: <path> - <reason>, <path> - <reason>` field; commas separate entries, so a
+   reason carries none. Native text search cannot certify this proof.
    Every reviewer receives the full inline plan and complete navigation index. The
    plan-completeness seat receives the full cumulative patch and every cluster's
    closure, search, and source obligations. With `"plan_seats": "all"`, each cluster is

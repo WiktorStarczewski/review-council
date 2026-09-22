@@ -1508,6 +1508,26 @@ def run_plan_search(command, directory, environment, deadline, executable=None):
                     pass
 
 
+def plan_excluded_paths(fields_text):
+    """Paths named in an Excluded field. Prose after ' - ' on each entry is a reason."""
+    found = set()
+    for entry in fields_text.split(','):
+        token = entry.strip().split(' - ', 1)[0].strip().strip('`')
+        if token:
+            found.add(token.lstrip('./'))
+    return found
+
+
+def reconcile_plan_sites(sites, excluded, paths):
+    """Return search hits named by neither Sites nor Excluded. Raise on a phantom exclusion."""
+    hits = {path.lstrip('./') for path in paths}
+    phantom = sorted(path for path in excluded if path not in hits)
+    if phantom:
+        raise ValueError('plan cluster excludes a path the search did not find: ' + phantom[0])
+    named = {path.lstrip('./') for path in sites} | set(excluded)
+    return sorted(hit for hit in hits if hit not in named)
+
+
 def prepare_plan_searches(repo, snapshot, clusters, prefix, base_tree=None):
     prepared = []
     artifacts = {}
@@ -1549,6 +1569,10 @@ def prepare_plan_searches(repo, snapshot, clusters, prefix, base_tree=None):
             sites = {row['path'] for row in cluster['paths'] if row['field'] == 'sites'}
             if not sites <= set(paths):
                 raise ValueError('plan search output omits a named site')
+            unreconciled = reconcile_plan_sites(sites, cluster.get('excluded', set()), paths)
+            if unreconciled:
+                raise ValueError('plan search found a site the cluster neither fixes nor excludes: '
+                                 + unreconciled[0])
             name = f'{prefix}-plan-search-{cluster["id"]}.txt'
             proof = {'artifact': name, 'status': status, 'saturated': False,
                      'bytes': len(body), 'sha256': digest(body), 'paths': paths}
@@ -1822,8 +1846,10 @@ def parse_plan(raw, entries):
                 if item not in path_rows:
                     path_rows.append(item)
         search_contract = plan_search_contract(fields['sites'])
+        excluded = plan_excluded_paths(fields.get('excluded', ''))
         clusters.append({'id': heading.group(1), 'search_pattern': search_contract['pattern'],
-                         'search_contract': search_contract, 'paths': path_rows})
+                         'search_contract': search_contract, 'paths': path_rows,
+                         'excluded': sorted(excluded)})
     ids = [cluster['id'] for cluster in clusters]
     if len(ids) != len(set(ids)):
         raise ValueError('duplicate plan cluster identifier')
@@ -3388,11 +3414,14 @@ def validate_plan(session, manifest, evidence, check_source, replay_searches=Tru
         raise ValueError('invalid plan clusters')
     ids = []
     for cluster in clusters:
-        base_keys = {'id', 'search_pattern', 'search_contract', 'paths'}
+        base_keys = {'id', 'search_pattern', 'search_contract', 'paths', 'excluded'}
         if (not isinstance(cluster, dict) or set(cluster) not in (
                 base_keys, base_keys | {'search_proof'})
                 or not isinstance(cluster['id'], str) or not re.fullmatch(r'C-[A-Za-z0-9][A-Za-z0-9-]*', cluster['id'])
                 or not isinstance(cluster['search_pattern'], str) or not cluster['search_pattern']
+                or not isinstance(cluster['excluded'], list)
+                or any(not isinstance(path, str) or not path for path in cluster['excluded'])
+                or cluster['excluded'] != sorted(set(cluster['excluded']))
                 or not isinstance(cluster['search_contract'], dict)
                 or set(cluster['search_contract']) != {'engine', 'domain', 'pattern'}
                 or cluster['search_contract'].get('engine') not in ('rg', 'grep-bre')
@@ -3437,9 +3466,14 @@ def validate_plan(session, manifest, evidence, check_source, replay_searches=Tru
                     or row.get('field') not in ('sites', 'test', 'tests', 'regression')
                     or not isinstance(row.get('token'), str) or not row['token']):
                 raise ValueError('invalid plan cluster path')
-        if proof is not None and not {
-                row['path'] for row in cluster['paths'] if row['field'] == 'sites'} <= set(proof['paths']):
-            raise ValueError('plan search proof omits a named site: ' + cluster['id'])
+        if proof is not None:
+            sites = {row['path'] for row in cluster['paths'] if row['field'] == 'sites'}
+            if not sites <= set(proof['paths']):
+                raise ValueError('plan search proof omits a named site: ' + cluster['id'])
+            # Re-checked here because the replay that would catch it is skipped on the
+            # render and verify-panel paths.
+            if reconcile_plan_sites(sites, cluster['excluded'], proof['paths']):
+                raise ValueError('plan search proof leaves a site unreconciled: ' + cluster['id'])
     if len(ids) != len(set(ids)):
         raise ValueError('duplicate plan cluster identifier')
     if any('search_proof' in cluster for cluster in clusters) \

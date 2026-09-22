@@ -64,6 +64,7 @@ PY
 Findings: F-001 (P1)
 Rule: Apply the helper result exactly once at every service entry.
 Sites: src/service.ts:1-2 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'run(Service|Alias)' .)
+Excluded: src/sibling.ts - runAlias applies no helper result so the rule cannot reach it, tests/service.test.ts - the test that pins the rule is not a fix site
 Must not: Change unrelated exports.
 Test: tests/service.test.ts:1-2
 Interacts with: none.
@@ -72,6 +73,7 @@ Prediction: reverting the guard fails tests/service.test.ts at "service" (assert
 Findings: F-002 (P1)
 Rule: Check every helper caller before changing the helper result.
 Sites: src/helper.ts:1 (found by: grep --exclude-dir=.git --null -r -n -- 'helper' .)
+Excluded: src/service.ts - the service entry caller is owned by C-01
 Must not: Skip callers outside the service entry.
 Test: tests/service.test.ts:1-2
 Interacts with: C-01.
@@ -905,6 +907,7 @@ PY
 Findings: F-001
 Rule: Keep value stable.
 Sites: src/value.ts:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'value' .)
+Excluded: one/value.test.ts - a test that pins the rule is not a fix site, two/value.test.ts - a test that pins the rule is not a fix site
 Test: value.test.ts:1
 Prediction: reverting the guard fails the value test at its assertion on the exported constant, because it reads the mutated value.
 EOF
@@ -989,7 +992,10 @@ PYEDIT
       python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 5p "${valid_args[@]}"
     rm "$S/hardlinked-plan.md"
     printf 'export const value = "-legacy";\n' > "$R/src/value.ts"
-    sed "s/-- 'value' \./-- -legacy ./" "$S/fix-plan.md" > "$S/legacy-pattern-plan.md"
+    # The -legacy pattern matches only src/value.ts, so the value-pattern exclusions would
+    # themselves name paths this search never finds.
+    sed -e "s/-- 'value' \./-- -legacy ./" -e '/^Excluded:/d' "$S/fix-plan.md" \
+      > "$S/legacy-pattern-plan.md"
     hash=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/legacy-pattern-plan.md")
     valid_args=(--phase plan --plan "$S/legacy-pattern-plan.md" --plan-sha256 "$hash" --full-seat sol
       --assignment sol=plan-completeness --assignment terra=plan-soundness
@@ -1030,6 +1036,7 @@ PY
 Findings: F-001
 Rule: Preserve the service result.
 Sites: src/service.ts:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'service' .)
+Excluded: tests/service.test.ts - the test that pins the rule is not a fix site
 Test: tests/service.test.ts:1-2
 Prediction: reverting the guard fails tests/service.test.ts at "service", because the assertion reads the changed return value.
 EOF
@@ -1162,6 +1169,7 @@ PY
 Findings: F-001
 Rule: Keep the value stable.
 Sites: src/value.ts:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'value' .)
+Excluded: tests/value.test.ts - the test that pins the rule is not a fix site
 Test: tests/value.test.ts:1
 Prediction: reverting the guard fails tests/value.test.ts at its assertion on the exported constant, because it reads the mutated value.
 EOF
@@ -1484,6 +1492,7 @@ with tempfile.TemporaryDirectory(prefix='plan-search-domain-') as tmp:
         'paths':[{'path':'deleted.txt','field':'sites'},
                  {'path':'type-swap','field':'sites'},
                  {'path':'reverse-swap/old.txt','field':'sites'}],
+        'excluded':['reverse-swap', 'type-swap/current.txt'],
     }
     prepared, artifacts=evidence.prepare_plan_searches(
         UnionRepo(), 'snapshot', [union_cluster], 'r1u', 'base')
@@ -2011,6 +2020,7 @@ PY
 Findings: F-001
 Rule: Keep the value stable.
 Sites: src/value.ts:2 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'value' .)
+Excluded: tests/value.test.ts - the test that pins the rule is not a fix site
 Test: tests/value.test.ts:1
 Prediction: reverting the guard fails the value test at its assertion on the exported constant, because it reads the mutated value.
 EOF
@@ -2104,8 +2114,69 @@ with_prediction = ('## C-01 cluster\n'
                    '"rejects an unchecked result", because the assertion reads the return value\n').encode()
 clusters = module.parse_plan(with_prediction, entries)
 assert len(clusters) == 1, clusters
-assert set(clusters[0]) == {'id', 'search_pattern', 'search_contract', 'paths'}, set(clusters[0])
+assert set(clusters[0]) == {
+    'id', 'search_pattern', 'search_contract', 'paths', 'excluded'}, set(clusters[0])
 assert not any(row['field'] == 'prediction' for row in clusters[0]['paths']), clusters[0]['paths']
 PY
   assert_eq "plan parser requires a prediction and keeps it prose" "$?" 0
+}
+
+test_plan_search_refuses_an_unreconciled_hit() {
+  python3 - "$SCRIPTS/rev-evidence.py" <<'PY'
+import importlib.util, os, pathlib, sys, tempfile
+spec = importlib.util.spec_from_file_location('rev_evidence', sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+
+# A search output carrying a path the plan never named must refuse.
+sites = {'src/service.ts'}
+excluded = set()
+paths = ['src/service.ts', 'src/sibling.ts']
+assert module.reconcile_plan_sites(sites, excluded, paths) == ['src/sibling.ts']
+
+# Naming it as excluded reconciles.
+assert module.reconcile_plan_sites(sites, {'src/sibling.ts'}, paths) == []
+
+# Excluding something the search never found is itself a defect.
+try:
+    module.reconcile_plan_sites(sites, {'src/ghost.ts'}, paths)
+except ValueError as error:
+    assert 'excludes a path the search did not find' in str(error), str(error)
+else:
+    raise AssertionError('an exclusion of a non-hit was accepted')
+
+# An Excluded field parses to its paths and drops the reason prose after " - ".
+assert module.plan_excluded_paths('') == set()
+assert module.plan_excluded_paths(
+    '`src/sibling.ts` - a different rule owns it, ./tests/value.test.ts - the test itself'
+) == {'src/sibling.ts', 'tests/value.test.ts'}
+
+# The refusal has to reach preparation, not only the helper: a cluster whose search finds a
+# path it neither fixes nor excludes publishes nothing.
+contract = {'engine': 'grep-bre', 'domain': 'grep-complete-worktree', 'pattern': 'needle'}
+with tempfile.TemporaryDirectory(prefix='plan-reconcile-') as tmp:
+    class Repo:
+        session = pathlib.Path(tmp)
+        env = dict(os.environ)
+
+        @staticmethod
+        def materialize_regular(tree, destination, paths=None):
+            (destination / 'src').mkdir(parents=True, exist_ok=True)
+            (destination / 'src/service.ts').write_text('needle\n')
+            (destination / 'src/sibling.ts').write_text('needle\n')
+
+    cluster = {'id': 'C-01', 'search_contract': contract,
+               'paths': [{'path': 'src/service.ts', 'field': 'sites'}]}
+    try:
+        module.prepare_plan_searches(Repo(), 'snapshot', [cluster], 'r1x')
+    except ValueError as error:
+        assert str(error) == ('plan search found a site the cluster neither fixes nor '
+                              'excludes: src/sibling.ts'), str(error)
+    else:
+        raise AssertionError('an unreconciled search hit was prepared')
+    prepared, _ = module.prepare_plan_searches(
+        Repo(), 'snapshot', [dict(cluster, excluded=['src/sibling.ts'])], 'r1x')
+    assert prepared[0]['search_proof']['paths'] == [
+        'src/service.ts', 'src/sibling.ts'], prepared
+PY
+  assert_eq "plan search reconciles hits against sites and exclusions" "$?" 0
 }
