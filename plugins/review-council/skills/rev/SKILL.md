@@ -720,7 +720,8 @@ Prediction before the fix exists and watch it fail, once per cluster's Predictio
 not once for the round. Record the observed failure line in fix-plan.md beside the
 Prediction it belongs to: a failure whose message does not match the Prediction is a
 STOP, not a note, because a test that fails for an unrelated reason proves nothing
-about the defect. Implement `fix-plan.md` **one cluster per commit**, P0 clusters
+about the defect. Implement `fix-plan.md` **one cluster per commit** (the commit
+itself happens later, in the Commit phase below, not here in Fix), P0 clusters
 first: every enumerated site, arm, realm and copy in the same commit. A fix that
 covers the cited instance and leaves a listed sibling is not done - it is next
 round's finding. Within a cluster, P3 only when trivial and safe. Match the
