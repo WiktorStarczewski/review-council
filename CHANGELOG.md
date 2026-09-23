@@ -26,6 +26,8 @@
 - On one 14-file pull request this cleared one of the two hard audit failures seen across six
   codex launches. The other was that 1 MB search.
 
+## 0.5.0
+
 - A fix plan now has to say which test fails without it, and the loop has to watch that happen.
   `Prediction` joins `Findings`, `Rule` and `Sites` as a required plan-cluster field, naming the
   test, the arm and the assertion or message that fails today. The Fix step then runs that test
