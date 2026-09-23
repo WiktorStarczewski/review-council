@@ -20,12 +20,20 @@ SEARCH_RESULTS = 80
 SEARCH_RESULT_SENTINEL = SEARCH_RESULTS + 1
 OUTPUT_BYTES = 32 * 1024
 PATCH_TURN_OUTPUT_BYTES = 60 * 1024
-ADVISORY_CODES = {
+# Pacing codes count byte-proved reads after the fact and never withdraw credit from them.
+PACING_CODES = {
+    'patch-chunk-batch-too-large', 'required-source-segment-batch-too-large',
+    'evidence-proof-batch-too-large', 'source-packet-batch-too-large',
+}
+ADVISORY_CODES = PACING_CODES | {
     'discovery-output-too-large', 'duplicate-patch-chunk', 'duplicate-required-source-segment',
     'evidence-read-order',
     'missing-evidence-index', 'repository-expansion-call-limit',
     'redundant-assigned-patch-read', 'source-output-mismatch', 'unbounded-shell-output',
     'unsupported-source-range',
+    'tool-output-too-large', 'tool-turn-output-too-large', 'unbounded-read', 'unbounded-search',
+    'unsupported-source-batch', 'source-batch-lines-too-large', 'overlapping-source-batch',
+    'source-batch-output-mismatch',
 }
 CLAUDE_EMPTY_READ = '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>'
 READ_TOOLS = {'read', 'read_file'}
@@ -743,8 +751,8 @@ def direct_source_range(name, data, root, cache=None, session=None):
     offset = next((data[key] for key in ('offset', 'start_line', 'line_start') if key in data), None)
     limit = next((data[key] for key in ('limit', 'line_limit', 'max_lines') if key in data), None)
     try:
-        return canonical_range(target, int(offset), int(offset) + int(limit) - 1, root,
-                               cache=cache)
+        return canonical_range(target, int(offset), int(offset) + min(int(limit), READ_LINES) - 1,
+                               root, cache=cache)
     except (TypeError, ValueError):
         return None
 
@@ -898,6 +906,11 @@ def shell_violations(command, roots, root, session, authorized=None, complete=No
                      dependency=None, adapter=None, allow_source_batch=False):
     tool = 'Bash'
     command = unwrap_shell(command)
+    # A refused program must never hide behind a shape code, several of which are advisories.
+    try:
+        READONLY_POLICY.validate(command, allow_source_batch=True)
+    except Exception:
+        return [violation('unsupported-shell-command', tool)]
     if contains_unquoted(command, '<'):
         return [violation('unsupported-shell-input-redirection', tool)]
     try:
@@ -1975,6 +1988,21 @@ def post_hook(args):
 
 
 def audit(args):
+    # A call raising any violation but a pacing count earns no credit. Credit granted before its
+    # violation surfaced (an oversized turn is judged last) is revoked by assessing again.
+    blocked = set()
+    while True:
+        result, unique, revoked = assess(args, blocked)
+        if not revoked:
+            break
+        blocked |= revoked
+    publish(args.out, result)
+    return 2 if unique else 0
+
+
+def assess(args, blocked):
+    blocked = set(blocked)
+    credited = set()
     root = Path(args.root).resolve()
     session = Path(args.session).resolve()
     prompt = Path(args.prompt).resolve()
@@ -1993,6 +2021,11 @@ def audit(args):
     roots = allowed_roots(root, session, args.deps)
     source_cache = {}
     failures = []
+
+    def flag(call_id, code, tool):
+        failures.append(violation(code, tool))
+        blocked.add(call_id)
+
     if not prompt_lines:
         failures.append(violation('missing-prompt', args.adapter))
     evidence_scoped, declared_manifest_hash = evidence_manifest_declaration(prompt_lines)
@@ -2085,23 +2118,24 @@ def audit(args):
     verified_call_ranges = {}
     pending_source_ranges = []
     for call_id, (name, data, turn) in calls.items():
-        failures.extend(validate_call(
-            name, data, roots, root, session, authorized, complete_paths, source_cache,
-            dependency, args.adapter, source_batch_enabled))
+        for item in validate_call(
+                name, data, roots, root, session, authorized, complete_paths, source_cache,
+                dependency, args.adapter, source_batch_enabled):
+            flag(call_id, item['code'], item['tool'])
         if name.lower() in RECOGNIZED_TOOLS:
             recognized_tool_calls += 1
         if call_id not in outputs:
-            failures.append(violation('missing-tool-output', name))
+            flag(call_id, 'missing-tool-output', name)
             continue
         output = outputs[call_id]
         size = output['bytes']
         turn_sizes[turn] = turn_sizes.get(turn, 0) + size
         if size > OUTPUT_BYTES and not byte_exempt(name, data, root, session, complete_paths):
-            failures.append(violation('tool-output-too-large', name))
+            flag(call_id, 'tool-output-too-large', name)
         if not output['success']:
             continue
         if too_many_results(name, data, output['value']):
-            failures.append(violation('discovery-output-too-large', name))
+            flag(call_id, 'discovery-output-too-large', name)
         call_ranges = []
         try:
             direct = direct_source_range(name, data, root, source_cache, session)
@@ -2112,9 +2146,9 @@ def audit(args):
                     data.get('command', ''), root, source_cache, session)
                 call_ranges.extend(shell_ranges)
                 if unparseable:
-                    failures.append(violation('unsupported-source-range', name))
+                    flag(call_id, 'unsupported-source-range', name)
         except (OSError, TypeError, ValueError):
-            failures.append(violation('unsupported-source-range', name))
+            flag(call_id, 'unsupported-source-range', name)
         if call_ranges:
             pending_source_ranges.append((call_id, name, output['value'], call_ranges))
             if source_batch_enabled and name.lower() in SHELL_TOOLS and len(call_ranges) > 1:
@@ -2173,6 +2207,8 @@ def audit(args):
             frozen_entries = {}
     snapshot_tree = manifest.get('snapshot_tree') if manifest is not None else None
     for call_id, name, value, call_ranges in pending_source_ranges:
+        if call_id in blocked:
+            continue
         expected_values = []
         trees = frozen_entries
         if any('tree' in row for row in call_ranges):
@@ -2187,7 +2223,7 @@ def audit(args):
             except (OSError, ValueError):
                 call_ranges = None
             if call_ranges is None:
-                failures.append(violation('source-output-mismatch', name))
+                flag(call_id, 'source-output-mismatch', name)
                 continue
             if not call_ranges:
                 continue
@@ -2214,14 +2250,14 @@ def audit(args):
                           for expected in expected_values)
         except (OSError, UnicodeError, ValueError):
             matched = False
-        if matched:
+        if not matched:
+            flag(call_id, 'source-batch-output-mismatch' if call_id in source_batch_call_ids
+                 else 'source-output-mismatch', name)
+        else:
+            credited.add(call_id)
             source_read_call_ids.add(call_id)
             verified_call_ranges[call_id] = call_ranges
             tool_ranges.extend(call_ranges)
-        else:
-            failures.append(violation(
-                'source-batch-output-mismatch' if call_id in source_batch_call_ids
-                else 'source-output-mismatch', name))
 
     packet_ranges = []
     packet_bytes = 0
@@ -2238,9 +2274,13 @@ def audit(args):
     expected_patch_chunks = 0
     opened_patch_chunks = 0
     exact_patch_chunk_calls = set()
-    exact_source_packet_calls = set()
     exact_evidence_index_calls = set()
     required_segment_calls = []
+    # Byte-proved ordered reads, credited or not: pacing and the proof-turn exemption count these.
+    paced_chunk_calls = []
+    paced_packet_calls = set()
+    paced_index_calls = set()
+    paced_segment_calls = []
     required_source_ranges = []
     required_source_role = None
     required_source_range_proofs = []
@@ -2273,7 +2313,10 @@ def audit(args):
                         and delivered_matches(
                             args.adapter, name, output['value'], evidence_index,
                             1, file_line_count(evidence_index))):
-                    exact_evidence_index_calls.add(call_id)
+                    paced_index_calls.add(call_id)
+                    if call_id not in blocked:
+                        credited.add(call_id)
+                        exact_evidence_index_calls.add(call_id)
             if not exact_evidence_index_calls:
                 failures.append(violation('missing-evidence-index', args.adapter))
             opened_packets = set()
@@ -2286,18 +2329,20 @@ def audit(args):
                 for path in paths_opened_by_call(name, data, root):
                     if SOURCE_PACKET_NAME.fullmatch(path.name) and path.parent == session:
                         if path not in assigned_paths:
-                            failures.append(violation('unassigned-source-packet', name))
+                            flag(call_id, 'unassigned-source-packet', name)
                         else:
                             complete = complete_packet_read(name, data, path, root)
                             exact_output = complete and delivered_matches(
                                 args.adapter, name, output['value'], path, 1, file_line_count(path))
                             if not complete:
-                                failures.append(violation('partial-source-packet', name))
+                                flag(call_id, 'partial-source-packet', name)
                             if complete and not exact_output:
-                                failures.append(violation('source-packet-output-mismatch', name))
+                                flag(call_id, 'source-packet-output-mismatch', name)
                             if exact_output:
+                                paced_packet_calls.add(call_id)
+                            if exact_output and call_id not in blocked:
+                                credited.add(call_id)
                                 opened_packets.add(path)
-                                exact_source_packet_calls.add(call_id)
             for path in assigned_paths:
                 if path not in opened_packets:
                     failures.append(violation('missing-source-packet', args.adapter))
@@ -2309,7 +2354,7 @@ def audit(args):
                     packet_ranges.append({'path': row['path'], 'line_start': row['line_start'],
                                           'line_end': row['line_end'], 'origin': 'packet'})
             failures.extend(turn_batch_violations(
-                calls, exact_source_packet_calls,
+                calls, paced_packet_calls,
                 manifest['source_context']['packet_batch_limit'],
                 'source-packet-batch-too-large', args.adapter))
 
@@ -2341,13 +2386,13 @@ def audit(args):
                     for path in opened:
                         if path.parent == session and PATCH_CHUNK_NAME.fullmatch(path.name):
                             if path not in chunk_by_path:
-                                failures.append(violation('unassigned-patch-chunk', name))
+                                flag(call_id, 'unassigned-patch-chunk', name)
                                 continue
                             duplicate = path in seen_chunk_paths
                             row = chunk_by_path[path]
                             complete = complete_packet_read(name, data, path, root)
                             if not complete:
-                                failures.append(violation('partial-patch-chunk', name))
+                                flag(call_id, 'partial-patch-chunk', name)
                                 continue
                             try:
                                 metadata = path.lstat()
@@ -2356,15 +2401,19 @@ def audit(args):
                             except OSError:
                                 safe = False
                             if not safe:
-                                failures.append(violation('redirected-patch-chunk', name))
+                                flag(call_id, 'redirected-patch-chunk', name)
                                 continue
                             if not delivered_matches_bytes(
                                     args.adapter, name, output['value'], path.read_bytes(), 1):
-                                failures.append(violation('assigned-patch-output-mismatch', name))
+                                flag(call_id, 'assigned-patch-output-mismatch', name)
                                 continue
                             if duplicate:
-                                failures.append(violation('duplicate-patch-chunk', name))
+                                flag(call_id, 'duplicate-patch-chunk', name)
                                 continue
+                            paced_chunk_calls.append((call_id, turn))
+                            if call_id in blocked:
+                                continue
+                            credited.add(call_id)
                             seen_chunk_paths.add(path)
                             observed.append(row['index'])
                             exact_calls.append((call_id, turn, output['bytes']))
@@ -2380,8 +2429,8 @@ def audit(args):
                 patch_proof_visible_bytes = sum(size for _, _, size in exact_calls)
                 opened_patch_chunks = len(observed)
                 batch_limit = adapter_read_batch_limit
-                for turn in {turn for _, turn, _ in exact_calls}:
-                    if sum(call_turn == turn for _, call_turn, _ in exact_calls) > batch_limit:
+                for turn in {turn for _, turn in paced_chunk_calls}:
+                    if sum(call_turn == turn for _, call_turn in paced_chunk_calls) > batch_limit:
                         failures.append(violation('patch-chunk-batch-too-large', args.adapter))
             else:
                 verified_patch_ranges = []
@@ -2394,23 +2443,24 @@ def audit(args):
                     requested = assigned_patch_ranges_for_call(
                         name, data, assigned_patch, root, assigned_patch_lines)
                     if len(requested) > 1:
-                        failures.append(violation('ambiguous-assigned-patch-read', name))
+                        flag(call_id, 'ambiguous-assigned-patch-read', name)
                         continue
                     for start, end in requested:
                         if end < start and ranges_cover_file(
                                 verified_patch_ranges, assigned_patch_lines):
-                            failures.append(violation('redundant-assigned-patch-read', name))
+                            flag(call_id, 'redundant-assigned-patch-read', name)
                             continue
                         expected_patch = byte_range_lines(assigned_patch_line_index, start, end)
-                        if delivered_matches_bytes(
+                        if not delivered_matches_bytes(
                                 args.adapter, name, output['value'], expected_patch, start):
+                            flag(call_id, 'assigned-patch-output-mismatch', name)
+                        elif call_id not in blocked:
+                            credited.add(call_id)
                             assigned_patch_reads += 1
                             verified_patch_ranges.append((start, end))
                             proof_call_ids.add(call_id)
                             proof_turns.add(turn)
                             patch_proof_visible_bytes += output['bytes']
-                        else:
-                            failures.append(violation('assigned-patch-output-mismatch', name))
                 if not ranges_cover_file(verified_patch_ranges, assigned_patch_lines):
                     failures.append(violation('missing-assigned-patch-range', args.adapter))
                 elif not ranges_cover_file_in_order(verified_patch_ranges, assigned_patch_lines):
@@ -2435,13 +2485,13 @@ def audit(args):
                         continue
                     assigned_segment = required_segment_paths.get(path)
                     if assigned_segment is None:
-                        failures.append(violation('unassigned-required-source-segment', name))
+                        flag(call_id, 'unassigned-required-source-segment', name)
                         continue
                     required_index, required, segment = assigned_segment
                     identity = (required_index, segment['index'])
                     duplicate = identity in seen_required_segments
                     if not complete_packet_read(name, data, path, root):
-                        failures.append(violation('partial-required-source-segment', name))
+                        flag(call_id, 'partial-required-source-segment', name)
                         continue
                     try:
                         metadata = path.lstat()
@@ -2452,16 +2502,20 @@ def audit(args):
                         safe = False
                         raw = b''
                     if not safe:
-                        failures.append(violation('redirected-required-source-segment', name))
+                        flag(call_id, 'redirected-required-source-segment', name)
                         continue
                     if (hashlib.sha256(raw).hexdigest() != segment['content_sha256']
                             or not delivered_matches_bytes(
                                 args.adapter, name, output['value'], raw, 1)):
-                        failures.append(violation('required-source-output-mismatch', name))
+                        flag(call_id, 'required-source-output-mismatch', name)
                         continue
                     if duplicate:
-                        failures.append(violation('duplicate-required-source-segment', name))
+                        flag(call_id, 'duplicate-required-source-segment', name)
                         continue
+                    paced_segment_calls.append((call_id, turn))
+                    if call_id in blocked:
+                        continue
+                    credited.add(call_id)
                     seen_required_segments.add(identity)
                     observed_by_required[required_index].append(segment['index'])
                     observed_required_segments.append(identity)
@@ -2503,8 +2557,8 @@ def audit(args):
             if observed_required_segments != sorted(observed_required_segments):
                 failures.append(violation('reordered-required-source-segments', args.adapter))
             source_segment_batch_limit = adapter_read_batch_limit
-            for turn in {turn for _, turn in required_segment_calls}:
-                if (sum(call_turn == turn for _, call_turn in required_segment_calls)
+            for turn in {turn for _, turn in paced_segment_calls}:
+                if (sum(call_turn == turn for _, call_turn in paced_segment_calls)
                         > source_segment_batch_limit):
                     failures.append(violation('required-source-segment-batch-too-large', args.adapter))
             order_patch_calls = exact_patch_chunk_calls if patch_proof_mode == 'chunks' \
@@ -2524,9 +2578,9 @@ def audit(args):
             ]
             if len(expansion_calls) > REPOSITORY_EXPANSION_CALL_LIMIT:
                 failures.append(violation('repository-expansion-call-limit', args.adapter))
-            ordered_proof_calls = (exact_patch_chunk_calls
-                                   | {call_id for call_id, _ in required_segment_calls}
-                                   | exact_evidence_index_calls)
+            ordered_proof_calls = ({call_id for call_id, _ in paced_chunk_calls}
+                                   | {call_id for call_id, _ in paced_segment_calls}
+                                   | paced_index_calls)
             for turn in turns:
                 proof_reads = [call_id for call_id in turns[turn]
                                if call_id in ordered_proof_calls]
@@ -2554,12 +2608,13 @@ def audit(args):
             root, session, complete_paths))
         proof_exempt = ordered_proof_turn_exempt(
             adapter_read_batch_limit, output_calls,
-            exact_patch_chunk_calls
-            | {call_id for call_id, _ in required_segment_calls}
-            | exact_evidence_index_calls,
+            {call_id for call_id, _ in paced_chunk_calls}
+            | {call_id for call_id, _ in paced_segment_calls}
+            | paced_index_calls,
             size)
         if not ordinary_exempt and not proof_exempt:
             failures.append(violation('tool-turn-output-too-large', args.adapter))
+            blocked.update(turns.get(turn, []))
 
     source_ranges = []
     for row in [*packet_ranges, *tool_ranges]:
@@ -2583,7 +2638,7 @@ def audit(args):
             searches = []
             for call_id, (name, data, _) in calls.items():
                 output = outputs.get(call_id)
-                if output is None or not output['success']:
+                if output is None or not output['success'] or call_id in blocked:
                     continue
                 result_text = output_text(output['value'])
                 if result_text is None or len(split_lf_text(result_text)) > SEARCH_RESULTS:
@@ -2607,6 +2662,7 @@ def audit(args):
                         failures.append(violation('missing-plan-cluster-search', args.adapter))
                     else:
                         call_id, result_hash = matches[0]
+                        credited.add(call_id)
                         plan_cluster_search_proofs.append({
                             'cluster': cluster['id'], 'search_contract': cluster['search_contract'],
                             'call_id': call_id, 'output_sha256': result_hash})
@@ -2707,8 +2763,7 @@ def audit(args):
         'finding_citations': finding_citations,
         'source_ranges': source_ranges,
     }
-    publish(args.out, result)
-    return 2 if unique else 0
+    return result, unique, blocked & credited
 
 
 def main():

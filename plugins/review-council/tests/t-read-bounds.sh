@@ -1063,6 +1063,26 @@ required = context['required_source_ranges'][0]
 segments = required['segments']
 if not complete:
     segments = segments[:-1]
+def turn(*calls):
+    for call_id, command_text, _ in calls:
+        events.append({'type':'item.started','item':{'id':call_id,'type':'command_execution','command':command_text}})
+    for call_id, command_text, output in calls:
+        events.append({'type':'item.completed','item':{'id':call_id,'type':'command_execution','command':command_text,
+                                                       'aggregated_output':output,'exit_code':0}})
+if mode in ('sibling', 'paced', 'paced-altered'):
+    # Severity: the first segment shares its turn with an oversized prompt read, or the first two
+    # segments share one turn past the Codex batch limit of one.
+    first, second = segments[0], segments[1]
+    calls = [('source-' + str(row['index']), "cat '" + str(session / row['artifact']) + "'",
+              (session / row['artifact']).read_text()) for row in (first, second)]
+    if mode == 'paced-altered':
+        calls[1] = calls[1][:2] + (('X' if calls[1][2][:1] != 'X' else 'Y') + calls[1][2][1:],)
+    if mode == 'sibling':
+        turn(calls[0], ('oversized', "cat -- '" + str(session / 'r9-sol.prompt.md') + "'", 'z' * (33 * 1024)))
+        turn(calls[1])
+    else:
+        turn(*calls)
+    segments = segments[2:]
 for position, segment in enumerate(segments):
     path = session / segment['artifact']
     output = path.read_text()
@@ -1116,6 +1136,20 @@ PY
       '^Required source segment [0-9]+/[0-9]+: run cat -- .*-source-segment-[0-9]{3}-[0-9]{3}\.txt '
     assert_nogrep "Codex prompt exposes no detached Git repository command" "$prompt" \
       'git --git-dir=|evidence-repository'
+
+    local severity_mode severity_want
+    while IFS='|' read -r severity_mode severity_want; do
+      write_required_transcript "$severity_mode"
+      python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+        --raw "$S/r9-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
+        --out "$S/r9-sol.read-audit.json" >/dev/null 2>&1
+      assert_eq "$severity_mode required segments follow the credit rule" \
+        "$(severity_verdict "$S/r9-sol.read-audit.json")" "$(printf '%s\n' ${severity_want//;/ })"
+    done <<'CASES'
+sibling|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,tool-output-too-large@command_execution,tool-turn-output-too-large@codex;advisories=-
+paced|valid;violations=-;advisories=evidence-proof-batch-too-large@codex,required-source-segment-batch-too-large@codex
+paced-altered|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,required-source-output-mismatch@command_execution;advisories=-
+CASES
 
     write_required_transcript live-window
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
@@ -2682,15 +2716,15 @@ test_codex_snapshot_tree_reads_are_audited_source() {
 
     pinned_read_transcript "$(cat "$S/fixture.manifest")" "$S/r$label-$seat.stream.ndjson" "$R" "$base" oversized
     pinned_read_audit "$R" "$S" "$label" "$seat"
-    assert_eq "an oversized unbounded snapshot-tree read fails the audit" "$?" 2
+    assert_eq "an oversized unbounded snapshot-tree read beside complete proof passes" "$?" 0
     summary=$(pinned_read_summary "$S/r$label-$seat.read-audit.json")
-    assert_eq "an oversized unbounded snapshot-tree read is a hard byte failure" "$summary" \
-      "$(printf '%s\n' 'tool-output-too-large tool-turn-output-too-large unbounded-shell-output' \
-        'advisories=-' 'ranges=src/asset.rs:1-45 src/types.ts:1-5')"
+    assert_eq "an oversized unbounded snapshot-tree read is an advisory that earns no range" "$summary" \
+      "$(printf '%s\n' - 'advisories=tool-output-too-large tool-turn-output-too-large unbounded-shell-output' \
+        'ranges=src/asset.rs:1-45 src/types.ts:1-5')"
   )
 }
 
-test_codex_line_bounded_minified_search_stays_fatal() {
+test_codex_line_bounded_minified_search_is_an_advisory() {
   ( local R="$T/minified-search-root" S="$T/minified-search-session" label=22 seat base summary
     pinned_read_fixture "$R" "$S" "$label" || return
     seat=$(cat "$S/fixture.seat"); base=$(cat "$S/fixture.base")
@@ -2698,11 +2732,11 @@ test_codex_line_bounded_minified_search_stays_fatal() {
       > "$S/r$label-$seat.json"
     pinned_read_transcript "$(cat "$S/fixture.manifest")" "$S/r$label-$seat.stream.ndjson" "$R" "$base" minified-search
     pinned_read_audit "$R" "$S" "$label" "$seat"
-    assert_eq "a line-bounded search returning 45 KiB fails the audit" "$?" 2
+    assert_eq "a line-bounded search returning 45 KiB beside complete proof passes" "$?" 0
     summary=$(pinned_read_summary "$S/r$label-$seat.read-audit.json")
-    assert_eq "only the byte ceilings fail, and the base read adds no range" "$summary" \
-      "$(printf '%s\n' 'tool-output-too-large tool-turn-output-too-large' \
-        'advisories=-' 'ranges=src/asset.rs:1-45 src/types.ts:1-5')"
+    assert_eq "the byte ceilings are advisories, and the base read adds no range" "$summary" \
+      "$(printf '%s\n' - 'advisories=tool-output-too-large tool-turn-output-too-large' \
+        'ranges=src/asset.rs:1-45 src/types.ts:1-5')"
   )
 }
 
@@ -2774,4 +2808,444 @@ raise SystemExit(1 if failed else 0)
 PY
     assert_eq "only a limiter reading the pipe from a full oid and a relative path is a pinned read" "$?" 0
   )
+}
+
+# Audit severity: conduct codes are advisories that earn no credit (docs/audit-severity-2026-09-23.md).
+# One repository serves every label: 31 is window mode with codex source batching, 32 adds
+# source-context packets, and 33 is chunk mode. Seat sol owns the full scope in each.
+severity_fixture() {
+  local R=$1 S=$2 base label
+  mkrepo "$R"; mkdir -p "$R/src" "$S"
+  python3 - "$R" <<'PY' || return
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+(root / 'src/wide.rs').write_text(''.join(f'pub const W{i:03d}: &str = "{"w" * 120}";\n' for i in range(300)))
+(root / 'src/small.rs').write_text(''.join(f'pub const S{i}: u8 = {i};\n' for i in range(8)))
+PY
+  git -C "$R" add . && git -C "$R" commit -qm base || return
+  base=$(git -C "$R" rev-parse HEAD)
+  python3 - "$R" <<'PY' || return
+import sys
+from pathlib import Path
+root = Path(sys.argv[1]); wide = root / 'src/wide.rs'
+wide.write_text(wide.read_text().replace('W150: &str = "w', 'W150: &str = "v'))
+(root / 'src/lines.txt').write_text(''.join(f'l{i % 10}\n' for i in range(2100)))
+PY
+  git -C "$R" add . && git -C "$R" commit -qm head || return
+  printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+    "$base" "$R" > "$S/scope.env"
+  printf 'src/lines.txt\nsrc/wide.rs\n' > "$S/files.txt"; : > "$S/untracked.txt"
+  printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+  for label in 31 32 33; do
+    local context=0 chunks=0 manifest bundle
+    [ "$label" != 32 ] || context=1
+    [ "$label" != 33 ] || chunks=1
+    manifest=$(REV_SOURCE_CONTEXT=$context REV_PATCH_CHUNKS=$chunks \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$S" "$label" --phase discovery) || return
+    bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"]["sol"]["bundle"])' "$manifest") || return
+    REV_CODEX_SOURCE_BATCH=1 "$SCRIPTS/rev-prompt.sh" "$S" "$label" sol "$bundle" severity \
+      --evidence "$manifest" > /dev/null || return
+  done
+}
+
+# severity_transcript <session> <label> <adapter> <spec-json>: writes r<label>-sol.stream.ndjson.
+# The prefix proves the assigned patch (windows or chunks), every packet and the evidence index,
+# one call per turn. `sibling` puts an oversized prompt read in the same turn as one prefix call;
+# `batch_chunks` reads those chunks in one turn and `alter_chunk` changes one chunk's delivered
+# bytes. `tail` is a list of turns; a call is {"cmd","out"}, {"cmd","out_lines":[path,start,end]},
+# {"sed":[path,start,end],"tamper"}, {"batch":[[path,start,end],...],"tamper"}, {"oversized":true}
+# or, for gemini, {"tool","input","out"} and {"read":[path,offset,limit]}.
+severity_transcript() {
+  python3 - "$@" <<'PY'
+import json, pathlib, shlex, sys
+session, label, adapter, spec = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3], json.loads(sys.argv[4])
+manifest = json.load(open(session / f'r{label}-evidence.manifest.json'))
+root = None
+for line in (session / 'scope.env').read_text().splitlines():
+    if line.startswith('REV_ROOT='):
+        root = pathlib.Path(shlex.split(line.split('=', 1)[1])[0])
+prompt = session / f'r{label}-sol.prompt.md'
+assignment = manifest['assignments']['sol']; context = manifest['source_context']['seats']['sol']
+counter = [0]
+def lines_of(path, start, end):
+    return ''.join(pathlib.Path(path).read_text().splitlines(keepends=True)[start - 1:end])
+def build(call):
+    counter[0] += 1; identity = f'c{counter[0]}'
+    if 'oversized' in call:
+        if adapter == 'codex':
+            return identity, 'command_execution', {'command': 'cat -- ' + shlex.quote(str(prompt))}, 'z' * (33 * 1024) + '\n'
+        return identity, 'read_file', {'path': str(prompt)}, 'z' * (33 * 1024) + '\n'
+    if 'sed' in call:
+        path, start, end = call['sed']
+        output = lines_of(root / path if not path.startswith('/') else path, start, end)
+        if call.get('tamper'):
+            output = output.replace('w', 'q', 1) if 'w' in output else 'q' + output
+        return identity, 'command_execution', {'command': f"sed -n '{start},{end}p' {shlex.quote(path)}"}, output
+    if 'batch' in call:
+        output = ''.join(lines_of(root / path, start, end) for path, start, end in call['batch'])
+        if call.get('tamper'):
+            output = 'q' + output
+        command = '; '.join(f"sed -n '{start},{end}p' {path}" for path, start, end in call['batch'])
+        return identity, 'command_execution', {'command': command}, output
+    if 'out_lines' in call:
+        path, start, end = call['out_lines']
+        return identity, 'command_execution', {'command': call['cmd']}, lines_of(root / path, start, end)
+    if 'read' in call:
+        path, offset, limit = call['read']
+        return identity, 'read_file', {'path': path, 'offset': offset, 'limit': limit}, lines_of(root / path, offset, offset + limit - 1)
+    if 'tool' in call:
+        return identity, call['tool'], call['input'], call['out']
+    return identity, 'command_execution', {'command': call['cmd']}, call['out']
+def artifact(path, altered=False):
+    text = path.read_text()
+    if altered:
+        text = ('X' if text[:1] != 'X' else 'Y') + text[1:]
+    if adapter == 'codex':
+        return {'cmd': 'cat -- ' + shlex.quote(str(path)), 'out': text}
+    return {'tool': 'read_file', 'input': {'path': str(path)}, 'out': text}
+turns = []
+named = {}
+if assignment['patch_read_mode'] == 'chunks':
+    chunks = manifest['patch_sets'][assignment['patch_set']]['chunks']
+    batch = spec.get('batch_chunks', [])
+    for row in chunks:
+        call = artifact(session / row['artifact'], row['index'] == spec.get('alter_chunk'))
+        named['chunk-' + str(row['index'])] = call
+        if row['index'] in batch[1:]:
+            turns[-1].append(call)
+        else:
+            turns.append([call])
+else:
+    patch = pathlib.Path(assignment['patch']); total = len(patch.read_text().splitlines())
+    for start in range(1, total + 1, 240):
+        end = min(total, start + 239)
+        if adapter == 'codex':
+            call = {'cmd': f"sed -n '{start},{end}p' {shlex.quote(str(patch))}", 'out': lines_of(patch, start, end)}
+        else:
+            call = {'tool': 'read_file', 'input': {'path': str(patch), 'offset': start, 'limit': 240},
+                    'out': lines_of(patch, start, end)}
+        named.setdefault('patch', call); turns.append([call])
+for index, shard in enumerate(context['shards'], 1):
+    call = artifact(session / shard['artifact']); named['packet-' + str(index)] = call; turns.append([call])
+named['index'] = artifact(session / f'r{label}-evidence.md'); turns.append([named['index']])
+if spec.get('sibling'):
+    target = named[spec['sibling']]
+    next(turn for turn in turns if any(call is target for call in turn)).append({'oversized': True})
+turns.extend(spec.get('tail', []))
+events = []
+for turn in turns:
+    built = [build(call) for call in turn]
+    for identity, name, data, _ in built:
+        if adapter == 'codex':
+            events.append({'type': 'item.started', 'item': {'id': identity, 'type': 'command_execution', 'command': data['command']}})
+        else:
+            events.append({'type': 'tool_use', 'tool_id': identity, 'tool_name': name, 'parameters': data})
+    for identity, name, data, output in built:
+        if adapter == 'codex':
+            events.append({'type': 'item.completed', 'item': {'id': identity, 'type': 'command_execution', 'command': data['command'], 'aggregated_output': output, 'exit_code': 0}})
+        else:
+            events.append({'type': 'tool_result', 'tool_id': identity, 'status': 'success', 'output': output})
+with open(session / f'r{label}-sol.stream.ndjson', 'w') as stream:
+    stream.write(''.join(json.dumps(event) + '\n' for event in events))
+PY
+}
+
+# severity_audit <root> <session> <label> <adapter> [--deps dir]: audits sol and prints the verdict.
+severity_audit() {
+  local R=$1 S=$2 label=$3 adapter=$4; shift 4
+  python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter "$adapter" \
+    --raw "$S/r$label-sol.stream.ndjson" --prompt "$S/r$label-sol.prompt.md" --root "$R" \
+    --session "$S" --out "$S/r$label-sol.read-audit.json" "$@" >/dev/null 2>&1
+  severity_verdict "$S/r$label-sol.read-audit.json"
+}
+
+# Prints status, then every violation and advisory as sorted code@tool; the audit JSON is parsed.
+severity_verdict() {
+  python3 - "$1" <<'PY'
+import json, sys
+audit = json.load(open(sys.argv[1]))
+rows = lambda key: ','.join(sorted(row['code'] + '@' + row['tool'] for row in audit[key])) or '-'
+print(audit['status']); print('violations=' + rows('violations')); print('advisories=' + rows('advisories'))
+PY
+}
+
+severity_expect() { printf '%s\n' "$1" "violations=$2" "advisories=$3"; }
+
+severity_findings() {
+  local S=$1 label=$2 file=${3:-} start=${4:-} end=${5:-}
+  if [ -z "$file" ]; then
+    printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r$label-sol.json"
+  else
+    printf '{"summary":"one","findings":[{"severity":"P2","file":"%s","line_start":%s,"line_end":%s,"claim":"c","evidence":"e","suggested_fix":"f","confidence":0.9}]}\n' \
+      "$file" "$start" "$end" > "$S/r$label-sol.json"
+  fi
+}
+
+test_audit_severity_size_and_batch_codes() {
+  ( local R="$T/severity-size-root" S="$T/severity-size-session" name adapter violating clean code tool gate
+    severity_fixture "$R" "$S" || return
+    severity_findings "$S" 31
+    local wide_clean='[{"sed":["src/wide.rs",1,20]}]'
+    local read_clean='[{"read":["src/wide.rs",1,20]}]'
+    # name, adapter, violating turn, clean turn, advisory codes (code@tool, comma-separated).
+    while IFS='^' read -r name adapter violating clean code; do
+      [ -n "$name" ] || continue
+      gate="missing-required-source-read@$adapter"
+      severity_transcript "$S" 31 "$adapter" "{\"tail\":[$violating]}"
+      assert_eq "$name as the only read leaves the required read unproven" \
+        "$(severity_audit "$R" "$S" 31 "$adapter")" \
+        "$(severity_expect invalid "$(printf '%s\n' "$gate" ${code//,/ } | sort | paste -sd, -)" -)"
+      severity_transcript "$S" 31 "$adapter" "{\"tail\":[$violating,$clean]}"
+      assert_eq "$name beside a clean read is an advisory" \
+        "$(severity_audit "$R" "$S" 31 "$adapter")" "$(severity_expect valid - "$code")"
+    done <<CASES
+tool-output-too-large^codex^[{"sed":["src/wide.rs",1,240]}]^$wide_clean^tool-output-too-large@command_execution,tool-turn-output-too-large@codex
+tool-turn-output-too-large^codex^[{"sed":["src/wide.rs",1,120]},{"sed":["src/wide.rs",121,240]}]^$wide_clean^tool-turn-output-too-large@codex
+unbounded-read^gemini^[{"read":["src/wide.rs",290,250]}]^$read_clean^unbounded-read@read_file
+unbounded-search^gemini^[{"tool":"search_file_content","input":{"pattern":"W150","path":"src"},"out":"src/wide.rs:151:W150\n"}]^$read_clean^unbounded-search@search_file_content
+unsupported-source-batch^codex^[{"cmd":"sed -n '1,20p' src/wide.rs; rg -n W150 src | head -81","out_lines":["src/wide.rs",1,20]}]^$wide_clean^unsupported-source-batch@Bash
+source-batch-lines-too-large^codex^[{"batch":[["src/lines.txt",1,200],["src/lines.txt",201,241]]}]^$wide_clean^source-batch-lines-too-large@Bash
+overlapping-source-batch^codex^[{"batch":[["src/lines.txt",1,20],["src/lines.txt",10,30]]}]^$wide_clean^overlapping-source-batch@Bash
+source-batch-output-mismatch^codex^[{"batch":[["src/lines.txt",1,20],["src/lines.txt",30,40]],"tamper":true}]^$wide_clean^source-batch-output-mismatch@command_execution
+CASES
+  )
+}
+
+test_audit_severity_credit_on_every_proof_surface() {
+  ( local R="$T/severity-credit-root" S="$T/severity-credit-session"
+    severity_fixture "$R" "$S" || return
+    local clean='[{"sed":["src/wide.rs",1,20]}]'
+    local size='tool-output-too-large@command_execution,tool-turn-output-too-large@codex'
+    for label in 31 32 33; do severity_findings "$S" "$label"; done
+
+    severity_transcript "$S" 31 codex "{\"sibling\":\"patch\",\"tail\":[$clean]}"
+    assert_eq "a patch window in an oversized turn proves no patch range" \
+      "$(severity_audit "$R" "$S" 31 codex)" \
+      "$(severity_expect invalid "missing-assigned-patch-range@codex,$size" -)"
+    severity_transcript "$S" 33 codex "{\"sibling\":\"chunk-2\",\"tail\":[$clean]}"
+    assert_eq "a patch chunk in an oversized turn proves no chunk" \
+      "$(severity_audit "$R" "$S" 33 codex)" \
+      "$(severity_expect invalid "missing-assigned-patch-chunk@codex,$size" -)"
+    severity_transcript "$S" 32 codex "{\"sibling\":\"packet-1\",\"tail\":[$clean]}"
+    assert_eq "a packet in an oversized turn proves no packet" \
+      "$(severity_audit "$R" "$S" 32 codex)" \
+      "$(severity_expect invalid "missing-source-packet@codex,$size" -)"
+    severity_transcript "$S" 31 codex "{\"sibling\":\"index\",\"tail\":[$clean]}"
+    assert_eq "an evidence index in an oversized turn proves no index" \
+      "$(severity_audit "$R" "$S" 31 codex)" \
+      "$(severity_expect valid - "missing-evidence-index@codex,$size")"
+
+    severity_findings "$S" 31 src/wide.rs 200 210
+    severity_transcript "$S" 31 codex "{\"tail\":[[{\"sed\":[\"src/wide.rs\",1,240]}],$clean]}"
+    assert_eq "an oversized read earns no citation" \
+      "$(severity_audit "$R" "$S" 31 codex)" \
+      "$(severity_expect invalid "$size,unsubstantiated-finding-range@codex" -)"
+    severity_transcript "$S" 31 codex "{\"tail\":[[{\"sed\":[\"src/wide.rs\",190,220]}]]}"
+    assert_eq "the same citation is earned by a clean read" \
+      "$(severity_audit "$R" "$S" 31 codex)" "$(severity_expect valid - -)"
+    severity_findings "$S" 31
+
+    severity_transcript "$S" 31 gemini '{"tail":[[{"read":["src/lines.txt",1,2000]}]]}'
+    assert_eq "a 2000-line Read earns no range" \
+      "$(severity_audit "$R" "$S" 31 gemini)" \
+      "$(severity_expect invalid "missing-required-source-read@gemini,unbounded-read@read_file" -)"
+    python3 - "$SCRIPTS/lib/review-read-audit.py" "$R" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
+audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
+root = Path(sys.argv[2]).resolve()
+row = audit.direct_source_range('Read', {'file_path': 'src/lines.txt', 'offset': 1, 'limit': 2000}, root)
+assert (row['line_start'], row['line_end']) == (1, audit.READ_LINES), row
+row = audit.direct_source_range('Read', {'file_path': 'src/lines.txt', 'offset': 5, 'limit': 20}, root)
+assert (row['line_start'], row['line_end']) == (5, 24), row
+PY
+    assert_eq "a direct Read range is capped at READ_LINES" "$?" 0
+  )
+}
+
+test_audit_severity_pacing_keeps_credit() {
+  ( local R="$T/severity-pacing-root" S="$T/severity-pacing-session"
+    severity_fixture "$R" "$S" || return
+    severity_findings "$S" 33
+    local clean='[{"sed":["src/wide.rs",1,20]}]'
+    severity_transcript "$S" 33 codex "{\"batch_chunks\":[1,2],\"tail\":[$clean]}"
+    assert_eq "an over-limit batch of exact chunks keeps its credit" \
+      "$(severity_audit "$R" "$S" 33 codex)" \
+      "$(severity_expect valid - "evidence-proof-batch-too-large@codex,patch-chunk-batch-too-large@codex")"
+    severity_transcript "$S" 33 codex "{\"batch_chunks\":[1,2],\"alter_chunk\":2,\"tail\":[$clean]}"
+    assert_eq "the same batch with an altered chunk is incomplete" \
+      "$(severity_audit "$R" "$S" 33 codex)" \
+      "$(severity_expect invalid "assigned-patch-output-mismatch@command_execution,missing-assigned-patch-chunk@codex" -)"
+  )
+}
+
+test_audit_severity_mixed_codes_are_all_violations() {
+  ( local R="$T/severity-mixed-root" S="$T/severity-mixed-session"
+    severity_fixture "$R" "$S" || return
+    severity_findings "$S" 31
+    severity_transcript "$S" 31 codex "{\"tail\":[[{\"sed\":[\"src/wide.rs\",1,240]}],[{\"cmd\":\"cat -- '$S/r31-terra.prompt.md'\",\"out\":\"x\\n\"}],[{\"sed\":[\"src/wide.rs\",1,20]}]]}"
+    assert_eq "a fatal code turns every advisory into a violation" \
+      "$(severity_audit "$R" "$S" 31 codex)" \
+      "$(severity_expect invalid "tool-output-too-large@command_execution,tool-turn-output-too-large@codex,unnamed-session-artifact@Bash" -)"
+  )
+}
+
+test_audit_severity_refused_programs_win_over_shape() {
+  ( local R="$T/severity-refused-root" S="$T/severity-refused-session" name command extra
+    severity_fixture "$R" "$S" || return
+    severity_findings "$S" 31
+    while IFS='|' read -r name command extra; do
+      severity_transcript "$S" 31 codex "$(python3 -c 'import json,sys; print(json.dumps({"tail":[[{"cmd":sys.argv[1].replace("\\n","\n"),"out":"1\n"}],[{"sed":["src/wide.rs",1,20]}]]}))' "$command")"
+      assert_eq "$name reports the refused program" "$(severity_audit "$R" "$S" 31 codex)" \
+        "$(severity_expect invalid "$(printf '%s\n' unsupported-shell-command@Bash ${extra//,/ } | sort | paste -sd, -)" -)"
+    done <<'CASES'
+python heredoc|python3 - <<'PY'\nprint(1)\nPY|
+unparseable command with an interpreter|cat src/small.rs; python3 -c 'print(1)|unsupported-source-range@command_execution
+batch with python3 -c|sed -n '1,2p' src/small.rs; python3 -c 'print(1)'|
+CASES
+  )
+}
+
+test_audit_severity_independence_stays_fatal() {
+  ( local R="$T/severity-independence-root" S="$T/severity-independence-session" artifact
+    severity_fixture "$R" "$S" || return
+    severity_findings "$S" 31
+    printf '{"summary":"x","findings":[]}\n' > "$S/r31-terra.json"; printf 'ledger\n' > "$S/findings.md"
+    for artifact in r31-terra.json r31-terra.prompt.md findings.md; do
+      severity_transcript "$S" 31 codex "{\"tail\":[[{\"cmd\":\"cat -- '$S/$artifact'\",\"out\":\"x\\n\"}],[{\"sed\":[\"src/wide.rs\",1,20]}]]}"
+      assert_eq "reading $artifact is an independence failure" "$(severity_audit "$R" "$S" 31 codex)" \
+        "$(severity_expect invalid unnamed-session-artifact@Bash -)"
+    done
+  )
+}
+
+test_audit_severity_dependency_root() {
+  ( local R="$T/severity-deps-root" S="$T/severity-deps-session"
+    local deps="$T/cargo-home/registry/src" other="$T/other-home/.cargo/registry/src" crate
+    severity_fixture "$R" "$S" || return
+    severity_findings "$S" 31
+    for crate in "$deps" "$other"; do
+      mkdir -p "$crate/index.crates.io-0/pinned-1.0.0/src"
+      printf 'pub fn pinned() {}\n' > "$crate/index.crates.io-0/pinned-1.0.0/src/lib.rs"
+    done
+    local listing="{\"cmd\":\"ls -d $deps/*/pinned-*\",\"out\":\"$deps/index.crates.io-0/pinned-1.0.0\\n\"}"
+    local read="{\"cmd\":\"sed -n '1,5p' $deps/index.crates.io-0/pinned-1.0.0/src/lib.rs\",\"out\":\"pub fn pinned() {}\\n\"}"
+    severity_transcript "$S" 31 codex "{\"tail\":[[$listing],[$read],[{\"sed\":[\"src/wide.rs\",1,20]}]]}"
+    assert_eq "a listing and a bounded read under REV_DEPS_DIR are in scope" \
+      "$(severity_audit "$R" "$S" 31 codex --deps "$deps")" \
+      "$(severity_expect valid - unbounded-shell-output@Bash)"
+    assert_eq "the same reads without REV_DEPS_DIR are out of scope" \
+      "$(severity_audit "$R" "$S" 31 codex)" \
+      "$(severity_expect invalid path-outside-scope@Bash -)"
+    severity_transcript "$S" 31 codex "{\"tail\":[[${read//$deps/$other}],[{\"sed\":[\"src/wide.rs\",1,20]}]]}"
+    assert_eq "a read under another home's registry is out of scope" \
+      "$(severity_audit "$R" "$S" 31 codex --deps "$deps")" \
+      "$(severity_expect invalid path-outside-scope@Bash -)"
+  )
+}
+
+# Every code the auditor can emit is either advisory or on this documented fatal list.
+test_audit_code_catalog_is_classified() {
+  python3 - "$SCRIPTS/lib/review-read-audit.py" "$SCRIPTS/lib/readonly-bash-guard.py" <<'PY'
+import ast, importlib.util, sys
+FATAL = {
+    # transcript integrity
+    'missing-transcript', 'malformed-transcript', 'unsupported-transcript-shape',
+    'missing-tool-call-id', 'missing-tool-output', 'duplicate-tool-call', 'duplicate-tool-output',
+    'orphan-tool-output', 'invalid-tool-call-shape', 'invalid-hook-payload', 'no-recognized-review-tools',
+    # binding
+    'missing-prompt', 'invalid-prompt-artifact-set', 'invalid-evidence-manifest-declaration',
+    'invalid-assignment-prompt-binding', 'invalid-plan-prompt-binding', 'invalid-plan-evidence',
+    'invalid-plan-first-call', 'invalid-source-context', 'invalid-required-source-identity',
+    'invalid-review-result',
+    # completeness
+    'missing-source-packet', 'partial-source-packet', 'unassigned-source-packet',
+    'source-packet-output-mismatch', 'missing-assigned-patch-chunk', 'partial-patch-chunk',
+    'reordered-patch-chunks', 'redirected-patch-chunk', 'unassigned-patch-chunk',
+    'assigned-patch-output-mismatch', 'missing-assigned-patch-range',
+    'missing-required-source-segment', 'partial-required-source-segment',
+    'reordered-required-source-segments', 'redirected-required-source-segment',
+    'unassigned-required-source-segment', 'required-source-output-mismatch',
+    'missing-required-source-range', 'missing-required-source-read',
+    'missing-plan-cluster-search', 'missing-plan-cluster-source',
+    'unsubstantiated-finding-range', 'invalid-plan-finding-range',
+    # independence and scope
+    'unnamed-session-artifact', 'path-outside-scope', 'unresolved-path-variable',
+    # visibility and safety
+    'unsupported-shell-command', 'unrecognized-review-tool', 'unsupported-shell-input-redirection',
+    'unsupported-shell-shape', 'missing-read-path', 'missing-shell-command',
+    'ambiguous-assigned-patch-read',
+}
+ADVISORY = {
+    'discovery-output-too-large', 'duplicate-patch-chunk', 'duplicate-required-source-segment',
+    'evidence-read-order', 'missing-evidence-index', 'repository-expansion-call-limit',
+    'redundant-assigned-patch-read', 'source-output-mismatch', 'unbounded-shell-output',
+    'unsupported-source-range',
+    'tool-output-too-large', 'tool-turn-output-too-large', 'unbounded-read', 'unbounded-search',
+    'unsupported-source-batch', 'source-batch-lines-too-large', 'overlapping-source-batch',
+    'source-batch-output-mismatch',
+    'patch-chunk-batch-too-large', 'required-source-segment-batch-too-large',
+    'evidence-proof-batch-too-large', 'source-packet-batch-too-large',
+}
+def strings(node):
+    return {item.value for item in ast.walk(node)
+            if isinstance(item, ast.Constant) and isinstance(item.value, str)}
+def callee(node):
+    return node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, 'attr', None)
+emitted, opaque = set(), []
+audit_tree = ast.parse(open(sys.argv[1]).read())
+# A function passing one of its own parameters to violation() forwards the code its callers name.
+forwarders, forwarded = {}, set()
+for function in ast.walk(audit_tree):
+    if not isinstance(function, ast.FunctionDef):
+        continue
+    params = [arg.arg for arg in function.args.args]
+    for call in ast.walk(function):
+        if isinstance(call, ast.Call) and callee(call) == 'violation' and call.args \
+                and isinstance(call.args[0], ast.Name) and call.args[0].id in params:
+            forwarders[function.name] = params.index(call.args[0].id)
+            forwarded.add(call)
+def reforwarded(node):
+    # `error.code` carries a SourceBatchBlocked code; `item['code']` re-emits a violation() row.
+    return (isinstance(node, ast.Attribute) and node.attr == 'code') or (
+        isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant)
+        and node.slice.value == 'code')
+for call in ast.walk(audit_tree):
+    if not isinstance(call, ast.Call):
+        continue
+    name = callee(call)
+    if name == 'violation' and call.args and call not in forwarded:
+        position = 0
+    elif name in forwarders and len(call.args) > forwarders[name]:
+        position = forwarders[name]
+    else:
+        continue
+    code = call.args[position]
+    if isinstance(code, (ast.Constant, ast.IfExp)):
+        emitted |= strings(code)
+    elif not reforwarded(code):
+        opaque.append(ast.unparse(call))
+for call in ast.walk(ast.parse(open(sys.argv[2]).read())):
+    if isinstance(call, ast.Call) and callee(call) == 'SourceBatchBlocked' and call.args:
+        emitted |= strings(call.args[0])
+spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+problems = []
+if opaque:
+    problems.append('violation() with a non-literal code: ' + '; '.join(opaque))
+if module.ADVISORY_CODES != ADVISORY:
+    problems.append('ADVISORY_CODES drifted: +%s -%s' % (
+        sorted(module.ADVISORY_CODES - ADVISORY), sorted(ADVISORY - module.ADVISORY_CODES)))
+if FATAL & ADVISORY:
+    problems.append('classified twice: %s' % sorted(FATAL & ADVISORY))
+if emitted - FATAL - ADVISORY:
+    problems.append('unclassified: %s' % sorted(emitted - FATAL - ADVISORY))
+if (FATAL | ADVISORY) - emitted:
+    problems.append('classified but never emitted: %s' % sorted((FATAL | ADVISORY) - emitted))
+print('\n'.join(problems))
+raise SystemExit(1 if problems else 0)
+PY
+  assert_eq "every emitted audit code is classified exactly once" "$?" 0
 }

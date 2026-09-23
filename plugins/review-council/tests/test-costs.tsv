@@ -181,7 +181,7 @@ t-read-bounds.sh::test_read_transcript_audit_contract	3	normal
 t-read-bounds.sh::test_required_source_range_coverage	3	normal
 t-read-bounds.sh::test_search_helpers_reuse_declared_command_set	3	normal
 t-read-bounds.sh::test_specialist_required_range_uses_session_artifacts	3	normal
-t-read-bounds.sh::test_codex_line_bounded_minified_search_stays_fatal	3	normal
+t-read-bounds.sh::test_codex_line_bounded_minified_search_is_an_advisory	3	normal
 t-read-bounds.sh::test_codex_snapshot_tree_reads_are_audited_source	3	normal
 t-read-bounds.sh::test_shell_comments_are_inert_to_the_read_audit	3	normal
 t-rev-reviewer.sh::test_rev_reviewer	1	normal
@@ -313,3 +313,11 @@ t-skill.sh::test_skill_rev_mutate_precedes_commit	1	normal
 t-mutate.sh::test_mutate_surfaces_what_failed_on_a_pinned_hunk	1	normal
 t-skill.sh::test_skill_states_what_a_prediction_is_read_against	1	normal
 t-plan-evidence.sh::test_code_evidence_records_unenforced_agent_seats	2	normal
+t-read-bounds.sh::test_audit_severity_size_and_batch_codes	3	normal
+t-read-bounds.sh::test_audit_severity_credit_on_every_proof_surface	3	normal
+t-read-bounds.sh::test_audit_severity_pacing_keeps_credit	3	normal
+t-read-bounds.sh::test_audit_severity_mixed_codes_are_all_violations	3	normal
+t-read-bounds.sh::test_audit_severity_refused_programs_win_over_shape	3	normal
+t-read-bounds.sh::test_audit_severity_independence_stays_fatal	3	normal
+t-read-bounds.sh::test_audit_severity_dependency_root	3	normal
+t-read-bounds.sh::test_audit_code_catalog_is_classified	3	normal
