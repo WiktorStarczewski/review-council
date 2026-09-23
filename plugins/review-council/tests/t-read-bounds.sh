@@ -2582,6 +2582,9 @@ if mode in ('fixture-a', 'base-commit', 'base-tree'):
     pinned('refutation',
            "# Refutation question for the Asset-name collision: is the interface aliased?\n"
            "git show {REV}:src/types.ts | sed -n '1,240p'", rev)
+elif mode == 'absent-path':
+    pinned('absent', "git show {REV}:src/absent.rs | sed -n '1,5p'")
+    pinned('refutation', "git show {REV}:src/types.ts | sed -n '1,5p'")
 elif mode == 'foreign-preamble':
     pinned('source', "git show {REV}:src/asset.rs | sed -n '1,45p'")
     command('refutation', "sed -n '1,5p' 'src/types.ts'", run("sed -n '1,5p' 'src/types.ts'"))
@@ -2659,7 +2662,7 @@ test_codex_snapshot_tree_reads_are_audited_source() {
           'advisories=-' 'ranges=')"
     done
 
-    for mode in tampered base-bytes foreign-preamble; do
+    for mode in tampered base-bytes foreign-preamble absent-path; do
       pinned_read_transcript "$(cat "$S/fixture.manifest")" "$S/r$label-$seat.stream.ndjson" "$R" "$base" "$mode"
       pinned_read_audit "$R" "$S" "$label" "$seat"
       assert_eq "$mode snapshot-tree output fails the audit" "$?" 2
