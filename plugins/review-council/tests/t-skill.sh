@@ -283,15 +283,21 @@ test_skill_contract() {
     assert_grep "host rejects incomplete chunk receipts" "$H" \
       '[Mm]issing, reordered, truncated, replaced,'
     assert_grep "host rejects redirected chunk receipts" "$H" \
-      'unassigned, redirected, or oversized chunks'
+      'unassigned, or redirected chunks invalidate the attempt'
+    assert_nogrep "size is not a completeness failure in the host contract" "$H" \
+      'oversized, unassigned, or unparseable|redirected, or oversized chunks'
     assert_grep "host preserves component narrowing in paired baseline" "$H" \
       'same component assignments and patch narrowing'
     assert_grep "host checks narrow read audits before triage" "$H" \
       '[Bb]efore triage or receipt.*read-audit'
     assert_grep "every evidence seat requires a schema 2 read audit" "$H" \
       '[Ee]very evidence-launched seat.*schema 2'
-    assert_grep "budget and choreography audit findings remain advisory" "$H" \
-      '[Rr]ead order.*call count.*output sentinel.*advisories'
+    assert_grep "an invalid read audit is a hard evidence-audit failure" "$H" \
+      "read audit with status .invalid. is a hard evidence-audit failure"
+    assert_grep "advisories stay visible and never earn credit" "$H" \
+      'valid audit may carry advisories: these never discard the review, stay visible in the receipt, and never earn credit'
+    assert_grep "a violating call proves nothing but a pacing count" "$H" \
+      'except a pacing count, proves no range, no patch chunk, packet or segment, and no citation'
     assert_grep "hard audit failure stops before another paid launch" "$H" \
       '[Hh]ard evidence-audit failure.*stop.*without.*paid retry'
     assert_grep "seat-local recovery retains valid completed reviewers" "$H" \
