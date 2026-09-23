@@ -64,16 +64,20 @@ PY
 Findings: F-001 (P1)
 Rule: Apply the helper result exactly once at every service entry.
 Sites: src/service.ts:1-2 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'run(Service|Alias)' .)
+Excluded: src/sibling.ts - runAlias applies no helper result, so the rule cannot reach it
 Must not: Change unrelated exports.
 Test: tests/service.test.ts:1-2
 Interacts with: none.
+Prediction: reverting the guard fails tests/service.test.ts at "service" (assert on runService()), because the doubled helper result changes the return value.
 ## C-02 - keep helper callers visible
 Findings: F-002 (P1)
 Rule: Check every helper caller before changing the helper result.
 Sites: src/helper.ts:1 (found by: grep --exclude-dir=.git --null -r -n -- 'helper' .)
+Excluded: src/service.ts - the service entry caller is owned by C-01
 Must not: Skip callers outside the service entry.
 Test: tests/service.test.ts:1-2
 Interacts with: C-01.
+Prediction: reverting the guard fails tests/service.test.ts at "service" (assert on runService()), because an unchecked caller re-applies the changed helper result.
 EOF
     local plan_hash manifest
     plan_hash=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/fix-plan.md")
@@ -903,7 +907,9 @@ PY
 Findings: F-001
 Rule: Keep value stable.
 Sites: src/value.ts:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'value' .)
+Excluded: two/value.test.ts - a duplicate-basename fixture the rule never reaches
 Test: value.test.ts:1
+Prediction: reverting the guard fails the value test at its assertion on the exported constant, because it reads the mutated value.
 EOF
     local hash; hash=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/fix-plan.md")
     local args=(--phase plan --plan "$S/fix-plan.md" --plan-sha256 "$hash" --full-seat sol
@@ -972,9 +978,10 @@ PYEDIT
     assert_eq "the forged unenforced list fails validation" "$forged" 2
     assert_grep "the refusal names the derived mismatch" \
       "$T/plan-forged.err" 'unenforced_seats does not match the roster'
-    assert_eq "a non-plan phase never marks an agent seat unenforced" \
-      "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["unenforced_seats"]))' "$S/r3-evidence.manifest.json" 2>/dev/null || echo 0)" \
-      0
+    # A code panel now records its agent rows too, and that inverse is pinned, non-vacuously, by
+    # test_code_evidence_records_unenforced_agent_seats. The assertion that stood here read
+    # r3-evidence.manifest.json, which this session never creates, so its `|| echo 0` fallback
+    # answered 0 whatever the contract said.
     printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"},{"seat":"agent-extra","adapter":"agent","extra":true}]}' > "$S/roster.json"
     assert_exit "stale plan hash rejects adaptive plan preparation" 2 \
       python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 4p "${valid_args[@]/$hash/0000000000000000000000000000000000000000000000000000000000000000}"
@@ -986,7 +993,10 @@ PYEDIT
       python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 5p "${valid_args[@]}"
     rm "$S/hardlinked-plan.md"
     printf 'export const value = "-legacy";\n' > "$R/src/value.ts"
-    sed "s/-- 'value' \./-- -legacy ./" "$S/fix-plan.md" > "$S/legacy-pattern-plan.md"
+    # The -legacy pattern matches only src/value.ts, so the value-pattern exclusions would
+    # themselves name paths this search never finds.
+    sed -e "s/-- 'value' \./-- -legacy ./" -e '/^Excluded:/d' "$S/fix-plan.md" \
+      > "$S/legacy-pattern-plan.md"
     hash=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/legacy-pattern-plan.md")
     valid_args=(--phase plan --plan "$S/legacy-pattern-plan.md" --plan-sha256 "$hash" --full-seat sol
       --assignment sol=plan-completeness --assignment terra=plan-soundness
@@ -1028,6 +1038,7 @@ Findings: F-001
 Rule: Preserve the service result.
 Sites: src/service.ts:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'service' .)
 Test: tests/service.test.ts:1-2
+Prediction: reverting the guard fails tests/service.test.ts at "service", because the assertion reads the changed return value.
 EOF
     REV_PATCH_CHUNKS=1 REV_SOURCE_CONTEXT=1 python3 - \
       "$SCRIPTS/rev-evidence.py" "$S" "$R" <<'PY'
@@ -1159,6 +1170,7 @@ Findings: F-001
 Rule: Keep the value stable.
 Sites: src/value.ts:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'value' .)
 Test: tests/value.test.ts:1
+Prediction: reverting the guard fails tests/value.test.ts at its assertion on the exported constant, because it reads the mutated value.
 EOF
     local hash; hash=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/fix-plan.md")
     local args=(--phase plan --plan "$S/fix-plan.md" --plan-sha256 "$hash" --full-seat sol
@@ -1209,7 +1221,7 @@ spec = importlib.util.spec_from_file_location('rev_evidence', sys.argv[1])
 module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 audit_spec = importlib.util.spec_from_file_location('read_audit', sys.argv[2])
 audit = importlib.util.module_from_spec(audit_spec); audit_spec.loader.exec_module(audit)
-raw = b'''## C-01 - build entry\nFindings: F-001\nRule: Keep the build target stable.\nSites: Makefile:1-2, :4-5; tests/value.test.ts:1-3 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'src/(value|fake)\\.ts' .)\nRegression: src/value.ts:1\n'''
+raw = b'''## C-01 - build entry\nFindings: F-001\nRule: Keep the build target stable.\nSites: Makefile:1-2, :4-5; tests/value.test.ts:1-3 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'src/(value|fake)\\.ts' .)\nRegression: src/value.ts:1\nPrediction: reverting the guard fails the value regression at its assertion on the build target, because the target reads the mutated value.\n'''
 clusters = module.parse_plan(raw, {'Makefile', 'tests/value.test.ts', 'src/value.ts'})
 assert clusters[0]['search_pattern'] == r'src/(value|fake)\.ts'
 assert clusters[0]['search_contract'] == {
@@ -1219,7 +1231,7 @@ assert [(row['path'], row['resolution']) for row in clusters[0]['paths']] == [
     ('tests/value.test.ts', 'direct'), ('src/value.ts', 'direct')]
 assert [(row['line_start'], row['line_end']) for row in clusters[0]['paths']] == [
     (1, 2), (4, 5), (1, 3), (1, 1)]
-numeric_search = b'''## C-02 - numeric search regex\nFindings: F-002\nRule: Keep numeric search patterns valid.\nSites: src/value.ts:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'value{2}|code80' .)\nTest: tests/value.test.ts:1\n'''
+numeric_search = b'''## C-02 - numeric search regex\nFindings: F-002\nRule: Keep numeric search patterns valid.\nSites: src/value.ts:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'value{2}|code80' .)\nTest: tests/value.test.ts:1\nPrediction: reverting the guard fails the value test at its assertion on the numeric pattern, because it reads the mutated value.\n'''
 assert module.parse_plan(
     numeric_search, {'src/value.ts', 'tests/value.test.ts'})[0]['search_pattern'] == 'value{2}|code80'
 assert module.plan_search_pattern("x (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- -legacy .)") == '-legacy'
@@ -1241,13 +1253,14 @@ import importlib.util, sys
 spec = importlib.util.spec_from_file_location('rev_evidence', sys.argv[1])
 module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 entries = {'src/value.ts', 'tests/value.test.ts'}
+prediction = 'Prediction: reverting the guard fails the value test at its assertion on the exported constant, because it reads the mutated value.\n'
 bad = [
-    b'''## C-01 - missing search\nFindings: F-001\nRule: Keep value stable.\nSites: src/value.ts:1\nTest: tests/value.test.ts:1\n''',
-    b'''## C-01 - escaping path\nFindings: F-001\nRule: Keep value stable.\nSites: ../src/value.ts:1 (found by: rg -n value .)\nTest: tests/value.test.ts:1\n''',
-    b'''## C-01 - reversed range\nFindings: F-001\nRule: Keep value stable.\nSites: src/value.ts:4-2 (found by: rg -n value .)\nTest: tests/value.test.ts:1\n''',
-    b'''## C-01 - bare range after path\nFindings: F-001\nRule: Keep value stable.\nSites: src/value.ts:1, 4-6 (found by: rg -n value .)\nTest: tests/value.test.ts:1\n''',
-    b'''## C-01 - bare range before path\nFindings: F-001\nRule: Keep value stable.\nSites: 4-6, src/value.ts:1 (found by: rg -n value .)\nTest: tests/value.test.ts:1\n''',
-    b'''## C-01 - missing regression\nFindings: F-001\nRule: Keep value stable.\nSites: src/value.ts:1 (found by: rg -n value .)\n''',
+    b'''## C-01 - missing search\nFindings: F-001\nRule: Keep value stable.\nSites: src/value.ts:1\nTest: tests/value.test.ts:1\n''' + prediction.encode(),
+    b'''## C-01 - escaping path\nFindings: F-001\nRule: Keep value stable.\nSites: ../src/value.ts:1 (found by: rg -n value .)\nTest: tests/value.test.ts:1\n''' + prediction.encode(),
+    b'''## C-01 - reversed range\nFindings: F-001\nRule: Keep value stable.\nSites: src/value.ts:4-2 (found by: rg -n value .)\nTest: tests/value.test.ts:1\n''' + prediction.encode(),
+    b'''## C-01 - bare range after path\nFindings: F-001\nRule: Keep value stable.\nSites: src/value.ts:1, 4-6 (found by: rg -n value .)\nTest: tests/value.test.ts:1\n''' + prediction.encode(),
+    b'''## C-01 - bare range before path\nFindings: F-001\nRule: Keep value stable.\nSites: 4-6, src/value.ts:1 (found by: rg -n value .)\nTest: tests/value.test.ts:1\n''' + prediction.encode(),
+    b'''## C-01 - missing regression\nFindings: F-001\nRule: Keep value stable.\nSites: src/value.ts:1 (found by: rg -n value .)\n''' + prediction.encode(),
 ]
 sites_form = '; expected Sites: <path>[:<start>[-<end>]], ... (found by: <search>)'
 messages = {
@@ -1278,7 +1291,9 @@ entries = {'src/client.ts', 'tests/client.test.ts'}
 search = " (found by: grep --exclude-dir=.git --null -r -n -- 'sync' .)"
 def plan(rule, test, sites='src/client.ts:1', field='Test'):
     return (f'## C-07 - prose\nFindings: F-001\nRule: {rule}\nSites: {sites}{search}\n'
-            f'Must not: retry after 600 ms or touch client.sync.\n{field}: {test}\n').encode()
+            f'Must not: retry after 600 ms or touch client.sync.\n{field}: {test}\n'
+            'Prediction: reverting the guard fails the named test at its first assertion, '
+            'because the retry runs again after the parking await.\n').encode()
 prose = ['600', '3 s', 'client.sync', "onStage('submitting')/markSubmitting",
          'onStage(a)/b', 'try/catch', 'failure/cancellation']
 for text in prose:
@@ -1476,6 +1491,7 @@ with tempfile.TemporaryDirectory(prefix='plan-search-domain-') as tmp:
         'paths':[{'path':'deleted.txt','field':'sites'},
                  {'path':'type-swap','field':'sites'},
                  {'path':'reverse-swap/old.txt','field':'sites'}],
+        'excluded':['reverse-swap', 'type-swap/current.txt'],
     }
     prepared, artifacts=evidence.prepare_plan_searches(
         UnionRepo(), 'snapshot', [union_cluster], 'r1u', 'base')
@@ -1741,6 +1757,7 @@ Rule: Wait 600 ms, then 3 s, before client.sync; keep try/catch around onStage('
 Sites: src/service.ts:1-2, src/helper.ts:1 (found by: grep --exclude-dir=.git --null -r -n -- 'helper' .)
 Must not: Change unrelated exports.
 Test: tests/service.test.ts:1-2 - client.sync after 600 ms skips try/catch in onStage(a)/b (fails today).
+Prediction: reverting the guard fails tests/service.test.ts at "client.sync after 600 ms skips try/catch in onStage(a)/b", because the retry fires again after the parking await.
 EOF
     local hash manifest
     hash=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/fix-plan.md")
@@ -1875,7 +1892,8 @@ for cluster in range(3):
         + f" (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'capacity_marker_(0[0-9]|1[0-7])' .)\n".replace(
             'capacity_marker_(0[0-9]|1[0-7])',
             f'capacity_marker_({start:02d}|{start + 1:02d}|{start + 2:02d}|{start + 3:02d}|{start + 4:02d}|{start + 5:02d}|{start + 6:02d}|{start + 7:02d}|{start + 8:02d}|{start + 9:02d}|{start + 10:02d}|{start + 11:02d}|{start + 12:02d}|{start + 13:02d}|{start + 14:02d}|{start + 15:02d}|{start + 16:02d}|{start + 17:02d})')
-        + f'Test: src/site{start:02d}.py:1\n')
+        + f'Test: src/site{start:02d}.py:1\n'
+        + f'Prediction: reverting the guard fails src/site{start:02d}.py at its capacity-marker assertion, because the marker reads the mutated value.\n')
 Path(sys.argv[1]).write_text(''.join(clusters))
 PY
     local hash manifest
@@ -1935,6 +1953,7 @@ Findings: F-001
 Rule: Keep every exact location stable.
 Sites: src/value.ts.generated:2, `src/nested value.ts`:1-2, src/\xc3\xbcber value.ts:3, unique.test.ts:4, README.md:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'value' .)
 Test: `src/uber value.ts:5-6`; src/value.ts:7 stays prose
+Prediction: reverting the guard fails unique.test.ts at its assertion on the pinned constant, because the location moves.
 '''
 rows = module.parse_plan(raw, entries)[0]['paths']
 assert [(row['path'], row['line_start'], row['line_end'], row['resolution']) for row in rows] == [
@@ -2001,6 +2020,7 @@ Findings: F-001
 Rule: Keep the value stable.
 Sites: src/value.ts:2 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'value' .)
 Test: tests/value.test.ts:1
+Prediction: reverting the guard fails the value test at its assertion on the exported constant, because it reads the mutated value.
 EOF
     local hash; hash=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/fix-plan.md")
     local args=(--phase plan --plan "$S/fix-plan.md" --plan-sha256 "$hash" --full-seat sol
@@ -2059,5 +2079,338 @@ PY
     assert_eq "fresh verification rechecks plan ranges against pinned source" "$?" 2
     assert_grep "fresh verification reports the canonical range error" \
       "$T/plan-location-verify.err" 'plan cluster C-01 field Sites: line range is outside pinned source "src/value\.ts:2"; expected Sites: '
+  )
+}
+
+test_plan_parser_requires_a_prediction() {
+  python3 - "$SCRIPTS/rev-evidence.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('rev_evidence', sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+
+entries = {'src/value.ts', 'tests/value.test.ts'}
+found = '(found by: `rg --hidden --no-ignore --glob \'!.git/**\' --null -n -- runService .`)'
+
+without = ('## C-01 cluster\n'
+           'Findings: F-001\n'
+           'Rule: every caller checks the result\n'
+           'Sites: src/value.ts:1-2 ' + found + '\n'
+           'Test: tests/value.test.ts - passes today with the bug\n').encode()
+try:
+    module.parse_plan(without, entries)
+except ValueError as error:
+    assert 'incomplete plan cluster: C-01' in str(error), str(error)
+else:
+    raise AssertionError('a cluster with no Prediction was accepted')
+
+with_prediction = ('## C-01 cluster\n'
+                   'Findings: F-001\n'
+                   'Rule: every caller checks the result\n'
+                   'Sites: src/value.ts:1-2 ' + found + '\n'
+                   'Test: tests/value.test.ts - passes today with the bug\n'
+                   'Prediction: reverting the guard fails value.test.ts at '
+                   '"rejects an unchecked result", because the assertion reads the return value\n').encode()
+clusters = module.parse_plan(with_prediction, entries)
+assert len(clusters) == 1, clusters
+assert set(clusters[0]) == {
+    'id', 'search_pattern', 'search_contract', 'paths', 'excluded'}, set(clusters[0])
+assert not any(row['field'] == 'prediction' for row in clusters[0]['paths']), clusters[0]['paths']
+PY
+  assert_eq "plan parser requires a prediction and keeps it prose" "$?" 0
+}
+
+test_plan_search_refuses_an_unreconciled_hit() {
+  python3 - "$SCRIPTS/rev-evidence.py" <<'PY'
+import importlib.util, os, pathlib, sys, tempfile
+spec = importlib.util.spec_from_file_location('rev_evidence', sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+
+# A search output carrying a path the plan never named must refuse.
+sites = {'src/service.ts'}
+excluded = set()
+paths = ['src/service.ts', 'src/sibling.ts']
+assert module.reconcile_plan_sites(sites, excluded, paths) == ['src/sibling.ts']
+
+# Naming it as excluded reconciles.
+assert module.reconcile_plan_sites(sites, {'src/sibling.ts'}, paths) == []
+
+# Excluding something the search never found is itself a defect.
+try:
+    module.reconcile_plan_sites(sites, {'src/ghost.ts'}, paths)
+except ValueError as error:
+    assert 'excludes a path the search did not find' in str(error), str(error)
+else:
+    raise AssertionError('an exclusion of a non-hit was accepted')
+
+# A path the plan declares under Test/Tests/Regression is already named, so the cluster
+# never has to exclude its own test file by hand.
+assert module.reconcile_plan_sites(
+    sites | {'tests/service.test.ts'}, set(),
+    paths + ['tests/service.test.ts']) == ['src/sibling.ts']
+
+# An Excluded field parses to its paths and drops the reason prose after " - ".
+assert module.plan_excluded_paths('') == set()
+assert module.plan_excluded_paths(
+    '`src/sibling.ts` - a different rule owns it; ./tests/value.test.ts - the test itself'
+) == {'src/sibling.ts', 'tests/value.test.ts'}
+
+# Entries are separated by ';', so a reason may contain commas and stays ONE entry.
+assert module.plan_excluded_paths(
+    'src/sibling.ts - a different rule owns it, and it has its own cluster'
+) == {'src/sibling.ts'}
+
+# A bare path is refused: an exclusion without a reason is the discipline evaporating.
+for bare in ('src/sibling.ts', 'src/service.ts - ok; src/sibling.ts', 'src/sibling.ts -   '):
+    try:
+        module.plan_excluded_paths(bare)
+    except ValueError as error:
+        assert str(error) == 'no reason for excluded path "src/sibling.ts"', str(error)
+    else:
+        raise AssertionError('an exclusion with no reason was accepted: ' + bare)
+try:
+    module.plan_excluded_paths('``  - a reason with no path')
+except ValueError as error:
+    assert 'no path in excluded entry' in str(error), str(error)
+else:
+    raise AssertionError('an exclusion with no path was accepted')
+
+# The separator is the ' - ' right after the path. A hyphen inside a later word is not it:
+# splitting there would attribute the refusal to "src/foo", which the author never wrote.
+try:
+    module.plan_excluded_paths('src/foo -bar.ts - a reason')
+except ValueError as error:
+    assert str(error) == (
+        'excluded entry is not <path> - <reason>: "src/foo -bar.ts - a reason"'), str(error)
+else:
+    raise AssertionError('an entry whose path carries whitespace was accepted')
+
+# Dot paths survive whole. `rg --hidden --no-ignore` is mandated by the contract, so
+# .github, .claude and .eslintrc* are routinely in the search output, and a character-class
+# lstrip('./') would both rename them and collapse .eslintrc.js onto eslintrc.js.
+assert module.plan_excluded_paths(
+    '.github/workflows/ci.yml - generated by C-05; ./src/x.ts - a leading ./ is the authors'
+) == {'.github/workflows/ci.yml', 'src/x.ts'}
+# A dot path the cluster names reconciles against itself. A symmetric strip would keep this
+# passing, so the accurate-refusal assertion in the prepare block below is its real proof.
+assert module.reconcile_plan_sites(
+    {'.github/workflows/ci.yml'}, set(), ['.github/workflows/ci.yml']) == []
+assert module.reconcile_plan_sites(
+    {'.eslintrc.js'}, set(), ['eslintrc.js']) == ['eslintrc.js']
+# Composed the way production composes it: the author writes the exclusion, the parser
+# hands it to the reconciliation. A collapsed .eslintrc.js reconciles eslintrc.js silently.
+try:
+    module.reconcile_plan_sites(
+        set(), module.plan_excluded_paths('.eslintrc.js - generated, owned by C-05'),
+        ['eslintrc.js'])
+except ValueError as error:
+    assert str(error) == (
+        'plan cluster excludes a path the search did not find: .eslintrc.js'), str(error)
+else:
+    raise AssertionError('a dot path was collapsed onto its undotted sibling')
+
+# parse_plan names the cluster on an Excluded refusal, the way it does for every other field.
+found = '(found by: `rg --hidden --no-ignore --glob \'!.git/**\' --null -n -- runService .`)'
+raw = ('## C-01 cluster\n'
+       'Findings: F-001\n'
+       'Rule: every caller checks the result\n'
+       'Sites: src/value.ts:1-2 ' + found + '\n'
+       'Excluded: src/other.ts\n'
+       'Test: tests/value.test.ts - passes today with the bug\n'
+       'Prediction: reverting the guard fails value.test.ts at "rejects an unchecked result"\n')
+try:
+    module.parse_plan(raw.encode(), {'src/value.ts', 'tests/value.test.ts'})
+except ValueError as error:
+    assert str(error) == (
+        'plan cluster C-01 field Excluded: no reason for excluded path "src/other.ts"; '
+        'expected Excluded: <path> - <reason>; <path> - <reason>'), str(error)
+else:
+    raise AssertionError('an Excluded refusal escaped without naming its cluster')
+
+# The refusal has to reach preparation, not only the helper: a cluster whose search finds a
+# path it neither fixes nor excludes publishes nothing.
+contract = {'engine': 'grep-bre', 'domain': 'grep-complete-worktree', 'pattern': 'needle'}
+with tempfile.TemporaryDirectory(prefix='plan-reconcile-') as tmp:
+    class Repo:
+        session = pathlib.Path(tmp)
+        env = dict(os.environ)
+
+        @staticmethod
+        def materialize_regular(tree, destination, paths=None):
+            for name in ('src/service.ts', 'src/sibling.ts', '.github/workflows/ci.yml'):
+                target = destination / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text('needle\n')
+
+    cluster = {'id': 'C-01', 'search_contract': contract,
+               'paths': [{'path': 'src/service.ts', 'field': 'sites'}]}
+    # The dot path sorts first, so the refusal names it, and it must be named as written.
+    try:
+        module.prepare_plan_searches(Repo(), 'snapshot', [cluster], 'r1x')
+    except ValueError as error:
+        assert str(error) == ('plan search found a site the cluster neither fixes nor '
+                              'excludes: .github/workflows/ci.yml'), str(error)
+    else:
+        raise AssertionError('an unreconciled search hit was prepared')
+    try:
+        module.prepare_plan_searches(
+            Repo(), 'snapshot',
+            [dict(cluster, excluded=['github/workflows/ci.yml'])], 'r1x')
+    except ValueError as error:
+        assert str(error) == ('plan cluster excludes a path the search did not find: '
+                              'github/workflows/ci.yml'), str(error)
+    else:
+        raise AssertionError('an undotted exclusion reconciled a dot path')
+    prepared, _ = module.prepare_plan_searches(
+        Repo(), 'snapshot',
+        [dict(cluster, excluded=['.github/workflows/ci.yml', 'src/sibling.ts'])], 'r1x')
+    assert prepared[0]['search_proof']['paths'] == [
+        '.github/workflows/ci.yml', 'src/service.ts', 'src/sibling.ts'], prepared
+PY
+  assert_eq "plan search reconciles hits against sites and exclusions" "$?" 0
+}
+
+
+# The manifest-side reconciliation: `render` and `verify-panel` validate with the search replay
+# OFF, so validate_plan's cluster loop is the only thing re-checking a stored proof there.
+# Both forgeries rewrite the manifest AND its evidence twin, because validate_plan binds them.
+test_plan_proof_reconciliation_is_revalidated_without_replay() {
+  ( local R="$T/plan-proof-root" S="$T/plan-proof-session"
+    mkrepo "$R"; mkdir -p "$R/src" "$R/tests" "$S"
+    printf 'export function runService() { return 1; }\n' > "$R/src/service.ts"
+    printf 'export function runAlias() { return 1; }\n' > "$R/src/sibling.ts"
+    printf 'import { runService } from "../src/service";\ntest("service", () => runService());\n' \
+      > "$R/tests/service.test.ts"
+    git -C "$R" add . && git -C "$R" commit -qm "plan proof base"
+    local base; base=$(git -C "$R" rev-parse HEAD)
+    printf 'export function runService() { return 2; }\n' > "$R/src/service.ts"
+    printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+      "$base" "$R" > "$S/scope.env"
+    printf 'src/service.ts\n' > "$S/files.txt"; : > "$S/untracked.txt"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"}]}' > "$S/roster.json"
+    cat > "$S/fix-plan.md" <<'EOF'
+## C-01 - keep the service result stable
+Findings: F-001
+Rule: Apply the service result exactly once at every entry.
+Sites: src/service.ts:1 (found by: grep --exclude-dir=.git --null -r -n -- 'run' .)
+Excluded: src/sibling.ts - runAlias returns a constant, so the rule cannot reach it
+Test: tests/service.test.ts:1-2
+Prediction: reverting the guard fails tests/service.test.ts at "service", because the assertion reads the changed return value.
+EOF
+    local hash manifest
+    hash=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/fix-plan.md")
+    manifest=$(REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 python3 "$SCRIPTS/rev-evidence.py" \
+      prepare "$S" 1p --phase plan --plan "$S/fix-plan.md" --plan-sha256 "$hash" \
+      --full-seat sol --assignment sol=plan-completeness) || return
+    cp "$manifest" "$T/plan-proof.manifest"
+    cp "$S/r1p-evidence.json" "$T/plan-proof.evidence"
+    cp "$S/r1p-plan-search-C-01.txt" "$T/plan-proof.search"
+    assert_exit "the reconciled plan renders on the non-replay path" 0 \
+      python3 "$SCRIPTS/rev-evidence.py" render "$manifest" sol --plan-source "$S/r1p-plan.md"
+
+    local forge_case
+    for forge_case in exclusion site; do
+      cp "$T/plan-proof.manifest" "$manifest"
+      cp "$T/plan-proof.evidence" "$S/r1p-evidence.json"
+      cp "$T/plan-proof.search" "$S/r1p-plan-search-C-01.txt"
+      python3 - "$manifest" "$S" "$forge_case" <<'PY'
+import hashlib, json, pathlib, sys
+manifest_path, session, case = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]), sys.argv[3]
+evidence_path = session / 'r1p-evidence.json'
+encode = lambda value: json.dumps(value, sort_keys=True, ensure_ascii=True, indent=2) + '\n'
+manifest = json.loads(manifest_path.read_text())
+evidence = json.loads(evidence_path.read_text())
+clusters = [document['plan']['clusters'][0] for document in (manifest, evidence)]
+if case == 'exclusion':
+    # The stored proof still lists src/sibling.ts, which the forged cluster no longer excludes.
+    for cluster in clusters:
+        cluster['excluded'] = []
+else:
+    # An internally consistent proof that has lost a site the cluster names. The stored
+    # word counts are derived from the artifact, so they are repaired too: without that
+    # the forgery stops at an earlier gate and never reaches the one under test.
+    artifact = session / clusters[0]['search_proof']['artifact']
+    original = artifact.read_bytes()
+    body = b''.join(line for line in original.splitlines(keepends=True)
+                    if not line.startswith(b'./src/service.ts\0'))
+    assert body and body != original, original
+    artifact.write_bytes(body)
+    digest = hashlib.sha256(body).hexdigest()
+    for cluster in clusters:
+        cluster['search_proof'].update(
+            bytes=len(body), sha256=digest,
+            paths=['src/sibling.ts', 'tests/service.test.ts'])
+    manifest['artifacts'][artifact.name] = {'sha256': digest, 'words': len(body.split())}
+    counts = manifest['word_counts']
+    seats = len(manifest['assignments'])
+    counts['prepared_search'] = len(body.split())
+    counts['avoided'] = max(0, seats * counts['full'] - counts['assigned_patch']
+                            - seats * counts['evidence'] - counts['source_context']
+                            - counts['prepared_search'])
+evidence_raw = encode(evidence).encode()
+evidence_path.write_bytes(evidence_raw)
+manifest['artifacts'][evidence_path.name] = {
+    'sha256': hashlib.sha256(evidence_raw).hexdigest(), 'words': len(evidence_raw.split())}
+manifest_path.write_text(encode(manifest))
+PY
+      python3 "$SCRIPTS/rev-evidence.py" render "$manifest" sol --plan-source "$S/r1p-plan.md" \
+        > /dev/null 2> "$T/plan-proof-$forge_case.err"
+      assert_eq "a forged $forge_case fails validation with the replay off" "$?" 2
+    done
+    assert_grep "the refusal names the unreconciled cluster" "$T/plan-proof-exclusion.err" \
+      '^evidence: plan search proof leaves a site unreconciled: C-01$'
+    assert_grep "the refusal names the cluster whose site vanished" "$T/plan-proof-site.err" \
+      '^evidence: plan search proof omits a named site: C-01$'
+  )
+}
+
+# A code panel containing an Agent row prepares evidence and records that row as unenforced,
+# the same mechanism 0.4.8 shipped for plan panels. The host used to skip preparation for the
+# whole panel, and because Claude rows resolve to `agent` wherever the Claude CLI is not seated,
+# that skip meant no code panel ever reached evidence mode at all.
+test_code_evidence_records_unenforced_agent_seats() {
+  ( local R="$T/code-agent-root" S="$T/code-agent-session"
+    mkrepo "$R"; mkdir -p "$R/src" "$S"
+    printf 'export function helper() { return 1; }\n' > "$R/src/helper.ts"
+    printf 'import { helper } from "./helper";\nexport function runService() { return helper(); }\n' > "$R/src/service.ts"
+    git -C "$R" add . && git -C "$R" commit -qm "code agent base"
+    local base; base=$(git -C "$R" rev-parse HEAD)
+    replace_literal "$R/src/helper.ts" 'return 1' 'return 2' || return
+    printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+      "$base" "$R" > "$S/scope.env"
+    printf '%s\n' src/helper.ts > "$S/files.txt"; : > "$S/untracked.txt"
+    local agent_roster='{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"agent"},{"seat":"sonnet","adapter":"claude"}]}'
+    local cli_roster='{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}'
+    printf '%s\n' "$agent_roster" > "$S/roster.json"
+    REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 1 \
+      --phase discovery --full-seat sol > "$T/code-agent.out" 2> "$T/code-agent.err"
+    assert_eq "a code panel holding an Agent row prepares instead of skipping" "$?" 0
+    assert_eq "the Agent code panel publishes its manifest" \
+      "$(find "$S" -maxdepth 1 -name 'r1-evidence.manifest.json' | wc -l | tr -d ' ')" 1
+    assert_eq "the code manifest names the Agent row as unenforced" \
+      "$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1]))["unenforced_seats"]))' "$S/r1-evidence.manifest.json")" \
+      'opus'
+    assert_exit "the code manifest revalidates against its own derived list" 0 \
+      python3 "$SCRIPTS/rev-evidence.py" verify "$S/r1-evidence.manifest.json"
+    # A CLI-only code panel is untouched: nothing is recorded, so nothing downstream reads it as
+    # partially unenforced.
+    printf '%s\n' "$cli_roster" > "$S/roster.json"
+    REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 2 \
+      --phase discovery --full-seat sol > /dev/null 2> "$T/code-cli.err"
+    assert_eq "a CLI-only code panel still prepares" "$?" 0
+    assert_eq "a CLI-only code panel records no unenforced seat" \
+      "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["unenforced_seats"]))' "$S/r2-evidence.manifest.json")" \
+      0
+    # The list is derived at validation, never taken on the manifest's word, on a code panel too.
+    python3 - "$S" <<'PYEDIT'
+import json, sys
+p = sys.argv[1] + '/r2-evidence.manifest.json'
+d = json.load(open(p)); d['unenforced_seats'] = ['sol']   # a CLI seat, which must never be listed
+json.dump(d, open(p, 'w'))
+PYEDIT
+    python3 "$SCRIPTS/rev-evidence.py" verify "$S/r2-evidence.manifest.json" \
+      > /dev/null 2> "$T/code-forged.err"
+    assert_eq "a forged unenforced list fails code-panel validation" "$?" 2
+    assert_grep "the code-panel refusal names the derived mismatch" \
+      "$T/code-forged.err" 'unenforced_seats does not match the roster'
   )
 }

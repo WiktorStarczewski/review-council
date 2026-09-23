@@ -278,12 +278,26 @@ and leave `MANIFEST` and `PANEL_PHASE` empty.
 Document panels read every supplied document in full and use their legacy rendering flow below.
 
 Evidence mode depends on each launched row's adapter, never on the host.
-If any launched code-panel roster row has adapter `agent`, skip evidence preparation
-for the whole code panel and keep `MANIFEST` empty. Claude Code plugin subagents ignore
+Code preparation RUNS with an Agent seat and records it as unenforced rather than
+skipping the panel. Claude Code plugin subagents ignore
 hook frontmatter, so an Agent seat cannot provide the enforced tool transcript required
-by evidence mode. Render and launch every code seat at full legacy scope under the same
-panel label. Rows on adapters `codex`, `gemini`, and `claude` launch through
-`rev-seat.sh` and keep evidence mode.
+by evidence mode, but skipping preparation for the whole panel meant that wherever Claude
+rows resolve to `agent`, no code panel reached evidence mode at all. The manifest lists
+those seats in `unenforced_seats`, validation skips only their read audit, hashes their
+result, exit and prompt into the receipt, and the receipt row carries `enforced: false`.
+Be exact about what that leaves proven: the prompt is bound to this manifest, but the
+result, exit and transcript are only hashed into the receipt, never compared to this
+panel, so a result or transcript filed under the wrong seat or round is recorded rather
+than detected. The orchestrator writes each Agent seat's result by hand, so a misfiling
+is the realistic failure here, not an attacker.
+Report such a panel as partially unenforced; never describe it as certified.
+An unenforced seat's read audit is produced anyway, from the transcript you copied, and
+recorded in `unenforced_audits` with its would-have-passed verdict; nothing gates on it,
+because whether an Agent transcript clears the gate is unmeasured and gating on an
+unmeasured pass rate would trade one blanket refusal for another. Report that verdict;
+never read it as certification.
+Rows on adapters `codex`, `gemini`, and `claude` launch through `rev-seat.sh` and keep
+evidence mode.
 `claude_adapter` decides whether a Claude Code host seats Claude rows on `agent`; a Codex host always seats them on `claude`.
 Plan preparation RUNS with an Agent seat and records it as unenforced rather than
 refusing. An Agent seat cannot supply the enforced read transcript, so a plan panel
@@ -291,10 +305,15 @@ containing one is never certified - but the value of the gate is its schema-4
 structure (per-cluster closure obligations, sibling-site search proofs, source
 shards), and that structure works on an Agent seat. Refusing meant a Claude-only
 Agent roster got no fix-design gate at all, which is strictly worse. The manifest
-lists those seats in `unenforced_seats`, validation skips only their read audit
-while still binding their result, exit and prompt hashes, and the receipt row carries
-`enforced: false`. Report such a panel as an unenforced plan panel; never describe it
-as certified. Do not replace the schema-4 plan with a legacy full-scope task.
+lists those seats in `unenforced_seats`, validation skips only their read audit, hashes
+their result, exit and prompt into the receipt, and the receipt row carries
+`enforced: false`. Be exact about what that leaves proven: the prompt is bound to this
+manifest, but the result, exit and transcript are only hashed into the receipt, never
+compared to this panel, so a result or transcript filed under the wrong seat or round is
+recorded rather than detected. The orchestrator writes each Agent seat's result by hand,
+so a misfiling is the realistic failure here, not an attacker.
+Report such a panel as an unenforced plan panel; never describe it as certified.
+Do not replace the schema-4 plan with a legacy full-scope task.
 
 Before adaptive fan-out, set `PANEL_LABEL` to the artifact label and `PANEL_PHASE` to
 `discovery`, `risk`, `verification`, or `repair`. Build `EVIDENCE_ARGS` from the exact
@@ -537,7 +556,9 @@ edit the working tree while seats run.
   write `0` (valid) or `2` to `$S/r<N>-<seat>.exit`.
 - For each Agent seat, copy `<output_file>` to `$S/r<N>-<seat>.stream.ndjson` without opening it
   in the orchestrator context, so profiling retains the complete subagent transcript.
-  Agent-containing code panels always use full legacy scope and do not create evidence audits.
+  An Agent seat is an unenforced evidence seat, not an excluded one: it is launched under the same
+  manifest as every other row, recorded in `unenforced_seats`, and the transcript left here is what
+  the receipt audits, ungated, to record whether that seat would have passed.
 
 | seat exit | action |
 |---|---|
@@ -577,6 +598,7 @@ launched seat's `$S/r<N>-<seat>.json` (they are small; manifests, audits and
    only member of its cluster is still a cluster.
 
 Update counts: `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S open.P0=<n> open.P1=<n> open.P2=<n> rejected=<n>`.
+Write all three counts in one call after the round's seats have exited: `rev-state.sh` refuses `phase=fix` while `open.P0`, `open.P1` and `open.P2` predate the newest `r<N>-<seat>.exit`, and only all three in one call refresh that stamp. A plan panel's `r<N>p-<seat>.exit` is not a seat exit for this purpose, so triage stays valid across the plan gate.
 
 ### Plan - the fix-design gate
 
@@ -604,13 +626,28 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    Sites:    src/lib/sync/useSyncTrigger.ts:141, :208; src/lib/miden/sdk/miden-client.ts:88;
              worker realm: src/workers/sync.ts:60
              (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'await .*lock' .)
+   Excluded: src/workers/index.ts - re-exports only, and never awaits the hold;
+             docs/sync.md - prose that quotes the old call, tracked by C-05
    Must not: change the eviction timing; touch the SW driver (owned by C-04).
    Test:     sync-lock.test.ts - evict mid-await, assert the late call is dropped (fails today).
    Interacts with: C-04 (both touch the ceiling; C-04 lands first).
+   Prediction: reverting the guard fails sync-lock.test.ts at "drops the late call", because
+             the call after the parking await no longer re-checks hold ownership.
    ```
 
    `Sites` is the part that matters: enumerate by searching, not by memory, and list every
-   arm, realm, caller and copy (JSDoc, README, CHANGELOG, `.d.ts`) the rule reaches.
+   arm, realm, caller and copy (JSDoc, README, CHANGELOG, `.d.ts`) the rule reaches. The
+   search reconciles against the plan in both directions, so every path it finds is either
+   a path the cluster already names - under `Sites`, or under `Test`/`Tests`/`Regression` -
+   or an `Excluded` entry carrying the reason it is not a fix site. An `Excluded` entry
+   naming a path the search did not find is refused, and so is one that names a path
+   without a reason. You can no longer fix 8 of 10 sites silently: the 2 you skip have to
+   be written down, with why.
+   `Prediction` states which test fails, on which arm, at which assertion or message, and
+   why - a concrete symptom, not a restatement of `Rule`. It is read twice, not filed and
+   forgotten: Fix compares it against the observed pre-fix red run, and Verify compares it
+   against the failure line `rev-mutate.sh` prints beside each pinned hunk. Both
+   comparisons are yours - the tool surfaces what failed and never reads a prediction.
 2. Choose the plan seats from the roster. By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order, preferring one whose adapter is not `agent` when the roster has one (an Agent seat runs the panel unenforced), `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.
    When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat, even when the preceding code
    panel included an extra or a one-seat repair, and deal the plan lenses by the same
@@ -641,18 +678,22 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    and the complete authorized artifact set must match exactly. After every plan prompt
    renders, apply the same single ordinary prelaunch verify and require every prompt's
    one embedded manifest hash to match before fan-out.
-   The parser requires every cluster to have `Findings`, `Rule`, `Sites`, and at
-   least one of `Test`, `Tests`, or `Regression`. Every path must resolve in the
+   The parser requires every cluster to have `Findings`, `Rule`, `Sites`, `Prediction`,
+   and at least one of `Test`, `Tests`, or `Regression`. Every path must resolve in the
    pinned repository snapshot. Locations are read only from `Sites` and the first
-   token of a test field (`Test: <path> - <what fails today>`); every other field is prose.
+   token of a test field (`Test: <path> - <what fails today>`); every other field is prose,
+   including `Prediction`.
    Locations may use `path:line`, `path:start-end`,
    or a shorthand `:start-end` after a path. `Sites` must include one bounded query in
    either exact form: `found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'PATTERN' .`
    or `found by: grep --exclude-dir=.git --null -r -n -- 'PATTERN' .`. These fixed
    flags cover every regular worktree file except `.git`. Do not add other globs,
    types, exclusions, path operands, maximum depth, redirects, or filename suppression.
-   Keep the result below 80 lines. It must include every path named in `Sites`; native
-   text search cannot certify this proof.
+   Keep the result below 80 lines. It must include every path named in `Sites`, and every
+   path it finds must be one the cluster names in any field or an entry in the optional
+   `Excluded: <path> - <reason>; <path> - <reason>` field. Semicolons separate entries, so
+   a reason may contain commas, and the reason is mandatory. Native text search cannot
+   certify this proof.
    Every reviewer receives the full inline plan and complete navigation index. The
    plan-completeness seat receives the full cumulative patch and every cluster's
    closure, search, and source obligations. With `"plan_seats": "all"`, each cluster is
@@ -695,24 +736,35 @@ commits implement - nothing outside it lands this round.
 
 ### Fix
 
-`${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=fix`. Implement `fix-plan.md`
-**one cluster per commit**, P0 clusters first: every enumerated site, arm, realm and copy in the
-same commit. A fix that covers the cited instance and leaves a listed sibling is not done -
-it is next round's finding. Within a cluster, P3 only when trivial and safe. Match the surrounding style; do not reformat
-untouched code. When two findings conflict, resolve it explicitly in the ledger. A
-finding that is right but out of scope is `DEFERRED (reason)`; wrong is `REJECTED
-(reason)`. Rejecting is a valid outcome - never fix what is not broken to satisfy a
-reviewer.
+`${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=fix`. Run the test named in
+Prediction before the fix exists and watch it fail, once per cluster's Prediction,
+not once for the round. Record the observed failure line in fix-plan.md beside the
+Prediction it belongs to: a failure whose message does not match the Prediction is a
+STOP, not a note, because a test that fails for an unrelated reason proves nothing
+about the defect. Implement `fix-plan.md` **one cluster per commit** (the commit
+itself happens later, in the Commit phase below, not here in Fix), P0 clusters
+first: every enumerated site, arm, realm and copy in the same commit. A fix that
+covers the cited instance and leaves a listed sibling is not done - it is next
+round's finding. Within a cluster, P3 only when trivial and safe. Match the
+surrounding style; do not reformat untouched code. When two findings conflict,
+resolve it explicitly in the ledger. A finding that is right but out of scope is
+`DEFERRED (reason)`; wrong is `REJECTED (reason)`. Rejecting is a valid outcome -
+never fix what is not broken to satisfy a reviewer.
 
 ### Verify
 
 `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=verify`. Re-run the gates from
-setup. Compare with `baseline.md`: pre-existing failures are not regressions; anything
-newly failing is yours to repair or revert **before** the next round. Never advance on
-an unverified material tree. For review-council self-hosting, run an 8-30 second
-focused test after each edit, the roughly three-minute evidence fixture after a
-coherent contract cluster, and the complete suite once for each material tree. Record
-the tree hash and successful command so an unchanged tree reuses that gate result.
+setup. Compare with `baseline.md`: pre-existing failures are not regressions;
+anything newly failing is yours to repair or revert **before** the next round.
+Never advance on an unverified material tree. Run the repository's full gate list,
+not the subset the diff suggests, and record the result in the ledger. Then run
+rev-mutate.sh over the changed hunks before committing: revert each hunk alone and
+confirm a test notices, and compare what failed against the cluster's Prediction:
+`${CLAUDE_PLUGIN_ROOT}/scripts/rev-mutate.sh $S "<the test command>"`. For
+review-council self-hosting, run an 8-30 second focused test after each edit, the
+roughly three-minute evidence fixture after a coherent contract cluster, and the
+complete suite once for each material tree. Record the tree hash and successful
+command so an unchanged tree reuses that gate result.
 Before a paid panel after adapter, prompt, manifest, or audit changes, preflight
 replays the preserved provider envelopes through the current auditor.
 Replay runs after the roster probe and before any reviewer launch.

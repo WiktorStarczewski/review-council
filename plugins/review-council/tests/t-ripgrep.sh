@@ -53,6 +53,7 @@ Sites: src/service.ts:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --n
 Must not: Change unrelated exports.
 Test: tests/service.test.ts:1-2
 Interacts with: none.
+Prediction: reverting the guard fails tests/service.test.ts at "returns the service result once", because the assertion reads the duplicated return value.
 EOF
     ln -s "$(command -v git)" "$B/git-only/git"
     cat > "$B/rg" <<'SH'

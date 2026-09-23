@@ -286,7 +286,9 @@ four full red-team launches. With `plan_seats: "all"`, every plan panel launches
 four core seats instead of one.
 
 `rev-state.sh` refuses `phase=fix` while P0-P2 findings are open until the round's plan
-panel completed or `findings.md` records `Plan panel r<N>p - SKIPPED: <reason>`.
+panel completed or `findings.md` records `Plan panel r<N>p - SKIPPED: <reason>`. It also
+refuses when the open counts predate the round's newest seat exit, so a counter still
+holding the previous round's zeroes cannot short-circuit the gate.
 
 One four-bundle verification panel reviews the latest material state: directly after
 discovery when no nontrivial fix follows, or after the latest nontrivial fix. Adaptive
@@ -493,7 +495,11 @@ Claude CLI seats receive only `Read` and `Grep`, with bounded pre-tool and post-
 checks. Inherited settings, plugins, MCP configuration, and editing tools are disabled.
 Codex seats use the read-only sandbox. Agent-adapter seats (`claude_adapter: agent`, or
 `auto` without a signed-in Claude CLI) disable editing tools, but their native read hooks
-cannot satisfy evidence mode or schema-4 plan evidence.
+cannot satisfy enforced evidence. They run evidence mode anyway and are recorded in the
+manifest's `unenforced_seats`: their read audit stops gating rather than the panel stopping, so a
+panel holding one is partially unenforced and never certified. That audit is still produced and
+reported under `unenforced_audits` with its would-have-passed verdict, so the agent pass rate can
+be measured before anyone decides whether it can be enforced.
 
 Nonfinal Claude CLI responses carry a continuation instruction: while required review
 work remains, the response must include the next allowed read or search. Progress text
@@ -605,9 +611,11 @@ The host session applies accepted findings automatically within the authorized s
 1. Apply one root-cause rule across every listed sibling site.
 2. Preserve unrelated user changes.
 3. Add a regression test that fails under the broken behavior when warranted.
-4. Run relevant project gates and restore baseline or better.
-5. Commit coherent clusters only when the workflow authorizes commits.
-6. Run a full four-bundle verification panel after a material fix.
+4. Run the repository's full gate list, not the subset the diff suggests, and
+   restore baseline or better.
+5. Run the mutation check over the changed hunks before committing.
+6. Commit coherent clusters only when the workflow authorizes commits.
+7. Run a full four-bundle verification panel after a material fix.
 
 Adaptive review completes only when:
 
@@ -896,8 +904,10 @@ Full reference: [docs/config.md](docs/config.md).
   cache.
 - Quota fallback covers quota and capacity only. It does not hide authentication,
   configuration, model, adapter, or unknown failures.
-- A schema-4 plan panel cannot seat a reviewer on the `agent` adapter, because that
-  adapter cannot provide the enforced read transcript; other roster rows may use it.
+- A panel seating a reviewer on the `agent` adapter is never certified, because that
+  adapter cannot provide the enforced read transcript. It still runs: the seat is recorded
+  unenforced, its audit is reported without gating, and the panel is reported as partially
+  unenforced.
 - Explicit numeric code reviews and document reviews retain full scope instead of
   adaptive evidence narrowing.
 - Evidence chunks prove complete change reads but do not replace source reads for

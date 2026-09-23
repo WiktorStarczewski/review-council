@@ -1775,11 +1775,20 @@ def required_range_covered(required, ranges):
 
 
 def result_for_audit(args):
-    out = Path(args.out)
-    suffix = '.read-audit.json'
-    if not out.name.endswith(suffix) or not out.name.startswith('r'):
-        return None, None
-    result = out.with_name(out.name[:-len(suffix)] + '.json')
+    # The result is normally the sibling of --out, which only works while --out is the enforced
+    # `r<label>-<seat>.read-audit.json`. An unenforced seat's audit is deliberately written under a
+    # name no attempt-state or profiling glob matches, so it names its result explicitly; without
+    # that, result_sha256 comes back null and the audit can never be valid whatever the transcript
+    # proves, which would pin an ungated would-have-passed verdict to false by construction.
+    explicit = getattr(args, 'result', None)
+    if explicit:
+        result = Path(explicit)
+    else:
+        out = Path(args.out)
+        suffix = '.read-audit.json'
+        if not out.name.endswith(suffix) or not out.name.startswith('r'):
+            return None, None
+        result = out.with_name(out.name[:-len(suffix)] + '.json')
     document = json.loads(result.read_text())
     if not isinstance(document, dict) or not isinstance(document.get('findings'), list):
         raise ValueError('invalid review result structure')
@@ -2613,6 +2622,7 @@ def main():
     prompts.add_argument('--prompt', required=True, action='append')
     audits = commands.add_parser('audit')
     audits.add_argument('--adapter', required=True, choices=('codex', 'grok', 'gemini', 'claude', 'agent'))
+    audits.add_argument('--result')
     audits.add_argument('--raw', required=True)
     audits.add_argument('--prompt', required=True)
     audits.add_argument('--root', required=True)

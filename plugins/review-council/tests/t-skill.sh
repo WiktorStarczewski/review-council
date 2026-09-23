@@ -362,8 +362,8 @@ test_skill_contract() {
       '[Hh]ard audit failure.*fallback panel.*stop.*repair'
     assert_grep "host requires citation range coverage" "$H" \
       '[Ee]very finding citation must intersect'
-    assert_grep "host excludes unenforced Agent seats from evidence mode" "$H" \
-      'adapter `agent`.*skip evidence preparation|skip evidence preparation.*adapter `agent`'
+    assert_grep "host runs code evidence with Agent seats recorded unenforced" "$H" \
+      'Code preparation RUNS with an Agent seat and records it as unenforced'
     assert_grep "numeric panels bypass evidence narrowing" "$H" \
       '[Ee]xplicit numeric.*full cumulative patch'
     assert_grep "document panels retain full reads" "$H" \
@@ -597,6 +597,21 @@ skill_adapter_and_plan_gate_contract() {
   local adapter_choice='`claude_adapter` decides whether a Claude Code host seats Claude rows on `agent`; a Codex host always seats them on `claude`.'
   local plan_refusal='Plan preparation RUNS with an Agent seat and records it as unenforced rather than'
   local refusal_skip='Report such a panel as an unenforced plan panel; never describe it'
+  local code_unenforced='Code preparation RUNS with an Agent seat and records it as unenforced rather than'
+  local code_report='Report such a panel as partially unenforced; never describe it as'
+  local ungated_audit='recorded in `unenforced_audits` with its would-have-passed verdict; nothing gates on it, because whether an Agent transcript clears the gate is unmeasured and gating on an unmeasured pass rate would trade one blanket refusal for another.'
+  # An unenforced seat's result, exit and transcript are HASHED into the receipt, never compared to
+  # the panel: only the prompt carries the manifest hash. Two independent fixtures proved a seat's
+  # result and transcript can be swapped in from another panel and accepted. The contract said
+  # "binding their result, exit and prompt hashes" in BOTH the code and the plan paragraph, so the
+  # count below is two, not one - the sentence was already wrong for plan panels in 0.4.8, and a
+  # one-paragraph fix would satisfy a bare fixed-string pin.
+  local not_bound='Be exact about what that leaves proven: the prompt is bound to this manifest, but the result, exit and transcript are only hashed into the receipt, never compared to this panel, so a result or transcript filed under the wrong seat or round is recorded rather than detected.'
+  local misfiling='The orchestrator writes each Agent seat'"'"'s result by hand, so a misfiling is the realistic failure here, not an attacker.'
+  # The prohibition this replaced: a whole code panel skipped evidence preparation because one row
+  # was an Agent row. Claude rows resolve to `agent` wherever the Claude CLI is not seated, so that
+  # sentence meant evidence mode never ran on a code panel at all.
+  local blanket_skip='skip evidence preparation'
   local plan_default='By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order, preferring one whose adapter is not `agent` when the roster has one (an Agent seat runs the panel unenforced), `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.'
   local plan_all='When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat'
   local minimum='adaptive `<N>x` coverage repair and the default one-seat plan panel are the only exceptions.'
@@ -605,6 +620,7 @@ skill_adapter_and_plan_gate_contract() {
   local skip_line='When the plan panel is skipped, append a line beginning `Plan panel r<N>p - SKIPPED: <reason>` to `$S/findings.md` before `phase=fix`.'
   local gate='`rev-state.sh` refuses `phase=fix` for code round `<N>` while `open.P0 + open.P1 + open.P2` is above zero, unless that skip line exists or every seat recorded by `phase=plan round=<N>p` has `r<N>p-<seat>.json` and a `0` exit.'
   local incomplete='An incomplete plan panel is not a skip: stop the run incomplete before any edit.'
+  local fresh_counts='Write all three counts in one call after the round'"'"'s seats have exited: `rev-state.sh` refuses `phase=fix` while `open.P0`, `open.P1` and `open.P2` predate the newest `r<N>-<seat>.exit`, and only all three in one call refresh that stamp. A plan panel'"'"'s `r<N>p-<seat>.exit` is not a seat exit for this purpose, so triage stays valid across the plan gate.'
   local sibling='Sibling-site completeness: for each fix commit since the base, name the rule it applies and search the repository for sites, arms, realms, callers and copies (tests, JSDoc, docs) the rule reaches but the commit missed.'
   # Host-tied evidence wording that must never return: an evidence or plan decision keyed on the
   # host instead of a launched row's adapter.
@@ -616,6 +632,18 @@ skill_adapter_and_plan_gate_contract() {
     assert_flat_fixed "$host names claude_adapter as the agent-row control" "$H" "$adapter_choice"
     assert_flat_fixed "$host refuses plan prep only for non-extra agent rows" "$H" "$plan_refusal"
     assert_flat_fixed "$host records a plan prep refusal as the skip reason" "$H" "$refusal_skip"
+    assert_flat_fixed "$host prepares code evidence with an Agent row" "$H" "$code_unenforced"
+    assert_flat_fixed "$host never calls a partly unenforced code panel certified" "$H" "$code_report"
+    assert_flat_fixed "$host records the unenforced audit verdict without gating on it" "$H" "$ungated_audit"
+    assert_flat_fixed "$host says a misfiled unenforced result goes undetected" "$H" "$not_bound"
+    assert_flat_fixed "$host names hand transcription as the realistic failure" "$H" "$misfiling"
+    local bound_hits
+    bound_hits=$(tr '\n' ' ' < "$H" | tr -s ' ' | grep -o -F -- "$not_bound" | grep -c .)
+    assert_eq "$host carries the unenforced-binding caveat in both the code and plan paragraphs" \
+      "$bound_hits" 2
+    assert_nogrep "$host no longer claims an unenforced result is bound" "$H" \
+      'binding their result'
+    assert_nogrep "$host never skips a whole code panel over an Agent row" "$H" "$blanket_skip"
     assert_nogrep "$host has no host-tied evidence rule" "$H" "$host_tied"
     assert_flat_fixed "$host defaults to one plan-completeness seat" "$H" "$plan_default"
     assert_grep "$host restores every core seat with plan_seats all" "$H" "$(printf '%s' "$plan_all" | sed 's/[][\.*^$|+?(){}]/\\&/g')"
@@ -625,6 +653,7 @@ skill_adapter_and_plan_gate_contract() {
     assert_flat_fixed "$host records a skipped plan panel" "$H" "$skip_line"
     assert_flat_fixed "$host states the rev-state fix gate" "$H" "$gate"
     assert_flat_fixed "$host stops on an incomplete plan panel" "$H" "$incomplete"
+    assert_flat_fixed "$host requires counts written after the round's seat exits" "$H" "$fresh_counts"
     assert_flat_fixed "$host verification seats check sibling sites" "$H" "$sibling"
     assert_grep "$host renders a panel in one --panel call" "$H" \
       'rev-prompt\.sh"? "\$S" "\$PANEL_LABEL" --panel "\$S/r\$PANEL_LABEL-panel\.tsv" "\$\{PHASE_PROMPT_ARGS\[@\]\}" "\$\{EVIDENCE_PROMPT_ARGS\[@\]\}"$'
@@ -651,6 +680,15 @@ skill_adapter_and_plan_gate_contract() {
   for flat in "$W/planted-host-tied-1.md" "$W/planted-host-tied-2.md"; do
     assert_grep "planted host-tied rule is detected: $(basename "$flat")" "$flat" "$host_tied"
   done
+  # Plant the blanket skip too, so its negative assertion above cannot pass vacuously.
+  printf 'If any launched code-panel roster row has adapter `agent`, skip evidence preparation.\n' \
+    > "$W/planted-blanket-skip.md"
+  assert_grep "planted blanket code-evidence skip is detected" "$W/planted-blanket-skip.md" "$blanket_skip"
+  # Same for the overclaim: plant it so its negative assertion cannot pass vacuously.
+  printf 'validation skips only their read audit while still binding their result, exit and prompt hashes.\n' \
+    > "$W/planted-bound-claim.md"
+  assert_grep "planted unenforced-binding overclaim is detected" "$W/planted-bound-claim.md" \
+    'binding their result'
 
   assert_grep "Claude host documents claude_adapter values and override" "$K" \
     '`claude_adapter` \(`cli`, `agent`, or `auto`, default'
@@ -669,4 +707,84 @@ skill_adapter_and_plan_gate_contract() {
   assert_grep "Codex host writes phase=fix before its first edit" "$CK" \
     '^Before the first edit, write `rev-state\.sh "\$S" phase=fix`\.$'
   assert_grep "Codex host shares the plan_seats key" "$CK" '`plan_seats`, and `quota_fallback` are shared with Claude Code'
+}
+
+# assert_flat_fixed matches a SUBSTRING, so a pin that stops mid-sentence is satisfied by the
+# weakened sentence containing it: appending ", or skip the red run entirely when it is
+# inconvenient" after "watch it fail" inverted this branch's flagship obligation with every
+# assertion green. Each of the four pins below therefore runs through its own sentence terminator
+# and into the opening words of the sentence after it, which is what bounds it - the appended
+# clause now falls inside the pinned span. The four spans interlock in pairs (each pin's tail is
+# the next one's head), so nothing can be inserted between the full-gate sentence and the mutation
+# invocation, or between the red-run sentence and the Implement/Apply directive. The helper is
+# deliberately left alone: the pins elsewhere that share its weakness are a separate task.
+test_skill_requires_the_full_gate_list_on_a_fix_commit() {
+  ( local tick='`'
+    local want="Run the repository's full gate list, not the subset the diff suggests, and record the result in the ledger. Then run rev-mutate.sh over the changed hunks"
+    local mut="run rev-mutate.sh over the changed hunks before committing: revert each hunk alone and confirm a test notices, and compare what failed against the cluster's Prediction: $tick"
+    assert_flat_fixed "rev skill requires the full gate list" \
+      "$SK/skills/rev/SKILL.md" "$want"
+    assert_flat_fixed "codex skill requires the full gate list" \
+      "$SK/codex-skills/rev/SKILL.md" "$want"
+    assert_flat_fixed "rev skill invokes the mutation check" \
+      "$SK/skills/rev/SKILL.md" "$mut"
+    assert_flat_fixed "codex skill invokes the mutation check" \
+      "$SK/codex-skills/rev/SKILL.md" "$mut" )
+}
+
+test_skill_requires_a_proven_red_before_the_fix() {
+  ( local tick='`'
+    local red="Run the test named in Prediction before the fix exists and watch it fail, once per cluster's Prediction, not once for the round. Record the observed failure line in fix-plan.md beside the Prediction it belongs to: a failure whose message"
+    local stop='a failure whose message does not match the Prediction is a STOP, not a note, because a test that fails for an unrelated reason proves nothing about the defect.'
+    assert_flat_fixed "rev skill requires a proven red" "$SK/skills/rev/SKILL.md" "$red"
+    assert_flat_fixed "codex skill requires a proven red" "$SK/codex-skills/rev/SKILL.md" "$red"
+    # The sentence after the STOP is the one place the two hosts word this differently.
+    assert_flat_fixed "rev skill treats a mismatched failure as a stop" \
+      "$SK/skills/rev/SKILL.md" "$stop Implement ${tick}fix-plan.md${tick}"
+    assert_flat_fixed "codex skill treats a mismatched failure as a stop" \
+      "$SK/codex-skills/rev/SKILL.md" "$stop Apply confirmed fixes in coherent clusters" )
+}
+
+# rev-mutate.sh reports a verdict and the failing line; it never reads fix-plan.md, so it cannot
+# check anything against a Prediction. The contract said it did, which is the shape of claim that
+# survives precisely because no test can fail on it. Both hosts carry one definition, word for word.
+test_skill_states_what_a_prediction_is_read_against() {
+  ( local K
+    local want='`Prediction` states which test fails, on which arm, at which assertion or message, and why - a concrete symptom, not a restatement of `Rule`. It is read twice, not filed and forgotten: Fix compares it against the observed pre-fix red run, and Verify compares it against the failure line `rev-mutate.sh` prints beside each pinned hunk. Both comparisons are yours - the tool surfaces what failed and never reads a prediction.'
+    for K in "$SK/skills/rev/SKILL.md" "$SK/codex-skills/rev/SKILL.md"; do
+      assert_flat_fixed "$(basename "$(dirname "$(dirname "$K")")") names both readers of a Prediction" "$K" "$want"
+      assert_flat_absent "$(basename "$(dirname "$(dirname "$K")")") claims no automatic check" "$K" \
+        'checked twice|checked against what a mutation'
+      assert_eq "$(basename "$(dirname "$(dirname "$K")")") defines Prediction exactly once" \
+        "$(tr '\n' ' ' < "$K" | tr -s ' ' | grep -o 'states which test fails' | grep -c .)" 1
+    done )
+}
+
+# Pins the two IMPORTANT fixes from the fix-contract review: the mutation-check
+# invocation must be runnable (a path plus arguments, not bare prose), and it must
+# run before the commit directive on both hosts - the exact defect a relative-position
+# mirror recreated on Codex (rev-mutate ran with nothing staged, exit 4).
+assert_flat_order() {
+  local name=$1 file=$2 pattern=$3 flat
+  flat="$T/flat-order-$(basename "$file")-$RANDOM"
+  tr '\n' ' ' < "$file" | tr -s ' ' > "$flat"
+  grep -Eq -- "$pattern" "$flat" && ok "$name" || fail "$name" "no /$pattern/ in $file (flattened)"
+}
+
+test_skill_rev_mutate_invocation_is_runnable() {
+  ( assert_flat_fixed "rev skill's mutation check has a runnable invocation" \
+      "$SK/skills/rev/SKILL.md" 'scripts/rev-mutate.sh $S "<the test command>"'
+    assert_flat_fixed "codex skill's mutation check has a runnable invocation" \
+      "$SK/codex-skills/rev/SKILL.md" 'scripts/rev-mutate.sh "$S" "<the test command>"' )
+}
+
+test_skill_rev_mutate_precedes_commit() {
+  ( assert_flat_order "rev skill runs the mutation check before Commit" \
+      "$SK/skills/rev/SKILL.md" 'rev-mutate.*### Commit'
+    # Anchored on "the test command", not "rev-mutate": that word also appears in
+    # the prose sentence describing the check, so a directive inserted between the
+    # prose and the concrete invocation would still read as "after rev-mutate" and
+    # pass. "the test command" occurs exactly once, inside the invocation itself.
+    assert_flat_order "codex skill runs the mutation check before Commit only when" \
+      "$SK/codex-skills/rev/SKILL.md" 'the test command.*Commit only when' )
 }

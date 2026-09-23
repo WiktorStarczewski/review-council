@@ -277,12 +277,26 @@ omit evidence preparation, and render each seat with the per-seat form and
 `--read-only "$S/docs.txt"`.
 
 Evidence mode depends on each launched row's adapter, never on the host.
-If any launched code-panel roster row has adapter `agent`, skip evidence preparation
-for the whole code panel and keep `MANIFEST` empty. Claude Code plugin subagents ignore
+Code preparation RUNS with an Agent seat and records it as unenforced rather than
+skipping the panel. Claude Code plugin subagents ignore
 hook frontmatter, so an Agent seat cannot provide the enforced tool transcript required
-by evidence mode. Render and launch every code seat at full legacy scope under the same
-panel label. Rows on adapters `codex`, `gemini`, and `claude` launch through
-`rev-seat.sh` and keep evidence mode.
+by evidence mode, but skipping preparation for the whole panel meant that wherever Claude
+rows resolve to `agent`, no code panel reached evidence mode at all. The manifest lists
+those seats in `unenforced_seats`, validation skips only their read audit, hashes their
+result, exit and prompt into the receipt, and the receipt row carries `enforced: false`.
+Be exact about what that leaves proven: the prompt is bound to this manifest, but the
+result, exit and transcript are only hashed into the receipt, never compared to this
+panel, so a result or transcript filed under the wrong seat or round is recorded rather
+than detected. The orchestrator writes each Agent seat's result by hand, so a misfiling
+is the realistic failure here, not an attacker.
+Report such a panel as partially unenforced; never describe it as certified.
+An unenforced seat's read audit is produced anyway, from the transcript you copied, and
+recorded in `unenforced_audits` with its would-have-passed verdict; nothing gates on it,
+because whether an Agent transcript clears the gate is unmeasured and gating on an
+unmeasured pass rate would trade one blanket refusal for another. Report that verdict;
+never read it as certification.
+Rows on adapters `codex`, `gemini`, and `claude` launch through `rev-seat.sh` and keep
+evidence mode.
 `claude_adapter` decides whether a Claude Code host seats Claude rows on `agent`; a Codex host always seats them on `claude`.
 Plan preparation RUNS with an Agent seat and records it as unenforced rather than
 refusing. An Agent seat cannot supply the enforced read transcript, so a plan panel
@@ -290,10 +304,15 @@ containing one is never certified - but the value of the gate is its schema-4
 structure (per-cluster closure obligations, sibling-site search proofs, source
 shards), and that structure works on an Agent seat. Refusing meant a Claude-only
 Agent roster got no fix-design gate at all, which is strictly worse. The manifest
-lists those seats in `unenforced_seats`, validation skips only their read audit
-while still binding their result, exit and prompt hashes, and the receipt row carries
-`enforced: false`. Report such a panel as an unenforced plan panel; never describe it
-as certified. Do not replace the schema-4 plan with a legacy full-scope task.
+lists those seats in `unenforced_seats`, validation skips only their read audit, hashes
+their result, exit and prompt into the receipt, and the receipt row carries
+`enforced: false`. Be exact about what that leaves proven: the prompt is bound to this
+manifest, but the result, exit and transcript are only hashed into the receipt, never
+compared to this panel, so a result or transcript filed under the wrong seat or round is
+recorded rather than detected. The orchestrator writes each Agent seat's result by hand,
+so a misfiling is the realistic failure here, not an attacker.
+Report such a panel as an unenforced plan panel; never describe it as certified.
+Do not replace the schema-4 plan with a legacy full-scope task.
 
 Before adaptive fan-out, set `PANEL_LABEL` to the artifact label and `PANEL_PHASE` to
 `discovery`, `risk`, `verification`, or `repair`. Build `EVIDENCE_ARGS` from the exact
@@ -485,6 +504,7 @@ opened. Scope cuts are `DEFERRED (scope decision)`, not unrequested product chan
 Maintain a ledger entry per finding: ID, severity P0-P3, status OPEN/FIXED/REJECTED/
 DEFERRED, file and line, claim, evidence, reporting seats, disposition, test result,
 and commit if any. Do not re-raise resolved findings without new evidence.
+Write all three counts in one call after the round's seats have exited: `rev-state.sh` refuses `phase=fix` while `open.P0`, `open.P1` and `open.P2` predate the newest `r<N>-<seat>.exit`, and only all three in one call refresh that stamp. A plan panel's `r<N>p-<seat>.exit` is not a seat exit for this purpose, so triage stays valid across the plan gate.
 
 Run the plan panel when accepted findings require a nontrivial change; skip it when
 there is no accepted fix or every accepted fix is a P3 or one-line P2. Write
@@ -509,16 +529,27 @@ Immediately before launch, write
 plan artifacts and its seats instead of the completed code panel.
 
 Every cluster must contain `Findings`,
-`Rule`, `Sites`, and at least one of `Test`, `Tests`, or `Regression`. Its `Sites`
-field must include one bounded query in either exact form:
+`Rule`, `Sites`, `Prediction`, and at least one of `Test`, `Tests`, or `Regression`. Its
+`Sites` field must include one bounded query in either exact form:
 `found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'PATTERN' .`
 or `found by: grep --exclude-dir=.git --null -r -n -- 'PATTERN' .`. These fixed
 flags cover every regular worktree file except `.git`. Do not add other globs, types,
 exclusions, path operands, maximum depth, redirects, or filename suppression. Keep the
-result below 80 lines. It must include every path named in `Sites`; native text search
-cannot certify this proof.
+result below 80 lines. It must include every path named in `Sites`, and every path it
+finds must be one the cluster names in any field (`Sites`, or `Test`/`Tests`/`Regression`)
+or an entry in the optional `Excluded: <path> - <reason>; <path> - <reason>` field.
+Semicolons separate entries, so a reason may contain commas, and the reason is mandatory.
+An `Excluded` entry naming a path the search did not find is refused, so a cluster can no
+longer fix 8 of 10 sites silently: the 2 it skips have to be written down, with why.
+Native text search cannot certify this proof.
+`Prediction` states which test fails, on which arm, at which assertion or message, and
+why - a concrete symptom, not a restatement of `Rule`. It is read twice, not filed and
+forgotten: Fix compares it against the observed pre-fix red run, and Verify compares it
+against the failure line `rev-mutate.sh` prints beside each pinned hunk. Both
+comparisons are yours - the tool surfaces what failed and never reads a prediction.
 Locations are read only from `Sites` and the first token of a test field
-(`Test: <path> - <what fails today>`); every other field is prose. Locations may use
+(`Test: <path> - <what fails today>`); every other field is prose, including
+`Prediction`. Locations may use
 `path:line`, `path:start-end`, or a shorthand `:start-end` after a path.
 Write `$S/r<N>p-panel.tsv` with one line per plan seat, then bind and prepare the
 immutable plan before rendering:
@@ -571,12 +602,22 @@ editing. Keep one rule per root-cause cluster with a compact site table, invaria
 and falsifiable tests.
 
 Before the first edit, write `rev-state.sh "$S" phase=fix`.
-Apply confirmed fixes in coherent clusters. Preserve user changes. Run the relevant
-gates and bring them to baseline or better. Add meaningful regressions when warranted,
-not tests that merely mirror implementation. Commit only when within the user's
-requested workflow, with `fix(rev): <concrete change>` and no unrelated files. Record
-uncommitted fixes accurately when commits were not requested. Read-only runs skip
-all fix, commit, squash, push, and post-report editing steps.
+Run the test named in Prediction before the fix exists and watch it fail, once per
+cluster's Prediction, not once for the round. Record the observed failure line in
+fix-plan.md beside the Prediction it belongs to: a failure whose message does not
+match the Prediction is a STOP, not a note, because a test that fails for an
+unrelated reason proves nothing about the defect. Apply confirmed fixes in coherent
+clusters (one cluster per eventual commit, made only later when the round is
+actually committed, not here). Preserve user changes. Run the relevant gates and
+bring them to baseline or better. Add meaningful regressions when warranted, not
+tests that merely mirror implementation. Run the repository's full gate list, not
+the subset the diff suggests, and record the result in the ledger. Then run
+rev-mutate.sh over the changed hunks before committing: revert each hunk alone and
+confirm a test notices, and compare what failed against the cluster's Prediction:
+`$PLUGIN/scripts/rev-mutate.sh "$S" "<the test command>"`. Commit only when within
+the user's requested workflow, with `fix(rev): <concrete change>` and no unrelated
+files. Record uncommitted fixes accurately when commits were not requested.
+Read-only runs skip all fix, commit, squash, push, and post-report editing steps.
 
 For review-council self-hosting, use tiered verification: run an 8-30 second focused
 test after each edit, the roughly three-minute evidence fixture after a coherent
