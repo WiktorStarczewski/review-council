@@ -3716,8 +3716,7 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
     # unenforced_seats decides whose read audit is skipped, so it is DERIVED here and compared,
     # never taken on the manifest's word. Declared and untyped, a hand-edited list could name a
     # CLI seat, or be a bare string whose `in` test degrades to a substring match.
-    expected_unenforced = sorted(seat for seat in assigned
-                                 if manifest['phase'] == 'plan' and adapters[seat] == 'agent')
+    expected_unenforced = sorted(seat for seat in assigned if adapters[seat] == 'agent')
     declared_unenforced = manifest.get('unenforced_seats', [])
     if (not isinstance(declared_unenforced, list)
             or any(not isinstance(x, str) for x in declared_unenforced)
@@ -4412,19 +4411,18 @@ def _prepare_locked(args, session):
             raise ValueError('--plan belongs only to the plan phase')
         plan_source = None; plan_raw = None
     chosen, owner = assignments(args, roster)
-    # An agent seat cannot produce an enforced read transcript, so a plan panel that includes one
-    # cannot be CERTIFIED. That is not a reason to refuse the panel: the value of the plan gate is
-    # its schema-4 structure - per-cluster closure obligations, sibling-site search proofs, source
-    # shards - and that structure works on an agent seat. Refusing meant a Claude-only Agent roster
-    # got no fix-design gate at all, which is strictly worse than an unenforced one. The panel runs
-    # and is recorded unenforced, so nothing downstream can mistake it for a certified gate.
-    # PLAN ONLY. A code panel containing an agent row skips evidence preparation entirely at the
-    # host, so any agent seat that reaches a code manifest is an anomaly and must still prove its
-    # reads - t-evidence's narrow_agent_requires_proven_reads and full_agent_requires_proven_reads
-    # exist for exactly that. Relaxing this phase-agnostically silently disarmed both.
+    # An agent seat cannot produce an enforced read transcript, so a panel that includes one cannot
+    # be CERTIFIED. That is not a reason to refuse the panel: the value of evidence mode is its
+    # structure - bounded assignments, hash-bound patch and source packets, per-cluster closure
+    # obligations on a plan - and that structure works on an agent seat. The panel runs and the seat
+    # is recorded unenforced, so nothing downstream can mistake it for a certified gate.
+    # This covers CODE panels as well as plan panels. The host used to skip preparation for a whole
+    # code panel holding an agent row, and since Claude rows resolve to `agent` on every host that
+    # does not seat the Claude CLI, that skip meant no code panel ever ran in evidence mode. The
+    # seat's audit is not gated on, because the agent pass rate is unmeasured and gating on an
+    # unmeasured pass rate would trade one blanket refusal for another.
     unenforced_seats = sorted(row['seat'] for row in roster['seats']
-                              if args.phase == 'plan' and row.get('adapter') == 'agent'
-                              and row.get('seat') in chosen)
+                              if row.get('adapter') == 'agent' and row.get('seat') in chosen)
     if parent_manifest is not None:
         parent = parent_manifest['assignments'][parent_seat]
         if chosen != {parent_seat: parent['bundle']}:
@@ -5049,7 +5047,13 @@ def verify_panel_data(session, label):
 
 def selected_advisories(session, manifest, generations):
     rows = {}
+    # An unenforced seat has no enforced read audit to carry advisories: the receipt skipped it, and
+    # in production nothing wrote the file at all. Reading it here would have failed the whole
+    # receipt for a seat the panel deliberately does not enforce.
+    unenforced = set(manifest.get('unenforced_seats', []))
     for seat in manifest['assignments']:
+        if seat in unenforced:
+            continue
         label = generations[seat]['label'] if generations is not None else manifest['label']
         audit = read_json(session / f'r{label}-{seat}.read-audit.json')
         advisories = audit.get('advisories', [])

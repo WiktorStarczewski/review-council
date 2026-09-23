@@ -978,9 +978,10 @@ PYEDIT
     assert_eq "the forged unenforced list fails validation" "$forged" 2
     assert_grep "the refusal names the derived mismatch" \
       "$T/plan-forged.err" 'unenforced_seats does not match the roster'
-    assert_eq "a non-plan phase never marks an agent seat unenforced" \
-      "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["unenforced_seats"]))' "$S/r3-evidence.manifest.json" 2>/dev/null || echo 0)" \
-      0
+    # A code panel now records its agent rows too, and that inverse is pinned, non-vacuously, by
+    # test_code_evidence_records_unenforced_agent_seats. The assertion that stood here read
+    # r3-evidence.manifest.json, which this session never creates, so its `|| echo 0` fallback
+    # answered 0 whatever the contract said.
     printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"},{"seat":"agent-extra","adapter":"agent","extra":true}]}' > "$S/roster.json"
     assert_exit "stale plan hash rejects adaptive plan preparation" 2 \
       python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 4p "${valid_args[@]/$hash/0000000000000000000000000000000000000000000000000000000000000000}"
@@ -2359,5 +2360,57 @@ PY
       '^evidence: plan search proof leaves a site unreconciled: C-01$'
     assert_grep "the refusal names the cluster whose site vanished" "$T/plan-proof-site.err" \
       '^evidence: plan search proof omits a named site: C-01$'
+  )
+}
+
+# A code panel containing an Agent row prepares evidence and records that row as unenforced,
+# the same mechanism 0.4.8 shipped for plan panels. The host used to skip preparation for the
+# whole panel, and because Claude rows resolve to `agent` wherever the Claude CLI is not seated,
+# that skip meant no code panel ever reached evidence mode at all.
+test_code_evidence_records_unenforced_agent_seats() {
+  ( local R="$T/code-agent-root" S="$T/code-agent-session"
+    mkrepo "$R"; mkdir -p "$R/src" "$S"
+    printf 'export function helper() { return 1; }\n' > "$R/src/helper.ts"
+    printf 'import { helper } from "./helper";\nexport function runService() { return helper(); }\n' > "$R/src/service.ts"
+    git -C "$R" add . && git -C "$R" commit -qm "code agent base"
+    local base; base=$(git -C "$R" rev-parse HEAD)
+    replace_literal "$R/src/helper.ts" 'return 1' 'return 2' || return
+    printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+      "$base" "$R" > "$S/scope.env"
+    printf '%s\n' src/helper.ts > "$S/files.txt"; : > "$S/untracked.txt"
+    local agent_roster='{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"agent"},{"seat":"sonnet","adapter":"claude"}]}'
+    local cli_roster='{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}'
+    printf '%s\n' "$agent_roster" > "$S/roster.json"
+    REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 1 \
+      --phase discovery --full-seat sol > "$T/code-agent.out" 2> "$T/code-agent.err"
+    assert_eq "a code panel holding an Agent row prepares instead of skipping" "$?" 0
+    assert_eq "the Agent code panel publishes its manifest" \
+      "$(find "$S" -maxdepth 1 -name 'r1-evidence.manifest.json' | wc -l | tr -d ' ')" 1
+    assert_eq "the code manifest names the Agent row as unenforced" \
+      "$(python3 -c 'import json,sys; print(",".join(json.load(open(sys.argv[1]))["unenforced_seats"]))' "$S/r1-evidence.manifest.json")" \
+      'opus'
+    assert_exit "the code manifest revalidates against its own derived list" 0 \
+      python3 "$SCRIPTS/rev-evidence.py" verify "$S/r1-evidence.manifest.json"
+    # A CLI-only code panel is untouched: nothing is recorded, so nothing downstream reads it as
+    # partially unenforced.
+    printf '%s\n' "$cli_roster" > "$S/roster.json"
+    REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 2 \
+      --phase discovery --full-seat sol > /dev/null 2> "$T/code-cli.err"
+    assert_eq "a CLI-only code panel still prepares" "$?" 0
+    assert_eq "a CLI-only code panel records no unenforced seat" \
+      "$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["unenforced_seats"]))' "$S/r2-evidence.manifest.json")" \
+      0
+    # The list is derived at validation, never taken on the manifest's word, on a code panel too.
+    python3 - "$S" <<'PYEDIT'
+import json, sys
+p = sys.argv[1] + '/r2-evidence.manifest.json'
+d = json.load(open(p)); d['unenforced_seats'] = ['sol']   # a CLI seat, which must never be listed
+json.dump(d, open(p, 'w'))
+PYEDIT
+    python3 "$SCRIPTS/rev-evidence.py" verify "$S/r2-evidence.manifest.json" \
+      > /dev/null 2> "$T/code-forged.err"
+    assert_eq "a forged unenforced list fails code-panel validation" "$?" 2
+    assert_grep "the code-panel refusal names the derived mismatch" \
+      "$T/code-forged.err" 'unenforced_seats does not match the roster'
   )
 }

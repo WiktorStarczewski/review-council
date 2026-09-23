@@ -362,8 +362,8 @@ test_skill_contract() {
       '[Hh]ard audit failure.*fallback panel.*stop.*repair'
     assert_grep "host requires citation range coverage" "$H" \
       '[Ee]very finding citation must intersect'
-    assert_grep "host excludes unenforced Agent seats from evidence mode" "$H" \
-      'adapter `agent`.*skip evidence preparation|skip evidence preparation.*adapter `agent`'
+    assert_grep "host runs code evidence with Agent seats recorded unenforced" "$H" \
+      'Code preparation RUNS with an Agent seat and records it as unenforced'
     assert_grep "numeric panels bypass evidence narrowing" "$H" \
       '[Ee]xplicit numeric.*full cumulative patch'
     assert_grep "document panels retain full reads" "$H" \
@@ -597,6 +597,12 @@ skill_adapter_and_plan_gate_contract() {
   local adapter_choice='`claude_adapter` decides whether a Claude Code host seats Claude rows on `agent`; a Codex host always seats them on `claude`.'
   local plan_refusal='Plan preparation RUNS with an Agent seat and records it as unenforced rather than'
   local refusal_skip='Report such a panel as an unenforced plan panel; never describe it'
+  local code_unenforced='Code preparation RUNS with an Agent seat and records it as unenforced rather than'
+  local code_report='Report such a panel as partially unenforced; never describe it as'
+  # The prohibition this replaced: a whole code panel skipped evidence preparation because one row
+  # was an Agent row. Claude rows resolve to `agent` wherever the Claude CLI is not seated, so that
+  # sentence meant evidence mode never ran on a code panel at all.
+  local blanket_skip='skip evidence preparation'
   local plan_default='By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order, preferring one whose adapter is not `agent` when the roster has one (an Agent seat runs the panel unenforced), `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.'
   local plan_all='When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat'
   local minimum='adaptive `<N>x` coverage repair and the default one-seat plan panel are the only exceptions.'
@@ -617,6 +623,9 @@ skill_adapter_and_plan_gate_contract() {
     assert_flat_fixed "$host names claude_adapter as the agent-row control" "$H" "$adapter_choice"
     assert_flat_fixed "$host refuses plan prep only for non-extra agent rows" "$H" "$plan_refusal"
     assert_flat_fixed "$host records a plan prep refusal as the skip reason" "$H" "$refusal_skip"
+    assert_flat_fixed "$host prepares code evidence with an Agent row" "$H" "$code_unenforced"
+    assert_flat_fixed "$host never calls a partly unenforced code panel certified" "$H" "$code_report"
+    assert_nogrep "$host never skips a whole code panel over an Agent row" "$H" "$blanket_skip"
     assert_nogrep "$host has no host-tied evidence rule" "$H" "$host_tied"
     assert_flat_fixed "$host defaults to one plan-completeness seat" "$H" "$plan_default"
     assert_grep "$host restores every core seat with plan_seats all" "$H" "$(printf '%s' "$plan_all" | sed 's/[][\.*^$|+?(){}]/\\&/g')"
@@ -653,6 +662,10 @@ skill_adapter_and_plan_gate_contract() {
   for flat in "$W/planted-host-tied-1.md" "$W/planted-host-tied-2.md"; do
     assert_grep "planted host-tied rule is detected: $(basename "$flat")" "$flat" "$host_tied"
   done
+  # Plant the blanket skip too, so its negative assertion above cannot pass vacuously.
+  printf 'If any launched code-panel roster row has adapter `agent`, skip evidence preparation.\n' \
+    > "$W/planted-blanket-skip.md"
+  assert_grep "planted blanket code-evidence skip is detected" "$W/planted-blanket-skip.md" "$blanket_skip"
 
   assert_grep "Claude host documents claude_adapter values and override" "$K" \
     '`claude_adapter` \(`cli`, `agent`, or `auto`, default'

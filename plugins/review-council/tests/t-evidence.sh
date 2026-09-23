@@ -816,7 +816,8 @@ def write_agent_audit(session, label, seat):
     calls = max(1, len(packet['shards']) + len(tool_ranges) + patch_reads)
     cited = sum(any(row['path'] == finding['file'] and row['line_start'] <= finding['line_end']
                     and finding['line_start'] <= row['line_end'] for row in ranges) for finding in findings)
-    audit = {'schema_version':2, 'status':'valid', 'narrow':assignment['scope'] != 'full', 'adapter':'agent',
+    audit = {'schema_version':2, 'status':'valid', 'narrow':assignment['scope'] != 'full',
+             'adapter':assignment['adapter'],
              'prompt_sha256':module.digest(prompt.read_bytes()), 'stream_sha256':module.digest(stream.read_bytes()),
              'result_sha256':module.digest(result.read_bytes()),
              'evidence_manifest_sha256':module.digest(manifest_path.read_bytes()), 'violations':[],
@@ -838,7 +839,7 @@ def write_agent_audit(session, label, seat):
     (session / f'r{label}-{seat}.read-audit.json').write_text(json.dumps(audit))
 
 @contextlib.contextmanager
-def fixture(name='repo', object_format=None):
+def fixture(name='repo', object_format=None, adapter='agent'):
     with tempfile.TemporaryDirectory(prefix='evidence-hardening-') as tmp:
         root = Path(tmp) / name; root.mkdir(); session = Path(tmp) / 'session'; session.mkdir()
         def git(*args):
@@ -874,7 +875,7 @@ def fixture(name='repo', object_format=None):
         (session / 'scope.env').write_text(''.join(k + '=' + shlex.quote(v) + '\n' for k, v in [('REV_BASE', base), ('REV_ROOT', str(root)), ('REV_SCOPE', 'branch')]))
         (session / 'files.txt').write_text('')
         (session / 'untracked.txt').write_text('')
-        (session / 'roster.json').write_text(json.dumps({'seats': [{'seat': s, 'extra': False, 'adapter': 'agent'} for s in seats]}))
+        (session / 'roster.json').write_text(json.dumps({'seats': [{'seat': s, 'extra': False, 'adapter': adapter} for s in seats]}))
         write('main.py', (root / 'main.py').read_text().replace('return 1', 'return 2'))
         yield root, session, git, write, call, prepare, finish
 
@@ -1561,7 +1562,7 @@ def complete_declaration_context():
         assert declaration['line_start'] == 1 and declaration['line_end'] == 102
         assert declaration['content'] == changed
 
-    with fixture() as (root, session, git, write, call, prepare, finish):
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
         body = ('def oversized():\n'
                 + ''.join(f'    value_{i} = "{i:04d}-' + 'x' * 50 + '"\n' for i in range(6000))
                 + '    return value_5999\n')
@@ -1689,7 +1690,7 @@ def complete_declaration_context():
         call('render', manifest_path, owner, good=False)
         segment_path.unlink(); segment_path.write_bytes(segment_raw); redirect.unlink()
 
-    with fixture() as (root, session, git, write, call, prepare, finish):
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
         base_body = ('def provenance():\n'
                      + ''.join(f'    value_{i} = "base-{i:04d}-' + 'x' * 45 + '"\n'
                                for i in range(600))
@@ -1901,7 +1902,7 @@ def high_confidence_component_union():
         assert all(path in owner_patch for path in manifest['semantic_paths'])
 
 def components_ownership_and_instructions():
-    with fixture() as (root, session, git, write, call, prepare, finish):
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
         write('AGENTS.md', 'Repository constraint.\n'); write('src/AGENTS.md', 'Source constraint.\n')
         write('src/a.ts', 'import { dependency } from "./dep";\nexport function alpha() { return dependency(); }\n')
         write('src/dep.ts', 'export function dependency() { return 1; }\n')
@@ -2107,9 +2108,9 @@ def receipt_read_audits():
         stream.write_text('changed\n'); call('receipt', session, '1', good=False, error='invalid or stale read audit')
 
 def seat_local_recovery():
-    with fixture() as (root, session, git, write, call, prepare, finish):
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
         roster = {'seats': [
-            {'seat': seat, 'extra': False, 'adapter': 'agent',
+            {'seat': seat, 'extra': False, 'adapter': 'claude',
              'model': 'model-' + seat, 'effort': 'max'} for seat in seats]}
         (session / 'roster.json').write_text(json.dumps(roster))
         parent = prepare('parent', 'risk', *assign)
@@ -2131,7 +2132,7 @@ def seat_local_recovery():
             'seat': 'terra', 'snapshot_tree': parent['snapshot_tree'],
             'roster_sha256': parent['inputs']['roster.json'],
             'assignment_sha256': module.digest(module.encoded(parent['assignments']['terra'])),
-            'bundle': bundles[1], 'adapter': 'agent',
+            'bundle': bundles[1], 'adapter': 'claude',
             'model': 'model-terra', 'effort': 'max',
             'patch_chunks_mode': 'auto', 'source_context_enabled': True}
         assert child['assignments']['terra']['scope'] == 'full'
@@ -2245,8 +2246,8 @@ def seat_local_recovery():
         assert ordinary_receipt['schema_version'] == 1
         assert 'selected_generations' not in ordinary_receipt and 'replacements' not in ordinary_receipt
 
-def narrow_agent_requires_proven_reads():
-    with fixture() as (root, session, git, write, call, prepare, finish):
+def narrow_seat_requires_proven_reads():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
         write('main.py', 'def oversized():\n' + ''.join(
             f'    value_{index} = "{index:04d}-' + 'x' * 50 + '"\n' for index in range(1200))
               + '    return value_1199\n')
@@ -2255,7 +2256,7 @@ def narrow_agent_requires_proven_reads():
             (session / f'r1-{seat}.prompt.md').write_text(call('render', session / 'r1-evidence.manifest.json', seat))
             (session / f'r1-{seat}.json').write_text('{"summary":"checked","findings":[]}')
             (session / f'r1-{seat}.exit').write_text('0\n')
-            assert assignment['adapter'] == 'agent'
+            assert assignment['adapter'] == 'claude'
         for seat in manifest['assignments']:
             write_agent_audit(session, '1', seat)
         call('receipt', session, '1')
@@ -2283,8 +2284,8 @@ def narrow_agent_requires_proven_reads():
         call('receipt', session, 'narrow-corrupt', good=False,
              error='read audit evidence coverage mismatch')
 
-def full_agent_requires_proven_reads():
-    with fixture() as (root, session, git, write, call, prepare, finish):
+def full_seat_requires_proven_reads():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
         manifest = prepare('full-agent')
         seat = manifest['mechanical_owner']; manifest_path = session / 'rfull-agent-evidence.manifest.json'
         assert manifest['assignments'][seat]['scope'] == 'full'
@@ -2306,6 +2307,54 @@ def full_agent_requires_proven_reads():
             write_agent_audit(session, 'full-agent-corrupt', assigned)
         (session / f'rfull-agent-corrupt-{seat}.read-audit.json').write_text('{}')
         call('receipt', session, 'full-agent-corrupt', good=False)
+
+def unenforced_agent_seat_binds_only_its_prompt():
+    # The default fixture roster is all `agent` - what a Claude Code host produces when no Claude
+    # CLI is signed in. Such a CODE panel now runs evidence mode: every agent row is recorded in
+    # `unenforced_seats` and reported `enforced: false`, so the panel is never certified.
+    # What unenforcement costs is pinned here too. With no read audit, only the prompt still binds a
+    # seat's artifacts to this manifest, because the prompt carries the manifest hash; the transcript
+    # and the result are free, and a sibling panel's can be swapped in undetected. That is inherent -
+    # nothing else names the panel - and it is why such a panel is not certified. It is still strictly
+    # better than the rule it replaced, under which the whole panel was skipped and no seat, agent or
+    # CLI, got a manifest, a receipt or any binding at all.
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        manifest = prepare('code', 'risk', *assign)
+        assert manifest['unenforced_seats'] == sorted(seats), manifest['unenforced_seats']
+        prepare('sibling', 'risk', *assign)
+        for label, summary, raw in (('code', 'checked', '{}\n'),
+                                    ('sibling', 'sibling', '{"other":true}\n')):
+            path = session / f'r{label}-evidence.manifest.json'
+            for seat in manifest['assignments']:
+                (session / f'r{label}-{seat}.prompt.md').write_text(call('render', path, seat))
+                (session / f'r{label}-{seat}.json').write_text(
+                    json.dumps({'summary': summary, 'findings': []}))
+                (session / f'r{label}-{seat}.exit').write_text('0\n')
+                (session / f'r{label}-{seat}.stream.ndjson').write_text(raw)
+        # The production shape: nothing writes a read audit for an Agent row, so none exists. The
+        # receipt path must complete anyway rather than dying on the missing file.
+        assert not list(session.glob('r*-*.read-audit.json'))
+        verified = json.loads(call('verify-panel', session, 'code'))
+        assert verified['advisories'] == {}
+        for suffix, detected in (('prompt.md', True), ('stream.ndjson', False), ('json', False)):
+            target = session / f'rcode-sol.{suffix}'; saved = target.read_bytes()
+            target.write_bytes((session / f'rsibling-sol.{suffix}').read_bytes())
+            call('verify-panel', session, 'code', good=not detected)
+            target.write_bytes(saved)
+        (session / 'rcode-terra.exit').write_text('1\n')
+        call('receipt', session, 'code', good=False, error='seat failed: terra')
+        prepare('repair', 'repair', '--assignment', 'terra=' + bundles[1],
+                '--parent-assignment', 'code:terra')
+        child_path = session / 'rrepair-evidence.manifest.json'
+        (session / 'rrepair-terra.prompt.md').write_text(call('render', child_path, 'terra'))
+        (session / 'rrepair-terra.json').write_text('{"summary":"repair","findings":[]}')
+        (session / 'rrepair-terra.exit').write_text('0\n')
+        (session / 'rrepair-terra.stream.ndjson').write_text('{}\n')
+        composite = json.loads(
+            call('verify-panel', session, 'code', '--replacement', 'terra=repair'))
+        assert all(row['enforced'] is False and row['audit_sha256'] is None
+                   for row in composite['selected_generations'].values()), \
+            composite['selected_generations']
 
 def scoped_names_and_gitlink_lifecycle():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -2405,8 +2454,9 @@ cases = (
     budget_omissions_are_segmented_or_retained, innermost_declarations_and_bounded_anchors,
     high_confidence_component_union, components_ownership_and_instructions,
     instruction_override_precedence, empty_source_context, bounded_work_and_memory,
-    receipt_read_audits, seat_local_recovery, narrow_agent_requires_proven_reads,
-    full_agent_requires_proven_reads, scoped_names_and_gitlink_lifecycle,
+    receipt_read_audits, seat_local_recovery, narrow_seat_requires_proven_reads,
+    full_seat_requires_proven_reads, unenforced_agent_seat_binds_only_its_prompt,
+    scoped_names_and_gitlink_lifecycle,
     component_and_full_tampering, offline_structure_and_predecessor_walk,
     local_ignored_instructions,
 )
@@ -2435,8 +2485,8 @@ groups = {
     ),
     'scale_receipts': (
         wallet_scale, bounded_work_and_memory, receipt_read_audits,
-        seat_local_recovery, narrow_agent_requires_proven_reads,
-        full_agent_requires_proven_reads,
+        seat_local_recovery, narrow_seat_requires_proven_reads,
+        full_seat_requires_proven_reads, unenforced_agent_seat_binds_only_its_prompt,
     ),
 }
 partition = tuple(test for group in groups.values() for test in group)

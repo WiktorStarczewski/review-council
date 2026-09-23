@@ -277,11 +277,15 @@ omit evidence preparation, and render each seat with the per-seat form and
 `--read-only "$S/docs.txt"`.
 
 Evidence mode depends on each launched row's adapter, never on the host.
-If any launched code-panel roster row has adapter `agent`, skip evidence preparation
-for the whole code panel and keep `MANIFEST` empty. Claude Code plugin subagents ignore
+Code preparation RUNS with an Agent seat and records it as unenforced rather than
+skipping the panel. Claude Code plugin subagents ignore
 hook frontmatter, so an Agent seat cannot provide the enforced tool transcript required
-by evidence mode. Render and launch every code seat at full legacy scope under the same
-panel label. Rows on adapters `codex`, `gemini`, and `claude` launch through
+by evidence mode, but skipping preparation for the whole panel meant that wherever Claude
+rows resolve to `agent`, no code panel reached evidence mode at all. The manifest lists
+those seats in `unenforced_seats`, validation skips only their read audit while still
+binding their result, exit and prompt hashes, and the receipt row carries
+`enforced: false`. Report such a panel as partially unenforced; never describe it as
+certified. Rows on adapters `codex`, `gemini`, and `claude` launch through
 `rev-seat.sh` and keep evidence mode.
 `claude_adapter` decides whether a Claude Code host seats Claude rows on `agent`; a Codex host always seats them on `claude`.
 Plan preparation RUNS with an Agent seat and records it as unenforced rather than

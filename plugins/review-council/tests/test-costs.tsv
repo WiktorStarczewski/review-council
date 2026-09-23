@@ -309,3 +309,4 @@ t-skill.sh::test_skill_rev_mutate_invocation_is_runnable	1	normal
 t-skill.sh::test_skill_rev_mutate_precedes_commit	1	normal
 t-mutate.sh::test_mutate_surfaces_what_failed_on_a_pinned_hunk	1	normal
 t-skill.sh::test_skill_states_what_a_prediction_is_read_against	1	normal
+t-plan-evidence.sh::test_code_evidence_records_unenforced_agent_seats	2	normal

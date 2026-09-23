@@ -495,7 +495,9 @@ Claude CLI seats receive only `Read` and `Grep`, with bounded pre-tool and post-
 checks. Inherited settings, plugins, MCP configuration, and editing tools are disabled.
 Codex seats use the read-only sandbox. Agent-adapter seats (`claude_adapter: agent`, or
 `auto` without a signed-in Claude CLI) disable editing tools, but their native read hooks
-cannot satisfy evidence mode or schema-4 plan evidence.
+cannot satisfy enforced evidence. They run evidence mode anyway and are recorded in the
+manifest's `unenforced_seats`: their read audit is skipped rather than the panel, so a panel
+holding one is partially unenforced and never certified.
 
 Nonfinal Claude CLI responses carry a continuation instruction: while required review
 work remains, the response must include the next allowed read or search. Progress text
@@ -900,8 +902,9 @@ Full reference: [docs/config.md](docs/config.md).
   cache.
 - Quota fallback covers quota and capacity only. It does not hide authentication,
   configuration, model, adapter, or unknown failures.
-- A schema-4 plan panel cannot seat a reviewer on the `agent` adapter, because that
-  adapter cannot provide the enforced read transcript; other roster rows may use it.
+- A panel seating a reviewer on the `agent` adapter is never certified, because that
+  adapter cannot provide the enforced read transcript. It still runs: the seat is recorded
+  unenforced and the panel is reported as partially unenforced.
 - Explicit numeric code reviews and document reviews retain full scope instead of
   adaptive evidence narrowing.
 - Evidence chunks prove complete change reads but do not replace source reads for
