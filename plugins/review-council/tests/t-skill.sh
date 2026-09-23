@@ -599,6 +599,7 @@ skill_adapter_and_plan_gate_contract() {
   local refusal_skip='Report such a panel as an unenforced plan panel; never describe it'
   local code_unenforced='Code preparation RUNS with an Agent seat and records it as unenforced rather than'
   local code_report='Report such a panel as partially unenforced; never describe it as'
+  local ungated_audit='recorded in `unenforced_audits` with its would-have-passed verdict; nothing gates on it, because whether an Agent transcript clears the gate is unmeasured and gating on an unmeasured pass rate would trade one blanket refusal for another.'
   # The prohibition this replaced: a whole code panel skipped evidence preparation because one row
   # was an Agent row. Claude rows resolve to `agent` wherever the Claude CLI is not seated, so that
   # sentence meant evidence mode never ran on a code panel at all.
@@ -625,6 +626,7 @@ skill_adapter_and_plan_gate_contract() {
     assert_flat_fixed "$host records a plan prep refusal as the skip reason" "$H" "$refusal_skip"
     assert_flat_fixed "$host prepares code evidence with an Agent row" "$H" "$code_unenforced"
     assert_flat_fixed "$host never calls a partly unenforced code panel certified" "$H" "$code_report"
+    assert_flat_fixed "$host records the unenforced audit verdict without gating on it" "$H" "$ungated_audit"
     assert_nogrep "$host never skips a whole code panel over an Agent row" "$H" "$blanket_skip"
     assert_nogrep "$host has no host-tied evidence rule" "$H" "$host_tied"
     assert_flat_fixed "$host defaults to one plan-completeness seat" "$H" "$plan_default"

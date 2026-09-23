@@ -286,8 +286,12 @@ rows resolve to `agent`, no code panel reached evidence mode at all. The manifes
 those seats in `unenforced_seats`, validation skips only their read audit while still
 binding their result, exit and prompt hashes, and the receipt row carries
 `enforced: false`. Report such a panel as partially unenforced; never describe it as
-certified. Rows on adapters `codex`, `gemini`, and `claude` launch through
-`rev-seat.sh` and keep evidence mode.
+certified. An unenforced seat's read audit is produced anyway, from the transcript you
+copied, and recorded in `unenforced_audits` with its would-have-passed verdict; nothing
+gates on it, because whether an Agent transcript clears the gate is unmeasured and gating
+on an unmeasured pass rate would trade one blanket refusal for another. Report that
+verdict; never read it as certification. Rows on adapters `codex`, `gemini`, and `claude`
+launch through `rev-seat.sh` and keep evidence mode.
 `claude_adapter` decides whether a Claude Code host seats Claude rows on `agent`; a Codex host always seats them on `claude`.
 Plan preparation RUNS with an Agent seat and records it as unenforced rather than
 refusing. An Agent seat cannot supply the enforced read transcript, so a plan panel
@@ -542,7 +546,8 @@ edit the working tree while seats run.
 - For each Agent seat, copy `<output_file>` to `$S/r<N>-<seat>.stream.ndjson` without opening it
   in the orchestrator context, so profiling retains the complete subagent transcript.
   An Agent seat is an unenforced evidence seat, not an excluded one: it is launched under the same
-  manifest as every other row and recorded in `unenforced_seats`.
+  manifest as every other row, recorded in `unenforced_seats`, and the transcript left here is what
+  the receipt audits, ungated, to record whether that seat would have passed.
 
 | seat exit | action |
 |---|---|

@@ -2308,16 +2308,56 @@ def full_seat_requires_proven_reads():
         (session / f'rfull-agent-corrupt-{seat}.read-audit.json').write_text('{}')
         call('receipt', session, 'full-agent-corrupt', good=False)
 
+def write_agent_stream(session, label, seat):
+    """Emit a Claude/Agent transcript that actually proves this seat's assigned reads.
+
+    write_agent_audit fabricates an audit; this fabricates the TRANSCRIPT and lets the real
+    auditor derive the audit from it, which is the only way to show that an agent seat can clear
+    the gate at all.
+    """
+    manifest = json.loads((session / f'r{label}-evidence.manifest.json').read_text())
+    assignment = manifest['assignments'][seat]
+    context = manifest['source_context']['seats'][seat]
+    events = []
+    def read(identity, path, text, **extra):
+        events.append({'type':'assistant','message':{'content':[
+            {'type':'tool_use','id':identity,'name':'Read',
+             'input':dict({'file_path':str(path)}, **extra)}]}})
+        events.append({'type':'user','message':{'content':[
+            {'type':'tool_result','tool_use_id':identity,'content':text}]}})
+    if assignment['patch_read_mode'] == 'chunks':
+        for row in manifest['patch_sets'][assignment['patch_set']]['chunks']:
+            artifact = session / row['artifact']
+            read('patch-%d' % row['index'], artifact, artifact.read_text())
+    elif assignment['patch_bytes']:
+        patch = Path(assignment['patch']); lines = patch.read_text().splitlines(keepends=True)
+        for start in range(1, len(lines) + 1, 240):
+            end = min(len(lines), start + 239)
+            read('patch-%d' % start, patch, ''.join(lines[start - 1:end]),
+                 offset=start, limit=end - start + 1)
+    for index, shard in enumerate(context['shards'], 1):
+        artifact = session / shard['artifact']
+        read('packet-%d' % index, artifact, artifact.read_text())
+    index_path = session / f'r{label}-evidence.md'
+    read('evidence-index', index_path, index_path.read_text())
+    for number, required in enumerate(context['required_source_ranges'], 1):
+        for segment in required['segments']:
+            artifact = session / segment['artifact']
+            read('segment-%d-%d' % (number, segment['index']), artifact, artifact.read_text())
+    (session / f'r{label}-{seat}.stream.ndjson').write_text(
+        ''.join(json.dumps(event) + '\n' for event in events))
+
 def unenforced_agent_seat_binds_only_its_prompt():
     # The default fixture roster is all `agent` - what a Claude Code host produces when no Claude
     # CLI is signed in. Such a CODE panel now runs evidence mode: every agent row is recorded in
-    # `unenforced_seats` and reported `enforced: false`, so the panel is never certified.
-    # What unenforcement costs is pinned here too. With no read audit, only the prompt still binds a
-    # seat's artifacts to this manifest, because the prompt carries the manifest hash; the transcript
-    # and the result are free, and a sibling panel's can be swapped in undetected. That is inherent -
-    # nothing else names the panel - and it is why such a panel is not certified. It is still strictly
-    # better than the rule it replaced, under which the whole panel was skipped and no seat, agent or
-    # CLI, got a manifest, a receipt or any binding at all.
+    # `unenforced_seats` and reported `enforced: false`, so the panel is never certified. Its audit
+    # is produced anyway and its would-have-passed verdict recorded, and nothing gates on either.
+    # What unenforcement costs is pinned here too. With no enforced read audit, only the prompt
+    # still binds a seat's artifacts to this manifest, because the prompt carries the manifest hash;
+    # the transcript and the result are free, and a sibling panel's can be swapped in undetected.
+    # That is inherent - nothing else names the panel - and it is why such a panel is not certified.
+    # It is still strictly better than the rule it replaced, under which the whole panel was skipped
+    # and no seat, agent or CLI, got a manifest, a receipt or any binding at all.
     with fixture() as (root, session, git, write, call, prepare, finish):
         manifest = prepare('code', 'risk', *assign)
         assert manifest['unenforced_seats'] == sorted(seats), manifest['unenforced_seats']
@@ -2331,11 +2371,42 @@ def unenforced_agent_seat_binds_only_its_prompt():
                     json.dumps({'summary': summary, 'findings': []}))
                 (session / f'r{label}-{seat}.exit').write_text('0\n')
                 (session / f'r{label}-{seat}.stream.ndjson').write_text(raw)
-        # The production shape: nothing writes a read audit for an Agent row, so none exists. The
-        # receipt path must complete anyway rather than dying on the missing file.
+        # One seat gets a transcript that really proves its assigned reads. Without it every row
+        # below would read `would_pass: false` and the verdict would be a constant, not a
+        # measurement - which is exactly what it was until review-read-audit.py learned --result,
+        # since it had derived the result path from the enforced audit's own file name.
+        sol = manifest['assignments']['sol']
+        sol_prompt = session / 'rcode-sol.prompt.md'
+        # `## Your lens this round:` is added by rev-prompt.sh when it composes the launched prompt;
+        # the evidence render alone carries the scope and bundle lines but not the lens.
+        sol_prompt.write_text(sol_prompt.read_text()
+                              + '\n## Your lens this round: ' + sol['bundle'] + '\n')
+        write_agent_stream(session, 'code', 'sol')
+        # The production shape: nothing writes an enforced read audit for an Agent row.
         assert not list(session.glob('r*-*.read-audit.json'))
         verified = json.loads(call('verify-panel', session, 'code'))
         assert verified['advisories'] == {}
+        audits = verified['unenforced_audits']
+        assert set(audits) == set(seats), audits
+        assert audits['sol'] == {
+            'audit': 'rcode-sol.unenforced-audit.json',
+            'audit_sha256': module.digest((session / 'rcode-sol.unenforced-audit.json').read_bytes()),
+            'status': 'valid', 'would_pass': True, 'reason': None}, audits['sol']
+        for seat in ('terra', 'opus', 'sonnet'):
+            assert audits[seat]['status'] == 'invalid' and audits[seat]['would_pass'] is False
+            assert audits[seat]['reason'] == 'invalid or stale read audit: ' + seat, audits[seat]
+        # Recording an invalid audit must not gate by another route: the file is written under a
+        # name neither rev-attempt.py's hard-failure scan nor rev-profile.py's metric scan globs.
+        assert not list(session.glob('r*-*.read-audit.json'))
+        assert not list(session.glob('r*-*.audit.json'))
+        assert sorted(path.name for path in session.glob('rcode-*.unenforced-audit.json')) == sorted(
+            f'rcode-{seat}.unenforced-audit.json' for seat in seats)
+        missing = session / 'rcode-opus.stream.ndjson'; kept = missing.read_bytes()
+        missing.unlink()
+        absent = json.loads(call('verify-panel', session, 'code'))['unenforced_audits']['opus']
+        assert absent == {'audit': 'rcode-opus.unenforced-audit.json', 'audit_sha256': None,
+                          'status': None, 'would_pass': False, 'reason': 'no transcript'}, absent
+        missing.write_bytes(kept)
         for suffix, detected in (('prompt.md', True), ('stream.ndjson', False), ('json', False)):
             target = session / f'rcode-sol.{suffix}'; saved = target.read_bytes()
             target.write_bytes((session / f'rsibling-sol.{suffix}').read_bytes())
@@ -2353,6 +2424,7 @@ def unenforced_agent_seat_binds_only_its_prompt():
         composite = json.loads(
             call('verify-panel', session, 'code', '--replacement', 'terra=repair'))
         assert all(row['enforced'] is False and row['audit_sha256'] is None
+                   and row['unenforced_audit'] == composite['unenforced_audits'][row['seat']]
                    for row in composite['selected_generations'].values()), \
             composite['selected_generations']
 

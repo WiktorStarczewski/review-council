@@ -3960,7 +3960,305 @@ def validate_panel_coverage(manifest):
         raise ValueError('coverage requires all four bundles')
 
 
-def validate_results(session, manifest, manifest_hash, seats=None):
+def audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, result,
+               result_data, audit_path):
+    """Run the receipt's read-audit gate for one seat, raising on the first failure.
+
+    Lifted out of validate_results unchanged so an UNENFORCED seat can run the same gate
+    without it deciding the receipt. A second, parallel implementation would drift, and a
+    would-have-passed verdict produced by a different gate would measure nothing.
+    """
+    component_by_id = {component['id']: component for component in manifest['components']}
+    stream = Path(str(stem) + '.stream.ndjson')
+    audit = read_json(audit_path)
+    narrow = assignment['scope'] != 'full'
+    zero_tool_plan = (phase == 'plan' and assignment.get('plan_clusters') == []
+                      and assignment['patch_bytes'] == 0)
+    advisories = audit.get('advisories', []) if isinstance(audit, dict) else None
+    if (not isinstance(audit, dict) or type(audit.get('schema_version')) is not int or audit['schema_version'] != 2
+            or audit.get('status') != 'valid' or audit.get('narrow') is not narrow
+            or audit.get('adapter') != assignment['adapter'] or audit.get('violations') != []
+            or not isinstance(advisories, list)
+            or any(not isinstance(item, dict) or set(item) != {'code', 'tool'}
+                   or not isinstance(item.get('code'), str) or not item['code']
+                   or not isinstance(item.get('tool'), str) or not item['tool']
+                   for item in advisories)
+            or audit.get('prompt_sha256') != digest(prompt.read_bytes())
+            or audit.get('stream_sha256') != digest(stream.read_bytes())
+            or audit.get('result_sha256') != digest(result.read_bytes())
+            or audit.get('evidence_manifest_sha256') != manifest_hash):
+        raise ValueError('invalid or stale read audit: ' + seat)
+    if (any(type(audit.get(key)) is not int or audit[key] < 0 for key in
+            ('tool_calls', 'tool_turns', 'tool_output_bytes', 'max_tool_output_bytes',
+             'recognized_tool_calls', 'source_read_calls', 'packet_shards', 'packet_bytes',
+                 'packet_ranges', 'opened_source_ranges', 'finding_citations',
+                 'assigned_patch_bytes', 'assigned_patch_lines', 'assigned_patch_reads',
+                 'required_source_ranges_covered'))
+            or (audit['recognized_tool_calls'] < 1 and not zero_tool_plan)
+            or audit['recognized_tool_calls'] > audit['tool_calls']
+            or audit['max_tool_output_bytes'] > audit['tool_output_bytes']
+            or audit['packet_bytes'] > audit['tool_output_bytes']
+            or (assignment['patch_bytes'] > 0 and audit['assigned_patch_reads'] < 1)
+            or (assignment['patch_bytes'] == 0 and audit['assigned_patch_reads'] != 0)
+            or audit['assigned_patch_reads'] > audit['tool_calls']
+            or audit.get('assigned_patch_sha256') != assignment['patch_sha256']
+            or audit['assigned_patch_bytes'] != assignment['patch_bytes']
+            or audit['assigned_patch_lines'] != assignment['patch_lines']
+            or audit['assigned_patch_bytes'] > audit['tool_output_bytes']):
+        raise ValueError('invalid read audit counters: ' + seat)
+    patch_counter_fields = (
+        'patch_proof_calls', 'patch_proof_turns', 'patch_proof_visible_bytes',
+        'expected_patch_chunks', 'opened_patch_chunks')
+    if (any(type(audit.get(key)) is not int or audit[key] < 0
+            for key in patch_counter_fields)
+            or audit.get('patch_proof_mode') != assignment['patch_read_mode']
+            or audit['patch_proof_calls'] != audit['assigned_patch_reads']
+            or audit['patch_proof_turns'] > audit['patch_proof_calls']
+            or audit['patch_proof_visible_bytes'] > audit['tool_output_bytes']):
+        raise ValueError('invalid patch proof counters: ' + seat)
+    patch_ranges = audit.get('assigned_patch_ranges')
+    if (not isinstance(patch_ranges, list)
+            or any(not isinstance(row, dict) or set(row) != {'line_start', 'line_end'}
+                   or type(row.get('line_start')) is not int or type(row.get('line_end')) is not int
+                   or row['line_start'] < 1 or row['line_end'] < row['line_start']
+                   or row['line_end'] - row['line_start'] + 1 > 240
+                   or row['line_end'] > assignment['patch_lines'] for row in patch_ranges)
+            or patch_ranges != sorted(patch_ranges, key=lambda row: (row['line_start'], row['line_end']))
+            or len({(row['line_start'], row['line_end']) for row in patch_ranges}) != len(patch_ranges)):
+        raise ValueError('invalid assigned patch audit ranges: ' + seat)
+    if assignment['patch_read_mode'] == 'chunks':
+        expected_chunks = len(manifest['patch_sets'][assignment['patch_set']]['chunks'])
+        if (patch_ranges or audit['expected_patch_chunks'] != expected_chunks
+                or audit['opened_patch_chunks'] != expected_chunks
+                or audit['patch_proof_calls'] != expected_chunks):
+            raise ValueError('assigned patch chunk audit is incomplete: ' + seat)
+    else:
+        cursor = 1
+        for row in patch_ranges:
+            if row['line_start'] > cursor:
+                raise ValueError('assigned patch audit has an uncovered line gap: ' + seat)
+            cursor = max(cursor, row['line_end'] + 1)
+        if cursor != assignment['patch_lines'] + 1 or audit['assigned_patch_reads'] < len(patch_ranges):
+            raise ValueError('assigned patch audit is incomplete: ' + seat)
+    ranges = audit.get('source_ranges')
+    if (not isinstance(ranges, list) or any(not isinstance(row, dict) or set(row) != {
+            'path', 'line_start', 'line_end', 'origin'} or not within(row.get('path'), manifest['scope'])
+            or type(row.get('line_start')) is not int or type(row.get('line_end')) is not int
+            or row['line_start'] < 1 or row['line_end'] < row['line_start']
+            or (row.get('origin') == 'tool' and row['line_end'] - row['line_start'] + 1 > 240)
+            or row.get('origin') not in ('packet', 'tool') for row in ranges)):
+        raise ValueError('invalid read audit source ranges: ' + seat)
+    canonical = sorted(ranges, key=lambda row: (row['path'], row['line_start'], row['line_end'], row['origin']))
+    identities = {(row['path'], row['line_start'], row['line_end'], row['origin']) for row in ranges}
+    if ranges != canonical or len(identities) != len(ranges):
+        raise ValueError('noncanonical read audit source ranges: ' + seat)
+    packet_ranges = [row for row in ranges if row['origin'] == 'packet']
+    tool_ranges = [row for row in ranges if row['origin'] == 'tool']
+    opened = []
+    packet_keys = {(row['path'], row['line_start'], row['line_end']) for row in packet_ranges}
+    for shard in manifest['source_context']['seats'][seat]['shards']:
+        shard_keys = {(row['path'], row['line_start'], row['line_end']) for row in shard['ranges']}
+        if shard_keys and shard_keys <= packet_keys:
+            opened.append(shard)
+    expected_packet_keys = {(row['path'], row['line_start'], row['line_end'])
+                            for shard in opened for row in shard['ranges']}
+    if packet_keys != expected_packet_keys:
+        raise ValueError('read audit packet ranges do not match complete assigned shards: ' + seat)
+    context = manifest['source_context']['seats'][seat]
+    if len(opened) != len(context['shards']):
+        raise ValueError('read audit did not open every assigned source context shard: ' + seat)
+    required_covered = 0
+    required_intersected = False
+    for required in context['required_source_ranges']:
+        cursor = required['line_start']
+        for row in tool_ranges:
+            if (row['path'] == required['path']
+                    and row['line_start'] <= required['line_end']
+                    and required['line_start'] <= row['line_end']):
+                required_intersected = True
+            if row['path'] != required['path'] or row['line_end'] < cursor:
+                continue
+            if row['line_start'] > cursor:
+                break
+            cursor = max(cursor, row['line_end'] + 1)
+            if cursor > required['line_end']:
+                break
+        required_covered += cursor > required['line_end']
+    proof_keys = {'path', 'line_start', 'line_end', 'blob_tree', 'blob_oid', 'content_sha256'}
+    proofs = audit.get('required_source_range_proofs')
+    if (not isinstance(proofs, list)
+            or any(not isinstance(row, dict) or set(row) != proof_keys
+                   or not within(row.get('path'), manifest['scope'])
+                   or type(row.get('line_start')) is not int or type(row.get('line_end')) is not int
+                   or row['line_start'] < 1 or row['line_end'] < row['line_start']
+                   or row.get('blob_tree') not in (manifest['snapshot_tree'], manifest['base_tree'])
+                   or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', str(row.get('blob_oid')))
+                   or not re.fullmatch(r'[0-9a-f]{64}', str(row.get('content_sha256')))
+                   for row in proofs)):
+        raise ValueError('invalid required source range proofs: ' + seat)
+    proof_order = lambda row: (row['path'], row['line_start'], row['line_end'], row['blob_tree'],
+                               row['blob_oid'], row['content_sha256'])
+    if proofs != sorted(proofs, key=proof_order) or len({proof_order(row) for row in proofs}) != len(proofs):
+        raise ValueError('noncanonical required source range proofs: ' + seat)
+    expected_proofs = sorted(({
+        key: row[key] for key in proof_keys
+    } for row in context['required_source_ranges']), key=proof_order)
+    if any(proof not in expected_proofs for proof in proofs):
+        raise ValueError('required source range proof identity mismatch: ' + seat)
+    plan_name = f"r{manifest['label']}-plan.md" if phase == 'plan' else None
+    source_findings = [finding for finding in result_data['findings']
+                       if finding['file'] != plan_name]
+    cited = sum(any(row['path'] == finding['file']
+                    and row['line_start'] <= finding['line_end']
+                    and finding['line_start'] <= row['line_end'] for row in ranges)
+                for finding in source_findings)
+    boundary_paths = {path for component_id in context['components']
+                      for path in component_by_id[component_id]['boundary']}
+    boundary_intersected = any(row['path'] in boundary_paths for row in tool_ranges)
+    omitted_intersected = any(
+        row['path'] == omitted['path']
+        and row['line_start'] <= omitted['line_end']
+        and omitted['line_start'] <= row['line_end']
+        for row in tool_ranges for omitted in context['omitted_source_ranges'])
+    if (audit['packet_shards'] != len(opened)
+            or audit['packet_bytes'] != sum(shard['bytes'] for shard in opened)
+            or audit['packet_ranges'] != len(packet_ranges)
+            or audit['opened_source_ranges'] != len(tool_ranges)
+            or bool(tool_ranges) != bool(audit['source_read_calls'])
+            or (context['source_read_required']
+                and (audit['source_read_calls'] < 1
+                     or (not omitted_intersected if context['omitted_source_ranges']
+                         else not (boundary_intersected or required_intersected))
+                     or (context['required_source_ranges'] and context['role'] == 'specialist'
+                         and not required_intersected)))
+            or audit['required_source_ranges_covered'] != required_covered
+            or audit['required_source_ranges_covered'] != len(proofs)
+            or (context['role'] == 'integration'
+                and (required_covered != len(context['required_source_ranges'])
+                     or proofs != expected_proofs))
+            or audit['finding_citations'] != cited
+            or cited != len(source_findings)):
+        raise ValueError('read audit evidence coverage mismatch: ' + seat)
+    if phase == 'plan':
+        search_proofs = audit.get('plan_cluster_search_proofs')
+        source_proofs = audit.get('plan_cluster_source_proofs')
+        assigned_cluster_ids = set(assignment.get(
+            'plan_clusters', [cluster['id'] for cluster in manifest['plan']['clusters']]))
+        clusters = [cluster for cluster in manifest['plan']['clusters']
+                    if cluster['id'] in assigned_cluster_ids]
+        expected_searches = [(cluster['id'], cluster['search_contract']) for cluster in clusters]
+        actual_searches = [(row.get('cluster'), row.get('search_contract')) for row in search_proofs or []
+                           if isinstance(row, dict)]
+        expected_sources = [(cluster['id'], row['path'], row['line_start'], row['line_end'])
+                            for cluster in clusters for row in cluster['paths']]
+        actual_sources = [(row.get('cluster'), row.get('path'),
+                           row.get('line_start'), row.get('line_end'))
+                          for row in source_proofs or [] if isinstance(row, dict)]
+        expected_plan_citations = [
+            {'line_start': finding['line_start'], 'line_end': finding['line_end']}
+            for finding in result_data['findings'] if finding['file'] == plan_name]
+        def plan_range_covered(proof):
+            if proof['line_start'] is None:
+                return bool(proof['ranges'])
+            cursor = proof['line_start']
+            for source_range in sorted(proof['ranges'], key=lambda value: (
+                    value['line_start'], value['line_end'])):
+                if source_range['line_end'] < cursor:
+                    continue
+                if source_range['line_start'] > cursor:
+                    return False
+                cursor = max(cursor, source_range['line_end'] + 1)
+                if cursor > proof['line_end']:
+                    return True
+            return cursor > proof['line_end']
+        if (audit.get('plan_sha256') != manifest['plan']['sha256']
+                or audit.get('plan_artifact_sha256') != manifest['plan']['sha256']
+                or audit.get('plan_citation_ranges') != expected_plan_citations
+                or audit.get('plan_finding_citations') != len(expected_plan_citations)
+                or cited + len(expected_plan_citations) != len(result_data['findings'])
+                or actual_searches != expected_searches
+                or not all(set(row) == {
+                    'cluster', 'search_contract', 'call_id', 'output_sha256'}
+                           and isinstance(row['call_id'], str) and row['call_id']
+                           and re.fullmatch(r'[0-9a-f]{64}', str(row['output_sha256']))
+                           for row in search_proofs or [])
+                or any(cluster.get('search_proof') is not None and (
+                    row.get('call_id') != 'prepared:' + cluster['search_proof']['artifact']
+                    or row.get('output_sha256') != cluster['search_proof']['sha256'])
+                       for cluster, row in zip(clusters, search_proofs or []))
+                or actual_sources != expected_sources
+                or not all(set(row) == {
+                    'cluster', 'path', 'line_start', 'line_end', 'ranges'}
+                           and isinstance(row['ranges'], list) and row['ranges']
+                           and all(source_range in ranges for source_range in row['ranges'])
+                           and all(source_range['path'] == row['path']
+                                   for source_range in row['ranges'])
+                           and plan_range_covered(row)
+                           for row in source_proofs or [])):
+            raise ValueError('read audit plan proof mismatch: ' + seat)
+    elif (audit.get('plan_artifact_sha256') is not None
+          or audit.get('plan_citation_ranges') not in (None, [])
+          or audit.get('plan_finding_citations') not in (None, 0)):
+        raise ValueError('non-plan audit contains plan citation coverage: ' + seat)
+
+
+UNENFORCED_AUDIT_SUFFIX = '.unenforced-audit.json'
+
+
+def unenforced_verdict(session, manifest, manifest_hash, phase, seat, stem, assignment,
+                       prompt, result, result_data):
+    """Audit an unenforced seat's transcript and report whether it WOULD have passed the gate.
+
+    Nothing here gates: every path returns a verdict, including the ones where the auditor
+    cannot run. Whether an Agent transcript can clear the gate is unmeasured, and gating on an
+    unmeasured pass rate would trade one blanket refusal for another; recording it is how that
+    rate gets measured.
+
+    The audit lands on a name that neither rev-attempt.py's hard-failure scan
+    (`r*-*.read-audit.json`, `r*-*.audit.json`) nor rev-profile.py's metric scan globs. An
+    invalid advisory audit under either name would stop the session or move a measurement,
+    which is gating by another route.
+    """
+    stream = Path(str(stem) + '.stream.ndjson')
+    audit_path = Path(str(stem) + UNENFORCED_AUDIT_SUFFIX)
+    verdict = {'audit': audit_path.name, 'audit_sha256': None, 'status': None,
+               'would_pass': False, 'reason': None}
+    if not stream.is_file():
+        verdict['reason'] = 'no transcript'
+        return verdict
+    command = [sys.executable, str(Path(__file__).parent / 'lib' / 'review-read-audit.py'),
+               'audit', '--adapter', assignment['adapter'], '--raw', str(stream),
+               '--prompt', str(prompt), '--root', scope(session)['REV_ROOT'],
+               '--session', str(session), '--out', str(audit_path),
+               # --out is not the enforced name, so the result cannot be inferred from it.
+               '--result', str(result)]
+    deps = os.environ.get('REV_DEPS_DIR')
+    if deps:
+        command += ['--deps', deps]
+    try:
+        completed = subprocess.run(command, capture_output=True)
+    except OSError as error:
+        verdict['reason'] = 'read audit did not run: ' + str(error)
+        return verdict
+    if not audit_path.is_file():
+        verdict['reason'] = 'read audit did not run: exit ' + str(completed.returncode)
+        return verdict
+    verdict['audit_sha256'] = digest(audit_path.read_bytes())
+    try:
+        audit = read_json(audit_path)
+        if isinstance(audit, dict) and isinstance(audit.get('status'), str):
+            verdict['status'] = audit['status']
+        audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, result,
+                   result_data, audit_path)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError,
+            RecursionError) as error:
+        verdict['reason'] = str(error)
+    else:
+        verdict['would_pass'] = True
+    return verdict
+
+
+def validate_results(session, manifest, manifest_hash, seats=None, verdicts=None):
     result_hashes = {}
     component_by_id = {component['id']: component for component in manifest['components']}
     if seats is None:
@@ -4001,239 +4299,15 @@ def validate_results(session, manifest, manifest_hash, seats=None):
             agent_stream = Path(str(stem) + '.stream.ndjson')
             if agent_stream.exists():
                 result_hashes[agent_stream.name] = digest(agent_stream.read_bytes())
+            verdict = unenforced_verdict(session, manifest, manifest_hash, phase, seat, stem,
+                                         assignment, prompt, result, result_data)
+            if verdicts is not None:
+                verdicts[seat] = verdict
             continue
         audit_path = Path(str(stem) + '.read-audit.json')
         stream = Path(str(stem) + '.stream.ndjson')
-        audit = read_json(audit_path)
-        narrow = assignment['scope'] != 'full'
-        zero_tool_plan = (phase == 'plan' and assignment.get('plan_clusters') == []
-                          and assignment['patch_bytes'] == 0)
-        advisories = audit.get('advisories', []) if isinstance(audit, dict) else None
-        if (not isinstance(audit, dict) or type(audit.get('schema_version')) is not int or audit['schema_version'] != 2
-                or audit.get('status') != 'valid' or audit.get('narrow') is not narrow
-                or audit.get('adapter') != assignment['adapter'] or audit.get('violations') != []
-                or not isinstance(advisories, list)
-                or any(not isinstance(item, dict) or set(item) != {'code', 'tool'}
-                       or not isinstance(item.get('code'), str) or not item['code']
-                       or not isinstance(item.get('tool'), str) or not item['tool']
-                       for item in advisories)
-                or audit.get('prompt_sha256') != digest(prompt.read_bytes())
-                or audit.get('stream_sha256') != digest(stream.read_bytes())
-                or audit.get('result_sha256') != digest(result.read_bytes())
-                or audit.get('evidence_manifest_sha256') != manifest_hash):
-            raise ValueError('invalid or stale read audit: ' + seat)
-        if (any(type(audit.get(key)) is not int or audit[key] < 0 for key in
-                ('tool_calls', 'tool_turns', 'tool_output_bytes', 'max_tool_output_bytes',
-                 'recognized_tool_calls', 'source_read_calls', 'packet_shards', 'packet_bytes',
-                     'packet_ranges', 'opened_source_ranges', 'finding_citations',
-                     'assigned_patch_bytes', 'assigned_patch_lines', 'assigned_patch_reads',
-                     'required_source_ranges_covered'))
-                or (audit['recognized_tool_calls'] < 1 and not zero_tool_plan)
-                or audit['recognized_tool_calls'] > audit['tool_calls']
-                or audit['max_tool_output_bytes'] > audit['tool_output_bytes']
-                or audit['packet_bytes'] > audit['tool_output_bytes']
-                or (assignment['patch_bytes'] > 0 and audit['assigned_patch_reads'] < 1)
-                or (assignment['patch_bytes'] == 0 and audit['assigned_patch_reads'] != 0)
-                or audit['assigned_patch_reads'] > audit['tool_calls']
-                or audit.get('assigned_patch_sha256') != assignment['patch_sha256']
-                or audit['assigned_patch_bytes'] != assignment['patch_bytes']
-                or audit['assigned_patch_lines'] != assignment['patch_lines']
-                or audit['assigned_patch_bytes'] > audit['tool_output_bytes']):
-            raise ValueError('invalid read audit counters: ' + seat)
-        patch_counter_fields = (
-            'patch_proof_calls', 'patch_proof_turns', 'patch_proof_visible_bytes',
-            'expected_patch_chunks', 'opened_patch_chunks')
-        if (any(type(audit.get(key)) is not int or audit[key] < 0
-                for key in patch_counter_fields)
-                or audit.get('patch_proof_mode') != assignment['patch_read_mode']
-                or audit['patch_proof_calls'] != audit['assigned_patch_reads']
-                or audit['patch_proof_turns'] > audit['patch_proof_calls']
-                or audit['patch_proof_visible_bytes'] > audit['tool_output_bytes']):
-            raise ValueError('invalid patch proof counters: ' + seat)
-        patch_ranges = audit.get('assigned_patch_ranges')
-        if (not isinstance(patch_ranges, list)
-                or any(not isinstance(row, dict) or set(row) != {'line_start', 'line_end'}
-                       or type(row.get('line_start')) is not int or type(row.get('line_end')) is not int
-                       or row['line_start'] < 1 or row['line_end'] < row['line_start']
-                       or row['line_end'] - row['line_start'] + 1 > 240
-                       or row['line_end'] > assignment['patch_lines'] for row in patch_ranges)
-                or patch_ranges != sorted(patch_ranges, key=lambda row: (row['line_start'], row['line_end']))
-                or len({(row['line_start'], row['line_end']) for row in patch_ranges}) != len(patch_ranges)):
-            raise ValueError('invalid assigned patch audit ranges: ' + seat)
-        if assignment['patch_read_mode'] == 'chunks':
-            expected_chunks = len(manifest['patch_sets'][assignment['patch_set']]['chunks'])
-            if (patch_ranges or audit['expected_patch_chunks'] != expected_chunks
-                    or audit['opened_patch_chunks'] != expected_chunks
-                    or audit['patch_proof_calls'] != expected_chunks):
-                raise ValueError('assigned patch chunk audit is incomplete: ' + seat)
-        else:
-            cursor = 1
-            for row in patch_ranges:
-                if row['line_start'] > cursor:
-                    raise ValueError('assigned patch audit has an uncovered line gap: ' + seat)
-                cursor = max(cursor, row['line_end'] + 1)
-            if cursor != assignment['patch_lines'] + 1 or audit['assigned_patch_reads'] < len(patch_ranges):
-                raise ValueError('assigned patch audit is incomplete: ' + seat)
-        ranges = audit.get('source_ranges')
-        if (not isinstance(ranges, list) or any(not isinstance(row, dict) or set(row) != {
-                'path', 'line_start', 'line_end', 'origin'} or not within(row.get('path'), manifest['scope'])
-                or type(row.get('line_start')) is not int or type(row.get('line_end')) is not int
-                or row['line_start'] < 1 or row['line_end'] < row['line_start']
-                or (row.get('origin') == 'tool' and row['line_end'] - row['line_start'] + 1 > 240)
-                or row.get('origin') not in ('packet', 'tool') for row in ranges)):
-            raise ValueError('invalid read audit source ranges: ' + seat)
-        canonical = sorted(ranges, key=lambda row: (row['path'], row['line_start'], row['line_end'], row['origin']))
-        identities = {(row['path'], row['line_start'], row['line_end'], row['origin']) for row in ranges}
-        if ranges != canonical or len(identities) != len(ranges):
-            raise ValueError('noncanonical read audit source ranges: ' + seat)
-        packet_ranges = [row for row in ranges if row['origin'] == 'packet']
-        tool_ranges = [row for row in ranges if row['origin'] == 'tool']
-        opened = []
-        packet_keys = {(row['path'], row['line_start'], row['line_end']) for row in packet_ranges}
-        for shard in manifest['source_context']['seats'][seat]['shards']:
-            shard_keys = {(row['path'], row['line_start'], row['line_end']) for row in shard['ranges']}
-            if shard_keys and shard_keys <= packet_keys:
-                opened.append(shard)
-        expected_packet_keys = {(row['path'], row['line_start'], row['line_end'])
-                                for shard in opened for row in shard['ranges']}
-        if packet_keys != expected_packet_keys:
-            raise ValueError('read audit packet ranges do not match complete assigned shards: ' + seat)
-        context = manifest['source_context']['seats'][seat]
-        if len(opened) != len(context['shards']):
-            raise ValueError('read audit did not open every assigned source context shard: ' + seat)
-        required_covered = 0
-        required_intersected = False
-        for required in context['required_source_ranges']:
-            cursor = required['line_start']
-            for row in tool_ranges:
-                if (row['path'] == required['path']
-                        and row['line_start'] <= required['line_end']
-                        and required['line_start'] <= row['line_end']):
-                    required_intersected = True
-                if row['path'] != required['path'] or row['line_end'] < cursor:
-                    continue
-                if row['line_start'] > cursor:
-                    break
-                cursor = max(cursor, row['line_end'] + 1)
-                if cursor > required['line_end']:
-                    break
-            required_covered += cursor > required['line_end']
-        proof_keys = {'path', 'line_start', 'line_end', 'blob_tree', 'blob_oid', 'content_sha256'}
-        proofs = audit.get('required_source_range_proofs')
-        if (not isinstance(proofs, list)
-                or any(not isinstance(row, dict) or set(row) != proof_keys
-                       or not within(row.get('path'), manifest['scope'])
-                       or type(row.get('line_start')) is not int or type(row.get('line_end')) is not int
-                       or row['line_start'] < 1 or row['line_end'] < row['line_start']
-                       or row.get('blob_tree') not in (manifest['snapshot_tree'], manifest['base_tree'])
-                       or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', str(row.get('blob_oid')))
-                       or not re.fullmatch(r'[0-9a-f]{64}', str(row.get('content_sha256')))
-                       for row in proofs)):
-            raise ValueError('invalid required source range proofs: ' + seat)
-        proof_order = lambda row: (row['path'], row['line_start'], row['line_end'], row['blob_tree'],
-                                   row['blob_oid'], row['content_sha256'])
-        if proofs != sorted(proofs, key=proof_order) or len({proof_order(row) for row in proofs}) != len(proofs):
-            raise ValueError('noncanonical required source range proofs: ' + seat)
-        expected_proofs = sorted(({
-            key: row[key] for key in proof_keys
-        } for row in context['required_source_ranges']), key=proof_order)
-        if any(proof not in expected_proofs for proof in proofs):
-            raise ValueError('required source range proof identity mismatch: ' + seat)
-        plan_name = f"r{manifest['label']}-plan.md" if phase == 'plan' else None
-        source_findings = [finding for finding in result_data['findings']
-                           if finding['file'] != plan_name]
-        cited = sum(any(row['path'] == finding['file']
-                        and row['line_start'] <= finding['line_end']
-                        and finding['line_start'] <= row['line_end'] for row in ranges)
-                    for finding in source_findings)
-        boundary_paths = {path for component_id in context['components']
-                          for path in component_by_id[component_id]['boundary']}
-        boundary_intersected = any(row['path'] in boundary_paths for row in tool_ranges)
-        omitted_intersected = any(
-            row['path'] == omitted['path']
-            and row['line_start'] <= omitted['line_end']
-            and omitted['line_start'] <= row['line_end']
-            for row in tool_ranges for omitted in context['omitted_source_ranges'])
-        if (audit['packet_shards'] != len(opened)
-                or audit['packet_bytes'] != sum(shard['bytes'] for shard in opened)
-                or audit['packet_ranges'] != len(packet_ranges)
-                or audit['opened_source_ranges'] != len(tool_ranges)
-                or bool(tool_ranges) != bool(audit['source_read_calls'])
-                or (context['source_read_required']
-                    and (audit['source_read_calls'] < 1
-                         or (not omitted_intersected if context['omitted_source_ranges']
-                             else not (boundary_intersected or required_intersected))
-                         or (context['required_source_ranges'] and context['role'] == 'specialist'
-                             and not required_intersected)))
-                or audit['required_source_ranges_covered'] != required_covered
-                or audit['required_source_ranges_covered'] != len(proofs)
-                or (context['role'] == 'integration'
-                    and (required_covered != len(context['required_source_ranges'])
-                         or proofs != expected_proofs))
-                or audit['finding_citations'] != cited
-                or cited != len(source_findings)):
-            raise ValueError('read audit evidence coverage mismatch: ' + seat)
-        if phase == 'plan':
-            search_proofs = audit.get('plan_cluster_search_proofs')
-            source_proofs = audit.get('plan_cluster_source_proofs')
-            assigned_cluster_ids = set(assignment.get(
-                'plan_clusters', [cluster['id'] for cluster in manifest['plan']['clusters']]))
-            clusters = [cluster for cluster in manifest['plan']['clusters']
-                        if cluster['id'] in assigned_cluster_ids]
-            expected_searches = [(cluster['id'], cluster['search_contract']) for cluster in clusters]
-            actual_searches = [(row.get('cluster'), row.get('search_contract')) for row in search_proofs or []
-                               if isinstance(row, dict)]
-            expected_sources = [(cluster['id'], row['path'], row['line_start'], row['line_end'])
-                                for cluster in clusters for row in cluster['paths']]
-            actual_sources = [(row.get('cluster'), row.get('path'),
-                               row.get('line_start'), row.get('line_end'))
-                              for row in source_proofs or [] if isinstance(row, dict)]
-            expected_plan_citations = [
-                {'line_start': finding['line_start'], 'line_end': finding['line_end']}
-                for finding in result_data['findings'] if finding['file'] == plan_name]
-            def plan_range_covered(proof):
-                if proof['line_start'] is None:
-                    return bool(proof['ranges'])
-                cursor = proof['line_start']
-                for source_range in sorted(proof['ranges'], key=lambda value: (
-                        value['line_start'], value['line_end'])):
-                    if source_range['line_end'] < cursor:
-                        continue
-                    if source_range['line_start'] > cursor:
-                        return False
-                    cursor = max(cursor, source_range['line_end'] + 1)
-                    if cursor > proof['line_end']:
-                        return True
-                return cursor > proof['line_end']
-            if (audit.get('plan_sha256') != manifest['plan']['sha256']
-                    or audit.get('plan_artifact_sha256') != manifest['plan']['sha256']
-                    or audit.get('plan_citation_ranges') != expected_plan_citations
-                    or audit.get('plan_finding_citations') != len(expected_plan_citations)
-                    or cited + len(expected_plan_citations) != len(result_data['findings'])
-                    or actual_searches != expected_searches
-                    or not all(set(row) == {
-                        'cluster', 'search_contract', 'call_id', 'output_sha256'}
-                               and isinstance(row['call_id'], str) and row['call_id']
-                               and re.fullmatch(r'[0-9a-f]{64}', str(row['output_sha256']))
-                               for row in search_proofs or [])
-                    or any(cluster.get('search_proof') is not None and (
-                        row.get('call_id') != 'prepared:' + cluster['search_proof']['artifact']
-                        or row.get('output_sha256') != cluster['search_proof']['sha256'])
-                           for cluster, row in zip(clusters, search_proofs or []))
-                    or actual_sources != expected_sources
-                    or not all(set(row) == {
-                        'cluster', 'path', 'line_start', 'line_end', 'ranges'}
-                               and isinstance(row['ranges'], list) and row['ranges']
-                               and all(source_range in ranges for source_range in row['ranges'])
-                               and all(source_range['path'] == row['path']
-                                       for source_range in row['ranges'])
-                               and plan_range_covered(row)
-                               for row in source_proofs or [])):
-                raise ValueError('read audit plan proof mismatch: ' + seat)
-        elif (audit.get('plan_artifact_sha256') is not None
-              or audit.get('plan_citation_ranges') not in (None, [])
-              or audit.get('plan_finding_citations') not in (None, 0)):
-            raise ValueError('non-plan audit contains plan citation coverage: ' + seat)
+        audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, result,
+                   result_data, audit_path)
         for artifact in (audit_path, stream):
             result_hashes[artifact.name] = digest(artifact.read_bytes())
         for artifact in (result, exit_path, prompt):
@@ -4242,7 +4316,8 @@ def validate_results(session, manifest, manifest_hash, seats=None):
 
 
 def result_generation(session, manifest, manifest_hash, seat):
-    hashes = validate_results(session, manifest, manifest_hash, [seat])
+    verdicts = {}
+    hashes = validate_results(session, manifest, manifest_hash, [seat], verdicts)
     stem = f"r{manifest['label']}-{seat}"
     roster = read_json(session / 'roster.json')
     roster_seat = next(row for row in roster['seats'] if row.get('seat') == seat)
@@ -4266,6 +4341,10 @@ def result_generation(session, manifest, manifest_hash, seat):
         'enforced': seat not in manifest.get('unenforced_seats', []),
         'exit_sha256': hashes[stem + '.exit'],
     }
+    # Only an unenforced seat carries one, so an all-CLI generation row is byte-identical to the
+    # rows this receipt format already published.
+    if seat in verdicts:
+        row['unenforced_audit'] = verdicts[seat]
     return hashes, row
 
 
@@ -4985,13 +5064,14 @@ def parse_replacements(values):
     return replacements
 
 
-def verify_panel_selection(session, label, replacement_values=None, fresh=True, seen=None):
+def verify_panel_selection(session, label, replacement_values=None, fresh=True, seen=None,
+                           verdicts=None):
     manifest_path = session / f'r{label}-evidence.manifest.json'
     manifest, mh = validated_manifest(
         manifest_path, fresh=fresh, seen=seen, replay_plan_searches=False)
     replacements = parse_replacements(replacement_values)
     if not replacements:
-        results = validate_results(session, manifest, mh)
+        results = validate_results(session, manifest, mh, verdicts=verdicts)
         final_manifest, final_hash = validated_manifest(
             manifest_path, fresh=fresh, seen=seen, replay_plan_searches=False)
         if final_hash != mh or final_manifest != manifest:
@@ -5028,6 +5108,8 @@ def verify_panel_selection(session, label, replacement_values=None, fresh=True, 
             raise ValueError('mixed result generations: ' + ', '.join(sorted(overlap)))
         results.update(hashes)
         generations[seat] = generation
+        if verdicts is not None and 'unenforced_audit' in generation:
+            verdicts[seat] = generation['unenforced_audit']
     final_manifest, final_hash = validated_manifest(
         manifest_path, fresh=fresh, seen=seen, replay_plan_searches=False)
     if final_hash != mh or final_manifest != manifest:
@@ -5064,11 +5146,14 @@ def selected_advisories(session, manifest, generations):
 
 def verify_panel(args):
     session = Path(args.session).resolve()
+    verdicts = {}
     manifest, mh, results, generations, replacements = verify_panel_selection(
-        session, args.label, args.replacement)
+        session, args.label, args.replacement, verdicts=verdicts)
     data = {'manifest': f'r{args.label}-evidence.manifest.json',
             'manifest_sha256': mh, 'phase': manifest['phase'], 'results': results,
             'advisories': selected_advisories(session, manifest, generations)}
+    if verdicts:
+        data['unenforced_audits'] = verdicts
     if generations is not None:
         data.update(replacements=replacements, selected_generations=generations)
     print(json.dumps(data, sort_keys=True, separators=(',', ':')))
@@ -5077,8 +5162,9 @@ def verify_panel(args):
 def receipt(args):
     session = Path(args.session).resolve()
     manifest_path = session / f'r{args.label}-evidence.manifest.json'
+    verdicts = {}
     manifest, mh, results, generations, replacements = verify_panel_selection(
-        session, args.label, args.replacement)
+        session, args.label, args.replacement, verdicts=verdicts)
     if manifest['phase'] == 'plan':
         raise ValueError('plan panels never advance code coverage')
     data = {'schema_version': 1, 'manifest': manifest_path.name, 'manifest_sha256': mh,
@@ -5088,6 +5174,8 @@ def receipt(args):
             'findings': finding_ownership(
                 session, manifest,
                 {seat: row['label'] for seat, row in generations.items()} if generations else None)}
+    if verdicts:
+        data['unenforced_audits'] = verdicts
     if generations is not None:
         data.update(schema_version=2, replacements=replacements,
                     selected_generations=generations)
