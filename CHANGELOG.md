@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.2
+
+- A seat's read audit now fails only on codes that mean the review cannot be shown complete, cannot
+  be trusted as the seat's own work, or cannot be seen. Size codes (`tool-output-too-large`,
+  `tool-turn-output-too-large`, `unbounded-read`, `unbounded-search`), codex source-batch conduct
+  (`unsupported-source-batch`, `source-batch-lines-too-large`, `overlapping-source-batch`,
+  `source-batch-output-mismatch`) and the four proof-batch pacing counts are advisories. Before,
+  any one of them stopped the whole panel, forbade a retry and latched the session: on one 14-file
+  pull request a single `rg ... | head -80` over minified `dist/` output did that to a seat whose
+  review was otherwise complete.
+
+- Softening a code can never make an incomplete review complete, because a call that raises any
+  violation, fatal or advisory, now earns nothing: no source range, patch window or chunk, packet,
+  required segment, evidence-index or plan-search proof, and so no citation. Calls in an oversized
+  turn earn nothing either. An oversized output may not have reached the model in full, so its
+  bytes in the transcript prove nothing. Pacing counts are the one exception: they are taken over
+  reads that were each byte-proved on their own, and those reads keep their credit. A native Read
+  range is capped at 240 lines, as shell windows already were.
+
+- The read-only command policy now runs before every shape check, so a refused program such as a
+  `python3` heredoc or `sed ...; python3 -c ...` always reports `unsupported-shell-command` and
+  can never hide behind a batch or redirection code that is now an advisory.
+
+- In a repository with a `Cargo.lock`, when `REV_DEPS_DIR` is unset and the directory exists,
+  preflight records `$CARGO_HOME/registry/src` (default `~/.cargo/registry/src`) as
+  `REV_DEPS_DIR` in `scope.env`. `rev-seat.sh` exports it for every seat and prompt step 6 names it
+  as the only place to read pinned dependency source. A codex seat that listed and read its pinned
+  crate there had failed with `path-outside-scope`, which stays fatal everywhere else.
+
 ## 0.5.1
 
 - A codex seat that reads the frozen snapshot through `git show <snapshot tree>:<path> | sed -n`
