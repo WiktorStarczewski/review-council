@@ -4203,6 +4203,11 @@ def audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, r
 
 
 UNENFORCED_AUDIT_SUFFIX = '.unenforced-audit.json'
+# Both receipt-path children are short-lived, take every input as an argument, and now run per
+# selected seat on every verify-panel, receipt and predecessor walk. Inheriting this process's
+# stdin is what lets one block forever, and neither bounds its own work on a pathological input,
+# so each gets a closed stdin and a deadline far above any real run.
+CHILD_TIMEOUT_SECONDS = 300
 
 
 def unenforced_verdict(session, manifest, manifest_hash, phase, seat, stem, assignment,
@@ -4236,7 +4241,11 @@ def unenforced_verdict(session, manifest, manifest_hash, phase, seat, stem, assi
     if deps:
         command += ['--deps', deps]
     try:
-        completed = subprocess.run(command, capture_output=True)
+        completed = subprocess.run(command, capture_output=True, stdin=subprocess.DEVNULL,
+                                   timeout=CHILD_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        verdict['reason'] = f'read audit did not run: timed out after {CHILD_TIMEOUT_SECONDS}s'
+        return verdict
     except OSError as error:
         verdict['reason'] = 'read audit did not run: ' + str(error)
         return verdict
@@ -4280,7 +4289,14 @@ def validate_results(session, manifest, manifest_hash, seats=None, verdicts=None
         token = 'Evidence manifest SHA-256: ' + manifest_hash
         if token not in prompt.read_text().splitlines():
             raise ValueError('prompt manifest hash mismatch: ' + seat)
-        valid = subprocess.run([sys.executable, str(validator), str(result)], capture_output=True)
+        try:
+            valid = subprocess.run([sys.executable, str(validator), str(result)],
+                                   capture_output=True, stdin=subprocess.DEVNULL,
+                                   timeout=CHILD_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            # main() does not catch SubprocessError, so an uncaught one would surface as a
+            # traceback rather than a refusal.
+            raise ValueError('result validation timed out: ' + seat) from None
         if valid.returncode:
             raise ValueError('invalid result: ' + seat)
         result_data = read_json(result)
@@ -4292,8 +4308,12 @@ def validate_results(session, manifest, manifest_hash, seats=None, verdicts=None
         if seat in manifest.get('unenforced_seats', []):
             if assignment['adapter'] != 'agent':
                 raise ValueError('unenforced seat is not an agent adapter: ' + seat)
-            # Everything that DOES exist is still hashed, so the receipt binds the same bytes for
-            # this seat as for any other; only the audit is absent.
+            # Everything that DOES exist is HASHED into the receipt. That is not a binding: of
+            # these four, only the prompt is tied to this manifest, by the manifest-hash line
+            # checked above. The result, exit and transcript are recorded and never compared to
+            # this panel, so one filed under the wrong seat or round is not detected. The enforced
+            # path gets that binding from the read audit, which names manifest, prompt, stream and
+            # result in one record; an unenforced seat has no such record.
             for artifact in (result, exit_path, prompt):
                 result_hashes[artifact.name] = digest(artifact.read_bytes())
             agent_stream = Path(str(stem) + '.stream.ndjson')

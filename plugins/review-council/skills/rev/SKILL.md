@@ -283,15 +283,21 @@ skipping the panel. Claude Code plugin subagents ignore
 hook frontmatter, so an Agent seat cannot provide the enforced tool transcript required
 by evidence mode, but skipping preparation for the whole panel meant that wherever Claude
 rows resolve to `agent`, no code panel reached evidence mode at all. The manifest lists
-those seats in `unenforced_seats`, validation skips only their read audit while still
-binding their result, exit and prompt hashes, and the receipt row carries
-`enforced: false`. Report such a panel as partially unenforced; never describe it as
-certified. An unenforced seat's read audit is produced anyway, from the transcript you
-copied, and recorded in `unenforced_audits` with its would-have-passed verdict; nothing
-gates on it, because whether an Agent transcript clears the gate is unmeasured and gating
-on an unmeasured pass rate would trade one blanket refusal for another. Report that
-verdict; never read it as certification. Rows on adapters `codex`, `gemini`, and `claude`
-launch through `rev-seat.sh` and keep evidence mode.
+those seats in `unenforced_seats`, validation skips only their read audit, hashes their
+result, exit and prompt into the receipt, and the receipt row carries `enforced: false`.
+Be exact about what that leaves proven: the prompt is bound to this manifest, but the
+result, exit and transcript are only hashed into the receipt, never compared to this
+panel, so a result or transcript filed under the wrong seat or round is recorded rather
+than detected. The orchestrator writes each Agent seat's result by hand, so a misfiling
+is the realistic failure here, not an attacker.
+Report such a panel as partially unenforced; never describe it as certified.
+An unenforced seat's read audit is produced anyway, from the transcript you copied, and
+recorded in `unenforced_audits` with its would-have-passed verdict; nothing gates on it,
+because whether an Agent transcript clears the gate is unmeasured and gating on an
+unmeasured pass rate would trade one blanket refusal for another. Report that verdict;
+never read it as certification.
+Rows on adapters `codex`, `gemini`, and `claude` launch through `rev-seat.sh` and keep
+evidence mode.
 `claude_adapter` decides whether a Claude Code host seats Claude rows on `agent`; a Codex host always seats them on `claude`.
 Plan preparation RUNS with an Agent seat and records it as unenforced rather than
 refusing. An Agent seat cannot supply the enforced read transcript, so a plan panel
@@ -299,10 +305,15 @@ containing one is never certified - but the value of the gate is its schema-4
 structure (per-cluster closure obligations, sibling-site search proofs, source
 shards), and that structure works on an Agent seat. Refusing meant a Claude-only
 Agent roster got no fix-design gate at all, which is strictly worse. The manifest
-lists those seats in `unenforced_seats`, validation skips only their read audit
-while still binding their result, exit and prompt hashes, and the receipt row carries
-`enforced: false`. Report such a panel as an unenforced plan panel; never describe it
-as certified. Do not replace the schema-4 plan with a legacy full-scope task.
+lists those seats in `unenforced_seats`, validation skips only their read audit, hashes
+their result, exit and prompt into the receipt, and the receipt row carries
+`enforced: false`. Be exact about what that leaves proven: the prompt is bound to this
+manifest, but the result, exit and transcript are only hashed into the receipt, never
+compared to this panel, so a result or transcript filed under the wrong seat or round is
+recorded rather than detected. The orchestrator writes each Agent seat's result by hand,
+so a misfiling is the realistic failure here, not an attacker.
+Report such a panel as an unenforced plan panel; never describe it as certified.
+Do not replace the schema-4 plan with a legacy full-scope task.
 
 Before adaptive fan-out, set `PANEL_LABEL` to the artifact label and `PANEL_PHASE` to
 `discovery`, `risk`, `verification`, or `repair`. Build `EVIDENCE_ARGS` from the exact

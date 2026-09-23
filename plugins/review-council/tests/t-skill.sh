@@ -600,6 +600,14 @@ skill_adapter_and_plan_gate_contract() {
   local code_unenforced='Code preparation RUNS with an Agent seat and records it as unenforced rather than'
   local code_report='Report such a panel as partially unenforced; never describe it as'
   local ungated_audit='recorded in `unenforced_audits` with its would-have-passed verdict; nothing gates on it, because whether an Agent transcript clears the gate is unmeasured and gating on an unmeasured pass rate would trade one blanket refusal for another.'
+  # An unenforced seat's result, exit and transcript are HASHED into the receipt, never compared to
+  # the panel: only the prompt carries the manifest hash. Two independent fixtures proved a seat's
+  # result and transcript can be swapped in from another panel and accepted. The contract said
+  # "binding their result, exit and prompt hashes" in BOTH the code and the plan paragraph, so the
+  # count below is two, not one - the sentence was already wrong for plan panels in 0.4.8, and a
+  # one-paragraph fix would satisfy a bare fixed-string pin.
+  local not_bound='Be exact about what that leaves proven: the prompt is bound to this manifest, but the result, exit and transcript are only hashed into the receipt, never compared to this panel, so a result or transcript filed under the wrong seat or round is recorded rather than detected.'
+  local misfiling='The orchestrator writes each Agent seat'"'"'s result by hand, so a misfiling is the realistic failure here, not an attacker.'
   # The prohibition this replaced: a whole code panel skipped evidence preparation because one row
   # was an Agent row. Claude rows resolve to `agent` wherever the Claude CLI is not seated, so that
   # sentence meant evidence mode never ran on a code panel at all.
@@ -627,6 +635,14 @@ skill_adapter_and_plan_gate_contract() {
     assert_flat_fixed "$host prepares code evidence with an Agent row" "$H" "$code_unenforced"
     assert_flat_fixed "$host never calls a partly unenforced code panel certified" "$H" "$code_report"
     assert_flat_fixed "$host records the unenforced audit verdict without gating on it" "$H" "$ungated_audit"
+    assert_flat_fixed "$host says a misfiled unenforced result goes undetected" "$H" "$not_bound"
+    assert_flat_fixed "$host names hand transcription as the realistic failure" "$H" "$misfiling"
+    local bound_hits
+    bound_hits=$(tr '\n' ' ' < "$H" | tr -s ' ' | grep -o -F -- "$not_bound" | grep -c .)
+    assert_eq "$host carries the unenforced-binding caveat in both the code and plan paragraphs" \
+      "$bound_hits" 2
+    assert_nogrep "$host no longer claims an unenforced result is bound" "$H" \
+      'binding their result'
     assert_nogrep "$host never skips a whole code panel over an Agent row" "$H" "$blanket_skip"
     assert_nogrep "$host has no host-tied evidence rule" "$H" "$host_tied"
     assert_flat_fixed "$host defaults to one plan-completeness seat" "$H" "$plan_default"
@@ -668,6 +684,11 @@ skill_adapter_and_plan_gate_contract() {
   printf 'If any launched code-panel roster row has adapter `agent`, skip evidence preparation.\n' \
     > "$W/planted-blanket-skip.md"
   assert_grep "planted blanket code-evidence skip is detected" "$W/planted-blanket-skip.md" "$blanket_skip"
+  # Same for the overclaim: plant it so its negative assertion cannot pass vacuously.
+  printf 'validation skips only their read audit while still binding their result, exit and prompt hashes.\n' \
+    > "$W/planted-bound-claim.md"
+  assert_grep "planted unenforced-binding overclaim is detected" "$W/planted-bound-claim.md" \
+    'binding their result'
 
   assert_grep "Claude host documents claude_adapter values and override" "$K" \
     '`claude_adapter` \(`cli`, `agent`, or `auto`, default'
