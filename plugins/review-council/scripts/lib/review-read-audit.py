@@ -1989,11 +1989,12 @@ def post_hook(args):
 
 def audit(args):
     # A call raising any violation but a pacing count earns no credit. Credit granted before its
-    # violation surfaced (an oversized turn is judged last) is revoked by assessing again.
+    # violation surfaced (an oversized turn is judged last) is revoked by assessing again. Only
+    # newly revoked calls continue the loop, so it ends after at most one pass per call.
     blocked = set()
     while True:
         result, unique, revoked = assess(args, blocked)
-        if not revoked:
+        if revoked <= blocked:
             break
         blocked |= revoked
     publish(args.out, result)
