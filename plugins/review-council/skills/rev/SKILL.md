@@ -381,7 +381,7 @@ postlaunch check perform no search replay.
 Before triage or receipt, require every evidence-launched seat to have a read audit with schema 2 in `r<label>-<seat>.read-audit.json`, a valid status, exact
 manifest, prompt, stream, and result hashes, at least one recognized review tool, and
 canonical packet or bounded source ranges. Every finding citation must intersect one
-of those audited ranges. Agent-adapter findings must intersect a range from that
+of those audited ranges. A bounded `git show <snapshot tree>:<path>` read counts only when its bytes match the frozen snapshot blob; a read of the base or any other revision is context, never a range or a citation. Shell comments are ignored. Agent-adapter findings must intersect a range from that
 seat's assigned packet, and the audit must prove that every assigned shard was opened
 in full. The enforced read hooks are an earlier guard, not post-run evidence. A missing, malformed,
 stale, partial, oversized, unassigned, or unparseable packet or source range invalidates

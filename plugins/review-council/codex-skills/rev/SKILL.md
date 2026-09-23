@@ -379,7 +379,7 @@ postlaunch check perform no search replay.
 Before triage or receipt, require every evidence-launched seat to have a read audit with schema 2 in `r<label>-<seat>.read-audit.json`, a valid status, exact
 manifest, prompt, stream, and result hashes, at least one recognized review tool, and
 canonical packet or bounded source ranges. Every finding citation must intersect one
-of those audited ranges. A missing, malformed,
+of those audited ranges. A bounded `git show <snapshot tree>:<path>` read counts only when its bytes match the frozen snapshot blob; a read of the base or any other revision is context, never a range or a citation. Shell comments are ignored. A missing, malformed,
 stale, partial, oversized, unassigned, or unparseable packet or source range invalidates
 the whole attempt. The same is true for unsupported provider transcript shapes and
 zero-tool answers. In chunk mode, the audit also requires every hash-bound chunk once

@@ -55,6 +55,11 @@ CONTENT_COMMANDS = {
     'bat', 'strings', 'xxd', 'od', 'diff', 'head', 'tail', 'sed',
 }
 UNSUPPORTED_FILE_COMMANDS = {'column', 'paste', 'comm'}
+PINNED_OBJECT = re.compile(r'([0-9a-f]{40}|[0-9a-f]{64}):(.+)')
+# macOS /usr/bin/git is an xcrun shim; inside the codex sandbox it prints these on stderr before
+# git runs, and codex merges stderr into the command output.
+XCRUN_DIAGNOSTIC = re.compile(
+    r'(?:\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+ xcodebuild\[\d+:\d+\] |git: (?:warning|error): )[^\n]*\n')
 METADATA_COMMANDS = {
     ':', '[', 'basename', 'cd', 'date', 'df', 'dirname', 'du', 'echo', 'env', 'false',
     'file', 'git', 'md5', 'printf', 'pwd', 'read', 'readlink', 'realpath', 'shasum',
@@ -383,14 +388,43 @@ def split_shell(text):
     return [(part, separator) for part, separator in parts if part]
 
 
+def strip_shell_comments(text):
+    """Drop what the shell never executes: an unquoted `#` that starts a word, to end of line.
+
+    Reviewers annotate calls with a comment line, and a quote or `<` inside that comment
+    must not decide how the executed command is judged."""
+    kept = []
+    quote = None
+    escaped = False
+    i = 0
+    while i < len(text):
+        char = text[i]
+        if escaped:
+            escaped = False
+        elif char == '\\' and quote != "'":
+            escaped = True
+        elif quote:
+            if char == quote:
+                quote = None
+        elif char in ("'", '"'):
+            quote = char
+        elif char == '#' and (i == 0 or text[i - 1] in ' \t\n;&|()'):
+            while i < len(text) and text[i] != '\n':
+                i += 1
+            continue
+        kept.append(char)
+        i += 1
+    return ''.join(kept)
+
+
 def unwrap_shell(command):
     try:
         words = shlex.split(command)
     except ValueError:
-        return command
+        return strip_shell_comments(command)
     if len(words) == 3 and Path(words[0]).name in ('bash', 'sh', 'zsh', 'dash', 'ksh') and words[1] in ('-c', '-lc'):
-        return words[2]
-    return command
+        return strip_shell_comments(words[2])
+    return strip_shell_comments(command)
 
 
 def contains_unquoted(text, needle):
@@ -615,8 +649,36 @@ def canonical_range(path, start, end, root, origin='tool', cache=None):
     return {'path': relative, 'line_start': start, 'line_end': end, 'origin': origin}
 
 
+def pinned_object_read(pipeline):
+    """Parse `git show <full oid>:<path> | sed -n 'A,Bp'` (or `| head -n N`) into its oid and range.
+
+    The limiter must read only the pipe: a file operand would make it print another file."""
+    if len(pipeline) != 2 or not pipeline[0] or Path(pipeline[0][0]).name != 'git':
+        return None
+    words = pipeline[0][1:]
+    if words[:1] == ['--no-pager']:
+        words = words[1:]
+    match = PINNED_OBJECT.fullmatch(words[1]) if len(words) == 2 and words[0] == 'show' else None
+    if match is None or posixpath.normpath(match.group(2)) != match.group(2) \
+            or match.group(2).startswith(('/', '../')) or match.group(2) == '..':
+        return None
+    limiter = pipeline[1]
+    options = limiter[1:]
+    if not limiter or Path(limiter[0]).name not in ('sed', 'head') \
+            or len(options) != sum(1 for word in options if word.startswith('-')
+                                   or re.fullmatch(r'\d+(?:,\d+p)?', word)):
+        return None
+    selected = limiter_range(limiter)
+    if selected is None:
+        return None
+    return match.group(1), match.group(2), selected[0], selected[1]
+
+
 def shell_source_ranges(command, root, cache=None, session=None):
-    """Return exact current-source ranges and whether a source read was unparseable."""
+    """Return exact current-source ranges and whether a source read was unparseable.
+
+    A pinned-object read carries its oid as `tree`; the audit verifies it against that frozen
+    tree alone and grants no range for any object but the manifest snapshot tree."""
     try:
         parts = split_shell(unwrap_shell(command))
         parsed = [(command_words(part), separator) for part, separator in parts]
@@ -636,6 +698,11 @@ def shell_source_ranges(command, root, cache=None, session=None):
     direct_source = {'cat', 'less', 'more', 'awk', 'nl', 'bat', 'strings', 'xxd', 'od', 'sed', 'head', 'tail'}
     transparent = {'cat'}
     for pipeline in pipelines:
+        pinned = pinned_object_read(pipeline)
+        if pinned is not None:
+            ranges.append({'path': pinned[1], 'line_start': pinned[2], 'line_end': pinned[3],
+                           'origin': 'tool', 'tree': pinned[0]})
+            continue
         for position, words in enumerate(pipeline):
             if not words or Path(words[0]).name not in direct_source:
                 continue
@@ -1667,6 +1734,30 @@ def validate_plan_first_call(manifest, seat, adapter, calls, root, session):
     return [violation('invalid-plan-first-call', name)]
 
 
+def without_xcrun_preamble(value):
+    text = output_text(value)
+    if text is None:
+        return value
+    position = 0
+    while match := XCRUN_DIAGNOSTIC.match(text, position):
+        position = match.end()
+    return text[position:]
+
+
+def pinned_snapshot_ranges(call_ranges, entries, repository):
+    """Clamp snapshot-tree rows to their frozen blobs; None when a path is absent from the tree."""
+    rows = []
+    for row in call_ranges:
+        entry = entries.get(row['path'])
+        if entry is None:
+            return None
+        end = min(row['line_end'], len(split_lf_lines(repository.blob(entry))))
+        if row['line_start'] <= end:
+            rows.append({'path': row['path'], 'line_start': row['line_start'], 'line_end': end,
+                         'origin': 'tool'})
+    return rows
+
+
 def ranges_cover_file(ranges, total_lines):
     if total_lines == 0:
         return ranges == []
@@ -2080,11 +2171,30 @@ def audit(args):
         except (KeyError, OSError, TypeError, ValueError):
             failures.append(violation('invalid-source-context', args.adapter))
             frozen_entries = {}
+    snapshot_tree = manifest.get('snapshot_tree') if manifest is not None else None
     for call_id, name, value, call_ranges in pending_source_ranges:
         expected_values = []
+        trees = frozen_entries
+        if any('tree' in row for row in call_ranges):
+            # The base or any other revision is context only: never a receipt, never a citation.
+            if snapshot_tree not in frozen_entries \
+                    or any(row.get('tree', snapshot_tree) != snapshot_tree for row in call_ranges):
+                continue
+            trees = {snapshot_tree: frozen_entries[snapshot_tree]}
+            try:
+                call_ranges = pinned_snapshot_ranges(
+                    call_ranges, trees[snapshot_tree], evidence_repository)
+            except (OSError, ValueError):
+                call_ranges = None
+            if call_ranges is None:
+                failures.append(violation('source-output-mismatch', name))
+                continue
+            if not call_ranges:
+                continue
+            value = without_xcrun_preamble(value)
         try:
-            if frozen_entries:
-                for tree, entries in frozen_entries.items():
+            if trees:
+                for tree, entries in trees.items():
                     chunks = []
                     for row in call_ranges:
                         entry = entries.get(row['path'])
