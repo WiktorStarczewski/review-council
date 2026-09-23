@@ -170,6 +170,12 @@ test_prompt_evidence_contract() {
       assert_grep "$seat prompt prohibits numbered source pipelines" "$prompt" \
         'Do not use `nl -ba \.\.\. \| sed`'
       assert_grep "$seat prompt expands only for a concrete question" "$prompt" 'concrete question that could prove or refute a finding'
+      assert_grep "$seat prompt keeps the question out of the command" "$prompt" \
+        'in your reasoning, never as a comment inside the command'
+      assert_grep "$seat prompt warns that head bounds lines, not bytes" "$prompt" \
+        '`head` limits lines, not bytes'
+      assert_grep "$seat prompt never counts another revision as source" "$prompt" \
+        '`git show` of the base or any other revision is context only and never satisfies a required read or a citation'
       assert_grep "$seat prompt stops answered evidence paths" "$prompt" 'Stop that evidence path when the question is answered'
       assert_grep "$seat prompt treats packet excerpts as original source" "$prompt" \
         'source-context.*exact.*original source|exact original source.*source-context'
