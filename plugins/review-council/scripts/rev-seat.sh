@@ -87,6 +87,17 @@ AUDITF="$BASEN.read-audit.json"
 AUDIT_INVALID_OUT="$BASEN.audit-invalid.json"
 export REV_ACTIVE=1
 export SEAT MODEL EFFORT MODE ROOT PROMPT SCHEMA OUT LOG RAW BASE
+if [ -z "${REV_DEPS_DIR:-}" ] && [ -f "$SESSION/scope.env" ]; then
+  REV_DEPS_DIR=$(python3 - "$SESSION/scope.env" <<'PY'
+import shlex, sys
+for line in open(sys.argv[1]).read().splitlines():
+    key, _, value = line.partition('=')
+    if key == 'REV_DEPS_DIR':
+        print(shlex.split(value)[0])
+PY
+) || REV_DEPS_DIR=""
+fi
+[ -z "${REV_DEPS_DIR:-}" ] || export REV_DEPS_DIR
 preserve_audit_invalid_result() {
   if [ -s "$OUT" ]; then mv -f "$OUT" "$AUDIT_INVALID_OUT"
   else rm -f "$OUT" "$AUDIT_INVALID_OUT"

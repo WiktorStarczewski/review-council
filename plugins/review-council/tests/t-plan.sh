@@ -81,3 +81,23 @@ PY
   assert_grep "oversized plan prompt warns" "$S/plan-warn" 'plan prompt.*exceeds 3000 words'
   assert_exit "missing plan file is refused" 1 "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-sol plan-completeness "x" --plan "$S/no-such-plan.md"
 }
+
+# Prompt step 6 names the pinned-dependency root: the environment's REV_DEPS_DIR, else scope.env's.
+test_prompt_names_dependency_root() {
+  local S="$T/deps-prompt-session"; mkdir -p "$S"
+  printf "REV_BASE='0000000'\nREV_BRANCH='feat'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" "$T" > "$S/scope.env"
+  printf 'src/a.ts\n' > "$S/files.txt"
+  local out
+  out=$(env -u REV_DEPS_DIR "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-sol correctness "no deps")
+  assert_grep "step 6 is rendered" "$out" '^6\. Expand to another bounded block'
+  assert_nogrep "no dependency root names no directory" "$out" 'Read pinned dependency source only under'
+  printf "REV_DEPS_DIR='%s'\n" "$T/cargo home/registry/src" >> "$S/scope.env"
+  out=$(env -u REV_DEPS_DIR "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-sol correctness "scope deps")
+  assert_grep "step 6 names the scope.env dependency root" "$out" \
+    "^6\. Expand .*Read pinned dependency source only under $T/cargo home/registry/src\.$"
+  out=$(REV_DEPS_DIR=/tmp/depsview "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-sol correctness "env deps")
+  assert_grep "the environment's dependency root wins" "$out" \
+    '^6\. Expand .*Read pinned dependency source only under /tmp/depsview\.$'
+  out=$(env -u REV_DEPS_DIR REV_SEAT_OFFLINE=1 "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-sol correctness "offline")
+  assert_nogrep "a registry root is not described as a lockfile view" "$out" 'one directory per pinned crate'
+}

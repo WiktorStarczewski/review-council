@@ -110,9 +110,10 @@ else
     HAS_UNTRACKED=1
   fi
   # Parsed, never sourced: a repo path with a space or a branch name with shell metacharacters must not execute.
-  REV_BASE=""; REV_BRANCH=""; REV_DEFAULT=""; REV_ROOT=""; REV_SCOPE=""; k=""; v=""
+  REV_BASE=""; REV_BRANCH=""; REV_DEFAULT=""; REV_ROOT=""; REV_SCOPE=""; SCOPE_DEPS_DIR=""; k=""; v=""
   while IFS='=' read -r k v || [ -n "$k" ]; do
     case "$k" in
+      REV_DEPS_DIR) SCOPE_DEPS_DIR=$(unq "$v");;
       REV_BASE) REV_BASE=$(unq "$v");;
       REV_BRANCH) REV_BRANCH=$(unq "$v");;
       REV_DEFAULT) REV_DEFAULT=$(unq "$v");;
@@ -381,7 +382,12 @@ You are one independent reviewer on a read-only multi-model code review panel. S
 3. Read the smallest useful line window around each match. Every source Read call must set an explicit one-based `offset` and a `limit` of at most 240 lines. Every Grep or search call must set a result limit of at most 80. Only exact full-read artifacts and document inputs named in this prompt are exceptions.
 4. Shell commands that print source, diffs, or logs must select at most 240 inclusive lines, so `END - START + 1 <= 240`. Shell searches over multiple files need a global `| head -81` limiter; at most 80 result lines are accepted, and an 81st line invalidates the audit. `rg --max-count` alone is per file. Use portable byte-preserving `sed -n 'START,ENDp' 'FILE'` for source windows. Never put backticks or command substitutions in shell search patterns. Do not use `nl -ba ... | sed`; its added prefixes change the bytes, and a rejected call invalidates the audit. `head` limits lines, not bytes: keep searches off generated or minified files such as `dist/`, where one line can pass the output ceiling. Read original source from the working tree; `git show` of the base or any other revision is context only and never satisfies a required read or a citation.
 5. Batch independent bounded tool calls into one turn with a 32 KiB combined output ceiling. Ordered patch-chunk, required-source-segment, and evidence-index phases may advance in one turn using at most the rendered proof read limit and a 60 KiB combined output ceiling. Source-context packets and repository reads keep the ordinary 32 KiB turn ceiling, and repository expansion begins in a later turn. Keep each shell tool call to one producer pipeline. Never mix source reads and searches in one shell call.
-6. Expand to another bounded block, file, or pinned dependency only to answer a concrete question that could prove or refute a finding. Name the concrete symbol or invariant question in your reasoning, never as a comment inside the command, then make the tool call that bounded window.
+EOC
+    DEPS_ROOT=${REV_DEPS_DIR:-${SCOPE_DEPS_DIR:-}}
+    printf '%s' "6. Expand to another bounded block, file, or pinned dependency only to answer a concrete question that could prove or refute a finding. Name the concrete symbol or invariant question in your reasoning, never as a comment inside the command, then make the tool call that bounded window."
+    if [ -n "$DEPS_ROOT" ]; then printf ' Read pinned dependency source only under %s.' "$DEPS_ROOT"; fi
+    echo
+    cat <<'EOC'
 7. Stop that evidence path when the question is answered. Finish every assigned check and expand again when evidence is insufficient; never treat the navigation index or a summary as proof.
 8. After the evidence index, use at most 16 repository tool calls. Start no new evidence path after call 12; use the remaining calls only to refute or cite candidates, then return the required JSON.
 

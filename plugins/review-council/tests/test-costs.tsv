@@ -321,3 +321,5 @@ t-read-bounds.sh::test_audit_severity_refused_programs_win_over_shape	3	normal
 t-read-bounds.sh::test_audit_severity_independence_stays_fatal	3	normal
 t-read-bounds.sh::test_audit_severity_dependency_root	3	normal
 t-read-bounds.sh::test_audit_code_catalog_is_classified	3	normal
+t-scopeenv.sh::test_scopeenv_records_cargo_registry_root	1	normal
+t-plan.sh::test_prompt_names_dependency_root	1	normal
