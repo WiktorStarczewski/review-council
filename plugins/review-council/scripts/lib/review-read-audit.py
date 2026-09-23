@@ -2022,10 +2022,6 @@ def assess(args, blocked):
     source_cache = {}
     failures = []
 
-    def flag(call_id, code, tool):
-        failures.append(violation(code, tool))
-        blocked.add(call_id)
-
     if not prompt_lines:
         failures.append(violation('missing-prompt', args.adapter))
     evidence_scoped, declared_manifest_hash = evidence_manifest_declaration(prompt_lines)
@@ -2118,24 +2114,27 @@ def assess(args, blocked):
     verified_call_ranges = {}
     pending_source_ranges = []
     for call_id, (name, data, turn) in calls.items():
-        for item in validate_call(
-                name, data, roots, root, session, authorized, complete_paths, source_cache,
-                dependency, args.adapter, source_batch_enabled):
-            flag(call_id, item['code'], item['tool'])
+        call_failures = validate_call(
+            name, data, roots, root, session, authorized, complete_paths, source_cache,
+            dependency, args.adapter, source_batch_enabled)
+        failures.extend(call_failures)
+        if call_failures:
+            blocked.add(call_id)
         if name.lower() in RECOGNIZED_TOOLS:
             recognized_tool_calls += 1
         if call_id not in outputs:
-            flag(call_id, 'missing-tool-output', name)
+            failures.append(violation('missing-tool-output', name))
             continue
         output = outputs[call_id]
         size = output['bytes']
         turn_sizes[turn] = turn_sizes.get(turn, 0) + size
         if size > OUTPUT_BYTES and not byte_exempt(name, data, root, session, complete_paths):
-            flag(call_id, 'tool-output-too-large', name)
+            failures.append(violation('tool-output-too-large', name))
+            blocked.add(call_id)
         if not output['success']:
             continue
         if too_many_results(name, data, output['value']):
-            flag(call_id, 'discovery-output-too-large', name)
+            failures.append(violation('discovery-output-too-large', name))
         call_ranges = []
         try:
             direct = direct_source_range(name, data, root, source_cache, session)
@@ -2146,9 +2145,9 @@ def assess(args, blocked):
                     data.get('command', ''), root, source_cache, session)
                 call_ranges.extend(shell_ranges)
                 if unparseable:
-                    flag(call_id, 'unsupported-source-range', name)
+                    failures.append(violation('unsupported-source-range', name))
         except (OSError, TypeError, ValueError):
-            flag(call_id, 'unsupported-source-range', name)
+            failures.append(violation('unsupported-source-range', name))
         if call_ranges:
             pending_source_ranges.append((call_id, name, output['value'], call_ranges))
             if source_batch_enabled and name.lower() in SHELL_TOOLS and len(call_ranges) > 1:
@@ -2223,7 +2222,7 @@ def assess(args, blocked):
             except (OSError, ValueError):
                 call_ranges = None
             if call_ranges is None:
-                flag(call_id, 'source-output-mismatch', name)
+                failures.append(violation('source-output-mismatch', name))
                 continue
             if not call_ranges:
                 continue
@@ -2250,14 +2249,15 @@ def assess(args, blocked):
                           for expected in expected_values)
         except (OSError, UnicodeError, ValueError):
             matched = False
-        if not matched:
-            flag(call_id, 'source-batch-output-mismatch' if call_id in source_batch_call_ids
-                 else 'source-output-mismatch', name)
-        else:
+        if matched:
             credited.add(call_id)
             source_read_call_ids.add(call_id)
             verified_call_ranges[call_id] = call_ranges
             tool_ranges.extend(call_ranges)
+        else:
+            failures.append(violation(
+                'source-batch-output-mismatch' if call_id in source_batch_call_ids
+                else 'source-output-mismatch', name))
 
     packet_ranges = []
     packet_bytes = 0
@@ -2276,7 +2276,7 @@ def assess(args, blocked):
     exact_patch_chunk_calls = set()
     exact_evidence_index_calls = set()
     required_segment_calls = []
-    # Byte-proved ordered reads, credited or not: pacing and the proof-turn exemption count these.
+    # Byte-proved ordered reads, credited or not: the pacing counts are taken over these.
     paced_chunk_calls = []
     paced_packet_calls = set()
     paced_index_calls = set()
@@ -2329,15 +2329,15 @@ def assess(args, blocked):
                 for path in paths_opened_by_call(name, data, root):
                     if SOURCE_PACKET_NAME.fullmatch(path.name) and path.parent == session:
                         if path not in assigned_paths:
-                            flag(call_id, 'unassigned-source-packet', name)
+                            failures.append(violation('unassigned-source-packet', name))
                         else:
                             complete = complete_packet_read(name, data, path, root)
                             exact_output = complete and delivered_matches(
                                 args.adapter, name, output['value'], path, 1, file_line_count(path))
                             if not complete:
-                                flag(call_id, 'partial-source-packet', name)
+                                failures.append(violation('partial-source-packet', name))
                             if complete and not exact_output:
-                                flag(call_id, 'source-packet-output-mismatch', name)
+                                failures.append(violation('source-packet-output-mismatch', name))
                             if exact_output:
                                 paced_packet_calls.add(call_id)
                             if exact_output and call_id not in blocked:
@@ -2386,13 +2386,13 @@ def assess(args, blocked):
                     for path in opened:
                         if path.parent == session and PATCH_CHUNK_NAME.fullmatch(path.name):
                             if path not in chunk_by_path:
-                                flag(call_id, 'unassigned-patch-chunk', name)
+                                failures.append(violation('unassigned-patch-chunk', name))
                                 continue
                             duplicate = path in seen_chunk_paths
                             row = chunk_by_path[path]
                             complete = complete_packet_read(name, data, path, root)
                             if not complete:
-                                flag(call_id, 'partial-patch-chunk', name)
+                                failures.append(violation('partial-patch-chunk', name))
                                 continue
                             try:
                                 metadata = path.lstat()
@@ -2401,14 +2401,14 @@ def assess(args, blocked):
                             except OSError:
                                 safe = False
                             if not safe:
-                                flag(call_id, 'redirected-patch-chunk', name)
+                                failures.append(violation('redirected-patch-chunk', name))
                                 continue
                             if not delivered_matches_bytes(
                                     args.adapter, name, output['value'], path.read_bytes(), 1):
-                                flag(call_id, 'assigned-patch-output-mismatch', name)
+                                failures.append(violation('assigned-patch-output-mismatch', name))
                                 continue
                             if duplicate:
-                                flag(call_id, 'duplicate-patch-chunk', name)
+                                failures.append(violation('duplicate-patch-chunk', name))
                                 continue
                             paced_chunk_calls.append((call_id, turn))
                             if call_id in blocked:
@@ -2443,24 +2443,26 @@ def assess(args, blocked):
                     requested = assigned_patch_ranges_for_call(
                         name, data, assigned_patch, root, assigned_patch_lines)
                     if len(requested) > 1:
-                        flag(call_id, 'ambiguous-assigned-patch-read', name)
+                        failures.append(violation('ambiguous-assigned-patch-read', name))
                         continue
                     for start, end in requested:
                         if end < start and ranges_cover_file(
                                 verified_patch_ranges, assigned_patch_lines):
-                            flag(call_id, 'redundant-assigned-patch-read', name)
+                            failures.append(violation('redundant-assigned-patch-read', name))
                             continue
                         expected_patch = byte_range_lines(assigned_patch_line_index, start, end)
-                        if not delivered_matches_bytes(
+                        if delivered_matches_bytes(
                                 args.adapter, name, output['value'], expected_patch, start):
-                            flag(call_id, 'assigned-patch-output-mismatch', name)
-                        elif call_id not in blocked:
+                            if call_id in blocked:
+                                continue
                             credited.add(call_id)
                             assigned_patch_reads += 1
                             verified_patch_ranges.append((start, end))
                             proof_call_ids.add(call_id)
                             proof_turns.add(turn)
                             patch_proof_visible_bytes += output['bytes']
+                        else:
+                            failures.append(violation('assigned-patch-output-mismatch', name))
                 if not ranges_cover_file(verified_patch_ranges, assigned_patch_lines):
                     failures.append(violation('missing-assigned-patch-range', args.adapter))
                 elif not ranges_cover_file_in_order(verified_patch_ranges, assigned_patch_lines):
@@ -2485,13 +2487,13 @@ def assess(args, blocked):
                         continue
                     assigned_segment = required_segment_paths.get(path)
                     if assigned_segment is None:
-                        flag(call_id, 'unassigned-required-source-segment', name)
+                        failures.append(violation('unassigned-required-source-segment', name))
                         continue
                     required_index, required, segment = assigned_segment
                     identity = (required_index, segment['index'])
                     duplicate = identity in seen_required_segments
                     if not complete_packet_read(name, data, path, root):
-                        flag(call_id, 'partial-required-source-segment', name)
+                        failures.append(violation('partial-required-source-segment', name))
                         continue
                     try:
                         metadata = path.lstat()
@@ -2502,15 +2504,15 @@ def assess(args, blocked):
                         safe = False
                         raw = b''
                     if not safe:
-                        flag(call_id, 'redirected-required-source-segment', name)
+                        failures.append(violation('redirected-required-source-segment', name))
                         continue
                     if (hashlib.sha256(raw).hexdigest() != segment['content_sha256']
                             or not delivered_matches_bytes(
                                 args.adapter, name, output['value'], raw, 1)):
-                        flag(call_id, 'required-source-output-mismatch', name)
+                        failures.append(violation('required-source-output-mismatch', name))
                         continue
                     if duplicate:
-                        flag(call_id, 'duplicate-required-source-segment', name)
+                        failures.append(violation('duplicate-required-source-segment', name))
                         continue
                     paced_segment_calls.append((call_id, turn))
                     if call_id in blocked:
@@ -2608,9 +2610,9 @@ def assess(args, blocked):
             root, session, complete_paths))
         proof_exempt = ordered_proof_turn_exempt(
             adapter_read_batch_limit, output_calls,
-            {call_id for call_id, _ in paced_chunk_calls}
-            | {call_id for call_id, _ in paced_segment_calls}
-            | paced_index_calls,
+            exact_patch_chunk_calls
+            | {call_id for call_id, _ in required_segment_calls}
+            | exact_evidence_index_calls,
             size)
         if not ordinary_exempt and not proof_exempt:
             failures.append(violation('tool-turn-output-too-large', args.adapter))
@@ -2662,7 +2664,6 @@ def assess(args, blocked):
                         failures.append(violation('missing-plan-cluster-search', args.adapter))
                     else:
                         call_id, result_hash = matches[0]
-                        credited.add(call_id)
                         plan_cluster_search_proofs.append({
                             'cluster': cluster['id'], 'search_contract': cluster['search_contract'],
                             'call_id': call_id, 'output_sha256': result_hash})

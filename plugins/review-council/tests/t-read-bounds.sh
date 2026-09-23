@@ -1069,17 +1069,20 @@ def turn(*calls):
     for call_id, command_text, output in calls:
         events.append({'type':'item.completed','item':{'id':call_id,'type':'command_execution','command':command_text,
                                                        'aggregated_output':output,'exit_code':0}})
-if mode in ('sibling', 'paced', 'paced-altered'):
+if mode in ('sibling', 'paced', 'paced-altered', 'paced-oversized'):
     # Severity: the first segment shares its turn with an oversized prompt read, or the first two
-    # segments share one turn past the Codex batch limit of one.
+    # segments share one turn past the Codex batch limit of one, with or without that read.
     first, second = segments[0], segments[1]
     calls = [('source-' + str(row['index']), "cat '" + str(session / row['artifact']) + "'",
               (session / row['artifact']).read_text()) for row in (first, second)]
     if mode == 'paced-altered':
         calls[1] = calls[1][:2] + (('X' if calls[1][2][:1] != 'X' else 'Y') + calls[1][2][1:],)
+    oversized = ('oversized', "cat -- '" + str(session / 'r9-sol.prompt.md') + "'", 'z' * (33 * 1024))
     if mode == 'sibling':
-        turn(calls[0], ('oversized', "cat -- '" + str(session / 'r9-sol.prompt.md') + "'", 'z' * (33 * 1024)))
+        turn(calls[0], oversized)
         turn(calls[1])
+    elif mode == 'paced-oversized':
+        turn(*calls, oversized)
     else:
         turn(*calls)
     segments = segments[2:]
@@ -1149,6 +1152,7 @@ PY
 sibling|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,tool-output-too-large@command_execution,tool-turn-output-too-large@codex;advisories=-
 paced|valid;violations=-;advisories=evidence-proof-batch-too-large@codex,required-source-segment-batch-too-large@codex
 paced-altered|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,required-source-output-mismatch@command_execution;advisories=-
+paced-oversized|invalid;violations=evidence-proof-batch-too-large@codex,missing-required-source-range@codex,missing-required-source-segment@codex,required-source-segment-batch-too-large@codex,tool-output-too-large@command_execution,tool-turn-output-too-large@codex;advisories=-
 CASES
 
     write_required_transcript live-window
@@ -2764,7 +2768,7 @@ cases = [
     ("sed -n '1,2p' src/a#b.rs", [], ([('src/a#b.rs', 1, 2)], False)),
     ("rg -n '#include' src | head -81", [], ([], False)),
     ("# note\nsed -n '1,2p' 'src/a.rs'\nrg -n x src | head -81", ['unsupported-source-batch'], None),
-    ("# it's a comment, but the command is not\nsed -n '1,2p' 'src/a.rs' 'unterminated", ['unsupported-shell-shape'], None),
+    ("# it's a comment, but the command is not\nsed -n '1,2p' 'src/a.rs' 'unterminated", ['unsupported-shell-command'], None),
 ]
 failed = False
 for command, want_codes, want_ranges in cases:
@@ -2852,8 +2856,8 @@ PY
 # severity_transcript <session> <label> <adapter> <spec-json>: writes r<label>-sol.stream.ndjson.
 # The prefix proves the assigned patch (windows or chunks), every packet and the evidence index,
 # one call per turn. `sibling` puts an oversized prompt read in the same turn as one prefix call;
-# `batch_chunks` reads those chunks in one turn and `alter_chunk` changes one chunk's delivered
-# bytes. `tail` is a list of turns; a call is {"cmd","out"}, {"cmd","out_lines":[path,start,end]},
+# `batch_chunks` reads those chunks in one turn, `alter_chunk` changes one chunk's delivered
+# bytes, `join` moves named prefix calls into the first one's turn and `repeat` reads one twice. `tail` is a list of turns; a call is {"cmd","out"}, {"cmd","out_lines":[path,start,end]},
 # {"sed":[path,start,end],"tamper"}, {"batch":[[path,start,end],...],"tamper"}, {"oversized":true}
 # or, for gemini, {"tool","input","out"} and {"read":[path,offset,limit]}.
 severity_transcript() {
@@ -2929,9 +2933,14 @@ else:
 for index, shard in enumerate(context['shards'], 1):
     call = artifact(session / shard['artifact']); named['packet-' + str(index)] = call; turns.append([call])
 named['index'] = artifact(session / f'r{label}-evidence.md'); turns.append([named['index']])
+def turn_of(name):
+    return next(turn for turn in turns if any(call is named[name] for call in turn))
+for name in spec.get('join', [])[1:]:
+    moved = turn_of(name); turns.remove(moved); turn_of(spec['join'][0]).extend(moved)
+if spec.get('repeat'):
+    turn_of(spec['repeat']).append(dict(named[spec['repeat']]))
 if spec.get('sibling'):
-    target = named[spec['sibling']]
-    next(turn for turn in turns if any(call is target for call in turn)).append({'oversized': True})
+    turn_of(spec['sibling']).append({'oversized': True})
 turns.extend(spec.get('tail', []))
 events = []
 for turn in turns:
@@ -3078,6 +3087,23 @@ test_audit_severity_pacing_keeps_credit() {
     assert_eq "the same batch with an altered chunk is incomplete" \
       "$(severity_audit "$R" "$S" 33 codex)" \
       "$(severity_expect invalid "assigned-patch-output-mismatch@command_execution,missing-assigned-patch-chunk@codex" -)"
+
+    # Pacing is counted over byte-proved reads, so an oversized turn that voids their credit
+    # still reports how many proof reads it batched.
+    local size='tool-output-too-large@command_execution,tool-turn-output-too-large@codex'
+    severity_transcript "$S" 33 codex "{\"batch_chunks\":[1,2],\"sibling\":\"chunk-1\",\"tail\":[$clean]}"
+    assert_eq "an oversized chunk batch keeps its chunk pacing count" \
+      "$(severity_audit "$R" "$S" 33 codex)" \
+      "$(severity_expect invalid "evidence-proof-batch-too-large@codex,missing-assigned-patch-chunk@codex,patch-chunk-batch-too-large@codex,$size" -)"
+    severity_transcript "$S" 33 codex "{\"join\":[\"chunk-3\",\"index\"],\"sibling\":\"chunk-3\",\"tail\":[$clean]}"
+    assert_eq "an oversized chunk and index turn keeps its proof pacing count" \
+      "$(severity_audit "$R" "$S" 33 codex)" \
+      "$(severity_expect invalid "evidence-proof-batch-too-large@codex,missing-assigned-patch-chunk@codex,missing-evidence-index@codex,$size" -)"
+    severity_findings "$S" 32
+    severity_transcript "$S" 32 codex "{\"repeat\":\"packet-1\",\"sibling\":\"packet-1\",\"tail\":[$clean]}"
+    assert_eq "an oversized packet batch keeps its packet pacing count" \
+      "$(severity_audit "$R" "$S" 32 codex)" \
+      "$(severity_expect invalid "missing-source-packet@codex,source-packet-batch-too-large@codex,$size" -)"
   )
 }
 
