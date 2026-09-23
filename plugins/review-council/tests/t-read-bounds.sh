@@ -2477,3 +2477,298 @@ PY
     assert_eq "search helpers reuse the declared command set" "$?" 0
   )
 }
+
+# Command shapes below come from two recorded codex seats on one PR. The first read the frozen
+# snapshot tree through `git show <tree>:<path> | sed -n` with a `# Question:` comment line on
+# every call; the second ran a line-bounded search over a minified bundle (about 1 MB returned)
+# beside a bounded `git show <base commit>:<path>` read.
+pinned_read_fixture() {
+  local R=$1 S=$2 label=$3
+  mkrepo "$R"; mkdir -p "$R/src" "$S"
+  python3 - "$R" <<'PY' || return
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+(root / 'src/asset.rs').write_text(''.join(f'pub const V{i}: u32 = {i};\n' for i in range(60)))
+(root / 'src/types.ts').write_text(''.join(f'export interface Asset{i} {{ amount: number }}\n' for i in range(8)))
+(root / 'src/big.txt').write_text(''.join(f'{i:04d} ' + 'y' * 55 + '\n' for i in range(700)))
+PY
+  git -C "$R" add . && git -C "$R" commit -qm base || return
+  local base; base=$(git -C "$R" rev-parse HEAD)
+  python3 - "$R" <<'PY' || return
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+(root / 'src/asset.rs').write_text(''.join(f'pub const V{i}: u32 = {i} + 1;\n' for i in range(60)))
+PY
+  git -C "$R" commit -qam head || return
+  printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+    "$base" "$R" > "$S/scope.env"
+  printf 'src/asset.rs\n' > "$S/files.txt"; : > "$S/untracked.txt"
+  printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+  local manifest seat bundle
+  manifest=$(REV_SOURCE_CONTEXT=0 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" "$label" --phase discovery) || return
+  seat=$(python3 - "$manifest" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+for seat, context in doc['source_context']['seats'].items():
+    if doc['assignments'][seat]['adapter'] == 'codex' and context['source_read_required']:
+        print(seat)
+        break
+PY
+) || return
+  [ -n "$seat" ] || { fail "pinned-read fixture assigns a codex seat a required source read"; return 1; }
+  bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"][sys.argv[2]]["bundle"])' "$manifest" "$seat") || return
+  "$SCRIPTS/rev-prompt.sh" "$S" "$label" "$seat" "$bundle" pinned-read --evidence "$manifest" > "$S/fixture.prompt" || return
+  printf '%s\n' "$manifest" > "$S/fixture.manifest"; printf '%s\n' "$seat" > "$S/fixture.seat"
+  printf '%s\n' "$base" > "$S/fixture.base"
+}
+
+# Writes a codex transcript: patch windows, then MODE's repository reads around the evidence index.
+pinned_read_transcript() {
+  python3 - "$1" "$2" "$3" "$4" "$5" <<'PY'
+import json, pathlib, subprocess, sys
+manifest_path, out, root, base, mode = sys.argv[1:6]
+manifest = json.load(open(manifest_path)); root = pathlib.Path(root)
+session = pathlib.Path(manifest_path).parent
+seat = out.rsplit('/', 1)[1].split('-', 1)[1].rsplit('.stream.ndjson', 1)[0]
+snap = manifest['snapshot_tree']; base_tree = manifest['base_tree']
+events = []
+def command(call_id, text, output):
+    wrapped = '/bin/zsh -lc "' + text + '"'
+    events.extend([
+        {'type': 'item.started', 'item': {'id': call_id, 'type': 'command_execution',
+                                          'command': wrapped, 'aggregated_output': '',
+                                          'exit_code': None, 'status': 'in_progress'}},
+        {'type': 'item.completed', 'item': {'id': call_id, 'type': 'command_execution',
+                                            'command': wrapped, 'aggregated_output': output,
+                                            'exit_code': 0, 'status': 'completed'}},
+    ])
+def run(text):
+    return subprocess.run(['/bin/sh', '-c', text], cwd=root, check=True,
+                          capture_output=True).stdout.decode()
+# Recorded verbatim: /usr/bin/git is an xcrun shim that writes this to stderr inside the codex
+# sandbox, and codex merges stderr into the command output.
+XCRUN = '''\
+2026-09-23 16:31:29.921 xcodebuild[45032:170384804]  DVTFilePathFSEvents: Failed to start fs event stream.
+2026-09-23 16:31:30.485 xcodebuild[45032:170384803] [MT] DVTDeveloperPaths: Failed to get length of DARWIN_USER_CACHE_DIR from confstr(3), error = Error Domain=NSPOSIXErrorDomain Code=5 "Input/output error". Using NSCachesDirectory instead.
+git: warning: confstr() failed with code 5: couldn't get path of DARWIN_USER_TEMP_DIR; using /tmp instead
+git: error: couldn't create cache file '/tmp/xcrun_db-uqJMAQ8M' (errno=Operation not permitted)
+2026-09-23 16:31:31.518 xcodebuild[45038:170384873]  DVTFilePathFSEvents: Failed to start fs event stream.
+'''
+preamble = {'fixture-a': XCRUN, 'base-commit': XCRUN, 'base-tree': XCRUN,
+            'foreign-preamble': 'warning: refname is ambiguous.\n'}.get(mode, '')
+def pinned(call_id, text, rev=snap, output=None):
+    command(call_id, text.replace('{REV}', rev),
+            preamble + (run(text.replace('{REV}', rev)) if output is None else output))
+patch = pathlib.Path(manifest['assignments'][seat]['patch'])
+lines = patch.read_text().splitlines(keepends=True)
+for start in range(1, len(lines) + 1, 240):
+    end = min(len(lines), start + 239)
+    command('patch-' + str(start), f"sed -n '{start},{end}p' '{patch}'", ''.join(lines[start - 1:end]))
+index = session / f"r{manifest['label']}-evidence.md"
+rev = {'base-commit': base, 'base-tree': base_tree}.get(mode, snap)
+if mode in ('fixture-a', 'base-commit', 'base-tree'):
+    # Recorded order: one pinned read of the required target before the evidence index.
+    pinned('target', "git show {REV}:src/asset.rs | sed -n '24,30p'", rev)
+command('evidence-index', "cat -- '" + str(index) + "'", index.read_text())
+if mode in ('fixture-a', 'base-commit', 'base-tree'):
+    pinned('question-apostrophe',
+           "# Question: Does the new Asset wrapper's construction preserve the variant invariant?\n"
+           "git show {REV}:src/asset.rs | sed -n '1,45p'", rev)
+    pinned('question-search',
+           "# Question: Which production paths enumerate assets, and which tests exercise them?\n"
+           "git grep -n -e 'Asset' {REV} -- src | head -81", rev)
+    pinned('refutation',
+           "# Refutation question for the Asset-name collision: is the interface aliased?\n"
+           "git show {REV}:src/types.ts | sed -n '1,240p'", rev)
+elif mode == 'foreign-preamble':
+    pinned('source', "git show {REV}:src/asset.rs | sed -n '1,45p'")
+    command('refutation', "sed -n '1,5p' 'src/types.ts'", run("sed -n '1,5p' 'src/types.ts'"))
+elif mode == 'tampered':
+    text = "git show {REV}:src/asset.rs | sed -n '1,45p'"
+    pinned('tampered', text, output=run(text.replace('{REV}', snap)).replace('+ 1', '+ 2'))
+    pinned('refutation', "git show {REV}:src/types.ts | sed -n '1,5p'")
+elif mode == 'base-bytes':
+    text = "git show {REV}:src/asset.rs | sed -n '1,45p'"
+    pinned('base-bytes', text, output=run(text.replace('{REV}', base)))
+    pinned('refutation', "git show {REV}:src/types.ts | sed -n '1,5p'")
+elif mode == 'unbounded':
+    pinned('unbounded', 'git show {REV}:src/asset.rs')
+    pinned('refutation', "git show {REV}:src/types.ts | sed -n '1,5p'")
+elif mode == 'oversized':
+    pinned('oversized', 'git show {REV}:src/big.txt')
+    pinned('source', "git show {REV}:src/asset.rs | sed -n '1,45p'")
+    pinned('refutation', "git show {REV}:src/types.ts | sed -n '1,5p'")
+elif mode == 'minified-search':
+    command('source', "sed -n '1,45p' 'src/asset.rs'", run("sed -n '1,45p' 'src/asset.rs'"))
+    command('refutation', "sed -n '1,5p' 'src/types.ts'", run("sed -n '1,5p' 'src/types.ts'"))
+    # Three minified bundle lines pass `head -80` and still carry about 45 KiB.
+    command('minified', "rg -n 'class Word|vaultKey' 'dist/st' | head -80",
+            ''.join(f'dist/st/Cargo.js:{n}:' + 'w' * 15000 + '\n' for n in (13388, 25450, 27398)))
+    pinned('base-read', "git show {REV}:src/asset.rs | sed -n '1,120p'", base)
+with open(out, 'w') as stream:
+    for event in events:
+        stream.write(json.dumps(event) + '\n')
+PY
+}
+
+pinned_read_audit() {
+  local R=$1 S=$2 label=$3 seat=$4
+  python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+    --raw "$S/r$label-$seat.stream.ndjson" --prompt "$(cat "$S/fixture.prompt")" --root "$R" \
+    --session "$S" --out "$S/r$label-$seat.read-audit.json" >/dev/null 2>&1
+}
+
+# Prints the sorted violation codes, the advisories, then the tool-origin source ranges.
+pinned_read_summary() {
+  python3 - "$1" <<'PY'
+import json, sys
+audit = json.load(open(sys.argv[1]))
+print(' '.join(sorted({row['code'] for row in audit['violations']})) or '-')
+print('advisories=' + (' '.join(sorted({row['code'] for row in audit['advisories']})) or '-'))
+print('ranges=' + ' '.join(f"{row['path']}:{row['line_start']}-{row['line_end']}"
+                           for row in audit['source_ranges'] if row['origin'] == 'tool'))
+assert all(set(row) == {'path', 'line_start', 'line_end', 'origin'} for row in audit['source_ranges'])
+PY
+}
+
+test_codex_snapshot_tree_reads_are_audited_source() {
+  ( local R="$T/pinned-read-root" S="$T/pinned-read-session" label=21 seat base summary mode
+    pinned_read_fixture "$R" "$S" "$label" || return
+    seat=$(cat "$S/fixture.seat"); base=$(cat "$S/fixture.base")
+    printf '%s\n' '{"summary":"one collision","findings":[{"severity":"P1","file":"src/types.ts","line_start":1,"line_end":5,"claim":"c","evidence":"e","suggested_fix":"f","confidence":0.9}]}' \
+      > "$S/r$label-$seat.json"
+
+    pinned_read_transcript "$(cat "$S/fixture.manifest")" "$S/r$label-$seat.stream.ndjson" "$R" "$base" fixture-a
+    pinned_read_audit "$R" "$S" "$label" "$seat"
+    assert_eq "commented snapshot-tree reads pass the audit" "$?" 0
+    summary=$(pinned_read_summary "$S/r$label-$seat.read-audit.json")
+    assert_eq "commented snapshot-tree reads earn exact snapshot ranges" "$summary" \
+      "$(printf '%s\n' - 'advisories=evidence-read-order' \
+        'ranges=src/asset.rs:1-45 src/asset.rs:24-30 src/types.ts:1-8')"
+
+    for mode in base-commit base-tree; do
+      pinned_read_transcript "$(cat "$S/fixture.manifest")" "$S/r$label-$seat.stream.ndjson" "$R" "$base" "$mode"
+      pinned_read_audit "$R" "$S" "$label" "$seat"
+      assert_eq "$mode reads leave a required read unmet" "$?" 2
+      summary=$(pinned_read_summary "$S/r$label-$seat.read-audit.json")
+      assert_eq "$mode reads earn no source range or citation" "$summary" \
+        "$(printf '%s\n' \
+          'evidence-read-order missing-required-source-read unsubstantiated-finding-range' \
+          'advisories=-' 'ranges=')"
+    done
+
+    for mode in tampered base-bytes foreign-preamble; do
+      pinned_read_transcript "$(cat "$S/fixture.manifest")" "$S/r$label-$seat.stream.ndjson" "$R" "$base" "$mode"
+      pinned_read_audit "$R" "$S" "$label" "$seat"
+      assert_eq "$mode snapshot-tree output fails the audit" "$?" 2
+      summary=$(pinned_read_summary "$S/r$label-$seat.read-audit.json")
+      assert_eq "$mode snapshot-tree output verifies only against the snapshot" "$summary" \
+        "$(printf '%s\n' 'missing-required-source-read source-output-mismatch' \
+          'advisories=-' 'ranges=src/types.ts:1-5')"
+    done
+
+    pinned_read_transcript "$(cat "$S/fixture.manifest")" "$S/r$label-$seat.stream.ndjson" "$R" "$base" unbounded
+    pinned_read_audit "$R" "$S" "$label" "$seat"
+    assert_eq "an unbounded snapshot-tree read fails the audit" "$?" 2
+    summary=$(pinned_read_summary "$S/r$label-$seat.read-audit.json")
+    assert_eq "an unbounded snapshot-tree read earns no range" "$summary" \
+      "$(printf '%s\n' 'missing-required-source-read unbounded-shell-output' \
+        'advisories=-' 'ranges=src/types.ts:1-5')"
+
+    pinned_read_transcript "$(cat "$S/fixture.manifest")" "$S/r$label-$seat.stream.ndjson" "$R" "$base" oversized
+    pinned_read_audit "$R" "$S" "$label" "$seat"
+    assert_eq "an oversized unbounded snapshot-tree read fails the audit" "$?" 2
+    summary=$(pinned_read_summary "$S/r$label-$seat.read-audit.json")
+    assert_eq "an oversized unbounded snapshot-tree read is a hard byte failure" "$summary" \
+      "$(printf '%s\n' 'tool-output-too-large tool-turn-output-too-large unbounded-shell-output' \
+        'advisories=-' 'ranges=src/asset.rs:1-45 src/types.ts:1-5')"
+  )
+}
+
+test_codex_line_bounded_minified_search_stays_fatal() {
+  ( local R="$T/minified-search-root" S="$T/minified-search-session" label=22 seat base summary
+    pinned_read_fixture "$R" "$S" "$label" || return
+    seat=$(cat "$S/fixture.seat"); base=$(cat "$S/fixture.base")
+    printf '%s\n' '{"summary":"one leak","findings":[{"severity":"P2","file":"src/asset.rs","line_start":24,"line_end":30,"claim":"c","evidence":"e","suggested_fix":"f","confidence":0.9}]}' \
+      > "$S/r$label-$seat.json"
+    pinned_read_transcript "$(cat "$S/fixture.manifest")" "$S/r$label-$seat.stream.ndjson" "$R" "$base" minified-search
+    pinned_read_audit "$R" "$S" "$label" "$seat"
+    assert_eq "a line-bounded search returning 45 KiB fails the audit" "$?" 2
+    summary=$(pinned_read_summary "$S/r$label-$seat.read-audit.json")
+    assert_eq "only the byte ceilings fail, and the base read adds no range" "$summary" \
+      "$(printf '%s\n' 'tool-output-too-large tool-turn-output-too-large' \
+        'advisories=-' 'ranges=src/asset.rs:1-45 src/types.ts:1-5')"
+  )
+}
+
+test_shell_comments_are_inert_to_the_read_audit() {
+  ( local R="$T/shell-comment-root" S="$T/shell-comment-session"
+    mkdir -p "$R/src" "$S"
+    printf 'one\ntwo\nthree\n' > "$R/src/a.rs"
+    printf 'hash\nname\n' > "$R/src/a#b.rs"
+    python3 - "$SCRIPTS/lib/review-read-audit.py" "$R" "$S" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
+audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
+root, session = Path(sys.argv[2]).resolve(), Path(sys.argv[3]).resolve()
+roots = audit.allowed_roots(root, session)
+def codes(command):
+    return [row['code'] for row in audit.shell_violations(command, roots, root, session)]
+def ranges(command):
+    rows, unparseable = audit.shell_source_ranges(command, root, {}, session)
+    return [(row['path'], row['line_start'], row['line_end']) for row in rows], unparseable
+cases = [
+    ("# Question: does the wrapper's `new` < old?\nsed -n '1,2p' 'src/a.rs'", [], ([('src/a.rs', 1, 2)], False)),
+    ("sed -n '1,2p' 'src/a.rs' # trailing note that isn't quoted", [], ([('src/a.rs', 1, 2)], False)),
+    ("sed -n '1,2p' 'src/a.rs' #; rg -n x src", [], ([('src/a.rs', 1, 2)], False)),
+    ("sed -n '1,2p' src/a#b.rs", [], ([('src/a#b.rs', 1, 2)], False)),
+    ("rg -n '#include' src | head -81", [], ([], False)),
+    ("# note\nsed -n '1,2p' 'src/a.rs'\nrg -n x src | head -81", ['unsupported-source-batch'], None),
+    ("# it's a comment, but the command is not\nsed -n '1,2p' 'src/a.rs' 'unterminated", ['unsupported-shell-shape'], None),
+]
+failed = False
+for command, want_codes, want_ranges in cases:
+    got = codes(command)
+    if got != want_codes:
+        print('violations', repr(command), got, want_codes); failed = True
+    if want_ranges is not None and ranges(command) != want_ranges:
+        print('ranges', repr(command), ranges(command), want_ranges); failed = True
+raise SystemExit(1 if failed else 0)
+PY
+    assert_eq "shell comments neither hide commands nor break the audit parser" "$?" 0
+
+    python3 - "$SCRIPTS/lib/review-read-audit.py" "$R" "$S" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
+audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
+root, session = Path(sys.argv[2]).resolve(), Path(sys.argv[3]).resolve()
+oid = 'a' * 40
+def pinned(command):
+    rows, _ = audit.shell_source_ranges(command, root, {}, session)
+    return [(row.get('tree'), row['path'], row['line_start'], row['line_end']) for row in rows]
+cases = [
+    (f"git show {oid}:src/a.rs | sed -n '3,9p'", [(oid, 'src/a.rs', 3, 9)]),
+    (f"git --no-pager show {oid}:src/a.rs | head -n 4", [(oid, 'src/a.rs', 1, 4)]),
+    (f"git show {'b' * 64}:src/a.rs | head -4", [('b' * 64, 'src/a.rs', 1, 4)]),
+    (f"git show {oid}:src/a.rs | sed -n '1,2p' src/a#b.rs", []),
+    (f"git show {oid[:12]}:src/a.rs | sed -n '1,2p'", []),
+    (f"git show {oid}:../a.rs | sed -n '1,2p'", []),
+    (f"git show {oid}:/etc/passwd | sed -n '1,2p'", []),
+    (f"git show {oid}:src/a.rs | tail -n 2", []),
+    (f"git show {oid} -- src/a.rs | sed -n '1,2p'", []),
+    (f"git show {oid}:src/a.rs | sed -n '1,2p' | head -n 1", []),
+]
+failed = False
+for command, want in cases:
+    got = [row if row[0] else row[1:] for row in pinned(command)]
+    if got != want:
+        print(repr(command), got, want); failed = True
+raise SystemExit(1 if failed else 0)
+PY
+    assert_eq "only a limiter reading the pipe from a full oid and a relative path is a pinned read" "$?" 0
+  )
+}
