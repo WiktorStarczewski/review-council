@@ -1,6 +1,30 @@
 # Changelog
 
-## 0.5.0
+## 0.5.1
+
+- A codex seat that reads the frozen snapshot through `git show <snapshot tree>:<path> | sed -n`
+  (or `| head -n N`) no longer fails the bounded-read audit. The audit used to see no source
+  range in that read, so a seat that read exactly its required target was rejected as having
+  skipped it, and its findings as uncited. That read now earns a range, but only when its bytes
+  match the frozen snapshot blob; the tree is taken from the evidence manifest, and a `git show`
+  of the base commit, the base tree or any other revision is context that never earns a range or
+  satisfies a citation. On macOS `/usr/bin/git` is an `xcrun` shim that, inside the codex
+  sandbox, prints `xcodebuild` and `git: warning|error:` lines to stderr before git runs, and
+  codex merges stderr into the output. Those leading lines are dropped for these reads alone,
+  and every remaining byte must still match.
+
+- Shell comments no longer decide how a command is audited. Seats had put a `# Question: ...` line
+  on each call, as the prompt's "name the question first and record the window in the tool call"
+  seemed to ask. The audit read the comment as a second command, so every such call was an
+  unsupported source batch, and an apostrophe in the comment made it an unparseable shell shape.
+  A comment still cannot hide a second command on its own line. The prompt now asks for the
+  question in the reviewer's reasoning, not in the command. It also says that `head` limits lines,
+  not bytes, so searches should stay off minified build output: a line-bounded `rg` over a
+  `dist/` bundle returned about 1 MB and failed the output ceiling, a failure that is real and
+  stays hard.
+
+- On one 14-file pull request this cleared one of the two hard audit failures seen across six
+  codex launches. The other was that 1 MB search.
 
 - A fix plan now has to say which test fails without it, and the loop has to watch that happen.
   `Prediction` joins `Findings`, `Rule` and `Sites` as a required plan-cluster field, naming the
