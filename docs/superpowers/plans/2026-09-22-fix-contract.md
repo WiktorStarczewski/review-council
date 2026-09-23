@@ -854,6 +854,67 @@ in the corpus, asserting on the arm the fix touched rather than the arm the
 defect lived on, passes a mutation check and fails a red-first run."
 ```
 
+---
+
+### Task 7: Let evidence mode run on a panel containing Agent seats
+
+**Files:**
+- Modify: `plugins/review-council/skills/rev/SKILL.md` (the prohibition near "skip evidence preparation")
+- Modify: `plugins/review-council/codex-skills/rev/SKILL.md` (mirror)
+- Modify: `plugins/review-council/scripts/rev-evidence.py` (extend `unenforced_seats` to code panels)
+- Test: `plugins/review-council/tests/t-plan-evidence.sh`
+- Modify: `plugins/review-council/tests/test-costs.tsv`
+
+**The defect.** The contract says that if any launched code-panel row has adapter `agent`, evidence
+preparation is skipped for the whole panel, because "an Agent seat cannot provide the enforced tool
+transcript required by evidence mode." Claude rows resolve to `agent` on any host not seating the
+Claude CLI, so in practice **every panel contains an Agent seat and evidence mode never runs.**
+
+**The premise is false and the machinery already exists.** Verified before writing this task:
+
+- An Agent transcript carries ordered `Read` calls with `file_path`, `offset` and `limit`, which is
+  exactly what an audit consumes.
+- `scripts/lib/review-read-audit.py` handles the adapter by name at `:960`, `:1133` and `:1178`
+  (`adapter = 'claude' if adapter == 'agent' else adapter`).
+- Running `audit --adapter agent` against a real Agent transcript exits 0 and writes a well-formed
+  audit. It reported `evidence_scoped: False` only because that panel was legacy, so there was no
+  manifest to bind against.
+- `rev-evidence.py` already renders agent-appropriate evidence prompts, emitting `Read` rather than
+  `read_file`, at `:4647`, `:4703`, `:4718`, `:4736` and `:4754`.
+- `rev-evidence.py:4269` already collects `unenforced_seats` for rows whose adapter is `agent`.
+
+0.4.8 shipped that `unenforced_seats` path for PLAN panels: preparation records the seats,
+validation skips only their read audit while still binding result, exit and prompt hashes, and the
+receipt row carries `enforced: false`. This task extends the same shipped mechanism to code panels.
+
+**Two halves, and the second must not gate the first.**
+
+1. **Make evidence mode run.** Remove the blanket prohibition. A code panel containing Agent rows
+   prepares evidence normally and records those rows in `unenforced_seats`, as a plan panel already
+   does. Report such a panel as partially unenforced; never describe it as certified.
+2. **Produce the audit anyway and record whether it would have passed.** The orchestrator already
+   copies each Agent transcript to `r<N>-<seat>.stream.ndjson`. Run `audit --adapter agent` against
+   it and store the verdict. Do NOT gate on it. The pass rate is unknown and the honest way to find
+   out is to measure it before deciding whether Agent seats can be enforced.
+
+**Why the second half is ungated:** the team knowledge base records that Claude CLI seats often
+failed read enforcement with patch-only citations. That is a pass-rate risk, not a capability
+limit, and gating on an unmeasured pass rate trades one blanket refusal for another.
+
+- [ ] **Step 1: Write the failing test.** A code panel whose roster holds an `agent` row must
+  prepare a manifest rather than returning empty, and that row must appear in `unenforced_seats`.
+  Assert both. Add the `test-costs.tsv` row.
+- [ ] **Step 2: Run it and watch it fail.** `plugins/review-council/tests/run-tests.sh evidence`
+- [ ] **Step 3: Extend `unenforced_seats` to code panels**, following the plan-panel path at
+  `rev-evidence.py:4269` rather than inventing a second mechanism.
+- [ ] **Step 4: Green, then add the audit-anyway step**, storing each Agent seat's audit result and
+  its would-have-passed verdict without gating on either.
+- [ ] **Step 5: Update both SKILL.md copies**, replacing the prohibition with the unenforced-seat
+  rule, and pin the new sentence in `t-skill.sh`.
+- [ ] **Step 6: Mutation-check.** Delete the `unenforced_seats` recording and confirm the new test
+  dies. Write the prediction first.
+- [ ] **Step 7: Commit.**
+
 ### Task 6: Full verification and push
 
 - [ ] **Step 1: Run the complete shell suite**
