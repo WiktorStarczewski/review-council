@@ -473,7 +473,7 @@ test_skill_contract() {
       'upstream destination|destination ref'
     assert_grep "stack binds that destination to the reviewed branch" "$H" \
       'reviewed branch'
-    assert_grep "stack reconciles before squash" "$H" '[Bb]efore squash'
+    assert_grep "stack reconciles before pushing" "$H" '[Bb]efore pushing'
     assert_grep "stack reconciles the tracking ref" "$H" 'tracking ref'
     assert_grep "stack records successful pinned pushes" "$H" \
       '[Aa]fter a pinned push succeeds'
