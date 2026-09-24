@@ -22,34 +22,17 @@ test_scopeenv() {
   )
 }
 
-# A Cargo repository with no REV_DEPS_DIR records the cargo registry root as the pinned-dependency
-# root, and only when that directory exists.
-test_scopeenv_records_cargo_registry_root() {
+# Preflight records no dependency root: prepare builds the per-crate view from each panel's snapshot.
+test_scopeenv_records_no_dependency_root() {
   ( seat_env; local PF; PF="$(pf_bin)/rev-preflight.sh"
-    local R="$T/cargo-scope-repo" registry="$T/cargo-home/registry/src" case_name want
+    local R="$T/cargo-scope-repo"
     mkrepo "$R"; cd "$R" || { fail "cargo scope setup" "cannot cd to $R"; return 1; }
     git checkout -qb feat && echo x > x.txt && git add x.txt && git commit -qm x
-    mkdir -p "$registry" "$T/cargo-home-empty" "$T/cargo-user/.cargo/registry/src"
-    deps_line() {
-      python3 - "$1/scope.env" <<'PY'
-import shlex, sys
-rows = dict(line.split('=', 1) for line in open(sys.argv[1]).read().splitlines() if line)
-print(shlex.split(rows['REV_DEPS_DIR'])[0] if 'REV_DEPS_DIR' in rows else '-')
-PY
-    }
-    CARGO_HOME="$T/cargo-home" "$PF" --write "$T/cargo-scope-no-lock" >/dev/null 2>&1
-    assert_eq "no Cargo.lock records no dependency root" "$(deps_line "$T/cargo-scope-no-lock")" -
+    mkdir -p "$T/cargo-home/registry/src/index.crates.io-0"
     printf '# lock\n' > Cargo.lock; git add Cargo.lock; git commit -qm lock
     CARGO_HOME="$T/cargo-home" "$PF" --write "$T/cargo-scope-lock" >/dev/null 2>&1
-    assert_eq "a Cargo.lock records the registry source root" \
-      "$(deps_line "$T/cargo-scope-lock")" "$registry"
-    ( unset CARGO_HOME; HOME="$T/cargo-user" "$PF" --write "$T/cargo-scope-home" >/dev/null 2>&1 )
-    assert_eq "CARGO_HOME defaults to ~/.cargo" \
-      "$(deps_line "$T/cargo-scope-home")" "$T/cargo-user/.cargo/registry/src"
-    CARGO_HOME="$T/cargo-home-empty" "$PF" --write "$T/cargo-scope-absent" >/dev/null 2>&1
-    assert_eq "a missing registry records no dependency root" "$(deps_line "$T/cargo-scope-absent")" -
-    CARGO_HOME="$T/cargo-home" REV_DEPS_DIR="$T/view" "$PF" --write "$T/cargo-scope-explicit" >/dev/null 2>&1
-    assert_eq "an explicit REV_DEPS_DIR is left to the environment" \
-      "$(deps_line "$T/cargo-scope-explicit")" -
+    assert_eq "a Cargo repository's scope.env names no dependency root" \
+      "$(python3 -c 'import sys; print(sorted(l.split("=")[0] for l in open(sys.argv[1]) if l.strip()))' "$T/cargo-scope-lock/scope.env")" \
+      "['REV_BASE', 'REV_BASE_BRANCH', 'REV_BRANCH', 'REV_DEFAULT', 'REV_ROOT', 'REV_SCOPE']"
   )
 }

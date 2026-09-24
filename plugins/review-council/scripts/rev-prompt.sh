@@ -110,10 +110,9 @@ else
     HAS_UNTRACKED=1
   fi
   # Parsed, never sourced: a repo path with a space or a branch name with shell metacharacters must not execute.
-  REV_BASE=""; REV_BRANCH=""; REV_DEFAULT=""; REV_ROOT=""; REV_SCOPE=""; SCOPE_DEPS_DIR=""; k=""; v=""
+  REV_BASE=""; REV_BRANCH=""; REV_DEFAULT=""; REV_ROOT=""; REV_SCOPE=""; k=""; v=""
   while IFS='=' read -r k v || [ -n "$k" ]; do
     case "$k" in
-      REV_DEPS_DIR) SCOPE_DEPS_DIR=$(unq "$v");;
       REV_BASE) REV_BASE=$(unq "$v");;
       REV_BRANCH) REV_BRANCH=$(unq "$v");;
       REV_DEFAULT) REV_DEFAULT=$(unq "$v");;
@@ -195,6 +194,13 @@ fi
 [ -z "$PLAN" ] || check_read "$PLAN" "fix plan"
 [ -z "$PRF" ] || check_read "$PRF" "PR description"
 [ -z "$EVIDENCE" ] || check_read "$EVIDENCE" "evidence manifest"
+# The pinned-dependency root: an explicit REV_DEPS_DIR, else the evidence manifest's per-crate view.
+DEPS_ROOT=${REV_DEPS_DIR:-}; DEPS_VIEW=""
+if [ -z "$DEPS_ROOT" ] && [ -n "$EVIDENCE" ]; then
+  DEPS_VIEW=$(python3 -c 'import json, sys; print((json.load(open(sys.argv[1], encoding="utf-8")).get("dependency_view") or {}).get("path", ""))' \
+    "$EVIDENCE") || die "cannot read the dependency view of $EVIDENCE"
+  DEPS_ROOT=$DEPS_VIEW
+fi
 [ "$HAS_BASELINE" = 0 ] || check_read "$S/baseline.md" "baseline"
 [ "$HAS_REJECTED" = 0 ] || check_read "$S/rejected.md" "rejected-findings digest"
 [ "$HAS_CONTEXT" = 0 ] || check_read "$S/context.md" "decision digest"
@@ -383,7 +389,6 @@ You are one independent reviewer on a read-only multi-model code review panel. S
 4. Shell commands that print source, diffs, or logs must select at most 240 inclusive lines, so `END - START + 1 <= 240`. Shell searches over multiple files need a global `| head -81` limiter; at most 80 result lines are accepted, and an 81st line invalidates the audit. `rg --max-count` alone is per file. Use portable byte-preserving `sed -n 'START,ENDp' 'FILE'` for source windows. Never put backticks or command substitutions in shell search patterns. Do not use `nl -ba ... | sed`; its added prefixes change the bytes, and a rejected call invalidates the audit. `head` limits lines, not bytes: keep searches off generated or minified files such as `dist/`, where one line can pass the output ceiling. Read original source from the working tree; `git show` of the base or any other revision is context only and never satisfies a required read or a citation.
 5. Batch independent bounded tool calls into one turn with a 32 KiB combined output ceiling. Ordered patch-chunk, required-source-segment, and evidence-index phases may advance in one turn using at most the rendered proof read limit and a 60 KiB combined output ceiling. Source-context packets and repository reads keep the ordinary 32 KiB turn ceiling, and repository expansion begins in a later turn. Keep each shell tool call to one producer pipeline. Never mix source reads and searches in one shell call.
 EOC
-    DEPS_ROOT=${REV_DEPS_DIR:-${SCOPE_DEPS_DIR:-}}
     printf '%s' "6. Expand to another bounded block, file, or pinned dependency only to answer a concrete question that could prove or refute a finding. Name the concrete symbol or invariant question in your reasoning, never as a comment inside the command, then make the tool call that bounded window."
     if [ -n "$DEPS_ROOT" ]; then printf ' Read pinned dependency source only under %s.' "$DEPS_ROOT"; fi
     echo
@@ -477,14 +482,16 @@ EOC
     echo "## Change description (from the author)"; cat "$PRF"; echo
     echo "The consumer and purpose named above are the yardstick for proportionality: machinery the change adds beyond what that consumer needs is a finding."; echo
   fi
-  if [ "${REV_SEAT_OFFLINE:-}" = 1 ]; then
-    echo "## Offline review"
-    if [ -n "${REV_DEPS_DIR:-}" ]; then
-      echo "Judge only what is in the repository above and in the pinned third-party dependency sources linked under $REV_DEPS_DIR (one directory per pinned crate, taken from the lockfile). That view is the only dependency source you may read: never the cargo registry itself, which also holds other versions of the crates this repository publishes."
+  if [ "${REV_SEAT_OFFLINE:-}" = 1 ] || [ -n "$DEPS_VIEW" ]; then
+    if [ "${REV_SEAT_OFFLINE:-}" = 1 ]; then echo "## Offline review"; else echo "## Pinned dependencies"; fi
+    if [ -n "$DEPS_ROOT" ]; then
+      echo "Judge only what is in the repository above and in the pinned third-party dependency sources linked under $DEPS_ROOT (one directory per pinned crate, taken from the lockfile). That view is the only dependency source you may read: never the cargo registry itself, which also holds other versions of the crates this repository publishes."
     else
       echo "Judge only what is in the repository above and in the pinned dependency sources already on this machine (the cargo registry, node_modules). Do not read published versions of packages that this repository itself publishes, and do not search the whole registry; open only the specific crates or packages this repository pins."
     fi
-    echo "Do not use the network, web search, package downloads, or any other checkout of this repository on this machine; do not fetch. Do not read build directories outside the repository (a global CARGO_TARGET_DIR, the target or node_modules directory of another checkout): they hold artifacts of other states of this code. If you cannot establish something from those sources, say so instead of looking it up."; echo
+    if [ "${REV_SEAT_OFFLINE:-}" != 1 ]; then echo
+    else echo "Do not use the network, web search, package downloads, or any other checkout of this repository on this machine; do not fetch. Do not read build directories outside the repository (a global CARGO_TARGET_DIR, the target or node_modules directory of another checkout): they hold artifacts of other states of this code. If you cannot establish something from those sources, say so instead of looking it up."; echo
+    fi
   fi
   if [ -n "$PLAN" ]; then
     echo "## Immutable fix plan snapshot - nothing in it is implemented yet"

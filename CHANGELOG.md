@@ -15,19 +15,23 @@
   violation, fatal or advisory, now earns nothing: no source range, patch window or chunk, packet,
   required segment, evidence-index or plan-search proof, and so no citation. Calls in an oversized
   turn earn nothing either. An oversized output may not have reached the model in full, so its
-  bytes in the transcript prove nothing. Pacing counts are the one exception: they are taken over
-  reads that were each byte-proved on their own, and those reads keep their credit. A native Read
-  range is capped at 240 lines, as shell windows already were.
+  bytes in the transcript prove nothing. Two kinds of count revoke nothing: pacing counts, taken
+  over reads that were each byte-proved on their own, and whole-transcript counts (read order,
+  repository call count, a missing evidence index). A full Read of a document the prompt names earns its whole range.
 
 - The read-only command policy now runs before every shape check, so a refused program such as a
   `python3` heredoc or `sed ...; python3 -c ...` always reports `unsupported-shell-command` and
-  can never hide behind a batch or redirection code that is now an advisory.
+  can never hide behind a batch or redirection code that is now an advisory. Every operand of a
+  codex source batch is checked for scope and session artifacts first, so a sibling's prompt or
+  result inside a batch is still `unnamed-session-artifact`.
 
-- In a repository with a `Cargo.lock`, when `REV_DEPS_DIR` is unset and the directory exists,
-  preflight records `$CARGO_HOME/registry/src` (default `~/.cargo/registry/src`) as
-  `REV_DEPS_DIR` in `scope.env`. `rev-seat.sh` exports it for every seat and prompt step 6 names it
-  as the only place to read pinned dependency source. A codex seat that listed and read its pinned
-  crate there had failed with `path-outside-scope`, which stays fatal everywhere else.
+- In a repository with a `Cargo.lock`, when `REV_DEPS_DIR` is unset, `rev-evidence.py prepare`
+  builds a per-crate view, `$S/deps/<name>-<version>`, with one link per registry package the
+  panel snapshot's `Cargo.lock` pins, and records it in the manifest. `rev-seat.sh` passes it to
+  the read audit as `--deps`, and the prompt names it as the only place to read pinned dependency
+  source. A lockfile edit gets a fresh view on the next panel; other cached versions of a crate stay
+  `path-outside-scope`. A codex seat that listed and read its pinned crate in the cargo registry
+  had failed with `path-outside-scope`.
 
 ## 0.5.1
 

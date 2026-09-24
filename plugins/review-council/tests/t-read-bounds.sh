@@ -1746,7 +1746,7 @@ wide-total~sed -n '1,121p' 'src/a.ts'; sed -n '121,241p' 'src/b.ts'~source-batch
 overlap~sed -n '1,80p' 'src/a.ts'; sed -n '80,120p' 'src/a.ts'~overlapping-source-batch
 mixed-search~sed -n '1,80p' 'src/a.ts'; rg -n 'never-matches' src | head -80~unsupported-source-batch
 mixed-output~sed -n '1,80p' 'src/a.ts'; printf marker; sed -n '121,160p' 'src/b.ts'~unsupported-source-batch
-variable-path~sed -n '1,80p' "$FILE"; sed -n '121,160p' 'src/b.ts'~unsupported-source-batch
+variable-path~sed -n '1,80p' "$FILE"; sed -n '121,160p' 'src/b.ts'~unresolved-path-variable
 CASES
 
     write_codex_batch mismatch "$good" mismatch || return
@@ -3053,6 +3053,15 @@ test_audit_severity_credit_on_every_proof_surface() {
     severity_transcript "$S" 31 codex "{\"tail\":[[{\"sed\":[\"src/wide.rs\",190,220]}]]}"
     assert_eq "the same citation is earned by a clean read" \
       "$(severity_audit "$R" "$S" 31 codex)" "$(severity_expect valid - -)"
+    # Two ~18 KiB reads overflow their turn together; neither earns its citation.
+    local line
+    for line in 100 200; do
+      severity_findings "$S" 31 src/wide.rs "$line" "$((line + 1))"
+      severity_transcript "$S" 31 codex "{\"tail\":[[{\"sed\":[\"src/wide.rs\",1,120]},{\"sed\":[\"src/wide.rs\",121,240]}],$clean]}"
+      assert_eq "an overflowing turn earns no citation at line $line" \
+        "$(severity_audit "$R" "$S" 31 codex)" \
+        "$(severity_expect invalid "tool-turn-output-too-large@codex,unsubstantiated-finding-range@codex" -)"
+    done
     severity_findings "$S" 31
 
     severity_transcript "$S" 31 gemini '{"tail":[[{"read":["src/lines.txt",1,2000]}]]}'
@@ -3066,11 +3075,32 @@ spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
 audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
 root = Path(sys.argv[2]).resolve()
 row = audit.direct_source_range('Read', {'file_path': 'src/lines.txt', 'offset': 1, 'limit': 2000}, root)
-assert (row['line_start'], row['line_end']) == (1, audit.READ_LINES), row
+assert (row['line_start'], row['line_end']) == (1, 2000), row
 row = audit.direct_source_range('Read', {'file_path': 'src/lines.txt', 'offset': 5, 'limit': 20}, root)
 assert (row['line_start'], row['line_end']) == (5, 24), row
 PY
-    assert_eq "a direct Read range is capped at READ_LINES" "$?" 0
+    assert_eq "a direct Read range is the requested window, uncapped" "$?" 0
+
+    # A prompt-named document may be read in full, and that read earns its whole range.
+    local D="$T/severity-document-session"
+    mkdir -p "$D" "$R/docs"
+    python3 -c "open('$R/docs/plan.md', 'w').write(''.join(f'line {i}\\n' for i in range(1, 301)))"
+    printf '# Review\n\n## Scope\nDocuments to review (read them in full):\n- docs/plan.md\n\n## Output\nx\n' \
+      > "$D/r1-sol.prompt.md"
+    python3 - "$R/docs/plan.md" "$D" <<'PY'
+import json, sys
+text = open(sys.argv[1]).read(); session = sys.argv[2]
+events = [{'type': 'tool_use', 'tool_id': 'c1', 'tool_name': 'read_file',
+           'parameters': {'path': 'docs/plan.md', 'offset': 1, 'limit': 2000}},
+          {'type': 'tool_result', 'tool_id': 'c1', 'status': 'success', 'output': text}]
+open(session + '/r1-sol.stream.ndjson', 'w').write(''.join(json.dumps(e) + '\n' for e in events))
+PY
+    severity_findings "$D" 1 docs/plan.md 290 295
+    assert_eq "a full read of a prompt-named document earns a citation past line 240" \
+      "$(severity_audit "$R" "$D" 1 gemini)" "$(severity_expect valid - -)"
+    assert_eq "that read earns the document's entire range" \
+      "$(python3 -c 'import json,sys; print([(r["path"], r["line_start"], r["line_end"]) for r in json.load(open(sys.argv[1]))["source_ranges"]])' "$D/r1-sol.read-audit.json")" \
+      "[('docs/plan.md', 1, 300)]"
   )
 }
 
@@ -3147,28 +3177,104 @@ test_audit_severity_independence_stays_fatal() {
   )
 }
 
+# severity_lock <repo> <pinned version>: commits a Cargo.lock pinning one registry crate, one git crate
+# and the repository's own crate.
+severity_lock() {
+  cat > "$1/Cargo.lock" <<EOF
+version = 3
+
+[[package]]
+name = "own"
+version = "0.1.0"
+dependencies = [
+ "pinned",
+]
+
+[[package]]
+name = "pinned"
+version = "$2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[[package]]
+name = "fromgit"
+version = "0.3.0"
+source = "git+https://example.invalid/fromgit#0000000"
+EOF
+  git -C "$1" add Cargo.lock && git -C "$1" commit -qm "lock $2"
+}
+
 test_audit_severity_dependency_root() {
-  ( local R="$T/severity-deps-root" S="$T/severity-deps-session"
-    local deps="$T/cargo-home/registry/src" other="$T/other-home/.cargo/registry/src" crate
+  ( local R="$T/severity-deps-root" S="$T/severity-deps-session" home="$T/cargo-home" version
+    local registry="$T/cargo-home/registry/src/index.crates.io-0"
     severity_fixture "$R" "$S" || return
-    severity_findings "$S" 31
-    for crate in "$deps" "$other"; do
-      mkdir -p "$crate/index.crates.io-0/pinned-1.0.0/src"
-      printf 'pub fn pinned() {}\n' > "$crate/index.crates.io-0/pinned-1.0.0/src/lib.rs"
+    assert_eq "a repository with no Cargo.lock gets no dependency view" \
+      "$(python3 -c 'import json,sys; print("dependency_view" in json.load(open(sys.argv[1])))' "$S/r31-evidence.manifest.json"):$(test -e "$S/deps" && echo view || echo none)" \
+      "False:none"
+    for version in 1.0.0 2.0.0; do
+      mkdir -p "$registry/pinned-$version/src" "$registry/fromgit-0.3.0/src"
+      printf 'pub fn pinned() {}\n' > "$registry/pinned-$version/src/lib.rs"
     done
-    local listing="{\"cmd\":\"ls -d $deps/*/pinned-*\",\"out\":\"$deps/index.crates.io-0/pinned-1.0.0\\n\"}"
-    local read="{\"cmd\":\"sed -n '1,5p' $deps/index.crates.io-0/pinned-1.0.0/src/lib.rs\",\"out\":\"pub fn pinned() {}\\n\"}"
-    severity_transcript "$S" 31 codex "{\"tail\":[[$listing],[$read],[{\"sed\":[\"src/wide.rs\",1,20]}]]}"
-    assert_eq "a listing and a bounded read under REV_DEPS_DIR are in scope" \
-      "$(severity_audit "$R" "$S" 31 codex --deps "$deps")" \
+    severity_lock "$R" 1.0.0
+    view_of() {
+      CARGO_HOME="$home" python3 "$SCRIPTS/rev-evidence.py" prepare "$S" "$1" --phase discovery >/dev/null || return
+      python3 - "$S/r$1-evidence.manifest.json" <<'PY'
+import json, os, sys
+view = json.load(open(sys.argv[1]))['dependency_view']
+links = sorted((name, os.readlink(os.path.join(view['path'], name))) for name in os.listdir(view['path']))
+print(json.dumps([os.path.basename(view['path']), view['crates'], [(n, t.split('/registry/src/')[1]) for n, t in links]]))
+PY
+    }
+    assert_eq "prepare links each pinned registry crate from the snapshot's Cargo.lock" \
+      "$(env -u REV_DEPS_DIR bash -c "$(declare -f view_of); SCRIPTS='$SCRIPTS' S='$S' home='$home' view_of 41")" \
+      '["deps", ["pinned-1.0.0"], [["pinned-1.0.0", "index.crates.io-0/pinned-1.0.0"]]]'
+    assert_eq "an explicit REV_DEPS_DIR builds no view" \
+      "$(REV_DEPS_DIR="$T/explicit" CARGO_HOME="$home" python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 40 --phase discovery >/dev/null; python3 -c 'import json,sys; print("dependency_view" in json.load(open(sys.argv[1])))' "$S/r40-evidence.manifest.json")" \
+      False
+
+    severity_findings "$S" 41; severity_findings "$S" 31
+    cp "$S/r31-sol.prompt.md" "$S/r31-sol.prompt.saved"
+    local view="$S/deps" link read resolved listing other
+    link="{\"cmd\":\"sed -n '1,1p' $view/pinned-1.0.0/src/lib.rs\",\"out\":\"pub fn pinned() {}\\n\"}"
+    resolved="{\"cmd\":\"sed -n '1,1p' $registry/pinned-1.0.0/src/lib.rs\",\"out\":\"pub fn pinned() {}\\n\"}"
+    listing="{\"cmd\":\"ls -d $view/pinned-*\",\"out\":\"$view/pinned-1.0.0\\n\"}"
+    other="{\"cmd\":\"sed -n '1,1p' $registry/pinned-2.0.0/src/lib.rs\",\"out\":\"pub fn pinned() {}\\n\"}"
+    for read in "$link" "$resolved"; do
+      severity_transcript "$S" 31 codex "{\"tail\":[[$read],[{\"sed\":[\"src/wide.rs\",1,20]}]]}"
+      assert_eq "a bounded pinned-crate read is in scope: ${read:8:60}" \
+        "$(severity_audit "$R" "$S" 31 codex --deps "$view")" "$(severity_expect valid - -)"
+    done
+    severity_transcript "$S" 31 codex "{\"tail\":[[$listing],[{\"sed\":[\"src/wide.rs\",1,20]}]]}"
+    assert_eq "a listing whose glob resolves only to view targets is in scope" \
+      "$(severity_audit "$R" "$S" 31 codex --deps "$view")" \
       "$(severity_expect valid - unbounded-shell-output@Bash)"
-    assert_eq "the same reads without REV_DEPS_DIR are out of scope" \
+    severity_transcript "$S" 31 codex "{\"tail\":[[$other],[{\"sed\":[\"src/wide.rs\",1,20]}]]}"
+    assert_eq "another cached version of a pinned crate is out of scope" \
+      "$(severity_audit "$R" "$S" 31 codex --deps "$view")" \
+      "$(severity_expect invalid path-outside-scope@Bash -)"
+    severity_transcript "$S" 31 codex "{\"tail\":[[$link],[{\"sed\":[\"src/wide.rs\",1,20]}]]}"
+    assert_eq "the view is out of scope when the audit is not given it" \
       "$(severity_audit "$R" "$S" 31 codex)" \
       "$(severity_expect invalid path-outside-scope@Bash -)"
-    severity_transcript "$S" 31 codex "{\"tail\":[[${read//$deps/$other}],[{\"sed\":[\"src/wide.rs\",1,20]}]]}"
-    assert_eq "a read under another home's registry is out of scope" \
-      "$(severity_audit "$R" "$S" 31 codex --deps "$deps")" \
-      "$(severity_expect invalid path-outside-scope@Bash -)"
+
+    local manifest="$S/r41-evidence.manifest.json" bundle prompt
+    bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"]["sol"]["bundle"])' "$manifest")
+    prompt=$(env -u REV_DEPS_DIR "$SCRIPTS/rev-prompt.sh" "$S" 41 sol "$bundle" deps --evidence "$manifest")
+    local recorded
+    recorded=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["dependency_view"]["path"])' "$manifest")
+    assert_eq "the manifest records the session's view" "$recorded" "$(cd "$S" && pwd -P)/deps"
+    assert_grep "an evidence prompt's step 6 names the manifest's view" "$prompt" \
+      "^6\. Expand .*Read pinned dependency source only under $recorded\.$"
+    assert_grep "an online evidence prompt describes the per-crate view" "$prompt" \
+      "pinned third-party dependency sources linked under $recorded \(one directory per pinned crate"
+
+    severity_lock "$R" 2.0.0
+    assert_eq "a lockfile edit changes the next panel's view" \
+      "$(env -u REV_DEPS_DIR bash -c "$(declare -f view_of); SCRIPTS='$SCRIPTS' S='$S' home='$home' view_of 42")" \
+      '["deps", ["pinned-2.0.0"], [["pinned-2.0.0", "index.crates.io-0/pinned-2.0.0"]]]'
+    assert_eq "the earlier manifest keeps the view it recorded" \
+      "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["dependency_view"]["crates"])' "$S/r41-evidence.manifest.json")" \
+      "['pinned-1.0.0']"
   )
 }
 
@@ -3274,4 +3380,68 @@ print('\n'.join(problems))
 raise SystemExit(1 if problems else 0)
 PY
   assert_eq "every emitted audit code is classified exactly once" "$?" 0
+}
+
+# The credit reassessment ends once no NEW call is revoked. A credit site that forgot the blocked
+# check would re-revoke an already blocked call on every pass; that must end in a verdict, not a hang.
+test_audit_credit_reassessment_terminates() {
+  python3 - "$SCRIPTS/lib/review-read-audit.py" <<'PY'
+import importlib.util, signal, sys, types
+spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
+audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
+passes = []
+def assess(args, blocked):
+    passes.append(set(blocked))
+    return {'status': 'valid'}, False, {'c1'}
+audit.assess = assess
+audit.publish = lambda path, data: None
+signal.signal(signal.SIGALRM, lambda *_: sys.exit('reassessment did not terminate'))
+signal.alarm(10)
+assert audit.audit(types.SimpleNamespace(out='unused')) == 0
+signal.alarm(0)
+assert passes == [set(), {'c1'}], passes
+PY
+  assert_eq "a re-revoked blocked call ends the reassessment" "$?" 0
+  ( local R="$T/severity-terminate-root" S="$T/severity-terminate-session"
+    severity_fixture "$R" "$S" || return
+    severity_findings "$S" 31
+    severity_transcript "$S" 31 codex '{"sibling":"patch","tail":[[{"sed":["src/wide.rs",1,20]}]]}'
+    assert_eq "the unmutated auditor revokes an oversized turn's credit and terminates" \
+      "$(perl -e 'alarm shift; exec @ARGV' 120 bash -c "$(declare -f severity_audit severity_verdict); SCRIPTS='$SCRIPTS' severity_audit '$R' '$S' 31 codex")" \
+      "$(severity_expect invalid "missing-assigned-patch-range@codex,tool-output-too-large@command_execution,tool-turn-output-too-large@codex" -)"
+  )
+}
+
+# Whole-transcript advisories are counts, not facts about one call, so they revoke no credit.
+test_audit_severity_global_advisories_revoke_nothing() {
+  ( local R="$T/severity-global-root" S="$T/severity-global-session" tail="" start
+    severity_fixture "$R" "$S" || return
+    for start in $(seq 1 10 170); do
+      tail="$tail${tail:+,}[{\"sed\":[\"src/wide.rs\",$start,$((start + 9))]}]"
+    done
+    severity_findings "$S" 31 src/wide.rs 165 168
+    severity_transcript "$S" 31 codex "{\"tail\":[$tail]}"
+    assert_eq "a repository call count over the limit keeps every call's citation" \
+      "$(severity_audit "$R" "$S" 31 codex)" \
+      "$(severity_expect valid - repository-expansion-call-limit@codex)"
+  )
+}
+
+# Every batch operand is checked for scope and session artifacts before a batch code is recorded.
+test_audit_severity_batch_operands_are_scoped() {
+  ( local R="$T/severity-operand-root" S="$T/severity-operand-session" name command
+    severity_fixture "$R" "$S" || return
+    severity_findings "$S" 31
+    printf '{"summary":"x","findings":[]}\n' > "$S/r31-terra.json"
+    while IFS='|' read -r name command; do
+      command=${command//@S@/$S}
+      severity_transcript "$S" 31 codex "$(python3 -c 'import json,sys; print(json.dumps({"tail":[[{"cmd":sys.argv[1],"out":"x\n"}],[{"sed":["src/wide.rs",1,20]}]]}))' "$command")"
+      assert_eq "$name is an independence failure" "$(severity_audit "$R" "$S" 31 codex)" \
+        "$(severity_expect invalid unnamed-session-artifact@Bash -)"
+    done <<'CASES'
+a clean batch with a sibling-result operand|sed -n '1,20p' src/wide.rs; sed -n '1,1p' @S@/r31-terra.json
+an overlapping batch with a sibling-result operand|sed -n '1,20p' src/lines.txt; sed -n '1,1p' @S@/r31-terra.json; sed -n '10,30p' src/lines.txt
+an oversized batch with a sibling-prompt operand|sed -n '1,200p' src/lines.txt; sed -n '1,41p' @S@/r31-terra.prompt.md
+CASES
+  )
 }

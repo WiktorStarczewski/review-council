@@ -389,7 +389,7 @@ the whole attempt. The same is true for unsupported provider transcript shapes a
 zero-tool answers. In chunk mode, the audit also requires every hash-bound chunk once
 in exact order before packet and source reads. Missing, reordered, truncated, replaced,
 unassigned, or redirected chunks invalidate the attempt.
-A seat's evidence read audit with status `invalid` is a hard evidence-audit failure. A valid audit may carry advisories: these never discard the review, stay visible in the receipt, and never earn credit. A call that raises any violation, except a pacing count, proves no range, no patch chunk, packet or segment, and no citation.
+A seat's evidence read audit with status `invalid` is a hard evidence-audit failure. A valid audit may carry advisories: these never discard the review, stay visible in the receipt, and never earn credit. A call that raises a call-local violation, and every proof call in a turn that overflows the turn ceiling, proves no range, no patch chunk, packet or segment, and no citation. Pacing counts and whole-transcript counts revoke nothing.
 
 Retain one launch handle for every pending seat and inspect each terminal result as it arrives. Store every Bash task ID and Agent task ID under its seat name. A provider execution exit 1 or 2 with no invalid read audit is seat-local and may retry only the failed seat once with its exact prompt, assignment, model, and effort while other seats continue. A hard evidence-audit failure is a compiler or contract incident: stop the current panel without another paid retry and preserve every valid sibling and partial stream. Never widen an evidence-audit failure into a full-state repair.
 

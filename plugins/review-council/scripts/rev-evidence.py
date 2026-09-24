@@ -3716,6 +3716,14 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
     # unenforced_seats decides whose read audit is skipped, so it is DERIVED here and compared,
     # never taken on the manifest's word. Declared and untyped, a hand-edited list could name a
     # CLI seat, or be a bare string whose `in` test degrades to a substring match.
+    view = manifest.get('dependency_view')
+    if 'dependency_view' in manifest and (
+            not isinstance(view, dict) or set(view) != {'path', 'crates'}
+            or view['path'] != str(session / 'deps') or not isinstance(view['crates'], list)
+            or any(not isinstance(crate, str) or not CRATE_NAME.fullmatch(crate)
+                   for crate in view['crates'])
+            or view['crates'] != sorted(set(view['crates']))):
+        raise ValueError('invalid dependency view')
     expected_unenforced = sorted(seat for seat in assigned if adapters[seat] == 'agent')
     declared_unenforced = manifest.get('unenforced_seats', [])
     if (not isinstance(declared_unenforced, list)
@@ -4237,7 +4245,7 @@ def unenforced_verdict(session, manifest, manifest_hash, phase, seat, stem, assi
                '--session', str(session), '--out', str(audit_path),
                # --out is not the enforced name, so the result cannot be inferred from it.
                '--result', str(result)]
-    deps = os.environ.get('REV_DEPS_DIR')
+    deps = os.environ.get('REV_DEPS_DIR') or (manifest.get('dependency_view') or {}).get('path')
     if deps:
         command += ['--deps', deps]
     try:
@@ -4453,6 +4461,52 @@ def current_coverage_head(session):
     return head
 
 
+CRATE_NAME = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.+-]*')
+
+
+def locked_registry_crates(raw):
+    """`<name>-<version>` for every Cargo.lock [[package]] carrying a registry checksum."""
+    crates = set()
+    for block in re.split(r'^\[\[package\]\][ \t]*$', raw.decode('utf-8', 'replace'), flags=re.M)[1:]:
+        fields = dict(re.findall(r'^(name|version|checksum) = "([^"\n]*)"', block, re.M))
+        if fields.get('checksum') and all(CRATE_NAME.fullmatch(fields.get(key, ''))
+                                          for key in ('name', 'version')):
+            crates.add(fields['name'] + '-' + fields['version'])
+    return sorted(crates)
+
+
+def dependency_view(repo, session, snapshot):
+    """Link each crate the snapshot's Cargo.lock pins into $S/deps; None without a lockfile.
+
+    A user-supplied REV_DEPS_DIR is the dependency root instead, so no view is built."""
+    if os.environ.get('REV_DEPS_DIR'):
+        return None
+    entry = repo.entries(snapshot).get('Cargo.lock')
+    if entry is None or entry[0] not in ('100644', '100755'):
+        return None
+    home = Path(os.environ.get('CARGO_HOME') or Path.home() / '.cargo')
+    registry = home / 'registry' / 'src'
+    indexes = sorted(path for path in registry.iterdir() if path.is_dir()) if registry.is_dir() else []
+    wanted = {}
+    for crate in locked_registry_crates(repo.git('cat-file', 'blob', entry[1])):
+        source = next((index / crate for index in indexes if (index / crate).is_dir()), None)
+        if source is not None:
+            wanted[crate] = str(source)
+    view = session / 'deps'
+    if view.is_symlink() or (view.exists() and not view.is_dir()):
+        raise ValueError('dependency view must be a session directory')
+    view.mkdir(mode=0o700, exist_ok=True)
+    for child in view.iterdir():
+        if not child.is_symlink():
+            raise ValueError('unexpected dependency view entry: ' + child.name)
+        if os.readlink(child) != wanted.get(child.name):
+            child.unlink()
+    for crate, source in wanted.items():
+        if not (view / crate).is_symlink():
+            os.symlink(source, view / crate)
+    return {'path': str(view), 'crates': sorted(wanted)}
+
+
 def prepare(args):
     session = Path(args.session).resolve()
     with session_input_lock(session):
@@ -4563,6 +4617,7 @@ def _prepare_locked(args, session):
         unknown_ref = True
     patches, hunks, categories, opaque = repo.changes(base_tree, snapshot)
     data = facts(repo, snapshot, hunks, categories, base_tree)
+    deps_view = dependency_view(repo, session, snapshot)
     plan_clusters = None
     if args.phase == 'plan':
         snapshot_entries = repo.entries(snapshot); base_entries = repo.entries(base_tree)
@@ -4816,6 +4871,8 @@ def _prepare_locked(args, session):
                 'artifacts': {name: {'sha256': digest(raw), 'words': len(raw.split())} for name, raw in artifacts.items()}}
     if args.phase == 'plan':
         manifest['plan'] = data['plan']
+    if deps_view is not None:
+        manifest['dependency_view'] = deps_view
     # Recorded on EVERY manifest, so a consumer never has to infer enforcement from the roster.
     # A non-empty list means those seats cannot supply a read audit and the panel is not certified.
     manifest['unenforced_seats'] = unenforced_seats

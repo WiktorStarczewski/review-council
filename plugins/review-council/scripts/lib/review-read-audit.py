@@ -751,8 +751,7 @@ def direct_source_range(name, data, root, cache=None, session=None):
     offset = next((data[key] for key in ('offset', 'start_line', 'line_start') if key in data), None)
     limit = next((data[key] for key in ('limit', 'line_limit', 'max_lines') if key in data), None)
     try:
-        return canonical_range(target, int(offset), int(offset) + min(int(limit), READ_LINES) - 1,
-                               root, cache=cache)
+        return canonical_range(target, int(offset), int(offset) + int(limit) - 1, root, cache=cache)
     except (TypeError, ValueError):
         return None
 
@@ -927,6 +926,18 @@ def shell_violations(command, roots, root, session, authorized=None, complete=No
             current = []
     if current:
         pipelines.append(current)
+    # Every operand is scoped before a batch code, several of which are advisories, is recorded.
+    for words, _ in parsed:
+        for candidate in path_candidates(words, root):
+            try:
+                path = resolved(candidate, root)
+            except (OSError, ValueError):
+                return [violation('unresolved-path-variable', tool)]
+            if not session_path_allowed(path, session, authorized, dependency):
+                return [violation('unnamed-session-artifact', tool)]
+            if not inside(path, roots) and not (authorized is not None and path in authorized) \
+                    and not session_artifact(path, session):
+                return [violation('path-outside-scope', tool)]
     quiet = {'cd', ':', 'true', 'false', 'test', '[', 'sleep'}
     producer_pipelines = sum(any(words and Path(words[0]).name not in quiet for words in pipeline)
                              for pipeline in pipelines)
@@ -948,16 +959,6 @@ def shell_violations(command, roots, root, session, authorized=None, complete=No
     for words, _ in parsed:
         if words and words[0] in ('for', 'while', 'until', 'if', 'then', 'do', 'case', '{'):
             return [violation('unsupported-shell-shape', tool)]
-        for candidate in path_candidates(words, root):
-            try:
-                path = resolved(candidate, root)
-            except (OSError, ValueError):
-                return [violation('unresolved-path-variable', tool)]
-            if not session_path_allowed(path, session, authorized, dependency):
-                return [violation('unnamed-session-artifact', tool)]
-            if not inside(path, roots) and not (authorized is not None and path in authorized) \
-                    and not session_artifact(path, session):
-                return [violation('path-outside-scope', tool)]
     for pipeline in pipelines:
         for position, words in enumerate(pipeline):
             if not words:

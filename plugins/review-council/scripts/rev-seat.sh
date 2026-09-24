@@ -87,13 +87,14 @@ AUDITF="$BASEN.read-audit.json"
 AUDIT_INVALID_OUT="$BASEN.audit-invalid.json"
 export REV_ACTIVE=1
 export SEAT MODEL EFFORT MODE ROOT PROMPT SCHEMA OUT LOG RAW BASE
-if [ -z "${REV_DEPS_DIR:-}" ] && [ -f "$SESSION/scope.env" ]; then
-  REV_DEPS_DIR=$(python3 - "$SESSION/scope.env" <<'PY'
-import shlex, sys
-for line in open(sys.argv[1]).read().splitlines():
-    key, _, value = line.partition('=')
-    if key == 'REV_DEPS_DIR':
-        print(shlex.split(value)[0])
+# An explicit REV_DEPS_DIR wins; otherwise the panel manifest's per-crate view is the dependency root.
+if [ -z "${REV_DEPS_DIR:-}" ] && [ -f "$SESSION/r${ROUND}-evidence.manifest.json" ]; then
+  REV_DEPS_DIR=$(python3 - "$SESSION" "$ROUND" <<'PY'
+import json, os, sys
+view = json.load(open(os.path.join(sys.argv[1], f'r{sys.argv[2]}-evidence.manifest.json'))).get('dependency_view')
+if isinstance(view, dict) and isinstance(view.get('path'), str) \
+        and os.path.realpath(view['path']) == os.path.realpath(os.path.join(sys.argv[1], 'deps')):
+    print(view['path'])
 PY
 ) || REV_DEPS_DIR=""
 fi

@@ -1140,7 +1140,7 @@ print(json.dumps({'type':'result','is_error':False,'subtype':'success',
             self.assertEqual(command_args[command_args.index('--prompt') + 1], str(prompt))
             self.assertEqual(command_args[command_args.index('--deps') + 1], str(deps))
 
-    def test_seat_exports_scope_dependency_root(self):
+    def test_seat_exports_manifest_dependency_view(self):
         cli = self.root / 'claude'
         cli.write_text('''#!/usr/bin/env python3
 import json, os, sys
@@ -1152,11 +1152,12 @@ print(json.dumps({'type':'result','is_error':False,'subtype':'success',
         cli.chmod(0o755)
         (self.root / 'roster.json').write_text(json.dumps({'seats': [
             self.roster.make_seat('sonnet', 'claude', 'sonnet', 'max')]}))
-        deps = self.root / 'cargo' / 'registry' / 'src'
-        deps.mkdir(parents=True)
+        deps = self.root / 'deps'
+        deps.mkdir()
         (self.root / 'scope.env').write_text(
-            "REV_BASE='0000000'\nREV_ROOT='" + str(self.root) + "'\nREV_SCOPE='branch'\n"
-            "REV_DEPS_DIR='" + str(deps) + "'\n")
+            "REV_BASE='0000000'\nREV_ROOT='" + str(self.root) + "'\nREV_SCOPE='branch'\n")
+        (self.root / 'r1-evidence.manifest.json').write_text(json.dumps(
+            {'dependency_view': {'path': str(deps), 'crates': []}}))
         prompt = self.root / 'prompt.md'
         prompt.write_text('Review the fixture.')
         capture = self.root / 'args.json'

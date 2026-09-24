@@ -118,11 +118,6 @@ if [ -n "$WRITE" ]; then
     printf 'REV_BASE_BRANCH=%s\n' "$(q "$BASE_BRANCH")"
     printf 'REV_ROOT=%s\n'    "$(q "$ROOT")"
     printf 'REV_SCOPE=%s\n'   "$(q "$SCOPE")"
-    # The sanctioned root for pinned crate source; an explicit REV_DEPS_DIR stays in the environment.
-    DEPS_ROOT="${CARGO_HOME:-$HOME/.cargo}/registry/src"
-    if [ -z "${REV_DEPS_DIR:-}" ] && [ -f "$ROOT/Cargo.lock" ] && [ -d "$DEPS_ROOT" ]; then
-      printf 'REV_DEPS_DIR=%s\n' "$(q "$DEPS_ROOT")"
-    fi
   } > "$STAGE/scope.env" || die "cannot stage scope.env"
   printf '%s\n' "$FILES" > "$STAGE/files.txt" || die "cannot stage files.txt"
   if [ -n "$UNTRACKED" ]; then printf '%s\n' "$UNTRACKED" > "$STAGE/untracked.txt" || die "cannot stage untracked.txt"

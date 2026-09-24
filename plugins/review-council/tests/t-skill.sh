@@ -296,8 +296,8 @@ test_skill_contract() {
       "read audit with status .invalid. is a hard evidence-audit failure"
     assert_grep "advisories stay visible and never earn credit" "$H" \
       'valid audit may carry advisories: these never discard the review, stay visible in the receipt, and never earn credit'
-    assert_grep "a violating call proves nothing but a pacing count" "$H" \
-      'except a pacing count, proves no range, no patch chunk, packet or segment, and no citation'
+    assert_grep "a violating call or overflowing turn proves nothing" "$H" \
+      'A call that raises a call-local violation, and every proof call in a turn that overflows the turn ceiling, proves no range, no patch chunk, packet or segment, and no citation\. Pacing counts and whole-transcript counts revoke nothing\.'
     assert_grep "hard audit failure stops before another paid launch" "$H" \
       '[Hh]ard evidence-audit failure.*stop.*without.*paid retry'
     assert_grep "seat-local recovery retains valid completed reviewers" "$H" \
