@@ -462,11 +462,12 @@ test_stop_guard_picks_the_newest_above_the_cap() {
 test_stop_guard_is_declared_in_hooks_json() {
   ( local decl; decl=$(python3 -c '
 import json
-d = json.load(open("'"$SK"'/.claude-plugin/hooks.json"))["hooks"]["Stop"][0]["hooks"][0]
-print(d["command"])
+h = json.load(open("'"$SK"'/.claude-plugin/hooks.json"))["hooks"]
+print(h["Stop"][0]["hooks"][0]["command"] + "|" + h["SessionStart"][0]["hooks"][0]["command"])
 ' 2>/dev/null)
-    assert_eq "hooks.json declares the Stop hook at the shipped path" \
-      "$decl" '${CLAUDE_PLUGIN_ROOT}/hooks/stop-session-guard'
+    # Quoted, so a plugin root containing a space stays one word (claude plugin validate --strict).
+    assert_eq "hooks.json declares both hooks at the shipped paths, quoted" \
+      "$decl" '"${CLAUDE_PLUGIN_ROOT}/hooks/stop-session-guard"|"${CLAUDE_PLUGIN_ROOT}/hooks/session-start"'
     if [ -x "$STOP_HOOK_SRC" ]; then ok "the shipped hook is executable"
     else fail "the shipped hook is executable" "not executable"; fi )
 }
