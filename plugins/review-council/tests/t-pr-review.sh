@@ -2211,3 +2211,52 @@ test_pr_review_publish_failure() {
   assert_exit "missing publication session is not created for a receipt" 0 \
     test ! -e "$missing"
 }
+
+test_pr_review_unsquashed_stack_keeps_per_fix_links() {
+  local session="$T/pr-unsquashed" root="$T/pr-unsquashed-repo" bin="$T/pr-unsquashed-bin"
+  pr_review_session "$session" "$root"
+  pr_review_gh_shim "$bin"
+  echo one > "$root/one.txt"; git -C "$root" add one.txt
+  git -C "$root" commit -qm 'fix(rev): F-001 one'
+  local first; first=$(git -C "$root" rev-parse HEAD)
+  echo two > "$root/two.txt"; git -C "$root" add two.txt
+  git -C "$root" commit -qm 'fix(rev): F-002 two'
+  local head; head=$(git -C "$root" rev-parse HEAD)
+  python3 - "$session/pr-review.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data.pop('fixed_in')
+path.write_text(json.dumps(data))
+PY
+  pin_pr_review_links "$session" "$root"
+  python3 - "$session/pr-review.json" "$first" <<'PY'
+import copy
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+second = copy.deepcopy(data['fixes'][0])
+second['summary'] = 'Second fix in its own commit'
+data['fixes'][0]['commit'] = {
+    'label': sys.argv[2][:7], 'url': f'https://github.com/acme/repo/commit/{sys.argv[2]}'}
+data['fixes'].append(second)
+path.write_text(json.dumps(data))
+PY
+  # A NO_PUSH render has no associated PR; the later pushed finalize promotes the target.
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-unsquashed.calls" NO_PUSH=1 \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 >/dev/null
+  PATH="$bin:$PATH" GH_HEAD_OID="$head" GH_CALLS="$T/pr-unsquashed.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" finalize-stack "$session" --head "$head" \
+    > "$T/pr-unsquashed.out" 2> "$T/pr-unsquashed.err"
+  assert_eq "unsquashed stack finalization succeeds" "$?" 0
+  assert_grep "unsquashed stack keeps the first fix's own SHA" \
+    "$session/pr-review.md" "/commit/$first"
+  assert_grep "unsquashed stack keeps the second fix's own SHA" \
+    "$session/pr-review.md" "/commit/$head"
+}
