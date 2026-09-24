@@ -44,11 +44,13 @@ Key properties:
 - Every core seat receives an independent task and produces the same findings schema.
 - Agreement increases confidence but never replaces source verification.
 - The source, prompt, evidence, transcript, result, model, and effort are hash-bound.
-- Valid siblings are retained. Only a missing semantic bundle may trigger one
-  full-state coverage repair after at least three valid reviewers.
+- Valid siblings are retained. An assignment without a valid result gets at most one
+  replacement on another enforced seat, and a hard audit failure latches only its own
+  label and seat.
 - Provider quota fallback is explicit, visible, temporary, and limited to quota or
   capacity failures.
 - Later panels review a safe semantic delta only after a valid predecessor receipt.
+- `phase=fix` stops for the user once two rounds cite lines the review itself changed.
 - Status and usage are read from session artifacts without another model call.
 - Completed PR reviews use one deterministic `COMMENTED` review format with the
   badge, verdict tip, decisions, fixes, verified-sound, coverage, and footer sections.
@@ -536,13 +538,13 @@ as provider quota.
 | Failure | Recovery |
 | --- | --- |
 | first provider exit 1 or 2 without an invalid audit | retry only that seat once with the exact prompt, assignment, model, and effort |
-| hard evidence-audit failure | preserve all artifacts, block every seat under that label, and stop the panel before another paid launch |
+| hard evidence-audit failure | preserve all artifacts, never relaunch that seat under that label, and replace the assignment once on another enforced seat (`<N>x`, or a one-seat `<N>px` plan panel) |
 | valid sibling | retain its result, transcript, audit, and usage |
-| at least three valid reviewers but one missing semantic bundle | run one full-state coverage repair on a surviving seat |
-| provider seat fails twice or a plan seat fails twice | leave the configured panel incomplete |
+| provider seat fails twice or a plan seat fails twice | replace the assignment once on another enforced seat |
+| no eligible seat, a second failure in the panel, or a failed replacement | leave the panel incomplete and ask the user |
 | receipt failure | diagnose the provenance or contract defect and end the run without automatic reviewers |
 
-Audit failures never widen into a full-state repair. Review fixes wait until the
+A replacement child has full scope. Review fixes wait until the
 receipt seals, even when valid results are triaged while slower siblings remain active.
 
 ## Quota fallback
@@ -574,7 +576,8 @@ Rules:
   trees, scope, and paths, including same-path tracked, staged, and untracked content.
 - Results from the quota-failed label remain diagnostic and do not enter the receipt.
 - One quota fallback panel is the only permitted full-panel restart.
-- A hard audit failure in fallback stops without repair or another fallback.
+- A quota substitution never uses a replacement child; a hard audit failure inside the fallback
+  panel follows the one-replacement rule.
 - Fallback never edits configuration.
 - The next review probes the preferred roster again, so restored capacity restores the
   configured council automatically.

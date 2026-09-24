@@ -33,6 +33,29 @@
   `path-outside-scope`. A codex seat that listed and read its pinned crate in the cargo registry
   had failed with `path-outside-scope`.
 
+- A hard audit failure no longer stops the panel or latches the session. `rev-attempt.py` refuses
+  only a relaunch of the same label and seat (an invalid `read-audit.json` or an archived
+  `audit-invalid.json`); the session and panel stop markers and the `stop` and `check` commands are
+  gone. On the wallet C1 review, 8 hard failures had each forced a new session.
+
+- An assignment without a valid result gets at most one replacement on another eligible seat:
+  after its exact retry for an execution failure, immediately for a hard audit failure. This rule
+  replaces coverage repair. `prepare <N>x --phase repair --assignment <executor>=<parent bundle>
+  --parent-assignment <N>:<failed seat>` keys the child by the seat that runs it, and refuses the
+  failed seat itself, an Agent seat, a parent with no recorded terminal failure (an archived
+  `audit-invalid.json`, or an exact retry that also exited 1 or 2, which `rev-seat.sh` now records
+  per launch) and a second replacement in the panel. The receipt reads the replacement's result,
+  audit and findings under the executing seat. A failed plan seat is replaced by an ordinary
+  one-seat `<N>px` plan panel, and `phase=fix` accepts `<N>p` or `<N>px`.
+
+- A review-origin breaker. `rev-evidence.py review-origin <S> <N>` counts, from round `<N>`'s
+  sealed receipt, the chosen citations on lines the review itself changed since its first
+  receipt. `phase=fix` records the count and refuses once two rounds since the last
+  `review_origin_ack=<N>` have a nonzero count, so the user decides whether to revert the review's
+  own changes. `rev-state.sh <fallback> inherit-breaker <parent>` carries the window into a quota
+  fallback session. On the wallet C1 review about 30 of 38 later findings were defects in the
+  review's own fixes.
+
 ## 0.5.1
 
 - A codex seat that reads the frozen snapshot through `git show <snapshot tree>:<path> | sed -n`

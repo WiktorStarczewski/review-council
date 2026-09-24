@@ -326,3 +326,4 @@ t-read-bounds.sh::test_hard_audit_latch_is_per_label_and_seat	1	normal
 t-read-bounds.sh::test_seat_records_launch_exits	1	normal
 t-evidence.sh::test_evidence_hardening_replacement	3	normal
 t-state.sh::test_state_fix_gate_accepts_a_px_plan_replacement	1	normal
+t-skill.sh::test_skill_replacement_and_breaker_contract	1	normal
