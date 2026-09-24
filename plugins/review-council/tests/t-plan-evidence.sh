@@ -98,6 +98,16 @@ EOF
     assert_eq "plan replacement keeps whole-panel recovery" "$?" 2
     assert_grep "plan replacement has a stable fallback reason" "$T/plan-child.err" \
       'plan parent assignments require whole-panel recovery'
+    # A failed plan seat is replaced by an ordinary one-seat plan panel under <N>px.
+    local replacement px="$S-px"
+    cp -R "$S" "$px" || return
+    replacement=$(REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$px" 1px --phase plan \
+      --plan "$px/fix-plan.md" --plan-sha256 "$plan_hash" --full-seat opus \
+      --assignment opus=plan-completeness) || return
+    assert_eq "a <N>px plan replacement is a schema-4 one-seat plan panel on the same plan" \
+      "$(python3 -c 'import json,sys; a,b=(json.load(open(p)) for p in sys.argv[1:]); print(b["schema_version"], b["phase"], list(b["assignments"]), b["assignments"]["opus"]["scope"], b["plan"]["sha256"] == a["plan"]["sha256"])' "$manifest" "$replacement")" \
+      "4 plan ['opus'] full True"
     assert_exit "plan evidence prompt requires the bound plan argument" 1 \
       "$SCRIPTS/rev-prompt.sh" "$S" 1p sol plan-completeness plan --evidence "$manifest"
     python3 - "$manifest" <<'PY'

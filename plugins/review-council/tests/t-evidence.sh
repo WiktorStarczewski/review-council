@@ -784,8 +784,7 @@ def write_agent_audit(session, label, seat):
     missing = [finding for finding in findings if not any(
         row['path'] == finding['file'] and row['line_start'] <= finding['line_end']
         and finding['line_start'] <= row['line_end'] for row in ranges)]
-    tool_ranges = [{'path': finding['file'], 'line_start': finding['line_start'],
-                    'line_end': finding['line_end'], 'origin': 'tool'} for finding in missing]
+    tool_ranges = []
     for required in packet['required_source_ranges']:
         tool_ranges.extend({'path': required['path'], 'line_start': segment['line_start'],
                             'line_end': segment['line_end'], 'origin': 'tool'}
@@ -800,6 +799,8 @@ def write_agent_audit(session, label, seat):
                              if component['id'] == packet['components'][0])
             tool_ranges.append({'path': component['boundary'][0], 'line_start': 1,
                                 'line_end': 1, 'origin': 'tool'})
+    tool_ranges.extend({'path': finding['file'], 'line_start': finding['line_start'],
+                        'line_end': finding['line_end'], 'origin': 'tool'} for finding in missing)
     ranges.extend(tool_ranges)
     ranges = sorted({(row['path'], row['line_start'], row['line_end'], row['origin']) for row in ranges})
     ranges = [{'path': path, 'line_start': start, 'line_end': end, 'origin': origin}
@@ -2122,9 +2123,10 @@ def seat_local_recovery():
             write_agent_audit(session, 'parent', seat)
         (session / 'rparent-terra.exit').write_text('1\n')
         call('receipt', session, 'parent', good=False, error='seat failed: terra')
-        child_args = ('--assignment', 'terra=' + bundles[1],
+        (session / 'rparent-terra.audit-invalid.json').write_text('{"summary":"kept","findings":[]}\n')
+        child_args = ('--assignment', 'sol=' + bundles[1],
                       '--parent-assignment', 'parent:terra')
-        child = prepare('child', 'repair', *child_args)
+        child = prepare('parentx', 'repair', *child_args)
         binding = child['parent_assignment']
         assert binding == {
             'manifest': parent_path.name,
@@ -2135,49 +2137,50 @@ def seat_local_recovery():
             'bundle': bundles[1], 'adapter': 'claude',
             'model': 'model-terra', 'effort': 'max',
             'patch_chunks_mode': 'auto', 'source_context_enabled': True}
-        assert child['assignments']['terra']['scope'] == 'full'
+        assert child['assignments']['sol']['scope'] == 'full'
         assert child['patch_chunks_mode'] == parent['patch_chunks_mode'] == 'auto'
         assert child['source_context']['enabled'] is parent['source_context']['enabled'] is True
-        call('prepare', session, 'child-chunk-conflict', '--phase', 'repair', *child_args,
+        call('prepare', session, 'parentx', '--phase', 'repair', *child_args,
              good=False, env={'REV_PATCH_CHUNKS':'0'},
              error='repair patch chunk setting conflicts with parent assignment')
-        call('prepare', session, 'child-source-conflict', '--phase', 'repair', *child_args,
+        call('prepare', session, 'parentx', '--phase', 'repair', *child_args,
              good=False, env={'REV_SOURCE_CONTEXT':'0'},
              error='repair source context setting conflicts with parent assignment')
-        call('prepare', session, 'child-worktree-conflict', '--phase', 'repair',
+        call('prepare', session, 'parentx', '--phase', 'repair',
              *child_args, '--head', git('rev-parse', 'HEAD'), good=False,
              error='explicit source selector conflicts with parent assignment')
-        child_path = session / 'rchild-evidence.manifest.json'
-        (session / 'rchild-terra.prompt.md').write_text(call('render', child_path, 'terra'))
-        (session / 'rchild-terra.json').write_text('{"summary":"child","findings":[]}')
-        (session / 'rchild-terra.exit').write_text('0\n')
-        write_agent_audit(session, 'child', 'terra')
-        output = call('verify-panel', session, 'parent', '--replacement', 'terra=child')
+        child_path = session / 'rparentx-evidence.manifest.json'
+        (session / 'rparentx-sol.prompt.md').write_text(call('render', child_path, 'sol'))
+        (session / 'rparentx-sol.json').write_text('{"summary":"child","findings":[]}')
+        (session / 'rparentx-sol.exit').write_text('0\n')
+        write_agent_audit(session, 'parentx', 'sol')
+        output = call('verify-panel', session, 'parent', '--replacement', 'terra=parentx')
         verified = json.loads(output)
-        assert verified['replacements'] == {'terra': 'child'}
-        assert {seat: row['label'] for seat, row in verified['selected_generations'].items()} == {
-            'sol': 'parent', 'terra': 'child', 'opus': 'parent', 'sonnet': 'parent'}
-        call('receipt', session, 'parent', '--replacement', 'terra=child')
+        assert verified['replacements'] == {'terra': 'parentx'}
+        assert {seat: (row['label'], row['seat']) for seat, row in verified['selected_generations'].items()} == {
+            'sol': ('parent', 'sol'), 'terra': ('parentx', 'sol'), 'opus': ('parent', 'opus'),
+            'sonnet': ('parent', 'sonnet')}
+        call('receipt', session, 'parent', '--replacement', 'terra=parentx')
         receipt = json.loads((session / 'rparent-coverage.receipt.json').read_text())
         assert receipt['schema_version'] == 2
         assert receipt['selected_generations'] == verified['selected_generations']
         assert receipt['results'] == verified['results']
         assert receipt['selected_generations']['sol']['result_sha256'] == module.digest(
             (session / 'rparent-sol.json').read_bytes())
-        call('receipt', session, 'parent', '--replacement', 'terra=child')
+        call('receipt', session, 'parent', '--replacement', 'terra=parentx')
         follow = prepare('follow', 'verification', *assign)
         assert follow['fallback_reason'] is None
-        call('verify-panel', session, 'parent', '--replacement', 'terra=child',
-             '--replacement', 'terra=child', good=False, error='duplicate replacement seat')
+        call('verify-panel', session, 'parent', '--replacement', 'terra=parentx',
+             '--replacement', 'terra=parentx', good=False, error='duplicate replacement seat')
         (session / 'rparent-terra.exit').write_text('0\n')
         (session / 'rparent-opus.exit').write_text('1\n')
-        call('verify-panel', session, 'parent', '--replacement', 'opus=child',
+        call('verify-panel', session, 'parent', '--replacement', 'opus=parentx',
              good=False, error='replacement child is bound to another parent seat')
         (session / 'rparent-terra.exit').write_text('1\n')
         (session / 'rparent-opus.exit').write_text('0\n')
 
         original_manifest = child_path.read_bytes()
-        original_evidence = (session / 'rchild-evidence.json').read_bytes()
+        original_evidence = (session / 'rparentx-evidence.json').read_bytes()
         for key, value in (
                 ('snapshot_tree', parent['base_tree']), ('roster_sha256', '0' * 64),
                 ('assignment_sha256', '0' * 64), ('bundle', bundles[0]),
@@ -2187,50 +2190,41 @@ def seat_local_recovery():
             changed['parent_assignment'][key] = value
             evidence['parent_assignment'][key] = value
             evidence_raw = module.encoded(evidence)
-            (session / 'rchild-evidence.json').write_bytes(evidence_raw)
-            changed['artifacts']['rchild-evidence.json'] = {
+            (session / 'rparentx-evidence.json').write_bytes(evidence_raw)
+            changed['artifacts']['rparentx-evidence.json'] = {
                 'sha256': module.digest(evidence_raw), 'words': len(evidence_raw.split())}
             child_path.write_bytes(module.encoded(changed))
-            call('verify-panel', session, 'parent', '--replacement', 'terra=child', good=False)
+            call('verify-panel', session, 'parent', '--replacement', 'terra=parentx', good=False)
         child_path.write_bytes(original_manifest)
-        (session / 'rchild-evidence.json').write_bytes(original_evidence)
+        (session / 'rparentx-evidence.json').write_bytes(original_evidence)
         changed = json.loads(original_manifest)
-        changed['task_capacity']['seats']['terra']['projected_turns'] += 1
+        changed['task_capacity']['seats']['sol']['projected_turns'] += 1
         child_path.write_bytes(module.encoded(changed))
         call('verify', child_path, good=False, error='invalid task capacity contract')
         child_path.write_bytes(original_manifest)
 
-        sibling = prepare('sibling', 'repair', '--assignment', 'terra=' + bundles[1],
-                          '--parent-assignment', 'parent:terra')
-        sibling_path = session / 'rsibling-evidence.manifest.json'
-        (session / 'rsibling-terra.prompt.md').write_text(call('render', sibling_path, 'terra'))
-        (session / 'rsibling-terra.json').write_text('{"summary":"sibling","findings":[]}')
-        (session / 'rsibling-terra.exit').write_text('0\n')
-        write_agent_audit(session, 'sibling', 'terra')
-        sibling_stream = session / 'rsibling-terra.stream.ndjson'
-        sibling_stream.write_text('{"different":true}\n')
-        sibling_audit = json.loads((session / 'rsibling-terra.read-audit.json').read_text())
-        sibling_audit['stream_sha256'] = module.digest(sibling_stream.read_bytes())
-        (session / 'rsibling-terra.read-audit.json').write_text(json.dumps(sibling_audit))
-        for suffix in ('prompt.md', 'stream.ndjson', 'json', 'read-audit.json'):
-            target = session / ('rchild-terra.' + suffix); saved = target.read_bytes()
-            target.write_bytes((session / ('rsibling-terra.' + suffix)).read_bytes())
-            call('verify-panel', session, 'parent', '--replacement', 'terra=child', good=False)
+        # The executor's own parent-panel generation is valid there and must not pass as the child.
+        # (Both streams are the fixture's identical '{}', so only the other artifacts can differ.)
+        for suffix in ('prompt.md', 'json', 'read-audit.json'):
+            target = session / ('rparentx-sol.' + suffix); saved = target.read_bytes()
+            target.write_bytes((session / ('rparent-sol.' + suffix)).read_bytes())
+            call('verify-panel', session, 'parent', '--replacement', 'terra=parentx', good=False)
             target.write_bytes(saved)
 
         git('add', 'main.py'); git('commit', '-qm', 'reviewed ref')
         reviewed_ref = git('rev-parse', 'HEAD')
         parent_ref = prepare('parent-ref', 'risk', '--head', reviewed_ref, *assign)
-        inherited = prepare('child-ref', 'repair', '--assignment', 'terra=' + bundles[1],
+        (session / 'rparent-ref-terra.audit-invalid.json').write_text('{"summary":"kept","findings":[]}\n')
+        inherited = prepare('parent-refx', 'repair', '--assignment', 'sol=' + bundles[1],
                             '--parent-assignment', 'parent-ref:terra')
         assert inherited['source'] == parent_ref['source'] == {
             'mode': 'ref', 'ref': reviewed_ref}
         assert inherited['snapshot_tree'] == parent_ref['snapshot_tree']
-        explicit = prepare('child-ref-explicit', 'repair', '--assignment', 'terra=' + bundles[1],
+        explicit = prepare('parent-refx', 'repair', '--assignment', 'sol=' + bundles[1],
                            '--parent-assignment', 'parent-ref:terra', '--head', reviewed_ref)
         assert explicit['source'] == parent_ref['source']
-        call('prepare', session, 'child-ref-conflict', '--phase', 'repair',
-             '--assignment', 'terra=' + bundles[1],
+        call('prepare', session, 'parent-refx', '--phase', 'repair',
+             '--assignment', 'sol=' + bundles[1],
              '--parent-assignment', 'parent-ref:terra', '--head', git('rev-parse', 'HEAD^'),
              good=False, error='explicit source selector conflicts with parent assignment')
 
@@ -2245,6 +2239,190 @@ def seat_local_recovery():
         ordinary_receipt = json.loads((session / 'rordinary-coverage.receipt.json').read_text())
         assert ordinary_receipt['schema_version'] == 1
         assert 'selected_generations' not in ordinary_receipt and 'replacements' not in ordinary_receipt
+
+def replacement_runs_on_another_seat():
+    attempt = script.parent / 'lib' / 'rev-attempt.py'
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        roster = {'seats': [
+            {'seat': seat, 'extra': False, 'adapter': 'agent' if seat == 'sonnet' else 'claude',
+             'model': 'model-' + seat, 'effort': 'max'} for seat in seats]}
+        (session / 'roster.json').write_text(json.dumps(roster))
+        parent = prepare('4', 'risk', *assign, '--full-seat', 'sonnet')
+        path = session / 'r4-evidence.manifest.json'
+        for seat in parent['assignments']:
+            (session / f'r4-{seat}.prompt.md').write_text(call('render', path, seat))
+            (session / f'r4-{seat}.json').write_text('{"summary":"parent","findings":[]}')
+            (session / f'r4-{seat}.exit').write_text('0\n')
+            if seat != 'sonnet':
+                write_agent_audit(session, '4', seat)
+        (session / 'r4-sol.exit').write_text('2\n')
+        child_args = ('--assignment', 'terra=' + bundles[0], '--parent-assignment', '4:sol')
+        call('prepare', session, '4x', '--phase', 'repair', *child_args, good=False,
+             error='parent assignment has no recorded terminal failure')
+        (session / 'r4-sol.audit-invalid.json').write_text('{"summary":"kept","findings":[]}\n')
+        call('prepare', session, '4x', '--phase', 'repair', '--assignment', 'sol=' + bundles[0],
+             '--parent-assignment', '4:sol', good=False,
+             error='replacement executor must differ from the parent seat')
+        call('prepare', session, '4x', '--phase', 'repair', '--assignment', 'sonnet=' + bundles[0],
+             '--parent-assignment', '4:sol', good=False,
+             error='replacement executor must be an enforced seat')
+        call('prepare', session, '4y', '--phase', 'repair', *child_args, good=False,
+             error='replacement label must be 4x')
+        call('prepare', session, '4x', '--phase', 'repair', '--assignment', 'terra=' + bundles[1],
+             '--parent-assignment', '4:sol', good=False,
+             error='repair assignment does not match its parent')
+        child = prepare('4x', 'repair', *child_args)
+        assert list(child['assignments']) == ['terra'], child['assignments']
+        assert child['assignments']['terra']['bundle'] == parent['assignments']['sol']['bundle']
+        assert child['assignments']['terra']['scope'] == 'full'
+        assert child['parent_assignment']['seat'] == 'sol'
+        assert child['parent_assignment']['adapter'] == 'claude'
+        assert prepare('4x', 'repair', *child_args) == child, 'the same replacement re-prepares'
+        (session / 'r4-opus.exit').write_text('2\n')
+        (session / 'r4-opus.audit-invalid.json').write_text('{"summary":"kept","findings":[]}\n')
+        call('prepare', session, '4x', '--phase', 'repair', '--assignment', 'sol=' + bundles[2],
+             '--parent-assignment', '4:opus', good=False, error='panel already has a replacement')
+        call('prepare', session, '4x', '--phase', 'repair', '--assignment', 'opus=' + bundles[0],
+             '--parent-assignment', '4:sol', good=False, error='panel already has a replacement')
+        (session / 'r4-opus.exit').write_text('0\n'); (session / 'r4-opus.audit-invalid.json').unlink()
+
+        child_path = session / 'r4x-evidence.manifest.json'
+        (session / 'r4x-terra.prompt.md').write_text(call('render', child_path, 'terra'))
+        (session / 'r4x-terra.json').write_text(json.dumps({'summary': 'child', 'findings': [
+            {'severity': 'P2', 'file': 'main.py', 'line_start': 2, 'line_end': 2, 'claim': 'child claim',
+             'evidence': 'e', 'suggested_fix': 'f', 'confidence': 0.9}]}))
+        (session / 'r4x-terra.exit').write_text('2\n')
+        write_agent_audit(session, '4x', 'terra')
+        call('receipt', session, '4', '--replacement', 'sol=4x', good=False, error='seat failed: terra')
+        assert not (session / 'r4-coverage.receipt.json').exists(), 'a failed replacement seals nothing'
+        (session / 'r4x-terra.exit').write_text('0\n')
+        call('verify-panel', session, '4', '--replacement', 'sol=4x', '--replacement', 'opus=4x',
+             good=False, error='at most one replacement per panel')
+        call('receipt', session, '4', '--replacement', 'sol=4x')
+        receipt = json.loads((session / 'r4-coverage.receipt.json').read_text())
+        row = receipt['selected_generations']['sol']
+        assert (row['label'], row['seat'], row['adapter'], row['enforced']) == ('4x', 'terra', 'claude', True), row
+        assert row['result_sha256'] == module.digest((session / 'r4x-terra.json').read_bytes())
+        assert receipt['selected_generations']['terra']['label'] == '4'
+        assert [(f['claim'], f['owners']) for f in receipt['findings']] == [('child claim', ['sol'])], receipt['findings']
+
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        roster = {'seats': [{'seat': seat, 'extra': False, 'adapter': 'claude', 'model': 'model-' + seat,
+                             'effort': 'max'} for seat in seats]}
+        (session / 'roster.json').write_text(json.dumps(roster))
+        parent = prepare('5', 'risk', *assign, '--full-seat', 'sonnet')
+        owner = parent['mechanical_owner']
+        assert parent['assignments'][owner]['scope'] == 'full'
+        path = session / 'r5-evidence.manifest.json'
+        prompt = session / f'r5-{owner}.prompt.md'; prompt.write_text(call('render', path, owner))
+        def launch(code):
+            assert subprocess.run([sys.executable, str(attempt), 'reserve', session, '5', owner, prompt]).returncode == 0
+            assert subprocess.run([sys.executable, str(attempt), 'record', session, '5', owner, prompt, code]).returncode == 0
+            (session / f'r5-{owner}.exit').write_text(code + '\n')
+        executor = next(seat for seat in seats if seat != owner)
+        bundle = parent['assignments'][owner]['bundle']
+        args = ('--assignment', executor + '=' + bundle, '--parent-assignment', '5:' + owner)
+        launch('1')
+        call('prepare', session, '5x', '--phase', 'repair', *args, good=False,
+             error='parent assignment has no recorded terminal failure')
+        launch('2')
+        child = prepare('5x', 'repair', *args)
+        assert child['assignments'][executor]['scope'] == 'full'
+        assert child['assignments'][executor]['full_state'] is True
+        assert child['assignments'][executor]['bundle'] == bundle
+
+def review_origin_counts_the_reviews_own_lines():
+    state_script = script.parent / 'rev-state.sh'
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        roster = {'seats': [{'seat': seat, 'extra': False, 'adapter': 'claude', 'model': 'model-' + seat,
+                             'effort': 'max'} for seat in seats]}
+        (session / 'roster.json').write_text(json.dumps(roster))
+        for name, text in (('head.py', 'a = 1\nb = 2\nc = 3\n'), ('tail.py', 'a = 1\nb = 2\nc = 3\n'),
+                           ('empty.py', 'x = 1\n'), ('gone.py', 'y = 1\n')):
+            write(name, text)
+        git('add', 'head.py', 'tail.py', 'empty.py', 'gone.py'); git('commit', '-qm', 'review scope')
+        def cite(path, start, end=None):
+            return {'severity': 'P3', 'file': path, 'line_start': start, 'line_end': end or start,
+                    'claim': f'{path}:{start}', 'evidence': 'e', 'suggested_fix': 'f', 'confidence': 0.5}
+        def seal(label, cited, failed=None, executor=None):
+            manifest = prepare(label, 'discovery')
+            path = session / f'r{label}-evidence.manifest.json'
+            for index, seat in enumerate(manifest['assignments']):
+                (session / f'r{label}-{seat}.prompt.md').write_text(call('render', path, seat))
+                findings = cited[index::len(seats)]
+                (session / f'r{label}-{seat}.json').write_text(json.dumps({'summary': 's', 'findings': findings}))
+                (session / f'r{label}-{seat}.exit').write_text('0\n')
+                write_agent_audit(session, label, seat)
+            replacement = []
+            if failed:
+                stem = session / f'r{label}-{failed}'
+                Path(str(stem) + '.json').rename(Path(str(stem) + '.audit-invalid.json'))
+                Path(str(stem) + '.exit').write_text('2\n')
+                child = prepare(label + 'x', 'repair', '--assignment', executor + '=' + manifest['assignments'][failed]['bundle'],
+                                '--parent-assignment', label + ':' + failed)
+                child_path = session / f'r{label}x-evidence.manifest.json'
+                (session / f'r{label}x-{executor}.prompt.md').write_text(call('render', child_path, executor))
+                (session / f'r{label}x-{executor}.json').write_text(json.dumps({'summary': 's', 'findings': [cite('main.py', 2)]}))
+                (session / f'r{label}x-{executor}.exit').write_text('0\n')
+                write_agent_audit(session, label + 'x', executor)
+                replacement = ['--replacement', failed + '=' + label + 'x']
+            call('receipt', session, label, *replacement)
+        def origin(label):
+            return json.loads(call('review-origin', session, label))
+        def fix(label, **extra):
+            args = [f'round={label}', 'open.P0=0', 'open.P1=0', 'open.P2=0', 'phase=fix',
+                    *(f'{key}={value}' for key, value in extra.items())]
+            return subprocess.run([str(state_script), str(session), *args], capture_output=True, text=True)
+        def state():
+            return json.loads((session / 'state.json').read_text())
+
+        seal('1', [cite('main.py', 2), cite('head.py', 1)])
+        first = json.loads((session / 'r1-coverage.receipt.json').read_text())['snapshot_tree']
+        assert origin('1') == {'label': '1', 'review_base_tree': first, 'citations': 0}, origin('1')
+        assert fix('1').returncode == 0
+        assert state()['review_base_tree'] == first and state()['review_origin'] == {'1': 0}, state()
+
+        # Uncommitted review edits: a changed line, a first-line and a last-line deletion, an
+        # emptied file and a deleted one. Every citation below is P3: severity has no effect.
+        write('main.py', (root / 'main.py').read_text().replace('    return 2\n', '    return 3\n', 1))
+        write('head.py', 'b = 2\nc = 3\n'); write('tail.py', 'a = 1\nb = 2\n'); write('empty.py', '')
+        (root / 'gone.py').unlink()
+        cited = [cite('main.py', 2), cite('main.py', 4, 5), cite('head.py', 1), cite('head.py', 2),
+                 cite('tail.py', 2), cite('tail.py', 1), cite('empty.py', 1), cite('gone.py', 1)]
+        seal('2', cited, failed='opus', executor='terra')
+        # Counted: main.py:2, head.py:1, tail.py:2, empty.py, gone.py and the replacement's main.py:2.
+        # opus's own findings were archived by its hard failure and are not the chosen result.
+        chosen = [row for index, row in enumerate(cited) if seats[index % len(seats)] != 'opus']
+        expected = sum(row['claim'] in ('main.py:2', 'head.py:1', 'tail.py:2', 'empty.py:1', 'gone.py:1')
+                       for row in chosen) + 1
+        assert origin('2')['citations'] == expected, (origin('2'), expected)
+        assert fix('2').returncode == 0, 'one nonzero round passes'
+        assert state()['review_origin'] == {'1': 0, '2': expected}
+
+        seal('3', [cite('main.py', 2)])
+        refused = fix('3')
+        assert refused.returncode == 2 and 'review_origin_ack=3' in refused.stderr, refused.stderr
+        assert state()['round'] == 2 and '3' not in state()['review_origin'], 'a refusal leaves state unchanged'
+        assert fix('3', review_origin_ack=3).returncode == 0
+        seal('4', [cite('main.py', 2)])
+        assert fix('4').returncode == 0, 'the acknowledgement starts a new window'
+        seal('5', [cite('main.py', 2)])
+        assert fix('5').returncode == 2, 'two more nonzero rounds trip it again'
+        assert '5' not in state()['review_origin']
+        assert fix('5', review_origin_ack=5).returncode == 0
+
+        plan = subprocess.run([str(state_script), str(session), 'phase=plan', 'round=7p',
+                               'seats=["sol"]', 'open.P0=0', 'open.P1=0', 'open.P2=0'], capture_output=True, text=True)
+        assert plan.returncode == 0, plan.stderr
+        assert fix('7p').returncode == 0 and '7' not in state()['review_origin'], 'a round without a receipt is ignored'
+
+        fallback = session.parent / 'fallback'; fallback.mkdir()
+        inherit = [str(state_script), str(fallback), 'inherit-breaker', str(session)]
+        assert subprocess.run(inherit, capture_output=True).returncode == 0
+        copied = json.loads((fallback / 'state.json').read_text())
+        assert copied == {key: state()[key] for key in ('review_base_tree', 'review_origin', 'review_origin_ack')}, copied
+        again = subprocess.run(inherit, capture_output=True, text=True)
+        assert again.returncode == 2 and 'already has breaker state' in again.stderr, again.stderr
 
 def narrow_seat_requires_proven_reads():
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
@@ -2414,19 +2592,11 @@ def unenforced_agent_seat_binds_only_its_prompt():
             target.write_bytes(saved)
         (session / 'rcode-terra.exit').write_text('1\n')
         call('receipt', session, 'code', good=False, error='seat failed: terra')
-        prepare('repair', 'repair', '--assignment', 'terra=' + bundles[1],
-                '--parent-assignment', 'code:terra')
-        child_path = session / 'rrepair-evidence.manifest.json'
-        (session / 'rrepair-terra.prompt.md').write_text(call('render', child_path, 'terra'))
-        (session / 'rrepair-terra.json').write_text('{"summary":"repair","findings":[]}')
-        (session / 'rrepair-terra.exit').write_text('0\n')
-        (session / 'rrepair-terra.stream.ndjson').write_text('{}\n')
-        composite = json.loads(
-            call('verify-panel', session, 'code', '--replacement', 'terra=repair'))
-        assert all(row['enforced'] is False and row['audit_sha256'] is None
-                   and row['unenforced_audit'] == composite['unenforced_audits'][row['seat']]
-                   for row in composite['selected_generations'].values()), \
-            composite['selected_generations']
+        # An Agent result cannot be bound against copying, so no Agent seat may replace another.
+        (session / 'rcode-terra.audit-invalid.json').write_text('{"summary":"kept","findings":[]}\n')
+        call('prepare', session, 'codex', '--phase', 'repair', '--assignment', 'sol=' + bundles[1],
+             '--parent-assignment', 'code:terra', good=False,
+             error='replacement executor must be an enforced seat')
 
 def scoped_names_and_gitlink_lifecycle():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -2528,6 +2698,7 @@ cases = (
     instruction_override_precedence, empty_source_context, bounded_work_and_memory,
     receipt_read_audits, seat_local_recovery, narrow_seat_requires_proven_reads,
     full_seat_requires_proven_reads, unenforced_agent_seat_binds_only_its_prompt,
+    replacement_runs_on_another_seat, review_origin_counts_the_reviews_own_lines,
     scoped_names_and_gitlink_lifecycle,
     component_and_full_tampering, offline_structure_and_predecessor_walk,
     local_ignored_instructions,
@@ -2560,6 +2731,7 @@ groups = {
         seat_local_recovery, narrow_seat_requires_proven_reads,
         full_seat_requires_proven_reads, unenforced_agent_seat_binds_only_its_prompt,
     ),
+    'replacement': (replacement_runs_on_another_seat, review_origin_counts_the_reviews_own_lines),
 }
 partition = tuple(test for group in groups.values() for test in group)
 assert len(partition) == len(set(partition)) and set(partition) == set(cases), \
@@ -2606,6 +2778,10 @@ test_evidence_hardening_context() {
 
 test_evidence_hardening_scale_receipts() {
   REV_EVIDENCE_GROUP=scale_receipts evidence_hardening
+}
+
+test_evidence_hardening_replacement() {
+  REV_EVIDENCE_GROUP=replacement evidence_hardening
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

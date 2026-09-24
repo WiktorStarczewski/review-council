@@ -2,14 +2,15 @@
 # rev-state.sh <session-dir> key=value...
 # Merge keys into <session>/state.json (created if absent). Dotted keys nest: open.P1=1.
 # Values that parse as JSON are stored typed (1, true, null, ["a"], {"x":1}); otherwise as strings.
-# phase=plan round=<N>p seats=[...] also records plans.<N>p. phase=fix exits 2 with state unchanged
-# while open P0+P1+P2 > 0, unless plan <N>p completed or findings.md records its skip.
+# phase=plan round=<N>p (or <N>px) seats=[...] also records plans.<label>. phase=fix exits 2 with state
+# unchanged while open P0+P1+P2 > 0, unless plan <N>p or <N>px completed or findings.md records its skip.
 set -u
+HERE=$(cd "$(dirname "$0")" && pwd)
 S=${1:?usage: rev-state.sh <session-dir> key=value...}; shift
 [ $# -gt 0 ] || { echo "usage: rev-state.sh <session-dir> key=value..." >&2; exit 1; }
 mkdir -p "$S"
-python3 - "$S/state.json" "$@" <<'PY'
-import json, math, os, re, stat, sys
+REV_STATE_EVIDENCE="$HERE/rev-evidence.py" python3 - "$S/state.json" "$@" <<'PY'
+import json, math, os, re, stat, subprocess, sys
 
 def _reject_constant(name):
     raise ValueError(f"rev-state: non-standard JSON constant {name!r} rejected")
@@ -20,6 +21,27 @@ state = {}
 if os.path.exists(path):
     with open(path) as f:
         state = json.load(f)
+BREAKER_KEYS = ('review_base_tree', 'review_origin', 'review_origin_ack')
+
+
+def save():
+    tmp = path + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(state, f, indent=1, allow_nan=False)
+    os.replace(tmp, path)
+
+
+if kvs[:1] == ['inherit-breaker']:
+    # A quota-fallback session carries the parent's breaker window instead of starting a new one.
+    if len(kvs) != 2:
+        print("usage: rev-state.sh <fallback-session> inherit-breaker <parent-session>", file=sys.stderr); sys.exit(1)
+    if any(key in state for key in BREAKER_KEYS):
+        print("rev-state: refusing inherit-breaker: this session already has breaker state", file=sys.stderr); sys.exit(2)
+    with open(os.path.join(kvs[1], 'state.json')) as f:
+        parent = json.load(f)
+    state.update({key: parent[key] for key in BREAKER_KEYS if key in parent})
+    save()
+    sys.exit(0)
 assigned = set()
 for kv in kvs:
     k, sep, v = kv.partition('=')
@@ -110,7 +132,7 @@ if {'open.P0', 'open.P1', 'open.P2'} <= assigned:
 phase = state.get('phase')
 if 'phase' in assigned and phase == 'plan' and {'round', 'seats'} <= assigned:
     label, seats = state.get('round'), state.get('seats')
-    if isinstance(label, str) and re.fullmatch(r'[0-9]+p', label):
+    if isinstance(label, str) and re.fullmatch(r'[0-9]+px?', label):
         if (not isinstance(seats, list) or not seats
                 or not all(isinstance(seat, str) and re.fullmatch(SEAT_NAME, seat) for seat in seats)):
             refuse(f"refusing phase=plan round={label}: seats must be a JSON array of seat names, "
@@ -134,19 +156,39 @@ if 'phase' in assigned and phase == 'fix':
         refuse("refusing phase=fix: open.P0/P1/P2 have not been written since the last seat "
                "exit, so the counts are last round's - re-run triage and set "
                "open.P0=<n> open.P1=<n> open.P2=<n>")
+    code_round = re.fullmatch(r'([0-9]+)(?:px|p|x)?', str(state.get('round')))
+    if code_round and receipt_file(f'r{int(code_round.group(1))}-coverage.receipt.json'):
+        number = str(int(code_round.group(1)))
+        command = [sys.executable, os.environ['REV_STATE_EVIDENCE'], 'review-origin', session, number]
+        if isinstance(state.get('review_base_tree'), str):
+            command += ['--base-tree', state['review_base_tree']]
+        origin = subprocess.run(command, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        if origin.returncode:
+            refuse(f"refusing phase=fix: cannot count review-origin citations for round {number}: "
+                   + origin.stderr.strip())
+        counted = json.loads(origin.stdout)
+        state.setdefault('review_base_tree', counted['review_base_tree'])
+        state.setdefault('review_origin', {})[number] = counted['citations']
+    ack = state.get('review_origin_ack', 0)
+    if isinstance(ack, bool) or not isinstance(ack, int):
+        refuse(f"refusing phase=fix: review_origin_ack={ack!r} is not a round number")
+    tripped = sorted(int(label) for label, count in (state.get('review_origin') or {}).items()
+                     if count and int(label) > ack)
+    if len(tripped) >= 2:
+        refuse(f"refusing phase=fix: rounds {', '.join(map(str, tripped))} cite lines this review "
+               "changed. Ask the user first (recommended: revert the cited review changes and defer "
+               f"the originating findings), then record review_origin_ack={tripped[-1]}")
     if total > 0:
-        match = re.fullmatch(r'([0-9]+)[px]?', str(state.get('round')))
+        match = code_round
         if not match:
             refuse(f"refusing phase=fix: cannot determine the code round from round={state.get('round')!r}; "
                    "set round=<N> before phase=fix")
         label = f'{int(match.group(1))}p'
-        if not plan_completed(label) and not plan_skipped(label):
+        # A failed plan seat is replaced by a one-seat <N>px plan panel.
+        if not plan_completed(label) and not plan_completed(label + 'x') and not plan_skipped(label):
             refuse(f"refusing phase=fix for round {int(match.group(1))}: {total} open P0-P2 findings need "
                    f"the plan gate - complete plan panel r{label} (phase=plan round={label} \"seats=[...]\", "
                    f"then every seat's r{label}-<seat>.json with a 0 exit) or append a findings.md line "
                    f"'Plan panel r{label} - SKIPPED: <reason>'")
-tmp = path + '.tmp'
-with open(tmp, 'w') as f:
-    json.dump(state, f, indent=1, allow_nan=False)
-os.replace(tmp, path)
+save()
 PY

@@ -7,6 +7,7 @@ from collections import Counter
 from contextlib import contextmanager, redirect_stdout
 from difflib import SequenceMatcher
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -2917,11 +2918,16 @@ def validate_source_context_snapshot(repo, session, manifest):
                 raise ValueError('required source content does not match snapshot: ' + row['path'])
 
 
-def finding_ownership(session, manifest, generation_labels=None):
+def generation_stem(manifest, generations, seat):
+    """The file stem of an assignment's chosen result: a replacement runs under its own seat."""
+    row = (generations or {}).get(seat)
+    return f"r{row['label']}-{row['seat']}" if row else f"r{manifest['label']}-{seat}"
+
+
+def finding_ownership(session, manifest, generations=None):
     found = {}
     for seat in manifest['assignments']:
-        label = generation_labels.get(seat, manifest['label']) if generation_labels else manifest['label']
-        for finding in read_json(session / f"r{label}-{seat}.json")['findings']:
+        for finding in read_json(session / (generation_stem(manifest, generations, seat) + '.json'))['findings']:
             path = finding['file']
             if not within(path, manifest['scope']):
                 raise ValueError('finding outside literal review scope: ' + path)
@@ -3785,11 +3791,12 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
             'patch_chunks_mode': parent['patch_chunks_mode'],
             'source_context_enabled': parent['source_context']['enabled'],
         }
-        child_assignment = assigned.get(seat)
-        if (binding != expected_binding or len(assigned) != 1 or child_assignment is None
+        executor, child_assignment = next(iter(assigned.items()))
+        if (binding != expected_binding or len(assigned) != 1 or executor == seat
+                or child_assignment['adapter'] == 'agent'
+                or manifest['label'] != parent['label'] + 'x'
                 or child_assignment['scope'] != 'full'
                 or child_assignment['bundle'] != parent_assignment['bundle']
-                or child_assignment['adapter'] != parent_assignment['adapter']
                 or manifest['snapshot_tree'] != parent['snapshot_tree']
                 or manifest['base_tree'] != parent['base_tree']
                 or manifest['source'] != parent['source']
@@ -4424,12 +4431,11 @@ def prior_coverage(session, repo, base_tree, reference=None, seen=None):
             if (selected_manifest != manifest or selected_hash != mh or results != receipt.get('results')
                     or selected != generations or canonical != replacements):
                 raise ValueError('composite receipt generations changed')
-            labels = {seat: row['label'] for seat, row in selected.items()}
         else:
             if validate_results(session, manifest, mh) != receipt['results']:
                 raise ValueError('receipt results changed')
-            labels = None
-        ownership = finding_ownership(session, manifest, labels)
+            selected = None
+        ownership = finding_ownership(session, manifest, selected)
         if receipt.get('findings') != ownership:
             receipt['findings'] = []
             receipt['ownership_fallback_reason'] = 'missing or invalid prior finding ownership'
@@ -4507,6 +4513,14 @@ def dependency_view(repo, session, snapshot):
     return {'path': str(view), 'crates': sorted(wanted)}
 
 
+def attempt_module():
+    spec = importlib.util.spec_from_file_location(
+        'rev_attempt', Path(__file__).resolve().parent / 'lib' / 'rev-attempt.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def prepare(args):
     session = Path(args.session).resolve()
     with session_input_lock(session):
@@ -4534,6 +4548,8 @@ def _prepare_locked(args, session):
             raise ValueError('plan parent assignments require whole-panel recovery')
         if parent_manifest['phase'] == 'repair' or parent_seat not in parent_manifest['assignments']:
             raise ValueError('invalid parent assignment')
+        if args.label != parent_label + 'x':
+            raise ValueError('replacement label must be ' + parent_label + 'x')
     chunk_mode, source_context_enabled = evidence_modes(os.environ, parent_manifest)
     source_head = args.head
     if parent_manifest is not None:
@@ -4578,8 +4594,24 @@ def _prepare_locked(args, session):
                               if row.get('adapter') == 'agent' and row.get('seat') in chosen)
     if parent_manifest is not None:
         parent = parent_manifest['assignments'][parent_seat]
-        if chosen != {parent_seat: parent['bundle']}:
+        executor = next(iter(chosen)) if len(chosen) == 1 else None
+        if executor == parent_seat:
+            raise ValueError('replacement executor must differ from the parent seat')
+        if executor is None or chosen[executor] != parent['bundle']:
             raise ValueError('repair assignment does not match its parent')
+        executor_row = next((row for row in roster['seats'] if row.get('seat') == executor), None)
+        if executor_row is None or executor_row.get('adapter') == 'agent':
+            # An Agent result cannot be bound against copying, so it cannot stand in for another seat.
+            raise ValueError('replacement executor must be an enforced seat')
+        if not attempt_module().terminal_failure(session, parent_label, parent_seat,
+                                                 session / f'r{parent_label}-{parent_seat}.prompt.md'):
+            raise ValueError('parent assignment has no recorded terminal failure')
+        existing = session / f'r{args.label}-evidence.manifest.json'
+        if existing.exists():
+            prior = read_json(existing)
+            if ((prior.get('parent_assignment') or {}).get('seat') != parent_seat
+                    or list(prior.get('assignments') or {}) != [executor]):
+                raise ValueError('panel already has a replacement')
         roster_seat = next((row for row in roster['seats'] if row.get('seat') == parent_seat), None)
         if roster_seat is None:
             raise ValueError('parent assignment seat is absent from roster')
@@ -5155,8 +5187,12 @@ def verify_panel_selection(session, label, replacement_values=None, fresh=True, 
             raise ValueError('panel manifest changed during verification')
         return manifest, mh, results, None, replacements
     validate_panel_coverage(manifest)
+    if len(replacements) > 1:
+        raise ValueError('at most one replacement per panel')
     if not set(replacements) <= set(manifest['assignments']):
         raise ValueError('replacement seat is absent from parent panel')
+    if any(child_label != label + 'x' for child_label in replacements.values()):
+        raise ValueError('replacement label must be ' + label + 'x')
     results = {}
     generations = {}
     children = {}
@@ -5178,7 +5214,8 @@ def verify_panel_selection(session, label, replacement_values=None, fresh=True, 
             if (not isinstance(binding, dict) or binding.get('manifest') != manifest_path.name
                     or binding.get('manifest_sha256') != mh or binding.get('seat') != seat):
                 raise ValueError('replacement child is bound to another parent seat: ' + seat)
-            hashes, generation = result_generation(session, child, child_hash, seat)
+            hashes, generation = result_generation(session, child, child_hash,
+                                                   next(iter(child['assignments'])))
             children[seat] = (child_path, child, child_hash)
         overlap = set(results) & set(hashes)
         if overlap:
@@ -5213,8 +5250,7 @@ def selected_advisories(session, manifest, generations):
     for seat in manifest['assignments']:
         if seat in unenforced:
             continue
-        label = generations[seat]['label'] if generations is not None else manifest['label']
-        audit = read_json(session / f'r{label}-{seat}.read-audit.json')
+        audit = read_json(session / (generation_stem(manifest, generations, seat) + '.read-audit.json'))
         advisories = audit.get('advisories', [])
         if advisories:
             rows[seat] = advisories
@@ -5248,9 +5284,7 @@ def receipt(args):
             'snapshot_tree': manifest['snapshot_tree'], 'base_tree': manifest['base_tree'],
             'phase': manifest['phase'], 'assignments': manifest['assignments'], 'results': results,
             'advisories': selected_advisories(session, manifest, generations),
-            'findings': finding_ownership(
-                session, manifest,
-                {seat: row['label'] for seat, row in generations.items()} if generations else None)}
+            'findings': finding_ownership(session, manifest, generations)}
     if verdicts:
         data['unenforced_audits'] = verdicts
     if generations is not None:
@@ -5267,6 +5301,52 @@ def receipt(args):
     if created or head is None:
         publish(session / 'coverage-head.json', encoded({'receipt': path.name, 'sha256': digest(raw)}))
     print(path)
+
+
+def first_receipt_tree(session):
+    labels = sorted(int(match.group(1)) for match in (
+        re.fullmatch(r'r([0-9]+)-coverage\.receipt\.json', path.name) for path in session.iterdir())
+        if match)
+    if not labels:
+        raise ValueError('no code round receipt to anchor the review base')
+    return read_json(session / f'r{labels[0]}-coverage.receipt.json')['snapshot_tree']
+
+
+def review_origin(args):
+    """Count the round's chosen citations that land on lines the review itself changed."""
+    session = Path(args.session).resolve()
+    receipt = read_json(session / f'r{args.label}-coverage.receipt.json')
+    manifest, mh = validated_manifest(session / receipt['manifest'], fresh=False,
+                                      replay_plan_searches=False)
+    if receipt.get('manifest_sha256') != mh or receipt.get('snapshot_tree') != manifest['snapshot_tree']:
+        raise ValueError('receipt does not match its manifest')
+    base = args.base_tree or first_receipt_tree(session)
+    repo = Repository(session)
+    _, hunks, _, _ = repo.changes(base, receipt['snapshot_tree'])
+    after = repo.entries(receipt['snapshot_tree'])
+    whole, changed = set(), {}
+    for hunk in hunks:
+        body = repo.blob(after[hunk['path']]) if hunk['path'] in after else b''
+        total = len(split_lf_lines(body))
+        if hunk['kind'] == 'opaque' or total == 0:
+            whole.add(hunk['path'])
+            continue
+        # A deletion is anchored where it happened; clamp line 0 and EOF+1 to a surviving line.
+        changed.setdefault(hunk['path'], set()).update(
+            min(max(line, 1), total) for line in hunk['changed_lines'])
+    citations = 0
+    for seat in manifest['assignments']:
+        stem = generation_stem(manifest, receipt.get('selected_generations'), seat)
+        raw = (session / (stem + '.json')).read_bytes()
+        if receipt['results'].get(stem + '.json') != digest(raw):
+            raise ValueError('result changed after the receipt: ' + stem)
+        for finding in json.loads(raw)['findings']:
+            lines = changed.get(finding['file'], ())
+            if finding['file'] in whole or any(
+                    finding['line_start'] <= line <= finding['line_end'] for line in lines):
+                citations += 1
+    print(json.dumps({'label': args.label, 'review_base_tree': base, 'citations': citations},
+                     sort_keys=True))
 
 
 def main():
@@ -5293,6 +5373,8 @@ def main():
     panel.add_argument('--replacement', action='append', default=[])
     rec = commands.add_parser('receipt'); rec.add_argument('session'); rec.add_argument('label')
     rec.add_argument('--replacement', action='append', default=[])
+    origin = commands.add_parser('review-origin')
+    origin.add_argument('session'); origin.add_argument('label'); origin.add_argument('--base-tree')
     args = parser.parse_args()
     try:
         if hasattr(args, 'label') and not SAFE_NAME.fullmatch(args.label):
@@ -5300,7 +5382,8 @@ def main():
         with plan_search_signal_handlers():
             {'prepare': prepare, 'render': render, 'render-panel': render_panel,
              'verify': verify, 'same-source': same_source,
-             'verify-panel': verify_panel, 'receipt': receipt}[args.command](args)
+             'verify-panel': verify_panel, 'receipt': receipt,
+             'review-origin': review_origin}[args.command](args)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError, RecursionError) as error:
         print('evidence: ' + str(error), file=sys.stderr)
         return 2
