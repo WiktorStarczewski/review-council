@@ -2347,9 +2347,9 @@ def review_origin_counts_the_reviews_own_lines():
         def seal(label, cited, failed=None, executor=None):
             manifest = prepare(label, 'discovery')
             path = session / f'r{label}-evidence.manifest.json'
-            for index, seat in enumerate(manifest['assignments']):
+            for seat in manifest['assignments']:
                 (session / f'r{label}-{seat}.prompt.md').write_text(call('render', path, seat))
-                findings = cited[index::len(seats)]
+                findings = cited.get(seat, [])
                 (session / f'r{label}-{seat}.json').write_text(json.dumps({'summary': 's', 'findings': findings}))
                 (session / f'r{label}-{seat}.exit').write_text('0\n')
                 write_agent_audit(session, label, seat)
@@ -2376,7 +2376,7 @@ def review_origin_counts_the_reviews_own_lines():
         def state():
             return json.loads((session / 'state.json').read_text())
 
-        seal('1', [cite('main.py', 2), cite('head.py', 1)])
+        seal('1', {'sol': [cite('main.py', 2)], 'terra': [cite('head.py', 1)]})
         first = json.loads((session / 'r1-coverage.receipt.json').read_text())['snapshot_tree']
         assert origin('1') == {'label': '1', 'review_base_tree': first, 'citations': 0}, origin('1')
         assert fix('1').returncode == 0
@@ -2387,26 +2387,26 @@ def review_origin_counts_the_reviews_own_lines():
         write('main.py', (root / 'main.py').read_text().replace('    return 2\n', '    return 3\n', 1))
         write('head.py', 'b = 2\nc = 3\n'); write('tail.py', 'a = 1\nb = 2\n'); write('empty.py', '')
         (root / 'gone.py').unlink()
-        cited = [cite('main.py', 2), cite('main.py', 4, 5), cite('head.py', 1), cite('head.py', 2),
-                 cite('tail.py', 2), cite('tail.py', 1), cite('empty.py', 1), cite('gone.py', 1)]
-        seal('2', cited, failed='opus', executor='terra')
-        # Counted: main.py:2, head.py:1, tail.py:2, empty.py, gone.py and the replacement's main.py:2.
-        # opus's own findings were archived by its hard failure and are not the chosen result.
-        chosen = [row for index, row in enumerate(cited) if seats[index % len(seats)] != 'opus']
-        expected = sum(row['claim'] in ('main.py:2', 'head.py:1', 'tail.py:2', 'empty.py:1', 'gone.py:1')
-                       for row in chosen) + 1
+        # Counted: main.py:2, head.py:1, tail.py:2 (the end-of-file anchor clamps to line 2),
+        # empty.py, gone.py and the replacement's main.py:2. opus's own result was archived by its
+        # hard failure and is not the chosen one; the rest lie outside every changed interval.
+        seal('2', {'sol': [cite('main.py', 2), cite('main.py', 4, 5)],
+                   'terra': [cite('head.py', 1), cite('head.py', 2), cite('tail.py', 2)],
+                   'sonnet': [cite('tail.py', 1), cite('empty.py', 1), cite('gone.py', 1)],
+                   'opus': [cite('main.py', 2)]}, failed='opus', executor='terra')
+        expected = 6
         assert origin('2')['citations'] == expected, (origin('2'), expected)
         assert fix('2').returncode == 0, 'one nonzero round passes'
         assert state()['review_origin'] == {'1': 0, '2': expected}
 
-        seal('3', [cite('main.py', 2)])
+        seal('3', {'sol': [cite('main.py', 2)]})
         refused = fix('3')
         assert refused.returncode == 2 and 'review_origin_ack=3' in refused.stderr, refused.stderr
         assert state()['round'] == 2 and '3' not in state()['review_origin'], 'a refusal leaves state unchanged'
         assert fix('3', review_origin_ack=3).returncode == 0
-        seal('4', [cite('main.py', 2)])
+        seal('4', {'sol': [cite('main.py', 2)]})
         assert fix('4').returncode == 0, 'the acknowledgement starts a new window'
-        seal('5', [cite('main.py', 2)])
+        seal('5', {'sol': [cite('main.py', 2)]})
         assert fix('5').returncode == 2, 'two more nonzero rounds trip it again'
         assert '5' not in state()['review_origin']
         assert fix('5', review_origin_ack=5).returncode == 0
