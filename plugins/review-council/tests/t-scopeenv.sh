@@ -21,3 +21,18 @@ test_scopeenv() {
     assert_nogrep "prompt does not leak the quoting" "$p" "^Repository: '"
   )
 }
+
+# Preflight records no dependency root: prepare builds the per-crate view from each panel's snapshot.
+test_scopeenv_records_no_dependency_root() {
+  ( seat_env; local PF; PF="$(pf_bin)/rev-preflight.sh"
+    local R="$T/cargo-scope-repo"
+    mkrepo "$R"; cd "$R" || { fail "cargo scope setup" "cannot cd to $R"; return 1; }
+    git checkout -qb feat && echo x > x.txt && git add x.txt && git commit -qm x
+    mkdir -p "$T/cargo-home/registry/src/index.crates.io-0"
+    printf '# lock\n' > Cargo.lock; git add Cargo.lock; git commit -qm lock
+    CARGO_HOME="$T/cargo-home" "$PF" --write "$T/cargo-scope-lock" >/dev/null 2>&1
+    assert_eq "a Cargo repository's scope.env names no dependency root" \
+      "$(python3 -c 'import sys; print(sorted(l.split("=")[0] for l in open(sys.argv[1]) if l.strip()))' "$T/cargo-scope-lock/scope.env")" \
+      "['REV_BASE', 'REV_BASE_BRANCH', 'REV_BRANCH', 'REV_DEFAULT', 'REV_ROOT', 'REV_SCOPE']"
+  )
+}

@@ -201,3 +201,19 @@ test_state_fix_gate_counts_a_repair_round_seat_exit() {
     assert_eq "a repair round's seat exit makes the counts stale" "$?" 2
     assert_grep "the repair refusal names the way out" "$out" "open\.P0=.*open\.P1=.*open\.P2=" )
 }
+
+# A failed plan seat is replaced by a one-seat <N>px plan panel, and the fix gate accepts it.
+test_state_fix_gate_accepts_a_px_plan_replacement() {
+  ( local ST="$SCRIPTS/rev-state.sh" S="$T/gate-px"
+    "$ST" "$S" round=5 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
+    "$ST" "$S" phase=plan round=5p 'seats=["codex-terra"]' >/dev/null
+    echo 2 > "$S/r5p-codex-terra.exit"; printf '{"summary":"x","findings":[]}\n' > "$S/r5p-codex-terra.audit-invalid.json"
+    state_gate_refuses "a hard-failed plan seat" "$S" 5 phase=fix
+    "$ST" "$S" phase=plan round=5px 'seats=["codex-sol"]' >/dev/null
+    assert_eq "the <N>px plan launch records its seats" \
+      "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plans"].get("5px"))' "$S/state.json")" "['codex-sol']"
+    state_gate_refuses "a <N>px plan panel that has not returned" "$S" 5 phase=fix
+    printf '{"summary":"sound","findings":[]}\n' > "$S/r5px-codex-sol.json"; echo 0 > "$S/r5px-codex-sol.exit"
+    assert_exit "a completed <N>px plan panel allows fix" 0 "$ST" "$S" phase=fix
+  )
+}

@@ -1140,6 +1140,46 @@ print(json.dumps({'type':'result','is_error':False,'subtype':'success',
             self.assertEqual(command_args[command_args.index('--prompt') + 1], str(prompt))
             self.assertEqual(command_args[command_args.index('--deps') + 1], str(deps))
 
+    def test_seat_exports_manifest_dependency_view(self):
+        cli = self.root / 'claude'
+        cli.write_text('''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+Path(os.environ['CAPTURE']).write_text(json.dumps(sys.argv[1:]))
+print(json.dumps({'type':'result','is_error':False,'subtype':'success',
+                  'structured_output':json.loads(Path(os.environ['FINDINGS']).read_text())}))
+''')
+        cli.chmod(0o755)
+        (self.root / 'roster.json').write_text(json.dumps({'seats': [
+            self.roster.make_seat('sonnet', 'claude', 'sonnet', 'max')]}))
+        deps = self.root / 'deps'
+        deps.mkdir()
+        (self.root / 'scope.env').write_text(
+            "REV_BASE='0000000'\nREV_ROOT='" + str(self.root) + "'\nREV_SCOPE='branch'\n")
+        (self.root / 'r1-evidence.manifest.json').write_text(json.dumps(
+            {'dependency_view': {'path': str(deps), 'crates': []}}))
+        prompt = self.root / 'prompt.md'
+        prompt.write_text('Review the fixture.')
+        capture = self.root / 'args.json'
+        env = dict(self.env, PATH=str(self.root) + os.pathsep + os.environ['PATH'],
+                   REV_REPO=str(self.root), CAPTURE=str(capture),
+                   FINDINGS=str(SHARED / 'tests/fixtures/findings-valid.json'))
+        env.pop('REV_DEPS_DIR', None)
+        subprocess.run([str(SCRIPTS / 'rev-seat.sh'), 'sonnet', str(self.root), '1', str(prompt)],
+                       env=env, text=True, capture_output=True)
+        args = json.loads(capture.read_text())
+        settings = json.loads(args[args.index('--settings') + 1])
+        audit_commands = [
+            hook['command']
+            for phase in ('PreToolUse', 'PostToolUse')
+            for matcher in settings['hooks'][phase]
+            for hook in matcher['hooks']
+        ]
+        self.assertTrue(audit_commands)
+        for audit_command in audit_commands:
+            command_args = shlex.split(audit_command)
+            self.assertEqual(command_args[command_args.index('--deps') + 1], str(deps))
+
     def test_claude_reviewer_limits_session_reads_to_current_prompt(self):
         reviewer = (SHARED / 'agents/rev-reviewer.md').read_text()
         sonnet = (SHARED / 'agents/rev-reviewer-sonnet.md').read_text()

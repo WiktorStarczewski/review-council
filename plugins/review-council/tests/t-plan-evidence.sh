@@ -98,6 +98,16 @@ EOF
     assert_eq "plan replacement keeps whole-panel recovery" "$?" 2
     assert_grep "plan replacement has a stable fallback reason" "$T/plan-child.err" \
       'plan parent assignments require whole-panel recovery'
+    # A failed plan seat is replaced by an ordinary one-seat plan panel under <N>px.
+    local replacement px="$S-px"
+    cp -R "$S" "$px" || return
+    replacement=$(REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$px" 1px --phase plan \
+      --plan "$px/fix-plan.md" --plan-sha256 "$plan_hash" --full-seat opus \
+      --assignment opus=plan-completeness) || return
+    assert_eq "a <N>px plan replacement is a schema-4 one-seat plan panel on the same plan" \
+      "$(python3 -c 'import json,sys; a,b=(json.load(open(p)) for p in sys.argv[1:]); print(b["schema_version"], b["phase"], list(b["assignments"]), b["assignments"]["opus"]["scope"], b["plan"]["sha256"] == a["plan"]["sha256"])' "$manifest" "$replacement")" \
+      "4 plan ['opus'] full True"
     assert_exit "plan evidence prompt requires the bound plan argument" 1 \
       "$SCRIPTS/rev-prompt.sh" "$S" 1p sol plan-completeness plan --evidence "$manifest"
     python3 - "$manifest" <<'PY'
@@ -714,6 +724,46 @@ PY
       --root "$R" --session "$S" --out "$S/r1p-sol.read-audit.json" >/dev/null || return
     cp "$S/r1p-sol.stream.ndjson" "$T/terra.stream.valid"
     cp "$S/r1p-sol.read-audit.json" "$T/terra.audit.valid"
+    # Severity: a proof call sharing its turn with an oversized read earns nothing.
+    local sibling_target sibling_want
+    while IFS='|' read -r sibling_target sibling_want; do
+      python3 - "$T/terra.stream.valid" "$S/r1p-sol.stream.ndjson" "$sibling_target" \
+        "$S/r1p-sol.prompt.md" <<'PY'
+import json, sys
+source, target, identity, prompt = sys.argv[1:]
+command = "cat -- '" + prompt + "'"
+rows = []
+for line in open(source):
+    row = json.loads(line); rows.append(row)
+    item = row.get('item') or {}
+    if item.get('id') != identity:
+        continue
+    sibling = {'id': 'oversized-sibling', 'type': 'command_execution', 'command': command}
+    if row['type'] == 'item.started':
+        rows.append({'type': 'item.started', 'item': sibling})
+    else:
+        rows.append({'type': 'item.completed', 'item': dict(
+            sibling, aggregated_output='z' * (33 * 1024), exit_code=0)})
+assert any((row.get('item') or {}).get('id') == 'oversized-sibling' for row in rows)
+open(target, 'w').write(''.join(json.dumps(row) + '\n' for row in rows))
+PY
+      python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+        --raw "$S/r1p-sol.stream.ndjson" --prompt "$S/r1p-sol.prompt.md" \
+        --root "$R" --session "$S" --out "$S/r1p-sol.read-audit.json" >/dev/null 2>&1
+      assert_eq "$sibling_target in an oversized turn earns no plan proof" \
+        "$(python3 - "$S/r1p-sol.read-audit.json" <<'PY'
+import json, sys
+audit = json.load(open(sys.argv[1]))
+rows = lambda key: ','.join(sorted(row['code'] + '@' + row['tool'] for row in audit[key])) or '-'
+print(audit['status'] + ';violations=' + rows('violations') + ';advisories=' + rows('advisories'))
+PY
+)" "$sibling_want"
+    done <<'CASES'
+search-rg|invalid;violations=missing-plan-cluster-search@codex,tool-output-too-large@command_execution,tool-turn-output-too-large@codex;advisories=-
+packet-1|invalid;violations=missing-plan-cluster-source@codex,missing-source-packet@codex,tool-output-too-large@command_execution,tool-turn-output-too-large@codex;advisories=-
+CASES
+    cp "$T/terra.stream.valid" "$S/r1p-sol.stream.ndjson"
+    cp "$T/terra.audit.valid" "$S/r1p-sol.read-audit.json"
     python3 - "$S/r1p-sol.stream.ndjson" <<'PY'
 import json, sys
 p=sys.argv[1]; rows=[]

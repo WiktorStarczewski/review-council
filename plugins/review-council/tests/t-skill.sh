@@ -126,7 +126,7 @@ test_skill_contract() {
     assert_grep "host refuses certification without required artifacts" "$H" \
       'missing any audit, receipt, or final report required by its selected mode is incomplete'
     assert_grep "host writes exact code-panel state" "$H" 'phase=fan-out round=<N> "seats=\$LAUNCHED_SEATS"'
-    assert_grep "host writes exact repair state" "$H" 'phase=repair round=<N>x "seats=\$REPAIR_SEATS"'
+    assert_grep "host writes exact replacement state" "$H" 'phase=repair round=<N>x "seats=\[\\"\$EXECUTOR\\"\]"'
     assert_grep "host writes exact plan state" "$H" 'phase=plan round=<N>p "seats=\$PLAN_SEATS"'
     assert_grep "host counts only numbered code panels" "$H" 'Plan panels do not count as numbered code panels'
     assert_grep "host preserves numeric continuation" "$H" 'Only numeric mode continues past its requested minimum'
@@ -283,17 +283,23 @@ test_skill_contract() {
     assert_grep "host rejects incomplete chunk receipts" "$H" \
       '[Mm]issing, reordered, truncated, replaced,'
     assert_grep "host rejects redirected chunk receipts" "$H" \
-      'unassigned, redirected, or oversized chunks'
+      'unassigned, or redirected chunks invalidate the attempt'
+    assert_nogrep "size is not a completeness failure in the host contract" "$H" \
+      'oversized, unassigned, or unparseable|redirected, or oversized chunks'
     assert_grep "host preserves component narrowing in paired baseline" "$H" \
       'same component assignments and patch narrowing'
     assert_grep "host checks narrow read audits before triage" "$H" \
       '[Bb]efore triage or receipt.*read-audit'
     assert_grep "every evidence seat requires a schema 2 read audit" "$H" \
       '[Ee]very evidence-launched seat.*schema 2'
-    assert_grep "budget and choreography audit findings remain advisory" "$H" \
-      '[Rr]ead order.*call count.*output sentinel.*advisories'
-    assert_grep "hard audit failure stops before another paid launch" "$H" \
-      '[Hh]ard evidence-audit failure.*stop.*without.*paid retry'
+    assert_grep "an invalid read audit is a hard evidence-audit failure" "$H" \
+      "read audit with status .invalid. is a hard evidence-audit failure"
+    assert_grep "advisories stay visible and never earn credit" "$H" \
+      'valid audit may carry advisories: these never discard the review, stay visible in the receipt, and never earn credit'
+    assert_grep "a violating call or overflowing turn proves nothing" "$H" \
+      'A call that raises a call-local violation, and every proof call in a turn that overflows the turn ceiling, proves no range, no patch chunk, packet or segment, and no citation\. Pacing counts and whole-transcript counts revoke nothing\.'
+    assert_grep "a hard audit failure ends only that seat's assignment" "$H" \
+      "[Hh]ard evidence-audit failure ends only that seat's assignment: never relaunch that seat under that label"
     assert_grep "seat-local recovery retains valid completed reviewers" "$H" \
       '[Rr]etain each completed valid result'
     assert_grep "host retains one launch handle for every pending seat" "$H" \
@@ -340,10 +346,6 @@ test_skill_contract() {
       'cancel a completed valid sibling'
     assert_grep "host retains partial streams on cancellation" "$H" \
       '[Pp]reserve.*partial stream'
-    assert_grep "audit failures never widen to full-state repair" "$H" \
-      '[Nn]ever widen.*evidence-audit failure.*full-state repair'
-    assert_grep "hard audit failure cannot enter coverage repair" "$H" \
-      '[Hh]ard audit failure never enters coverage repair'
     assert_nogrep "no host section can retry an audit failure" "$H" \
       '[Aa]n individual audit failure.*retr(y|ies)'
     assert_nogrep "Codex host has no unconditional exit 1/2 retry directive" "$H" \
@@ -358,8 +360,8 @@ test_skill_contract() {
       '[Tt]riage completed valid results as they arrive'
     assert_grep "one quota fallback panel is the retry ceiling" "$H" \
       '[Qq]uota fallback panel.*only permitted full-panel restart'
-    assert_grep "fallback audit failure cannot start repair" "$H" \
-      '[Hh]ard audit failure.*fallback panel.*stop.*repair'
+    assert_grep "a hard audit inside the fallback panel follows the replacement rule" "$H" \
+      'later hard audit inside the fallback panel follows the replacement rule'
     assert_grep "host requires citation range coverage" "$H" \
       '[Ee]very finding citation must intersect'
     assert_grep "host runs code evidence with Agent seats recorded unenforced" "$H" \
@@ -614,11 +616,11 @@ skill_adapter_and_plan_gate_contract() {
   local blanket_skip='skip evidence preparation'
   local plan_default='By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order, preferring one whose adapter is not `agent` when the roster has one (an Agent seat runs the panel unenforced), `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.'
   local plan_all='When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat'
-  local minimum='adaptive `<N>x` coverage repair and the default one-seat plan panel are the only exceptions.'
+  local minimum='An `<N>x` replacement and the default one-seat plan panel are the only exceptions.'
   local verify_one='`verify-panel` certifies the one-seat plan panel once that seat returns'
   local before_code='The plan panel runs after triage and before any edit of the working tree.'
   local skip_line='When the plan panel is skipped, append a line beginning `Plan panel r<N>p - SKIPPED: <reason>` to `$S/findings.md` before `phase=fix`.'
-  local gate='`rev-state.sh` refuses `phase=fix` for code round `<N>` while `open.P0 + open.P1 + open.P2` is above zero, unless that skip line exists or every seat recorded by `phase=plan round=<N>p` has `r<N>p-<seat>.json` and a `0` exit.'
+  local gate='`rev-state.sh` refuses `phase=fix` for code round `<N>` while `open.P0 + open.P1 + open.P2` is above zero, unless that skip line exists or every seat recorded by `phase=plan round=<N>p`, or by its `<N>px` replacement panel, has `r<label>-<seat>.json` and a `0` exit.'
   local incomplete='An incomplete plan panel is not a skip: stop the run incomplete before any edit.'
   local fresh_counts='Write all three counts in one call after the round'"'"'s seats have exited: `rev-state.sh` refuses `phase=fix` while `open.P0`, `open.P1` and `open.P2` predate the newest `r<N>-<seat>.exit`, and only all three in one call refresh that stamp. A plan panel'"'"'s `r<N>p-<seat>.exit` is not a seat exit for this purpose, so triage stays valid across the plan gate.'
   local sibling='Sibling-site completeness: for each fix commit since the base, name the rule it applies and search the repository for sites, arms, realms, callers and copies (tests, JSDoc, docs) the rule reaches but the commit missed.'
@@ -787,4 +789,63 @@ test_skill_rev_mutate_precedes_commit() {
     # pass. "the test command" occurs exactly once, inside the invocation itself.
     assert_flat_order "codex skill runs the mutation check before Commit only when" \
       "$SK/codex-skills/rev/SKILL.md" 'the test command.*Commit only when' )
+}
+
+# One replacement rule replaces every hard-audit stop and every coverage-repair clause, found by
+# search in both host skills, and the review-origin breaker is stated where phase=fix is.
+test_skill_replacement_and_breaker_contract() {
+  python3 - "$SK/skills/rev/SKILL.md" "$SK/codex-skills/rev/SKILL.md" <<'PY'
+import re, sys
+RULE = ('An assignment without a valid result gets at most one replacement on another eligible seat: '
+        'after its exact retry for an execution failure, immediately for a hard audit failure.')
+REMOVED = [
+    'stop the current panel without another paid retry',
+    'widen an evidence-audit failure into a full-state repair',
+    'If a hard audit failure occurs in the fallback panel, stop',
+    'never enters coverage repair',
+    'Do not create a replacement generation for execution or audit compliance failures',
+    'coverage repair',
+    'stop the panel; preserve its diagnostics; do not relaunch that label',
+    'hard plan read-audit failure stops the panel',
+    'hard audit marker stops the panel',
+    'returns at least three valid reviewers',
+    'fresh review session',
+]
+problems = []
+for path in sys.argv[1:]:
+    text = open(path).read()
+    host = 'codex' if 'codex-skills' in path else 'claude'
+    flat = ' '.join(text.split())
+    for phrase in REMOVED:
+        if phrase.lower() in flat.lower():
+            problems.append(f'{host}: removed clause survives: {phrase}')
+    paragraphs = [' '.join(block.split()) for block in re.split(r'\n\s*\n', text)]
+    rows = [line for line in text.splitlines() if line.startswith('|')]
+    locations = {
+        'hard-audit': [p for p in paragraphs if "hard evidence-audit failure ends only that seat's assignment" in p],
+        'coverage-repair': [p for p in paragraphs if 'Do not certify an adaptive panel until every assignment has a valid result' in p],
+        'replacement procedure': [p for p in paragraphs if '--parent-assignment "<N>:$FAILED_SEAT"' in p],
+        'plan replacement': [p for p in paragraphs if 'round=<N>px' in p and 'plan-completeness' in p],
+    }
+    if host == 'claude':
+        locations['failure table'] = [row for row in rows if row.startswith('| hard evidence-audit failure |')]
+        if len(locations['failure table']) != 2:
+            problems.append(f'{host}: expected two failure-table rows, found {len(locations["failure table"])}')
+    else:
+        locations['collection'] = [p for p in paragraphs if 'Exit 1/2 with no invalid read audit' in p]
+    for name, found in locations.items():
+        if not found:
+            problems.append(f'{host}: no {name} location')
+        elif name != 'plan replacement' and not all(RULE in item for item in found):
+            problems.append(f'{host}: the rule is missing at the {name} location')
+    for phrase in ('"$S" review_origin_ack=<N>', 'inherit-breaker "$PARENT_S"',
+                   'Ask the user before anything else', 'revert the cited review changes',
+                   'defer the originating findings', 'An exit-4 quota substitution never uses a replacement child',
+                   'Numeric, stack and legacy rounds have no receipt and are not counted'):
+        if phrase not in flat:
+            problems.append(f'{host}: missing: {phrase}')
+print('\n'.join(problems))
+raise SystemExit(1 if problems else 0)
+PY
+  assert_eq "both skills state one replacement rule and the review-origin breaker" "$?" 0
 }

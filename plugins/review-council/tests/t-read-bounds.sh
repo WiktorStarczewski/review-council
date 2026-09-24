@@ -1063,6 +1063,29 @@ required = context['required_source_ranges'][0]
 segments = required['segments']
 if not complete:
     segments = segments[:-1]
+def turn(*calls):
+    for call_id, command_text, _ in calls:
+        events.append({'type':'item.started','item':{'id':call_id,'type':'command_execution','command':command_text}})
+    for call_id, command_text, output in calls:
+        events.append({'type':'item.completed','item':{'id':call_id,'type':'command_execution','command':command_text,
+                                                       'aggregated_output':output,'exit_code':0}})
+if mode in ('sibling', 'paced', 'paced-altered', 'paced-oversized'):
+    # Severity: the first segment shares its turn with an oversized prompt read, or the first two
+    # segments share one turn past the Codex batch limit of one, with or without that read.
+    first, second = segments[0], segments[1]
+    calls = [('source-' + str(row['index']), "cat '" + str(session / row['artifact']) + "'",
+              (session / row['artifact']).read_text()) for row in (first, second)]
+    if mode == 'paced-altered':
+        calls[1] = calls[1][:2] + (('X' if calls[1][2][:1] != 'X' else 'Y') + calls[1][2][1:],)
+    oversized = ('oversized', "cat -- '" + str(session / 'r9-sol.prompt.md') + "'", 'z' * (33 * 1024))
+    if mode == 'sibling':
+        turn(calls[0], oversized)
+        turn(calls[1])
+    elif mode == 'paced-oversized':
+        turn(*calls, oversized)
+    else:
+        turn(*calls)
+    segments = segments[2:]
 for position, segment in enumerate(segments):
     path = session / segment['artifact']
     output = path.read_text()
@@ -1116,6 +1139,21 @@ PY
       '^Required source segment [0-9]+/[0-9]+: run cat -- .*-source-segment-[0-9]{3}-[0-9]{3}\.txt '
     assert_nogrep "Codex prompt exposes no detached Git repository command" "$prompt" \
       'git --git-dir=|evidence-repository'
+
+    local severity_mode severity_want
+    while IFS='|' read -r severity_mode severity_want; do
+      write_required_transcript "$severity_mode"
+      python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+        --raw "$S/r9-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
+        --out "$S/r9-sol.read-audit.json" >/dev/null 2>&1
+      assert_eq "$severity_mode required segments follow the credit rule" \
+        "$(severity_verdict "$S/r9-sol.read-audit.json")" "$(printf '%s\n' ${severity_want//;/ })"
+    done <<'CASES'
+sibling|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,tool-output-too-large@command_execution,tool-turn-output-too-large@codex;advisories=-
+paced|valid;violations=-;advisories=evidence-proof-batch-too-large@codex,required-source-segment-batch-too-large@codex
+paced-altered|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,required-source-output-mismatch@command_execution;advisories=-
+paced-oversized|invalid;violations=evidence-proof-batch-too-large@codex,missing-required-source-range@codex,missing-required-source-segment@codex,required-source-segment-batch-too-large@codex,tool-output-too-large@command_execution,tool-turn-output-too-large@codex;advisories=-
+CASES
 
     write_required_transcript live-window
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
@@ -1708,7 +1746,7 @@ wide-total~sed -n '1,121p' 'src/a.ts'; sed -n '121,241p' 'src/b.ts'~source-batch
 overlap~sed -n '1,80p' 'src/a.ts'; sed -n '80,120p' 'src/a.ts'~overlapping-source-batch
 mixed-search~sed -n '1,80p' 'src/a.ts'; rg -n 'never-matches' src | head -80~unsupported-source-batch
 mixed-output~sed -n '1,80p' 'src/a.ts'; printf marker; sed -n '121,160p' 'src/b.ts'~unsupported-source-batch
-variable-path~sed -n '1,80p' "$FILE"; sed -n '121,160p' 'src/b.ts'~unsupported-source-batch
+variable-path~sed -n '1,80p' "$FILE"; sed -n '121,160p' 'src/b.ts'~unresolved-path-variable
 CASES
 
     write_codex_batch mismatch "$good" mismatch || return
@@ -2192,8 +2230,8 @@ EOF
       test -s "$S/r1-codex-sol.audit-invalid.json"
     assert_grep "invalid narrowed audit remains reviewable" "$S/r1-codex-sol.read-audit.json" '"status":"invalid"'
     assert_grep "narrowed audit declares narrow validity" "$S/r1-codex-sol.read-audit.json" '"narrow":true'
-    assert_grep "seat log stops before another paid launch" "$S/r1-codex-sol.log" \
-      'stop the panel before another reviewer launch'
+    assert_grep "seat log names the replacement rule" "$S/r1-codex-sol.log" \
+      'replace this assignment on another eligible seat; never relaunch this seat under this label'
     assert_nogrep "seat log does not request an audit retry" "$S/r1-codex-sol.log" 'retry|rerun'
     local invalid_hash audit_hash
     invalid_hash=$(shasum -a 256 "$S/r1-codex-sol.audit-invalid.json" | awk '{print $1}')
@@ -2207,80 +2245,77 @@ EOF
       "$(shasum -a 256 "$S/r1-codex-sol.audit-invalid.json" | awk '{print $1}')" "$invalid_hash"
     assert_eq "hard-audit relaunch refusal preserves the invalid audit" \
       "$(shasum -a 256 "$S/r1-codex-sol.read-audit.json" | awk '{print $1}')" "$audit_hash"
-    assert_grep "hard-audit relaunch refusal names the existing marker" \
-      "$T/narrow-relaunch.out" 'review session stopped after a hard evidence audit failure.*fresh review session'
+    assert_grep "hard-audit relaunch refusal names the latched label and seat" \
+      "$T/narrow-relaunch.out" 'codex-sol under label 1 failed a hard evidence audit'
     SHIM_MODE=ok SHIM_CALLS_FILE="$T/narrow-refusal.calls" \
       "$SCRIPTS/rev-seat.sh" codex-terra "$S" 1 "$S/p.md" > "$T/sibling-relaunch.out" 2>&1
-    assert_eq "hard-audit marker refuses a sibling under the same panel label" "$?" 2
-    assert_eq "sibling hard-audit refusal makes no provider call" \
-      "$(wc -l < "$T/narrow-refusal.calls" | tr -d ' ')" 1
-    assert_exit "sibling hard-audit refusal creates no attempt reservation" 1 \
-      grep -R -q -- '"seat":"codex-terra"' "$S/attempts"
-    assert_grep "sibling hard-audit refusal names the stopped panel" \
-      "$T/sibling-relaunch.out" 'review session stopped after a hard evidence audit failure.*fresh review session'
+    assert_nogrep "the latch does not refuse a sibling under the same label" \
+      "$T/sibling-relaunch.out" 'failed a hard evidence audit'
+    assert_eq "the sibling makes its own provider call" \
+      "$(wc -l < "$T/narrow-refusal.calls" | tr -d ' ')" 2
   )
 }
 
-test_session_audit_stop_crosses_panel_labels() {
-  ( seat_env; local session="$T/session-audit-stop"; seat_roster "$session"
-    printf 'review\n' > "$session/r2-codex-sol.prompt.md"
-    printf 'invalid result\n' > "$session/r1-codex-sol.invalid.json"
-    printf 'invalid audit\n' > "$session/r1-codex-sol.audit.json"
-    : > "$SHIM_ARGS_FILE"
-    python3 "$SCRIPTS/lib/rev-attempt.py" stop "$session" r1 --reason "hard evidence audit failed"
-    assert_eq "hard evidence audit stop persists" "$?" 0
-    local before
-    before=$(sha256sum "$session/r1-codex-sol.invalid.json" "$session/r1-codex-sol.audit.json")
-    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$session" r2 "$session/r2-codex-sol.prompt.md" \
-      >"$T/session-stop.out" 2>"$T/session-stop.err"
-    assert_eq "a different label cannot bypass the hard stop" "$?" 2
-    assert_eq "the stopped session launches no provider" "$(wc -l < "$SHIM_ARGS_FILE" | tr -d ' ')" 0
-    assert_eq "hard-audit evidence stays byte-identical" \
-      "$(sha256sum "$session/r1-codex-sol.invalid.json" "$session/r1-codex-sol.audit.json")" "$before"
-    assert_grep "the refusal requires a fresh session" "$T/session-stop.err" \
-      'hard evidence audit failed.*fresh review session'
-  )
-}
-
-test_session_audit_stop_recognizes_legacy_read_audit() {
-  ( local session="$T/session-audit-legacy" prompt="$T/session-audit-legacy.prompt.md"
+# The latch is per (label, seat): only that seat under that label is refused, and no marker exists.
+test_hard_audit_latch_is_per_label_and_seat() {
+  ( local session="$T/latch" prompt="$T/latch.prompt.md" name label seat want
     mkdir -p "$session"; printf 'review\n' > "$prompt"
-    cat > "$session/r1-codex-sol.read-audit.json" <<'JSON'
-{"schema_version":2,"status":"invalid","evidence_scoped":true}
-JSON
-    python3 "$SCRIPTS/lib/rev-attempt.py" reserve "$session" r2 codex-sol "$prompt" \
-      >"$T/session-audit-legacy.out" 2>"$T/session-audit-legacy.err"
-    assert_eq "legacy hard audit stops another panel label" "$?" 2
-    assert_eq "legacy hard audit creates no reservation" \
-      "$(find "$session/attempts" -type f -name '*.json' -print -quit)" ""
-    assert_grep "legacy hard audit requires a fresh session" "$T/session-audit-legacy.err" \
-      'fresh review session'
+    reserve() { python3 "$SCRIPTS/lib/rev-attempt.py" reserve "$session" "$1" "$2" "$prompt" 2>"$T/latch.err"; }
+    for name in invalid-audit auditor-output legacy-audit; do
+      rm -rf "$session"; mkdir -p "$session"
+      case "$name" in
+        invalid-audit)
+          printf '{"schema_version":2,"status":"invalid","evidence_scoped":true}\n' > "$session/r4-codex-sol.read-audit.json"
+          printf '{"summary":"kept","findings":[]}\n' > "$session/r4-codex-sol.audit-invalid.json";;
+        auditor-output) printf '{"summary":"kept","findings":[]}\n' > "$session/r4-codex-sol.audit-invalid.json";;
+        legacy-audit) printf '{"schema_version":2,"status":"invalid","evidence_scoped":true}\n' > "$session/r4-codex-sol.read-audit.json";;
+      esac
+      while read -r label seat want; do
+        reserve "$label" "$seat"
+        assert_eq "$name: ($label, $seat) reservation" "$?" "$want"
+        [ "$want" != 2 ] || cp "$T/latch.err" "$T/latch-refusal.err"
+      done <<'CASES'
+4 codex-sol 2
+4 codex-terra 0
+5 codex-sol 0
+6 codex-sol 0
+CASES
+      assert_grep "$name: the refusal names the latched seat and label" "$T/latch-refusal.err" \
+        'codex-sol under label 4 failed a hard evidence audit'
+      assert_eq "$name: no stop marker exists" \
+        "$(find "$session" -name '*stopped*' -print | wc -l | tr -d ' ')" 0
+    done
+    printf '{"schema_version":2,"status":"invalid","evidence_scoped":false}\n' > "$session/r4-codex-sol.read-audit.json"
+    rm -f "$session/r4-codex-sol.audit-invalid.json"
+    reserve 4 codex-sol
+    assert_eq "an invalid legacy-scope audit does not latch" "$?" 0
+    for command in stop check; do
+      python3 "$SCRIPTS/lib/rev-attempt.py" "$command" "$session" 4 >/dev/null 2>&1
+      assert_eq "the $command command is gone" "$?" 1
+    done
   )
 }
 
-test_session_audit_stop_survives_partial_marker_state() {
-  ( local session="$T/session-audit-partial" prompt="$T/session-audit-partial.prompt.md"
-    mkdir -p "$session/attempts"; printf 'review\n' > "$prompt"
-    local panel_key
-    panel_key=$(printf r1 | shasum -a 256 | awk '{print $1}')
-    printf 'conflicting marker\n' > "$session/attempts/panel-$panel_key.stopped.json"
-    python3 "$SCRIPTS/lib/rev-attempt.py" stop "$session" r1 --reason "hard evidence audit failed" \
-      >"$T/session-audit-partial-stop.out" 2>"$T/session-audit-partial-stop.err"
-    assert_eq "a conflicting panel marker reports an incomplete stop write" "$?" 1
-    assert_exit "the authoritative session stop is still persisted" 0 \
-      test -s "$session/attempts/session.stopped.json"
-    python3 "$SCRIPTS/lib/rev-attempt.py" reserve "$session" r2 codex-sol "$prompt" \
-      >"$T/session-audit-partial.out" 2>"$T/session-audit-partial.err"
-    assert_eq "a partial panel stop cannot reopen the session" "$?" 2
-
-    session="$T/session-audit-invalid-fallback"
-    mkdir -p "$session"; printf 'invalid findings\n' > "$session/r1-codex-sol.audit-invalid.json"
-    python3 "$SCRIPTS/lib/rev-attempt.py" reserve "$session" r2 codex-sol "$prompt" \
-      >"$T/session-audit-invalid-fallback.out" \
-      2>"$T/session-audit-invalid-fallback.err"
-    assert_eq "a preserved invalid-audit result stops another panel label" "$?" 2
-    assert_grep "invalid-audit fallback requires a fresh session" \
-      "$T/session-audit-invalid-fallback.err" 'fresh review session'
+# Each launch that reserved records its final exit, so an exhausted exact retry is on record.
+test_seat_records_launch_exits() {
+  ( seat_env; local S="$T/launch-exits"; seat_roster "$S"; printf 'review\n' > "$S/p.md"
+    local n
+    for n in 1 2; do
+      SHIM_MODE=empty "$SCRIPTS/rev-seat.sh" codex-sol "$S" 4 "$S/p.md" >/dev/null 2>&1
+    done
+    assert_eq "two failed launches record both exits" \
+      "$(python3 -c 'import glob,json,sys; print([json.load(open(p)).get("launches") for p in glob.glob(sys.argv[1] + "/attempts/*.json")])' "$S")" \
+      "[[2, 2]]"
+    python3 - "$SCRIPTS/lib/rev-attempt.py" "$S" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('attempt', sys.argv[1])
+attempt = importlib.util.module_from_spec(spec); spec.loader.exec_module(attempt)
+session = Path(sys.argv[2])
+assert attempt.terminal_failure(session, '4', 'codex-sol', session / 'p.md')
+assert not attempt.terminal_failure(session, '4', 'codex-terra', session / 'p.md')
+PY
+    assert_eq "an exhausted exact retry is a recorded terminal failure" "$?" 0
   )
 }
 
@@ -2318,8 +2353,8 @@ EOF
       test -s "$S/rfull-codex-sol.audit-invalid.json"
     assert_grep "full-scope audit is authoritatively evidence scoped" \
       "$S/rfull-codex-sol.read-audit.json" '"evidence_scoped":true'
-    assert_grep "full-scope evidence failure stops before another paid launch" \
-      "$S/rfull-codex-sol.log" 'stop the panel before another reviewer launch'
+    assert_grep "full-scope evidence failure names the replacement rule" \
+      "$S/rfull-codex-sol.log" 'replace this assignment on another eligible seat; never relaunch this seat under this label'
     assert_nogrep "full-scope evidence failure does not request a retry" \
       "$S/rfull-codex-sol.log" 'retry|rerun'
 
@@ -2351,11 +2386,6 @@ if [ "$1" = "$AUDIT_SCRIPT" ] && [ "$2" = audit ]; then
       exit 2;;
   esac
 fi
-if [ -n "${ATTEMPT_SCRIPT:-}" ] && [ "$1" = "$ATTEMPT_SCRIPT" ] && [ "$2" = stop ]; then
-  printf '%s\n' "$$" > "$STOP_PID_FILE"
-  : > "$STOP_READY_FILE"
-  while :; do sleep 0.05; done
-fi
 PATH="$REAL_PYTHON_PATH" exec python3 "$@"
 SH
     chmod +x "$audit_python/python3"
@@ -2378,32 +2408,16 @@ SH
         'bounded-read audit metadata is missing, malformed, or inconsistent'
     done
 
-    S="$T/audit-failure-interrupted-stop"; seat_roster "$S"
-    printf 'Assigned scope: full\n' > "$S/legacy.md"
+    # An auditor-output failure latches that (label, seat) through its archived result alone.
+    S="$T/audit-failure-metadata-malformed"
     : > "$SHIM_ARGS_FILE"
-    local stop_ready="$T/interrupted-stop.ready" stop_pid_file="$T/interrupted-stop.pid"
-    PATH="$audit_python:$real_python" REAL_PYTHON_PATH="$real_python" \
-      AUDIT_SCRIPT="$SCRIPTS/lib/review-read-audit.py" AUDIT_SHIM_MODE=malformed \
-      ATTEMPT_SCRIPT="$SCRIPTS/lib/rev-attempt.py" STOP_READY_FILE="$stop_ready" \
-      STOP_PID_FILE="$stop_pid_file" SHIM_MODE=unbounded \
-      "$SCRIPTS/rev-seat.sh" codex-sol "$S" interrupted "$S/legacy.md" \
-      > "$T/audit-interrupted-stop.out" 2>&1 &
-    local seat_pid=$! i=0
-    while [ ! -e "$stop_ready" ] && kill -0 "$seat_pid" 2>/dev/null && [ "$i" -lt 100 ]; do
-      sleep 0.02; i=$((i + 1))
-    done
-    assert_exit "hard-stop interruption fixture reaches the blocked helper" 0 test -s "$stop_pid_file"
-    assert_exit "invalid findings are preserved before the stop helper can finish" 0 \
-      test -s "$S/rinterrupted-codex-sol.audit-invalid.json"
-    kill -TERM "$(cat "$stop_pid_file")" 2>/dev/null || true
-    wait "$seat_pid"; assert_eq "interrupted stop still fails the evidence seat" "$?" 2
-    local provider_calls
-    provider_calls=$(wc -l < "$SHIM_ARGS_FILE" | tr -d ' ')
+    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" metadata-malformed "$S/legacy.md" \
+      > "$T/audit-output-relaunch.out" 2>&1
+    assert_eq "an auditor-output failure refuses a relaunch of that label and seat" "$?" 2
+    assert_eq "the refused relaunch makes no provider call" "$(wc -l < "$SHIM_ARGS_FILE" | tr -d ' ')" 0
     SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" later "$S/legacy.md" \
-      > "$T/audit-interrupted-relaunch.out" 2>&1
-    assert_eq "preserved invalid findings stop a later panel label" "$?" 2
-    assert_eq "interrupted hard stop permits no second provider launch" \
-      "$(wc -l < "$SHIM_ARGS_FILE" | tr -d ' ')" "$provider_calls"
+      > "$T/audit-output-later.out" 2>&1
+    assert_eq "a later label launches the same seat" "$?" 0
   )
 }
 
@@ -2682,15 +2696,15 @@ test_codex_snapshot_tree_reads_are_audited_source() {
 
     pinned_read_transcript "$(cat "$S/fixture.manifest")" "$S/r$label-$seat.stream.ndjson" "$R" "$base" oversized
     pinned_read_audit "$R" "$S" "$label" "$seat"
-    assert_eq "an oversized unbounded snapshot-tree read fails the audit" "$?" 2
+    assert_eq "an oversized unbounded snapshot-tree read beside complete proof passes" "$?" 0
     summary=$(pinned_read_summary "$S/r$label-$seat.read-audit.json")
-    assert_eq "an oversized unbounded snapshot-tree read is a hard byte failure" "$summary" \
-      "$(printf '%s\n' 'tool-output-too-large tool-turn-output-too-large unbounded-shell-output' \
-        'advisories=-' 'ranges=src/asset.rs:1-45 src/types.ts:1-5')"
+    assert_eq "an oversized unbounded snapshot-tree read is an advisory that earns no range" "$summary" \
+      "$(printf '%s\n' - 'advisories=tool-output-too-large tool-turn-output-too-large unbounded-shell-output' \
+        'ranges=src/asset.rs:1-45 src/types.ts:1-5')"
   )
 }
 
-test_codex_line_bounded_minified_search_stays_fatal() {
+test_codex_line_bounded_minified_search_is_an_advisory() {
   ( local R="$T/minified-search-root" S="$T/minified-search-session" label=22 seat base summary
     pinned_read_fixture "$R" "$S" "$label" || return
     seat=$(cat "$S/fixture.seat"); base=$(cat "$S/fixture.base")
@@ -2698,11 +2712,11 @@ test_codex_line_bounded_minified_search_stays_fatal() {
       > "$S/r$label-$seat.json"
     pinned_read_transcript "$(cat "$S/fixture.manifest")" "$S/r$label-$seat.stream.ndjson" "$R" "$base" minified-search
     pinned_read_audit "$R" "$S" "$label" "$seat"
-    assert_eq "a line-bounded search returning 45 KiB fails the audit" "$?" 2
+    assert_eq "a line-bounded search returning 45 KiB beside complete proof passes" "$?" 0
     summary=$(pinned_read_summary "$S/r$label-$seat.read-audit.json")
-    assert_eq "only the byte ceilings fail, and the base read adds no range" "$summary" \
-      "$(printf '%s\n' 'tool-output-too-large tool-turn-output-too-large' \
-        'advisories=-' 'ranges=src/asset.rs:1-45 src/types.ts:1-5')"
+    assert_eq "the byte ceilings are advisories, and the base read adds no range" "$summary" \
+      "$(printf '%s\n' - 'advisories=tool-output-too-large tool-turn-output-too-large' \
+        'ranges=src/asset.rs:1-45 src/types.ts:1-5')"
   )
 }
 
@@ -2730,7 +2744,7 @@ cases = [
     ("sed -n '1,2p' src/a#b.rs", [], ([('src/a#b.rs', 1, 2)], False)),
     ("rg -n '#include' src | head -81", [], ([], False)),
     ("# note\nsed -n '1,2p' 'src/a.rs'\nrg -n x src | head -81", ['unsupported-source-batch'], None),
-    ("# it's a comment, but the command is not\nsed -n '1,2p' 'src/a.rs' 'unterminated", ['unsupported-shell-shape'], None),
+    ("# it's a comment, but the command is not\nsed -n '1,2p' 'src/a.rs' 'unterminated", ['unsupported-shell-command'], None),
 ]
 failed = False
 for command, want_codes, want_ranges in cases:
@@ -2773,5 +2787,637 @@ for command, want in cases:
 raise SystemExit(1 if failed else 0)
 PY
     assert_eq "only a limiter reading the pipe from a full oid and a relative path is a pinned read" "$?" 0
+  )
+}
+
+# Audit severity: conduct codes are advisories that earn no credit (docs/audit-severity-2026-09-23.md).
+# One repository serves every label: 31 is window mode with codex source batching, 32 adds
+# source-context packets, and 33 is chunk mode. Seat sol owns the full scope in each.
+severity_fixture() {
+  local R=$1 S=$2 base label
+  mkrepo "$R"; mkdir -p "$R/src" "$S"
+  python3 - "$R" <<'PY' || return
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+(root / 'src/wide.rs').write_text(''.join(f'pub const W{i:03d}: &str = "{"w" * 120}";\n' for i in range(300)))
+(root / 'src/small.rs').write_text(''.join(f'pub const S{i}: u8 = {i};\n' for i in range(8)))
+PY
+  git -C "$R" add . && git -C "$R" commit -qm base || return
+  base=$(git -C "$R" rev-parse HEAD)
+  python3 - "$R" <<'PY' || return
+import sys
+from pathlib import Path
+root = Path(sys.argv[1]); wide = root / 'src/wide.rs'
+wide.write_text(wide.read_text().replace('W150: &str = "w', 'W150: &str = "v'))
+(root / 'src/lines.txt').write_text(''.join(f'l{i % 10}\n' for i in range(2100)))
+PY
+  git -C "$R" add . && git -C "$R" commit -qm head || return
+  printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+    "$base" "$R" > "$S/scope.env"
+  printf 'src/lines.txt\nsrc/wide.rs\n' > "$S/files.txt"; : > "$S/untracked.txt"
+  printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+  for label in 31 32 33; do
+    local context=0 chunks=0 manifest bundle
+    [ "$label" != 32 ] || context=1
+    [ "$label" != 33 ] || chunks=1
+    manifest=$(REV_SOURCE_CONTEXT=$context REV_PATCH_CHUNKS=$chunks \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$S" "$label" --phase discovery) || return
+    bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"]["sol"]["bundle"])' "$manifest") || return
+    REV_CODEX_SOURCE_BATCH=1 "$SCRIPTS/rev-prompt.sh" "$S" "$label" sol "$bundle" severity \
+      --evidence "$manifest" > /dev/null || return
+  done
+}
+
+# severity_transcript <session> <label> <adapter> <spec-json>: writes r<label>-sol.stream.ndjson.
+# The prefix proves the assigned patch (windows or chunks), every packet and the evidence index,
+# one call per turn. `sibling` puts an oversized prompt read in the same turn as one prefix call;
+# `batch_chunks` reads those chunks in one turn, `alter_chunk` changes one chunk's delivered
+# bytes, `join` moves named prefix calls into the first one's turn and `repeat` reads one twice. `tail` is a list of turns; a call is {"cmd","out"}, {"cmd","out_lines":[path,start,end]},
+# {"sed":[path,start,end],"tamper"}, {"batch":[[path,start,end],...],"tamper"}, {"oversized":true}
+# or, for gemini, {"tool","input","out"} and {"read":[path,offset,limit]}.
+severity_transcript() {
+  python3 - "$@" <<'PY'
+import json, pathlib, shlex, sys
+session, label, adapter, spec = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3], json.loads(sys.argv[4])
+manifest = json.load(open(session / f'r{label}-evidence.manifest.json'))
+root = None
+for line in (session / 'scope.env').read_text().splitlines():
+    if line.startswith('REV_ROOT='):
+        root = pathlib.Path(shlex.split(line.split('=', 1)[1])[0])
+prompt = session / f'r{label}-sol.prompt.md'
+assignment = manifest['assignments']['sol']; context = manifest['source_context']['seats']['sol']
+counter = [0]
+def lines_of(path, start, end):
+    return ''.join(pathlib.Path(path).read_text().splitlines(keepends=True)[start - 1:end])
+def build(call):
+    counter[0] += 1; identity = f'c{counter[0]}'
+    if 'oversized' in call:
+        if adapter == 'codex':
+            return identity, 'command_execution', {'command': 'cat -- ' + shlex.quote(str(prompt))}, 'z' * (33 * 1024) + '\n'
+        return identity, 'read_file', {'path': str(prompt)}, 'z' * (33 * 1024) + '\n'
+    if 'sed' in call:
+        path, start, end = call['sed']
+        output = lines_of(root / path if not path.startswith('/') else path, start, end)
+        if call.get('tamper'):
+            output = output.replace('w', 'q', 1) if 'w' in output else 'q' + output
+        return identity, 'command_execution', {'command': f"sed -n '{start},{end}p' {shlex.quote(path)}"}, output
+    if 'batch' in call:
+        output = ''.join(lines_of(root / path, start, end) for path, start, end in call['batch'])
+        if call.get('tamper'):
+            output = 'q' + output
+        command = '; '.join(f"sed -n '{start},{end}p' {path}" for path, start, end in call['batch'])
+        return identity, 'command_execution', {'command': command}, output
+    if 'out_lines' in call:
+        path, start, end = call['out_lines']
+        return identity, 'command_execution', {'command': call['cmd']}, lines_of(root / path, start, end)
+    if 'read' in call:
+        path, offset, limit = call['read']
+        return identity, 'read_file', {'path': path, 'offset': offset, 'limit': limit}, lines_of(root / path, offset, offset + limit - 1)
+    if 'tool' in call:
+        return identity, call['tool'], call['input'], call['out']
+    return identity, 'command_execution', {'command': call['cmd']}, call['out']
+def artifact(path, altered=False):
+    text = path.read_text()
+    if altered:
+        text = ('X' if text[:1] != 'X' else 'Y') + text[1:]
+    if adapter == 'codex':
+        return {'cmd': 'cat -- ' + shlex.quote(str(path)), 'out': text}
+    return {'tool': 'read_file', 'input': {'path': str(path)}, 'out': text}
+turns = []
+named = {}
+if assignment['patch_read_mode'] == 'chunks':
+    chunks = manifest['patch_sets'][assignment['patch_set']]['chunks']
+    batch = spec.get('batch_chunks', [])
+    for row in chunks:
+        call = artifact(session / row['artifact'], row['index'] == spec.get('alter_chunk'))
+        named['chunk-' + str(row['index'])] = call
+        if row['index'] in batch[1:]:
+            turns[-1].append(call)
+        else:
+            turns.append([call])
+else:
+    patch = pathlib.Path(assignment['patch']); total = len(patch.read_text().splitlines())
+    for start in range(1, total + 1, 240):
+        end = min(total, start + 239)
+        if adapter == 'codex':
+            call = {'cmd': f"sed -n '{start},{end}p' {shlex.quote(str(patch))}", 'out': lines_of(patch, start, end)}
+        else:
+            call = {'tool': 'read_file', 'input': {'path': str(patch), 'offset': start, 'limit': 240},
+                    'out': lines_of(patch, start, end)}
+        named.setdefault('patch', call); turns.append([call])
+for index, shard in enumerate(context['shards'], 1):
+    call = artifact(session / shard['artifact']); named['packet-' + str(index)] = call; turns.append([call])
+named['index'] = artifact(session / f'r{label}-evidence.md'); turns.append([named['index']])
+def turn_of(name):
+    return next(turn for turn in turns if any(call is named[name] for call in turn))
+for name in spec.get('join', [])[1:]:
+    moved = turn_of(name); turns.remove(moved); turn_of(spec['join'][0]).extend(moved)
+if spec.get('repeat'):
+    turn_of(spec['repeat']).append(dict(named[spec['repeat']]))
+if spec.get('sibling'):
+    turn_of(spec['sibling']).append({'oversized': True})
+turns.extend(spec.get('tail', []))
+events = []
+for turn in turns:
+    built = [build(call) for call in turn]
+    for identity, name, data, _ in built:
+        if adapter == 'codex':
+            events.append({'type': 'item.started', 'item': {'id': identity, 'type': 'command_execution', 'command': data['command']}})
+        else:
+            events.append({'type': 'tool_use', 'tool_id': identity, 'tool_name': name, 'parameters': data})
+    for identity, name, data, output in built:
+        if adapter == 'codex':
+            events.append({'type': 'item.completed', 'item': {'id': identity, 'type': 'command_execution', 'command': data['command'], 'aggregated_output': output, 'exit_code': 0}})
+        else:
+            events.append({'type': 'tool_result', 'tool_id': identity, 'status': 'success', 'output': output})
+with open(session / f'r{label}-sol.stream.ndjson', 'w') as stream:
+    stream.write(''.join(json.dumps(event) + '\n' for event in events))
+PY
+}
+
+# severity_audit <root> <session> <label> <adapter> [--deps dir]: audits sol and prints the verdict.
+severity_audit() {
+  local R=$1 S=$2 label=$3 adapter=$4; shift 4
+  python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter "$adapter" \
+    --raw "$S/r$label-sol.stream.ndjson" --prompt "$S/r$label-sol.prompt.md" --root "$R" \
+    --session "$S" --out "$S/r$label-sol.read-audit.json" "$@" >/dev/null 2>&1
+  severity_verdict "$S/r$label-sol.read-audit.json"
+}
+
+# Prints status, then every violation and advisory as sorted code@tool; the audit JSON is parsed.
+severity_verdict() {
+  python3 - "$1" <<'PY'
+import json, sys
+audit = json.load(open(sys.argv[1]))
+rows = lambda key: ','.join(sorted(row['code'] + '@' + row['tool'] for row in audit[key])) or '-'
+print(audit['status']); print('violations=' + rows('violations')); print('advisories=' + rows('advisories'))
+PY
+}
+
+severity_expect() { printf '%s\n' "$1" "violations=$2" "advisories=$3"; }
+
+severity_findings() {
+  local S=$1 label=$2 file=${3:-} start=${4:-} end=${5:-}
+  if [ -z "$file" ]; then
+    printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r$label-sol.json"
+  else
+    printf '{"summary":"one","findings":[{"severity":"P2","file":"%s","line_start":%s,"line_end":%s,"claim":"c","evidence":"e","suggested_fix":"f","confidence":0.9}]}\n' \
+      "$file" "$start" "$end" > "$S/r$label-sol.json"
+  fi
+}
+
+test_audit_severity_size_and_batch_codes() {
+  ( local R="$T/severity-size-root" S="$T/severity-size-session" name adapter violating clean code tool gate
+    severity_fixture "$R" "$S" || return
+    severity_findings "$S" 31
+    local wide_clean='[{"sed":["src/wide.rs",1,20]}]'
+    local read_clean='[{"read":["src/wide.rs",1,20]}]'
+    # name, adapter, violating turn, clean turn, advisory codes (code@tool, comma-separated).
+    while IFS='^' read -r name adapter violating clean code; do
+      [ -n "$name" ] || continue
+      gate="missing-required-source-read@$adapter"
+      severity_transcript "$S" 31 "$adapter" "{\"tail\":[$violating]}"
+      assert_eq "$name as the only read leaves the required read unproven" \
+        "$(severity_audit "$R" "$S" 31 "$adapter")" \
+        "$(severity_expect invalid "$(printf '%s\n' "$gate" ${code//,/ } | sort | paste -sd, -)" -)"
+      severity_transcript "$S" 31 "$adapter" "{\"tail\":[$violating,$clean]}"
+      assert_eq "$name beside a clean read is an advisory" \
+        "$(severity_audit "$R" "$S" 31 "$adapter")" "$(severity_expect valid - "$code")"
+    done <<CASES
+tool-output-too-large^codex^[{"sed":["src/wide.rs",1,240]}]^$wide_clean^tool-output-too-large@command_execution,tool-turn-output-too-large@codex
+tool-turn-output-too-large^codex^[{"sed":["src/wide.rs",1,120]},{"sed":["src/wide.rs",121,240]}]^$wide_clean^tool-turn-output-too-large@codex
+unbounded-read^gemini^[{"read":["src/wide.rs",290,250]}]^$read_clean^unbounded-read@read_file
+unbounded-search^gemini^[{"tool":"search_file_content","input":{"pattern":"W150","path":"src"},"out":"src/wide.rs:151:W150\n"}]^$read_clean^unbounded-search@search_file_content
+unsupported-source-batch^codex^[{"cmd":"sed -n '1,20p' src/wide.rs; rg -n W150 src | head -81","out_lines":["src/wide.rs",1,20]}]^$wide_clean^unsupported-source-batch@Bash
+source-batch-lines-too-large^codex^[{"batch":[["src/lines.txt",1,200],["src/lines.txt",201,241]]}]^$wide_clean^source-batch-lines-too-large@Bash
+overlapping-source-batch^codex^[{"batch":[["src/lines.txt",1,20],["src/lines.txt",10,30]]}]^$wide_clean^overlapping-source-batch@Bash
+source-batch-output-mismatch^codex^[{"batch":[["src/lines.txt",1,20],["src/lines.txt",30,40]],"tamper":true}]^$wide_clean^source-batch-output-mismatch@command_execution
+CASES
+  )
+}
+
+test_audit_severity_credit_on_every_proof_surface() {
+  ( local R="$T/severity-credit-root" S="$T/severity-credit-session"
+    severity_fixture "$R" "$S" || return
+    local clean='[{"sed":["src/wide.rs",1,20]}]'
+    local size='tool-output-too-large@command_execution,tool-turn-output-too-large@codex'
+    for label in 31 32 33; do severity_findings "$S" "$label"; done
+
+    severity_transcript "$S" 31 codex "{\"sibling\":\"patch\",\"tail\":[$clean]}"
+    assert_eq "a patch window in an oversized turn proves no patch range" \
+      "$(severity_audit "$R" "$S" 31 codex)" \
+      "$(severity_expect invalid "missing-assigned-patch-range@codex,$size" -)"
+    severity_transcript "$S" 33 codex "{\"sibling\":\"chunk-2\",\"tail\":[$clean]}"
+    assert_eq "a patch chunk in an oversized turn proves no chunk" \
+      "$(severity_audit "$R" "$S" 33 codex)" \
+      "$(severity_expect invalid "missing-assigned-patch-chunk@codex,$size" -)"
+    severity_transcript "$S" 32 codex "{\"sibling\":\"packet-1\",\"tail\":[$clean]}"
+    assert_eq "a packet in an oversized turn proves no packet" \
+      "$(severity_audit "$R" "$S" 32 codex)" \
+      "$(severity_expect invalid "missing-source-packet@codex,$size" -)"
+    severity_transcript "$S" 31 codex "{\"sibling\":\"index\",\"tail\":[$clean]}"
+    assert_eq "an evidence index in an oversized turn proves no index" \
+      "$(severity_audit "$R" "$S" 31 codex)" \
+      "$(severity_expect valid - "missing-evidence-index@codex,$size")"
+
+    severity_findings "$S" 31 src/wide.rs 200 210
+    severity_transcript "$S" 31 codex "{\"tail\":[[{\"sed\":[\"src/wide.rs\",1,240]}],$clean]}"
+    assert_eq "an oversized read earns no citation" \
+      "$(severity_audit "$R" "$S" 31 codex)" \
+      "$(severity_expect invalid "$size,unsubstantiated-finding-range@codex" -)"
+    severity_transcript "$S" 31 codex "{\"tail\":[[{\"sed\":[\"src/wide.rs\",190,220]}]]}"
+    assert_eq "the same citation is earned by a clean read" \
+      "$(severity_audit "$R" "$S" 31 codex)" "$(severity_expect valid - -)"
+    # Two ~18 KiB reads overflow their turn together; neither earns its citation.
+    local line
+    for line in 100 200; do
+      severity_findings "$S" 31 src/wide.rs "$line" "$((line + 1))"
+      severity_transcript "$S" 31 codex "{\"tail\":[[{\"sed\":[\"src/wide.rs\",1,120]},{\"sed\":[\"src/wide.rs\",121,240]}],$clean]}"
+      assert_eq "an overflowing turn earns no citation at line $line" \
+        "$(severity_audit "$R" "$S" 31 codex)" \
+        "$(severity_expect invalid "tool-turn-output-too-large@codex,unsubstantiated-finding-range@codex" -)"
+    done
+    severity_findings "$S" 31
+
+    severity_transcript "$S" 31 gemini '{"tail":[[{"read":["src/lines.txt",1,2000]}]]}'
+    assert_eq "a 2000-line Read earns no range" \
+      "$(severity_audit "$R" "$S" 31 gemini)" \
+      "$(severity_expect invalid "missing-required-source-read@gemini,unbounded-read@read_file" -)"
+    python3 - "$SCRIPTS/lib/review-read-audit.py" "$R" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
+audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
+root = Path(sys.argv[2]).resolve()
+row = audit.direct_source_range('Read', {'file_path': 'src/lines.txt', 'offset': 1, 'limit': 2000}, root)
+assert (row['line_start'], row['line_end']) == (1, 2000), row
+row = audit.direct_source_range('Read', {'file_path': 'src/lines.txt', 'offset': 5, 'limit': 20}, root)
+assert (row['line_start'], row['line_end']) == (5, 24), row
+PY
+    assert_eq "a direct Read range is the requested window, uncapped" "$?" 0
+
+    # A prompt-named document may be read in full, and that read earns its whole range.
+    local D="$T/severity-document-session"
+    mkdir -p "$D" "$R/docs"
+    python3 -c "open('$R/docs/plan.md', 'w').write(''.join(f'line {i}\\n' for i in range(1, 301)))"
+    printf '# Review\n\n## Scope\nDocuments to review (read them in full):\n- docs/plan.md\n\n## Output\nx\n' \
+      > "$D/r1-sol.prompt.md"
+    python3 - "$R/docs/plan.md" "$D" <<'PY'
+import json, sys
+text = open(sys.argv[1]).read(); session = sys.argv[2]
+events = [{'type': 'tool_use', 'tool_id': 'c1', 'tool_name': 'read_file',
+           'parameters': {'path': 'docs/plan.md', 'offset': 1, 'limit': 2000}},
+          {'type': 'tool_result', 'tool_id': 'c1', 'status': 'success', 'output': text}]
+open(session + '/r1-sol.stream.ndjson', 'w').write(''.join(json.dumps(e) + '\n' for e in events))
+PY
+    severity_findings "$D" 1 docs/plan.md 290 295
+    assert_eq "a full read of a prompt-named document earns a citation past line 240" \
+      "$(severity_audit "$R" "$D" 1 gemini)" "$(severity_expect valid - -)"
+    assert_eq "that read earns the document's entire range" \
+      "$(python3 -c 'import json,sys; print([(r["path"], r["line_start"], r["line_end"]) for r in json.load(open(sys.argv[1]))["source_ranges"]])' "$D/r1-sol.read-audit.json")" \
+      "[('docs/plan.md', 1, 300)]"
+  )
+}
+
+test_audit_severity_pacing_keeps_credit() {
+  ( local R="$T/severity-pacing-root" S="$T/severity-pacing-session"
+    severity_fixture "$R" "$S" || return
+    severity_findings "$S" 33
+    local clean='[{"sed":["src/wide.rs",1,20]}]'
+    severity_transcript "$S" 33 codex "{\"batch_chunks\":[1,2],\"tail\":[$clean]}"
+    assert_eq "an over-limit batch of exact chunks keeps its credit" \
+      "$(severity_audit "$R" "$S" 33 codex)" \
+      "$(severity_expect valid - "evidence-proof-batch-too-large@codex,patch-chunk-batch-too-large@codex")"
+    severity_transcript "$S" 33 codex "{\"batch_chunks\":[1,2],\"alter_chunk\":2,\"tail\":[$clean]}"
+    assert_eq "the same batch with an altered chunk is incomplete" \
+      "$(severity_audit "$R" "$S" 33 codex)" \
+      "$(severity_expect invalid "assigned-patch-output-mismatch@command_execution,missing-assigned-patch-chunk@codex" -)"
+
+    # Pacing is counted over byte-proved reads, so an oversized turn that voids their credit
+    # still reports how many proof reads it batched.
+    local size='tool-output-too-large@command_execution,tool-turn-output-too-large@codex'
+    severity_transcript "$S" 33 codex "{\"batch_chunks\":[1,2],\"sibling\":\"chunk-1\",\"tail\":[$clean]}"
+    assert_eq "an oversized chunk batch keeps its chunk pacing count" \
+      "$(severity_audit "$R" "$S" 33 codex)" \
+      "$(severity_expect invalid "evidence-proof-batch-too-large@codex,missing-assigned-patch-chunk@codex,patch-chunk-batch-too-large@codex,$size" -)"
+    severity_transcript "$S" 33 codex "{\"join\":[\"chunk-3\",\"index\"],\"sibling\":\"chunk-3\",\"tail\":[$clean]}"
+    assert_eq "an oversized chunk and index turn keeps its proof pacing count" \
+      "$(severity_audit "$R" "$S" 33 codex)" \
+      "$(severity_expect invalid "evidence-proof-batch-too-large@codex,missing-assigned-patch-chunk@codex,missing-evidence-index@codex,$size" -)"
+    severity_findings "$S" 32
+    severity_transcript "$S" 32 codex "{\"repeat\":\"packet-1\",\"sibling\":\"packet-1\",\"tail\":[$clean]}"
+    assert_eq "an oversized packet batch keeps its packet pacing count" \
+      "$(severity_audit "$R" "$S" 32 codex)" \
+      "$(severity_expect invalid "missing-source-packet@codex,source-packet-batch-too-large@codex,$size" -)"
+  )
+}
+
+test_audit_severity_mixed_codes_are_all_violations() {
+  ( local R="$T/severity-mixed-root" S="$T/severity-mixed-session"
+    severity_fixture "$R" "$S" || return
+    severity_findings "$S" 31
+    severity_transcript "$S" 31 codex "{\"tail\":[[{\"sed\":[\"src/wide.rs\",1,240]}],[{\"cmd\":\"cat -- '$S/r31-terra.prompt.md'\",\"out\":\"x\\n\"}],[{\"sed\":[\"src/wide.rs\",1,20]}]]}"
+    assert_eq "a fatal code turns every advisory into a violation" \
+      "$(severity_audit "$R" "$S" 31 codex)" \
+      "$(severity_expect invalid "tool-output-too-large@command_execution,tool-turn-output-too-large@codex,unnamed-session-artifact@Bash" -)"
+  )
+}
+
+test_audit_severity_refused_programs_win_over_shape() {
+  ( local R="$T/severity-refused-root" S="$T/severity-refused-session" name command extra
+    severity_fixture "$R" "$S" || return
+    severity_findings "$S" 31
+    while IFS='|' read -r name command extra; do
+      severity_transcript "$S" 31 codex "$(python3 -c 'import json,sys; print(json.dumps({"tail":[[{"cmd":sys.argv[1].replace("\\n","\n"),"out":"1\n"}],[{"sed":["src/wide.rs",1,20]}]]}))' "$command")"
+      assert_eq "$name reports the refused program" "$(severity_audit "$R" "$S" 31 codex)" \
+        "$(severity_expect invalid "$(printf '%s\n' unsupported-shell-command@Bash ${extra//,/ } | sort | paste -sd, -)" -)"
+    done <<'CASES'
+python heredoc|python3 - <<'PY'\nprint(1)\nPY|
+unparseable command with an interpreter|cat src/small.rs; python3 -c 'print(1)|unsupported-source-range@command_execution
+batch with python3 -c|sed -n '1,2p' src/small.rs; python3 -c 'print(1)'|
+CASES
+  )
+}
+
+test_audit_severity_independence_stays_fatal() {
+  ( local R="$T/severity-independence-root" S="$T/severity-independence-session" artifact
+    severity_fixture "$R" "$S" || return
+    severity_findings "$S" 31
+    printf '{"summary":"x","findings":[]}\n' > "$S/r31-terra.json"; printf 'ledger\n' > "$S/findings.md"
+    for artifact in r31-terra.json r31-terra.prompt.md findings.md; do
+      severity_transcript "$S" 31 codex "{\"tail\":[[{\"cmd\":\"cat -- '$S/$artifact'\",\"out\":\"x\\n\"}],[{\"sed\":[\"src/wide.rs\",1,20]}]]}"
+      assert_eq "reading $artifact is an independence failure" "$(severity_audit "$R" "$S" 31 codex)" \
+        "$(severity_expect invalid unnamed-session-artifact@Bash -)"
+    done
+  )
+}
+
+# severity_lock <repo> <pinned version>: commits a Cargo.lock pinning one registry crate, one git crate
+# and the repository's own crate.
+severity_lock() {
+  cat > "$1/Cargo.lock" <<EOF
+version = 3
+
+[[package]]
+name = "own"
+version = "0.1.0"
+dependencies = [
+ "pinned",
+]
+
+[[package]]
+name = "pinned"
+version = "$2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[[package]]
+name = "fromgit"
+version = "0.3.0"
+source = "git+https://example.invalid/fromgit#0000000"
+EOF
+  git -C "$1" add Cargo.lock && git -C "$1" commit -qm "lock $2"
+}
+
+test_audit_severity_dependency_root() {
+  ( local R="$T/severity-deps-root" S="$T/severity-deps-session" home="$T/cargo-home" version
+    local registry="$T/cargo-home/registry/src/index.crates.io-0"
+    severity_fixture "$R" "$S" || return
+    assert_eq "a repository with no Cargo.lock gets no dependency view" \
+      "$(python3 -c 'import json,sys; print("dependency_view" in json.load(open(sys.argv[1])))' "$S/r31-evidence.manifest.json"):$(test -e "$S/deps" && echo view || echo none)" \
+      "False:none"
+    for version in 1.0.0 2.0.0; do
+      mkdir -p "$registry/pinned-$version/src" "$registry/fromgit-0.3.0/src"
+      printf 'pub fn pinned() {}\n' > "$registry/pinned-$version/src/lib.rs"
+    done
+    severity_lock "$R" 1.0.0
+    view_of() {
+      CARGO_HOME="$home" python3 "$SCRIPTS/rev-evidence.py" prepare "$S" "$1" --phase discovery >/dev/null || return
+      python3 - "$S/r$1-evidence.manifest.json" <<'PY'
+import json, os, sys
+view = json.load(open(sys.argv[1]))['dependency_view']
+links = sorted((name, os.readlink(os.path.join(view['path'], name))) for name in os.listdir(view['path']))
+print(json.dumps([os.path.basename(view['path']), view['crates'], [(n, t.split('/registry/src/')[1]) for n, t in links]]))
+PY
+    }
+    assert_eq "prepare links each pinned registry crate from the snapshot's Cargo.lock" \
+      "$(env -u REV_DEPS_DIR bash -c "$(declare -f view_of); SCRIPTS='$SCRIPTS' S='$S' home='$home' view_of 41")" \
+      '["deps", ["pinned-1.0.0"], [["pinned-1.0.0", "index.crates.io-0/pinned-1.0.0"]]]'
+    assert_eq "an explicit REV_DEPS_DIR builds no view" \
+      "$(REV_DEPS_DIR="$T/explicit" CARGO_HOME="$home" python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 40 --phase discovery >/dev/null; python3 -c 'import json,sys; print("dependency_view" in json.load(open(sys.argv[1])))' "$S/r40-evidence.manifest.json")" \
+      False
+
+    severity_findings "$S" 41; severity_findings "$S" 31
+    cp "$S/r31-sol.prompt.md" "$S/r31-sol.prompt.saved"
+    local view="$S/deps" link read resolved listing other
+    link="{\"cmd\":\"sed -n '1,1p' $view/pinned-1.0.0/src/lib.rs\",\"out\":\"pub fn pinned() {}\\n\"}"
+    resolved="{\"cmd\":\"sed -n '1,1p' $registry/pinned-1.0.0/src/lib.rs\",\"out\":\"pub fn pinned() {}\\n\"}"
+    listing="{\"cmd\":\"ls -d $view/pinned-*\",\"out\":\"$view/pinned-1.0.0\\n\"}"
+    other="{\"cmd\":\"sed -n '1,1p' $registry/pinned-2.0.0/src/lib.rs\",\"out\":\"pub fn pinned() {}\\n\"}"
+    for read in "$link" "$resolved"; do
+      severity_transcript "$S" 31 codex "{\"tail\":[[$read],[{\"sed\":[\"src/wide.rs\",1,20]}]]}"
+      assert_eq "a bounded pinned-crate read is in scope: ${read:8:60}" \
+        "$(severity_audit "$R" "$S" 31 codex --deps "$view")" "$(severity_expect valid - -)"
+    done
+    severity_transcript "$S" 31 codex "{\"tail\":[[$listing],[{\"sed\":[\"src/wide.rs\",1,20]}]]}"
+    assert_eq "a listing whose glob resolves only to view targets is in scope" \
+      "$(severity_audit "$R" "$S" 31 codex --deps "$view")" \
+      "$(severity_expect valid - unbounded-shell-output@Bash)"
+    severity_transcript "$S" 31 codex "{\"tail\":[[$other],[{\"sed\":[\"src/wide.rs\",1,20]}]]}"
+    assert_eq "another cached version of a pinned crate is out of scope" \
+      "$(severity_audit "$R" "$S" 31 codex --deps "$view")" \
+      "$(severity_expect invalid path-outside-scope@Bash -)"
+    severity_transcript "$S" 31 codex "{\"tail\":[[$link],[{\"sed\":[\"src/wide.rs\",1,20]}]]}"
+    assert_eq "the view is out of scope when the audit is not given it" \
+      "$(severity_audit "$R" "$S" 31 codex)" \
+      "$(severity_expect invalid path-outside-scope@Bash -)"
+
+    local manifest="$S/r41-evidence.manifest.json" bundle prompt
+    bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"]["sol"]["bundle"])' "$manifest")
+    prompt=$(env -u REV_DEPS_DIR "$SCRIPTS/rev-prompt.sh" "$S" 41 sol "$bundle" deps --evidence "$manifest")
+    local recorded
+    recorded=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["dependency_view"]["path"])' "$manifest")
+    assert_eq "the manifest records the session's view" "$recorded" "$(cd "$S" && pwd -P)/deps"
+    assert_grep "an evidence prompt's step 6 names the manifest's view" "$prompt" \
+      "^6\. Expand .*Read pinned dependency source only under $recorded\.$"
+    assert_grep "an online evidence prompt describes the per-crate view" "$prompt" \
+      "pinned third-party dependency sources linked under $recorded \(one directory per pinned crate"
+
+    severity_lock "$R" 2.0.0
+    assert_eq "a lockfile edit changes the next panel's view" \
+      "$(env -u REV_DEPS_DIR bash -c "$(declare -f view_of); SCRIPTS='$SCRIPTS' S='$S' home='$home' view_of 42")" \
+      '["deps", ["pinned-2.0.0"], [["pinned-2.0.0", "index.crates.io-0/pinned-2.0.0"]]]'
+    assert_eq "the earlier manifest keeps the view it recorded" \
+      "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["dependency_view"]["crates"])' "$S/r41-evidence.manifest.json")" \
+      "['pinned-1.0.0']"
+  )
+}
+
+# Every code the auditor can emit is either advisory or on this documented fatal list.
+test_audit_code_catalog_is_classified() {
+  python3 - "$SCRIPTS/lib/review-read-audit.py" "$SCRIPTS/lib/readonly-bash-guard.py" <<'PY'
+import ast, importlib.util, sys
+FATAL = {
+    # transcript integrity
+    'missing-transcript', 'malformed-transcript', 'unsupported-transcript-shape',
+    'missing-tool-call-id', 'missing-tool-output', 'duplicate-tool-call', 'duplicate-tool-output',
+    'orphan-tool-output', 'invalid-tool-call-shape', 'invalid-hook-payload', 'no-recognized-review-tools',
+    # binding
+    'missing-prompt', 'invalid-prompt-artifact-set', 'invalid-evidence-manifest-declaration',
+    'invalid-assignment-prompt-binding', 'invalid-plan-prompt-binding', 'invalid-plan-evidence',
+    'invalid-plan-first-call', 'invalid-source-context', 'invalid-required-source-identity',
+    'invalid-review-result',
+    # completeness
+    'missing-source-packet', 'partial-source-packet', 'unassigned-source-packet',
+    'source-packet-output-mismatch', 'missing-assigned-patch-chunk', 'partial-patch-chunk',
+    'reordered-patch-chunks', 'redirected-patch-chunk', 'unassigned-patch-chunk',
+    'assigned-patch-output-mismatch', 'missing-assigned-patch-range',
+    'missing-required-source-segment', 'partial-required-source-segment',
+    'reordered-required-source-segments', 'redirected-required-source-segment',
+    'unassigned-required-source-segment', 'required-source-output-mismatch',
+    'missing-required-source-range', 'missing-required-source-read',
+    'missing-plan-cluster-search', 'missing-plan-cluster-source',
+    'unsubstantiated-finding-range', 'invalid-plan-finding-range',
+    # independence and scope
+    'unnamed-session-artifact', 'path-outside-scope', 'unresolved-path-variable',
+    # visibility and safety
+    'unsupported-shell-command', 'unrecognized-review-tool', 'unsupported-shell-input-redirection',
+    'unsupported-shell-shape', 'missing-read-path', 'missing-shell-command',
+    'ambiguous-assigned-patch-read',
+}
+ADVISORY = {
+    'discovery-output-too-large', 'duplicate-patch-chunk', 'duplicate-required-source-segment',
+    'evidence-read-order', 'missing-evidence-index', 'repository-expansion-call-limit',
+    'redundant-assigned-patch-read', 'source-output-mismatch', 'unbounded-shell-output',
+    'unsupported-source-range',
+    'tool-output-too-large', 'tool-turn-output-too-large', 'unbounded-read', 'unbounded-search',
+    'unsupported-source-batch', 'source-batch-lines-too-large', 'overlapping-source-batch',
+    'source-batch-output-mismatch',
+    'patch-chunk-batch-too-large', 'required-source-segment-batch-too-large',
+    'evidence-proof-batch-too-large', 'source-packet-batch-too-large',
+}
+def strings(node):
+    return {item.value for item in ast.walk(node)
+            if isinstance(item, ast.Constant) and isinstance(item.value, str)}
+def callee(node):
+    return node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, 'attr', None)
+emitted, opaque = set(), []
+audit_tree = ast.parse(open(sys.argv[1]).read())
+# A function passing one of its own parameters to violation() forwards the code its callers name.
+forwarders, forwarded = {}, set()
+for function in ast.walk(audit_tree):
+    if not isinstance(function, ast.FunctionDef):
+        continue
+    params = [arg.arg for arg in function.args.args]
+    for call in ast.walk(function):
+        if isinstance(call, ast.Call) and callee(call) == 'violation' and call.args \
+                and isinstance(call.args[0], ast.Name) and call.args[0].id in params:
+            forwarders[function.name] = params.index(call.args[0].id)
+            forwarded.add(call)
+def reforwarded(node):
+    # `error.code` carries a SourceBatchBlocked code; `item['code']` re-emits a violation() row.
+    return (isinstance(node, ast.Attribute) and node.attr == 'code') or (
+        isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant)
+        and node.slice.value == 'code')
+for call in ast.walk(audit_tree):
+    if not isinstance(call, ast.Call):
+        continue
+    name = callee(call)
+    if name == 'violation' and call.args and call not in forwarded:
+        position = 0
+    elif name in forwarders and len(call.args) > forwarders[name]:
+        position = forwarders[name]
+    else:
+        continue
+    code = call.args[position]
+    if isinstance(code, (ast.Constant, ast.IfExp)):
+        emitted |= strings(code)
+    elif not reforwarded(code):
+        opaque.append(ast.unparse(call))
+for call in ast.walk(ast.parse(open(sys.argv[2]).read())):
+    if isinstance(call, ast.Call) and callee(call) == 'SourceBatchBlocked' and call.args:
+        emitted |= strings(call.args[0])
+spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+problems = []
+if opaque:
+    problems.append('violation() with a non-literal code: ' + '; '.join(opaque))
+if module.ADVISORY_CODES != ADVISORY:
+    problems.append('ADVISORY_CODES drifted: +%s -%s' % (
+        sorted(module.ADVISORY_CODES - ADVISORY), sorted(ADVISORY - module.ADVISORY_CODES)))
+if FATAL & ADVISORY:
+    problems.append('classified twice: %s' % sorted(FATAL & ADVISORY))
+if emitted - FATAL - ADVISORY:
+    problems.append('unclassified: %s' % sorted(emitted - FATAL - ADVISORY))
+if (FATAL | ADVISORY) - emitted:
+    problems.append('classified but never emitted: %s' % sorted((FATAL | ADVISORY) - emitted))
+print('\n'.join(problems))
+raise SystemExit(1 if problems else 0)
+PY
+  assert_eq "every emitted audit code is classified exactly once" "$?" 0
+}
+
+# The credit reassessment ends once no NEW call is revoked. A credit site that forgot the blocked
+# check would re-revoke an already blocked call on every pass; that must end in a verdict, not a hang.
+test_audit_credit_reassessment_terminates() {
+  python3 - "$SCRIPTS/lib/review-read-audit.py" <<'PY'
+import importlib.util, signal, sys, types
+spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
+audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
+passes = []
+def assess(args, blocked):
+    passes.append(set(blocked))
+    return {'status': 'valid'}, False, {'c1'}
+audit.assess = assess
+audit.publish = lambda path, data: None
+signal.signal(signal.SIGALRM, lambda *_: sys.exit('reassessment did not terminate'))
+signal.alarm(10)
+assert audit.audit(types.SimpleNamespace(out='unused')) == 0
+signal.alarm(0)
+assert passes == [set(), {'c1'}], passes
+PY
+  assert_eq "a re-revoked blocked call ends the reassessment" "$?" 0
+  ( local R="$T/severity-terminate-root" S="$T/severity-terminate-session"
+    severity_fixture "$R" "$S" || return
+    severity_findings "$S" 31
+    severity_transcript "$S" 31 codex '{"sibling":"patch","tail":[[{"sed":["src/wide.rs",1,20]}]]}'
+    assert_eq "the unmutated auditor revokes an oversized turn's credit and terminates" \
+      "$(perl -e 'alarm shift; exec @ARGV' 120 bash -c "$(declare -f severity_audit severity_verdict); SCRIPTS='$SCRIPTS' severity_audit '$R' '$S' 31 codex")" \
+      "$(severity_expect invalid "missing-assigned-patch-range@codex,tool-output-too-large@command_execution,tool-turn-output-too-large@codex" -)"
+  )
+}
+
+# Whole-transcript advisories are counts, not facts about one call, so they revoke no credit.
+test_audit_severity_global_advisories_revoke_nothing() {
+  ( local R="$T/severity-global-root" S="$T/severity-global-session" tail="" start
+    severity_fixture "$R" "$S" || return
+    for start in $(seq 1 10 170); do
+      tail="$tail${tail:+,}[{\"sed\":[\"src/wide.rs\",$start,$((start + 9))]}]"
+    done
+    severity_findings "$S" 31 src/wide.rs 165 168
+    severity_transcript "$S" 31 codex "{\"tail\":[$tail]}"
+    assert_eq "a repository call count over the limit keeps every call's citation" \
+      "$(severity_audit "$R" "$S" 31 codex)" \
+      "$(severity_expect valid - repository-expansion-call-limit@codex)"
+  )
+}
+
+# Every batch operand is checked for scope and session artifacts before a batch code is recorded.
+test_audit_severity_batch_operands_are_scoped() {
+  ( local R="$T/severity-operand-root" S="$T/severity-operand-session" name command
+    severity_fixture "$R" "$S" || return
+    severity_findings "$S" 31
+    printf '{"summary":"x","findings":[]}\n' > "$S/r31-terra.json"
+    while IFS='|' read -r name command; do
+      command=${command//@S@/$S}
+      severity_transcript "$S" 31 codex "$(python3 -c 'import json,sys; print(json.dumps({"tail":[[{"cmd":sys.argv[1],"out":"x\n"}],[{"sed":["src/wide.rs",1,20]}]]}))' "$command")"
+      assert_eq "$name is an independence failure" "$(severity_audit "$R" "$S" 31 codex)" \
+        "$(severity_expect invalid unnamed-session-artifact@Bash -)"
+    done <<'CASES'
+a clean batch with a sibling-result operand|sed -n '1,20p' src/wide.rs; sed -n '1,1p' @S@/r31-terra.json
+an overlapping batch with a sibling-result operand|sed -n '1,20p' src/lines.txt; sed -n '1,1p' @S@/r31-terra.json; sed -n '10,30p' src/lines.txt
+an oversized batch with a sibling-prompt operand|sed -n '1,200p' src/lines.txt; sed -n '1,41p' @S@/r31-terra.prompt.md
+CASES
   )
 }

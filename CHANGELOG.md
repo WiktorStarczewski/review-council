@@ -1,5 +1,61 @@
 # Changelog
 
+## 0.5.2
+
+- A seat's read audit now fails only on codes that mean the review cannot be shown complete, cannot
+  be trusted as the seat's own work, or cannot be seen. Size codes (`tool-output-too-large`,
+  `tool-turn-output-too-large`, `unbounded-read`, `unbounded-search`), codex source-batch conduct
+  (`unsupported-source-batch`, `source-batch-lines-too-large`, `overlapping-source-batch`,
+  `source-batch-output-mismatch`) and the four proof-batch pacing counts are advisories. Before,
+  any one of them stopped the whole panel, forbade a retry and latched the session: on one 14-file
+  pull request a single `rg ... | head -80` over minified `dist/` output did that to a seat whose
+  review was otherwise complete.
+
+- Softening a code can never make an incomplete review complete, because a call that raises any
+  violation, fatal or advisory, now earns nothing: no source range, patch window or chunk, packet,
+  required segment, evidence-index or plan-search proof, and so no citation. Calls in an oversized
+  turn earn nothing either. An oversized output may not have reached the model in full, so its
+  bytes in the transcript prove nothing. Two kinds of count revoke nothing: pacing counts, taken
+  over reads that were each byte-proved on their own, and whole-transcript counts (read order,
+  repository call count, a missing evidence index). A full Read of a document the prompt names earns its whole range.
+
+- The read-only command policy now runs before every shape check, so a refused program such as a
+  `python3` heredoc or `sed ...; python3 -c ...` always reports `unsupported-shell-command` and
+  can never hide behind a batch or redirection code that is now an advisory. Every operand of a
+  codex source batch is checked for scope and session artifacts first, so a sibling's prompt or
+  result inside a batch is still `unnamed-session-artifact`.
+
+- In a repository with a `Cargo.lock`, when `REV_DEPS_DIR` is unset, `rev-evidence.py prepare`
+  builds a per-crate view, `$S/deps/<name>-<version>`, with one link per registry package the
+  panel snapshot's `Cargo.lock` pins, and records it in the manifest. `rev-seat.sh` passes it to
+  the read audit as `--deps`, and the prompt names it as the only place to read pinned dependency
+  source. A lockfile edit gets a fresh view on the next panel; other cached versions of a crate stay
+  `path-outside-scope`. A codex seat that listed and read its pinned crate in the cargo registry
+  had failed with `path-outside-scope`.
+
+- A hard audit failure no longer stops the panel or latches the session. `rev-attempt.py` refuses
+  only a relaunch of the same label and seat (an invalid `read-audit.json` or an archived
+  `audit-invalid.json`); the session and panel stop markers and the `stop` and `check` commands are
+  gone. On the wallet C1 review, 8 hard failures had each forced a new session.
+
+- An assignment without a valid result gets at most one replacement on another eligible seat:
+  after its exact retry for an execution failure, immediately for a hard audit failure. This rule
+  replaces coverage repair. `prepare <N>x --phase repair --assignment <executor>=<parent bundle>
+  --parent-assignment <N>:<failed seat>` keys the child by the seat that runs it, and refuses the
+  failed seat itself, an Agent seat, a parent with no recorded terminal failure (an archived
+  `audit-invalid.json`, or an exact retry that also exited 1 or 2, which `rev-seat.sh` now records
+  per launch) and a second replacement in the panel. The receipt reads the replacement's result,
+  audit and findings under the executing seat. A failed plan seat is replaced by an ordinary
+  one-seat `<N>px` plan panel, and `phase=fix` accepts `<N>p` or `<N>px`.
+
+- A review-origin breaker. `rev-evidence.py review-origin <S> <N>` counts, from round `<N>`'s
+  sealed receipt, the chosen citations on lines the review itself changed since its first
+  receipt. `phase=fix` records the count and refuses once two rounds since the last
+  `review_origin_ack=<N>` have a nonzero count, so the user decides whether to revert the review's
+  own changes. `rev-state.sh <fallback> inherit-breaker <parent>` carries the window into a quota
+  fallback session. On the wallet C1 review about 30 of 38 later findings were defects in the
+  review's own fixes.
+
 ## 0.5.1
 
 - A codex seat that reads the frozen snapshot through `git show <snapshot tree>:<path> | sed -n`

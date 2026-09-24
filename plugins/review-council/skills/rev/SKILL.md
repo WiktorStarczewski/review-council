@@ -319,8 +319,7 @@ Before adaptive fan-out, set `PANEL_LABEL` to the artifact label and `PANEL_PHAS
 `discovery`, `risk`, `verification`, or `repair`. Build `EVIDENCE_ARGS` from the exact
 launched seats: discovery passes `--full-seat` for the first core seat; risk and
 verification pass one `--assignment "$SEAT=$BUNDLE_OR_COMPOSITE"` per seat plus
-`--full-seat` for the first regression-bundle seat; repair passes its one assignment
-and that repair seat as `--full-seat`. Then prepare once:
+`--full-seat` for the first regression-bundle seat; a replacement passes its one assignment and `--parent-assignment` (see the replacement rule below). Then prepare once:
 
 ```bash
 MANIFEST=
@@ -355,10 +354,9 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/rev-prompt.sh "$S" "$PANEL_LABEL" --panel "$S/r$PA
 ```
 
 `--panel` loads the evidence manifest once, writes every `r<label>-<seat>.prompt.md`,
-prints their paths in order, and publishes none when any seat fails. Render a single
-`<N>x` repair seat with the per-seat form
+prints their paths in order, and publishes none when any seat fails. Render a single `<N>x` replacement seat with the per-seat form
 `${CLAUDE_PLUGIN_ROOT}/scripts/rev-prompt.sh "$S" "$PANEL_LABEL" "$SEAT" "$LENS" "$EMPHASIS" --phase "$COVERED_PHASE" "${EVIDENCE_PROMPT_ARGS[@]}"`,
-where `COVERED_PHASE` is the phase of the panel it repairs (`risk` or `verification`).
+where `COVERED_PHASE` is the phase of the panel it replaces into (`discovery`, `risk`, or `verification`).
 An exact seat retry reuses its already-rendered prompt.
 
 If any evidence prompt render fails, discard the narrowed panel.
@@ -384,14 +382,14 @@ canonical packet or bounded source ranges. Every finding citation must intersect
 of those audited ranges. A bounded `git show <snapshot tree>:<path>` read counts only when its bytes match the frozen snapshot blob; a read of the base or any other revision is context, never a range or a citation. Shell comments are ignored. Agent-adapter findings must intersect a range from that
 seat's assigned packet, and the audit must prove that every assigned shard was opened
 in full. The enforced read hooks are an earlier guard, not post-run evidence. A missing, malformed,
-stale, partial, oversized, unassigned, or unparseable packet or source range invalidates
+stale, partial, or unassigned packet or source range invalidates
 the whole attempt. The same is true for unsupported provider transcript shapes and
 zero-tool answers. In chunk mode, the audit also requires every hash-bound chunk once
 in exact order before packet and source reads. Missing, reordered, truncated, replaced,
-unassigned, redirected, or oversized chunks invalidate the attempt.
-Read order, repository call count, output sentinel overflow, a missing navigation index, and duplicate completed reads are advisories when patch, required-source, citation, and result completeness all pass. These advisories remain visible in the receipt but never discard a substantively complete review.
+unassigned, or redirected chunks invalidate the attempt.
+A seat's evidence read audit with status `invalid` is a hard evidence-audit failure. A valid audit may carry advisories: these never discard the review, stay visible in the receipt, and never earn credit. A call that raises a call-local violation, and every proof call in a turn that overflows the turn ceiling, proves no range, no patch chunk, packet or segment, and no citation. Pacing counts and whole-transcript counts revoke nothing.
 
-Retain one launch handle for every pending seat and inspect each terminal result as it arrives. Store every Bash task ID and Agent task ID under its seat name. A provider execution exit 1 or 2 with no invalid read audit is seat-local and may retry only the failed seat once with its exact prompt, assignment, model, and effort while other seats continue. A hard evidence-audit failure is a compiler or contract incident: stop the current panel without another paid retry and preserve every valid sibling and partial stream. Never widen an evidence-audit failure into a full-state repair.
+Retain one launch handle for every pending seat and inspect each terminal result as it arrives. Store every Bash task ID and Agent task ID under its seat name. A provider execution exit 1 or 2 with no invalid read audit is seat-local and may retry only the failed seat once with its exact prompt, assignment, model, and effort while other seats continue. A hard evidence-audit failure ends only that seat's assignment: never relaunch that seat under that label (`rev-attempt.py` refuses it), keep every sibling running, and preserve every valid sibling and partial stream. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure.
 
 Exit 3 or 4 must cancel every pending sibling. Exit 3 never enters quota fallback:
 stop and name the tool that needs sign-in. On exit 4,
@@ -408,7 +406,7 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/rev-preflight.sh --scope "$REV_SCOPE" --write "$FA
   --quota-failed-seat "$SEAT"
 ```
 
-Before switching the active session to `FALLBACK_S`, require its `scope.env`, `files.txt`, and `untracked.txt` to byte-match the files in `PARENT_S`. Require a nonempty parent evidence manifest and require the generated roster to identify every temporary
+Before switching the active session to `FALLBACK_S`, run `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh "$FALLBACK_S" inherit-breaker "$PARENT_S"` so the review-origin window carries over, then require its `scope.env`, `files.txt`, and `untracked.txt` to byte-match the files in `PARENT_S`. Require a nonempty parent evidence manifest and require the generated roster to identify every temporary
 substitution. Set `FALLBACK_LABEL` to a fresh label, rebuild `FALLBACK_EVIDENCE_ARGS` from that roster's assignments, build `FALLBACK_LAUNCHED_SEATS` from every seat in the fresh roster, and prepare its fresh full-panel evidence manifest without launching:
 
 ```bash
@@ -425,7 +423,7 @@ LAUNCHED_SEATS=$FALLBACK_LAUNCHED_SEATS
 
 Run this comparison before rendering prompts, writing fan-out state, or launching a reviewer. It binds the base and snapshot trees, scope, and paths, including same-path tracked, staged, and untracked content. A failure stops fallback. Restart every assignment with that roster under a fresh full-panel label;
 discard every result from the quota-failed label even when it was valid. Never use a repair child for quota fallback.
-The quota fallback panel is the only permitted full-panel restart for this panel generation. If a hard audit failure occurs in the fallback panel, stop without a repair or another fallback.
+The quota fallback panel is the only permitted full-panel restart for this panel generation. An exit-4 quota substitution never uses a replacement child; a later hard audit inside the fallback panel follows the replacement rule.
 If the new roster cannot replace the quota-failed lab,
 if a fallback seat itself reports quota, or if any source identity changed, stop. The
 next review run probes the preferred providers again because fallback never mutates
@@ -435,7 +433,7 @@ partial stream and log for diagnosis.
 
 Exit 7 is local attempt exhaustion, not provider quota. Preserve valid siblings and stop the panel without substitution or a repair child.
 
-Retain each completed valid result. Triage completed valid results as they arrive, but do not edit until the receipt seals. If a provider execution fails twice, preserve its siblings. With at least three valid reviewers, run at most the existing one-seat coverage repair for a missing semantic bundle; otherwise report the panel incomplete. Do not create a replacement generation for execution or audit compliance failures. A hard audit failure never enters coverage repair.
+Retain each completed valid result. Triage completed valid results as they arrive, but do not edit until the receipt seals. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure. An eligible seat is another enforced (non-Agent) roster seat, and the failed assignment needs a recorded terminal failure: its archived `r<N>-<seat>.audit-invalid.json`, or an exact retry that also exited 1 or 2. Prepare the child with `${CLAUDE_PLUGIN_ROOT}/scripts/rev-evidence.py prepare "$S" "<N>x" --phase repair --assignment "$EXECUTOR=$PARENT_BUNDLE" --parent-assignment "<N>:$FAILED_SEAT"`, which refuses an ineligible executor, a parent with no recorded terminal failure, and a second replacement in the panel. Render it with the per-seat form above, record `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh "$S" phase=repair round=<N>x "seats=[\"$EXECUTOR\"]"`, launch it, and seal with `REPLACEMENT_ARGS=(--replacement "$FAILED_SEAT=<N>x")`. Discovery uses the same rule, and the child has full scope. With no eligible seat, a second failed assignment in the panel, or a failed replacement, the panel is incomplete: ask the user, and never start a new session for it.
 
 After every assigned seat has a valid result, certify discovery after its complete simplicity panel.
 For risk and verification, certify only after the complete four-bundle panel is
@@ -563,13 +561,13 @@ edit the working tree while seats run.
 | seat exit | action |
 |---|---|
 | `0` | done |
-| `1` or `2` with no invalid read audit | retry that seat once immediately at the same maximum effort while siblings continue; still failing means the configured panel is incomplete |
-| hard evidence-audit failure | stop the panel; preserve its diagnostics; do not relaunch that label |
+| `1` or `2` with no invalid read audit | retry that seat once immediately at the same maximum effort while siblings continue; still failing gets the one replacement below |
+| hard evidence-audit failure | keep siblings running; never relaunch that seat under that label. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure. |
 | `3` | cancel pending siblings, stop the run, and tell the user which tool needs sign-in |
 | `4` | cancel pending siblings, stop the run, and name the usage or rate-limit blocker |
 
-A round needs **three or more** seats' output. With fewer, stop and say so. An
-adaptive `<N>x` coverage repair and the default one-seat plan panel are the only exceptions. Never fall
+A round needs **three or more** seats' output. With fewer, stop and say so.
+An `<N>x` replacement and the default one-seat plan panel are the only exceptions. Never fall
 back to reviewing the diff yourself and calling it reviewed. Padding guarantees three
 seats were *launched*, so this rule is now about seats that failed, not seats that were
 never there.
@@ -607,7 +605,7 @@ there is no accepted fix or every accepted fix is a P3 or one-line P2. Repeat it
 when verification accepts a new P0/P1 root cause or another nontrivial cluster.
 The plan panel runs after triage and before any edit of the working tree.
 When the plan panel is skipped, append a line beginning `Plan panel r<N>p - SKIPPED: <reason>` to `$S/findings.md` before `phase=fix`.
-`rev-state.sh` refuses `phase=fix` for code round `<N>` while `open.P0 + open.P1 + open.P2` is above zero, unless that skip line exists or every seat recorded by `phase=plan round=<N>p` has `r<N>p-<seat>.json` and a `0` exit.
+`rev-state.sh` refuses `phase=fix` for code round `<N>` while `open.P0 + open.P1 + open.P2` is above zero, unless that skip line exists or every seat recorded by `phase=plan round=<N>p`, or by its `<N>px` replacement panel, has `r<label>-<seat>.json` and a `0` exit.
 An incomplete plan panel is not a skip: stop the run incomplete before any edit.
 
 Why: over 11 past runs, 56% of all findings (68% from round 5 on) were fixes of an
@@ -720,10 +718,7 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    source packets, finding citations, and every cluster search and source proof. It
    never writes a receipt or advances `coverage-head.json`. An individual provider
    execution failure with no invalid read audit retains valid sibling results and may
-   retry only that seat once with its exact prompt, assignment, model, and effort. A
-   hard plan read-audit failure stops the panel before another paid launch. If a plan seat exhausts its exact provider retry,
-   preserve every completed sibling and partial stream, then report the configured
-   plan panel incomplete. Do not broaden a specialist to full scope or replace the
+   retry only that seat once with its exact prompt, assignment, model, and effort. A failed plan seat, after its exact retry for an execution failure or immediately for a hard plan read-audit failure, is replaced by an ordinary one-seat plan panel on another eligible seat: `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh "$S" phase=plan round=<N>px "seats=[\"$OTHER\"]"`, then `${CLAUDE_PLUGIN_ROOT}/scripts/rev-evidence.py prepare "$S" "<N>px" --phase plan --plan "$S/fix-plan.md" --plan-sha256 "$PLAN_SHA256" --assignment "$OTHER=plan-completeness" --full-seat "$OTHER"`. It keeps the schema-4 plan contract, and under `plan_seats: all` it covers every cluster with the completeness lens; preserve every completed sibling and partial stream. If the `<N>px` panel fails too, report the configured plan panel incomplete and ask the user. Do not broaden a specialist to full scope or replace the
    schema-4 task with a legacy prompt.
 3. Triage the plan findings like any others (verify against the code; ledger entries carry
    the `Cluster:` line). Amend `fix-plan.md` in place: add the sites the panel found, split
@@ -736,7 +731,7 @@ commits implement - nothing outside it lands this round.
 
 ### Fix
 
-`${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=fix`. Run the test named in
+`${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=fix`. `phase=fix` also counts, for each code round with a sealed receipt, the chosen citations that land on lines this review changed since its first receipt, and refuses once two rounds since the last acknowledgement have a nonzero count. Ask the user before anything else, and recommend that they revert the cited review changes and defer the originating findings. Record the decision with `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh "$S" review_origin_ack=<N>` and put the outcome in the report. Numeric, stack and legacy rounds have no receipt and are not counted. Run the test named in
 Prediction before the fix exists and watch it fail, once per cluster's Prediction,
 not once for the round. Record the observed failure line in fix-plan.md beside the
 Prediction it belongs to: a failure whose message does not match the Prediction is a
@@ -824,14 +819,7 @@ performance, tests, observability, maintenance, and regression. Keep the same ev
 rules and the same maximum effort in every bundle.
 
 One four-bundle verification panel reviews the latest material state: directly after
-discovery when no nontrivial fix follows, or after the latest nontrivial fix. After a
-risk or verification panel returns at least three valid reviewers, compute coverage
-from valid outputs for any roster size; run every missing bundle as an `<N>x` repair
-on a distinct surviving seat before certification. A coverage repair is one seat, so
-the three-reviewer minimum does not apply. Do not certify the adaptive panel until all
-four bundles have valid results. Set `REPAIR_SEATS` to exactly the seats launched for
-that repair, then record `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=repair round=<N>x "seats=$REPAIR_SEATS"`
-immediately before launching it.
+discovery when no nontrivial fix follows, or after the latest nontrivial fix. Do not certify an adaptive panel until every assignment has a valid result, its own or its one replacement's. A certified risk or verification panel therefore has all four bundles. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure. A replacement is one seat, so the three-reviewer minimum does not apply.
 
 An explicit numeric override exclusively uses the legacy numbered code-panel schedule below.
 Conditional plan panels are extra and do not count toward the requested total.
@@ -995,8 +983,8 @@ loop stops early, the last relayed line says why.
 
 | Failure | Action |
 |---|---|
-| seat exit 1 or 2 with no invalid read audit | retry that seat once immediately at the same maximum effort; still failing leaves the configured panel incomplete |
-| hard evidence-audit failure | stop the panel; preserve its diagnostics; do not relaunch that label |
+| seat exit 1 or 2 with no invalid read audit | retry that seat once immediately at the same maximum effort; still failing gets the one replacement |
+| hard evidence-audit failure | keep siblings running; never relaunch that seat under that label. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure. |
 | seat exit 3 | cancel pending siblings; stop; report which tool needs sign-in |
 | seat exit 4 | cancel pending siblings; stop; report the usage or rate-limit blocker |
 | fewer than 3 seats in a code round | stop; say so; do not self-review |
