@@ -38,20 +38,22 @@ audit can see in full.
 
 ### Credit rule (new, enforced)
 
-A call that raises any violation, fatal or advisory, earns nothing. It gets no source range, no
-patch-chunk, packet, segment, or evidence-index proof, and no citation. Pacing codes are the one
-exception, described below. `direct_source_range` is capped at `READ_LINES`, as `limiter_range`
-already is.
+A call that raises a call-local violation, fatal or advisory, earns nothing: no source range, no
+patch-chunk, packet, segment or evidence-index proof, and no citation.
+`tool-turn-output-too-large` is turn-local, so every proof-producing call in the overflowing turn
+earns nothing. The rule matters for size codes. An oversized output may not have reached the model
+in full, because providers truncate what they show, so the bytes in the transcript do not prove the
+model read them. With this rule, softening a code can never make an incomplete review complete,
+because completeness still has to be proved by calls that raise no violation.
 
-The rule matters for size codes. An oversized output may not have reached the model in full,
-because providers truncate what they show. The bytes in the transcript do not prove the model read
-them. With this rule, softening a code can never make an incomplete review complete, because
-completeness still has to be proved by calls that raise no violation.
+Two kinds of code revoke nothing. Global advisories (`evidence-read-order`,
+`repository-expansion-call-limit`, `missing-evidence-index`) are counts over the whole transcript,
+not facts about one call. Pacing codes are the other kind, described next.
 
 Pacing codes (`patch-chunk-batch-too-large`, `required-source-segment-batch-too-large`,
 `evidence-proof-batch-too-large`, `source-packet-batch-too-large`) are counted after the fact,
 over reads that were each byte-proved on their own. A pacing code does not remove credit from
-those reads. It is the only exception to the credit rule.
+those reads. Pacing codes and the global advisories are the exceptions to the credit rule.
 
 ### Safety ordering
 
@@ -62,11 +64,21 @@ always reports `unsupported-shell-command` and cannot hide behind a shape code.
 ### Pinned dependencies
 
 `path-outside-scope` stays fatal. It is the admission control against reading secrets. The
-sanctioned root for pinned dependency source is `REV_DEPS_DIR`, which the audit already honours
-(`allowed_roots`). If the reviewed repository has a `Cargo.lock` and `REV_DEPS_DIR` is unset,
-preflight records `$CARGO_HOME/registry/src` (default `~/.cargo/registry/src`) in `scope.env`,
-provided that directory exists. `rev-seat.sh` exports it for every seat. Prompt step 6 names that
-directory as the only place for pinned-dependency reads. Run 3's reads fall inside it.
+sanctioned root for pinned dependency source is `REV_DEPS_DIR`. The audit already honours it, and
+it accepts the resolved target of each child (`allowed_roots`). If the reviewed repository has a
+`Cargo.lock` and `REV_DEPS_DIR` is unset, `rev-evidence.py prepare` builds a per-crate view,
+`$S/deps/<name>-<version>`, as one symlink per registry `[[package]]` with a checksum, pointing at
+`$CARGO_HOME/registry/src/<index>/<name>-<version>`. It builds the view from the Cargo.lock in that
+panel's snapshot, so a review that edits the lockfile gets a fresh view on its next panel. The
+manifest records the view. `rev-seat.sh` passes it as `--deps`. For online seats too, the prompt
+uses rev-prompt.sh's existing per-crate view paragraph ("never the cargo registry itself"). Reads
+of a pinned crate pass whether they go through the link or the resolved registry path. Other cached
+versions stay `path-outside-scope`. A user-supplied `REV_DEPS_DIR` is honoured as it is today.
+
+Batch operands: before an advisory batch code (`unsupported-source-batch`,
+`source-batch-lines-too-large`, `overlapping-source-batch`) is recorded, every path operand is
+checked for scope and session artifacts. A sibling prompt, result or ledger path anywhere in a batch
+raises `unnamed-session-artifact`, which is fatal.
 
 ## Classification
 
@@ -109,9 +121,8 @@ fatal list in the test file. A new code with no classification then fails the su
 
 - Run 2: tool-output-too-large and tool-turn-output-too-large become advisories. The oversized
   call earns nothing. The seat is valid only if its other calls prove completeness.
-- Run 3: with `REV_DEPS_DIR` set to the registry, the registry reads are in scope. The `ls -d` glob
-  must resolve inside that root, or the implementation must treat a listing (`ls -d`, no content
-  output) there as in scope.
+- Run 3: the pinned `miden-client` and `miden-protocol` crates are in the per-crate view, so their
+  bounded reads are in scope. An `ls -d` whose glob resolves only to view targets is in scope.
 - Run 1: already fixed in 0.5.1.
 
 ## Contract text
@@ -121,8 +132,9 @@ clauses in the same paragraph with:
 
 > A seat's evidence read audit with status `invalid` is a hard evidence-audit failure. A valid
 > audit may carry advisories: these never discard the review, stay visible in the receipt, and
-> never earn credit. A call that raises any violation, except a pacing count, proves no range, no
-> patch chunk, packet or segment, and no citation.
+> never earn credit. A call that raises a call-local violation, and every proof call in a turn
+> that overflows the turn ceiling, proves no range, no patch chunk, packet or segment, and no
+> citation. Pacing counts and whole-transcript counts revoke nothing.
 
 Prompt step 6 names `REV_DEPS_DIR` (when set) as the only directory for pinned-dependency reads.
 
@@ -138,7 +150,9 @@ relies on substring greps.
    with the code only in `advisories`.
 2. The credit rule on every proof surface: an oversized or batch-violating read that is the only
    proof of a patch chunk, a packet, a required segment, or a citation leaves that proof missing.
-   A Read of 2000 lines earns at most `READ_LINES` lines.
+   A 2000-line Read of a repository path raises unbounded-read and earns no range. A clean full read
+   of a prompt-named document earns its entire range. A turn with two 20 KiB proof reads overflows,
+   and neither read earns credit.
 3. Pacing: an over-limit batch of individually exact chunk or segment reads is valid, with only
    the pacing code in `advisories`. The same batch with one chunk altered is invalid with the
    completeness code for that evidence type.
@@ -148,10 +162,18 @@ relies on substring greps.
    interpreter, and a batch containing `python3 -c` each report `unsupported-shell-command`.
 6. Independence stays fatal: reading a sibling `r<N>-<seat>.json`, a sibling prompt, or
    `findings.md` gives unnamed-session-artifact, and the audit is invalid.
-7. Dependencies: a bounded read under `REV_DEPS_DIR` is valid. The same read under another home
-   directory path gives path-outside-scope (fatal). Preflight writes the registry root to
-   `scope.env` only when `Cargo.lock` exists.
-8. Catalog: every emitted code is classified.
+7. Dependencies:
+   - A bounded read of a pinned crate, through the view link and through the resolved registry
+     path, is valid.
+   - A read of another cached version of the same crate gives path-outside-scope.
+   - A repository with no Cargo.lock gets no view.
+   - A lockfile edit between panels changes the next manifest's view.
+   - A batch mixing clean reads with one sibling-result operand is invalid with
+     unnamed-session-artifact.
+   - A mixed batch containing `python3` plus otherwise complete proofs is invalid with
+     unsupported-shell-command.
+8. Catalog: every emitted code belongs to exactly one of the documented advisory and fatal sets,
+   and `ADVISORY_CODES` equals the documented advisory set.
 
 Mutation check: re-hardening or over-softening any single code, or removing the credit guard,
 fails at least one test.
