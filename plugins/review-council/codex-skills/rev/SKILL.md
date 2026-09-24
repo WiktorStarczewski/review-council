@@ -603,8 +603,8 @@ the subset the diff suggests, and record the result in the ledger. Then run
 rev-mutate.sh over the changed hunks before committing: revert each hunk alone and
 confirm a test notices, and compare what failed against the cluster's Prediction:
 `$PLUGIN/scripts/rev-mutate.sh "$S" "<the test command>"`. Commit only when within
-the user's requested workflow, with `fix(rev): <finding IDs> <concrete change>` and no unrelated
-files. Review commits are never squashed: each fix is its own commit, and its subject names the finding IDs it closes, never the round. Record uncommitted fixes accurately when commits were not requested.
+the user's requested workflow, one commit per cluster, with `fix(rev): <finding IDs> <concrete change>` and no unrelated
+files. Review commits are never squashed: each fix is its own commit, and its subject names the finding IDs it closes, never the round. Finding IDs are unique within the session and never reused. Record uncommitted fixes accurately when commits were not requested.
 Read-only runs skip all fix, commit, push, and post-report editing steps.
 
 For review-council self-hosting, use tiered verification: run an 8-30 second focused

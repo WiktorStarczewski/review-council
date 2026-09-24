@@ -701,7 +701,7 @@ are accepted only when a versioned roster policy already records their exact has
 3. accepted, fixed, rejected, and deferred findings, sorted by severity;
 4. panel, bundle, lens, and changed-file coverage;
 5. baseline and final project gates;
-6. commits, squash, and push status when those actions were authorized;
+6. one line per fix commit, and push status when that action was authorized;
 7. residual risk and anything that still deserves human attention.
 
 The report states late P0 findings plainly. A degraded verdict opens with its exact

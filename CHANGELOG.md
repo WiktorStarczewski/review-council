@@ -6,9 +6,17 @@
   subject names the finding IDs it closes, for example `fix(rev): F-012, F-019 re-check hold
   ownership after every parking await`, never the round. The rev skill drops the `rev-squash.sh`
   step after the loop, the Codex copy drops the authorized squash, and the stack finisher now
-  defaults to `NO_SQUASH=1` on Claude Code as it already did on Codex. `NO_SQUASH=0` still opts a
-  stack into collapsing each repository's run with `rev-squash.sh`. The finding-to-commit mapping is
-  the audit trail; a PR's own squash-merge still collapses the commits on the target branch.
+  defaults to `NO_SQUASH=1` on Claude Code as it already did on Codex. `NO_SQUASH=0` is kept as a
+  legacy opt-in that collapses each repository's run with `rev-squash.sh` and discards the mapping.
+  The finding-to-commit mapping is the audit trail; a PR's own squash-merge still collapses the
+  commits on the target branch. The Commit step now stages and commits each cluster on its own,
+  the round record lists one SHA per fixed cluster, and finding IDs are unique within a session.
+
+- Stack PR-review finalization kept rewriting every fix link to the pushed head, as if the fixes had
+  been squashed. With unsquashed commits (the new default, and Codex's before it) a stack rendered
+  under `NO_PUSH=1` and pushed later collapsed every fix row onto the tip commit. A fix link is now
+  remapped only when its commit is no longer in the pushed head's history, which is what a squash
+  does; otherwise it keeps its own SHA.
 
 ## 0.5.3
 

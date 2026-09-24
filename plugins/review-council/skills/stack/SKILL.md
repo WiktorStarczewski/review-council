@@ -1,6 +1,6 @@
 ---
 name: stack
-description: Run the /review-council:rev multi-model review across a STACK of related PRs in several repos - per-PR legs in dependency order, two passes, a cross-repo seam review, a completeness critic, stall recovery, and one squashed review commit per repo. Use when one change spans multiple repositories that must be reviewed together (a protocol change plus the SDK, client and app PRs that consume it), or when a review must run unattended for many hours. For a single PR or branch, use /review-council:rev directly.
+description: Run the /review-council:rev multi-model review across a STACK of related PRs in several repos - per-PR legs in dependency order, two passes, a cross-repo seam review, a completeness critic, stall recovery, and one push per repo with review commits kept one per fix. Use when one change spans multiple repositories that must be reviewed together (a protocol change plus the SDK, client and app PRs that consume it), or when a review must run unattended for many hours. For a single PR or branch, use /review-council:rev directly.
 user_invocable: true
 ---
 
@@ -138,15 +138,15 @@ re-run it idle before touching code.
 Each leg commits one fix per commit, and the orchestrator pushes each repo once with
 those commits intact: review commits are never squashed, because the finding-to-commit
 mapping is the audit trail. `NO_SQUASH=1` is the default on both hosts; `NO_SQUASH=0`
-opts back into collapsing each repo's run with `${CLAUDE_PLUGIN_ROOT}/scripts/rev-squash.sh --apply`,
-and a refused squash is then logged (`!!! squash refused for <repo>`) while the push
+is a legacy opt-in that collapses each repo's run with `${CLAUDE_PLUGIN_ROOT}/scripts/rev-squash.sh --apply`
+and discards that mapping; a refused squash is then logged (`!!! squash refused for <repo>`) while the push
 still happens. Before pushing, the orchestrator reconciles the validated upstream tracking ref from
 the captured literal push URL. After a pinned push succeeds, it records the immutable
 pushed commit in that ref before checking whether the local branch moved. A retry can
 therefore recognize remote success without rewriting an already-pushed review commit.
 
 After every completed repository is pushed successfully, `stack.sh` follows
-`docs/pr-review.md`: a changed-head squash must preserve the inspected tree, decision
+`docs/pr-review.md`: unsquashed fix commits keep their own links, and a changed-head squash (`NO_SQUASH=0`) must preserve the inspected tree, decision
 links and reviewed-PR fix links are mapped to the pushed aggregate commit, the
 canonical body is rendered again, and only then is the latest completed review for
 each canonical repository published. Separate-PR fix links stay pinned. A pushed

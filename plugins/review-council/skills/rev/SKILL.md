@@ -770,8 +770,9 @@ failure blocks the paid run.
 ### Commit
 
 `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=commit`. Only after verification
-passes, and only if the round changed files. Stage what the round touched (never `git
-add -A` blindly; the session dir is outside the repo). No push. Never `--amend`, never
+passes, and only if the round changed files. Commit each cluster on its own: stage exactly
+that cluster's changes (never `git add -A` blindly; the session dir is outside the repo)
+and commit them. No push. Never `--amend`, never
 `--no-verify`, never force. No AI attribution of any kind. Review commits are never squashed: each fix is its own commit, and its subject names the finding IDs it closes, never the round. One cluster is one fix.
 
 ```
@@ -786,7 +787,7 @@ Then `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S last_commit=<sha> fixed=<tot
 ### Record
 
 Append a round block to `findings.md`: seats and efforts used, lenses, new findings
-by severity, fixed/rejected/deferred counts, verification result, commit SHA (or
+by severity, fixed/rejected/deferred counts, verification result, one commit SHA per fixed cluster with its finding IDs (or
 "no changes"). Tell the user in two or three sentences: round number, seats, new
 findings by severity, what was fixed, gate status, commit.
 
@@ -998,7 +999,8 @@ Verified: yes - handler.ts:88, no status check before retry.
 Action:   Fixed in round 3 (a1b2c3d) - retry only on 5xx and network errors.
 ```
 
-Status ∈ `OPEN | FIXED | REJECTED (reason) | DEFERRED (reason)`. Every finding ends
+Finding IDs are unique within the session and never reused, so a commit subject names its
+findings without the round. Status ∈ `OPEN | FIXED | REJECTED (reason) | DEFERRED (reason)`. Every finding ends
 in one of them; never drop one silently. Round blocks append after the entries.
 
 ## PR review publication

@@ -136,7 +136,8 @@ RSEOF
     assert_grep "report written" "$ROOT/leg1/report.md" 'report'
     assert_grep "phase 2 skipped when unset" "$LOG" 'PHASE 2 skipped'
     assert_grep "phase 3 skipped when unset" "$LOG" 'PHASE 3 skipped'
-    assert_grep "finish runs squash" "$LOG" 'review commit\(s\) at tip'
+    assert_grep "finish keeps review commits by default" "$LOG" 'NO_SQUASH=1: keeping review commits'
+    assert_nogrep "finish does not squash by default" "$LOG" 'review commit\(s\) at tip'
     assert_grep "no push honoured" "$LOG" 'NO_PUSH=1'
     assert_grep "no-push stack suppresses external review publication" "$LOG" \
       'NO_PUSH=1: not publishing PR reviews'
@@ -843,7 +844,7 @@ SH
       SHIM_MODE=ok "$RS/stack.sh" "$T/stack.cfg" > "$T/stack8.out" 2>&1 )
     assert_grep "runs with no REV_SCRIPTS set" "$T/stack8.log" 'ALL PHASES COMPLETE'
     assert_grep "the sibling roster is the default" "$T/roster-args-sibling" '^--brief$'
-    assert_grep "the sibling squash is the default" "$T/stack8.log" 'review commit\(s\) at tip'
+    assert_grep "the sibling squash runs when opted in" "$T/stack8.log" 'review commit\(s\) at tip'
   )
 }
 
