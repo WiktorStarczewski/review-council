@@ -174,6 +174,12 @@ test_prompt_evidence_contract() {
         'in your reasoning, never as a comment inside the command'
       assert_grep "$seat prompt warns that head bounds lines, not bytes" "$prompt" \
         '`head` limits lines, not bytes'
+      assert_grep "$seat prompt forbids interpreters and inline scripts" "$prompt" \
+        'Never run an interpreter or inline script \(`node`, `python3`, `bash -c`, `eval`\)'
+      assert_grep "$seat prompt reports an execution-only claim instead of running code" "$prompt" \
+        'say in the finding that it is unverified at runtime'
+      assert_grep "$seat prompt states that a bad chunk read fails the review" "$prompt" \
+        'A skipped, partial, repeated, or out-of-order chunk read fails your whole review'
       assert_grep "$seat prompt never counts another revision as source" "$prompt" \
         '`git show` of the base or any other revision is context only and never satisfies a required read or a citation'
       assert_grep "$seat prompt stops answered evidence paths" "$prompt" 'Stop that evidence path when the question is answered'

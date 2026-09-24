@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.3
+
+- The reviewer prompt now says that running an interpreter or an inline script (`node`, `python3`,
+  `bash -c`, `eval`) fails the whole review, because the read-only policy refuses it. Test runners
+  on existing files (`npx tsc --noEmit`, `cargo test`) are the only execution allowed. A claim that
+  can only be settled by running new code stays a finding, marked unverified at runtime. It also
+  says that a skipped, partial, repeated, or out-of-order patch chunk read fails the review. On
+  web-sdk PR 418 both mistakes, one per codex seat, cost the final verification panel its
+  security bundle: the seat's replacement ran `node -e` to test a TypeScript hypothesis.
+
 ## 0.5.2
 
 - A seat's read audit now fails only on codes that mean the review cannot be shown complete, cannot
