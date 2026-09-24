@@ -99,19 +99,23 @@ PY
 ) || REV_DEPS_DIR=""
 fi
 [ -z "${REV_DEPS_DIR:-}" ] || export REV_DEPS_DIR
+REPLACE_RULE="replace this assignment on another eligible seat; never relaunch this seat under this label"
 preserve_audit_invalid_result() {
   if [ -s "$OUT" ]; then mv -f "$OUT" "$AUDIT_INVALID_OUT"
   else rm -f "$OUT" "$AUDIT_INVALID_OUT"
   fi
 }
-stop_panel_generation() {
-  python3 "$HERE/lib/rev-attempt.py" stop "$SESSION" "$ROUND" --reason "hard evidence audit failed" >>"$LOG" 2>&1
-}
 
+RESERVED=0
 finish() {  # <code> - validate on 0, record, print the one-line summary, exit
   local code=$1 n="-"
   if [ "$code" = 0 ]; then n=$(python3 "$VALIDATE" "$OUT" 2>>"$LOG") || { code=2; n="-"; }; fi
   echo "$code" > "$EXITF"
+  # A launch that reserved a call records its exit, so an exhausted exact retry is on record.
+  if [ "$RESERVED" = 1 ]; then
+    python3 "$HERE/lib/rev-attempt.py" record "$SESSION" "$ROUND" "$SEAT" "$PROMPT" "$code" >>"$LOG" 2>&1 \
+      || echo "cannot record this launch's exit" >> "$LOG"
+  fi
   echo "seat=$SEAT round=$ROUND exit=$code findings=$n"
   exit "$code"
 }
@@ -152,16 +156,6 @@ has_tool_call() {
 # one WITHOUT reading anything, even when the prompt says to run tools first (seen live: summary "I'll
 # inspect the diff…", zero findings, zero tool calls). An answer with no tool calls is not a review: retry
 # once at the same effort, then fail the seat so the orchestrator's retry/skip rule applies.
-PANEL_CHECK_ERROR=$(python3 "$HERE/lib/rev-attempt.py" check "$SESSION" "$ROUND" 2>&1)
-PANEL_CHECK_RC=$?
-if [ "$PANEL_CHECK_RC" -eq 2 ]; then
-  echo "$PANEL_CHECK_ERROR" >> "$LOG"
-  printf 'rev-seat: %s\n' "$PANEL_CHECK_ERROR" >&2
-  finish 2
-elif [ "$PANEL_CHECK_RC" -ne 0 ]; then
-  echo "cannot validate panel attempt state" >> "$LOG"
-  finish 1
-fi
 rm -f "$EXITF"
 attempt=0
 while :; do
@@ -172,12 +166,14 @@ while :; do
   if [ "$reserve_rc" -ne 0 ]; then
     restore_raw || { echo "cannot restore prior stream after reservation refusal" >> "$LOG"; finish 1; }
     [ -z "$reserve_error" ] || printf 'rev-seat: %s\n' "$reserve_error" >&2
+    [ -z "$reserve_error" ] || printf '%s\n' "$reserve_error" >> "$LOG"
     if [ "$reserve_rc" -eq 7 ]; then
       echo "persistent provider-call cap reached for this seat generation" >> "$LOG"
       echo "rev-seat: persistent provider-call cap reached for this seat generation" >&2
     fi
     finish "$reserve_rc"
   fi
+  RESERVED=1
   rm -f "$OUT" "$AUDITF"
   [ "$attempt" -ne 1 ] || : > "$LOG"
   "$ADAPTER_SH"; rc=$?
@@ -232,22 +228,19 @@ PY
   )
   AUDIT_META_RC=$?
   if [ "$AUDIT_META_RC" -ne 0 ]; then
-    echo "bounded-read audit metadata is missing, malformed, or inconsistent" >> "$LOG"
+    echo "bounded-read audit metadata is missing, malformed, or inconsistent; $REPLACE_RULE" >> "$LOG"
     preserve_audit_invalid_result
-    stop_panel_generation || echo "cannot persist panel hard-stop state" >> "$LOG"
     finish 2
   fi
   if [ "$AUDIT_RC" -ne 0 ]; then
     case "$AUDIT_SCOPE" in
       full)
-        echo "bounded-read audit rejected full-scope evidence review; stop the panel before another reviewer launch" >> "$LOG"
+        echo "bounded-read audit rejected full-scope evidence review; $REPLACE_RULE" >> "$LOG"
         preserve_audit_invalid_result
-        stop_panel_generation || echo "cannot persist panel hard-stop state" >> "$LOG"
         finish 2;;
       narrow)
-        echo "bounded-read audit rejected narrowed review; stop the panel before another reviewer launch" >> "$LOG"
+        echo "bounded-read audit rejected narrowed review; $REPLACE_RULE" >> "$LOG"
         preserve_audit_invalid_result
-        stop_panel_generation || echo "cannot persist panel hard-stop state" >> "$LOG"
         finish 2;;
       legacy)
         echo "bounded-read audit found violations in a legacy review; result retained as advisory" >> "$LOG";;

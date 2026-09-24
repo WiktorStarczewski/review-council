@@ -163,9 +163,6 @@ t-read-bounds.sh::test_grok_visible_output_accounting	3	normal
 t-read-bounds.sh::test_implicit_turn_output_cap	3	normal
 t-read-bounds.sh::test_isolated_home_startup_cleanup	3	normal
 t-read-bounds.sh::test_narrow_seat_refuses_invalid_audit	3	normal
-t-read-bounds.sh::test_session_audit_stop_crosses_panel_labels	3	normal
-t-read-bounds.sh::test_session_audit_stop_recognizes_legacy_read_audit	3	normal
-t-read-bounds.sh::test_session_audit_stop_survives_partial_marker_state	3	normal
 t-read-bounds.sh::test_ordered_evidence_phase_validator	3	normal
 t-read-bounds.sh::test_ordered_proof_turn_exemption	3	normal
 t-read-bounds.sh::test_read_audit_binds_delivered_output	3	normal
@@ -238,7 +235,6 @@ t-seat-claude.sh::test_seat_claude_cli_scrubs_parent_session	1	normal
 t-seat.sh::test_seat_codex	1	normal
 t-seat.sh::test_seat_process_group_cancellation_preserves_partial_stream	4	exclusive
 t-seat.sh::test_seat_rejects_retired_grok_adapter	1	normal
-t-seat.sh::test_session_audit_stop_serializes_reservations	1	normal
 t-seat2.sh::test_seat_classify_exec	1	normal
 t-skill.sh::test_skill_contract	1	normal
 t-squash.sh::test_squash	1	normal
@@ -326,3 +322,5 @@ t-plan.sh::test_prompt_names_dependency_root	1	normal
 t-read-bounds.sh::test_audit_credit_reassessment_terminates	3	normal
 t-read-bounds.sh::test_audit_severity_global_advisories_revoke_nothing	2	normal
 t-read-bounds.sh::test_audit_severity_batch_operands_are_scoped	2	normal
+t-read-bounds.sh::test_hard_audit_latch_is_per_label_and_seat	1	normal
+t-read-bounds.sh::test_seat_records_launch_exits	1	normal
