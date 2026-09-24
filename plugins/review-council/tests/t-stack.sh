@@ -120,7 +120,7 @@ RSEOF
     assert_nogrep "roster brief is not echoed" "$T/stack.out" 'review-council seats:'
     assert_grep "leg marked stack" "$T/claude-args" '^REV_STACK_LEG=1$'
     assert_grep "leg inherits no-push mode" "$T/claude-args" '^NO_PUSH=1$'
-    assert_grep "leg inherits no-squash mode" "$T/claude-args" '^NO_SQUASH=0$'
+    assert_grep "leg keeps review commits by default" "$T/claude-args" '^NO_SQUASH=1$'
     assert_grep "leg runs in the repo" "$T/claude-args" "^cwd=$R$"
     assert_grep "leg drops the parent Claude Code session marker" "$T/claude-args" '^CLAUDECODE=unset$'
     assert_grep "leg drops the parent session id" "$T/claude-args" '^CLAUDE_CODE_SESSION_ID=unset$'

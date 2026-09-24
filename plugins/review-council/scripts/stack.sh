@@ -57,7 +57,7 @@ if [ "${REVIEW_COUNCIL_HOST:-claude}" = codex ]; then
   NO_SQUASH=${NO_SQUASH:-1}
 else
   NO_PUSH=${NO_PUSH:-0}
-  NO_SQUASH=${NO_SQUASH:-0}
+  NO_SQUASH=${NO_SQUASH:-1}
 fi
 export NO_PUSH NO_SQUASH
 REV_SCRIPTS=${REV_SCRIPTS:-$HERE}   # roster.sh, rev-status.sh and rev-squash.sh live beside this script

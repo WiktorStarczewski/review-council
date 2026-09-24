@@ -756,7 +756,7 @@ Claude Code stack legs use `claude -p`. Codex stack legs use `codex exec` with
 workspace-write for authorized fixes, network access for reviewer providers, and write
 access to the session root. Legs never launch another stack.
 
-Codex defaults to `NO_PUSH=1 NO_SQUASH=1`. Publication and history rewriting require
+Codex defaults to `NO_PUSH=1 NO_SQUASH=1`; Claude Code defaults to `NO_SQUASH=1` as well, so review commits stay one per fix on both hosts. Publication and history rewriting require
 the caller's existing authorization. A failed repository is skipped entirely during
 stack finishing.
 
@@ -865,7 +865,7 @@ where sessions are discovered so a test can own the state it reads.
 | no usable external CLI | can run a visibly degraded Agent panel | refuses |
 | session startup policy | plugin hook | native skill discovery |
 | stack leg | `claude -p` | `codex exec` |
-| stack finishing default | config-controlled | local and unsquashed |
+| stack finishing default | push, unsquashed | local and unsquashed |
 
 Both hosts share the roster, evidence, schema, adapters, ledgers, status, profiling,
 and receipt implementation.

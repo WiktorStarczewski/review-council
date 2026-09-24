@@ -849,3 +849,14 @@ raise SystemExit(1 if problems else 0)
 PY
   assert_eq "both skills state one replacement rule and the review-origin breaker" "$?" 0
 }
+
+test_skill_keeps_one_commit_per_fix() {
+  ( local rule="Review commits are never squashed: each fix is its own commit, and its subject names the finding IDs it closes, never the round."
+    assert_flat_fixed "rev skill keeps one commit per fix" "$SK/skills/rev/SKILL.md" "$rule"
+    assert_flat_fixed "codex skill keeps one commit per fix" "$SK/codex-skills/rev/SKILL.md" "$rule"
+    assert_nogrep "rev skill no longer squashes after the loop" "$SK/skills/rev/SKILL.md" 'rev-squash\.sh --apply'
+    assert_nogrep "codex skill no longer squashes when authorized" "$SK/codex-skills/rev/SKILL.md" 'rev-squash\.sh` dry-run'
+    assert_nogrep "rev commit example carries no round" "$SK/skills/rev/SKILL.md" 'fix\(rev\): round'
+    assert_grep "rev commit example names finding IDs" "$SK/skills/rev/SKILL.md" '^fix\(rev\): F-012, F-019 '
+    assert_nogrep "stack skill no longer squashes per repo" "$SK/skills/stack/SKILL.md" 'one squash \+ one push per repo' )
+}

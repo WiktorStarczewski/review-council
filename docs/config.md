@@ -117,7 +117,7 @@ The differences are:
   5 even with the default `min_labs: 1`.
 - Codex models are read from `$CODEX_HOME/models_cache.json` when `CODEX_HOME` is set,
   otherwise `~/.codex/models_cache.json`. The explicit cache override still wins.
-- Codex stack defaults are `NO_PUSH=1` and `NO_SQUASH=1`. Existing shell stack configs
+- Codex stack defaults are `NO_PUSH=1` and `NO_SQUASH=1`; Claude Code defaults to `NO_SQUASH=1` too. Existing shell stack configs
   can override these, so inspect them before reusing a Claude stack configuration.
 - Claude session hooks, update notices, and auto-update settings are not installed
   in Codex. Refresh the Git marketplace and reinstall, or rerun the curl installer, then start a new chat.

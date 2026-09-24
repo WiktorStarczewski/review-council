@@ -603,9 +603,9 @@ the subset the diff suggests, and record the result in the ledger. Then run
 rev-mutate.sh over the changed hunks before committing: revert each hunk alone and
 confirm a test notices, and compare what failed against the cluster's Prediction:
 `$PLUGIN/scripts/rev-mutate.sh "$S" "<the test command>"`. Commit only when within
-the user's requested workflow, with `fix(rev): <concrete change>` and no unrelated
-files. Record uncommitted fixes accurately when commits were not requested.
-Read-only runs skip all fix, commit, squash, push, and post-report editing steps.
+the user's requested workflow, with `fix(rev): <finding IDs> <concrete change>` and no unrelated
+files. Review commits are never squashed: each fix is its own commit, and its subject names the finding IDs it closes, never the round. Record uncommitted fixes accurately when commits were not requested.
+Read-only runs skip all fix, commit, push, and post-report editing steps.
 
 For review-council self-hosting, use tiered verification: run an 8-30 second focused
 test after each edit, the roughly three-minute evidence fixture after a coherent
@@ -648,10 +648,9 @@ Prompt generation warns above
 1,800 words for code and 3,000 words for plans; investigate the repeated context
 instead of silently truncating evidence.
 
-Do not squash or push unless the user authorized those actions. If authorized, use
-`rev-squash.sh` dry-run before `--apply`; a refusal leaves history intact. Push only
-the authorized branch. In `REV_STACK_LEG=1`, never squash or push; the stack controls
-those actions. If blocked in a headless leg, record `phase=blocked` and exit without
+Do not push unless the user authorized it, and never squash review commits. Push only
+the authorized branch. In `REV_STACK_LEG=1`, never push; the stack controls
+it. If blocked in a headless leg, record `phase=blocked` and exit without
 a completion receipt; do not guess approval or report success.
 
 Before completing any code review, read `$PLUGIN/docs/pr-review.md` and follow it
@@ -659,7 +658,7 @@ exactly. Write `S/pr-review.json`, render and inspect `S/pr-review.md`, and publ
 as a `COMMENTED` GitHub PR review. This applies to normal and read-only code reviews.
 A branch with no associated open PR skips cleanly. Document reviews do not post. In
 `REV_STACK_LEG=1`, prepare and render the body but leave guarded finalization, final
-rendering, and publication to the stack after its final squash and push. A completed
+rendering, and publication to the stack after its final push. A completed
 leg sets `phase=stack-ready` and writes `S/stack-report.md`, not `phase=done` or
 `S/report.md`; the stack promotes the ready receipt only after publication. A required
 publication failure writes

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.4
+
+- Review commits are no longer squashed. Each fix (one finding cluster) is its own commit, and its
+  subject names the finding IDs it closes, for example `fix(rev): F-012, F-019 re-check hold
+  ownership after every parking await`, never the round. The rev skill drops the `rev-squash.sh`
+  step after the loop, the Codex copy drops the authorized squash, and the stack finisher now
+  defaults to `NO_SQUASH=1` on Claude Code as it already did on Codex. `NO_SQUASH=0` still opts a
+  stack into collapsing each repository's run with `rev-squash.sh`. The finding-to-commit mapping is
+  the audit trail; a PR's own squash-merge still collapses the commits on the target branch.
+
 ## 0.5.3
 
 - The reviewer prompt now says that running an interpreter or an inline script (`node`, `python3`,

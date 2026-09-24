@@ -29,7 +29,7 @@ For one PR, one branch, or uncommitted work: `/review-council:rev`. Do not reach
     PHASE 1  per-PR legs, PASS 2     again - pass 1 reviewed a tree that has since changed, including by pass 1 itself
     PHASE 2  cross-repo seam review  the contracts BETWEEN the PRs
     PHASE 3  completeness critic     what did every pass miss
-    FINISH   one squash + one push per repo (skipped for a repo whose leg failed)
+    FINISH   one push per repo, review commits kept one per fix (skipped for a repo whose leg failed)
 
 **Pass 2 is not redundant.** In the run this skill was built from, pass 2 found that a
 change landing after pass 1 had invalidated a security assumption documented on the
@@ -133,14 +133,14 @@ under sweep load, a "hung" suite that was debug-mode proving, and an E2E spec dy
 `Deadline expired`. Any failure whose text mentions a timeout or deadline is suspect:
 re-run it idle before touching code.
 
-## Finishing: squash, push, publish, then promote
+## Finishing: push, publish, then promote
 
-Each leg commits per round as crash recovery; the orchestrator collapses each repo's run
-with `${CLAUDE_PLUGIN_ROOT}/scripts/rev-squash.sh --apply` and pushes once. Squash and push are **independent**: a
-refused squash is logged (`!!! squash refused for <repo>`) and the push still happens,
-because the round commits are real work that CI has to see. If a repo prints
-"refusing: … only N unpushed", something was pushed mid-run - leave that history alone.
-Before squash, the orchestrator reconciles the validated upstream tracking ref from
+Each leg commits one fix per commit, and the orchestrator pushes each repo once with
+those commits intact: review commits are never squashed, because the finding-to-commit
+mapping is the audit trail. `NO_SQUASH=1` is the default on both hosts; `NO_SQUASH=0`
+opts back into collapsing each repo's run with `${CLAUDE_PLUGIN_ROOT}/scripts/rev-squash.sh --apply`,
+and a refused squash is then logged (`!!! squash refused for <repo>`) while the push
+still happens. Before pushing, the orchestrator reconciles the validated upstream tracking ref from
 the captured literal push URL. After a pinned push succeeds, it records the immutable
 pushed commit in that ref before checking whether the local branch moved. A retry can
 therefore recognize remote success without rewriting an already-pushed review commit.
