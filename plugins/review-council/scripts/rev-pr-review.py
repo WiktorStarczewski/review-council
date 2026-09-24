@@ -1007,7 +1007,14 @@ def replace_sha_url(url, pattern, head, field):
     return match.group(1) + head + (match.group(2) if match.lastindex == 2 else "")
 
 
-def finalized_data(data, head):
+def in_history(url, head, root):
+    match = re.search(r"/commit/([0-9a-f]{7,40})/?$", url or "")
+    return match is not None and subprocess.run(
+        ["git", "merge-base", "--is-ancestor", match.group(1), head],
+        cwd=root, capture_output=True, timeout=30).returncode == 0
+
+
+def finalized_data(data, head, root):
     updated = json.loads(json.dumps(data))
     for index, decision in enumerate(updated.get("decisions", [])):
         location = decision.get("location", {})
@@ -1016,6 +1023,10 @@ def finalized_data(data, head):
     if updated.get("fixed_in") is None:
         for index, fix in enumerate(updated.get("fixes", [])):
             commit = fix.get("commit", {})
+            # An unsquashed fix commit is still in head's history and keeps its own link;
+            # only a squash, which drops it from that history, maps it to the aggregate head.
+            if in_history(commit.get("url"), head, root):
+                continue
             label = inline(commit.get("label"), f"fixes[{index}].commit.label")
             commit["label"] = head[:min(len(label), len(head))]
             commit["url"] = replace_sha_url(
@@ -1028,7 +1039,7 @@ def stack_review_state(session, target, head):
     source_body = render(data, target["date"])
     require(body_hash(source_body) == target["source_body_sha256"],
             "structured PR review input does not match its frozen semantic render")
-    updated = finalized_data(data, head)
+    updated = finalized_data(data, head, parse_scope(session / "scope.env")["root"])
     body = render(updated, target["date"])
     output = session / "pr-review.md"
     require(output.is_file(), f"rendered PR review is missing: {output}")

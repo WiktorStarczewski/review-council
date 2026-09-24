@@ -473,7 +473,7 @@ test_skill_contract() {
       'upstream destination|destination ref'
     assert_grep "stack binds that destination to the reviewed branch" "$H" \
       'reviewed branch'
-    assert_grep "stack reconciles before squash" "$H" '[Bb]efore squash'
+    assert_grep "stack reconciles before pushing" "$H" '[Bb]efore pushing'
     assert_grep "stack reconciles the tracking ref" "$H" 'tracking ref'
     assert_grep "stack records successful pinned pushes" "$H" \
       '[Aa]fter a pinned push succeeds'
@@ -497,7 +497,7 @@ test_skill_contract() {
     assert_grep "host blocks success when required publication fails" "$H" \
       'blocks `phase=done` and `report\.md`'
     assert_grep "host leaves stack publication until after push" "$H" \
-      'final squash and push'
+      'final push'
     assert_grep "host gives stack legs a ready report" "$H" 'stack-report\.md'
     assert_grep "host gives stack legs a ready phase" "$H" 'phase=stack-ready'
     assert_grep "host keeps associated review sessions outside the checkout" "$H" \
@@ -848,4 +848,26 @@ print('\n'.join(problems))
 raise SystemExit(1 if problems else 0)
 PY
   assert_eq "both skills state one replacement rule and the review-origin breaker" "$?" 0
+}
+
+test_skill_keeps_one_commit_per_fix() {
+  ( local rule="Review commits are never squashed: each fix is its own commit, and its subject names the finding IDs it closes, never the round."
+    assert_flat_fixed "rev skill keeps one commit per fix" "$SK/skills/rev/SKILL.md" "$rule"
+    assert_flat_fixed "codex skill keeps one commit per fix" "$SK/codex-skills/rev/SKILL.md" "$rule"
+    assert_nogrep "rev skill no longer squashes after the loop" "$SK/skills/rev/SKILL.md" 'rev-squash\.sh --apply'
+    assert_nogrep "codex skill no longer squashes when authorized" "$SK/codex-skills/rev/SKILL.md" 'rev-squash\.sh` dry-run'
+    assert_nogrep "rev commit example carries no round" "$SK/skills/rev/SKILL.md" 'fix\(rev\): round'
+    assert_grep "rev commit example names finding IDs" "$SK/skills/rev/SKILL.md" '^fix\(rev\): F-012, F-019 '
+    assert_nogrep "stack skill no longer squashes per repo" "$SK/skills/stack/SKILL.md" 'one squash \+ one push per repo'
+    assert_nogrep "no rev skill invokes rev-squash" "$SK/skills/rev/SKILL.md" 'rev-squash'
+    assert_nogrep "no codex rev skill invokes rev-squash" "$SK/codex-skills/rev/SKILL.md" 'rev-squash'
+    assert_nogrep "stack skills and runner promise no squashed commit" "$SK/skills/stack/SKILL.md" 'squashed review commit|squash \+ push' -i
+    assert_nogrep "stack runner banner promises no squash" "$SK/scripts/stack.sh" 'squash \+ push per repo|post-squash' -i
+    assert_grep "stack runner defaults to keeping review commits on every host" "$SK/scripts/stack.sh" '^NO_SQUASH=\$\{NO_SQUASH:-1\}$'
+    assert_flat_fixed "rev skill commits each cluster on its own" "$SK/skills/rev/SKILL.md" "Commit each cluster on its own: stage exactly that cluster's changes"
+    assert_flat_fixed "rev skill keeps finding IDs unique" "$SK/skills/rev/SKILL.md" "Finding IDs are unique within the session and never reused"
+    assert_flat_fixed "codex skill keeps finding IDs unique" "$SK/codex-skills/rev/SKILL.md" "Finding IDs are unique within the session and never reused"
+    assert_flat_fixed "codex stack skill states the unsquashed default" "$SK/codex-skills/stack/SKILL.md" "keeps changes local and review commits one per fix"
+    assert_flat_fixed "README states the unsquashed default on both hosts" "$SK/../../README.md" "so review commits stay one per fix on both hosts"
+    assert_grep "codex doc table states the unsquashed default" "$SK/../../docs/codex.md" 'Push, keep one commit per fix' )
 }

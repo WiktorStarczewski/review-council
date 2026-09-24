@@ -1,8 +1,8 @@
 #!/bin/bash
 # stack.sh <config.sh>
 # Run /review-council:rev across a STACK of repos, unattended: per-repo legs (PASSES passes), a cross-repo seam
-# review, a completeness critic, then one squash + push per repo. Legs are headless
-# `claude -p "/review-council:rev …"` runs marked REV_STACK_LEG=1, so they never squash or push themselves.
+# review, a completeness critic, then one push per repo with the review commits kept one per fix. Legs are
+# headless `claude -p "/review-council:rev …"` runs marked REV_STACK_LEG=1, so they never push themselves.
 #
 # The config defines legs() - run_leg calls in DEPENDENCY ORDER - and may set SEAM_REPO / CRITIC_REPO / premises.
 # See stack.example.sh next to this script.
@@ -54,11 +54,11 @@ AUTH_WAIT_TRIES=${AUTH_WAIT_TRIES:-60}
 AUTH_WAIT_SECS=${AUTH_WAIT_SECS:-60}
 if [ "${REVIEW_COUNCIL_HOST:-claude}" = codex ]; then
   NO_PUSH=${NO_PUSH:-1}
-  NO_SQUASH=${NO_SQUASH:-1}
 else
   NO_PUSH=${NO_PUSH:-0}
-  NO_SQUASH=${NO_SQUASH:-0}
 fi
+# Review commits stay one per fix on both hosts; NO_SQUASH=0 is a legacy opt-in that collapses them.
+NO_SQUASH=${NO_SQUASH:-1}
 export NO_PUSH NO_SQUASH
 REV_SCRIPTS=${REV_SCRIPTS:-$HERE}   # roster.sh, rev-status.sh and rev-squash.sh live beside this script
 SEAM_REPO=${SEAM_REPO:-}
@@ -476,7 +476,7 @@ finish_repos() {
     ( cd "$d" && if [ "$NO_SQUASH" = 1 ]; then echo "(NO_SQUASH=1: keeping review commits)"; else "$REV_SCRIPTS/rev-squash.sh" --apply; fi ) 2>&1 | sed 's/^/    /' | tee -a "$LOG"
     srq=$?
     set +o pipefail
-    # A refused squash is not a reason to withhold the push: the round commits are real work and CI
+    # A refused squash (NO_SQUASH=0 only) is not a reason to withhold the push: the review commits are real work and CI
     # must see them. Squash and push are therefore independent steps, not one && chain.
     [ "$srq" -eq 0 ] || say "!!! squash refused for $(basename "$d") - pushing the un-collapsed review commits"
     head=$(git -C "$d" rev-parse HEAD 2>/dev/null) || {
@@ -650,8 +650,8 @@ for PASS in $(seq 1 "$PASSES"); do export PASS; say "########## PHASE 1 - PER-PR
 say "ALL PHASE 1 COMPLETE"
 if [ -n "$SEAM_REPO" ]; then PASS=seam; say "########## PHASE 2 - CROSS-REPO SEAMS ##########"; run_leg "$SEAM_REPO" 2 seams "$SEAM_PREMISE"; else say "PHASE 2 skipped (SEAM_REPO unset)"; fi
 if [ -n "$CRITIC_REPO" ]; then PASS=critic; say "########## PHASE 3 - COMPLETENESS CRITIC ##########"; run_leg "$CRITIC_REPO" 1 critic "$CRITIC_PREMISE"; else say "PHASE 3 skipped (CRITIC_REPO unset)"; fi
-say "########## FINISH - squash + push per repo ##########"; finish_repos
-say "########## FINALIZE - reconcile post-squash review links ##########"
+say "########## FINISH - push per repo ##########"; finish_repos
+say "########## FINALIZE - reconcile review links with the pushed head ##########"
 finalize_reviews || true
 say "########## PUBLISH - one PR review per completed repository ##########"
 publish_reviews || true

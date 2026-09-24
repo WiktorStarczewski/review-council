@@ -143,7 +143,7 @@ Agent extras remain available outside the core plan assignments.
 | No usable external CLI | Built-in Claude panel | Refuse if no actual provider survives |
 | Session policy | Claude SessionStart hook | Native skills, no global review hook |
 | Stack engine | `claude -p` | `codex exec` |
-| Stack finishing defaults | Squash and push | Keep history and changes local |
+| Stack finishing defaults | Push, keep one commit per fix | Keep history and changes local |
 
 By default, Codex selects its newest visible model generation from its local model
 cache, up to two seats, using the existing supported effort ladder. Set

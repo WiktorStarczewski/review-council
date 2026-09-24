@@ -54,7 +54,7 @@ Environment variables take precedence over the config file, which takes preceden
 | `REVIEW_COUNCIL_CONTRACT_VERSION_TIMEOUT_SECONDS` | `rev-contract-check.py` | Per-provider CLI version timeout. Defaults to 5 seconds. |
 | `REVIEW_COUNCIL_CONTRACT_VERSION_OUTPUT_BYTES` | `rev-contract-check.py` | Output cap for each provider CLI version command. Defaults to 64 KiB. |
 | `REV_ACTIVE` | the loop | Set to `1` automatically inside every seat's environment once a review starts; a nested `/review-council:rev` refuses to start while it's set. Not meant to be set by hand. |
-| `REV_STACK_LEG` | `stack.sh` | Set to `1` automatically inside each stack leg so it skips the top-level squash/push and so a leg can never itself launch a stack. Not meant to be set by hand. |
+| `REV_STACK_LEG` | `stack.sh` | Set to `1` automatically inside each stack leg so it skips the top-level push and so a leg can never itself launch a stack. Not meant to be set by hand. |
 | `REV_SOURCE_CONTEXT` | `rev-evidence.py` | `1` enables literal source-context packets and required-source segments. This is the host default. Set `0` only for a labeled baseline measurement. |
 | `REV_PATCH_CHUNKS` | `rev-evidence.py` | `auto` selects exact patch chunks when they save proof reads or are required to fit compiled provider capacity. `1` forces chunks when representable. `0` requests window mode and fails preparation when that mode cannot fit. The host default is `auto`. |
 | `REV_RG` | `rev-evidence.py` | The ripgrep executable that replays `rg` plan searches. Unset, `rg` on PATH is used, then Claude Code's embedded ripgrep (`$CLAUDE_CODE_EXECPATH` run as `rg`, accepted only when `rg --version` prints `ripgrep`). When none is found, `prepare` fails with `ripgrep binary not found on PATH; set REV_RG to a ripgrep executable`. |
@@ -117,7 +117,7 @@ The differences are:
   5 even with the default `min_labs: 1`.
 - Codex models are read from `$CODEX_HOME/models_cache.json` when `CODEX_HOME` is set,
   otherwise `~/.codex/models_cache.json`. The explicit cache override still wins.
-- Codex stack defaults are `NO_PUSH=1` and `NO_SQUASH=1`. Existing shell stack configs
+- Codex stack defaults are `NO_PUSH=1` and `NO_SQUASH=1`; Claude Code defaults to `NO_SQUASH=1` too. Existing shell stack configs
   can override these, so inspect them before reusing a Claude stack configuration.
 - Claude session hooks, update notices, and auto-update settings are not installed
   in Codex. Refresh the Git marketplace and reinstall, or rerun the curl installer, then start a new chat.

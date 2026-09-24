@@ -770,12 +770,13 @@ failure blocks the paid run.
 ### Commit
 
 `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=commit`. Only after verification
-passes, and only if the round changed files. Stage what the round touched (never `git
-add -A` blindly; the session dir is outside the repo). No push. Never `--amend`, never
-`--no-verify`, never force. No AI attribution of any kind.
+passes, and only if the round changed files. Commit each cluster on its own: stage exactly
+that cluster's changes (never `git add -A` blindly; the session dir is outside the repo)
+and commit them. No push. Never `--amend`, never
+`--no-verify`, never force. No AI attribution of any kind. Review commits are never squashed: each fix is its own commit, and its subject names the finding IDs it closes, never the round. One cluster is one fix.
 
 ```
-fix(rev): round 3 - C-03 re-check hold ownership after every parking await
+fix(rev): F-012, F-019 re-check hold ownership after every parking await
 
 F-012 P1  late call after eviction re-entered the client
 F-019 P2  worker realm had the same late call
@@ -786,7 +787,7 @@ Then `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S last_commit=<sha> fixed=<tot
 ### Record
 
 Append a round block to `findings.md`: seats and efforts used, lenses, new findings
-by severity, fixed/rejected/deferred counts, verification result, commit SHA (or
+by severity, fixed/rejected/deferred counts, verification result, one commit SHA per fixed cluster with its finding IDs (or
 "no changes"). Tell the user in two or three sentences: round number, seats, new
 findings by severity, what was fixed, gate status, commit.
 
@@ -891,24 +892,20 @@ evidence.
 
 Not in stack-leg mode:
 
-1. `${CLAUDE_PLUGIN_ROOT}/scripts/rev-squash.sh` (dry run) then
-   `${CLAUDE_PLUGIN_ROOT}/scripts/rev-squash.sh --apply` - collapses the contiguous
-   `fix(rev)` run at the tip into one `apply review findings` commit. A run broken up
-   by other commits is left alone; the PR squash-merge is the real collapse. A refusal
-   ("only N unpushed") means something was pushed mid-loop - leave history as is and
-   say so.
-2. Push once (`git push`, `-u origin HEAD` if no upstream), so CI runs on what
-   reviewers will see.
-3. Follow **PR review publication** below. Publication succeeds or cleanly skips
+1. Push once (`git push`, `-u origin HEAD` if no upstream), so CI runs on what
+   reviewers will see. Push the fix commits as committed; the finding-to-commit
+   mapping is the audit trail, and the PR's own squash-merge collapses them on the
+   target branch.
+2. Follow **PR review publication** below. Publication succeeds or cleanly skips
    because no open PR is associated before the run can become done.
-4. `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=done`; write `$S/report.md`;
+3. `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=done`; write `$S/report.md`;
    stop the status Monitor with `TaskStop`; report (below).
 
 ## Stack-leg mode (`REV_STACK_LEG=1`)
 
 You are running headless under `/review-council:stack`. Differences: no Monitor
 (nobody is watching this transcript; `stack.sh` renders the status line itself); no
-squash, no push (the stack does both per repo at the end); never ask a question -
+push (the stack pushes per repo at the end); never ask a question -
 decide and record the decision in the ledger. After the local review, rendering, and
 inspection are complete, set `phase=stack-ready` and write `$S/stack-report.md` before
 your final message. Do not set `phase=done` or write `$S/report.md`; the stack promotes
@@ -939,7 +936,7 @@ diff, not a document list): run **Setup** exactly as in the loop, including
 dir) and the baseline gates, and render prompts the normal way - *without*
 `--read-only`, so seats get the repo, the pinned base and the changed-file list. Fan
 out, collect and triage exactly as in a round. Then stop: no **Fix**, no **Verify**,
-no **Commit**, no squash, no push, and no `--vacuity` exemption. Follow **PR review publication**
+no **Commit**, no push, and no `--vacuity` exemption. Follow **PR review publication**
 below, then report as below, minus the commits section; the standing rule to apply actionable findings then applies
 to you *after* reporting, as its own separate change the user can see.
 
@@ -989,7 +986,6 @@ loop stops early, the last relayed line says why.
 | seat exit 4 | cancel pending siblings; stop; report the usage or rate-limit blocker |
 | fewer than 3 seats in a code round | stop; say so; do not self-review |
 | a fix breaks a gate | repair or revert before the next round |
-| squash refuses | leave history; say so |
 | an `agent` row returns non-JSON twice | treat it as exit 2 for the round |
 
 ## Ledger (`$S/findings.md`)
@@ -1003,7 +999,8 @@ Verified: yes - handler.ts:88, no status check before retry.
 Action:   Fixed in round 3 (a1b2c3d) - retry only on 5xx and network errors.
 ```
 
-Status ∈ `OPEN | FIXED | REJECTED (reason) | DEFERRED (reason)`. Every finding ends
+Finding IDs are unique within the session and never reused, so a commit subject names its
+findings without the round. Status ∈ `OPEN | FIXED | REJECTED (reason) | DEFERRED (reason)`. Every finding ends
 in one of them; never drop one silently. Round blocks append after the entries.
 
 ## PR review publication
@@ -1014,7 +1011,7 @@ For every completed code review, read
 publish it as a `COMMENTED` GitHub PR review. This applies to normal and read-only
 code reviews. A branch with no associated open PR skips cleanly. Document reviews do
 not post. In stack-leg mode, prepare and render the body but leave guarded
-finalization, final rendering, and publication to the stack after its final squash and push.
+finalization, final rendering, and publication to the stack after its final push.
 A required publication failure writes
 `incomplete.md` and blocks `phase=done` and `report.md`.
 When `NO_PUSH=1`, render and inspect the body but let the publisher's no-push gate
@@ -1031,7 +1028,7 @@ skip every external GitHub call.
 4. **Coverage**: rounds, seats and efforts, lenses, final gate status, any seat that
    dropped and why. On a degraded panel, state the roster's `degradation` sentence
    verbatim and name every seat carrying `"padded": true`.
-5. **Commits**: one line per round commit; the squash commit; the push.
+5. **Commits**: one line per fix commit (finding IDs and SHA); the push.
 6. **Residual risk**: deferred, untestable, worth a human look.
 
 Say plainly if P0s were still appearing in late rounds. A confident report over a

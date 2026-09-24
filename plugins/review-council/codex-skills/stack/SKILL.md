@@ -23,7 +23,7 @@ stall, and resumes from the same session root and ledger.
    rules in `rev`; plan panels do not count toward that minimum. These counts do not
    opt a leg into the direct adaptive default.
 3. Set `REVIEW_COUNCIL_HOST=codex`. Default `NO_PUSH=1 NO_SQUASH=1` keeps changes local
-   and history intact. Set either to `0` only with the user's prior authorization.
+   and review commits one per fix; `NO_SQUASH=0` is a legacy opt-in that collapses them. Set either to `0` only with the user's prior authorization.
    Existing Claude configs may set these explicitly, so inspect and adapt them.
    This skill does not grant publication or history-rewrite permission.
 4. Run `roster.sh --brief` under the Codex host and show any degradation. No usable
@@ -62,12 +62,12 @@ completed repository pushes successfully. When multiple
 sessions review one canonical repository, only its latest actually completed session
 is authoritative; a later skipped session cannot reclaim that role.
 A real push requires the upstream destination ref to equal the reviewed branch ref.
-Before squash, the runner validates the literal push URL and ref, fetches that exact
+Before pushing, the runner validates the literal push URL and ref, fetches that exact
 destination, and reconciles its remote-tracking ref. After a pinned push succeeds, it
 records the immutable pushed head in that tracking ref before checking for branch
 movement, so a retry cannot rewrite commits that already reached the remote.
-A changed-head
-squash must preserve the inspected tree, maps decision links and reviewed-PR fix links
+Unsquashed fix commits keep their own links. A changed-head
+squash (`NO_SQUASH=0`) must preserve the inspected tree, maps decision links and reviewed-PR fix links
 to the pushed aggregate commit, preserves separate-PR fix links, and renders the final
 body before publication. A pushed retry derives finalization from the frozen target
 and current head. No associated open

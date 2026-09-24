@@ -116,6 +116,7 @@ t-pr-review.sh::test_pr_review_repository_and_base_identity	1	normal
 t-pr-review.sh::test_pr_review_required_lists	1	normal
 t-pr-review.sh::test_pr_review_stack_finalization	1	normal
 t-pr-review.sh::test_pr_review_validate_stack	1	normal
+t-pr-review.sh::test_pr_review_unsquashed_stack_keeps_per_fix_links	1	normal
 t-preflight.sh::test_preflight	1	normal
 t-preflight.sh::test_preflight_installs_complete_staged_generation	1	normal
 t-preflight.sh::test_preflight_refuses_sealed_session_inputs	1	normal
@@ -327,3 +328,4 @@ t-read-bounds.sh::test_seat_records_launch_exits	1	normal
 t-evidence.sh::test_evidence_hardening_replacement	3	normal
 t-state.sh::test_state_fix_gate_accepts_a_px_plan_replacement	1	normal
 t-skill.sh::test_skill_replacement_and_breaker_contract	1	normal
+t-skill.sh::test_skill_keeps_one_commit_per_fix	1	normal
