@@ -2089,7 +2089,7 @@ def is_prose_path(path):
         '.adoc', '.asc', '.markdown', '.md', '.mdx', '.org', '.rst', '.text', '.txt'}
 
 
-def components_for(patches, dependencies, chosen, owner, findings=None):
+def components_for(patches, dependencies, chosen, owner, findings=None, prior_owners=None):
     changed = set(patches)
     parents = {path: path for path in changed}
     def leader(path):
@@ -2129,8 +2129,11 @@ def components_for(patches, dependencies, chosen, owner, findings=None):
                        'words': sum(len(patches[p].split()) for p in files), 'specialists': [],
                        'prior_owners': [], 'full_state_owner': owner})
     for component in sorted(result, key=lambda c: (-c['words'], c['files'])):
-        prior = sorted({s for finding in (findings or []) if finding['file'] in component['boundary']
-                        for s in finding['owners'] if s in chosen})
+        if prior_owners is not None:
+            prior = sorted({s for s in prior_owners.get(component['id'], []) if s in chosen})
+        else:
+            prior = sorted({s for finding in (findings or []) if finding['file'] in component['boundary']
+                            for s in finding['owners'] if s in chosen})
         component['prior_owners'] = prior
         targets = [s for s in specialists if s in prior]
         if not targets and specialists:
@@ -3005,8 +3008,10 @@ def validate_components(session, manifest, evidence):
                 proof_assignments):
             raise ValueError('plan component routing is not canonical')
     else:
-        synthetic = [{'file': c['files'][0], 'owners': c['prior_owners']} for c in components]
-        if components != components_for(basis, edges, ordered, owner, synthetic):
+        # Not a finding on each first file: that file can sit in a neighbour's boundary. The owners
+        # themselves are checked against the predecessor's findings when not offline.
+        claimed = {c['id']: c['prior_owners'] for c in components}
+        if components != components_for(basis, edges, ordered, owner, prior_owners=claimed):
             raise ValueError('component routing is not canonical')
     if adaptive and not components:
         raise ValueError('adaptive scope requires semantic components')
