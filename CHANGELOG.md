@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.5
+
+- A delta verification panel is no longer refused with `component routing is not canonical` when
+  one component's first file sits inside another component's boundary, as it does for a test that
+  imports two modules or a shared mock. The offline check rebuilt each component's prior owners
+  from a finding placed on every component's first file, which handed a neighbour owners its real
+  findings never gave it. It now re-derives routing from the owners the manifest records, and those
+  owners are still checked against the predecessor's findings whenever validation is not offline.
+  Four wallet reviews hit it at their final verification: three ran that panel uncertified, and one
+  waited for this fix.
+
 ## 0.5.4
 
 - Review commits are no longer squashed. Each fix (one finding cluster) is its own commit, and its

@@ -1945,6 +1945,55 @@ def components_ownership_and_instructions():
         finally:
             module.Repository = old
 
+def overlapping_boundaries_keep_prior_owner_routing():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        write('src/core.ts', 'export function alpha() { return 1; }\n')
+        write('src/other.ts', 'export function other() { return 1; }\n')
+        write('tests/multi.test.ts',
+              'import { alpha } from "../src/core";\nimport { other } from "../src/other";\n'
+              'test("both", () => alpha() + other());\n')
+        write('large.py', ''.join(f'value_{i} = {i}\n' for i in range(1200)))
+        m = prepare()
+        by_files = {tuple(c['files']): c for c in m['components']}
+        assert 'tests/multi.test.ts' in by_files[('src/other.ts',)]['boundary']
+        finding_owner = by_files[('src/core.ts',)]['specialists'][0]
+        finding = {'severity':'P2','file':'src/core.ts','line_start':1,'line_end':1,'claim':'Alpha needs a bound','evidence':'It returns a constant.','suggested_fix':'Bound it.','confidence':0.9}
+        for seat in m['assignments']:
+            (session / f'r1-{seat}.prompt.md').write_text(call('render', session / 'r1-evidence.manifest.json', seat))
+            (session / f'r1-{seat}.json').write_text(json.dumps({'summary':'checked','findings':[finding] if seat == finding_owner else []}))
+            (session / f'r1-{seat}.exit').write_text('0\n')
+            write_agent_audit(session, '1', seat)
+        call('receipt', session, '1')
+        for name in ('src/core.ts', 'src/other.ts', 'tests/multi.test.ts'):
+            write(name, (root / name).read_text().replace('1', '2', 1) if name != 'tests/multi.test.ts'
+                  else (root / name).read_text() + '// changed\n')
+        later = prepare('2', 'verification', *assign)
+        assert any(a['scope'] == 'delta' for a in later['assignments'].values()), later['fallback_reason']
+        by_files = {tuple(c['files']): c for c in later['components']}
+        # The multi-import test's first file sits inside other.ts's boundary, but only core.ts carries the finding.
+        assert finding_owner in by_files[('tests/multi.test.ts',)]['prior_owners']
+        assert finding_owner not in by_files[('src/other.ts',)]['prior_owners']
+        mpath = session / 'r2-evidence.manifest.json'
+        for seat in later['assignments']:
+            call('render', mpath, seat)
+        call('verify', mpath)
+        module.validated_manifest(mpath, fresh=False, offline=True)
+        m, ep = json.loads(mpath.read_text()), session / 'r2-evidence.json'
+        e = json.loads(ep.read_text())
+        other = next(c for c in m['components'] if c['files'] == ['src/other.ts'])
+        other['prior_owners'] = [next(s for s in m['assignments'] if s != m['mechanical_owner']
+                                      and s not in other['specialists'])]
+        e['components'] = m['components']; ep.write_bytes(module.encoded(e))
+        m['artifacts'][ep.name] = {'sha256': module.digest(ep.read_bytes()), 'words': len(ep.read_bytes().split())}
+        mpath.write_bytes(module.encoded(m))
+        call('verify', mpath, good=False)
+        try:
+            module.validated_manifest(mpath, fresh=False, offline=True)
+        except ValueError as error:
+            assert 'component routing is not canonical' in str(error), error
+        else:
+            raise AssertionError('offline validation accepted owners the routing does not follow')
+
 def instruction_override_precedence():
     with fixture() as (root, session, git, write, call, prepare, finish):
         write('AGENTS.md', 'root ordinary\n'); write('AGENTS.override.md', 'root override\n')
@@ -2701,7 +2750,7 @@ cases = (
     replacement_runs_on_another_seat, review_origin_counts_the_reviews_own_lines,
     scoped_names_and_gitlink_lifecycle,
     component_and_full_tampering, offline_structure_and_predecessor_walk,
-    local_ignored_instructions,
+    local_ignored_instructions, overlapping_boundaries_keep_prior_owner_routing,
 )
 groups = {
     'structure': (
@@ -2716,6 +2765,7 @@ groups = {
         sparse_gitlink_and_special, roster_bundle_coverage,
         scoped_names_and_gitlink_lifecycle, component_and_full_tampering,
         offline_structure_and_predecessor_walk, local_ignored_instructions,
+        overlapping_boundaries_keep_prior_owner_routing,
     ),
     'context': (
         cstyle_enclosing_bodies, source_context_packets,
