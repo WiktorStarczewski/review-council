@@ -311,8 +311,8 @@ def render(out, case, variant, session, profile=None):
     (session / 'files.txt').write_text('\n'.join(case['files']) + '\n')
     (session / 'untracked.txt').write_text('')
     profile = profile or json.loads((out / 'manifest.json').read_text())['identity']['profile']
-    rows = profile['roster']
     seat = profile['seat']
+    rows = sorted(profile['roster'], key=lambda row: row['seat'] != seat)
     other = next(row['seat'] for row in rows if row['adapter'] == 'codex' and row['seat'] != seat)
     write_json(session / 'roster.json', {'seats': rows})
     lens = case['lens'] if case['mode'] == 'legacy' else 'correctness-boundaries+tests-observability-maintenance-regression'

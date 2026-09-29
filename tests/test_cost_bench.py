@@ -12,8 +12,8 @@ from unittest.mock import patch
 REPO = Path(__file__).resolve().parents[1]
 PROFILE = {'seat': 'codex-luna', 'model': 'fixture-luna', 'effort': 'xhigh',
            'selectors': ['latest-sol', 'latest-luna'],
-           'roster': [dict(seat='codex-luna', model='fixture-luna', adapter='codex', effort='xhigh', extra=False),
-                      dict(seat='codex-sol', model='fixture-sol', adapter='codex', effort='xhigh', extra=False),
+           'roster': [dict(seat='codex-sol', model='fixture-sol', adapter='codex', effort='xhigh', extra=False),
+                      dict(seat='codex-luna', model='fixture-luna', adapter='codex', effort='xhigh', extra=False),
                       dict(seat='opus', model='opus', adapter='claude', effort='max', extra=False)]}
 sys.path.insert(0, str(REPO / 'eval'))
 try:
