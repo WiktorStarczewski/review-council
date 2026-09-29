@@ -2761,6 +2761,9 @@ def unenforced_audit_cache_is_keyed_on_every_input():
         # Each input alone invalidates a warm entry. The scripts run from a copy so their bytes can change.
         sol = session / 'rcode-sol'; plugin = session.parent / 'plugin'; real_file = module.__file__
         shutil.copytree(script.parent, plugin / 'scripts'); shutil.copytree(script.parent.parent / 'schema', plugin / 'schema')
+        # copytree keeps modes, and the release verifier stages the tree read-only.
+        for path in (plugin, *plugin.rglob('*')):
+            path.chmod(path.stat().st_mode | 0o200)
         scope_path = session / 'scope.env'; deps = session.parent / 'deps'; deps.mkdir()
         other_root = session.parent / 'other-root'; other_root.mkdir()
         def edit(path, data):
