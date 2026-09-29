@@ -508,3 +508,30 @@ Deferred to 0.4.4 after the stable release:
 - Sonnet completed a useful result but missed required source proof. The wrapper preserved it under `.audit-invalid.json`, emitted exit 2, and made no retry. Its mixed advisory/fatal classification suggestion was rejected because 0.4.3 intentionally promotes choreography issues to advisories only after every substantive proof gate passes.
 - The third bounded panel stopped on Terra's truncated source packet without retrying any seat. Sol found malformed duplicate patch reads could skip completeness validation, and Terra identified quota fallback's path-only source comparison. The fixes validate duplicate bytes, cap normal source packets at 16 KiB, and compare frozen content identities across fallback sessions.
 - The final bounded panel launched each configured seat once and performed no automatic retry, fallback, or repair. Sol found that quota fallback did not promote all active generation variables. Opus's preserved result found that a hard stop was seat-local and two tests were vacuous. Sonnet found that receipt output dropped advisory detail. Terra reported no findings. All source-verifiable P1 and P2 findings were fixed. Opus's audit failure came from a redundant Read after the full patch had already been proven; that exact sequence is now a valid advisory regression, while a premature overshoot remains fatal.
+
+## Review cost first wave
+
+- [x] Trustworthy reviewer and host usage with deduplicated streaming records.
+- [x] Static launch prechecks and isolated availability probes.
+- [x] Active-mode prompt compilation with unchanged evidence obligations.
+- [x] Compact session briefing and local status watching.
+- [x] Register new tests and complete the bounded four-call development benchmark.
+- [x] Complete the full local gate and prepare the feature branch and draft PR.
+
+Review: Implemented on a worktree based on 0.5.6. Focused cases cover streaming identities, explicit zero cost, incomplete results, static replay, probe isolation, active evidence modes and scheduled local status. Production roster and certification coverage are preserved. The final frozen gate passes 351 shell cases, 4,683 assertions, all 147 Python tests and all validators. Read-only-copy setup failures were fixed in temporary copies; the runtime implementation remains unchanged after measurement. The four-call allocation replaced the earlier one-call development check. It benchmarks reviewed fixtures and does not certify the first-wave implementation. Feature-branch delivery uses this verified code and the prepared draft PR; full Council certification remains pending while Claude quota is exhausted.
+
+## Reusable cost benchmarks
+
+- [x] Freeze 0.5.6 and first-wave source identities and two sealed correctness cases.
+- [x] Add provider-free scorer and bounded runner regressions.
+- [x] Measure local correctness, prompt compilation and preflight work.
+- [x] Run the approved four Terra executions, two paired cases in opposite orders.
+- [x] Inspect all eight returned findings against source and runtime truth.
+- [x] Save complete hash-bound adjudications and JSON/CSV/Markdown results.
+- [x] Preserve two earlier routing failures separately with unknown usage.
+
+Plan: `docs/superpowers/plans/2026-09-29-review-cost-benchmarks.md`. Live identity is `gpt-5.6-terra` at `max`. Four successful executions, no availability probes, scoring calls, replacement models or automatic reviewer retries. This is a single-seat benchmark, with no full Council certification.
+
+Review: All four results pass schema and read audits. Each version finds four of four planted defects with zero false positives. Pooled estimated Standard credits fall from 6.91687 to 6.44636 (6.8%); provider time falls from 187.71 s to 160.08 s (14.7%). Total input falls 0.9%, uncached input 0.1%, output 17.3%. Most observed savings come from output, and two cases do not establish statistical quality equivalence or production savings. Dollars remain unknown because the CLI does not report them.
+
+Results: `docs/cost-benchmark-wave1-2026-09-29.md`. Complete raw artifacts and aggregate metrics are retained in `wave1-20260930-network` under the research-notes benchmark directory. `wave1-20260929` and `wave1-20260930-live` preserve the two earlier routing failures at 17.28 s and 17.13 s with no usage or findings. Both transport failures stopped their original batches. The final successful batch followed a fresh network reachability check under Full access.

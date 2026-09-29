@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Create and lease a private, deterministic temporary home for one seat."""
 import argparse
+from contextlib import contextmanager
 import fcntl
 import hashlib
 import os
@@ -82,6 +83,20 @@ def create_home(path, kind, auth):
         if not auth_path.is_file():
             raise ValueError('Codex auth path is not a file')
         (path / 'auth.json').symlink_to(auth_path)
+
+
+@contextmanager
+def leased_home(kind, identity, auth=None):
+    path = seat_path(kind, identity)
+    descriptor = acquire_lease(path, kind, blocking=True)
+    try:
+        create_home(path, kind, auth)
+        yield path
+    finally:
+        try:
+            safe_remove(path, kind)
+        finally:
+            os.close(descriptor)
 
 
 def sweep(kind, exclude=None):

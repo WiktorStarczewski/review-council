@@ -1,0 +1,505 @@
+#!/usr/bin/env python3
+"""Freeze, run and report bounded single-seat version comparisons."""
+import argparse
+import csv
+import fcntl
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import platform
+import shlex
+import shutil
+import signal
+import stat
+import statistics
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+
+REPO = Path(__file__).resolve().parents[1]
+SUITE = REPO / 'eval/fixtures/cost-v1'
+RATE = REPO / 'eval/rates/codex-standard-2026-09-29.json'
+MODEL = 'gpt-5.6-terra'
+EFFORT = 'max'
+
+
+def encoded(value):
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()
+
+
+def write_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        stream.write(json.dumps(value, indent=2, ensure_ascii=True).encode() + b'\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+        temporary = Path(stream.name)
+    temporary.replace(path)
+
+
+def tree_identity(root):
+    entries = []
+    for path in sorted(root.rglob('*')):
+        relative = path.relative_to(root)
+        if '.git' in relative.parts or '__pycache__' in relative.parts or path.suffix == '.pyc':
+            continue
+        if path.is_symlink():
+            raise ValueError('source symlink: ' + str(relative))
+        if path.is_file():
+            entries.append([relative.as_posix(), stat.S_IMODE(path.stat().st_mode),
+                            hashlib.sha256(path.read_bytes()).hexdigest()])
+    return hashlib.sha256(encoded(entries)).hexdigest()
+
+
+def snapshot_tree(source, destination):
+    before = tree_identity(source)
+    shutil.copytree(source, destination, ignore=shutil.ignore_patterns('.git', '__pycache__', '*.pyc'))
+    if before != tree_identity(source) or before != tree_identity(destination):
+        raise ValueError('source changed during freeze')
+    return before
+
+
+def make_worktree_writable(root):
+    """Permit fixture setup in a private copy without changing frozen sources."""
+    for path in [root, *root.rglob('*')]:
+        path.chmod(stat.S_IMODE(path.stat().st_mode) | stat.S_IWUSR)
+
+
+class Budget:
+    def __init__(self, path, identity, maximum):
+        if not isinstance(maximum, int) or isinstance(maximum, bool) or maximum < 0:
+            raise ValueError('invalid call budget')
+        self.path, self.identity, self.maximum = path, identity, maximum
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self.lock():
+            self.read()
+
+    def lock(self):
+        stream = self.path.with_suffix('.lock').open('a+')
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        return stream
+
+    def read(self):
+        if not self.path.exists():
+            return {'identity': self.identity, 'maximum': self.maximum, 'attempts': []}
+        value = json.loads(self.path.read_text())
+        if value.get('identity') != self.identity or value.get('maximum') != self.maximum:
+            raise ValueError('changed benchmark identity or call budget')
+        attempts = value.get('attempts')
+        if not isinstance(attempts, list) or len(attempts) > self.maximum:
+            raise ValueError('invalid call budget ledger')
+        ids = [row.get('run_id') for row in attempts if isinstance(row, dict)]
+        if len(ids) != len(attempts) or any(not isinstance(x, str) for x in ids) or len(set(ids)) != len(ids):
+            raise ValueError('invalid call budget reservations')
+        return value
+
+    def reserve(self, run_id):
+        with self.lock():
+            value = self.read()
+            if any(row['run_id'] == run_id for row in value['attempts']):
+                return False
+            if len(value['attempts']) >= self.maximum:
+                raise ValueError('reviewer execution budget exhausted')
+            value['attempts'].append({'run_id': run_id, 'status': 'reserved',
+                                      'reserved_at': time.time()})
+            write_json(self.path, value)
+        return True
+
+    def complete(self, run_id, result):
+        with self.lock():
+            value = self.read()
+            row = next(row for row in value['attempts'] if row['run_id'] == run_id)
+            row.update(status='finished', exit_code=result['exit_code'],
+                       timed_out=result['timed_out'])
+            write_json(self.path, value)
+
+
+def run_process(command, cwd, environment, log, timeout):
+    start = time.monotonic()
+    with log.open('ab') as stream:
+        process = subprocess.Popen(command, cwd=cwd, env=environment, stdout=stream,
+                                   stderr=subprocess.STDOUT, start_new_session=True)
+        timed_out = False
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            cancel(process)
+        except BaseException:
+            cancel(process)
+            raise
+    return {'exit_code': process.returncode, 'timed_out': timed_out,
+            'wall_seconds': time.monotonic() - start}
+
+
+def cancel(process):
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(process.pid, sig)
+        except ProcessLookupError:
+            pass
+        try:
+            process.wait(timeout=2)
+            break
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def schedule(cases, maximum):
+    if 2 * len(cases) > maximum:
+        raise ValueError('call budget is smaller than the paired schedule')
+    return [(case['id'], variant) for index, case in enumerate(cases)
+            for variant in (('baseline', 'candidate') if index % 2 == 0
+                            else ('candidate', 'baseline'))]
+
+
+def command(argv, cwd=None, environment=None):
+    result = subprocess.run(argv, cwd=cwd, env=environment, text=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if result.returncode:
+        raise ValueError(result.stderr[-2000:] or result.stdout[-2000:] or 'command failed')
+    return result.stdout.strip()
+
+
+def git(root, *args):
+    return command(['git', '-C', str(root), *args])
+
+
+def prepare(out, baseline, candidate, maximum):
+    if out.exists() and any(out.iterdir()):
+        raise ValueError('prepare requires an empty output directory')
+    out.mkdir(parents=True, exist_ok=True)
+    frozen = out / 'sources'
+    frozen.mkdir()
+    commit = git(candidate, 'rev-parse', baseline + '^{commit}')
+    archive = subprocess.check_output(['git', '-C', str(candidate), 'archive', commit,
+                                      'plugins/review-council'])
+    with tarfile.open(fileobj=io.BytesIO(archive)) as bundle:
+        for entry in bundle.getmembers():
+            if entry.issym() or entry.islnk() or Path(entry.name).is_absolute() or '..' in Path(entry.name).parts:
+                raise ValueError('unsafe baseline archive member')
+        bundle.extractall(frozen / 'baseline')
+    baseline_plugin = frozen / 'baseline/plugins/review-council'
+    candidate_plugin = frozen / 'candidate/plugins/review-council'
+    candidate_plugin.parent.mkdir(parents=True)
+    sources = {'baseline': tree_identity(baseline_plugin),
+               'candidate': snapshot_tree(candidate / 'plugins/review-council', candidate_plugin)}
+    snapshot_tree(SUITE, out / 'cases')
+    shutil.copy2(RATE, out / 'rate-card.json')
+    cases = [json.loads(path.read_text()) for path in sorted((out / 'cases').glob('*/case.json'))]
+    planned = schedule(cases, maximum)
+    version = command(['codex', '--version'])
+    identity = {'sources': sources, 'cases': tree_identity(out / 'cases'),
+                'baseline_commit': commit, 'model': MODEL, 'effort': EFFORT,
+                'codex_version': version, 'rate_card': hashlib.sha256(RATE.read_bytes()).hexdigest(),
+                'collector': hashlib.sha256((candidate / 'plugins/review-council/scripts/lib/usage.py').read_bytes()).hexdigest(),
+                'engine': engine_identity(), 'python_version': platform.python_version(),
+                'platform': platform.platform()}
+    identity['subjects'] = {}
+    for case in cases:
+        root = out / 'work' / case['id'] / 'root'
+        root.parent.mkdir(parents=True)
+        snapshot_tree(out / 'cases' / case['id'] / 'before', root)
+        make_worktree_writable(root)
+        git(root, 'init', '-q', '-b', 'main')
+        git(root, 'add', '.')
+        git(root, '-c', 'commit.gpgsign=false', '-c', 'user.name=Fixture',
+            '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Baseline fixture')
+        git(root, 'checkout', '-qb', 'change')
+        for path in (out / 'cases' / case['id'] / 'after').rglob('*'):
+            if path.is_file():
+                target = root / path.relative_to(out / 'cases' / case['id'] / 'after')
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
+        identity['subjects'][case['id']] = {'base': git(root, 'rev-parse', 'main'),
+                                           'source': tree_identity(root)}
+    engine = out / 'engine'
+    (engine / 'eval').mkdir(parents=True)
+    for name in identity['engine']:
+        shutil.copy2(REPO / 'eval' / name, engine / 'eval' / name)
+    helper = engine / 'plugins/review-council/scripts/lib/usage.py'
+    helper.parent.mkdir(parents=True)
+    shutil.copy2(candidate_plugin / 'scripts/lib/usage.py', helper)
+    write_json(out / 'manifest.json', {'format_version': 1, 'identity': identity,
+                                      'maximum': maximum, 'schedule': planned,
+                                      'created_at': time.time()})
+    return load_manifest(out)
+
+
+def engine_identity():
+    return {name: hashlib.sha256((REPO / 'eval' / name).read_bytes()).hexdigest()
+            for name in ('cost_bench.py', 'bench_local.py', 'bench_metrics.py', 'bench_score.py')}
+
+
+def load_manifest(out):
+    manifest = json.loads((out / 'manifest.json').read_text())
+    identity = manifest['identity']
+    for variant, digest in identity['sources'].items():
+        if tree_identity(out / 'sources' / variant / 'plugins/review-council') != digest:
+            raise ValueError('frozen source identity changed')
+    if tree_identity(out / 'cases') != identity['cases']:
+        raise ValueError('frozen truth identity changed')
+    if hashlib.sha256((out / 'rate-card.json').read_bytes()).hexdigest() != identity['rate_card']:
+        raise ValueError('frozen rate card changed')
+    if identity.get('engine') != engine_identity():
+        raise ValueError('benchmark engine changed; use a new output directory')
+    for case_id, subject in identity.get('subjects', {}).items():
+        root = out / 'work' / case_id / 'root'
+        if tree_identity(root) != subject['source'] or git(root, 'rev-parse', 'main') != subject['base']:
+            raise ValueError('reviewed fixture changed: ' + case_id)
+    return manifest
+
+
+def environment():
+    values = dict(os.environ, REV_PATCH_CHUNKS='0', REV_SOURCE_CONTEXT='1')
+    for key in ('REV_ACTIVE', 'REV_RG', 'REV_DEPS_DIR', 'REV_EVIDENCE_MANIFEST'):
+        values.pop(key, None)
+    return values
+
+
+def render(out, case, variant, session):
+    start = time.monotonic()
+    plugin = out / 'sources' / variant / 'plugins/review-council'
+    scripts = plugin / 'scripts'
+    root = out / 'work' / case['id'] / 'root'
+    session.mkdir(parents=True, exist_ok=True)
+    scope = {'REV_BASE': git(root, 'rev-parse', 'main'), 'REV_BRANCH': 'change',
+             'REV_DEFAULT': 'main', 'REV_ROOT': str(root), 'REV_SCOPE': 'branch'}
+    (session / 'scope.env').write_text(''.join(k + '=' + shlex.quote(v) + '\n' for k, v in scope.items()))
+    (session / 'files.txt').write_text('\n'.join(case['files']) + '\n')
+    (session / 'untracked.txt').write_text('')
+    rows = [dict(seat='terra', adapter='codex', model=MODEL, effort=EFFORT, mode='prompt', extra=False),
+            dict(seat='sol', adapter='codex', model='gpt-5.6-sol', effort=EFFORT, mode='prompt', extra=False),
+            dict(seat='opus', adapter='claude', model='opus', effort=EFFORT, mode='prompt', extra=False)]
+    write_json(session / 'roster.json', {'seats': rows})
+    lens = case['lens'] if case['mode'] == 'legacy' else 'correctness-boundaries+tests-observability-maintenance-regression'
+    args = [str(scripts / 'rev-prompt.sh'), str(session), '1', 'terra', lens,
+            'Review the behavior change and substantiate actionable correctness findings.']
+    if case['mode'] == 'evidence':
+        manifest = command([sys.executable, str(scripts / 'rev-evidence.py'), 'prepare',
+                            str(session), '1', '--phase', 'risk', '--assignment',
+                            'terra=correctness-boundaries+tests-observability-maintenance-regression', '--assignment',
+                            'sol=security-state-api', '--assignment',
+                            'opus=concurrency-resources-performance'], environment=environment())
+        args += ['--evidence', manifest]
+    prompt = Path(command(args, environment=environment()).splitlines()[-1])
+    return prompt, time.monotonic() - start
+
+
+def local(out, repetitions):
+    from bench_local import accounting_case, context_case, preflight_case
+    manifest = load_manifest(out)
+    rows = []
+    for case, variant in manifest['schedule']:
+        data = json.loads((out / 'cases' / case / 'case.json').read_text())
+        for index in range(repetitions + 1):
+            session = out / 'local' / case / variant / str(index)
+            prompt, elapsed = render(out, data, variant, session)
+            rows.append({'case': case, 'variant': variant, 'warmup': index == 0,
+                         'compile_seconds': elapsed, 'prompt_words': len(prompt.read_text().split()),
+                         'prompt_bytes': prompt.stat().st_size})
+    oracles = [json.loads(command([sys.executable, str(path), '--json']))
+               for path in sorted((out / 'cases').glob('*/oracle.py'))]
+    mechanics = {}
+    for variant in ('baseline', 'candidate'):
+        plugin = out / 'sources' / variant / 'plugins/review-council'
+        destination = out / 'local/mechanics' / variant
+        mechanics[variant] = {'preflight': preflight_case(plugin, destination / 'preflight'),
+                              'accounting': accounting_case(plugin, destination / 'accounting'),
+                              'context': context_case(plugin, destination / 'context')}
+    summaries = []
+    for case_id, variant in manifest['schedule']:
+        sample = [row for row in rows if row['case'] == case_id and row['variant'] == variant and not row['warmup']]
+        summaries.append({'case': case_id, 'variant': variant, 'samples': len(sample),
+                          'median_compile_seconds': statistics.median(row['compile_seconds'] for row in sample),
+                          'min_compile_seconds': min(row['compile_seconds'] for row in sample),
+                          'max_compile_seconds': max(row['compile_seconds'] for row in sample),
+                          'prompt_words': sample[0]['prompt_words'], 'prompt_bytes': sample[0]['prompt_bytes']})
+    candidate = mechanics['candidate']
+    result = {'repetitions': repetitions, 'warmup_per_variant': 1, 'renders': rows,
+              'compile_summaries': summaries, 'mechanics': mechanics,
+              'oracles': oracles, 'passed': all(row['passed'] for row in oracles),
+              'provider_executions': 0}
+    result['passed'] &= candidate['accounting']['matches_truth'] and candidate['preflight']['roster_probes'] == 0
+    write_json(out / 'local.json', result)
+    return result
+
+
+def check_selection():
+    path = Path(os.environ.get('REVIEW_COUNCIL_CONFIG', Path.home() / '.config/review-council/config.json'))
+    config = json.loads(path.read_text())
+    if config.get('codex_models') != ['gpt-5.6-sol', MODEL] or config.get('claude_models') != ['opus', 'sonnet']:
+        raise ValueError('production model selection differs from the required roster')
+    if 'grok' not in config.get('exclude', []):
+        raise ValueError('production config must exclude Grok')
+
+
+def live(out, timeout):
+    from bench_metrics import credit_estimate, measure_stream
+    from bench_score import score_findings
+    manifest = load_manifest(out)
+    if not (out / 'local.json').exists() or not json.loads((out / 'local.json').read_text())['passed']:
+        raise ValueError('run the passing local lane before live executions')
+    check_selection()
+    if command(['codex', '--version']) != manifest['identity']['codex_version']:
+        raise ValueError('CLI version changed since freeze')
+    budget = Budget(out / 'budget.json', manifest['identity'], manifest['maximum'])
+    rate = json.loads((out / 'rate-card.json').read_text())
+    for case_id, variant in manifest['schedule']:
+        run_id = case_id + '/' + variant
+        if any(row['run_id'] == run_id for row in budget.read()['attempts']):
+            continue
+        case = json.loads((out / 'cases' / case_id / 'case.json').read_text())
+        session = out / 'runs' / case_id / variant
+        prompt, render_seconds = render(out, case, variant, session)
+        plugin = out / 'sources' / variant / 'plugins/review-council'
+        root = out / 'work' / case_id / 'root'
+        raw, findings = session / 'r1-terra.stream.ndjson', session / 'r1-terra.json'
+        values = environment()
+        values.update(SEAT='terra', MODEL=MODEL, EFFORT=EFFORT, MODE='prompt', ROOT=str(root),
+                      PROMPT=str(prompt), SCHEMA=str(plugin / 'schema/findings.schema.json'),
+                      OUT=str(findings), LOG=str(session / 'r1-terra.log'), RAW=str(raw),
+                      BASE=git(root, 'rev-parse', 'main'))
+        if not budget.reserve(run_id):
+            continue
+        print('launch ' + run_id + ' ' + MODEL + '/' + EFFORT, flush=True)
+        run = run_process(['bash', str(plugin / 'scripts/seats.d/codex.sh')], root,
+                          values, session / 'adapter.log', timeout)
+        budget.complete(run_id, run)
+        usage = measure_stream(raw, out / 'sources/candidate/plugins/review-council/scripts/lib/usage.py')
+        row = dict(run, case=case_id, variant=variant, status='provider-failed', valid=False,
+                   compile_seconds=render_seconds, prompt_words=len(prompt.read_text().split()),
+                   prompt_bytes=prompt.stat().st_size, **usage)
+        row['estimated_credits'] = credit_estimate(row['usage'], rate)
+        row.update(validation_seconds=0, audit_seconds=0)
+        if run['exit_code'] == 0 and findings.exists():
+            checked = run_process([sys.executable, str(plugin / 'scripts/lib/validate-findings.py'),
+                                   str(findings)], root, values, session / 'validation.log', 30)
+            row['schema_valid'] = checked['exit_code'] == 0
+            row['validation_seconds'] = checked['wall_seconds']
+            if row['schema_valid']:
+                result = json.loads(findings.read_text())
+                row['incomplete_proof'] = result['summary'].startswith('INCOMPLETE PROOF')
+                row['quality'] = score_findings(case, result)
+                audit = run_process([sys.executable, str(plugin / 'scripts/lib/review-read-audit.py'),
+                    'audit', '--adapter', 'codex', '--raw', str(raw), '--prompt', str(prompt),
+                    '--root', str(root), '--session', str(session), '--result', str(findings),
+                    '--out', str(session / 'r1-terra.audit.json')], root, values, session / 'audit.log', 60)
+                row['audit_valid'] = audit['exit_code'] == 0
+                row['audit_seconds'] = audit['wall_seconds']
+                row['valid'] = row['audit_valid'] and not row['incomplete_proof'] and not row['errors']
+                row['status'] = 'complete' if row['valid'] else 'invalid-proof'
+            else:
+                row['status'] = 'invalid-schema'
+        row['artifacts'] = {'prompt': str(prompt.relative_to(out)), 'raw': str(raw.relative_to(out)),
+                            'findings': str(findings.relative_to(out))}
+        row['machine_seconds'] = sum(row[key] for key in (
+            'compile_seconds', 'wall_seconds', 'validation_seconds', 'audit_seconds'))
+        write_json(session / 'measurement.json', row)
+        print(run_id + ': ' + row['status'] + ', %.2f s' % row['wall_seconds'], flush=True)
+        report(out)
+        if run['exit_code'] != 0:
+            break
+
+
+def report(out):
+    from bench_metrics import paired_deltas
+    from bench_score import score_findings
+    manifest = load_manifest(out)
+    rows = []
+    for path in sorted((out / 'runs').glob('*/*/measurement.json')):
+        row = json.loads(path.read_text())
+        adjudication = path.parent / 'adjudication.json'
+        if adjudication.exists() and row.get('schema_valid'):
+            case = json.loads((out / 'cases' / row['case'] / 'case.json').read_text())
+            result = json.loads((path.parent / 'r1-terra.json').read_text())
+            row['quality'] = score_findings(case, result, json.loads(adjudication.read_text()))
+        rows.append(row)
+    ledger = out / 'budget.json'
+    attempts = json.loads(ledger.read_text())['attempts'] if ledger.exists() else []
+    local_path = out / 'local.json'
+    result = {'manifest': manifest, 'rows': rows, 'pairs': paired_deltas(rows),
+              'local': json.loads(local_path.read_text()) if local_path.exists() else None,
+              'reserved_executions': len(attempts), 'maximum_executions': manifest['maximum'],
+              'unmeasured_reservations': [x['run_id'] for x in attempts
+                  if x['run_id'] not in {r['case'] + '/' + r['variant'] for r in rows}],
+              'limits': ['Two cases provide no statistical quality equivalence.',
+                         'Server cache cannot be cleared; order is reversed for case two.',
+                         'No full panel certification or subscription cost claim.',
+                         'One reviewer execution may include multiple provider HTTP requests.']}
+    write_json(out / 'report.json', result)
+    fields = ['case', 'variant', 'status', 'valid', 'wall_seconds', 'prompt_words', 'prompt_bytes',
+              'tool_calls', 'estimated_credits', 'input_tokens', 'cached_input_tokens',
+              'uncached_input_tokens', 'output_tokens', 'reasoning_output_tokens', 'cost_usd']
+    with (out / 'report.csv').open('w', newline='') as stream:
+        writer = csv.DictWriter(stream, fields)
+        writer.writeheader()
+        for row in rows:
+            values = dict(row, **(row.get('usage') or {}))
+            writer.writerow({key: values.get(key) for key in fields})
+    text = ['# Review cost benchmark', '', 'Baseline: `' + manifest['identity']['baseline_commit'] + '`.',
+            'Model: `' + MODEL + '`, effort `' + EFFORT + '`.', '',
+            '| Case | Version | Status | Seconds | Input | Output | Estimated credits | Recall | FP |',
+            '| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |']
+    for row in rows:
+        usage, quality = row.get('usage') or {}, row.get('quality') or {}
+        text.append('| %s | %s | %s | %.2f | %s | %s | %s | %s | %s |' % (
+            row['case'], row['variant'], row['status'], row['wall_seconds'],
+            usage.get('input_tokens', 'unknown'), usage.get('output_tokens', 'unknown'),
+            row.get('estimated_credits'), quality.get('recall'), quality.get('false_positives')))
+    text += ['', 'Dollars are unknown unless reported. Credits are a dated Standard estimate.', '']
+    if result['local']:
+        text += ['## Local lane', '', '| Case | Version | Prompt words | Median compile seconds |',
+                 '| --- | --- | ---: | ---: |']
+        for row in result['local']['compile_summaries']:
+            text.append('| %s | %s | %d | %.3f |' % (row['case'], row['variant'], row['prompt_words'], row['median_compile_seconds']))
+        text += ['', 'Contract refusal and accounting replay:', '']
+        for variant, mechanics in result['local']['mechanics'].items():
+            text.append('- %s: %d roster probes, accounting truth %s (%d input, %d output).' % (
+                variant, mechanics['preflight']['roster_probes'], mechanics['accounting']['matches_truth'],
+                mechanics['accounting']['input_tokens'], mechanics['accounting']['output_tokens']))
+        text += ['']
+    text += ['- ' + item for item in result['limits']]
+    (out / 'report.md').write_text('\n'.join(text) + '\n')
+    return result
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('command', choices=('prepare', 'local', 'live', 'report'))
+    parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--baseline', default='4151007')
+    parser.add_argument('--candidate', type=Path, default=REPO)
+    parser.add_argument('--max-calls', type=int, default=4)
+    parser.add_argument('--repetitions', type=int, default=5)
+    parser.add_argument('--timeout', type=float, default=600)
+    args = parser.parse_args()
+    out = args.out.expanduser().resolve()
+    if args.repetitions < 1 or args.timeout <= 0:
+        parser.error('repetitions and timeout must be positive')
+    try:
+        if args.command == 'prepare':
+            prepare(out, args.baseline, args.candidate.resolve(), args.max_calls)
+        elif args.command == 'local':
+            result = local(out, args.repetitions)
+            if not result['passed']:
+                raise ValueError('fixture oracle failed')
+        elif args.command == 'live':
+            with (out / 'live.lock').open('a+') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                live(out, args.timeout)
+        result = report(out)
+        print(str(out / 'report.md') + ' (%d/%d reserved)' % (
+            result['reserved_executions'], result['maximum_executions']))
+    except (ValueError, OSError, subprocess.SubprocessError) as error:
+        print('benchmark: ' + str(error), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

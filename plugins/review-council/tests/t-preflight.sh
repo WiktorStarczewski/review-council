@@ -183,9 +183,9 @@ SH
     "$PF" --write "$T/pf-contract-fail" > "$T/pf.out" 2> "$T/pf.err"
   assert_eq "failed provider replay blocks preflight" "$?" 1
   assert_grep "failed provider replay is explained" "$T/pf.err" \
-    'provider contract replay failed after the roster probe'
-  assert_eq "provider replay runs after exactly one additional roster probe" \
-    "$(wc -l < "$RSTUB_ARGS" | tr -d ' ')" "8"
+    'provider contract replay failed before the roster probe'
+  assert_eq "failed static replay spends no additional roster probe" \
+    "$(wc -l < "$RSTUB_ARGS" | tr -d ' ')" "4"
   : > "$T/contract.calls"
   REVIEW_COUNCIL_CONTRACT_RUNNER="$contract_runner" \
     REVIEW_COUNCIL_CONTRACT_PROVIDER_VERSIONS='{"codex":"1","claude":"1"}' \

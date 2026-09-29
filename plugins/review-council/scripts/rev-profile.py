@@ -5,23 +5,22 @@ import argparse
 import hashlib
 import importlib.util
 import json
-import math
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
+LIB_DIR = Path(__file__).resolve().parent / "lib"
+if str(LIB_DIR) not in sys.path:
+    sys.path.insert(0, str(LIB_DIR))
+from usage import USAGE_FIELDS, add_usage, empty_usage, host_usage, reviewer_streams
 
-TERMINAL_TYPES = {"result", "turn.completed", "end"}
+
 REVIEW_ARTIFACT = re.compile(r"^r[A-Za-z0-9][A-Za-z0-9_.-]*-")
 RENDER_TIMING = re.compile(r"^r([A-Za-z0-9][A-Za-z0-9_.-]*)-render\.json$")
 VALIDATOR = Path(__file__).resolve().parent / "lib" / "validate-findings.py"
 EVIDENCE_SCRIPT = Path(__file__).resolve().parent / "rev-evidence.py"
-USAGE_FIELDS = (
-    "input_tokens", "output_tokens", "processed_tokens", "cached_input_tokens",
-    "cache_write_input_tokens", "cache_read_input_tokens", "cost_usd",
-)
 
 
 def session_directory(value):
@@ -37,6 +36,23 @@ def session_directory(value):
     if not os.access(resolved, os.R_OK | os.X_OK):
         raise argparse.ArgumentTypeError(f"{value}: session directory is not readable and traversable")
     return resolved
+
+
+def host_log_path(value):
+    path = Path(value).expanduser()
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as error:
+        raise argparse.ArgumentTypeError(f"{value}: host log does not exist or cannot be resolved") from error
+    if not resolved.is_file() or not os.access(resolved, os.R_OK):
+        raise argparse.ArgumentTypeError(f"{value}: host log is not a readable file")
+    return resolved
+
+
+def session_streams(directory):
+    adapters, _, _ = roster_metadata(directory)
+    return [(path, adapter_for_key(artifact_key(path), adapters))
+            for path in sorted(directory.glob("*.stream.*")) if artifact_key(path) is not None]
 
 
 def is_plan(path):
@@ -137,130 +153,10 @@ def adapter_for_key(key, adapters):
     return adapters.get(seat) if seat else None
 
 
-def terminal_record(path):
-    terminal = None
-    try:
-        with path.open(errors="replace") as stream:
-            for line in stream:
-                try:
-                    record = json.loads(line)
-                except (TypeError, ValueError):
-                    continue
-                if isinstance(record, dict) and record.get("type") in TERMINAL_TYPES:
-                    terminal = record
-    except OSError:
-        return None
-    return terminal
-
-
-def number(value, integer=False):
-    if value is None:
-        return 0 if integer else 0.0
-    if isinstance(value, bool):
-        raise ValueError("boolean usage metric")
-    if integer:
-        if not isinstance(value, int) or value < 0:
-            raise ValueError("invalid integer usage metric")
-        return value
-    if not isinstance(value, (int, float)):
-        raise ValueError("invalid numeric usage metric")
-    value = float(value)
-    if not math.isfinite(value) or value < 0:
-        raise ValueError("invalid finite usage metric")
-    return value
-
-
-def inferred_adapter(record):
-    if isinstance(record.get("stats"), dict):
-        return "gemini"
-    return {"result": "claude", "turn.completed": "codex", "end": "grok"}.get(record.get("type"))
-
-
-def record_usage(record, adapter=None):
-    kind = record.get("type")
-    provider = adapter or inferred_adapter(record) or "unknown"
-    shape = adapter if adapter in {"claude", "codex", "grok", "gemini"} else inferred_adapter(record)
-    container = "stats" if shape == "gemini" else "usage"
-    usage = record.get(container)
-    if container in record and usage is not None and not isinstance(usage, dict):
-        raise ValueError("invalid usage object")
-    usage = usage if isinstance(usage, dict) else {}
-    for key in (
-        "input_tokens", "output_tokens", "processed_tokens", "cached_input_tokens",
-        "cache_write_input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
-        "reasoning_output_tokens", "total_tokens",
-    ):
-        if key in usage:
-            number(usage[key], integer=True)
-    if "total_tokens" in usage and "output_tokens" in usage \
-            and usage["total_tokens"] < usage["output_tokens"]:
-        raise ValueError("total token count is below output token count")
-    cost = number(record.get("total_cost_usd") or usage.get("cost_usd") or record.get("cost_usd"))
-    cached_input = number(usage.get("cached_input_tokens"), integer=True)
-    cache_write = number(
-        usage.get("cache_write_input_tokens")
-        if usage.get("cache_write_input_tokens") is not None
-        else usage.get("cache_creation_input_tokens"),
-        integer=True,
-    )
-    cache_read = number(usage.get("cache_read_input_tokens"), integer=True)
-    if shape == "claude" or (shape is None and kind == "result"):
-        input_tokens = sum(number(usage.get(key), integer=True) for key in (
-            "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"
-        ))
-        output_tokens = number(usage.get("output_tokens"), integer=True)
-    elif shape == "codex":
-        input_tokens = number(usage.get("input_tokens"), integer=True)
-        output_tokens = number(usage.get("output_tokens"), integer=True)
-    elif shape == "gemini":
-        input_tokens = number(usage.get("input_tokens"), integer=True)
-        output_tokens = number(usage.get("output_tokens"), integer=True)
-    else:
-        output_tokens = number(usage.get("output_tokens"), integer=True)
-        total_tokens = number(usage.get("total_tokens"), integer=True)
-        if "total_tokens" in usage:
-            if total_tokens < output_tokens:
-                raise ValueError("total token count is below output token count")
-            input_tokens = total_tokens - output_tokens
-        else:
-            input_tokens = number(usage.get("input_tokens"), integer=True) + number(
-                usage.get("cache_read_input_tokens"), integer=True
-            )
-    return {
-        "provider": provider,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-        "processed_tokens": input_tokens + output_tokens,
-        "cached_input_tokens": cached_input,
-        "cache_write_input_tokens": cache_write,
-        "cache_read_input_tokens": cache_read,
-        "cost_usd": cost,
-    }
-
-
-def empty_usage():
-    return {
-        "calls": 0,
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "processed_tokens": 0,
-        "cached_input_tokens": 0,
-        "cache_write_input_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "cost_usd": 0.0,
-    }
-
-
 def empty_provider():
     item = empty_usage()
     item.update({"completed_calls": 0, "metered_calls": 0, "unmetered_calls": 0})
     return item
-
-
-def add_usage(target, usage):
-    target["calls"] += 1
-    for key in USAGE_FIELDS:
-        target[key] += usage[key]
 
 
 def empty_scope_projection(with_names=True):
@@ -676,8 +572,10 @@ def is_completed_result(path, receipt_version=0, legacy_no_exit_sha256=None):
     ).returncode == 0
 
 
-def profile_session(directory):
+def profile_session(directory, stream_usage=None):
     adapters, receipt_version, legacy_no_exit_sha256 = roster_metadata(directory)
+    if stream_usage is None:
+        stream_usage, _ = reviewer_streams(session_streams(directory))
     prompts = {"code": {"count": 0, "words": 0}, "plan": {"count": 0, "words": 0}}
     for path in directory.glob("*.prompt.md"):
         if artifact_key(path) is None:
@@ -698,6 +596,8 @@ def profile_session(directory):
             document = json.loads(path.read_text(errors="replace"))
         except (OSError, ValueError):
             continue
+        if document["summary"].startswith("INCOMPLETE PROOF"):
+            continue
         phase = "plan" if is_plan(path) else "code"
         results[phase]["calls"] += 1
         results[phase]["findings"] += len(document["findings"])
@@ -708,19 +608,11 @@ def profile_session(directory):
     metered_keys = set()
     stream_providers = {}
     invalid_usage = []
-    for path in directory.glob("*.stream.*"):
+    for path, _ in session_streams(directory):
         key = artifact_key(path)
-        if key is None:
-            continue
-        record = terminal_record(path)
-        if record is None:
-            continue
-        try:
-            item = record_usage(record, adapter_for_key(key, adapters))
-        except (TypeError, ValueError) as error:
-            invalid_usage.append({"stream": path.name, "reason": str(error)})
-            continue
-        if item["processed_tokens"] == 0 and item["cost_usd"] == 0:
+        item, invalid = stream_usage[path]
+        invalid_usage.extend(invalid)
+        if item is None or (item["processed_tokens"] == 0 and item["cost_usd_known_calls"] == 0):
             continue
         add_usage(usage, item)
         metered_keys.add(key)
@@ -759,10 +651,14 @@ def profile_session(directory):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--json", action="store_true", dest="as_json")
+    parser.add_argument("--host-log", action="append", default=[], type=host_log_path,
+                        metavar="PATH", help="Explicit native host log; mixed usage stays separate from reviewer totals")
     parser.add_argument("sessions", nargs="+", type=session_directory)
     args = parser.parse_args()
 
-    sessions = [profile_session(directory) for directory in args.sessions]
+    stream_usage, leaf_ids = reviewer_streams(
+        [stream for directory in args.sessions for stream in session_streams(directory)])
+    sessions = [profile_session(directory, stream_usage) for directory in args.sessions]
     totals = empty_usage()
     totals.update({"completed_calls": 0, "metered_calls": 0, "unmetered_calls": 0})
     totals["invalid_usage"] = 0
@@ -829,6 +725,14 @@ def main():
         "roster_signatures": roster_groups,
     }
     document = {"sessions": sessions, "totals": totals, "comparison": comparison}
+    if totals["unidentified_terminal_calls"]:
+        document["usage_identity_limit"] = (
+            "Terminal streams without message IDs are counted as artifact attempts; "
+            "mirrored requests cannot be deduplicated without stable identity.")
+    if args.host_log:
+        operations = {path.name for pattern in ("rev-*.sh", "rev-*.py")
+                      for path in Path(__file__).resolve().parent.glob(pattern)}
+        document["host_usage"] = host_usage(args.host_log, args.sessions, leaf_ids, operations)
 
     if args.as_json:
         print(json.dumps(document, indent=2, sort_keys=True, allow_nan=False))
@@ -857,6 +761,7 @@ def main():
                 len(scope["invalid_manifests"])
             )
         )
+        print("  usage_detail=" + usage_detail(usage))
         for invalid in scope["invalid_manifests"]:
             print("  evidence_invalid_detail=%s: %s" % (invalid["manifest"], invalid["reason"]))
         for invalid in session["invalid_usage"]:
@@ -908,6 +813,9 @@ def main():
             scope_totals["invalid_manifests"]
         )
     )
+    print("TOTAL_USAGE_DETAIL " + usage_detail(totals))
+    if "usage_identity_limit" in document:
+        print("USAGE_IDENTITY_LIMIT " + document["usage_identity_limit"])
     print(
         "TOTAL_READ_ACTIVITY audits=%d violating=%d calls=%d turns=%d output_bytes=%d max_output_bytes=%d invalid=%d packet_shards=%d packet_bytes=%d packet_ranges=%d source_reads:%d source_batches:%d opened_ranges:%d finding_citations:%d patch_proof_calls:%d patch_proof_turns:%d patch_proof_bytes:%d expected_chunks:%d opened_chunks:%d patch_modes:window:%d,chunk:%d"
         % (
@@ -929,6 +837,25 @@ def main():
         % (render_totals["panels"], render_totals["total_ms"], render_totals["seat_ms"],
            render_totals["invalid"])
     )
+    if args.host_log:
+        host = document["host_usage"]
+        for label, key in (("HOST_ENVELOPE", "envelope"), ("HOST_COUNCIL_OPERATIONS", "council_operations")):
+            item = host[key]
+            print("%s calls=%d processed=%d input=%d output=%d %s" % (
+                label, item["calls"], item["processed_tokens"], item["input_tokens"],
+                item["output_tokens"], usage_detail(item)))
+        print("HOST_ATTRIBUTION " + host["attribution"] + " " + host["cost_basis"])
+        for invalid in host["invalid_usage"]:
+            print("  host_usage_invalid_detail=%s: %s" % (invalid["stream"], invalid["reason"]))
+
+
+def usage_detail(usage):
+    return "uncached_input=%d reasoning_output=%d cache_write_5m_input=%d cache_write_1h_input=%d reported_cost_usd=%.2f cost_known=%d cost_unknown=%d terminal_identity_unknown=%d" % (
+        usage["uncached_input_tokens"], usage["reasoning_output_tokens"],
+        usage["cache_write_5m_input_tokens"], usage["cache_write_1h_input_tokens"],
+        usage["cost_usd"], usage["cost_usd_known_calls"], usage["cost_usd_unknown_calls"],
+        usage["unidentified_terminal_calls"])
+
 
 
 if __name__ == "__main__":

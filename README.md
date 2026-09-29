@@ -661,6 +661,7 @@ untracked.txt
 roster.json
 00-baseline.patch
 baseline.md
+baseline.json  # optional structured baseline
 findings.md
 rejected.md
 fix-plan.md
@@ -720,8 +721,8 @@ python3 plugins/review-council/scripts/rev-profile.py /tmp/rev-SESSION
 The profile separates:
 
 - completed, metered, and unmetered calls;
-- provider input, output, processed, cached-read, and cache-write tokens;
-- provider-reported cost where available;
+- provider input, uncached input, output, reasoning output, and cache categories;
+- provider-reported cost, with known and unknown cost calls separated;
 - prompt words for code and plan panels;
 - full, assigned, delta, evidence, and avoided projected scope words;
 - patch proof calls, turns, visible bytes, chunks, and delivery modes;
@@ -732,6 +733,16 @@ The profile separates:
 Mixed-roster output is marked as a measurement boundary. Historical baselines retain
 the roster that produced them. Planned word savings remain separate from actual
 provider usage and cost.
+
+Supply explicit `--host-log` paths to measure host envelopes and the conservative
+session-linked operation subset separately. `rev-context.py` provides a compact
+session briefing and a local watch with fixed ten-minute status events. See
+[cost accounting](docs/cost-accounting.md) for attribution limits, static prechecks,
+structured baselines and measurement guidance.
+
+Use the [reusable correctness, time and cost benchmarks](eval/COST_BENCHMARKS.md)
+to compare frozen plugin versions with provider-free checks and a bounded Terra lane.
+Raw usage, dated credit estimates and manually adjudicated quality remain separate.
 
 ## Stack reviews
 

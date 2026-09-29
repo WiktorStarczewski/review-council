@@ -18,12 +18,14 @@ else
 fi
 OUTS=(); TMPS=(); EVIDENCE_TMP=""; EVIDENCE_CHECK_TMP=""; FRAGMENTS=""; RULES_TMP=""; PATCH_TMP=""
 RENDER_OUT=""; TIMING_TMP=""; PUBLISHED=0
+BASELINE_TMP=""; BASELINE_FORMAT=""; BASELINE_FILE=""
 cleanup_prompt() {
   rm -f -- "${EVIDENCE_TMP:-}" 2>/dev/null || true
   rm -f -- "${EVIDENCE_CHECK_TMP:-}" 2>/dev/null || true
   rm -f -- "${RULES_TMP:-}" 2>/dev/null || true
   rm -f -- "${PATCH_TMP:-}" 2>/dev/null || true
   rm -f -- "${TIMING_TMP:-}" 2>/dev/null || true
+  rm -f -- "${BASELINE_TMP:-}" 2>/dev/null || true
   [ -z "${FRAGMENTS:-}" ] || rm -rf -- "$FRAGMENTS" 2>/dev/null || true
   [ "$PUBLISHED" = 1 ] \
     || rm -f -- ${TMPS[@]+"${TMPS[@]}"} ${OUTS[@]+"${OUTS[@]}"} "${RENDER_OUT:-}" 2>/dev/null || true
@@ -134,7 +136,14 @@ if [ -n "$EVIDENCE" ]; then
     || die "evidence manifest does not match session and prompt label: $EVIDENCE"
 fi
 HAS_BASELINE=0; HAS_REJECTED=0; HAS_CONTEXT=0
-if is_present "$S/baseline.md"; then require_regular "$S/baseline.md" "baseline"; HAS_BASELINE=1; fi
+if is_present "$S/baseline.json"; then
+  require_regular "$S/baseline.json" "structured baseline"
+  [ ! -L "$S/baseline.json" ] || die "structured baseline must not be a symlink: $S/baseline.json"
+  BASELINE_FORMAT=json; BASELINE_FILE="$S/baseline.json"; HAS_BASELINE=1
+elif is_present "$S/baseline.md"; then
+  require_regular "$S/baseline.md" "baseline"
+  BASELINE_FORMAT=markdown; BASELINE_FILE="$S/baseline.md"; HAS_BASELINE=1
+fi
 if is_present "$S/rejected.md"; then require_regular "$S/rejected.md" "rejected-findings digest"; HAS_REJECTED=1; fi
 if is_present "$S/context.md"; then require_regular "$S/context.md" "decision digest"; HAS_CONTEXT=1; fi
 SHOW_PR=0; SHOW_UNTRACKED=0; SHOW_REJECTED=0; SHOW_CONTEXT=0
@@ -201,10 +210,49 @@ if [ -z "$DEPS_ROOT" ] && [ -n "$EVIDENCE" ]; then
     "$EVIDENCE") || die "cannot read the dependency view of $EVIDENCE"
   DEPS_ROOT=$DEPS_VIEW
 fi
-[ "$HAS_BASELINE" = 0 ] || check_read "$S/baseline.md" "baseline"
+[ "$HAS_BASELINE" = 0 ] || check_read "$BASELINE_FILE" "baseline"
 [ "$HAS_REJECTED" = 0 ] || check_read "$S/rejected.md" "rejected-findings digest"
 [ "$HAS_CONTEXT" = 0 ] || check_read "$S/context.md" "decision digest"
 [ "$NEEDS_SCHEMA" = 0 ] || check_read "$SCHEMA" "findings schema"
+if [ "$BASELINE_FORMAT" = json ]; then
+  BASELINE_TMP=$(mktemp "$S/.rev-baseline.XXXXXX") || die "cannot create baseline fragment in $S"
+  python3 - "$BASELINE_FILE" > "$BASELINE_TMP" <<'PY'
+import json
+import sys
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('duplicate baseline field: ' + key)
+        result[key] = value
+    return result
+
+def nonempty(value):
+    return isinstance(value, str) and bool(value.strip()) and '\x00' not in value
+
+try:
+    with open(sys.argv[1], encoding='utf-8') as stream:
+        document = json.load(stream, object_pairs_hook=unique_object)
+    if (not isinstance(document, dict) or set(document) != {'schema_version', 'checks'}
+            or type(document['schema_version']) is not int or document['schema_version'] != 1
+            or not isinstance(document['checks'], list) or not document['checks']):
+        raise ValueError('baseline needs schema_version 1 and a nonempty checks list')
+    for index, check in enumerate(document['checks'], 1):
+        required = {'command', 'outcome', 'applicability'}
+        if (not isinstance(check, dict) or not required <= set(check)
+                or set(check) - required - {'failure', 'log'}
+                or any(not nonempty(value) for value in check.values())
+                or check['outcome'] not in ('passed', 'failed', 'skipped')
+                or (check['outcome'] == 'failed') != ('failure' in check)):
+            raise ValueError('invalid baseline check ' + str(index))
+    print(json.dumps(document, ensure_ascii=True, separators=(',', ':')))
+except (OSError, ValueError) as error:
+    raise SystemExit('baseline: ' + str(error))
+PY
+  [ "$?" = 0 ] || die "invalid structured baseline: $BASELINE_FILE"
+  BASELINE_FILE=$BASELINE_TMP
+fi
 if [ -n "$EVIDENCE" ] && [ -n "$PANEL" ]; then
   FRAGMENTS=$(mktemp -d "$S/.rev-evidence-fragment.XXXXXX") || die "cannot create evidence fragments in $S"
   # The manifest phase is authoritative; render-panel rejects a conflicting --phase.
@@ -230,6 +278,36 @@ if [ -n "$EVIDENCE" ]; then
   require_regular "$INSTRUCTIONS" "repository instruction snapshot"
   check_read "$INSTRUCTIONS" "repository instruction snapshot"
 fi
+COMPILED_MODES=$(python3 - "$HERE/lib/review_limits.py" "$EVIDENCE" "${SEATS[@]}" <<'PY'
+import json
+import runpy
+import sys
+
+limits = runpy.run_path(sys.argv[1])
+print('limits', limits['READ_LINES'], limits['REPOSITORY_EXPANSION_CALL_LIMIT'],
+      limits['MANDATORY_REPOSITORY_READ_LIMIT'])
+manifest = None
+if sys.argv[2]:
+    with open(sys.argv[2], encoding='utf-8') as stream:
+        manifest = json.load(stream)
+for seat in sys.argv[3:]:
+    mode, packets, segments = 'windows', False, False
+    if manifest:
+        mode = manifest['assignments'][seat]['patch_read_mode']
+        context = manifest['source_context']['seats'][seat]
+        packets = bool(context['shards'])
+        segments = any(row['segments'] for row in context['required_source_ranges'])
+    print('mode', mode, int(packets), int(segments))
+PY
+) || die "cannot compile prompt limits and evidence modes"
+PATCH_MODES=(); PACKET_MODES=(); SEGMENT_MODES=()
+while read -r kind first second third; do
+  if [ "$kind" = limits ]; then
+    READ_LINES=$first; CALL_LIMIT=$second; REFUTATION_START=$third
+  else
+    PATCH_MODES+=("$first"); PACKET_MODES+=("$second"); SEGMENT_MODES+=("$third")
+  fi
+done <<< "$COMPILED_MODES"
 PATCH_ARTIFACT=""; PATCH_AVAILABLE=0
 if [ -z "$RO" ]; then
   SESSION_DIR=$(cd "$S" && pwd -P) || die "cannot resolve session directory: $S"
@@ -380,24 +458,65 @@ You are one independent reviewer on a read-only multi-model code review panel. S
 
 - Read only inside the repository, exact review-session artifacts named in this prompt, document inputs listed in this prompt, and explicitly named pinned dependency roots. Do not read any other review-session artifact, user or global rules, memories, skills, caches, other checkouts, or unrelated files.
 - Never edit files or run a command that changes the repository or its dependencies. Never run an interpreter or inline script (`node`, `python3`, `bash -c`, `eval`): the read-only policy refuses it, and a refused command fails your whole review. Test runners on existing files (`npx tsc --noEmit`, `cargo test`) are the only execution allowed. If a claim can only be settled by running new code, keep the finding and say in the finding that it is unverified at runtime.
-- Clean-room ordering: Do NOT read the diff first. For a clean-room lens, write the smallest design before any patch or source read. For every other lens, begin with assigned-hunk discovery.
-
-## Bounded evidence protocol
-1. After any required clean-room design, read every byte of the assigned patch using its rendered mode. In chunk mode, obey the rendered patch chunk batch limit, reading only consecutive chunks in exact order and in full. In window mode, use consecutive windows of at most 240 lines until coverage is complete. A skipped, partial, repeated, or out-of-order chunk read fails your whole review. Then read every listed source-context packet in full before source expansion. Treat each packet entry as exact original source at its recorded path and one-based lines.
-2. Locate the enclosing symbol or named section, then search definitions, direct references, related tests, and config gates. When `Source read required` is true, resolve every relevant omission with a bounded original-source read.
-3. Read the smallest useful line window around each match. Every source Read call must set an explicit one-based `offset` and a `limit` of at most 240 lines. Every Grep or search call must set a result limit of at most 80. Only exact full-read artifacts and document inputs named in this prompt are exceptions.
-4. Shell commands that print source, diffs, or logs must select at most 240 inclusive lines, so `END - START + 1 <= 240`. Shell searches over multiple files need a global `| head -81` limiter; at most 80 result lines are accepted, and an 81st line invalidates the audit. `rg --max-count` alone is per file. Use portable byte-preserving `sed -n 'START,ENDp' 'FILE'` for source windows. Never put backticks or command substitutions in shell search patterns. Do not use `nl -ba ... | sed`; its added prefixes change the bytes, and a rejected call invalidates the audit. `head` limits lines, not bytes: keep searches off generated or minified files such as `dist/`, where one line can pass the output ceiling. Read original source from the working tree; `git show` of the base or any other revision is context only and never satisfies a required read or a citation.
-5. Batch independent bounded tool calls into one turn with a 32 KiB combined output ceiling. Ordered patch-chunk, required-source-segment, and evidence-index phases may advance in one turn using at most the rendered proof read limit and a 60 KiB combined output ceiling. Source-context packets and repository reads keep the ordinary 32 KiB turn ceiling, and repository expansion begins in a later turn. Keep each shell tool call to one producer pipeline. Never mix source reads and searches in one shell call.
 EOC
+    if [ "$CLEAN_ROOM" = 1 ]; then
+      echo '- Clean-room ordering: Do NOT read the diff first. For this lens, write the smallest design before any patch or source read.'
+    fi
+    echo
+    echo '## Bounded evidence protocol'
+    if [ "$CLEAN_ROOM" = 1 ]; then
+      printf '1. After the required clean-room design, '
+    else
+      printf '1. First, begin with assigned-hunk discovery: '
+    fi
+    printf 'read every byte of the assigned patch using its rendered mode. '
+    if [ "$PATCH_MODE" = chunks ]; then
+      printf 'In chunk mode, obey the rendered patch chunk batch limit, reading only consecutive chunks in exact order and in full. A skipped, partial, or out-of-order chunk read fails your whole review. Do not repeat completed chunk reads.'
+    else
+      printf 'In window mode, use consecutive windows of at most %s lines until coverage is complete.' "$READ_LINES"
+    fi
+    if [ "$HAS_PACKETS" = 1 ]; then
+      printf ' Then read every listed source-context packet in full before source expansion. Treat each packet entry as exact original source at its recorded path and one-based lines.'
+    fi
+    echo
+    printf '2. Locate the enclosing symbol or named section, then search definitions, direct references, related tests, and config gates.'
+    [ -z "$EVIDENCE" ] || printf ' When `Source read required` is true, resolve every relevant omission with a bounded original-source read.'
+    echo
+    printf '3. Read the smallest useful line window around each match. '
+    case "$ADAPTER" in
+      agent|claude)
+        printf 'Every source Read call must set an explicit one-based `offset` and a `limit` of at most %s lines. Every Grep or search call must set a result limit of at most 80. ' "$READ_LINES";;
+      codex) ;;
+      *) printf 'Every source read_file call must select an explicit one-based start and at most %s lines. Every search call must set a result limit of at most 80. ' "$READ_LINES";;
+    esac
+    echo 'Only exact full-read artifacts and document inputs named in this prompt are exceptions.'
+    printf '4. Shell commands that print source, diffs, or logs must select at most %s inclusive lines, so `END - START + 1 <= %s`. ' "$READ_LINES" "$READ_LINES"
+    cat <<'EOC'
+Shell searches over multiple files need a global `| head -81` limiter; at most 80 result lines are accepted, and an 81st line invalidates the audit. `rg --max-count` alone is per file. Use portable byte-preserving `sed -n 'START,ENDp' 'FILE'` for source windows. Never put backticks or command substitutions in shell search patterns. Do not use `nl -ba ... | sed`; its added prefixes change the bytes, and a rejected call invalidates the audit. `head` limits lines, not bytes: keep searches off generated or minified files such as `dist/`, where one line can pass the output ceiling. Read original source from the working tree; `git show` of the base or any other revision is context only and never satisfies a required read or a citation.
+EOC
+    printf '5. Batch independent bounded tool calls into one turn with a 32 KiB combined output ceiling. '
+    if [ -n "$EVIDENCE" ]; then
+      printf 'Ordered '
+      [ "$PATCH_MODE" != chunks ] || printf 'patch-chunk, '
+      [ "$HAS_SEGMENTS" != 1 ] || printf 'required-source-segment, '
+      printf 'evidence-index phases may advance in one turn using at most the rendered proof read limit and a 60 KiB combined output ceiling. '
+      if [ "$HAS_PACKETS" = 1 ]; then printf 'Source-context packets and repository reads keep the ordinary 32 KiB turn ceiling, and '; fi
+      printf 'repository expansion begins in a later turn. '
+    fi
+    echo 'Keep each shell tool call to one producer pipeline. Never mix source reads and searches in one shell call.'
     printf '%s' "6. Expand to another bounded block, file, or pinned dependency only to answer a concrete question that could prove or refute a finding. Name the concrete symbol or invariant question in your reasoning, never as a comment inside the command, then make the tool call that bounded window."
     if [ -n "$DEPS_ROOT" ]; then printf ' Read pinned dependency source only under %s.' "$DEPS_ROOT"; fi
     echo
+    printf '7. Stop that evidence path when the question is answered. Finish every assigned check and expand again when evidence is insufficient; never treat '
+    [ -z "$EVIDENCE" ] || printf 'the navigation index or '
+    echo 'a summary as proof.'
+    if [ -n "$EVIDENCE" ]; then printf '8. After the evidence index, '; else printf '8. After assigned-patch discovery, '; fi
+    printf 'use at most %s repository tool calls. Start no new evidence path after call %s; use the remaining calls only to refute or cite candidates, then return the required JSON.\n\n' "$CALL_LIMIT" "$REFUTATION_START"
+    echo '## Evidence and output'
+    printf '%s' '- Every finding names a file and lines you opened yourself. Its cited range must intersect '
+    if [ "$HAS_PACKETS" = 1 ]; then printf 'a source-context packet range you opened or '; fi
     cat <<'EOC'
-7. Stop that evidence path when the question is answered. Finish every assigned check and expand again when evidence is insufficient; never treat the navigation index or a summary as proof.
-8. After the evidence index, use at most 16 repository tool calls. Start no new evidence path after call 12; use the remaining calls only to refute or cite candidates, then return the required JSON.
-
-## Evidence and output
-- Every finding names a file and lines you opened yourself. Its cited range must intersect a source-context packet range you opened or an audited original source range from a bounded source read. Search results, navigation summaries, and patches do not establish citation coverage. `evidence` states what the source shows.
+an audited original source range from a bounded source read. Search results, navigation summaries, and patches do not establish citation coverage. `evidence` states what the source shows.
 - Try to refute each candidate. `confidence` is your honest probability that it remains real.
 - P0: incorrect behavior, security hole, data loss, or crash. P1: reachable bug, edge case, or broken contract. P2: maintainability, performance, missing test, or unclear API. P3: trivial style, naming, or comment issue.
 - One strong finding beats several weak ones. No style findings unless P3 and trivial.
@@ -416,7 +535,11 @@ EOC
     case "$CODEX_SOURCE_BATCH" in 0) BATCH_ENABLED=false;; 1) BATCH_ENABLED=true;; *) die "REV_CODEX_SOURCE_BATCH must be 0 or 1";; esac
     echo "Codex source batching enabled: $BATCH_ENABLED"
     if [ "$CODEX_SOURCE_BATCH" = 1 ]; then
-      echo "Codex source batching: after assigned patch and source-context packet reads are complete, one Bash call may contain semicolon-separated pure \`sed -n 'START,ENDp' 'FILE'\` producers. Each literal in-scope window and the combined selected lines must be at most 240 lines; combined visible output must stay at or below 32 KiB. Do not overlap or duplicate windows, or mix source windows with searches, metadata, transforms, pipes, redirections, variables, substitutions, or conditional operators."
+      printf 'Codex source batching: after assigned patch'
+      [ "$HAS_PACKETS" != 1 ] || printf ' and source-context packet'
+      [ "$HAS_SEGMENTS" != 1 ] || printf ' and required source segment'
+      [ -z "$EVIDENCE" ] || printf ' and evidence index'
+      echo " reads are complete, one Bash call may contain semicolon-separated pure \`sed -n 'START,ENDp' 'FILE'\` producers. Each literal in-scope window and the combined selected lines must be at most $READ_LINES lines; combined visible output must stay at or below 32 KiB. Do not overlap or duplicate windows, or mix source windows with searches, metadata, transforms, pipes, redirections, variables, substitutions, or conditional operators."
     fi
     echo
   fi
@@ -436,13 +559,13 @@ EOC
         echo "Exact frozen assigned patch: $PATCH_ARTIFACT"
         case "$ADAPTER" in
           codex)
-            echo "First evidence action after any required clean-room design: run portable bounded sed windows over $PATCH_ARTIFACT, starting at line 1."
+            echo "$FIRST_EVIDENCE: run portable bounded sed windows over $PATCH_ARTIFACT, starting at line 1."
             ;;
           agent|claude)
-            echo "First evidence action after any required clean-room design: use Read to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most 240 lines, starting at line 1."
+            echo "$FIRST_EVIDENCE: use Read to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most $READ_LINES lines, starting at line 1."
             ;;
           *)
-            echo "First evidence action after any required clean-room design: use read_file to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most 240 lines, starting at line 1."
+            echo "$FIRST_EVIDENCE: use read_file to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most $READ_LINES lines, starting at line 1."
             ;;
         esac
         echo "Do not generate a live diff from the current worktree."
@@ -504,8 +627,17 @@ EOC
   fi
   echo "## Your lens this round: $LENS"; lens_text "$LENS"; echo; echo "Round emphasis: $EMPH"; echo
   if [ "$HAS_BASELINE" = 1 ]; then
-    echo "## Baseline (before any review fix)"; cat "$S/baseline.md"; echo
-    echo "Anything already failing above is pre-existing, not a finding of this change."; echo
+    echo "## Baseline (before any review fix)"
+    [ "$BASELINE_FORMAT" != json ] || echo '```json'
+    cat "$BASELINE_FILE"
+    [ "$BASELINE_FORMAT" != json ] || echo '```'
+    echo
+    if [ "$BASELINE_FORMAT" = json ]; then
+      echo 'Treat a failure as pre-existing only when its command, failure identity, and applicability match the observed failure.'
+    else
+      echo "Anything already failing above is pre-existing, not a finding of this change."
+    fi
+    echo
   fi
   echo "## Already rejected - do not resurface these"
   if [ "$SHOW_REJECTED" = 1 ]; then cat "$S/rejected.md"; else echo "(none yet)"; fi; echo
@@ -530,6 +662,9 @@ SEAT_MS=(); VALIDATE_ARGS=()
 for i in "${!SEATS[@]}"; do
   [ -z "$PANEL" ] || SEAT_STARTED=$(now_ms) || die "cannot read the clock"
   SEAT=${SEATS[$i]}; LENS=${LENSES[$i]}; EMPH=${EMPHASES[$i]}; ADAPTER=${ADAPTERS[$i]}; OUT=${OUTS[$i]}
+  PATCH_MODE=${PATCH_MODES[$i]}; HAS_PACKETS=${PACKET_MODES[$i]}; HAS_SEGMENTS=${SEGMENT_MODES[$i]}
+  CLEAN_ROOM=0; FIRST_EVIDENCE='First evidence action'
+  case "+$LENS+" in *+clean-room+*) CLEAN_ROOM=1; FIRST_EVIDENCE+=' after required clean-room design';; esac
   case "$ADAPTER" in agent|gemini) INLINE_SCHEMA=1;; *) INLINE_SCHEMA=0;; esac
   [ "$PHASE" != verification ] || EMPH="${EMPH:+$EMPH }$SIBLING_SITE_CHECK"
   if [ -n "$FRAGMENTS" ]; then

@@ -1,0 +1,24 @@
+{
+  "id": "boundary-ledger",
+  "mode": "legacy",
+  "files": ["ledger.py"],
+  "defects": [
+    {
+      "id": "quota-equality",
+      "file": "ledger.py",
+      "line_start": 39,
+      "line_end": 42,
+      "description": "A valid credit bringing the daily total exactly to the inclusive limit is rejected by >= instead of >.",
+      "keyword_groups": [["quota", "limit", "cap"], ["equal", "exact", "boundary", ">="]]
+    },
+    {
+      "id": "exclusive-window-end",
+      "file": "ledger.py",
+      "line_start": 56,
+      "line_end": 59,
+      "description": "entries_between includes events exactly at end, violating [start, end) and double-counting adjacent query windows.",
+      "keyword_groups": [["end", "upper", "window", "interval"], ["exclusive", "inclusive", "half-open", "boundary", "double"]]
+    }
+  ],
+  "lens": "correctness-boundaries"
+}

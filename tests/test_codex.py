@@ -79,12 +79,25 @@ class CodexTests(unittest.TestCase):
 
     def test_provider_probes_bind_the_selected_effort(self):
         commands = []
+        environments = []
+        state_home = self.root / 'codex-state'
+        state_home.mkdir()
+        auth = state_home / 'auth.json'
+        auth.write_text('{}')
 
-        def capture(command, _timeout):
+        def capture(command, _timeout, environment=None):
             commands.append(command)
+            environments.append(environment)
+            if environment is not None:
+                private = Path(environment['CODEX_HOME'])
+                self.assertNotEqual(private, state_home)
+                self.assertEqual(stat.S_IMODE(private.stat().st_mode), 0o700)
+                self.assertEqual((private / 'auth.json').resolve(), auth.resolve())
+                self.assertFalse((private / 'config.toml').exists())
             return 0, 'OK', ''
 
-        with patch.object(self.roster, 'run', side_effect=capture):
+        with patch.dict(os.environ, dict(self.env, CODEX_HOME=str(state_home))), \
+             patch.object(self.roster, 'run', side_effect=capture):
             self.assertEqual(
                 self.roster.probe_seat(
                     self.roster.make_seat('sol', 'codex', 'gpt-5.6-sol', 'max')),
@@ -96,6 +109,10 @@ class CodexTests(unittest.TestCase):
                 (None, None, None),
             )
         self.assertIn('model_reasoning_effort=max', commands[0])
+        self.assertIn('--ignore-user-config', commands[0])
+        self.assertIn('project_doc_max_bytes=0', commands[0])
+        self.assertFalse(Path(environments[0]['CODEX_HOME']).exists())
+        self.assertIsNone(environments[1])
         self.assertEqual(commands[1][commands[1].index('--effort') + 1], 'max')
 
     def test_repeat_seats_do_not_satisfy_lab_floor(self):

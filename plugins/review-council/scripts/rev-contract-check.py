@@ -115,7 +115,9 @@ def file_hashes(plugin):
     hashes = {}
     for name in sorted(paths):
         path = plugin / name
-        hashes[name] = digest(path.read_bytes()) if path.is_file() else None
+        hashes[name] = ({'sha256': digest(path.read_bytes()),
+                         'mode': stat.S_IMODE(path.stat().st_mode)}
+                        if path.is_file() else None)
     return hashes
 
 
@@ -214,6 +216,7 @@ def contract_executor(subject_plugin, subject_alias):
         'plugin': str(plugin),
         'runner': str(runner),
         'runner_sha256': runner_hash,
+        'runner_mode': stat.S_IMODE(runner.stat().st_mode),
         'execution': execution_policy(),
     }
 
@@ -430,18 +433,25 @@ def core_roster(path):
     return result
 
 
-def contract_identity(plugin, executor, roster, touched, subject_boundaries):
-    core = core_roster(roster)
+def static_identity(plugin, executor, touched, subject_boundaries):
     return {
         'schema_version': 2,
+        'phase': 'static',
         'boundaries': file_hashes(plugin),
         'executor': executor,
-        'provider_versions': provider_versions(row['adapter'] for row in core),
-        'core_roster': core,
         'subject_boundaries': subject_boundaries,
         'touched_boundaries': touched,
         'tests': list(CONTRACT_TESTS),
     }
+
+
+def contract_identity(local_identity, roster):
+    core = core_roster(roster)
+    identity = dict(local_identity)
+    identity.pop('phase')
+    identity['provider_versions'] = provider_versions(row['adapter'] for row in core)
+    identity['core_roster'] = core
+    return identity
 
 
 def validate_receipt(raw, identity, key, touched, source):
@@ -654,14 +664,32 @@ def print_contract_failure(failure):
         sys.stderr.buffer.flush()
 
 
+def replay_receipt(plugin, runner, executor, identity, key, touched):
+    environment = dict(os.environ)
+    environment.update(NO_COLOR='1', TERM='dumb')
+    outputs, failure = run_contracts(runner, plugin, environment, executor['execution'])
+    if failure is not None:
+        print_contract_failure(failure)
+        return None
+    return encoded({'schema_version': 2, 'key': key, 'identity': identity,
+                    'touched_boundaries': touched, 'log_sha256': digest(b''.join(outputs))})
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', required=True)
     parser.add_argument('--session', required=True)
     parser.add_argument('--base', required=True)
-    parser.add_argument('--roster', required=True)
+    parser.add_argument('--roster')
+    parser.add_argument('--static-check', action='store_true')
+    parser.add_argument('--static-result')
     parser.add_argument('--verify-only', action='store_true')
     args = parser.parse_args()
+    if args.static_check:
+        if not args.static_result or args.verify_only:
+            parser.error('--static-check requires --static-result and excludes --verify-only')
+    elif not args.roster:
+        parser.error('--roster is required for authoritative replay')
     root_alias = Path(args.root).expanduser().absolute()
     root = root_alias.resolve()
     session = Path(args.session).resolve()
@@ -676,12 +704,39 @@ def main():
         return 0
     subject_alias, _ = source_plugin(root_alias)
     plugin, runner, executor = contract_executor(subject_plugin, subject_alias or subject_plugin)
-    identity = contract_identity(
-        plugin, executor, args.roster, touched,
-        subject_boundary_hashes(subject_plugin, prefix, touched))
-    key = digest(encoded(identity))
+    subject_boundaries = subject_boundary_hashes(subject_plugin, prefix, touched)
     cache_root = Path(os.environ.get(
         'REVIEW_COUNCIL_CACHE_DIR', '~/.cache/review-council')).expanduser().resolve()
+    local_identity = static_identity(plugin, executor, touched, subject_boundaries)
+    local_key = digest(encoded(local_identity))
+
+    def require_unchanged_inputs():
+        _, _, current_executor = contract_executor(subject_plugin, subject_alias or subject_plugin)
+        current_touched = sorted(path for path in changed_paths(root, args.base)
+                                 if is_boundary(path, prefix))
+        current = static_identity(
+            plugin, current_executor, current_touched,
+            subject_boundary_hashes(subject_plugin, prefix, current_touched))
+        if current != local_identity:
+            raise ValueError('static contract inputs changed during replay')
+
+    if args.static_check:
+        cache_path = cache_root / 'contracts' / 'static' / (local_key + '.json')
+        if cache_path.is_file():
+            raw = receipt_bytes(cache_path, 'cached static')
+            validate_receipt(raw, local_identity, local_key, touched, 'cached static')
+        else:
+            raw = replay_receipt(plugin, runner, executor, local_identity, local_key, touched)
+            if raw is None:
+                return 2
+            require_unchanged_inputs()
+            publish(cache_path, raw)
+        result_path = Path(args.static_result).absolute()
+        publish(result_path, raw)
+        print(result_path)
+        return 0
+    identity = contract_identity(local_identity, args.roster)
+    key = digest(encoded(identity))
     cache_path = cache_root / 'contracts' / (key + '.json')
     session_path = session / ('contract-pass-' + key + '.json')
     if args.verify_only:
@@ -691,22 +746,25 @@ def main():
         validate_receipt(raw, identity, key, touched, 'session')
         print(session_path)
         return 0
+    local_result = None
+    if args.static_result:
+        local_result = validate_receipt(
+            receipt_bytes(Path(args.static_result).absolute(), 'staged static'),
+            local_identity, local_key, touched, 'staged static')
+        require_unchanged_inputs()
     if cache_path.is_file():
         raw = receipt_bytes(cache_path, 'cached')
         validate_receipt(raw, identity, key, touched, 'cached')
         publish(session_path, raw)
         print(session_path)
         return 0
-    environment = dict(os.environ)
-    environment.update(NO_COLOR='1', TERM='dumb')
-    outputs, failure = run_contracts(runner, plugin, environment, executor['execution'])
-    if failure is not None:
-        print_contract_failure(failure)
-        return 2
-    log_hash = digest(b''.join(outputs))
-    receipt = {'schema_version': 2, 'key': key, 'identity': identity,
-               'touched_boundaries': touched, 'log_sha256': log_hash}
-    raw = encoded(receipt)
+    if local_result is not None:
+        raw = encoded({'schema_version': 2, 'key': key, 'identity': identity,
+                       'touched_boundaries': touched, 'log_sha256': local_result['log_sha256']})
+    else:
+        raw = replay_receipt(plugin, runner, executor, identity, key, touched)
+        if raw is None:
+            return 2
     publish(cache_path, raw)
     publish(session_path, raw)
     print(session_path)
