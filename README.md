@@ -4,17 +4,20 @@ Review Council runs one change through independent reviewer seats, verifies ever
 claim against source, fixes confirmed defects, reruns project gates, and repeats only
 while material risk remains.
 
-One exact council, used throughout this README, is:
+One required council, used throughout this README, is:
 
 | Seat | Provider | Model | Effort | Primary role |
 | --- | --- | --- | --- | --- |
-| `codex-sol` | OpenAI | `gpt-5.6-sol` | `max` | independent review |
-| `codex-terra` | OpenAI | `gpt-5.6-terra` | `max` | independent review |
+| `codex-sol` | OpenAI | newest visible Sol | `xhigh` | independent review |
+| `codex-luna` | OpenAI | newest visible Luna | `xhigh` | independent review |
 | `opus` | Anthropic | `opus` | `max` | independent review |
 | `sonnet` | Anthropic | `sonnet` | `max` | independent review |
 
-The roster is built and probed at run time. Exact configuration makes this
-four-seat roster a requirement instead of a silent preference.
+The roster resolves `latest-sol` and `latest-luna` from the current Codex model
+catalog on each build, then freezes exact models and efforts before probing.
+Configuration makes this four-seat roster a requirement instead of a silent preference.
+Latest-family selectors and `xhigh` are opt-in configuration; unconfigured selection
+still chooses the newest two visible models at their highest supported effort.
 
 Grok is retired from live rosters. Gemini remains supported as an optional seat but is
 excluded from the exact four-seat configuration above.
@@ -181,11 +184,8 @@ Create `~/.config/review-council/config.json`:
 ```json
 {
   "exclude": ["gemini"],
-  "pin": {
-    "codex-sol": { "effort": "max" },
-    "codex-terra": { "effort": "max" }
-  },
-  "codex_models": ["gpt-5.6-sol", "gpt-5.6-terra"],
+  "codex_models": ["latest-sol", "latest-luna"],
+  "codex_effort": "xhigh",
   "claude_models": ["opus", "sonnet"],
   "extras": false,
   "min_labs": 2,
@@ -195,9 +195,9 @@ Create `~/.config/review-council/config.json`:
 
 This means:
 
-- both configured OpenAI models must exist and pass their probes;
+- the newest visible Sol and Luna must support `xhigh` and pass their probes;
 - both configured Anthropic model families must pass their probes;
-- all four seats run at maximum effort;
+- OpenAI seats use `xhigh`; Anthropic seats use `max`;
 - Gemini and the optional `codex-review` extra are absent;
 - at least two provider labs must be available before ordinary execution;
 - quota fallback may temporarily preserve seat count with visible substitutions.
@@ -559,7 +559,7 @@ Quota fallback is off by default. Enable it with:
 
 | Failed preferred provider | Temporary substitutes |
 | --- | --- |
-| Anthropic quota or capacity | unique Terra seats |
+| Anthropic quota or capacity | unique selected Terra seats, or selected Luna seats when Terra is absent |
 | OpenAI quota or capacity | unique Sonnet seats |
 
 Rules:
@@ -643,7 +643,7 @@ commit, squash, push, or require code convergence.
 During an active run, `rev-status.sh` reports one line every ten minutes:
 
 ```text
-r3/adaptive triage | sol: done 4f 9m | terra: running 14m | opus: done 3f 8m | sonnet: done 2f 7m | open P0:0 P1:1 P2:3 fixed 6
+r3/adaptive triage | sol: done 4f 9m | luna: running 14m | opus: done 3f 8m | sonnet: done 2f 7m | open P0:0 P1:1 P2:3 fixed 6
 ```
 
 Each seat is `running`, `done`, `failed`, or `dropped`, with elapsed time and the last
@@ -889,7 +889,8 @@ and receipt implementation.
 | --- | --- | --- |
 | `exclude` | `[]` | omit detected labs or seats |
 | `pin` | `{}` | override a detected seat model or effort |
-| `codex_models` | newest two visible | require one or two exact OpenAI model slugs |
+| `codex_models` | newest two visible | require one or two exact slugs or `latest-<family>` selectors |
+| `codex_effort` | highest supported | require one supported high effort for all OpenAI seats |
 | `claude_models` | absent | require exact `opus` and/or `sonnet` families |
 | `claude_seats` | `1` | legacy count of independent Opus seats, mutually exclusive with `claude_models` |
 | `claude_seat` | `true` | disable detected Claude seats when false |

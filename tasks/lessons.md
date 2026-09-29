@@ -244,3 +244,8 @@
 - Frozen verification trees are read-only. Tests and benchmark setup must make their private working copies writable, preserve the sealed originals, and exercise the read-only case directly.
 - Preserve an executable snapshot of the benchmark engine as well as its hash, so retained experiments remain reportable after harness fixes.
 - After a frozen-copy permission failure, inspect every new copy-and-write setup before restarting the complete gate; Python and shell copies can have the same failure.
+
+- Separate model and effort changes from workflow experiments. Freeze and measure the
+  new model settings first, then change the workflow and compare at that exact identity.
+- A request for latest models means provider discovery, not replacing an old version
+  pin with a newer one. Freeze resolved slugs in run artifacts for reproducibility.

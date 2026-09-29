@@ -10,6 +10,11 @@ import unittest
 from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[1]
+PROFILE = {'seat': 'codex-luna', 'model': 'fixture-luna', 'effort': 'xhigh',
+           'selectors': ['latest-sol', 'latest-luna'],
+           'roster': [dict(seat='codex-luna', model='fixture-luna', adapter='codex', effort='xhigh', extra=False),
+                      dict(seat='codex-sol', model='fixture-sol', adapter='codex', effort='xhigh', extra=False),
+                      dict(seat='opus', model='opus', adapter='claude', effort='max', extra=False)]}
 sys.path.insert(0, str(REPO / 'eval'))
 try:
     spec = importlib.util.spec_from_file_location('cost_bench', REPO / 'eval/cost_bench.py')
@@ -100,8 +105,11 @@ class CostBenchTests(unittest.TestCase):
             return 'codex-fixture' if argv == ['codex', '--version'] else original(argv, *args, **kwargs)
 
         out = self.root / 'batch'
+        rates = self.root / 'rates.json'
+        rates.write_text(json.dumps({'model': 'fixture-luna', 'input_per_million': 2,
+                                    'cached_per_million': 0.2, 'output_per_million': 10}))
         with patch.object(bench, 'command', command):
-            bench.prepare(out, 'main', candidate, 4)
+            bench.prepare(out, 'main', candidate, 4, PROFILE, rate_card=rates)
         result = bench.command([sys.executable, str(out / 'engine/eval/cost_bench.py'),
                                 'report', '--out', str(out)])
         self.assertIn('0/4 reserved', result)
@@ -151,6 +159,36 @@ class CostBenchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'budget'):
             bench.schedule(cases, 3)
 
+    def test_single_stage_schedule_has_exactly_two_calls(self):
+        cases = [{'id': 'first'}, {'id': 'second'}]
+        self.assertEqual(bench.schedule(cases, 2, ('candidate',)),
+                         [('first', 'candidate'), ('second', 'candidate')])
+        with self.assertRaisesRegex(ValueError, 'variant'):
+            bench.schedule(cases, 4, ('unsupported',))
+
+    def test_rate_selection_refuses_an_unpriced_future_model(self):
+        rates = {'models': {'gpt-99-luna': {'input_per_million': 2,
+                  'cached_per_million': 0.2, 'output_per_million': 10}}}
+        self.assertEqual(bench.model_rates(rates, 'gpt-99-luna')['output_per_million'], 10)
+        with self.assertRaisesRegex(ValueError, 'rate'):
+            bench.model_rates(rates, 'gpt-100-luna')
+
+    def test_cross_stage_comparison_rejects_changed_profile_truth_and_source(self):
+        before = {'identity': {'model': 'gpt-99-luna', 'effort': 'xhigh',
+                  'cases': 'truth', 'codex_version': 'cli', 'rate_card': 'rates',
+                  'collector': 'collector', 'engine': {},
+                  'sources': {'candidate': 'before'}}}
+        after = {'identity': dict(before['identity'], sources={'baseline': 'before',
+                                  'candidate': 'after'})}
+        bench.check_reference(before, after)
+        for key in ('model', 'effort', 'cases', 'codex_version', 'rate_card', 'collector', 'engine'):
+            changed = {'identity': dict(after['identity'], **{key: 'changed'})}
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, 'reference'):
+                bench.check_reference(before, changed)
+        after['identity']['sources']['baseline'] = 'unrelated'
+        with self.assertRaisesRegex(ValueError, 'reference'):
+            bench.check_reference(before, after)
+
     def test_contract_refusal_never_launches_even_fake_roster_probe(self):
         local_spec = importlib.util.spec_from_file_location('bench_local', REPO / 'eval/bench_local.py')
         if not local_spec.loader or not (REPO / 'eval/bench_local.py').exists():
@@ -196,8 +234,9 @@ class CostBenchTests(unittest.TestCase):
         bench.git(root, 'checkout', '-qb', 'change')
         for file in case['files']:
             (root / file).write_bytes((case_root / 'after' / file).read_bytes())
-        prompt, elapsed = bench.render(self.root, case, 'candidate', self.root / 'session')
+        prompt, elapsed = bench.render(self.root, case, 'candidate', self.root / 'session', PROFILE)
         self.assertTrue(prompt.is_file())
+        self.assertEqual(prompt.name, 'r1-codex-luna.prompt.md')
         self.assertGreater(prompt.stat().st_size, 0)
         self.assertFalse((self.root / 'budget.json').exists())
 

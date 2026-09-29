@@ -285,14 +285,18 @@ def make_seat(name, adapter, model, effort, mode=None, round_=None):
 
 # ---------------------------------------------------------------- detection
 
-def top_effort(levels):
-    """The highest of max → xhigh → high the model supports, else None (never a mid tier)."""
+def reasoning_efforts(levels):
     got = []
     for lv in levels if isinstance(levels, list) else []:
         e = lv.get('effort') if isinstance(lv, dict) else lv
         if isinstance(e, str) and e:
             got.append(e)
-    return next((e for e in EFFORTS if e in got), None)
+    return got
+
+
+def top_effort(levels):
+    """The highest of max -> xhigh -> high the model supports, else None (never a mid tier)."""
+    return next((e for e in EFFORTS if e in reasoning_efforts(levels)), None)
 
 
 def codex_catalog(path):
@@ -320,14 +324,16 @@ def codex_catalog(path):
     return listed, None
 
 
-def select_codex_models(listed, allowed=None):
+def select_codex_models(listed, allowed=None, requested_effort=None):
     if isinstance(allowed, list):
         by_slug = {slug: m for _, m, slug in listed}
         out = []
         for slug in allowed:
             if not isinstance(slug, str) or slug not in by_slug or any(item[0] == slug for item in out):
                 continue
-            effort = top_effort(by_slug[slug].get('supported_reasoning_levels'))
+            levels = by_slug[slug].get('supported_reasoning_levels')
+            effort = (requested_effort if requested_effort in reasoning_efforts(levels) else None) \
+                     if requested_effort else top_effort(levels)
             if effort:
                 out.append((slug, effort))
             if len(out) == 2:
@@ -367,6 +373,62 @@ def codex_models_setting(cfg):
     if not valid:
         return None, 'invalid codex_models: expected 1 or 2 unique non-empty model slug strings'
     return raw, None
+
+
+def codex_config_needs_resolution(cfg):
+    models = cfg.get('codex_models')
+    return ('codex_effort' in cfg or isinstance(models, list) and any(
+        isinstance(model, str) and model.startswith('latest-') for model in models))
+
+
+def codex_catalog_path():
+    return env_path('REVIEW_COUNCIL_CODEX_MODELS_CACHE',
+                    os.path.join(env_path('CODEX_HOME', '~/.codex'), 'models_cache.json'))
+
+
+def _resolve_codex_config(cfg, catalog):
+    effective = dict(cfg)
+    allowed, error = codex_models_setting(cfg)
+    if error:
+        return effective, error, 'config'
+    effort = cfg.get('codex_effort')
+    if 'codex_effort' in cfg and effort not in EFFORTS:
+        return effective, 'invalid codex_effort: expected max, xhigh or high', 'config'
+    listed, error = catalog
+    if error:
+        return effective, error, 'availability'
+    resolved = []
+    for selector in allowed or [slug for slug, _ in select_codex_models(listed)]:
+        if selector.startswith('latest-'):
+            family = selector.removeprefix('latest-')
+            matches = [(gen, slug) for gen, _, slug in listed if codex_suffix(slug) == family]
+            if not matches:
+                return effective, 'no visible Codex model for %s' % selector, 'availability'
+            slug = max(matches)[1]
+        else:
+            slug = selector
+        if slug in resolved:
+            return effective, 'codex_models resolves to duplicate model %s' % slug, 'config'
+        resolved.append(slug)
+    by_slug = {slug: model for _, model, slug in listed}
+    for slug in resolved:
+        if slug not in by_slug:
+            return effective, 'unknown Codex model slug: %s' % slug, 'config'
+        levels = by_slug[slug].get('supported_reasoning_levels')
+        if effort and effort not in reasoning_efforts(levels):
+            return effective, 'configured Codex model %s does not support effort %s' \
+                              % (slug, effort), 'config'
+        if not effort and top_effort(levels) is None:
+            return effective, 'configured Codex model has no supported high effort: %s' % slug, 'config'
+    effective['codex_models'] = resolved
+    return effective, None, None
+
+
+def resolve_codex_config(cfg, catalog_path=None):
+    """Resolve latest-family selectors and explicit effort without running a provider CLI."""
+    if not codex_config_needs_resolution(cfg):
+        return dict(cfg), None, None
+    return _resolve_codex_config(cfg, codex_catalog(catalog_path or codex_catalog_path()))
 
 
 def codex_seat_names(models):
@@ -412,9 +474,9 @@ def detect_codex(cfg):
     allowed, config_error = codex_models_setting(cfg)
     if config_error:
         return [], config_error
-    cache = env_path('REVIEW_COUNCIL_CODEX_MODELS_CACHE',
-                     os.path.join(env_path('CODEX_HOME', '~/.codex'), 'models_cache.json'))
-    listed, catalog_error = (codex_catalog(cache) if allowed is not None else (None, None))
+    cache = codex_catalog_path()
+    listed, catalog_error = (_RESOLVED.get('codex_catalog') or codex_catalog(cache)) \
+                            if allowed is not None else (None, None)
     if listed:
         by_slug = {slug: model for _, model, slug in listed}
         unknown = [slug for slug in allowed if slug not in by_slug]
@@ -437,7 +499,7 @@ def detect_codex(cfg):
         listed, catalog_error = codex_catalog(cache)
     if catalog_error:
         return [], catalog_error
-    models = select_codex_models(listed, allowed)
+    models = select_codex_models(listed, allowed, cfg.get('codex_effort'))
     if not models:
         return [], 'no usable model in %s' % cache
     return [make_seat(name, 'codex', slug, effort)
@@ -632,6 +694,11 @@ def enforce_codex_models(cfg, seats, excluded):
             excluded.append({'cli': seat['seat'],
                              'reason': 'pinned model %s is outside codex_models' % seat['model']})
             continue
+        if 'codex_effort' in cfg and seat.get('effort') != cfg['codex_effort']:
+            excluded.append({'cli': seat['seat'],
+                             'reason': 'pinned effort %s does not match required codex_effort %s'
+                                       % (seat.get('effort'), cfg['codex_effort'])})
+            continue
         if not seat['extra'] and seat['model'] in seen:
             excluded.append({'cli': seat['seat'],
                              'reason': 'pinned model %s duplicates another Codex seat' % seat['model']})
@@ -763,7 +830,9 @@ def quota_fallback_setting(cfg):
 def fallback_target(source, seats, probe_results, unavailable=()):
     if source['lab'] == 'anthropic':
         candidates = [s for s in seats if not s['extra'] and s['adapter'] == 'codex'
-                      and codex_suffix(s['model']) == 'terra']
+                      and codex_suffix(s['model']) in ('terra', 'luna')]
+        family = 'terra' if any(codex_suffix(s['model']) == 'terra' for s in candidates) else 'luna'
+        candidates = [s for s in candidates if codex_suffix(s['model']) == family]
     elif source['lab'] == 'openai':
         candidates = [s for s in seats if not s['extra']
                       and s['adapter'] in ('agent', 'claude') and s['model'] == 'sonnet']
@@ -780,7 +849,8 @@ def fallback_target(source, seats, probe_results, unavailable=()):
 
 
 def fallback_seat(target, source, used, counters):
-    family = 'codex-terra' if target['adapter'] == 'codex' else 'claude-sonnet'
+    family = ('codex-' + codex_suffix(target['model'])) \
+             if target['adapter'] == 'codex' else 'claude-sonnet'
     counters[family] = counters.get(family, 0) + 1
     name = '%s-fallback-%d' % (family, counters[family])
     while name in used:
@@ -963,7 +1033,8 @@ def enforce_exact_seats(cfg, seats, excluded):
         else:
             for entry in excluded:
                 cli, reason = entry.get('cli'), str(entry.get('reason', ''))
-                if reason.startswith('pinned model '):
+                if reason.startswith('pinned model ') or ('codex_effort' in cfg and
+                                                         reason.startswith('pinned effort ')):
                     config_reason = '%s: %s' % (cli, reason)
                     break
                 if reason.startswith(('unknown Codex model ', 'configured Codex model')):
@@ -1238,7 +1309,12 @@ def degradation(seats, padded):
 # ---------------------------------------------------------------- assembly
 
 def build(do_probe, quota_failed_seats=()):
+    _RESOLVED.clear()
     cfg, cfg_error = load_config()
+    resolution_class = 'config'
+    if not cfg_error and codex_config_needs_resolution(cfg):
+        _RESOLVED['codex_catalog'] = codex_catalog(codex_catalog_path())
+        cfg, cfg_error, resolution_class = _resolve_codex_config(cfg, _RESOLVED['codex_catalog'])
     if cfg_error:
         roster = {
             'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
@@ -1246,13 +1322,13 @@ def build(do_probe, quota_failed_seats=()):
             'labs': [],
             'padded': 0,
             'degraded': True,
-            'degradation': 'configuration is unreadable - reviewer selection refused',
-            'strict_class': 'config',
+            'degradation': ('configuration is unreadable - reviewer selection refused'
+                            if cfg_error == 'config unreadable' else 'reviewer model selection refused'),
+            'strict_class': resolution_class,
             'strict_reason': cfg_error,
             'excluded': [{'cli': 'config', 'reason': cfg_error}],
         }
-        return roster, {}, 'config'
-    _RESOLVED.clear()
+        return roster, {}, resolution_class
     excluded = []
     dropped = excluded_names(cfg)
     seats, adapter_of = [], {}
@@ -1272,6 +1348,9 @@ def build(do_probe, quota_failed_seats=()):
     if cfg.get('extras') is not False:
         for adapter, name, mode, round_ in EXTRAS:
             base = next((s for s in seats if s['adapter'] == adapter and not s['extra']), None)
+            if adapter == 'codex':
+                base = next((s for s in seats if s['adapter'] == adapter and not s['extra']
+                             and codex_suffix(s['model']) == 'sol'), base)
             if base:
                 seats.append(make_seat(name, adapter, base['model'], base['effort'], mode, round_))
 
