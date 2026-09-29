@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.5.6
+
+- The advisory read audit of Agent seats runs only when `REV_UNENFORCED_AUDIT=1`. Every
+  verify-panel, receipt and predecessor walk re-ran it for every Agent seat of every earlier round,
+  and each audit it spawned walked its own panel's predecessors again, so the receipts of rounds 1-3
+  ran 4, 28 and 148 audits. One review round on a loaded 10-core machine spent about 3.5 hours in
+  that bookkeeping around 6 minutes of seat review, with 39 audits running at once and each ending
+  in the 300-second timeout. Unset, each row records `would_pass: false` with the reason
+  `advisory read audit is off` and nothing is spawned; the receipt keeps its keys, and nothing gated
+  on the verdict before. Keep one setting for a whole session, since the receipt records the
+  verdict.
+- With the flag set, an audit is reused while nothing it reads has changed: the transcript, prompt
+  and result bytes, the manifest hash, every argument of the audit command (adapter, root,
+  dependency and session paths, as passed and resolved), the plugin's scripts and schema, and the
+  Python version. A missing, stale or unreadable entry audits afresh, and the gate always judges the
+  audit file itself, so an entry can skip an audit but never pass one. Five delta rounds now spawn
+  four audits per receipt. The enforced gate for CLI seats is unchanged: it only validates the read
+  audit written at seat time, about 3 ms a seat, so it has nothing worth caching.
+
 ## 0.5.5
 
 - A delta verification panel is no longer refused with `component routing is not canonical` when
