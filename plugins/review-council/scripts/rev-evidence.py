@@ -4224,11 +4224,45 @@ def audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, r
 
 UNENFORCED_AUDIT_FLAG = 'REV_UNENFORCED_AUDIT'
 UNENFORCED_AUDIT_SUFFIX = '.unenforced-audit.json'
+UNENFORCED_AUDIT_CACHE_SUFFIX = '.unenforced-audit.cache'
 # Both receipt-path children are short-lived, take every input as an argument, and now run per
 # selected seat on every verify-panel, receipt and predecessor walk. Inheriting this process's
 # stdin is what lets one block forever, and neither bounds its own work on a pathological input,
 # so each gets a closed stdin and a deadline far above any real run.
 CHILD_TIMEOUT_SECONDS = 300
+
+
+def unenforced_audit_key(command, manifest_hash, inputs):
+    """Hash every input the advisory audit and its gate read, or None when one is unreadable."""
+    code = Path(__file__).resolve()
+    sources = [code, *sorted((code.parent / 'lib').glob('*.py')),
+               *sorted((code.parent.parent / 'schema').glob('*.json'))]
+    paths = {flag: str(Path(command[command.index(flag) + 1]).resolve())
+             for flag in ('--root', '--deps', '--session') if flag in command}
+    try:
+        return digest(encoded({
+            'command': command, 'resolved': paths, 'manifest_sha256': manifest_hash,
+            'python': sys.version, 'inputs': [digest(path.read_bytes()) for path in inputs],
+            'code': [[str(path.relative_to(code.parent.parent)), digest(path.read_bytes())]
+                     for path in sources]}))
+    except OSError:
+        return None
+
+
+def cached_audit_matches(cache, key, audit):
+    try:
+        return key is not None and json.loads(cache.read_bytes()) == {
+            'schema_version': 1, 'key': key, 'audit_sha256': digest(audit.read_bytes())}
+    except (OSError, ValueError, RecursionError):
+        return False
+
+
+def file_identity(path):
+    try:
+        metadata = path.stat()
+    except OSError:
+        return None
+    return metadata.st_dev, metadata.st_ino, metadata.st_mtime_ns, metadata.st_size
 
 
 def unenforced_verdict(session, manifest, manifest_hash, phase, seat, stem, assignment,
@@ -4243,12 +4277,12 @@ def unenforced_verdict(session, manifest, manifest_hash, phase, seat, stem, assi
     The audit lands on a name that neither rev-attempt.py's hard-failure scan
     (`r*-*.read-audit.json`, `r*-*.audit.json`) nor rev-profile.py's metric scan globs. An
     invalid advisory audit under either name would stop the session or move a measurement,
-    which is gating by another route.
+    which is gating by another route. Its cache entry takes such a name for the same reason.
 
     It runs only when REV_UNENFORCED_AUDIT is `1`. Every verify-panel, receipt and predecessor
     walk reaches every Agent seat of every earlier round, and each audit spawned walks its own
     panel's predecessors again, so a round-3 receipt ran 148 audits and loaded machines hit the
-    timeout.
+    timeout. When it runs, an unchanged audit is reused rather than recomputed.
     """
     stream = Path(str(stem) + '.stream.ndjson')
     audit_path = Path(str(stem) + UNENFORCED_AUDIT_SUFFIX)
@@ -4269,18 +4303,31 @@ def unenforced_verdict(session, manifest, manifest_hash, phase, seat, stem, assi
     deps = os.environ.get('REV_DEPS_DIR') or (manifest.get('dependency_view') or {}).get('path')
     if deps:
         command += ['--deps', deps]
-    try:
-        completed = subprocess.run(command, capture_output=True, stdin=subprocess.DEVNULL,
-                                   timeout=CHILD_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired:
-        verdict['reason'] = f'read audit did not run: timed out after {CHILD_TIMEOUT_SECONDS}s'
-        return verdict
-    except OSError as error:
-        verdict['reason'] = 'read audit did not run: ' + str(error)
-        return verdict
-    if not audit_path.is_file():
-        verdict['reason'] = 'read audit did not run: exit ' + str(completed.returncode)
-        return verdict
+    cache = Path(str(stem) + UNENFORCED_AUDIT_CACHE_SUFFIX)
+    key = unenforced_audit_key(command, manifest_hash, (prompt, stream, result))
+    if not cached_audit_matches(cache, key, audit_path):
+        before = file_identity(audit_path)
+        try:
+            completed = subprocess.run(command, capture_output=True, stdin=subprocess.DEVNULL,
+                                       timeout=CHILD_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            verdict['reason'] = f'read audit did not run: timed out after {CHILD_TIMEOUT_SECONDS}s'
+            return verdict
+        except OSError as error:
+            verdict['reason'] = 'read audit did not run: ' + str(error)
+            return verdict
+        if not audit_path.is_file():
+            verdict['reason'] = 'read audit did not run: exit ' + str(completed.returncode)
+            return verdict
+        # Recorded only when this run wrote the audit and its inputs held still while it read them;
+        # a crashed child leaves the previous audit behind, which must not be filed under this key.
+        if (key is not None and file_identity(audit_path) != before
+                and unenforced_audit_key(command, manifest_hash, (prompt, stream, result)) == key):
+            try:
+                publish(cache, encoded({'schema_version': 1, 'key': key,
+                                        'audit_sha256': digest(audit_path.read_bytes())}))
+            except OSError:
+                pass
     verdict['audit_sha256'] = digest(audit_path.read_bytes())
     try:
         audit = read_json(audit_path)
