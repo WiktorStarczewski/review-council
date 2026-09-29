@@ -602,6 +602,10 @@ skill_adapter_and_plan_gate_contract() {
   local code_unenforced='Code preparation RUNS with an Agent seat and records it as unenforced rather than'
   local code_report='Report such a panel as partially unenforced; never describe it as'
   local ungated_audit='recorded in `unenforced_audits` with its would-have-passed verdict; nothing gates on it, because whether an Agent transcript clears the gate is unmeasured and gating on an unmeasured pass rate would trade one blanket refusal for another.'
+  # The advisory audit re-walks every earlier round, so it runs only on request; the receipt records
+  # its verdict, so the setting has to hold for the whole session.
+  local audit_opt_in='With `REV_UNENFORCED_AUDIT=1`, an unenforced seat'"'"'s read audit is produced anyway'
+  local audit_off='Without that flag no audit runs and each row records `would_pass: false` with the reason `advisory read audit is off`; keep one setting for the whole session, because the receipt records the verdict.'
   # An unenforced seat's result, exit and transcript are HASHED into the receipt, never compared to
   # the panel: only the prompt carries the manifest hash. Two independent fixtures proved a seat's
   # result and transcript can be swapped in from another panel and accepted. The contract said
@@ -637,6 +641,8 @@ skill_adapter_and_plan_gate_contract() {
     assert_flat_fixed "$host prepares code evidence with an Agent row" "$H" "$code_unenforced"
     assert_flat_fixed "$host never calls a partly unenforced code panel certified" "$H" "$code_report"
     assert_flat_fixed "$host records the unenforced audit verdict without gating on it" "$H" "$ungated_audit"
+    assert_flat_fixed "$host runs the advisory audit only when asked" "$H" "$audit_opt_in"
+    assert_flat_fixed "$host says what an unasked advisory audit records" "$H" "$audit_off"
     assert_flat_fixed "$host says a misfiled unenforced result goes undetected" "$H" "$not_bound"
     assert_flat_fixed "$host names hand transcription as the realistic failure" "$H" "$misfiling"
     local bound_hits

@@ -2574,11 +2574,18 @@ def write_agent_stream(session, label, seat):
     (session / f'r{label}-{seat}.stream.ndjson').write_text(
         ''.join(json.dumps(event) + '\n' for event in events))
 
+AUDIT_FLAG = 'REV_UNENFORCED_AUDIT'
+AUDIT_ON = {AUDIT_FLAG: '1'}
+AUDIT_OFF_REASON = 'advisory read audit is off; set REV_UNENFORCED_AUDIT=1 to run it'
+RECEIPT_KEYS = {'schema_version', 'manifest', 'manifest_sha256', 'snapshot_tree', 'base_tree',
+                'phase', 'assignments', 'results', 'advisories', 'findings', 'unenforced_audits'}
+
 def unenforced_agent_seat_binds_only_its_prompt():
     # The default fixture roster is all `agent` - what a Claude Code host produces when no Claude
     # CLI is signed in. Such a CODE panel now runs evidence mode: every agent row is recorded in
-    # `unenforced_seats` and reported `enforced: false`, so the panel is never certified. Its audit
-    # is produced anyway and its would-have-passed verdict recorded, and nothing gates on either.
+    # `unenforced_seats` and reported `enforced: false`, so the panel is never certified. With
+    # REV_UNENFORCED_AUDIT=1 its audit is produced anyway and its would-have-passed verdict
+    # recorded, and nothing gates on either.
     # What unenforcement costs is pinned here too. With no enforced read audit, only the prompt
     # still binds a seat's artifacts to this manifest, because the prompt carries the manifest hash;
     # the transcript and the result are free, and a sibling panel's can be swapped in undetected.
@@ -2611,7 +2618,7 @@ def unenforced_agent_seat_binds_only_its_prompt():
         write_agent_stream(session, 'code', 'sol')
         # The production shape: nothing writes an enforced read audit for an Agent row.
         assert not list(session.glob('r*-*.read-audit.json'))
-        verified = json.loads(call('verify-panel', session, 'code'))
+        verified = json.loads(call('verify-panel', session, 'code', env=AUDIT_ON))
         assert verified['advisories'] == {}
         audits = verified['unenforced_audits']
         assert set(audits) == set(seats), audits
@@ -2630,7 +2637,7 @@ def unenforced_agent_seat_binds_only_its_prompt():
             f'rcode-{seat}.unenforced-audit.json' for seat in seats)
         missing = session / 'rcode-opus.stream.ndjson'; kept = missing.read_bytes()
         missing.unlink()
-        absent = json.loads(call('verify-panel', session, 'code'))['unenforced_audits']['opus']
+        absent = json.loads(call('verify-panel', session, 'code', env=AUDIT_ON))['unenforced_audits']['opus']
         assert absent == {'audit': 'rcode-opus.unenforced-audit.json', 'audit_sha256': None,
                           'status': None, 'would_pass': False, 'reason': 'no transcript'}, absent
         missing.write_bytes(kept)
@@ -2646,6 +2653,80 @@ def unenforced_agent_seat_binds_only_its_prompt():
         call('prepare', session, 'codex', '--phase', 'repair', '--assignment', 'sol=' + bundles[1],
              '--parent-assignment', 'code:terra', good=False,
              error='replacement executor must be an enforced seat')
+
+def agent_code_panel(session, call, prepare, label='code'):
+    """A code panel of Agent seats in which only sol's transcript proves its reads."""
+    manifest = prepare(label, 'risk', *assign)
+    path = session / f'r{label}-evidence.manifest.json'
+    for seat, assignment in manifest['assignments'].items():
+        (session / f'r{label}-{seat}.prompt.md').write_text(
+            call('render', path, seat) + '\n## Your lens this round: ' + assignment['bundle'] + '\n')
+        (session / f'r{label}-{seat}.json').write_text('{"summary":"checked","findings":[]}')
+        (session / f'r{label}-{seat}.exit').write_text('0\n')
+        (session / f'r{label}-{seat}.stream.ndjson').write_text('{}\n')
+    write_agent_stream(session, label, 'sol')
+    return manifest
+
+def audits_spawned(flag, run, fake=None):
+    """Run `run()` in process with the audit flag at `flag`; return the stems it audited and its value.
+
+    `fake(real, command, ...)`, when given, stands in for the audit child so it can crash or race."""
+    spawned, real, saved = [], subprocess.run, os.environ.pop(AUDIT_FLAG, None)
+    def spy(command, *args, **kwargs):
+        if any(str(part).endswith('review-read-audit.py') for part in command):
+            spawned.append(Path(command[command.index('--out') + 1]).name.split('.')[0])
+            if fake is not None:
+                return fake(real, command, *args, **kwargs)
+        return real(command, *args, **kwargs)
+    if flag is not None:
+        os.environ[AUDIT_FLAG] = flag
+    subprocess.run = spy
+    try:
+        value = run()
+    finally:
+        subprocess.run = real
+        os.environ.pop(AUDIT_FLAG, None)
+        if saved is not None:
+            os.environ[AUDIT_FLAG] = saved
+    return sorted(spawned), value
+
+def panel_verdicts(session, label='code'):
+    verdicts = {}
+    module.verify_panel_selection(session, label, verdicts=verdicts)
+    return verdicts
+
+def in_process_receipt(session, label):
+    args = type('Args', (), {'session': str(session), 'label': label, 'replacement': []})()
+    with open(os.devnull, 'w') as sink, contextlib.redirect_stdout(sink):
+        module.receipt(args)
+    return json.loads((session / f'r{label}-coverage.receipt.json').read_text())
+
+def unenforced_audit_is_opt_in():
+    # Every verify-panel, receipt and predecessor walk reaches the advisory audit of every Agent
+    # seat of every earlier round, so unasked it spawns nothing and says why.
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        session = session.resolve(); agent_code_panel(session, call, prepare)
+        off = {seat: {'audit': f'rcode-{seat}.unenforced-audit.json', 'audit_sha256': None,
+                      'status': None, 'would_pass': False, 'reason': AUDIT_OFF_REASON} for seat in seats}
+        for flag in (None, '', '0', 'true', 'yes', ' 1', '1 '):
+            spawned, verdicts = audits_spawned(flag, lambda: panel_verdicts(session))
+            assert spawned == [] and verdicts == off, (flag, spawned, verdicts)
+        cli = json.loads(call('verify-panel', session, 'code', env={AUDIT_FLAG: '0'}))
+        assert cli['unenforced_audits'] == off, cli
+        assert not list(session.glob('rcode-*.unenforced-audit*'))
+        manifest, mh = module.validated_manifest(session / 'rcode-evidence.manifest.json', fresh=False)
+        spawned, (_, row) = audits_spawned(None, lambda: module.result_generation(session, manifest, mh, 'sol'))
+        assert spawned == [] and row['enforced'] is False and row['unenforced_audit'] == off['sol'], row
+        spawned, verdicts = audits_spawned('1', lambda: panel_verdicts(session))
+        assert spawned == ['rcode-' + seat for seat in sorted(seats)], spawned
+        assert verdicts['sol'] == {
+            'audit': 'rcode-sol.unenforced-audit.json', 'status': 'valid', 'would_pass': True,
+            'audit_sha256': module.digest((session / 'rcode-sol.unenforced-audit.json').read_bytes()),
+            'reason': None}, verdicts['sol']
+        assert all(verdicts[seat]['status'] == 'invalid' and verdicts[seat]['would_pass'] is False
+                   for seat in seats if seat != 'sol'), verdicts
+        spawned, receipt = audits_spawned('0', lambda: in_process_receipt(session, 'code'))
+        assert spawned == [] and set(receipt) == RECEIPT_KEYS and receipt['unenforced_audits'] == off
 
 def scoped_names_and_gitlink_lifecycle():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -2747,7 +2828,7 @@ cases = (
     instruction_override_precedence, empty_source_context, bounded_work_and_memory,
     receipt_read_audits, seat_local_recovery, narrow_seat_requires_proven_reads,
     full_seat_requires_proven_reads, unenforced_agent_seat_binds_only_its_prompt,
-    replacement_runs_on_another_seat, review_origin_counts_the_reviews_own_lines,
+    unenforced_audit_is_opt_in, replacement_runs_on_another_seat, review_origin_counts_the_reviews_own_lines,
     scoped_names_and_gitlink_lifecycle,
     component_and_full_tampering, offline_structure_and_predecessor_walk,
     local_ignored_instructions, overlapping_boundaries_keep_prior_owner_routing,
@@ -2780,6 +2861,7 @@ groups = {
         wallet_scale, bounded_work_and_memory, receipt_read_audits,
         seat_local_recovery, narrow_seat_requires_proven_reads,
         full_seat_requires_proven_reads, unenforced_agent_seat_binds_only_its_prompt,
+        unenforced_audit_is_opt_in,
     ),
     'replacement': (replacement_runs_on_another_seat, review_origin_counts_the_reviews_own_lines),
 }

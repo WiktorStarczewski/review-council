@@ -4222,6 +4222,7 @@ def audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, r
         raise ValueError('non-plan audit contains plan citation coverage: ' + seat)
 
 
+UNENFORCED_AUDIT_FLAG = 'REV_UNENFORCED_AUDIT'
 UNENFORCED_AUDIT_SUFFIX = '.unenforced-audit.json'
 # Both receipt-path children are short-lived, take every input as an argument, and now run per
 # selected seat on every verify-panel, receipt and predecessor walk. Inheriting this process's
@@ -4243,11 +4244,19 @@ def unenforced_verdict(session, manifest, manifest_hash, phase, seat, stem, assi
     (`r*-*.read-audit.json`, `r*-*.audit.json`) nor rev-profile.py's metric scan globs. An
     invalid advisory audit under either name would stop the session or move a measurement,
     which is gating by another route.
+
+    It runs only when REV_UNENFORCED_AUDIT is `1`. Every verify-panel, receipt and predecessor
+    walk reaches every Agent seat of every earlier round, and each audit spawned walks its own
+    panel's predecessors again, so a round-3 receipt ran 148 audits and loaded machines hit the
+    timeout.
     """
     stream = Path(str(stem) + '.stream.ndjson')
     audit_path = Path(str(stem) + UNENFORCED_AUDIT_SUFFIX)
     verdict = {'audit': audit_path.name, 'audit_sha256': None, 'status': None,
                'would_pass': False, 'reason': None}
+    if os.environ.get(UNENFORCED_AUDIT_FLAG) != '1':
+        verdict['reason'] = f'advisory read audit is off; set {UNENFORCED_AUDIT_FLAG}=1 to run it'
+        return verdict
     if not stream.is_file():
         verdict['reason'] = 'no transcript'
         return verdict
