@@ -499,9 +499,11 @@ Codex seats use the read-only sandbox. Agent-adapter seats (`claude_adapter: age
 `auto` without a signed-in Claude CLI) disable editing tools, but their native read hooks
 cannot satisfy enforced evidence. They run evidence mode anyway and are recorded in the
 manifest's `unenforced_seats`: their read audit stops gating rather than the panel stopping, so a
-panel holding one is partially unenforced and never certified. That audit is still produced and
-reported under `unenforced_audits` with its would-have-passed verdict, so the agent pass rate can
-be measured before anyone decides whether it can be enforced.
+panel holding one is partially unenforced and never certified. With `REV_UNENFORCED_AUDIT=1` that
+audit is still produced and reported under `unenforced_audits` with its would-have-passed verdict,
+so the agent pass rate can be measured before anyone decides whether it can be enforced. It is off
+by default: an audit of a delta round re-audits every earlier round's Agent seats, each of which
+does the same, so a round-3 receipt with four Agent seats ran 148 audits.
 
 Nonfinal Claude CLI responses carry a continuation instruction: while required review
 work remains, the response must include the next allowed read or search. Progress text
@@ -894,6 +896,7 @@ Useful evidence controls:
 | `REV_PATCH_CHUNKS` | `auto` | automatic, forced, or disabled exact patch chunks |
 | `REV_SOURCE_CONTEXT` | `1` in host skills | literal source packets and required-source segments |
 | `REV_CODEX_SOURCE_BATCH` | `0` | certified Codex-only source-window batch canary |
+| `REV_UNENFORCED_AUDIT` | unset | `1` runs the advisory read audit of Agent seats |
 | `REVIEW_COUNCIL_PROVIDER_OUTPUT_BYTES` | 1 MiB | provider status and probe output cap |
 | `REVIEW_COUNCIL_CONTRACT_VERSION_TIMEOUT_SECONDS` | 5 | provider CLI version timeout |
 | `REVIEW_COUNCIL_CONTRACT_VERSION_OUTPUT_BYTES` | 64 KiB | provider CLI version output cap |

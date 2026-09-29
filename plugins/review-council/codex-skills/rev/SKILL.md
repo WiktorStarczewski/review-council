@@ -283,11 +283,14 @@ panel, so a result or transcript filed under the wrong seat or round is recorded
 than detected. The orchestrator writes each Agent seat's result by hand, so a misfiling
 is the realistic failure here, not an attacker.
 Report such a panel as partially unenforced; never describe it as certified.
-An unenforced seat's read audit is produced anyway, from the transcript you copied, and
-recorded in `unenforced_audits` with its would-have-passed verdict; nothing gates on it,
-because whether an Agent transcript clears the gate is unmeasured and gating on an
-unmeasured pass rate would trade one blanket refusal for another. Report that verdict;
-never read it as certification.
+With `REV_UNENFORCED_AUDIT=1`, an unenforced seat's read audit is produced anyway, from
+the transcript you copied, and recorded in `unenforced_audits` with its would-have-passed
+verdict; nothing gates on it, because whether an Agent transcript clears the gate is
+unmeasured and gating on an unmeasured pass rate would trade one blanket refusal for
+another. Report that verdict; never read it as certification. Without that flag no audit
+runs and each row records `would_pass: false` with the reason
+`advisory read audit is off`; keep one setting for the whole session, because the receipt
+records the verdict.
 Rows on adapters `codex`, `gemini`, and `claude` launch through `rev-seat.sh` and keep
 evidence mode.
 `claude_adapter` decides whether a Claude Code host seats Claude rows on `agent`; a Codex host always seats them on `claude`.
