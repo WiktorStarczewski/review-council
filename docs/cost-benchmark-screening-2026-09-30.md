@@ -15,6 +15,9 @@ Numeric quality gates rejected several apparent savings on the complex dispatche
 | Line-addressed packets, wave 12 | 98.00 | 90.00 | -4.8% | -4.4% | Combination fails holdout |
 | Complete checks and line packets, wave 13 | 98.00 | 91.25 | -2.3% | -21.9% | Discard after holdout |
 | Combined candidate on build holdout, wave 14 | 98.75 | 86.25 | -14.8% | -19.7% | Discard |
+| Finite patch completion and caller-flow cue, wave 15 | 98.75 | 86.88 | -15.7% | -16.0% | Discard |
+| Immutable source batches, wave 16 | Unknown | Unknown | Unqualified | Unqualified | Discard invalid proof |
+| Exact producer stderr suppression, wave 17 | 98.75 | 91.25 | -20.0% | -37.7% | Pass screen; transfer pending |
 
 A separate fresh complex-case pair in wave 8 gives the read-cue control 87.5 and
 candidate 81.0. Credits fall only 1.0%, while provider time rises 17.0%. This
@@ -84,6 +87,39 @@ the minimum remains 86.25. This illustrates why the numeric mean is descriptive 
 gate remains mandatory. Generic statements about safety cannot replace source
 exposure or a substantiated concrete hypothesis.
 
+A finite patch-completion cue removes both extra empty patch reads in wave 15.
+Combined with a general caller/state-flow instruction, it finds all five holdout
+faults and reports the independently verified collection/publication interaction.
+Estimated credits fall 15.7% and provider time falls 16.0% against exact frozen
+controls. The clean result proves only one of three private source flows and
+scores 86.875, so the combination remains isolated and is discarded. A true
+statement that the planner supplies sorted option pairs does not establish every
+input-version, fingerprint and output consequence of reordering configuration.
+Partial analysis and exposure alone earn no full hypothesis credit.
+
+An immutable Git snapshot producer is measured separately in wave 16. Both
+executions finish but exact proof fails: Apple Git emits sandbox confstr/xcrun
+diagnostics on stderr before each producer, and captured output merges stderr
+with source stdout. The code findings semantically cover all five faults, with a
+joint planner citation missing one fault line. Full quality and qualified savings
+are unknown. Original streams and audits remain unchanged. A producer-level stderr
+correction is tested separately; no arbitrary diagnostic-looking text is stripped
+from source output to rescue the failed executions.
+
+The corrected immutable-source candidate passes both build holdout gates in wave 17.
+Its exact stdout audits validate two source batches per case. Mean quality is 95.00
+and minimum 91.25, with all five faults found and no clean false positives. The
+clean result proves two of three frozen source flows and two complete hypotheses;
+partial compiler-option analysis earns no additional hypothesis credit. Credits
+fall 20.0% and provider time 37.7% against unchanged reused controls. This remains
+a screen pending transfer and fresh validation, with no production adoption.
+
+Native live-file compound proof is independently retired after a real regression
+shows its joined output can be attributed to the wrong files. Explicit opt-in
+configuration refuses with a standalone-read alternative. Exact standalone LF,
+CRLF and unterminated reads still work. This correction preserves old artifacts,
+scoring versions and advisory classifications, and makes no performance claim.
+
 The adapter already provides one output schema and compact reviewer instructions.
 The two frozen control prompts share 5,187 prefix bytes before their repository
 field. Only 587 later bytes are renderer-owned repeated text; the remaining shared
@@ -100,5 +136,31 @@ or token savings. Inventory evidence is required before spending on that canary.
 [sanitized measurements](../eval/results/) preserve component scores, exact
 identities and per-case gates. Private executable snapshots, raw results, original
 streams, adjudications and ledgers remain frozen. Production retains the wave 2
-runtime plus the independent bounded-index audit correction. Full Council
+runtime plus the independent bounded-index audit correction and retirement of
+ambiguous native compound proof. Full Council
 certification remains pending while fewer than three allowed seats are available.
+
+Complete-case aggregation is reporting added after the frozen live stages. Its
+first sealed implementation is commit `17c64af`, using aggregation version
+`quality-equal-case-v1`. The original quality-v1 scoring functions and all paid
+measurement engine identities remain unchanged. Later records explicitly retain
+the aggregation module hash separately from the paid measurement engine.
+
+## Measured cost composition
+
+Fourteen unique executions in waves 11-14 reconcile to 3.001094 estimated credits.
+Reused wave 12 controls are counted once. The same dated Luna rate card charges
+reasoning once within output; dollars remain unknown.
+
+| Component | Reported tokens | Estimated credits | Credit share |
+| --- | ---: | ---: | ---: |
+| Uncached input | 454,671 | 1.136678 | 37.9% |
+| Cached input | 3,000,064 | 0.750016 | 25.0% |
+| Output, including reasoning | 89,152 | 1.114400 | 37.1% |
+
+Cache supplies 86.8% of input tokens, but repeated conversation input still costs
+62.9% of credits. Source-read turn consolidation has a concrete causal target.
+Aggregate usage cannot identify dispensable output or advertised tool-schema bytes.
+Further output limits, tool switches or prefix rearrangements lack the evidence
+needed for another paid canary. [Bound totals and inputs](../eval/results/cost-components-wave11-14-2026-09-30.json)
+allow this breakdown to be reproduced without access to private streams.

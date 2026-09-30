@@ -659,8 +659,8 @@ override that failed case gate. No scoring policy or rubric was relaxed.
 ### Next bounded experiment
 
 - [x] Validate a private immutable snapshot batch contract with real captured tool output. Sixteen new tests and 182 existing focused checks pass; no production adoption.
-- [ ] Test a general caller/state-flow inspection cue without fixture-specific hints.
-- [ ] Run fresh paired measurements only after local proof and prompt contracts pass.
+- [x] Test a general caller/state-flow inspection cue without fixture-specific hints; the clean holdout fails its quality floor.
+- [x] Run finite heldout measurements only after local proof and prompt contracts pass; keep proof-invalid measurements separate.
 
 Native live-source batching remains off. A preserved reproduction shows ambiguous
 joined producer output can be credited to incorrect individual source ranges.
@@ -680,3 +680,49 @@ Only this task record differs from the sealed tested source.
 The next cheaper screen isolates finite patch completion plus a generic caller/state-flow
 cue on the experimental packet anchor. Local rendering must preserve all unaffected
 phase/adapter bytes before a finite two-call heldout stage, using exact frozen controls.
+
+### Finite-completion screen
+
+Two Luna/xhigh calls complete with valid proof, no probes, graders or retries.
+Both avoid empty patch probes. All five faults are found with accurate citations;
+complex quality is 98.75 and clean quality 86.875. Pooled credits fall 15.69% and
+provider time 16.00%, but the clean floor fails. The combined runtime is discarded.
+The private immutable-source prototype passes its local lane and exact reused-control
+identity check; a separate two-call heldout screen is running.
+
+### Source producer validation
+
+The immutable-source screen completes both paid executions, but both exact audits
+fail on merged Apple Git sandbox diagnostics. Full quality remains unknown and
+no qualified savings percentage is published. All raw artifacts stay frozen.
+A separate producer correction will be tested locally before another finite stage.
+The optional native live-file compound proof path is independently retired after
+587 focused assertions and 21 unchanged-prompt comparisons. Its new portable
+regression is registered; the active complete frozen-source gate is running.
+
+agentic-kb: codex-seats-git-show-base-fails-read-audit explains the merged sandbox
+stderr failure and helped avoid loosening byte proof. Usage and a generic current
+sandbox CLI recipe are pushed from an isolated clean KB checkout in 6914a65;
+the original KB checkout's existing merge conflicts remain untouched.
+
+The prospective proof correction passes the complete frozen gate: 354 shell cases,
+4,701 assertions, 229 Python tests and all three validators. All five terminal
+logs and hashes verify exit 0. Tested tree is
+006cdc2c6212fe7ed76a08c4ac8c99fad53b557a94bd18c5c09664c05d2bb7ab.
+Signed commit dbff79b retains only that independent correction. New result metadata
+and task prose differ from the frozen tree; code, tests and fixtures are identical.
+
+### Exact stderr suppression screen
+
+- [x] Prove the real read-only sandbox failure and exact producer correction locally. Nineteen focused tests pass; warning-like source bytes remain unchanged.
+- [x] Measure the signed corrected immutable-source candidate on both heldout cases with two fresh executions and unchanged frozen controls.
+- [ ] Retain only if each case passes fixed correctness, citation, source-flow and quality gates; otherwise preserve measurements and discard runtime changes.
+
+Candidate db5dce0a0e546207548b9d0f93d568b109057b46 is isolated. No arbitrary
+stderr stripping, score revision or reinterpretation of wave 16 is permitted.
+
+Wave 17 passes both case gates: A 98.75 and B 91.25, mean 95.00 and minimum
+91.25. Pooled estimated credits fall 20.05% and provider time 37.68%. Original
+wave 16 remains invalid. An unchanged two-call dispatcher transfer is running,
+with a private prospective integration preserving retired native compound proof.
+No runtime is adopted before transfer and fresh paired validation.
