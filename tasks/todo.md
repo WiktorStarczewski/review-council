@@ -747,3 +747,17 @@ Final pre-push verification confirms all 285 tracked functional files match the
 complete gate snapshot in bytes and executable modes. All five terminal logs
 match receipt hashes and exit 0. Later changes are benchmark records and prose;
 complete-case summaries, component totals and bound input hashes verify separately.
+
+### Standalone component closure
+
+The final untested component isolation uses two new Luna/xhigh executions with
+control packets and source-read rules. Candidate source exactly matches wave 11.
+Wave 19 scores A 98.75 and B 86.25: all five faults and accurate citations, but
+only one clean source flow. Credits fall 8.44% and time rises 14.04%. The standalone
+output instructions are discarded independently of packet and batching changes.
+Their four-case mean is 93.15, minimum 86.25, pooled credits -8.46% and time +1.73%.
+Six new executions and two reused controls are explicitly recorded. No scoring
+policy, rubric or original stream changes. All evidence-backed screens are closed.
+
+PR #29 at bb4c168 passes macOS and Ubuntu CI. The final added files contain only
+wave 19 records and prose; functional code remains identical to that verified head.

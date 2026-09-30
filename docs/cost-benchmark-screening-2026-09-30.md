@@ -11,7 +11,7 @@ Numeric quality gates rejected several apparent savings on the complex dispatche
 | Material findings without five-item cap, wave 7 | 98.00 | 88.75 | -26.8% | -22.8% | Discard |
 | Batching with explicit EOF fallback, wave 9 | 86.50 | 88.75 | +8.8% | +69.7% | Discard |
 | Decisive summary cue, wave 10 | 92.50 | 97.50 | -16.5% | +74.0% | Unretained component screen |
-| Complete findings and summary cue, wave 11 | 96.33 | 91.25 | -8.5% | -17.1% | Unretained component screen |
+| Complete findings and summary cue, wave 11 | 96.33 | 91.25 | -8.5% | -17.1% | Discard after standalone holdout |
 | Line-addressed packets, wave 12 | 98.00 | 90.00 | -4.8% | -4.4% | Combination fails holdout |
 | Complete checks and line packets, wave 13 | 98.00 | 91.25 | -2.3% | -21.9% | Discard after holdout |
 | Combined candidate on build holdout, wave 14 | 98.75 | 86.25 | -14.8% | -19.7% | Discard |
@@ -19,6 +19,7 @@ Numeric quality gates rejected several apparent savings on the complex dispatche
 | Immutable source batches, wave 16 | Unknown | Unknown | Unqualified | Unqualified | Discard invalid proof |
 | Exact producer stderr suppression, wave 17 | 98.75 | 91.25 | -20.0% | -37.7% | Discard after transfer |
 | Same immutable candidate on dispatcher, wave 18 | 98.00 | 80.00 | +7.8% | +36.4% | Discard |
+| Standalone output component on build holdout, wave 19 | 98.75 | 86.25 | -8.4% | +14.0% | Discard |
 
 A separate fresh complex-case pair in wave 8 gives the read-cue control 87.5 and
 candidate 81.0. Credits fall only 1.0%, while provider time rises 17.0%. This
@@ -181,10 +182,24 @@ validation is purchased for a candidate already rejected by transfer.
 ## Screening stop condition
 
 The measured representations, output cues, EOF cues and source-turn mechanisms
-are exhausted for this pass. None of the wave 3-18 runtime combinations clears
+are exhausted for this pass. None of the wave 3-19 runtime combinations clears
 all fixed gates across both complex domains and their clean twins. Production
 keeps wave 2 and the independent proof corrections. Negative experiments remain
 reproducible; their runtime changes remain isolated. Future paid screens need a
 distinct causal target, such as locally validated caller/source closure or actual
 provider tool-inventory and per-turn accounting evidence. Rewording the same cues
 or lowering the score floor would not justify further spending.
+
+A final standalone transfer closes the output-instruction component left isolated
+by combined tests. Wave 19 restores control packets and standalone source reads,
+using the exact wave 11 candidate source identity. It finds all five build faults
+with accurate citations and scores 98.75. Its clean twin proves only one of three
+flows: builds.py stops at line 115, omitting the fetch path at 118-124, and no
+publication or artifact-retention source is read. Clean quality is 86.25, identical
+to the reused control and below the fixed floor. Credits fall 8.4% but time rises
+14.0%; the standalone component is discarded independently of packet changes.
+
+Across its two domains, mean quality is 93.15 versus 91.72, minimum remains 86.25,
+credits fall 8.5% and time rises 1.7%. [The bound component record](../eval/results/wave11-19-two-domain-2026-09-30.json)
+separates six new executions from two reused heldout controls. The quality floor
+rejects insufficient absolute depth even when paired quality does not decline.
