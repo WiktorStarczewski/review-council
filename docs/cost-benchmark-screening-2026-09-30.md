@@ -17,7 +17,8 @@ Numeric quality gates rejected several apparent savings on the complex dispatche
 | Combined candidate on build holdout, wave 14 | 98.75 | 86.25 | -14.8% | -19.7% | Discard |
 | Finite patch completion and caller-flow cue, wave 15 | 98.75 | 86.88 | -15.7% | -16.0% | Discard |
 | Immutable source batches, wave 16 | Unknown | Unknown | Unqualified | Unqualified | Discard invalid proof |
-| Exact producer stderr suppression, wave 17 | 98.75 | 91.25 | -20.0% | -37.7% | Pass screen; transfer pending |
+| Exact producer stderr suppression, wave 17 | 98.75 | 91.25 | -20.0% | -37.7% | Discard after transfer |
+| Same immutable candidate on dispatcher, wave 18 | 98.00 | 80.00 | +7.8% | +36.4% | Discard |
 
 A separate fresh complex-case pair in wave 8 gives the read-cue control 87.5 and
 candidate 81.0. Credits fall only 1.0%, while provider time rises 17.0%. This
@@ -112,7 +113,12 @@ and minimum 91.25, with all five faults found and no clean false positives. The
 clean result proves two of three frozen source flows and two complete hypotheses;
 partial compiler-option analysis earns no additional hypothesis credit. Credits
 fall 20.0% and provider time 37.7% against unchanged reused controls. This remains
-a screen pending transfer and fresh validation, with no production adoption.
+a passing screen, but the unchanged candidate fails dispatcher transfer in wave 18.
+That clean twin reads only jobs.py and worker.py, omitting the storage source
+needed by both frozen flows. Quality is 80.00 despite no false positives. The
+complex twin finds all six faults with accurate citations and scores 98.00.
+Dispatcher credits rise 7.8% and time 36.4%, so the combination is discarded.
+Prospective integration stops before any runtime edit or new paid validation.
 
 Native live-file compound proof is independently retired after a real regression
 shows its joined output can be attributed to the wrong files. Explicit opt-in
@@ -164,3 +170,21 @@ Aggregate usage cannot identify dispensable output or advertised tool-schema byt
 Further output limits, tool switches or prefix rearrangements lack the evidence
 needed for another paid canary. [Bound totals and inputs](../eval/results/cost-components-wave11-14-2026-09-30.json)
 allow this breakdown to be reproduced without access to private streams.
+
+Across the four cases in waves 17 and 18, the mean is 92.00 versus 90.91 for the
+reused controls, while the minimum falls from 86.25 to 80.00. Pooled credits fall
+7.5% and time 7.7%, but that descriptive aggregate cannot qualify the failed
+clean case. [The bound two-domain record](../eval/results/wave17-18-two-domain-2026-09-30.json)
+records four new executions and four reused controls explicitly. No fresh paired
+validation is purchased for a candidate already rejected by transfer.
+
+## Screening stop condition
+
+The measured representations, output cues, EOF cues and source-turn mechanisms
+are exhausted for this pass. None of the wave 3-18 runtime combinations clears
+all fixed gates across both complex domains and their clean twins. Production
+keeps wave 2 and the independent proof corrections. Negative experiments remain
+reproducible; their runtime changes remain isolated. Future paid screens need a
+distinct causal target, such as locally validated caller/source closure or actual
+provider tool-inventory and per-turn accounting evidence. Rewording the same cues
+or lowering the score floor would not justify further spending.

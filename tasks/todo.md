@@ -649,7 +649,8 @@ rubric was relaxed after observing these results.
 - [x] Test line-addressed packets on the qualified complete-checks control and repeat the combination against four fresh executions. All case gates pass; repeat credits fall 2.34% and provider time 21.90%.
 - [x] Validate the combined runtime on an unrelated frozen build-cache holdout. Five faults are found, but clean depth is 86.25 and fails the fixed floor; discard the combination despite lower credits and time.
 - [x] Integrate complete-case numeric run summaries after frozen paid stages finish. Forty focused quality/report tests pass; 22 portable holdout tests pass without skips.
-- [ ] Run the final active-source gate, commit and push a draft stacked PR.
+- [x] Verify the final functional source against the complete gate and commit measured outcomes.
+- Draft stacked delivery and exact CI results are tracked in the final PR.
 
 The instruction components remain private and unretained. The combined runtime
 passes the dispatcher but fails the independent clean holdout depth floor. Mean
@@ -716,7 +717,7 @@ and task prose differ from the frozen tree; code, tests and fixtures are identic
 
 - [x] Prove the real read-only sandbox failure and exact producer correction locally. Nineteen focused tests pass; warning-like source bytes remain unchanged.
 - [x] Measure the signed corrected immutable-source candidate on both heldout cases with two fresh executions and unchanged frozen controls.
-- [ ] Retain only if each case passes fixed correctness, citation, source-flow and quality gates; otherwise preserve measurements and discard runtime changes.
+- [x] Retain only if each case passes fixed correctness, citation, source-flow and quality gates; the unchanged dispatcher transfer fails, so discard runtime changes.
 
 Candidate db5dce0a0e546207548b9d0f93d568b109057b46 is isolated. No arbitrary
 stderr stripping, score revision or reinterpretation of wave 16 is permitted.
@@ -726,3 +727,23 @@ Wave 17 passes both case gates: A 98.75 and B 91.25, mean 95.00 and minimum
 wave 16 remains invalid. An unchanged two-call dispatcher transfer is running,
 with a private prospective integration preserving retired native compound proof.
 No runtime is adopted before transfer and fresh paired validation.
+
+### Completed transfer and stopping decision
+
+Wave 18 finds all six dispatcher faults with accurate citations (98.00), but its
+clean twin exposes no storage ranges and scores 80.00. Pooled credits rise 7.78%
+and time 36.44%. The combination is discarded; the private prospective integration
+remains clean at dbff79b with no code edits. Four-case mean is 92.00 versus 90.91,
+minimum 80.00 versus 86.25. Lower pooled credits cannot override that failed gate.
+Distinct evidence-backed cost mechanisms are exhausted for this pass; no further
+paid cue retries or unmeasurable tool/prefix canaries are justified.
+
+- [x] Preserve every completed stage, exact identities, manual adjudications and numeric comparison.
+- [x] Reconcile 14 unique execution cost components and bind their public inputs.
+- [x] Verify final metadata and commit the transfer disposition.
+- Final draft-PR delivery and both operating-system CI results are tracked in the PR.
+
+Final pre-push verification confirms all 285 tracked functional files match the
+complete gate snapshot in bytes and executable modes. All five terminal logs
+match receipt hashes and exit 0. Later changes are benchmark records and prose;
+complete-case summaries, component totals and bound input hashes verify separately.
