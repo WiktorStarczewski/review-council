@@ -1746,20 +1746,20 @@ PY
     write_codex_batch good "$good" exact || return
     audit_codex_batch good
     local good_rc=$?
-    assert_eq "Codex accepts two pure bounded source windows in one Bash call" "$good_rc" 0
-    assert_grep "Codex batch proves both exact source ranges" "$S/good-audit.json" \
-      '"opened_source_ranges":2'
-    assert_grep "Codex audit counts one multirange source batch" "$S/good-audit.json" \
-      '"source_read_batches":1'
-    assert_grep "Codex batch remains one source read call" "$S/good-audit.json" \
-      '"source_read_calls":1'
+    assert_eq "Codex refuses native compound source proof even with an old opt-in prompt" "$good_rc" 2
+    assert_grep "Codex compound call earns no source ranges" "$S/good-audit.json" \
+      '"opened_source_ranges":0'
+    assert_grep "Codex native source batch counter remains zero" "$S/good-audit.json" \
+      '"source_read_batches":0'
+    assert_grep "Codex compound call earns no source read credit" "$S/good-audit.json" \
+      '"source_read_calls":0'
 
     local wrapped="/bin/sh -lc \"$good\""
     write_codex_batch wrapped "$wrapped" exact || return
     audit_codex_batch wrapped
-    assert_eq "Codex accepts the live shell-wrapped source batch envelope" "$?" 0
-    assert_grep "Codex counts a live shell-wrapped source batch" "$S/wrapped-audit.json" \
-      '"source_read_batches":1'
+    assert_eq "Codex refuses the shell-wrapped native source batch envelope" "$?" 2
+    assert_grep "Codex wrapped compound call earns no batch credit" "$S/wrapped-audit.json" \
+      '"source_read_batches":0'
 
     printf 'Codex source batching enabled: false\nAssigned scope: full\n' > "$S/prompt.md"
     audit_codex_batch good
@@ -1777,8 +1777,8 @@ PY
         "\"code\":\"$code\""
     done <<'CASES'
 conditional~sed -n '1,80p' 'src/a.ts' && sed -n '121,200p' 'src/b.ts'~unsupported-source-batch
-wide-total~sed -n '1,121p' 'src/a.ts'; sed -n '121,241p' 'src/b.ts'~source-batch-lines-too-large
-overlap~sed -n '1,80p' 'src/a.ts'; sed -n '80,120p' 'src/a.ts'~overlapping-source-batch
+wide-total~sed -n '1,121p' 'src/a.ts'; sed -n '121,241p' 'src/b.ts'~unsupported-source-batch
+overlap~sed -n '1,80p' 'src/a.ts'; sed -n '80,120p' 'src/a.ts'~unsupported-source-batch
 mixed-search~sed -n '1,80p' 'src/a.ts'; rg -n 'never-matches' src | head -80~unsupported-source-batch
 mixed-output~sed -n '1,80p' 'src/a.ts'; printf marker; sed -n '121,160p' 'src/b.ts'~unsupported-source-batch
 variable-path~sed -n '1,80p' "$FILE"; sed -n '121,160p' 'src/b.ts'~unresolved-path-variable
@@ -1787,8 +1787,8 @@ CASES
     write_codex_batch mismatch "$good" mismatch || return
     audit_codex_batch mismatch
     assert_eq "Codex rejects a multirange output with one changed byte" "$?" 2
-    assert_grep "Codex multirange mismatch is fatal" "$S/mismatch-audit.json" \
-      '"code":"source-batch-output-mismatch"'
+    assert_grep "Codex altered multirange output cannot enter source proof" "$S/mismatch-audit.json" \
+      '"code":"unsupported-source-batch"'
 
     local overflow="sed -n '1,130p' 'src/a.ts'; sed -n '131,240p' 'src/b.ts'"
     write_codex_batch overflow "$overflow" exact || return
@@ -1815,6 +1815,116 @@ PY
     assert_grep "non-Codex source batch has a stable violation" "$S/grok-audit.json" \
       '"code":"unsupported-source-batch"'
   )
+}
+
+test_native_source_batch_redistribution_retirement() {
+  mkrepo "$T/native-batch-retirement/root" || return
+  python3 - "$SCRIPTS" "$T/native-batch-retirement" <<'PY'
+import hashlib, json, os, pathlib, shlex, subprocess, sys
+
+scripts, directory = map(pathlib.Path, sys.argv[1:])
+root, session = directory / 'root', directory / 'session'
+(root / 'src').mkdir(parents=True); session.mkdir()
+env = dict(os.environ, REV_SOURCE_CONTEXT='1', REV_CODEX_SOURCE_BATCH='0')
+def run(argv, cwd=None):
+    result = subprocess.run(argv, cwd=cwd, env=env, capture_output=True)
+    assert result.returncode == 0, result.stderr.decode()
+    return result.stdout
+def git(*args):
+    return run(['git', '-C', str(root), *args]).decode().strip()
+original = {'src/a.ts': b'a', 'src/b.ts': b'bc\n', 'src/lf.ts': b'lf\n',
+            'src/crlf.ts': b'crlf\r\n', 'src/proof.ts': b'old\n'}
+git('init', '-q')
+for path, raw in original.items():
+    (root / path).write_bytes(raw)
+git('add', 'src'); git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'Fixture baseline')
+base = git('rev-parse', 'HEAD')
+original['src/proof.ts'] = b'changed\n'; (root / 'src/proof.ts').write_bytes(b'changed\n')
+git('add', 'src'); git('-c', 'commit.gpgsign=false', 'commit', '-qm', 'Fixture reviewed change')
+(session / 'scope.env').write_text(
+    f"REV_BASE='{base}'\nREV_ROOT='{root}'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_SCOPE='branch'\n")
+(session / 'files.txt').write_text('src/proof.ts\n'); (session / 'untracked.txt').write_bytes(b'')
+(session / 'roster.json').write_text(json.dumps({'seats': [
+    {'seat': seat, 'adapter': adapter} for seat, adapter in
+    [('sol', 'codex'), ('terra', 'codex'), ('opus', 'claude'), ('sonnet', 'claude')]]}) + '\n')
+manifest_path = pathlib.Path(run([sys.executable, str(scripts / 'rev-evidence.py'),
+    'prepare', str(session), '1', '--head', git('rev-parse', 'HEAD'), '--phase', 'discovery']).decode().strip())
+manifest = json.loads(manifest_path.read_bytes()); assignment = manifest['assignments']['sol']
+prompt = pathlib.Path(run([str(scripts / 'rev-prompt.sh'), str(session), '1', 'sol',
+    assignment['bundle'], 'source-evidence', '--evidence', str(manifest_path)]).decode().strip())
+assert assignment['scope'] == 'full'
+# An old authenticated opt-in declaration must not resurrect ambiguous producer proof.
+prompt.write_text(prompt.read_text().replace('Codex source batching enabled: false',
+                                           'Codex source batching enabled: true'))
+result_path = session / 'r1-sol.json'
+result_path.write_text('{"summary":"checked","findings":[]}\n')
+frozen = {name: hashlib.sha256((session / name).read_bytes()).hexdigest()
+          for name in {manifest_path.name, prompt.name, result_path.name,
+                       *manifest['artifacts'], *manifest['inputs']}}
+events = []
+def tool(command):
+    output = run(['/bin/sh', '-c', command], cwd=root)
+    call_id = str(len(events))
+    events.extend([
+        {'type': 'item.started', 'item': {'id': call_id, 'type': 'command_execution', 'command': command}},
+        {'type': 'item.completed', 'item': {'id': call_id, 'type': 'command_execution',
+         'command': command, 'aggregated_output': output.decode(), 'exit_code': 0}},
+    ])
+    return output
+patch = pathlib.Path(assignment['patch']); patch_lines = patch.read_bytes().count(b'\n')
+for start in range(1, patch_lines + 1, 240):
+    tool(f"sed -n '{start},{min(patch_lines, start + 239)}p' {shlex.quote(str(patch))}")
+context = manifest['source_context']['seats']['sol']
+for artifact in [row['artifact'] for row in context['shards']] + [
+        segment['artifact'] for row in context['required_source_ranges'] for segment in row['segments']]:
+    tool('cat ' + shlex.quote(str(session / artifact)))
+tool('cat ' + shlex.quote(str(session / 'r1-evidence.md')))
+tool("sed -n '1,1p' 'src/proof.ts'")
+prefix = list(events)
+def audit(name):
+    stream, out = session / (name + '.ndjson'), session / (name + '.audit.json')
+    stream.write_text(''.join(json.dumps(row) + '\n' for row in events))
+    completed = subprocess.run([sys.executable, str(scripts / 'lib/review-read-audit.py'),
+        'audit', '--adapter', 'codex', '--raw', str(stream), '--prompt', str(prompt),
+        '--root', str(root), '--session', str(session), '--result', str(result_path),
+        '--out', str(out)], env=env, capture_output=True)
+    return completed.returncode, json.loads(out.read_bytes())
+def tool_paths(report):
+    return {row['path'] for row in report['source_ranges'] if row['origin'] == 'tool'}
+failures = []
+batch = "sed -n '1,1p' 'src/a.ts'; sed -n '1,1p' 'src/b.ts'"
+for name, restore in [('static-redistribution', False), ('restore-before-audit', True)]:
+    events[:] = prefix
+    (root / 'src/a.ts').write_bytes(b'ab'); (root / 'src/b.ts').write_bytes(b'c\n')
+    assert tool(batch) == b'abc\n'
+    if restore:
+        for path in ('src/a.ts', 'src/b.ts'):
+            (root / path).write_bytes(original[path])
+    rc, report = audit(name)
+    if rc != 0 or report['source_read_batches'] != 0 or tool_paths(report) != {'src/proof.ts'} \
+            or [row['code'] for row in report['advisories']] != ['unsupported-source-batch']:
+        failures.append(name + ': compound call received source credit or changed complete-proof classification')
+    print(name, report['status'], report['source_read_batches'], sorted(tool_paths(report)))
+    result_path.write_text(json.dumps({'summary': 'one', 'findings': [{
+        'severity': 'P2', 'file': 'src/a.ts', 'line_start': 1, 'line_end': 1,
+        'claim': 'c', 'evidence': 'e', 'suggested_fix': 'f', 'confidence': 0.9}]}))
+    citation_rc, citation_report = audit(name + '-citation')
+    assert citation_rc == 2 and 'unsubstantiated-finding-range' in {
+        row['code'] for row in citation_report['violations']}, citation_report
+    result_path.write_text('{"summary":"checked","findings":[]}\n')
+    for path, raw in original.items():
+        (root / path).write_bytes(raw)
+events[:] = prefix
+for path in ('src/a.ts', 'src/b.ts', 'src/lf.ts', 'src/crlf.ts'):
+    assert tool(f"sed -n '1,1p' '{path}'") == original[path]
+rc, report = audit('standalone-controls')
+assert rc == 0 and report['status'] == 'valid' and report['source_read_batches'] == 0, report
+assert tool_paths(report) == set(original) and not report['violations'] and not report['advisories'], report
+assert frozen == {name: hashlib.sha256((session / name).read_bytes()).hexdigest() for name in frozen}
+print('standalone LF, CRLF and unterminated reads preserve exact source credit; frozen artifacts unchanged')
+assert not failures, '\n'.join(failures)
+PY
+  assert_eq "real static and restored redistribution earns no compound proof; standalone bytes remain valid" "$?" 0
 }
 
 test_read_transcript_audit_contract() {
@@ -2826,7 +2936,7 @@ PY
 }
 
 # Audit severity: conduct codes are advisories that earn no credit (docs/audit-severity-2026-09-23.md).
-# One repository serves every label: 31 is window mode with codex source batching, 32 adds
+# One repository serves every label: 31 is window mode, 32 adds
 # source-context packets, and 33 is chunk mode. Seat sol owns the full scope in each.
 severity_fixture() {
   local R=$1 S=$2 base label
@@ -2859,7 +2969,7 @@ PY
     manifest=$(REV_SOURCE_CONTEXT=$context REV_PATCH_CHUNKS=$chunks \
       python3 "$SCRIPTS/rev-evidence.py" prepare "$S" "$label" --phase discovery) || return
     bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"]["sol"]["bundle"])' "$manifest") || return
-    REV_CODEX_SOURCE_BATCH=1 "$SCRIPTS/rev-prompt.sh" "$S" "$label" sol "$bundle" severity \
+    REV_CODEX_SOURCE_BATCH=0 "$SCRIPTS/rev-prompt.sh" "$S" "$label" sol "$bundle" severity \
       --evidence "$manifest" > /dev/null || return
   done
 }
@@ -3025,9 +3135,9 @@ tool-turn-output-too-large^codex^[{"sed":["src/wide.rs",1,120]},{"sed":["src/wid
 unbounded-read^gemini^[{"read":["src/wide.rs",290,250]}]^$read_clean^unbounded-read@read_file
 unbounded-search^gemini^[{"tool":"search_file_content","input":{"pattern":"W150","path":"src"},"out":"src/wide.rs:151:W150\n"}]^$read_clean^unbounded-search@search_file_content
 unsupported-source-batch^codex^[{"cmd":"sed -n '1,20p' src/wide.rs; rg -n W150 src | head -81","out_lines":["src/wide.rs",1,20]}]^$wide_clean^unsupported-source-batch@Bash
-source-batch-lines-too-large^codex^[{"batch":[["src/lines.txt",1,200],["src/lines.txt",201,241]]}]^$wide_clean^source-batch-lines-too-large@Bash
-overlapping-source-batch^codex^[{"batch":[["src/lines.txt",1,20],["src/lines.txt",10,30]]}]^$wide_clean^overlapping-source-batch@Bash
-source-batch-output-mismatch^codex^[{"batch":[["src/lines.txt",1,20],["src/lines.txt",30,40]],"tamper":true}]^$wide_clean^source-batch-output-mismatch@command_execution
+source-batch-lines-too-large^codex^[{"batch":[["src/lines.txt",1,200],["src/lines.txt",201,241]]}]^$wide_clean^unsupported-source-batch@Bash
+overlapping-source-batch^codex^[{"batch":[["src/lines.txt",1,20],["src/lines.txt",10,30]]}]^$wide_clean^unsupported-source-batch@Bash
+source-batch-output-mismatch^codex^[{"batch":[["src/lines.txt",1,20],["src/lines.txt",30,40]],"tamper":true}]^$wide_clean^unsupported-source-batch@Bash
 CASES
   )
 }
@@ -3332,6 +3442,7 @@ ADVISORY = {
     'patch-chunk-batch-too-large', 'required-source-segment-batch-too-large',
     'evidence-proof-batch-too-large', 'source-packet-batch-too-large',
 }
+RETIRED = {'source-batch-lines-too-large', 'overlapping-source-batch', 'source-batch-output-mismatch'}
 def strings(node):
     return {item.value for item in ast.walk(node)
             if isinstance(item, ast.Constant) and isinstance(item.value, str)}
@@ -3351,7 +3462,7 @@ for function in ast.walk(audit_tree):
             forwarders[function.name] = params.index(call.args[0].id)
             forwarded.add(call)
 def reforwarded(node):
-    # `error.code` carries a SourceBatchBlocked code; `item['code']` re-emits a violation() row.
+    # `item['code']` re-emits a violation() row.
     return (isinstance(node, ast.Attribute) and node.attr == 'code') or (
         isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant)
         and node.slice.value == 'code')
@@ -3385,8 +3496,10 @@ if FATAL & ADVISORY:
     problems.append('classified twice: %s' % sorted(FATAL & ADVISORY))
 if emitted - FATAL - ADVISORY:
     problems.append('unclassified: %s' % sorted(emitted - FATAL - ADVISORY))
-if (FATAL | ADVISORY) - emitted:
-    problems.append('classified but never emitted: %s' % sorted((FATAL | ADVISORY) - emitted))
+if emitted & RETIRED:
+    problems.append('retired native-batch code emitted: %s' % sorted(emitted & RETIRED))
+if (FATAL | ADVISORY) - RETIRED - emitted:
+    problems.append('classified but never emitted: %s' % sorted((FATAL | ADVISORY) - RETIRED - emitted))
 print('\n'.join(problems))
 raise SystemExit(1 if problems else 0)
 PY

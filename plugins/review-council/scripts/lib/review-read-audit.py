@@ -902,12 +902,12 @@ def repository_search_pattern(name, data, root):
 
 
 def shell_violations(command, roots, root, session, authorized=None, complete=None, cache=None,
-                     dependency=None, adapter=None, allow_source_batch=False):
+                     dependency=None):
     tool = 'Bash'
     command = unwrap_shell(command)
     # A refused program must never hide behind a shape code, several of which are advisories.
     try:
-        READONLY_POLICY.validate(command, allow_source_batch=True)
+        READONLY_POLICY.validate(command, inspect_compound=True)
     except Exception:
         return [violation('unsupported-shell-command', tool)]
     if contains_unquoted(command, '<'):
@@ -942,16 +942,9 @@ def shell_violations(command, roots, root, session, authorized=None, complete=No
     producer_pipelines = sum(any(words and Path(words[0]).name not in quiet for words in pipeline)
                              for pipeline in pipelines)
     if producer_pipelines > 1:
-        if adapter != 'codex' or not allow_source_batch:
-            return [violation('unsupported-source-batch', tool)]
-        try:
-            READONLY_POLICY.strict_source_batch(command, root)
-        except READONLY_POLICY.SourceBatchBlocked as error:
-            return [violation(error.code, tool)]
-        except (OSError, TypeError, ValueError):
-            return [violation('unsupported-source-batch', tool)]
+        return [violation('unsupported-source-batch', tool)]
     try:
-        READONLY_POLICY.validate(command, allow_source_batch=allow_source_batch)
+        READONLY_POLICY.validate(command)
     except Exception:
         return [violation('unsupported-shell-command', tool)]
     if any(token in command for token in ('`', '$(')):
@@ -993,7 +986,7 @@ def shell_violations(command, roots, root, session, authorized=None, complete=No
 
 
 def validate_call(name, data, roots, root, session, authorized=None, complete=None, cache=None,
-                  dependency=None, adapter=None, allow_source_batch=False):
+                  dependency=None):
     normalized = name.lower()
     path = tool_path(data)
     if path is not None:
@@ -1029,8 +1022,7 @@ def validate_call(name, data, roots, root, session, authorized=None, complete=No
         if not isinstance(command, str) or not command.strip():
             return [violation('missing-shell-command', name)]
         return shell_violations(
-            command, roots, root, session, authorized, complete, cache, dependency, adapter,
-            allow_source_batch)
+            command, roots, root, session, authorized, complete, cache, dependency)
     elif normalized in TERMINAL_TOOLS:
         return []
     return [violation('unrecognized-review-tool', name)]
@@ -2023,11 +2015,6 @@ def assess(args, blocked):
         prompt_lines = prompt.read_text().splitlines()
     except OSError:
         prompt_lines = []
-    source_batch_enabled = (
-        args.adapter == 'codex'
-        and prompt_lines.count('Codex source batching enabled: true') == 1
-        and 'Codex source batching enabled: false' not in prompt_lines
-    )
     adapter_read_batch_limit = _load_evidence_module().read_batch_limit(args.adapter)
     authorized, complete_paths = prompt_permissions(prompt, root, session)
     dependency = Path(args.deps).resolve() if args.deps else None
@@ -2123,13 +2110,12 @@ def assess(args, blocked):
     recognized_tool_calls = 0
     tool_ranges = []
     source_read_call_ids = set()
-    source_batch_call_ids = set()
     verified_call_ranges = {}
     pending_source_ranges = []
     for call_id, (name, data, turn) in calls.items():
         call_failures = validate_call(
             name, data, roots, root, session, authorized, complete_paths, source_cache,
-            dependency, args.adapter, source_batch_enabled)
+            dependency)
         failures.extend(call_failures)
         if call_failures:
             blocked.add(call_id)
@@ -2163,14 +2149,6 @@ def assess(args, blocked):
             failures.append(violation('unsupported-source-range', name))
         if call_ranges:
             pending_source_ranges.append((call_id, name, output['value'], call_ranges))
-            if source_batch_enabled and name.lower() in SHELL_TOOLS and len(call_ranges) > 1:
-                try:
-                    READONLY_POLICY.strict_source_batch(
-                        unwrap_shell(data.get('command', '')), root)
-                except (OSError, TypeError, ValueError, READONLY_POLICY.SourceBatchBlocked):
-                    pass
-                else:
-                    source_batch_call_ids.add(call_id)
     manifest = None
     manifest_hash = None
     seat = None
@@ -2268,9 +2246,7 @@ def assess(args, blocked):
             verified_call_ranges[call_id] = call_ranges
             tool_ranges.extend(call_ranges)
         else:
-            failures.append(violation(
-                'source-batch-output-mismatch' if call_id in source_batch_call_ids
-                else 'source-output-mismatch', name))
+            failures.append(violation('source-output-mismatch', name))
 
     packet_ranges = []
     packet_bytes = 0
@@ -2640,7 +2616,7 @@ def assess(args, blocked):
             source_ranges.append(row)
     source_ranges.sort(key=lambda row: (row['path'], row['line_start'], row['line_end'], row['origin']))
     source_read_calls = len(source_read_call_ids)
-    source_read_batches = len(source_read_call_ids & source_batch_call_ids)
+    source_read_batches = 0
     required_source_ranges_covered = len(required_source_range_proofs)
     if required_source_role == 'integration' \
             and required_source_ranges_covered != len(required_source_ranges):

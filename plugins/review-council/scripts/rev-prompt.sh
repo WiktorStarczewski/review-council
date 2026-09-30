@@ -532,15 +532,12 @@ EOC
   fi
   if [ "$ADAPTER" = codex ] && [ -z "$RO" ]; then
     CODEX_SOURCE_BATCH=${REV_CODEX_SOURCE_BATCH:-0}
-    case "$CODEX_SOURCE_BATCH" in 0) BATCH_ENABLED=false;; 1) BATCH_ENABLED=true;; *) die "REV_CODEX_SOURCE_BATCH must be 0 or 1";; esac
-    echo "Codex source batching enabled: $BATCH_ENABLED"
-    if [ "$CODEX_SOURCE_BATCH" = 1 ]; then
-      printf 'Codex source batching: after assigned patch'
-      [ "$HAS_PACKETS" != 1 ] || printf ' and source-context packet'
-      [ "$HAS_SEGMENTS" != 1 ] || printf ' and required source segment'
-      [ -z "$EVIDENCE" ] || printf ' and evidence index'
-      echo " reads are complete, one Bash call may contain semicolon-separated pure \`sed -n 'START,ENDp' 'FILE'\` producers. Each literal in-scope window and the combined selected lines must be at most $READ_LINES lines; combined visible output must stay at or below 32 KiB. Do not overlap or duplicate windows, or mix source windows with searches, metadata, transforms, pipes, redirections, variables, substitutions, or conditional operators."
-    fi
+    case "$CODEX_SOURCE_BATCH" in
+      0) ;;
+      1) die "REV_CODEX_SOURCE_BATCH=1 is retired; use standalone bounded source reads";;
+      *) die "REV_CODEX_SOURCE_BATCH must be 0 or 1";;
+    esac
+    echo "Codex source batching enabled: false"
     echo
   fi
   echo "## Scope"
