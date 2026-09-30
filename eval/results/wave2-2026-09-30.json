@@ -1,0 +1,205 @@
+{
+  "date": "2026-09-30",
+  "lane": "single-seat canary",
+  "model": "gpt-6-luna",
+  "effort": "xhigh",
+  "cli": "codex-cli 0.159.0",
+  "selectors": [
+    "latest-sol",
+    "latest-luna"
+  ],
+  "resolved_openai_models": [
+    "gpt-6.1-sol",
+    "gpt-6-luna"
+  ],
+  "reference_directory": "profile-latest-xhigh-20260930-v2",
+  "candidate_directory": "wave2-context-rounds-20260930-v2",
+  "source_identities": {
+    "baseline": "6e43de81bddae0bbca95641e3d579392467220150de1f5092e60077a124508f6",
+    "candidate": "d30c9e5af991fe3fd4fef958f0a0d0d0ac4087de690c390d3311d1cacbe21cc4"
+  },
+  "truth_identity": "e697a1c99f3e7c91cc098c9c4f518b747b10a98c6aca8c22ccfeff759ca46a60",
+  "rate_card_sha256": "874356631b4c6a1eb60a02f59bbdeb8123f8b3a3fa13f4ce4e3bcda429fed9ac",
+  "measured_engine": {
+    "cost_bench.py": "ec817a3322708092a75ecaee2aee5cca8561fbb07a3b2b40f4d51ad94e3028c4",
+    "bench_local.py": "8529b16410e4cea612d440b7c0dcc9dd3514d3ad2913269ef753018f93024a7c",
+    "bench_metrics.py": "6b292cf797c71117831fe4361329b448088e486213709bc5cc1777526603c81a",
+    "bench_score.py": "72e8753ce5177897dd9e96e7a8023edafc2322ff623fa887db230e4fb9f25579"
+  },
+  "authorized_calls": 4,
+  "completed_calls": 4,
+  "paid_probes": 0,
+  "paid_graders": 0,
+  "reviewer_retries": 0,
+  "totals": {
+    "baseline": {
+      "wall_seconds": 234.201160167,
+      "estimated_credits": 0.31533900000000004,
+      "tool_calls": 13,
+      "input_tokens": 324580,
+      "uncached_input_tokens": 59364,
+      "cached_input_tokens": 265216,
+      "output_tokens": 8050,
+      "reasoning_output_tokens": 6017
+    },
+    "wave2": {
+      "wall_seconds": 200.482725042,
+      "estimated_credits": 0.27739250000000004,
+      "tool_calls": 13,
+      "input_tokens": 296539,
+      "uncached_input_tokens": 52059,
+      "cached_input_tokens": 244480,
+      "output_tokens": 6890,
+      "reasoning_output_tokens": 5191
+    },
+    "reduction_percent": {
+      "wall_seconds": 14.397210970670116,
+      "estimated_credits": 12.03355753649247,
+      "tool_calls": 0.0,
+      "input_tokens": 8.63916445868507,
+      "uncached_input_tokens": 12.305437638973116,
+      "cached_input_tokens": 7.818532818532819,
+      "output_tokens": 14.409937888198758,
+      "reasoning_output_tokens": 13.727771314608608
+    },
+    "pairs": [
+      {
+        "case": "boundary-ledger",
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "valid_pair": true,
+        "metrics": {
+          "wall_seconds": {
+            "baseline": 141.039194917,
+            "candidate": 73.18044375,
+            "reduction_percent": 48.113399404282
+          },
+          "input_tokens": {
+            "baseline": 157567,
+            "candidate": 132398,
+            "reduction_percent": 15.973522374608898
+          },
+          "cached_input_tokens": {
+            "baseline": 129536,
+            "candidate": 108032,
+            "reduction_percent": 16.600790513833992
+          },
+          "uncached_input_tokens": {
+            "baseline": 28031,
+            "candidate": 24366,
+            "reduction_percent": 13.07481003175056
+          },
+          "output_tokens": {
+            "baseline": 3450,
+            "candidate": 2780,
+            "reduction_percent": 19.420289855072465
+          },
+          "reasoning_output_tokens": {
+            "baseline": 2563,
+            "candidate": 1883,
+            "reduction_percent": 26.531408505657435
+          },
+          "processed_tokens": {
+            "baseline": 161017,
+            "candidate": 135178,
+            "reduction_percent": 16.047373879776668
+          },
+          "estimated_credits": {
+            "baseline": 0.1455865,
+            "candidate": 0.122673,
+            "reduction_percent": 15.73875324978621
+          },
+          "prompt_words": {
+            "baseline": 852,
+            "candidate": 852,
+            "reduction_percent": 0.0
+          },
+          "prompt_bytes": {
+            "baseline": 5758,
+            "candidate": 5758,
+            "reduction_percent": 0.0
+          }
+        }
+      },
+      {
+        "case": "cache-isolation",
+        "baseline_status": "complete",
+        "candidate_status": "complete",
+        "valid_pair": true,
+        "metrics": {
+          "wall_seconds": {
+            "baseline": 93.16196525000001,
+            "candidate": 127.302281292,
+            "reduction_percent": -36.64619563400633
+          },
+          "input_tokens": {
+            "baseline": 167013,
+            "candidate": 164141,
+            "reduction_percent": 1.719626615892176
+          },
+          "cached_input_tokens": {
+            "baseline": 135680,
+            "candidate": 136448,
+            "reduction_percent": -0.5660377358490566
+          },
+          "uncached_input_tokens": {
+            "baseline": 31333,
+            "candidate": 27693,
+            "reduction_percent": 11.617144863243226
+          },
+          "output_tokens": {
+            "baseline": 4600,
+            "candidate": 4110,
+            "reduction_percent": 10.652173913043478
+          },
+          "reasoning_output_tokens": {
+            "baseline": 3454,
+            "candidate": 3308,
+            "reduction_percent": 4.226983207874928
+          },
+          "processed_tokens": {
+            "baseline": 171613,
+            "candidate": 168251,
+            "reduction_percent": 1.9590590456433954
+          },
+          "estimated_credits": {
+            "baseline": 0.1697525,
+            "candidate": 0.1547195,
+            "reduction_percent": 8.855834229245515
+          },
+          "prompt_words": {
+            "baseline": 1093,
+            "candidate": 1093,
+            "reduction_percent": 0.0
+          },
+          "prompt_bytes": {
+            "baseline": 7952,
+            "candidate": 7952,
+            "reduction_percent": 0.0
+          }
+        }
+      }
+    ]
+  },
+  "quality": {
+    "baseline_defects_found": 4,
+    "candidate_defects_found": 4,
+    "planted_defects": 4,
+    "false_positives": 0,
+    "baseline_valid_audits": 2,
+    "candidate_valid_audits": 2,
+    "candidate_citation_note": "Ledger endpoint range 50-56 misses the predicate at line 58; the substantive finding is true."
+  },
+  "findings_sha256": {
+    "boundary-ledger": "6fd52ee5b7f0c12416df20a3e5c5ed8a4e5257c6bcebf74dbf592b24f229accc",
+    "cache-isolation": "06e26a31d083e1ae8d7d15e5f17d928e7103c5320eb2bea1a37ca4b3d100a49c"
+  },
+  "limits": [
+    "Two cases provide no statistical quality equivalence.",
+    "Server cache cannot be cleared; single stages have temporal ordering bias.",
+    "No full panel certification or subscription cost claim.",
+    "One reviewer execution may include multiple provider HTTP requests.",
+    "Only Luna was live-measured; full-panel schedule savings are projected launch counts.",
+    "One imprecise candidate citation; severity calibration is unmeasured."
+  ]
+}

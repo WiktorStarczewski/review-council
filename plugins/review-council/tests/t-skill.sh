@@ -202,8 +202,14 @@ test_skill_contract() {
       'Numeric mode adds no panel for this composite assignment'
     assert_grep "qualifying adaptive reviews run one full red-team panel before planning" "$H" \
       'Large, high-risk, user-marked-important, or explicitly adversarial adaptive reviews run exactly one full red-team panel before planning'
-    assert_grep "full red-team reuses risk evidence and canonical bundles" "$H" \
-      'PANEL_PHASE=risk.*existing four canonical bundle assignments'
+    assert_grep "full red-team composes verification evidence and canonical bundles" "$H" \
+      'PANEL_PHASE=verification.*existing four canonical bundle assignments'
+    assert_grep "unchanged verification is checked by the coverage helper" "$H" \
+      'current-coverage.*\$S'
+    assert_grep "risk receipts are never promoted to verification" "$H" \
+      '[Nn]ever relabel a risk receipt'
+    assert_grep "ordinary and numeric schedules keep their verification obligation" "$H" \
+      '[Ss]implicity-only.*numeric.*unchanged'
     assert_grep "full red-team assignments are explicitly distinct" "$H" \
       'four distinct composed adversarial assignments'
     assert_grep "full red-team covers attacker behavior and trust boundaries" "$H" \
@@ -354,8 +360,8 @@ test_skill_contract() {
       '\| (`1` or `2`|seat exit 1 or 2) \| retry'
     assert_grep "collection retries only without an invalid audit" "$H" \
       '([Ee]xit 1/2|seat exit|`1` or `2`).*no invalid read audit.*retry'
-    assert_grep "seat-local recovery preserves maximum effort" "$H" \
-      '[Nn]ever lower effort|same maximum effort'
+    assert_grep "seat-local recovery preserves receipted effort" "$H" \
+      '[Nn]ever lower effort|same receipted effort'
     assert_grep "triage may overlap stragglers without early edits" "$H" \
       '[Tt]riage completed valid results as they arrive'
     assert_grep "one quota fallback panel is the retry ceiling" "$H" \

@@ -1,6 +1,6 @@
 ---
 name: rev
-description: Multi-model review-and-fix loop run from this session - a panel built at run time from whichever frontier CLIs are installed and signed in (Codex and Gemini) plus configured Claude seats, all at maximum effort, triaged into a ledger, fixed, verified and committed until rounds stop producing material findings. Use when the user runs /review-council:rev, asks for a review, audit, or check of code changes (a PR, a branch, uncommitted work, a path), after completing any non-trivial implementation, or for a read-only second opinion on a plan, design doc, or prose.
+description: Multi-model review-and-fix loop run from this session - a panel built at run time from whichever frontier CLIs are installed and signed in (Codex and Gemini) plus configured Claude seats, at their receipted efforts, triaged into a ledger, fixed, verified and committed until rounds stop producing material findings. Use when the user runs /review-council:rev, asks for a review, audit, or check of code changes (a PR, a branch, uncommitted work, a path), after completing any non-trivial implementation, or for a read-only second opinion on a plan, design doc, or prose.
 user_invocable: true
 ---
 
@@ -14,7 +14,7 @@ fix, verify the gates, commit, and report. The point is decorrelation: a reviewe
 that shares your weights shares your blind spots, so a review you run on your own
 work alone is proofreading. Disagreement between labs is the signal worth having.
 
-Keep the independent panel and maximum effort. Bound cost by running only the panels
+Keep the independent panel and its receipted efforts. Bound cost by running only the panels
 that change the verdict, keeping prompts compact, and reporting usage after each panel.
 
 Scripts live in `${CLAUDE_PLUGIN_ROOT}/scripts/` and are written out in full below.
@@ -187,7 +187,7 @@ or rendering prompts. Numeric extras keep their fixed lenses.
 ### Adaptive scope preparation
 
 Scope optimization never changes the preflight roster, its models, efforts, or
-seat count. Use every configured core seat, including Sol, Terra, Opus, and Sonnet
+seat count. Use every configured core seat, including Sol, Luna, Opus, and Sonnet
 when that is the configured roster.
 Cover all four risk bundles at least once in every risk and verification panel.
 Let `BUNDLES` be the four bundles in their listed order. In stable roster order, core seat `i` receives bundle `BUNDLES[i mod 4]`.
@@ -209,7 +209,7 @@ failure, or consumer boundary that breaks it. This supplements and never replace
 Numeric mode adds no panel for this composite assignment.
 
 Large, high-risk, user-marked-important, or explicitly adversarial adaptive reviews run exactly one full red-team panel before planning.
-For this panel, set `PANEL_PHASE=risk` and reuse the existing four canonical bundle assignments without changing `rev-evidence.py` or its schema. The panel has these four distinct composed adversarial assignments, in bundle order:
+For this panel, set `PANEL_PHASE=verification` and reuse the existing four canonical bundle assignments. Render this phase from the outset so every prompt also contains sibling-site completeness; keep the full cumulative owner and all composed adversarial emphases. The panel has these four distinct composed adversarial assignments, in bundle order:
 
 1. correctness and boundaries plus attacker behavior and trust boundaries;
 2. security, state, and API plus rollback and recovery;
@@ -222,6 +222,16 @@ each repeated bundle repeats its matching emphasis. Keep the result in the exist
 seat prompt; neither case changes the canonical topology or adds a provider call.
 
 The full panel joins the same initial finding clusters and does not grant another correction cycle.
+After triage, the combined panel may serve final verification only when no fix follows
+and its latest sealed receipt remains current. Run `current-coverage "$S"` through
+`rev-evidence.py`; require JSON `eligible: true` before omitting the separate panel.
+Record the returned receipt, hash, snapshot, and exact selected generations in the
+ledger. Never relabel a risk receipt. Missing, stale, or unenforced coverage keeps the separate verification obligation.
+Invalid or incomplete panels follow the existing failure and replacement rules;
+this scheduling check never authorizes an automatic full-panel rerun. Any fix or
+material source, scope, roster, model, effort, or repository-instruction change after
+the combined panel blocks reuse. Simplicity-only and explicit numeric schedules are unchanged.
+
 The ordinary adaptive and numeric stopping rules remain unchanged. Document panels receive no automatic red-team assignment unless the user explicitly requests an adversarial document review.
 
 The verification owner always traces the cumulative change through consumers and integration boundaries. Compose these additional emphases when relevant:
@@ -571,7 +581,7 @@ edit the working tree while seats run.
 | seat exit | action |
 |---|---|
 | `0` | done |
-| `1` or `2` with no invalid read audit | retry that seat once immediately at the same maximum effort while siblings continue; still failing gets the one replacement below |
+| `1` or `2` with no invalid read audit | retry that seat once immediately at the same receipted effort while siblings continue; still failing gets the one replacement below |
 | hard evidence-audit failure | keep siblings running; never relaunch that seat under that label. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure. |
 | `3` | cancel pending siblings, stop the run, and tell the user which tool needs sign-in |
 | `4` | cancel pending siblings, stop the run, and name the usage or rate-limit blocker |
@@ -804,11 +814,13 @@ findings by severity, what was fixed, gate status, commit.
 
 ## Adaptive panel plan
 
-With four core seats, a normal review plans 9 seat launches: four simplicity,
-one conditional plan, and four final verification launches. A large or high-risk
-review plans 17 by adding four risk-discovery and four full red-team launches. An
-important or explicitly adversarial review that is not otherwise large or high-risk
-plans 13 by adding four full red-team launches. With `"plan_seats": "all"`, every
+With four core seats, a normal review uses eight code-seat launches plus one
+conditional plan. A large or high-risk review uses twelve before fixes: four
+simplicity, four risk-discovery, and four combined red-team/verification launches.
+An important or explicitly adversarial review that is not otherwise large or
+high-risk uses eight before fixes. If any fix follows the combined panel, run four
+separate verification launches; a one-seat plan then gives totals of 17 or 13
+respectively. With `"plan_seats": "all"`, every
 plan panel launches all four core seats instead of one. An explicit round count remains a
 minimum override and exclusively selects the legacy numbered schedule.
 
@@ -820,18 +832,19 @@ protocol, public API, or irreversible mutation boundary.
 |---|---|---|
 | Simplicity discovery | always | simplicity for every seat |
 | Risk discovery | large or high-risk only | correctness-boundaries, security-state-api, concurrency-resources-performance, tests-observability-maintenance-regression |
-| Full red team | exactly once for large, high-risk, user-marked-important, or explicitly adversarial adaptive reviews | the four risk bundles with the four distinct composed adversarial assignments |
+| Full red team | exactly once for large, high-risk, user-marked-important, or explicitly adversarial adaptive reviews | the four risk bundles with the four distinct composed adversarial assignments, rendered as verification with sibling-site completeness |
 | Plan | accepted nontrivial fixes | plan-completeness on one seat; `"plan_seats": "all"` deals plan-completeness, plan-soundness, plan-simplicity, plan-tests |
-| Verification | after discovery or the latest nontrivial fix | the four risk bundles, rotated from risk discovery; `--phase verification` adds to every seat: Sibling-site completeness: for each fix commit since the base, name the rule it applies and search the repository for sites, arms, realms, callers and copies (tests, JSDoc, docs) the rule reaches but the commit missed. |
+| Verification | reuse the current combined panel when no fix follows; otherwise after discovery or fixes | the four risk bundles; `--phase verification` adds to every seat: Sibling-site completeness: for each fix commit since the base, name the rule it applies and search the repository for sites, arms, realms, callers and copies (tests, JSDoc, docs) the rule reaches but the commit missed. |
 
 Adaptive default panels use core seats and omit extras. Explicit numeric round plans
 may include extras in their configured rounds. The four risk bundles cover logic,
 boundaries, error handling, security, state, API contracts, concurrency, resources,
 performance, tests, observability, maintenance, and regression. Keep the same evidence
-rules and the same maximum effort in every bundle.
+rules and the same receipted effort in every bundle.
 
-One four-bundle verification panel reviews the latest material state: directly after
-discovery when no nontrivial fix follows, or after the latest nontrivial fix. Do not certify an adaptive panel until every assignment has a valid result, its own or its one replacement's. A certified risk or verification panel therefore has all four bundles. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure. A replacement is one seat, so the three-reviewer minimum does not apply.
+One four-bundle verification panel reviews the latest material state: the current
+combined panel when no fix follows, a separate panel after simplicity-only discovery,
+or a fresh panel after fixes. Do not certify an adaptive panel until every assignment has a valid result, its own or its one replacement's. A certified risk or verification panel therefore has all four bundles. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure. A replacement is one seat, so the three-reviewer minimum does not apply.
 
 An explicit numeric override exclusively uses the legacy numbered code-panel schedule below.
 Conditional plan panels are extra and do not count toward the requested total.
@@ -877,6 +890,9 @@ a full adaptive verification panel.
 Adaptive completion requires a full four-bundle verification panel after discovery
 or the latest nontrivial fix, no new or open P0/P1, no material change left
 unreviewed, and gates at or better than baseline.
+Immediately before finishing with a reused combined panel, rerun
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/rev-evidence.py" current-coverage "$S"`
+and require `eligible: true`. A failed final check requires fresh verification before completion.
 
 Only numeric mode continues past its requested minimum while any of these hold: the
 last numbered code panel produced a new P0/P1; the last numbered panel's fixes were
@@ -997,7 +1013,7 @@ and leaves certification to the receipt checks.
 
 | Failure | Action |
 |---|---|
-| seat exit 1 or 2 with no invalid read audit | retry that seat once immediately at the same maximum effort; still failing gets the one replacement |
+| seat exit 1 or 2 with no invalid read audit | retry that seat once immediately at the same receipted effort; still failing gets the one replacement |
 | hard evidence-audit failure | keep siblings running; never relaunch that seat under that label. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure. |
 | seat exit 3 | cancel pending siblings; stop; report which tool needs sign-in |
 | seat exit 4 | cancel pending siblings; stop; report the usage or rate-limit blocker |

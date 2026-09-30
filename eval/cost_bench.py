@@ -5,6 +5,7 @@ import csv
 import fcntl
 import hashlib
 import io
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -22,9 +23,7 @@ import time
 
 REPO = Path(__file__).resolve().parents[1]
 SUITE = REPO / 'eval/fixtures/cost-v1'
-RATE = REPO / 'eval/rates/codex-standard-2026-09-29.json'
-MODEL = 'gpt-5.6-terra'
-EFFORT = 'max'
+RATE = REPO / 'eval/rates/codex-standard-2026-09-30.json'
 
 
 def encoded(value):
@@ -149,12 +148,49 @@ def cancel(process):
             pass
 
 
-def schedule(cases, maximum):
-    if 2 * len(cases) > maximum:
+def schedule(cases, maximum, variants=('baseline', 'candidate')):
+    if not variants or len(set(variants)) != len(variants) or set(variants) - {'baseline', 'candidate'}:
+        raise ValueError('invalid benchmark variants')
+    if len(variants) * len(cases) > maximum:
         raise ValueError('call budget is smaller than the paired schedule')
     return [(case['id'], variant) for index, case in enumerate(cases)
             for variant in (('baseline', 'candidate') if index % 2 == 0
-                            else ('candidate', 'baseline'))]
+                            else ('candidate', 'baseline')) if variant in variants]
+
+
+def model_rates(card, model):
+    rates = card.get('models', {}).get(model) if 'models' in card else card if card.get('model') == model else None
+    if not isinstance(rates, dict):
+        raise ValueError('no frozen credit rate for selected model: ' + model)
+    for key in ('input_per_million', 'cached_per_million', 'output_per_million'):
+        value = rates.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ValueError('invalid frozen credit rate: ' + key)
+    return rates
+
+
+def resolve_profile(plugin, reviewer='codex-luna'):
+    path = Path(os.environ.get('REVIEW_COUNCIL_CONFIG', Path.home() / '.config/review-council/config.json'))
+    config = json.loads(path.read_text())
+    spec = importlib.util.spec_from_file_location('benchmark_roster', plugin / 'scripts/lib/roster.py')
+    roster = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(roster)
+    effective, error, _ = roster.resolve_codex_config(config)
+    if error:
+        raise ValueError(error)
+    if config.get('codex_models') != ['latest-sol', 'latest-luna'] or effective.get('codex_effort') != 'xhigh':
+        raise ValueError('production model selection must be latest Sol/Luna at xhigh')
+    if config.get('claude_models') != ['opus', 'sonnet'] or 'grok' not in config.get('exclude', []):
+        raise ValueError('production model selection must retain Opus/Sonnet and exclude Grok')
+    models = effective['codex_models']
+    names = roster.codex_seat_names([(model, None) for model in models])
+    rows = [dict(seat=name, adapter='codex', model=model, effort='xhigh', mode='prompt', extra=False)
+            for name, model in zip(names, models)]
+    selected = next((row for row in rows if row['seat'] == reviewer), None)
+    if selected is None:
+        raise ValueError('requested reviewer not in resolved roster: ' + reviewer)
+    rows.append(dict(seat='opus', adapter='claude', model='opus', effort='max', mode='prompt', extra=False))
+    return dict(selected, roster=rows, selectors=config['codex_models'])
 
 
 def command(argv, cwd=None, environment=None):
@@ -169,14 +205,14 @@ def git(root, *args):
     return command(['git', '-C', str(root), *args])
 
 
-def prepare(out, baseline, candidate, maximum):
+def prepare(out, baseline, candidate, maximum, profile, variants=('baseline', 'candidate'), rate_card=RATE):
     if out.exists() and any(out.iterdir()):
         raise ValueError('prepare requires an empty output directory')
     out.mkdir(parents=True, exist_ok=True)
     frozen = out / 'sources'
     frozen.mkdir()
     commit = git(candidate, 'rev-parse', baseline + '^{commit}')
-    archive = subprocess.check_output(['git', '-C', str(candidate), 'archive', commit,
+    archive = subprocess.check_output(['git', '-c', 'tar.umask=0022', '-C', str(candidate), 'archive', commit,
                                       'plugins/review-council'])
     with tarfile.open(fileobj=io.BytesIO(archive)) as bundle:
         for entry in bundle.getmembers():
@@ -189,13 +225,15 @@ def prepare(out, baseline, candidate, maximum):
     sources = {'baseline': tree_identity(baseline_plugin),
                'candidate': snapshot_tree(candidate / 'plugins/review-council', candidate_plugin)}
     snapshot_tree(SUITE, out / 'cases')
-    shutil.copy2(RATE, out / 'rate-card.json')
+    model_rates(json.loads(rate_card.read_text()), profile['model'])
+    shutil.copy2(rate_card, out / 'rate-card.json')
     cases = [json.loads(path.read_text()) for path in sorted((out / 'cases').glob('*/case.json'))]
-    planned = schedule(cases, maximum)
+    planned = schedule(cases, maximum, variants)
     version = command(['codex', '--version'])
     identity = {'sources': sources, 'cases': tree_identity(out / 'cases'),
-                'baseline_commit': commit, 'model': MODEL, 'effort': EFFORT,
-                'codex_version': version, 'rate_card': hashlib.sha256(RATE.read_bytes()).hexdigest(),
+                'baseline_commit': commit, 'model': profile['model'], 'effort': profile['effort'],
+                'profile': profile,
+                'codex_version': version, 'rate_card': hashlib.sha256(rate_card.read_bytes()).hexdigest(),
                 'collector': hashlib.sha256((candidate / 'plugins/review-council/scripts/lib/usage.py').read_bytes()).hexdigest(),
                 'engine': engine_identity(), 'python_version': platform.python_version(),
                 'platform': platform.platform()}
@@ -261,7 +299,7 @@ def environment():
     return values
 
 
-def render(out, case, variant, session):
+def render(out, case, variant, session, profile=None):
     start = time.monotonic()
     plugin = out / 'sources' / variant / 'plugins/review-council'
     scripts = plugin / 'scripts'
@@ -272,18 +310,19 @@ def render(out, case, variant, session):
     (session / 'scope.env').write_text(''.join(k + '=' + shlex.quote(v) + '\n' for k, v in scope.items()))
     (session / 'files.txt').write_text('\n'.join(case['files']) + '\n')
     (session / 'untracked.txt').write_text('')
-    rows = [dict(seat='terra', adapter='codex', model=MODEL, effort=EFFORT, mode='prompt', extra=False),
-            dict(seat='sol', adapter='codex', model='gpt-5.6-sol', effort=EFFORT, mode='prompt', extra=False),
-            dict(seat='opus', adapter='claude', model='opus', effort=EFFORT, mode='prompt', extra=False)]
+    profile = profile or json.loads((out / 'manifest.json').read_text())['identity']['profile']
+    seat = profile['seat']
+    rows = sorted(profile['roster'], key=lambda row: row['seat'] != seat)
+    other = next(row['seat'] for row in rows if row['adapter'] == 'codex' and row['seat'] != seat)
     write_json(session / 'roster.json', {'seats': rows})
     lens = case['lens'] if case['mode'] == 'legacy' else 'correctness-boundaries+tests-observability-maintenance-regression'
-    args = [str(scripts / 'rev-prompt.sh'), str(session), '1', 'terra', lens,
+    args = [str(scripts / 'rev-prompt.sh'), str(session), '1', seat, lens,
             'Review the behavior change and substantiate actionable correctness findings.']
     if case['mode'] == 'evidence':
         manifest = command([sys.executable, str(scripts / 'rev-evidence.py'), 'prepare',
                             str(session), '1', '--phase', 'risk', '--assignment',
-                            'terra=correctness-boundaries+tests-observability-maintenance-regression', '--assignment',
-                            'sol=security-state-api', '--assignment',
+                            seat + '=correctness-boundaries+tests-observability-maintenance-regression', '--assignment',
+                            other + '=security-state-api', '--assignment',
                             'opus=concurrency-resources-performance'], environment=environment())
         args += ['--evidence', manifest]
     prompt = Path(command(args, environment=environment()).splitlines()[-1])
@@ -329,13 +368,10 @@ def local(out, repetitions):
     return result
 
 
-def check_selection():
-    path = Path(os.environ.get('REVIEW_COUNCIL_CONFIG', Path.home() / '.config/review-council/config.json'))
-    config = json.loads(path.read_text())
-    if config.get('codex_models') != ['gpt-5.6-sol', MODEL] or config.get('claude_models') != ['opus', 'sonnet']:
-        raise ValueError('production model selection differs from the required roster')
-    if 'grok' not in config.get('exclude', []):
-        raise ValueError('production config must exclude Grok')
+def check_selection(out, profile):
+    current = resolve_profile(out / 'sources/candidate/plugins/review-council', profile['seat'])
+    if current != profile:
+        raise ValueError('production model selection changed since freeze')
 
 
 def live(out, timeout):
@@ -344,11 +380,12 @@ def live(out, timeout):
     manifest = load_manifest(out)
     if not (out / 'local.json').exists() or not json.loads((out / 'local.json').read_text())['passed']:
         raise ValueError('run the passing local lane before live executions')
-    check_selection()
+    profile = manifest['identity']['profile']
+    check_selection(out, profile)
     if command(['codex', '--version']) != manifest['identity']['codex_version']:
         raise ValueError('CLI version changed since freeze')
     budget = Budget(out / 'budget.json', manifest['identity'], manifest['maximum'])
-    rate = json.loads((out / 'rate-card.json').read_text())
+    rate = model_rates(json.loads((out / 'rate-card.json').read_text()), profile['model'])
     for case_id, variant in manifest['schedule']:
         run_id = case_id + '/' + variant
         if any(row['run_id'] == run_id for row in budget.read()['attempts']):
@@ -358,15 +395,16 @@ def live(out, timeout):
         prompt, render_seconds = render(out, case, variant, session)
         plugin = out / 'sources' / variant / 'plugins/review-council'
         root = out / 'work' / case_id / 'root'
-        raw, findings = session / 'r1-terra.stream.ndjson', session / 'r1-terra.json'
+        stem = 'r1-' + profile['seat']
+        raw, findings = session / (stem + '.stream.ndjson'), session / (stem + '.json')
         values = environment()
-        values.update(SEAT='terra', MODEL=MODEL, EFFORT=EFFORT, MODE='prompt', ROOT=str(root),
+        values.update(SEAT=profile['seat'], MODEL=profile['model'], EFFORT=profile['effort'], MODE='prompt', ROOT=str(root),
                       PROMPT=str(prompt), SCHEMA=str(plugin / 'schema/findings.schema.json'),
-                      OUT=str(findings), LOG=str(session / 'r1-terra.log'), RAW=str(raw),
+                      OUT=str(findings), LOG=str(session / (stem + '.log')), RAW=str(raw),
                       BASE=git(root, 'rev-parse', 'main'))
         if not budget.reserve(run_id):
             continue
-        print('launch ' + run_id + ' ' + MODEL + '/' + EFFORT, flush=True)
+        print('launch ' + run_id + ' ' + profile['model'] + '/' + profile['effort'], flush=True)
         run = run_process(['bash', str(plugin / 'scripts/seats.d/codex.sh')], root,
                           values, session / 'adapter.log', timeout)
         budget.complete(run_id, run)
@@ -388,7 +426,7 @@ def live(out, timeout):
                 audit = run_process([sys.executable, str(plugin / 'scripts/lib/review-read-audit.py'),
                     'audit', '--adapter', 'codex', '--raw', str(raw), '--prompt', str(prompt),
                     '--root', str(root), '--session', str(session), '--result', str(findings),
-                    '--out', str(session / 'r1-terra.audit.json')], root, values, session / 'audit.log', 60)
+                    '--out', str(session / (stem + '.audit.json'))], root, values, session / 'audit.log', 60)
                 row['audit_valid'] = audit['exit_code'] == 0
                 row['audit_seconds'] = audit['wall_seconds']
                 row['valid'] = row['audit_valid'] and not row['incomplete_proof'] and not row['errors']
@@ -406,7 +444,16 @@ def live(out, timeout):
             break
 
 
-def report(out):
+def check_reference(before, after):
+    first, second = before['identity'], after['identity']
+    for key in ('model', 'effort', 'profile', 'cases', 'codex_version', 'rate_card', 'collector', 'engine'):
+        if first.get(key) != second.get(key):
+            raise ValueError('reference differs in ' + key)
+    if first['sources']['candidate'] != second['sources']['baseline']:
+        raise ValueError('reference source differs from baseline')
+
+
+def report(out, reference=None):
     from bench_metrics import paired_deltas
     from bench_score import score_findings
     manifest = load_manifest(out)
@@ -416,19 +463,30 @@ def report(out):
         adjudication = path.parent / 'adjudication.json'
         if adjudication.exists() and row.get('schema_valid'):
             case = json.loads((out / 'cases' / row['case'] / 'case.json').read_text())
-            result = json.loads((path.parent / 'r1-terra.json').read_text())
+            result = json.loads((path.parent / ('r1-' + manifest['identity']['profile']['seat'] + '.json')).read_text())
             row['quality'] = score_findings(case, result, json.loads(adjudication.read_text()))
         rows.append(row)
     ledger = out / 'budget.json'
     attempts = json.loads(ledger.read_text())['attempts'] if ledger.exists() else []
     local_path = out / 'local.json'
-    result = {'manifest': manifest, 'rows': rows, 'pairs': paired_deltas(rows),
+    paired_rows = rows
+    reference_identity = None
+    if reference is not None:
+        original = report(reference)
+        check_reference(original['manifest'], manifest)
+        originals = [dict(row, variant='baseline') for row in original['rows'] if row['variant'] == 'candidate']
+        if any(row['variant'] != 'candidate' for row in rows):
+            raise ValueError('reference comparison requires a candidate-only stage')
+        paired_rows = originals + rows
+        reference_identity = {'path': str(reference), 'manifest_sha256': hashlib.sha256((reference / 'manifest.json').read_bytes()).hexdigest()}
+    result = {'manifest': manifest, 'rows': rows, 'pairs': paired_deltas(paired_rows),
+              'reference': reference_identity,
               'local': json.loads(local_path.read_text()) if local_path.exists() else None,
               'reserved_executions': len(attempts), 'maximum_executions': manifest['maximum'],
               'unmeasured_reservations': [x['run_id'] for x in attempts
                   if x['run_id'] not in {r['case'] + '/' + r['variant'] for r in rows}],
               'limits': ['Two cases provide no statistical quality equivalence.',
-                         'Server cache cannot be cleared; order is reversed for case two.',
+                         'Server cache cannot be cleared; single stages have temporal ordering bias.',
                          'No full panel certification or subscription cost claim.',
                          'One reviewer execution may include multiple provider HTTP requests.']}
     write_json(out / 'report.json', result)
@@ -442,7 +500,7 @@ def report(out):
             values = dict(row, **(row.get('usage') or {}))
             writer.writerow({key: values.get(key) for key in fields})
     text = ['# Review cost benchmark', '', 'Baseline: `' + manifest['identity']['baseline_commit'] + '`.',
-            'Model: `' + MODEL + '`, effort `' + EFFORT + '`.', '',
+            'Model: `' + manifest['identity']['model'] + '`, effort `' + manifest['identity']['effort'] + '`.', '',
             '| Case | Version | Status | Seconds | Input | Output | Estimated credits | Recall | FP |',
             '| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |']
     for row in rows:
@@ -477,13 +535,19 @@ def main():
     parser.add_argument('--max-calls', type=int, default=4)
     parser.add_argument('--repetitions', type=int, default=5)
     parser.add_argument('--timeout', type=float, default=600)
+    parser.add_argument('--reviewer', default='codex-luna')
+    parser.add_argument('--variants', choices=('both', 'candidate'), default='both')
+    parser.add_argument('--rate-card', type=Path, default=RATE)
+    parser.add_argument('--reference', type=Path)
     args = parser.parse_args()
     out = args.out.expanduser().resolve()
     if args.repetitions < 1 or args.timeout <= 0:
         parser.error('repetitions and timeout must be positive')
     try:
         if args.command == 'prepare':
-            prepare(out, args.baseline, args.candidate.resolve(), args.max_calls)
+            profile = resolve_profile(args.candidate.resolve() / 'plugins/review-council', args.reviewer)
+            variants = ('baseline', 'candidate') if args.variants == 'both' else ('candidate',)
+            prepare(out, args.baseline, args.candidate.resolve(), args.max_calls, profile, variants, args.rate_card)
         elif args.command == 'local':
             result = local(out, args.repetitions)
             if not result['passed']:
@@ -492,7 +556,7 @@ def main():
             with (out / 'live.lock').open('a+') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 live(out, args.timeout)
-        result = report(out)
+        result = report(out, args.reference.expanduser().resolve() if args.reference else None)
         print(str(out / 'report.md') + ' (%d/%d reserved)' % (
             result['reserved_executions'], result['maximum_executions']))
     except (ValueError, OSError, subprocess.SubprocessError) as error:

@@ -16,7 +16,7 @@ assert_flat_absent() {
 
 test_adaptive_schedule_contract() {
   local K
-  local timing='One four-bundle verification panel reviews the latest material state: directly after discovery when no nontrivial fix follows, or after the latest nontrivial fix.'
+  local timing='One four-bundle verification panel reviews the latest material state: the current combined panel when no fix follows, a separate panel after simplicity-only discovery, or a fresh panel after fixes.'
   local plan_trigger='Run the plan panel when accepted findings require a nontrivial change; skip it when there is no accepted fix or every accepted fix is a P3 or one-line P2.'
   local extras='Adaptive default panels use core seats and omit extras. Explicit numeric round plans may include extras in their configured rounds.'
   local repair="Do not certify an adaptive panel until every assignment has a valid result, its own or its one replacement's."
@@ -25,9 +25,9 @@ test_adaptive_schedule_contract() {
   local receipt='Current-session completion and finding yield require a schema-valid result with a successful exit receipt. Only exact hashed receiptless results recorded in a versioned legacy roster policy may omit one. Usage-bearing failed attempts remain metered.'
   for K in "$SK/skills/rev/SKILL.md" "$SK/codex-skills/rev/SKILL.md"; do
     assert_nogrep "$(basename "$(dirname "$(dirname "$K")")") has no eight-round floor" "$K" 'minimum[^[:alnum:]]{0,12}(8|eight)|8 rounds|eight rounds' -i
-    assert_flat_fixed "normal schedule budgets one final panel" "$K" 'normal review plans 9 seat launches: four simplicity, one conditional plan, and four final verification launches.'
-    assert_flat_fixed "large schedule budgets one plan seat" "$K" 'A large or high-risk review plans 17 by adding four risk-discovery and four full red-team launches.'
-    assert_flat_fixed "important schedule budgets one plan seat" "$K" 'adversarial review that is not otherwise large or high-risk plans 13 by adding four full red-team launches.'
+    assert_flat_fixed "ordinary schedule retains eight code seats and one conditional plan" "$K" 'normal review uses eight code-seat launches plus one conditional plan.'
+    assert_flat_fixed "combined schedule retains four separate verification seats after a fix" "$K" 'If any fix follows the combined panel, run four separate verification launches; a one-seat plan then gives totals of 17 or 13 respectively.'
+    assert_grep "reuse is based on fresh coverage" "$K" 'current-coverage.*\$S'
     assert_flat_fixed "all-lens plan panels restore four plan launches" "$K" 'With `"plan_seats": "all"`, every plan panel launches all four core seats instead of one.'
     assert_flat_absent "four-seat plan counts are gone" "$K" 'plans 12 seat launches|four conditional plan|plans 20 by|plans 16 by'
     assert_grep "large threshold names 25 files" "$K" 'more than 25 changed files'
@@ -84,18 +84,22 @@ test_adaptive_schedule_contract() {
   assert_grep "stack example excludes plan panels from count" "$SK/scripts/stack.example.sh" '[Pp]lan panels do not count'
 
   local D
-  for D in "$SK/../../README.md" "$SK/../../docs/codex.md" "$SK/../../docs/superpowers/specs/2026-09-11-token-efficient-council-design.md"; do
+  for D in "$SK/../../README.md" "$SK/../../docs/codex.md"; do
     assert_nogrep "$(basename "$D") has no undefined two-provider spot check" "$D" 'two-provider|two different providers|two providers' -i
     assert_flat_fixed "$(basename "$D") uses canonical verification timing" "$D" "$timing"
   done
   assert_flat_fixed "README uses canonical extras policy" "$SK/../../README.md" "$extras"
-  assert_flat_fixed "README budgets one plan seat" "$SK/../../README.md" 'a normal review plans 9 seat launches: four simplicity, one conditional plan, and four final verification launches.'
+  assert_flat_fixed "historical design retains its recorded verification timing" "$SK/../../docs/superpowers/specs/2026-09-11-token-efficient-council-design.md" 'One four-bundle verification panel reviews the latest material state: directly after discovery when no nontrivial fix follows, or after the latest nontrivial fix.'
   assert_flat_fixed "Codex guide budgets one plan seat" "$SK/../../docs/codex.md" 'normal changes plan 9 seat launches: four simplicity, one conditional plan, and four final verification launches.'
   for D in "$SK/../../README.md" "$SK/../../docs/codex.md"; do
     assert_flat_absent "$(basename "$D") has no four-seat plan counts" "$D" 'plan 12 seat launches|plans 12 seat launches|four conditional plan|plans 20 by|plans 16 by'
   done
   assert_grep "README table budgets one plan seat for ordinary changes" "$SK/../../README.md" '^\| ordinary, with one plan panel \| 9 \|$'
   assert_grep "README table budgets one plan seat for large changes" "$SK/../../README.md" '^\| large or high-risk, with one plan panel \| 17 \|$'
+  assert_grep "unchanged eligible large review removes four launches" "$SK/../../README.md" '^\| large or high-risk, no fix, current enforced combined receipt \| 12 \|$'
+  assert_grep "unchanged ineligible large review retains separate verification" "$SK/../../README.md" '^\| large or high-risk, no fix, combined receipt ineligible \| 16 \|$'
+  assert_grep "unchanged eligible important review removes four launches" "$SK/../../README.md" '^\| important or adversarial, no fix, current enforced combined receipt \| 8 \|$'
+  assert_grep "unchanged ineligible important review retains separate verification" "$SK/../../README.md" '^\| important or adversarial, no fix, combined receipt ineligible \| 12 \|$'
 }
 
 test_assert_grep_honors_flags() {

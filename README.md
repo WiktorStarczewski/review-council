@@ -4,17 +4,20 @@ Review Council runs one change through independent reviewer seats, verifies ever
 claim against source, fixes confirmed defects, reruns project gates, and repeats only
 while material risk remains.
 
-One exact council, used throughout this README, is:
+One required council, used throughout this README, is:
 
 | Seat | Provider | Model | Effort | Primary role |
 | --- | --- | --- | --- | --- |
-| `codex-sol` | OpenAI | `gpt-5.6-sol` | `max` | independent review |
-| `codex-terra` | OpenAI | `gpt-5.6-terra` | `max` | independent review |
+| `codex-sol` | OpenAI | newest visible Sol | `xhigh` | independent review |
+| `codex-luna` | OpenAI | newest visible Luna | `xhigh` | independent review |
 | `opus` | Anthropic | `opus` | `max` | independent review |
 | `sonnet` | Anthropic | `sonnet` | `max` | independent review |
 
-The roster is built and probed at run time. Exact configuration makes this
-four-seat roster a requirement instead of a silent preference.
+The roster resolves `latest-sol` and `latest-luna` from the current Codex model
+catalog on each build, then freezes exact models and efforts before probing.
+Configuration makes this four-seat roster a requirement instead of a silent preference.
+Latest-family selectors and `xhigh` are opt-in configuration; unconfigured selection
+still chooses the newest two visible models at their highest supported effort.
 
 Grok is retired from live rosters. Gemini remains supported as an optional seat but is
 excluded from the exact four-seat configuration above.
@@ -181,11 +184,8 @@ Create `~/.config/review-council/config.json`:
 ```json
 {
   "exclude": ["gemini"],
-  "pin": {
-    "codex-sol": { "effort": "max" },
-    "codex-terra": { "effort": "max" }
-  },
-  "codex_models": ["gpt-5.6-sol", "gpt-5.6-terra"],
+  "codex_models": ["latest-sol", "latest-luna"],
+  "codex_effort": "xhigh",
   "claude_models": ["opus", "sonnet"],
   "extras": false,
   "min_labs": 2,
@@ -195,9 +195,9 @@ Create `~/.config/review-council/config.json`:
 
 This means:
 
-- both configured OpenAI models must exist and pass their probes;
+- the newest visible Sol and Luna must support `xhigh` and pass their probes;
 - both configured Anthropic model families must pass their probes;
-- all four seats run at maximum effort;
+- OpenAI seats use `xhigh`; Anthropic seats use `max`;
 - Gemini and the optional `codex-review` extra are absent;
 - at least two provider labs must be available before ordinary execution;
 - quota fallback may temporarily preserve seat count with visible substitutions.
@@ -263,10 +263,10 @@ when no usable external CLI remains.
 | --- | --- | --- |
 | simplicity discovery | always | every core seat asks whether the change can be smaller through reuse or deletion |
 | risk discovery | more than 25 files, more than 1,500 lines, or a high-risk boundary | the four risk bundles across the full panel |
-| full red team | exactly once for a large, high-risk, user-marked-important, or explicitly adversarial adaptive review | four distinct adversarial compositions over the existing risk bundles, before planning |
+| full red team | exactly once for a large, high-risk, user-marked-important, or explicitly adversarial adaptive review | four distinct adversarial compositions over the existing risk bundles, rendered as verification with sibling-site completeness before planning |
 | plan | after triage and before any edit, when an accepted fix is nontrivial | one plan-completeness seat; `plan_seats: "all"` adds soundness, simplicity, and falsifiable tests |
 | fix and gates | after accepted and plan-approved findings, or a recorded plan skip | root-cause clusters, relevant regression tests, project gates at baseline or better |
-| verification | after discovery when no nontrivial fix follows, or after the latest nontrivial fix | all four risk bundles over the latest material state, plus a sibling-site check of every fix commit |
+| verification | reuse the current combined panel when no fix follows; otherwise after discovery or fixes | all four risk bundles over the latest material state, plus a sibling-site check of every fix commit |
 
 High-risk boundaries include security, persistence, concurrency, transactions,
 protocols, public APIs, and irreversible mutations.
@@ -277,23 +277,34 @@ For the four-seat council:
 | --- | ---: |
 | ordinary, no nontrivial fix | 8 |
 | ordinary, with one plan panel | 9 |
-| large or high-risk, no nontrivial fix | 16 |
+| large or high-risk, no fix, current enforced combined receipt | 12 |
+| large or high-risk, no fix, combined receipt ineligible | 16 |
 | large or high-risk, with one plan panel | 17 |
+| important or adversarial, no fix, current enforced combined receipt | 8 |
+| important or adversarial, no fix, combined receipt ineligible | 12 |
+| important or adversarial, with one plan panel | 13 |
 
-With four core seats, a normal review plans 9 seat launches: four simplicity, one
-conditional plan, and four final verification launches. A large or high-risk review
-plans 17 by adding four risk-discovery and four full red-team launches. An important
-or explicitly adversarial review that is not otherwise large or high-risk adds the
-four full red-team launches. With `plan_seats: "all"`, every plan panel launches all
-four core seats instead of one.
+The combined panel keeps all four bundles, the full cumulative owner, adversarial
+emphases, and sibling-site completeness. It removes one separate review draw when
+its latest sealed verification receipt still covers the unchanged material state.
+These are launch counts, not measured provider-cost reductions. If a fix follows,
+or source, instructions, roster, or evidence becomes stale, separate verification
+remains required. With `plan_seats: "all"`, every plan panel launches all four core
+seats instead of one.
 
 `rev-state.sh` refuses `phase=fix` while P0-P2 findings are open until the round's plan
 panel completed or `findings.md` records `Plan panel r<N>p - SKIPPED: <reason>`. It also
 refuses when the open counts predate the round's newest seat exit, so a counter still
 holding the previous round's zeroes cannot short-circuit the gate.
 
-One four-bundle verification panel reviews the latest material state: directly after
-discovery when no nontrivial fix follows, or after the latest nontrivial fix. Adaptive
+One four-bundle verification panel reviews the latest material state: the current
+combined panel when no fix follows, a separate panel after simplicity-only discovery,
+or a fresh panel after fixes.
+Check `rev-evidence.py current-coverage "$S"` before omitting a separate panel and
+again immediately before completion with a reused receipt. It requires the latest
+receipt to authenticate a complete enforced verification panel against current
+source and instructions. Risk-only and unenforced Agent receipts never qualify.
+Adaptive
 default panels use core seats and omit extras. Explicit numeric round plans may include
 extras in their configured rounds.
 
@@ -559,7 +570,7 @@ Quota fallback is off by default. Enable it with:
 
 | Failed preferred provider | Temporary substitutes |
 | --- | --- |
-| Anthropic quota or capacity | unique Terra seats |
+| Anthropic quota or capacity | unique selected Terra seats, or selected Luna seats when Terra is absent |
 | OpenAI quota or capacity | unique Sonnet seats |
 
 Rules:
@@ -643,7 +654,7 @@ commit, squash, push, or require code convergence.
 During an active run, `rev-status.sh` reports one line every ten minutes:
 
 ```text
-r3/adaptive triage | sol: done 4f 9m | terra: running 14m | opus: done 3f 8m | sonnet: done 2f 7m | open P0:0 P1:1 P2:3 fixed 6
+r3/adaptive triage | sol: done 4f 9m | luna: running 14m | opus: done 3f 8m | sonnet: done 2f 7m | open P0:0 P1:1 P2:3 fixed 6
 ```
 
 Each seat is `running`, `done`, `failed`, or `dropped`, with elapsed time and the last
@@ -741,8 +752,11 @@ session briefing and a local watch with fixed ten-minute status events. See
 structured baselines and measurement guidance.
 
 Use the [reusable correctness, time and cost benchmarks](eval/COST_BENCHMARKS.md)
-to compare frozen plugin versions with provider-free checks and a bounded Terra lane.
+to compare frozen plugin versions with provider-free checks and a bounded reviewer lane.
+The runner resolves the configured latest model and freezes its identity and rate card.
 Raw usage, dated credit estimates and manually adjudicated quality remain separate.
+The [second-wave results](docs/cost-benchmark-wave2-2026-09-30.md) measure 12.0% fewer
+estimated credits on two fixed-model canaries and distinguish projected round savings.
 
 ## Stack reviews
 
@@ -889,7 +903,8 @@ and receipt implementation.
 | --- | --- | --- |
 | `exclude` | `[]` | omit detected labs or seats |
 | `pin` | `{}` | override a detected seat model or effort |
-| `codex_models` | newest two visible | require one or two exact OpenAI model slugs |
+| `codex_models` | newest two visible | require one or two exact slugs or `latest-<family>` selectors |
+| `codex_effort` | highest supported | require one supported high effort for all OpenAI seats |
 | `claude_models` | absent | require exact `opus` and/or `sonnet` families |
 | `claude_seats` | `1` | legacy count of independent Opus seats, mutually exclusive with `claude_models` |
 | `claude_seat` | `true` | disable detected Claude seats when false |

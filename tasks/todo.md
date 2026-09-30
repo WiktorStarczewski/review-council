@@ -535,3 +535,36 @@ Plan: `docs/superpowers/plans/2026-09-29-review-cost-benchmarks.md`. Live identi
 Review: All four results pass schema and read audits. Each version finds four of four planted defects with zero false positives. Pooled estimated Standard credits fall from 6.91687 to 6.44636 (6.8%); provider time falls from 187.71 s to 160.08 s (14.7%). Total input falls 0.9%, uncached input 0.1%, output 17.3%. Most observed savings come from output, and two cases do not establish statistical quality equivalence or production savings. Dollars remain unknown because the CLI does not report them.
 
 Results: `docs/cost-benchmark-wave1-2026-09-29.md`. Complete raw artifacts and aggregate metrics are retained in `wave1-20260930-network` under the research-notes benchmark directory. `wave1-20260929` and `wave1-20260930-live` preserve the two earlier routing failures at 17.28 s and 17.13 s with no usage or findings. Both transport failures stopped their original batches. The final successful batch followed a fresh network reachability check under Full access.
+
+# Cost optimization wave 2
+
+- [x] Resolve newest Sol and Luna from the provider catalog, at xhigh, with no generation pins.
+- [x] Update the benchmark to freeze selected model, effort and rate card and allow two-call stages.
+- [x] Measure two fixtures on the existing wave 1 workflow before context or round changes.
+- [x] Select and implement wave 2 context and repeated-round optimizations from the measured baseline.
+- [x] Measure the same two fixtures on the frozen candidate, staying inside four total calls.
+- [x] Adjudicate findings, compare correctness, time and credits, and document limitations.
+- [x] Run the configured gate and commit the verified wave 2 source.
+- [ ] Push a separate draft change.
+
+### Constraints
+
+Latest models are discovered per run; historical identities stay fixed. OpenAI effort is xhigh.
+Anthropic keeps Opus/Sonnet aliases and supported max effort. Astra and Grok remain excluded.
+Only four new Luna reviewer executions are authorized. No paid probes, graders or retries.
+The model/effort measurement precedes wave 2 implementation and its measurement.
+
+### Wave 2 results
+
+Four new Luna/xhigh calls completed with no probes, graders or reviewer retries.
+The model-settings controls precede workflow changes. Workflow credits fell 12.0%
+(0.315339 to 0.2773925) and pooled provider time fell 14.4% (234.20 to 200.48 s).
+Both versions find four of four planted defects with zero false positives. One
+candidate ledger citation misses the predicate; severity calibration is unmeasured.
+The historical Terra/max migration reference is 95.1% cheaper and 46.3% slower,
+with model and effort changed. Combined-panel launch savings are contract-tested
+projections, require enforced CLI receipts, and have no live panel quality/cost result.
+
+The full local gate passes 353 shell cases, 4,700 assertions, 161 Python tests and
+all validators. Separate draft delivery remains pending. Global installed
+plugin/config activation and full Council certification remain separate.

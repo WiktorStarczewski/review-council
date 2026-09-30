@@ -30,11 +30,13 @@ are relative to that absolute `PLUGIN`; quote paths and use arrays for arguments
   different branch in an isolated worktree instead of changing a dirty checkout.
   Respect an explicit `--base`. Do not fabricate a base when it cannot be resolved.
 - The default code fix loop is adaptive. With the configured four-seat panel, a
-  normal review plans 9 seat launches: four simplicity, one conditional plan, and
-  four final verification launches. A large or high-risk review plans 17 by adding
-  four risk-discovery and four full red-team launches. An important or explicitly
-  adversarial review that is not otherwise large or high-risk plans 13 by adding
-  four full red-team launches. With `"plan_seats": "all"`, every plan panel launches
+  normal review uses eight code-seat launches plus one conditional plan. A large
+  or high-risk review uses twelve code-seat launches before fixes: four simplicity,
+  four risk-discovery, and four combined red-team/verification launches. An important
+  or explicitly adversarial review that is not otherwise large or high-risk uses
+  eight before fixes. If any fix follows the combined panel, run four separate
+  verification launches; a one-seat plan then gives totals of 17 or 13 respectively.
+  With `"plan_seats": "all"`, every plan panel launches
   all four core seats instead of one.
   An explicit round count is a minimum override and exclusively selects the
   legacy numbered schedule. `--read-only` and
@@ -123,9 +125,10 @@ rounds. Run these panels in order:
    below across the full panel.
 3. **Full red team:** exactly once for a large, high-risk, user-marked-important, or
    explicitly adversarial adaptive review. Run it before planning under the promoted
-   adversarial coverage contract below.
+   adversarial coverage contract below, rendered as a combined verification panel.
 4. **Plan:** apply the plan gate below.
-5. **Verification:** deal the four bundles across one full panel over the latest
+5. **Verification:** reuse the combined panel only when the coverage check below
+   proves it remains current after triage; otherwise deal the four bundles across one full panel over the latest
    material state. Prioritize changes
    since the last completed panel and trace their consumers; re-read cumulative code
    where the interaction requires it. `--phase verification` adds to every seat:
@@ -139,8 +142,9 @@ The four risk and verification bundles are `correctness-boundaries`,
 error handling, trust boundaries, durable state, contracts, concurrency, resources,
 performance, tests, observability, maintenance, and regression risk.
 
-One four-bundle verification panel reviews the latest material state: directly after
-discovery when no nontrivial fix follows, or after the latest nontrivial fix. Do not certify an adaptive panel until every assignment has a valid result, its own or its one replacement's. A certified risk or verification panel therefore has all four bundles. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure. A replacement is one seat, so the three-reviewer minimum does not apply.
+One four-bundle verification panel reviews the latest material state: the current
+combined panel when no fix follows, a separate panel after simplicity-only discovery,
+or a fresh panel after fixes. Do not certify an adaptive panel until every assignment has a valid result, its own or its one replacement's. A certified risk or verification panel therefore has all four bundles. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure. A replacement is one seat, so the three-reviewer minimum does not apply.
 
 An explicit numeric override exclusively uses the legacy numbered code-panel schedule below.
 Conditional plan panels are extra and do not count toward the requested total.
@@ -180,7 +184,7 @@ lenses.
 ### Adaptive scope preparation
 
 Scope optimization never changes the preflight roster, its models, efforts, or
-seat count. Use every configured core seat, including Sol, Terra, Opus, and Sonnet
+seat count. Use every configured core seat, including Sol, Luna, Opus, and Sonnet
 when that is the configured roster.
 Cover all four risk bundles at least once in every risk and verification panel.
 Let `BUNDLES` be the four bundles in their listed order. In stable roster order, core seat `i` receives bundle `BUNDLES[i mod 4]`.
@@ -202,7 +206,7 @@ failure, or consumer boundary that breaks it. This supplements and never replace
 Numeric mode adds no panel for this composite assignment.
 
 Large, high-risk, user-marked-important, or explicitly adversarial adaptive reviews run exactly one full red-team panel before planning.
-For this panel, set `PANEL_PHASE=risk` and reuse the existing four canonical bundle assignments without changing `rev-evidence.py` or its schema. The panel has these four distinct composed adversarial assignments, in bundle order:
+For this panel, set `PANEL_PHASE=verification` and reuse the existing four canonical bundle assignments. Render this phase from the outset so every prompt also contains sibling-site completeness; keep the full cumulative owner and all composed adversarial emphases. The panel has these four distinct composed adversarial assignments, in bundle order:
 
 1. correctness and boundaries plus attacker behavior and trust boundaries;
 2. security, state, and API plus rollback and recovery;
@@ -215,6 +219,16 @@ each repeated bundle repeats its matching emphasis. Keep the result in the exist
 seat prompt; neither case changes the canonical topology or adds a provider call.
 
 The full panel joins the same initial finding clusters and does not grant another correction cycle.
+After triage, the combined panel may serve final verification only when no fix follows
+and its latest sealed receipt remains current. Run `current-coverage "$S"` through
+`rev-evidence.py`; require JSON `eligible: true` before omitting the separate panel.
+Record the returned receipt, hash, snapshot, and exact selected generations in the
+ledger. Never relabel a risk receipt. Missing, stale, or unenforced coverage keeps the separate verification obligation.
+Invalid or incomplete panels follow the existing failure and replacement rules;
+this scheduling check never authorizes an automatic full-panel rerun. Any fix or
+material source, scope, roster, model, effort, or repository-instruction change after
+the combined panel blocks reuse. Simplicity-only and explicit numeric schedules are unchanged.
+
 The ordinary adaptive and numeric stopping rules remain unchanged. Document panels receive no automatic red-team assignment unless the user explicitly requests an adversarial document review.
 
 The verification owner always traces the cumulative change through consumers and integration boundaries. Compose these additional emphases when relevant:
@@ -489,7 +503,7 @@ seats with `rev-state.sh "$S" phase=collect round=<N> "seats=$LAUNCHED_SEATS"`.
 Inspect each `.exit`, `.json`, and `.log` as soon as that seat finishes; accept only the
 exit created after the synchronous prelaunch removal for the current launch. Absence of
 findings is not success without a valid completed response. Exit 1/2 with no invalid read audit: retry that seat
-once immediately with the same maximum effort while siblings continue. A hard audit failure never relaunches that seat under that label. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure. Exit 3 or 4:
+once immediately with the same receipted effort while siblings continue. A hard audit failure never relaunches that seat under that label. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure. Exit 3 or 4:
 cancel every pending sibling, then stop and name the sign-in, usage, or rate-limit
 blocker.
 Never lower effort or drop a configured core seat. If fewer than three reviewers
@@ -646,6 +660,9 @@ bounded watch as needed; changes do not reset its scheduled cadence.
 Adaptive completion requires a full four-bundle verification panel after discovery
 or the latest nontrivial fix, no new or open P0/P1 findings, no material change left
 unreviewed, and gates at baseline or better.
+Immediately before finishing with a reused combined panel, rerun
+`python3 "$PLUGIN/scripts/rev-evidence.py" current-coverage "$S"` and require
+`eligible: true`. A failed final check requires fresh verification before completion.
 
 Only numeric mode continues past its requested minimum while any of these hold: the
 last numbered code panel produced a new P0/P1; the last numbered panel's fixes were
