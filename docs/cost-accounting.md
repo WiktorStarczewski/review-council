@@ -116,3 +116,16 @@ provider cost savings or equal review recall. Live comparisons need the same sou
 roster, cache conditions and accounting categories, repeated cases and retained
 material findings. This first wave makes no reduction to seat count, phase coverage,
 maximum effort or final certification.
+
+## Compact reviewer startup
+
+Ordinary OpenAI prompt seats use the checked-in read-only reviewer instructions via
+`model_instructions_file`. This replaces the generic coding instructions. The supplied
+review contract retains evidence order, original-source proof, applicable repository
+rules, bounded reads, schema and completion requirements. Native review keeps its
+existing instructions. Missing or empty reviewer instructions refuse launch before
+the CLI is called. The instruction file is inside the contract-hashed helper tree.
+
+The configuration field is documented in the [official configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference). A shorter catalog template
+is an input-size observation, not measured provider savings. Use a fixed model, effort,
+fixture and rate card for the before/after live comparison.

@@ -2958,6 +2958,111 @@ def local_ignored_instructions():
         call('prepare',session,'unsafe-rules','--phase','discovery',good=False)
         assert not list(session.glob('runsafe-rules-*'))
 
+def current_coverage_receipts():
+    with fixture(adapter='codex') as (root, session, git, write, call, prepare, finish):
+        check = lambda: json.loads(call('current-coverage', session))
+        assert check()['eligible'] is False
+        (root / '.git/info/exclude').write_text('AGENTS.md\n')
+        write('AGENTS.md', 'Original repository instruction.\n')
+        roster_path = session / 'roster.json'
+        roster = json.loads(roster_path.read_text())
+        for row in roster['seats']:
+            row.update(model='model-' + row['seat'], effort='xhigh')
+        roster_path.write_text(json.dumps(roster))
+        prepare('risk', 'risk', *assign); finish('risk')
+        assert check()['eligible'] is False
+        prepare('current', 'verification', *assign)
+        assert check()['eligible'] is False
+        finish('current')
+        expected = check()
+        assert expected['eligible'] is True and expected['reason'] is None, expected
+        assert expected['phase'] == 'verification' and expected['label'] == 'current'
+        assert expected['receipt'] == 'rcurrent-coverage.receipt.json'
+        assert set(expected['selected_generations']) == set(seats)
+        assert all(row['effort'] == 'xhigh' and row['enforced'] is True
+                   for row in expected['selected_generations'].values())
+        receipt_path = session / expected['receipt']
+        head_path = session / 'coverage-head.json'
+        original_receipt = receipt_path.read_bytes(); original_head = head_path.read_bytes()
+        for field, value in (
+                ('phase', 'risk'), ('snapshot_tree', '0' * 40), ('base_tree', '0' * 40),
+                ('manifest_sha256', '0' * 64), ('assignments', {}), ('results', {}),
+                ('findings', [{}]), ('schema_version', 2)):
+            bad = json.loads(original_receipt); bad[field] = value
+            raw = module.encoded(bad); receipt_path.write_bytes(raw)
+            head_path.write_bytes(module.encoded({'receipt': receipt_path.name, 'sha256': module.digest(raw)}))
+            assert check()['eligible'] is False, field
+        receipt_path.write_bytes(original_receipt); head_path.write_bytes(original_head)
+        for path, raw in (
+                (root / 'main.py', b'def first():\n    return 3\n'),
+                (root / 'AGENTS.md', b'Changed ignored repository instruction.\n'),
+                (session / 'rcurrent-sol.json', b'{"summary":"changed","findings":[]}'),
+                (session / 'rcurrent-sol.exit', b'1\n'),
+                (session / 'rcurrent-sol.stream.ndjson', b'{"changed":true}\n'),
+                (session / 'files.txt', b'different.py\n')):
+            saved = path.read_bytes(); path.write_bytes(raw)
+            assert check()['eligible'] is False, str(path)
+            path.write_bytes(saved)
+        saved_roster = roster_path.read_bytes()
+        for field, value in (('model', 'another-model'), ('effort', 'max')):
+            changed = json.loads(saved_roster); changed['seats'][0][field] = value
+            roster_path.write_bytes(module.encoded(changed))
+            assert check()['eligible'] is False, field
+        roster_path.write_bytes(saved_roster)
+        manifest_path = session / 'rcurrent-evidence.manifest.json'
+        saved_manifest = manifest_path.read_bytes()
+        changed = json.loads(saved_manifest); changed['assignments'].pop('sol')
+        manifest_path.write_bytes(module.encoded(changed))
+        assert check()['eligible'] is False
+        manifest_path.write_bytes(saved_manifest)
+        assert check() == expected
+        prepare('latest-risk', 'risk', *assign); finish('latest-risk')
+        assert check()['eligible'] is False, 'an older verification cannot replace the latest risk head'
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        prepare('agent', 'verification', *assign); finish('agent')
+        assert json.loads(call('current-coverage', session))['eligible'] is False
+
+def current_coverage_replacements_and_refs():
+    with fixture(adapter='codex') as (root, session, git, write, call, prepare, finish):
+        parent = prepare('parent', 'verification', *assign)
+        for seat in parent['assignments']:
+            (session / f'rparent-{seat}.prompt.md').write_text(
+                call('render', session / 'rparent-evidence.manifest.json', seat))
+            (session / f'rparent-{seat}.json').write_text('{"summary":"parent","findings":[]}')
+            (session / f'rparent-{seat}.exit').write_text('0\n')
+            write_agent_audit(session, 'parent', seat)
+        (session / 'rparent-terra.exit').write_text('1\n')
+        (session / 'rparent-terra.audit-invalid.json').write_text('{"summary":"kept","findings":[]}\n')
+        prepare('parentx', 'repair', '--assignment', 'sol=' + bundles[1],
+                '--parent-assignment', 'parent:terra')
+        (session / 'rparentx-sol.prompt.md').write_text(
+            call('render', session / 'rparentx-evidence.manifest.json', 'sol'))
+        (session / 'rparentx-sol.json').write_text('{"summary":"replacement","findings":[]}')
+        (session / 'rparentx-sol.exit').write_text('0\n')
+        write_agent_audit(session, 'parentx', 'sol')
+        call('receipt', session, 'parent', '--replacement', 'terra=parentx')
+        check = lambda: json.loads(call('current-coverage', session))
+        value = check()
+        assert value['eligible'] is True, value
+        assert value['selected_generations']['terra']['label'] == 'parentx'
+        assert value['selected_generations']['terra']['seat'] == 'sol'
+        child = session / 'rparentx-sol.json'; saved = child.read_bytes()
+        child.write_text('{"summary":"changed replacement","findings":[]}')
+        assert check()['eligible'] is False
+        child.write_bytes(saved)
+        assert check() == value
+    with fixture(adapter='codex') as (root, session, git, write, call, prepare, finish):
+        git('add', 'main.py'); git('commit', '-qm', 'reviewed material')
+        prepare('ref', 'verification', '--head', git('rev-parse', 'HEAD'), *assign); finish('ref')
+        check = lambda: json.loads(call('current-coverage', session))
+        assert check()['eligible'] is True
+        saved = (root / 'main.py').read_bytes(); write('main.py', 'changed current worktree\n')
+        assert check()['eligible'] is False, 'a pinned ref cannot certify changed current source'
+        (root / 'main.py').write_bytes(saved)
+        (root / '.git/info/exclude').write_text('AGENTS.md\n')
+        write('AGENTS.md', 'New current instruction outside the pinned ref.\n')
+        assert check()['eligible'] is False
+
 cases = (
     storage_redirects, quoted_paths, changed_symbols, empty_patch_needs_no_fake_read,
     conservative_mechanical_classification, bounded_navigation_markdown, opaque_transitions,
@@ -2977,6 +3082,7 @@ cases = (
     scoped_names_and_gitlink_lifecycle,
     component_and_full_tampering, offline_structure_and_predecessor_walk,
     local_ignored_instructions, overlapping_boundaries_keep_prior_owner_routing,
+    current_coverage_receipts, current_coverage_replacements_and_refs,
 )
 groups = {
     'structure': (
@@ -3010,6 +3116,7 @@ groups = {
         nested_walks_reuse_cached_audits,
     ),
     'replacement': (replacement_runs_on_another_seat, review_origin_counts_the_reviews_own_lines),
+    'current_coverage': (current_coverage_receipts, current_coverage_replacements_and_refs),
 }
 partition = tuple(test for group in groups.values() for test in group)
 assert len(partition) == len(set(partition)) and set(partition) == set(cases), \
@@ -3060,6 +3167,10 @@ test_evidence_hardening_scale_receipts() {
 
 test_evidence_hardening_replacement() {
   REV_EVIDENCE_GROUP=replacement evidence_hardening
+}
+
+test_evidence_current_coverage() {
+  REV_EVIDENCE_GROUP=current_coverage evidence_hardening
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

@@ -61,13 +61,18 @@ Use review-council to review the SDK and wallet branches as a dependency stack.
 
 Code fix loops use adaptive discovery, plan, fix, and verification panels. With four
 core seats, normal changes plan 9 seat launches: four simplicity, one conditional
-plan, and four final verification launches. A large or high-risk review plans 17 by
-adding four risk-discovery and four full red-team launches. An important or explicitly
-adversarial review that is not otherwise large or high-risk plans 13 by adding four
-full red-team launches. With `plan_seats: "all"`, every plan panel launches all four
-core seats instead of one. One four-bundle verification panel reviews the latest material
-state: directly after discovery when no nontrivial fix follows, or after the latest
-nontrivial fix. Read-only reviews default to one panel. Explicit round counts remain minimum
+plan, and four final verification launches. A large or high-risk review with no fix
+uses twelve launches when its enforced combined red-team/verification receipt is
+current; an important or adversarial review uses eight. An ineligible combined
+receipt requires four separate verification launches. Any fix after that panel
+also requires separate verification, giving totals of 17 or 13 with one plan seat.
+Check `rev-evidence.py current-coverage "$S"` before reusing the receipt and again
+before completion. The combined prompts retain all four bundles and sibling-site
+completeness; risk-only and unenforced Agent receipts never qualify.
+With `plan_seats: "all"`, every plan panel launches all four core seats instead of
+one. One four-bundle verification panel reviews the latest material state: the current
+combined panel when no fix follows, a separate panel after simplicity-only discovery,
+or a fresh panel after fixes. Read-only reviews default to one panel. Explicit round counts remain minimum
 overrides and select the Codex host's legacy numbered schedule. Numeric mode continues
 while a new or open P0/P1, a nontrivial last fix, or an unreviewed lens or major file
 remains. It stops after the minimum, two consecutive rounds without a new P0/P1, no

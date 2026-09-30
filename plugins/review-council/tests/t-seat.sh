@@ -36,6 +36,28 @@ JSON
   assert_exit "the live Grok adapter script is absent" 1 test -e "$SCRIPTS/seats.d/grok.sh"
   seat_env_reset "$_path"
 }
+test_seat_codex_instructions_required() {
+  ( seat_env
+    local COPY="$T/instruction-plugin" S="$T/instruction-seat" variant
+    copy_writable_tree "$SK" "$COPY"
+    mkdir -p "$S"
+    printf 'review\n' > "$S/p.md"
+    for variant in empty missing; do
+      : > "$COPY/scripts/lib/reviewer-instructions.md"
+      [ "$variant" != missing ] || rm "$COPY/scripts/lib/reviewer-instructions.md"
+      : > "$T/instruction-calls"
+      SEAT=codex-sol MODEL=fixture EFFORT=xhigh MODE=prompt ROOT="$T" \
+        PROMPT="$S/p.md" SCHEMA="$COPY/schema/findings.schema.json" OUT="$S/result.json" \
+        LOG="$S/adapter.log" RAW="$S/raw.jsonl" BASE=abc \
+        SHIM_CALLS_FILE="$T/instruction-calls" bash "$COPY/scripts/seats.d/codex.sh" \
+        > "$S/out" 2> "$S/err"
+      assert_eq "$variant reviewer instructions refuse launch" "$?" 1
+      assert_eq "$variant instructions spend zero CLI calls" "$(wc -l < "$T/instruction-calls" | tr -d ' ')" 0
+      assert_grep "$variant instructions name the local failure" "$S/err" 'missing reviewer instructions'
+    done
+  )
+}
+
 test_seat_codex() {
   local _path="$PATH"; seat_env
   local S="$T/seat-codex"; seat_roster "$S"; echo "review the diff" > "$S/p.md"; : > "$T/args.env"
@@ -49,6 +71,7 @@ test_seat_codex() {
   assert_grep "prompt via stdin" "$T/args.stdin" 'review the diff'
   assert_grep "model comes from the roster" "$T/args" '^gpt-5.6-sol$'
   assert_grep "effort comes from the roster" "$T/args" '^model_reasoning_effort=max$'
+  assert_grep "prompt review uses compact reviewer instructions" "$T/args" '^model_instructions_file=.*scripts/lib/reviewer-instructions.md$'
   # the seat's environment is not visible in argv: REV_ACTIVE is the recursion guard, -C is the repo root
   assert_grep "seat carries REV_ACTIVE=1" "$T/args.env" '^REV_ACTIVE=1$'
   assert_nogrep "no seat runs unguarded" "$T/args.env" '^REV_ACTIVE=unset$'
@@ -92,6 +115,7 @@ SH
   SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-review "$S" 7 "$S/p.md" --base abc123 >/dev/null
   assert_grep "codex-review uses review subcommand" "$T/args" '^review$'
   assert_grep "codex-review passes base" "$T/args" '^abc123$'
+  assert_nogrep "native review keeps its own instructions" "$T/args" '^model_instructions_file='
     assert_nogrep "codex-review passes no sandbox flag (exec review has no -s)" "$T/args" '^(-s|read-only)$'
   assert_exit "seat that is not in the roster → 1" 1 "$SCRIPTS/rev-seat.sh" mystery "$S" 8 "$S/p.md"
   "$SCRIPTS/rev-seat.sh" mystery "$S" 8 "$S/p.md" 2> "$T/noseat.err"

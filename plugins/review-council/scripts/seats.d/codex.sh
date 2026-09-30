@@ -17,6 +17,11 @@ set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 SUMMARY="$HERE/../lib/stream-summary.py"
 [ -n "${EFFORT:-}" ] || { echo "codex adapter: missing receipted effort" >&2; exit 1; }
+INSTRUCTIONS="$(cd "$HERE/../lib" && pwd)/reviewer-instructions.md"
+if [ "${MODE:-}" != review ] && { [ ! -f "$INSTRUCTIONS" ] || [ ! -r "$INSTRUCTIONS" ] || [ ! -s "$INSTRUCTIONS" ]; }; then
+  echo "codex adapter: missing reviewer instructions" >&2
+  exit 1
+fi
 GITCHECK=""
 git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || GITCHECK="--skip-git-repo-check"
 CODEX_STATE_HOME=${CODEX_HOME:-$HOME/.codex}
@@ -63,6 +68,7 @@ if [ "${MODE:-}" = review ]; then
 else
   CODEX_HOME="$PRIVATE_HOME" codex exec --ephemeral --ignore-user-config -s read-only -C "$ROOT" \
       -m "$MODEL" -c model_reasoning_effort="$EFFORT" -c project_doc_max_bytes=0 \
+      -c model_instructions_file="$INSTRUCTIONS" \
       --json --output-schema "$SCHEMA" -o "$OUT" $GITCHECK - < "$PROMPT" 2>>"$LOG" \
     | tee "$RAW" | python3 -u "$SUMMARY" codex "$OUT" >> "$LOG"
   rc=${PIPESTATUS[0]}

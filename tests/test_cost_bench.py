@@ -95,6 +95,7 @@ class CostBenchTests(unittest.TestCase):
         plugin = candidate / 'plugins/review-council'
         plugin.parent.mkdir(parents=True)
         bench.snapshot_tree(REPO / 'plugins/review-council', plugin)
+        bench.make_worktree_writable(plugin)
         bench.git(candidate, 'init', '-q', '-b', 'main')
         bench.git(candidate, 'add', '.')
         bench.git(candidate, '-c', 'commit.gpgsign=false', '-c', 'user.name=Fixture',
@@ -108,8 +109,12 @@ class CostBenchTests(unittest.TestCase):
         rates = self.root / 'rates.json'
         rates.write_text(json.dumps({'model': 'fixture-luna', 'input_per_million': 2,
                                     'cached_per_million': 0.2, 'output_per_million': 10}))
-        with patch.object(bench, 'command', command):
-            bench.prepare(out, 'main', candidate, 4, PROFILE, rate_card=rates)
+        archive_env = {'GIT_CONFIG_COUNT': '1', 'GIT_CONFIG_KEY_0': 'tar.umask',
+                       'GIT_CONFIG_VALUE_0': '0000'}
+        with patch.object(bench, 'command', command), patch.dict(os.environ, archive_env):
+            manifest = bench.prepare(out, 'main', candidate, 4, PROFILE, rate_card=rates)
+        self.assertEqual(manifest['identity']['sources']['baseline'],
+                         manifest['identity']['sources']['candidate'])
         result = bench.command([sys.executable, str(out / 'engine/eval/cost_bench.py'),
                                 'report', '--out', str(out)])
         self.assertIn('0/4 reserved', result)

@@ -538,13 +538,14 @@ Results: `docs/cost-benchmark-wave1-2026-09-29.md`. Complete raw artifacts and a
 
 # Cost optimization wave 2
 
-- [ ] Resolve newest Sol and Luna from the provider catalog, at xhigh, with no generation pins.
-- [ ] Update the benchmark to freeze selected model, effort and rate card and allow two-call stages.
-- [ ] Measure two fixtures on the existing wave 1 workflow before context or round changes.
-- [ ] Select and implement wave 2 context and repeated-round optimizations from the measured baseline.
-- [ ] Measure the same two fixtures on the frozen candidate, staying inside four total calls.
-- [ ] Adjudicate findings, compare correctness, time and credits, and document limitations.
-- [ ] Run the configured gate, commit and push a separate draft change.
+- [x] Resolve newest Sol and Luna from the provider catalog, at xhigh, with no generation pins.
+- [x] Update the benchmark to freeze selected model, effort and rate card and allow two-call stages.
+- [x] Measure two fixtures on the existing wave 1 workflow before context or round changes.
+- [x] Select and implement wave 2 context and repeated-round optimizations from the measured baseline.
+- [x] Measure the same two fixtures on the frozen candidate, staying inside four total calls.
+- [x] Adjudicate findings, compare correctness, time and credits, and document limitations.
+- [x] Run the configured gate and commit the verified wave 2 source.
+- [ ] Push a separate draft change.
 
 ### Constraints
 
@@ -552,3 +553,18 @@ Latest models are discovered per run; historical identities stay fixed. OpenAI e
 Anthropic keeps Opus/Sonnet aliases and supported max effort. Astra and Grok remain excluded.
 Only four new Luna reviewer executions are authorized. No paid probes, graders or retries.
 The model/effort measurement precedes wave 2 implementation and its measurement.
+
+### Wave 2 results
+
+Four new Luna/xhigh calls completed with no probes, graders or reviewer retries.
+The model-settings controls precede workflow changes. Workflow credits fell 12.0%
+(0.315339 to 0.2773925) and pooled provider time fell 14.4% (234.20 to 200.48 s).
+Both versions find four of four planted defects with zero false positives. One
+candidate ledger citation misses the predicate; severity calibration is unmeasured.
+The historical Terra/max migration reference is 95.1% cheaper and 46.3% slower,
+with model and effort changed. Combined-panel launch savings are contract-tested
+projections, require enforced CLI receipts, and have no live panel quality/cost result.
+
+The full local gate passes 353 shell cases, 4,700 assertions, 161 Python tests and
+all validators. Separate draft delivery remains pending. Global installed
+plugin/config activation and full Council certification remain separate.

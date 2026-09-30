@@ -17,7 +17,9 @@ The two cases run baseline/candidate and candidate/baseline. A disk-backed locke
 
 `report.json`, `report.csv` and `report.md` contain raw results. Altered frozen source, fixture, model identity, rate card or benchmark engine refuses resumption. The reviewed fixture roots remain outside the truth directories. No full Council receipt or panel certification is produced.
 
-Preparation also saves the exact engine and common usage helper. After changing the checkout's harness, regenerate an existing run's report with its archived engine:
+Preparation sets `git archive` to `tar.umask=0022`, preserving executable bits while
+matching normal checkout permissions. Ambient archive settings cannot add group-write
+bits and break staged source identity. Preparation also saves the exact engine and common usage helper. After changing the checkout's harness, regenerate an existing run's report with its archived engine:
 
 ```bash
 python3 /tmp/rev-bench-wave1/engine/eval/cost_bench.py report --out /tmp/rev-bench-wave1

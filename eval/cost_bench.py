@@ -212,7 +212,7 @@ def prepare(out, baseline, candidate, maximum, profile, variants=('baseline', 'c
     frozen = out / 'sources'
     frozen.mkdir()
     commit = git(candidate, 'rev-parse', baseline + '^{commit}')
-    archive = subprocess.check_output(['git', '-C', str(candidate), 'archive', commit,
+    archive = subprocess.check_output(['git', '-c', 'tar.umask=0022', '-C', str(candidate), 'archive', commit,
                                       'plugins/review-council'])
     with tarfile.open(fileobj=io.BytesIO(archive)) as bundle:
         for entry in bundle.getmembers():

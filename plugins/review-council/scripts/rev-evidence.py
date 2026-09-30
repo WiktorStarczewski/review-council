@@ -5333,15 +5333,8 @@ def verify_panel(args):
     print(json.dumps(data, sort_keys=True, separators=(',', ':')))
 
 
-def receipt(args):
-    session = Path(args.session).resolve()
-    manifest_path = session / f'r{args.label}-evidence.manifest.json'
-    verdicts = {}
-    manifest, mh, results, generations, replacements = verify_panel_selection(
-        session, args.label, args.replacement, verdicts=verdicts)
-    if manifest['phase'] == 'plan':
-        raise ValueError('plan panels never advance code coverage')
-    data = {'schema_version': 1, 'manifest': manifest_path.name, 'manifest_sha256': mh,
+def coverage_receipt_data(session, manifest, mh, results, generations, replacements, verdicts):
+    data = {'schema_version': 1, 'manifest': f"r{manifest['label']}-evidence.manifest.json", 'manifest_sha256': mh,
             'snapshot_tree': manifest['snapshot_tree'], 'base_tree': manifest['base_tree'],
             'phase': manifest['phase'], 'assignments': manifest['assignments'], 'results': results,
             'advisories': selected_advisories(session, manifest, generations),
@@ -5351,6 +5344,85 @@ def receipt(args):
     if generations is not None:
         data.update(schema_version=2, replacements=replacements,
                     selected_generations=generations)
+    return data
+
+
+def current_coverage_data(session):
+    status = {'eligible': False, 'reason': None}
+    try:
+        head = current_coverage_head(session)
+        if head is None:
+            raise ValueError('coverage head is absent')
+        path = session / head['receipt']
+        metadata = path.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise ValueError('coverage receipt must be a regular session file')
+        raw = path.read_bytes()
+        if digest(raw) != head['sha256']:
+            raise ValueError('coverage receipt hash mismatch')
+        data = json.loads(raw)
+        if not isinstance(data, dict) or type(data.get('schema_version')) is not int \
+                or data['schema_version'] not in (1, 2):
+            raise ValueError('invalid coverage receipt schema')
+        name = data.get('manifest')
+        match = re.fullmatch(r'r([A-Za-z0-9][A-Za-z0-9._-]*)-evidence\.manifest\.json', name or '')
+        if not match or path.name != f'r{match.group(1)}-coverage.receipt.json':
+            raise ValueError('invalid coverage receipt manifest')
+        manifest_path = session / name
+        metadata = manifest_path.lstat()
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise ValueError('coverage manifest must be a regular session file')
+        replacements = data.get('replacements', {})
+        if not isinstance(replacements, dict):
+            raise ValueError('invalid coverage replacement selection')
+        values = [seat + '=' + label for seat, label in sorted(replacements.items())]
+        verdicts = {}
+        manifest, mh, results, generations, canonical = verify_panel_selection(
+            session, match.group(1), values, verdicts=verdicts)
+        if manifest['phase'] != 'verification':
+            raise ValueError('latest panel is not verification')
+        if manifest.get('unenforced_seats') or verdicts:
+            raise ValueError('verification reuse requires enforced CLI generations')
+        expected = coverage_receipt_data(session, manifest, mh, results, generations, canonical, verdicts)
+        if encoded(data) != encoded(expected):
+            raise ValueError('coverage receipt metadata or results changed')
+        selected = generations or {seat: result_generation(session, manifest, mh, seat)[1]
+                                   for seat in manifest['assignments']}
+        if any(not row['enforced'] for row in selected.values()):
+            raise ValueError('verification reuse requires enforced CLI generations')
+        repo = Repository(session)
+        current, unsafe = repo.snapshot()
+        if current != manifest['snapshot_tree'] or unsafe:
+            raise ValueError('current material source differs from verification')
+        if manifest['source']['mode'] == 'ref':
+            evidence = read_json(session / f"r{manifest['label']}-evidence.json")
+            _, _, categories, _ = repo.changes(manifest['base_tree'], current)
+            rows, packet = instructions(repo, current, instruction_coverage_paths(evidence, categories), True)
+            if rows != manifest['instructions'] or packet != (session / f"r{manifest['label']}-instructions.md").read_bytes():
+                raise ValueError('current repository instructions differ from verification')
+        if current_coverage_head(session) != head or path.read_bytes() != raw:
+            raise ValueError('coverage head changed during verification')
+        status.update(eligible=True, receipt=path.name, sha256=head['sha256'],
+                      phase=manifest['phase'], label=manifest['label'],
+                      snapshot_tree=manifest['snapshot_tree'], base_tree=manifest['base_tree'],
+                      selected_generations=selected)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError, RecursionError) as error:
+        status['reason'] = str(error)
+    return status
+
+
+def current_coverage(args):
+    print(json.dumps(current_coverage_data(Path(args.session).resolve()), sort_keys=True))
+
+
+def receipt(args):
+    session = Path(args.session).resolve()
+    verdicts = {}
+    manifest, mh, results, generations, replacements = verify_panel_selection(
+        session, args.label, args.replacement, verdicts=verdicts)
+    if manifest['phase'] == 'plan':
+        raise ValueError('plan panels never advance code coverage')
+    data = coverage_receipt_data(session, manifest, mh, results, generations, replacements, verdicts)
     path = session / f'r{args.label}-coverage.receipt.json'; raw = encoded(data)
     head = current_coverage_head(session)
     created = not path.exists()
@@ -5434,6 +5506,7 @@ def main():
     panel.add_argument('--replacement', action='append', default=[])
     rec = commands.add_parser('receipt'); rec.add_argument('session'); rec.add_argument('label')
     rec.add_argument('--replacement', action='append', default=[])
+    current = commands.add_parser('current-coverage'); current.add_argument('session')
     origin = commands.add_parser('review-origin')
     origin.add_argument('session'); origin.add_argument('label'); origin.add_argument('--base-tree')
     args = parser.parse_args()
@@ -5443,7 +5516,7 @@ def main():
         with plan_search_signal_handlers():
             {'prepare': prepare, 'render': render, 'render-panel': render_panel,
              'verify': verify, 'same-source': same_source,
-             'verify-panel': verify_panel, 'receipt': receipt,
+             'verify-panel': verify_panel, 'receipt': receipt, 'current-coverage': current_coverage,
              'review-origin': review_origin}[args.command](args)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError, RecursionError) as error:
         print('evidence: ' + str(error), file=sys.stderr)

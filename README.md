@@ -263,10 +263,10 @@ when no usable external CLI remains.
 | --- | --- | --- |
 | simplicity discovery | always | every core seat asks whether the change can be smaller through reuse or deletion |
 | risk discovery | more than 25 files, more than 1,500 lines, or a high-risk boundary | the four risk bundles across the full panel |
-| full red team | exactly once for a large, high-risk, user-marked-important, or explicitly adversarial adaptive review | four distinct adversarial compositions over the existing risk bundles, before planning |
+| full red team | exactly once for a large, high-risk, user-marked-important, or explicitly adversarial adaptive review | four distinct adversarial compositions over the existing risk bundles, rendered as verification with sibling-site completeness before planning |
 | plan | after triage and before any edit, when an accepted fix is nontrivial | one plan-completeness seat; `plan_seats: "all"` adds soundness, simplicity, and falsifiable tests |
 | fix and gates | after accepted and plan-approved findings, or a recorded plan skip | root-cause clusters, relevant regression tests, project gates at baseline or better |
-| verification | after discovery when no nontrivial fix follows, or after the latest nontrivial fix | all four risk bundles over the latest material state, plus a sibling-site check of every fix commit |
+| verification | reuse the current combined panel when no fix follows; otherwise after discovery or fixes | all four risk bundles over the latest material state, plus a sibling-site check of every fix commit |
 
 High-risk boundaries include security, persistence, concurrency, transactions,
 protocols, public APIs, and irreversible mutations.
@@ -277,23 +277,34 @@ For the four-seat council:
 | --- | ---: |
 | ordinary, no nontrivial fix | 8 |
 | ordinary, with one plan panel | 9 |
-| large or high-risk, no nontrivial fix | 16 |
+| large or high-risk, no fix, current enforced combined receipt | 12 |
+| large or high-risk, no fix, combined receipt ineligible | 16 |
 | large or high-risk, with one plan panel | 17 |
+| important or adversarial, no fix, current enforced combined receipt | 8 |
+| important or adversarial, no fix, combined receipt ineligible | 12 |
+| important or adversarial, with one plan panel | 13 |
 
-With four core seats, a normal review plans 9 seat launches: four simplicity, one
-conditional plan, and four final verification launches. A large or high-risk review
-plans 17 by adding four risk-discovery and four full red-team launches. An important
-or explicitly adversarial review that is not otherwise large or high-risk adds the
-four full red-team launches. With `plan_seats: "all"`, every plan panel launches all
-four core seats instead of one.
+The combined panel keeps all four bundles, the full cumulative owner, adversarial
+emphases, and sibling-site completeness. It removes one separate review draw when
+its latest sealed verification receipt still covers the unchanged material state.
+These are launch counts, not measured provider-cost reductions. If a fix follows,
+or source, instructions, roster, or evidence becomes stale, separate verification
+remains required. With `plan_seats: "all"`, every plan panel launches all four core
+seats instead of one.
 
 `rev-state.sh` refuses `phase=fix` while P0-P2 findings are open until the round's plan
 panel completed or `findings.md` records `Plan panel r<N>p - SKIPPED: <reason>`. It also
 refuses when the open counts predate the round's newest seat exit, so a counter still
 holding the previous round's zeroes cannot short-circuit the gate.
 
-One four-bundle verification panel reviews the latest material state: directly after
-discovery when no nontrivial fix follows, or after the latest nontrivial fix. Adaptive
+One four-bundle verification panel reviews the latest material state: the current
+combined panel when no fix follows, a separate panel after simplicity-only discovery,
+or a fresh panel after fixes.
+Check `rev-evidence.py current-coverage "$S"` before omitting a separate panel and
+again immediately before completion with a reused receipt. It requires the latest
+receipt to authenticate a complete enforced verification panel against current
+source and instructions. Risk-only and unenforced Agent receipts never qualify.
+Adaptive
 default panels use core seats and omit extras. Explicit numeric round plans may include
 extras in their configured rounds.
 
@@ -741,8 +752,11 @@ session briefing and a local watch with fixed ten-minute status events. See
 structured baselines and measurement guidance.
 
 Use the [reusable correctness, time and cost benchmarks](eval/COST_BENCHMARKS.md)
-to compare frozen plugin versions with provider-free checks and a bounded Terra lane.
+to compare frozen plugin versions with provider-free checks and a bounded reviewer lane.
+The runner resolves the configured latest model and freezes its identity and rate card.
 Raw usage, dated credit estimates and manually adjudicated quality remain separate.
+The [second-wave results](docs/cost-benchmark-wave2-2026-09-30.md) measure 12.0% fewer
+estimated credits on two fixed-model canaries and distinguish projected round savings.
 
 ## Stack reviews
 
