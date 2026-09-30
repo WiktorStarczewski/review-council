@@ -1,0 +1,342 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-30",
+  "suite": "cost-v2",
+  "reviewer_role": "specialist",
+  "identity": {
+    "sources": {
+      "baseline": "d30c9e5af991fe3fd4fef958f0a0d0d0ac4087de690c390d3311d1cacbe21cc4",
+      "candidate": "bb2b7d7fe32ebdc98158e7dd83327fd04901b0476ab36c484dfa8c857a81cb9f"
+    },
+    "cases": "119b7fb5d469b94365fbe8ef4638790b23f1ffcefae6aa15be5b9e1a1b52ed7b",
+    "baseline_commit": "4571f99f7e7b0a69d23a3f70ea5ae851037a427f",
+    "model": "gpt-6-luna",
+    "effort": "xhigh",
+    "codex_version": "codex-cli 0.159.0",
+    "rate_card": "874356631b4c6a1eb60a02f59bbdeb8123f8b3a3fa13f4ce4e3bcda429fed9ac",
+    "collector": "f3aaabecb46f6db7229092874e1c2c7ddd4f621482e51eb7c9349a99c51e1fa5",
+    "engine": {
+      "cost_bench.py": "5cb8df5e69b283ef869f552116d6a1f6da77efb39884c2e1125b08152051c5ad",
+      "bench_local.py": "8529b16410e4cea612d440b7c0dcc9dd3514d3ad2913269ef753018f93024a7c",
+      "bench_metrics.py": "6b292cf797c71117831fe4361329b448088e486213709bc5cc1777526603c81a",
+      "bench_score.py": "72e8753ce5177897dd9e96e7a8023edafc2322ff623fa887db230e4fb9f25579"
+    }
+  },
+  "budget": {
+    "maximum": 2,
+    "reserved": 2,
+    "unmeasured": [],
+    "paid_probes": 0,
+    "paid_graders": 0,
+    "reviewer_retries": 0
+  },
+  "rows": [
+    {
+      "case": "cache-isolation",
+      "variant": "baseline",
+      "status": "complete",
+      "valid": true,
+      "schema_valid": true,
+      "audit_valid": true,
+      "wall_seconds": 140.05415749999997,
+      "machine_seconds": 143.344364833,
+      "compile_seconds": 2.872594666,
+      "validation_seconds": 0.07117037500000833,
+      "audit_seconds": 0.3464422920000061,
+      "tool_calls": 9,
+      "prompt_words": 1421,
+      "prompt_bytes": 10047,
+      "estimated_credits": 0.195727,
+      "usage": {
+        "provider": "codex",
+        "input_tokens": 216400,
+        "uncached_input_tokens": 31312,
+        "output_tokens": 5694,
+        "reasoning_output_tokens": 4470,
+        "processed_tokens": 222094,
+        "cached_input_tokens": 185088,
+        "cache_write_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_write_5m_input_tokens": 0,
+        "cache_write_1h_input_tokens": 0,
+        "cost_usd": null,
+        "cost_usd_known_calls": 0,
+        "cost_usd_unknown_calls": 1,
+        "unidentified_terminal_calls": 0,
+        "cache_reported": true,
+        "reasoning_reported": true
+      },
+      "quality": {
+        "candidate_matches": [
+          {
+            "finding": 0,
+            "defects": [
+              "tenant-key"
+            ],
+            "provisional": true
+          },
+          {
+            "finding": 1,
+            "defects": [
+              "nested-read-alias"
+            ],
+            "provisional": true
+          }
+        ],
+        "confirmed": true,
+        "defect_hits": [
+          "tenant-key",
+          "nested-read-alias"
+        ],
+        "defect_total": 2,
+        "recall": 1.0,
+        "false_positives": 0,
+        "true_positive_findings": 2,
+        "valid_extra_findings": 0,
+        "duplicate_findings": 0,
+        "precision": 1.0,
+        "findings_sha256": "ebb79bb4fdc1e91e1be3bb54f8db66e386d7e44b676430b3ff5caf1c77aa6fbf"
+      }
+    },
+    {
+      "case": "cache-isolation",
+      "variant": "candidate",
+      "status": "invalid-proof",
+      "valid": false,
+      "schema_valid": true,
+      "audit_valid": false,
+      "wall_seconds": 175.665679125,
+      "machine_seconds": 179.12781779199997,
+      "compile_seconds": 2.936204083000007,
+      "validation_seconds": 0.07353229199998168,
+      "audit_seconds": 0.45240229199998794,
+      "tool_calls": 12,
+      "prompt_words": 1232,
+      "prompt_bytes": 8977,
+      "estimated_credits": 0.1976955,
+      "usage": {
+        "provider": "codex",
+        "input_tokens": 283701,
+        "uncached_input_tokens": 25909,
+        "output_tokens": 5478,
+        "reasoning_output_tokens": 4101,
+        "processed_tokens": 289179,
+        "cached_input_tokens": 257792,
+        "cache_write_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_write_5m_input_tokens": 0,
+        "cache_write_1h_input_tokens": 0,
+        "cost_usd": null,
+        "cost_usd_known_calls": 0,
+        "cost_usd_unknown_calls": 1,
+        "unidentified_terminal_calls": 0,
+        "cache_reported": true,
+        "reasoning_reported": true
+      },
+      "quality": {
+        "candidate_matches": [
+          {
+            "finding": 0,
+            "defects": [
+              "tenant-key"
+            ],
+            "provisional": true
+          },
+          {
+            "finding": 1,
+            "defects": [
+              "nested-read-alias"
+            ],
+            "provisional": true
+          }
+        ],
+        "confirmed": true,
+        "defect_hits": [
+          "tenant-key",
+          "nested-read-alias"
+        ],
+        "defect_total": 2,
+        "recall": 1.0,
+        "false_positives": 0,
+        "true_positive_findings": 2,
+        "valid_extra_findings": 0,
+        "duplicate_findings": 0,
+        "precision": 1.0,
+        "findings_sha256": "994d8fbbc3380e57a20b9bc9fe36407b96489c033e79f345ae688777d3df5cd0"
+      }
+    }
+  ],
+  "original_pairs": [
+    {
+      "case": "cache-isolation",
+      "baseline_status": "complete",
+      "candidate_status": "invalid-proof",
+      "valid_pair": false,
+      "metrics": {
+        "wall_seconds": {
+          "baseline": 140.05415749999997,
+          "candidate": 175.665679125,
+          "reduction_percent": null
+        },
+        "input_tokens": {
+          "baseline": 216400,
+          "candidate": 283701,
+          "reduction_percent": null
+        },
+        "cached_input_tokens": {
+          "baseline": 185088,
+          "candidate": 257792,
+          "reduction_percent": null
+        },
+        "uncached_input_tokens": {
+          "baseline": 31312,
+          "candidate": 25909,
+          "reduction_percent": null
+        },
+        "output_tokens": {
+          "baseline": 5694,
+          "candidate": 5478,
+          "reduction_percent": null
+        },
+        "reasoning_output_tokens": {
+          "baseline": 4470,
+          "candidate": 4101,
+          "reduction_percent": null
+        },
+        "processed_tokens": {
+          "baseline": 222094,
+          "candidate": 289179,
+          "reduction_percent": null
+        },
+        "estimated_credits": {
+          "baseline": 0.195727,
+          "candidate": 0.1976955,
+          "reduction_percent": null
+        },
+        "prompt_words": {
+          "baseline": 1421,
+          "candidate": 1232,
+          "reduction_percent": null
+        },
+        "prompt_bytes": {
+          "baseline": 10047,
+          "candidate": 8977,
+          "reduction_percent": null
+        }
+      }
+    }
+  ],
+  "observed_attempt_change_percent": {
+    "wall_seconds": 25.426965011731294,
+    "machine_seconds": 24.963278466292472,
+    "estimated_credits": 1.0057375834708449,
+    "tool_calls": 33.33333333333333,
+    "input_tokens": 31.100277264325314,
+    "cached_input_tokens": 39.28077455048409,
+    "uncached_input_tokens": -17.25536535513541,
+    "output_tokens": -3.7934668071654354,
+    "reasoning_output_tokens": -8.255033557046975
+  },
+  "representation": {
+    "baseline": {
+      "packet_count": 1,
+      "packet_bytes": 3968,
+      "entries": 4,
+      "source_bytes": 1092,
+      "digest": {
+        "mode": "full",
+        "full_bytes": 2305,
+        "delivered_bytes": 2305,
+        "retained_lines": 24,
+        "omitted_lines": 0
+      }
+    },
+    "candidate": {
+      "packet_count": 1,
+      "packet_bytes": 2010,
+      "entries": 4,
+      "source_bytes": 1092,
+      "digest": {
+        "mode": "routed",
+        "full_sha256": "ef78cfa12fd03926d0888d47b7fa81fda8c480e0642c4969410fd879fb8835b5",
+        "selected_ranges": [
+          [
+            1,
+            8
+          ]
+        ],
+        "full_bytes": 2305,
+        "delivered_bytes": 748,
+        "retained_lines": 8,
+        "omitted_lines": 16,
+        "fallback_reason": null
+      }
+    },
+    "source_fidelity": {
+      "ranges_unchanged": true,
+      "required_and_omitted_unchanged": true
+    }
+  },
+  "local_compile": [
+    {
+      "case": "cache-isolation",
+      "variant": "baseline",
+      "samples": 5,
+      "median_compile_seconds": 2.8987658749999996,
+      "min_compile_seconds": 2.7482652090000013,
+      "max_compile_seconds": 3.281634625,
+      "prompt_words": 1421,
+      "prompt_bytes": 10062
+    },
+    {
+      "case": "cache-isolation",
+      "variant": "candidate",
+      "samples": 5,
+      "median_compile_seconds": 2.8841137499999974,
+      "min_compile_seconds": 2.8107307090000013,
+      "max_compile_seconds": 3.269655,
+      "prompt_words": 1232,
+      "prompt_bytes": 8995
+    }
+  ],
+  "offline_replay": {
+    "status": "valid",
+    "provider_executions": 0,
+    "repair_source": "7b46a4883b2f359be2afc3d9d63f15ac4738f140f8922772f9a5b75e1e12f955",
+    "changed_plugin_files": [
+      "scripts/lib/review-read-audit.py",
+      "tests/t-read-bounds.sh"
+    ],
+    "original_audit_sha256": "cc58772af8ba64694bdfb01dafb6b315418fab96287c4a80291d4d18737bbea1",
+    "corrected_audit_sha256": "2b37a56773d18b9e8953701b7509073fb8c3c8b06b63cf28b9a15255d4188345",
+    "original_violations": [
+      {
+        "code": "decision-digest-output-mismatch",
+        "tool": "command_execution"
+      },
+      {
+        "code": "missing-full-decision-digest",
+        "tool": "command_execution"
+      },
+      {
+        "code": "missing-evidence-index",
+        "tool": "codex"
+      }
+    ],
+    "corrected_violations": [],
+    "digest_restored": true,
+    "digest_proof_calls": 1,
+    "digest_proof_visible_bytes": 2305,
+    "digest_expansion_calls": 6
+  },
+  "limitations": [
+    "1 case provides no statistical quality equivalence.",
+    "Server cache cannot be cleared; single stages have temporal ordering bias.",
+    "No full panel certification or subscription cost claim.",
+    "One reviewer execution may include multiple provider HTTP requests.",
+    "Original live candidate failed audit; corrected replay is separate and uses no new reviewer execution.",
+    "Repair changes the audit, not the preserved prompt or stream.",
+    "This specialist case differs from wave2 cumulative-owner controls."
+  ],
+  "disposition": "discarded-combined-optimization"
+}

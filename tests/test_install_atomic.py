@@ -121,25 +121,34 @@ builder.build(Path(sys.argv[2]))
         stage.mkdir()
         (live / 'identity').write_text('old\n')
         (stage / 'identity').write_text('new\n')
-        started = threading.Event()
+        observed_old = threading.Event()
+        observed_new = threading.Event()
         finished = threading.Event()
         observed = []
 
         def observe():
-            started.set()
             while not finished.is_set():
                 try:
-                    observed.append((live / 'identity').read_text())
+                    identity = (live / 'identity').read_text()
                 except FileNotFoundError:
-                    observed.append('missing')
+                    identity = 'missing'
+                observed.append(identity)
+                if identity == 'old\n':
+                    observed_old.set()
+                elif identity == 'new\n':
+                    observed_new.set()
 
         watcher = threading.Thread(target=observe)
         watcher.start()
-        self.assertTrue(started.wait(timeout=1))
-        for _ in range(200):
+        try:
+            self.assertTrue(observed_old.wait(timeout=5))
             self.builder._atomic_exchange(stage, live)
-        finished.set()
-        watcher.join(timeout=1)
+            self.assertTrue(observed_new.wait(timeout=5))
+            for _ in range(199):
+                self.builder._atomic_exchange(stage, live)
+        finally:
+            finished.set()
+            watcher.join(timeout=5)
 
         self.assertFalse(watcher.is_alive())
         self.assertTrue(observed)

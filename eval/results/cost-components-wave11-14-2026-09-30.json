@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "measurement": "reported-usage-credit-components",
+  "identity": {
+    "model": "gpt-6-luna",
+    "effort": "xhigh",
+    "codex_version": "codex-cli 0.159.0",
+    "rate_card": "874356631b4c6a1eb60a02f59bbdeb8123f8b3a3fa13f4ce4e3bcda429fed9ac",
+    "collector": "f3aaabecb46f6db7229092874e1c2c7ddd4f621482e51eb7c9349a99c51e1fa5",
+    "engine": {
+      "cost_bench.py": "31ff69bc9eccd19f793e8fa67434cf53e8c44e097af0438f43311c6338a6c794",
+      "bench_local.py": "8529b16410e4cea612d440b7c0dcc9dd3514d3ad2913269ef753018f93024a7c",
+      "bench_metrics.py": "6b292cf797c71117831fe4361329b448088e486213709bc5cc1777526603c81a",
+      "bench_score.py": "72e8753ce5177897dd9e96e7a8023edafc2322ff623fa887db230e4fb9f25579",
+      "bench_quality.py": "741c6763a9ef0361b1a04deac522866722ef808ea19a0d670acc0b3e9e4dc3c3"
+    }
+  },
+  "inputs": [
+    {
+      "artifact": "wave11-2026-09-30.json",
+      "sha256": "62b943a348eb6dc3dce3d195f5cf61de95db3cebde85aeeb959a42bf7ae24f9e",
+      "executions": 4
+    },
+    {
+      "artifact": "wave12-2026-09-30.json",
+      "sha256": "8aef4297fa81a25d73e91e5260a733afcdb304230fb0c42b694379f32f34b635",
+      "executions": 2
+    },
+    {
+      "artifact": "wave13-2026-09-30.json",
+      "sha256": "162920610d4d3a3d165f4201e446fe78e6b3c5d46b7a8e167af48245300271bc",
+      "executions": 4
+    },
+    {
+      "artifact": "wave14-2026-09-30.json",
+      "sha256": "1f725dec50caab2329aecbd95207324529f074d0ec1046e26eb04788751423eb",
+      "executions": 4
+    }
+  ],
+  "unique_executions": 14,
+  "reference_executions_counted_twice": 0,
+  "tokens": {
+    "uncached_input_tokens": 454671,
+    "cached_input_tokens": 3000064,
+    "output_tokens": 89152
+  },
+  "credits_per_million": {
+    "uncached_input_tokens": 2.5,
+    "cached_input_tokens": 0.25,
+    "output_tokens": 12.5
+  },
+  "estimated_credits": {
+    "uncached_input_tokens": 1.1366775,
+    "cached_input_tokens": 0.750016,
+    "output_tokens": 1.1144
+  },
+  "total_estimated_credits": 3.0010935,
+  "credit_shares_percent": {
+    "uncached_input_tokens": 37.87544440051601,
+    "cached_input_tokens": 24.991423959300167,
+    "output_tokens": 37.13313164018382
+  },
+  "cached_input_share_percent": 86.83919316532237,
+  "dollars": null,
+  "limits": [
+    "Reasoning is included in output and charged once.",
+    "Aggregate usage cannot attribute credits to specific tool bytes or prose.",
+    "No panel-wide cost or repeatability inference."
+  ]
+}

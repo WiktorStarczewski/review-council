@@ -1,3 +1,22 @@
+# Release 0.5.7
+
+- [x] Confirm the retained wave 1 and wave 2 changes and discarded experiment scope.
+- [x] Verify the signed stable 0.5.6 tag and inspect remote PR and release state.
+- [x] Prepare matching 0.5.7 manifests and release notes.
+- [x] Run the complete frozen candidate gate and resolve the stable release-review requirement.
+- [ ] Push and squash-merge the three stacked PRs with exact-head green CI.
+- [ ] Verify the merged release tree, publish a signed tag and GitHub release.
+- [ ] Update both installed hosts and verify version, source identity and skill discovery.
+
+### Release review
+
+The stable release panel is explicitly waived for 0.5.7. Publication remains gated
+on deterministic verification and green CI. The local candidate gate passes 354
+shell cases, 4,701 assertions, 229 Python tests and all three validators. Single-seat
+benchmark results do not certify the release implementation. The release procedure
+now names the latest Sol and Luna families at xhigh, preserving exact frozen run
+identities and supported maximum effort for Opus and Sonnet.
+
 # CLI Claude seats and a fast plan gate (#7, #8)
 
 - [x] WP1 #7 roster: `claude_adapter` (cli/agent/auto) + env override, one resolver, padding follows it; `plan_seats` config recorded in roster.json only when `all`.
@@ -545,7 +564,7 @@ Results: `docs/cost-benchmark-wave1-2026-09-29.md`. Complete raw artifacts and a
 - [x] Measure the same two fixtures on the frozen candidate, staying inside four total calls.
 - [x] Adjudicate findings, compare correctness, time and credits, and document limitations.
 - [x] Run the configured gate and commit the verified wave 2 source.
-- [ ] Push a separate draft change.
+- [x] Push a separate draft change.
 
 ### Constraints
 
@@ -566,5 +585,198 @@ with model and effort changed. Combined-panel launch savings are contract-tested
 projections, require enforced CLI receipts, and have no live panel quality/cost result.
 
 The full local gate passes 353 shell cases, 4,700 assertions, 161 Python tests and
-all validators. Separate draft delivery remains pending. Global installed
+all validators. Signed commit 4571f99 and draft PR #28 deliver wave 2. Global installed
 plugin/config activation and full Council certification remain separate.
+
+# Cost optimization wave 3
+
+Plan: `docs/superpowers/plans/2026-09-30-review-cost-wave3.md`.
+User chose packets plus relevant decision digests and two paid reviewer test executions
+on one paired evidence case. Production retains four seats.
+
+- [x] Implement lean packets with identical source selection and strict v1/v2 validation.
+- [x] Implement optional conservative decision routing and full-context expansion proof.
+- [x] Freeze one paired specialist case, with unchanged cache truth and neutral history.
+- [x] Pass local contracts and run the two authorized Luna/xhigh test executions.
+- [x] Adjudicate and document correctness, time, credits and representation-size metrics.
+- [x] Complete the full local gate after discarding the runtime.
+- [ ] Commit and push a separate draft with preserved measurements.
+
+### Wave 3 results
+
+Both paid executions finish and both semantic results find 2/2 bugs with no false
+positives. The candidate spends 0.1976955 versus 0.195727 credits and takes 175.67
+versus 140.05 s. Its original audit is invalid, with all original files preserved.
+Offline replay passes after narrow EOF and complete bounded-index proof fixes.
+Packet bytes fall 49.3%, but digest restoration and extra tool turns erase any
+observed cost/time benefit. The combined implementation is discarded; its frozen artifacts remain for reproduction.
+
+# Continued cost experiments
+
+The user authorized autonomous continuation after the wave 3 pair, testing ideas,
+benchmarking and retaining what works. This supersedes the completed wave 3 cap for
+new experiments; its original two-execution ledger remains unchanged.
+
+- [x] Verify and commit wave 3 measurements and independent audit correction after discarding the losing runtime.
+- [x] Add a complex multi-file case with executable truth and clean controls before retention decisions.
+- [x] Add a versioned 0-100 quality score from severity-weighted recall, precision, citation accuracy, observable source-flow coverage and manually verified hypotheses.
+- [x] Require valid proof, no lost P0/P1, no added false positives, at least 90/100 quality and at most a 3-point paired drop before retaining an optimization.
+- [x] Test packets without routed digest restoration on complex and clean cases. Discard after quality regression.
+- [x] Test explicit complete-read transition cues against redundant EOF tool turns. Discard after a fresh pair fails.
+- [x] Evaluate duplicate schema prose: the current adapter already supplies schema exactly once, so no change qualifies.
+- [ ] Evaluate further backlog ideas with local contracts before paid canaries.
+- [ ] Preserve unsuccessful experiments and retain measured improvements separately.
+
+Use Luna at xhigh for low-cost screening, preserve production roster and independent
+review obligations, freeze each identity, and prohibit automatic reviewer retries.
+Use two executions per one-case screening pair, with four only when a second case
+is necessary to check a concrete quality risk. Report variance and toy-case limits.
+
+The next packet-only pair uses four executions because a wholly clean twin is
+needed to measure specificity alongside the complex defective subsystem. Both
+identities stay frozen. Quality scoring uses observed evidence and complete local
+adjudications, never hidden reasoning or a paid grader. Legacy cases without the
+private behavior rubric report an explicitly limited core score rather than an
+invented 100-point score. Scoring policy changes require a new version and replay
+of both sides of a comparison.
+
+### Numeric quality and packet-only screen
+
+The full frozen gate passes 353 shell cases, 4,701 assertions, 191 Python tests and
+all three validators. Receipt tree: 35e96b952b44bceb0ea16f4b693426f301406faf685012eb61beee44098d301e.
+Wave 4 completes four Luna/xhigh executions: pooled credits fall 24.6%, but complex
+quality falls 92.5 to 83.5 with a lost P1 and two inaccurate citations. Clean quality
+falls 91.25 to 88.75. Both candidates fail fixed retention gates and are discarded.
+The independent bounded-index correction and reusable quality/complex-case suite remain.
+Read-cue and source-batch screens reuse exactly matching frozen baseline controls,
+with fresh two-execution candidate ledgers, no paid probes, graders or retries.
+Full Council certification remains pending while fewer than three allowed seats are available.
+
+### Continued screening results
+
+Waves 5-9 are measured and losing runtime candidates remain isolated. The uncapped
+complex result reaches 98/100 with all six faults, but its clean twin is 88.75 and
+fails the frozen floor. Both batching variants lose observable source-flow proof;
+the safer version also raises credits 8.8% and time 69.7%. Fresh read-cue testing
+reduces credits only 1.0% with lower quality and higher elapsed time. No score or
+rubric was relaxed after observing these results.
+
+### Transfer and aggregate quality checks
+
+- [x] Measure decisive-summary cue on both frozen cases with exact reused controls.
+- [x] Measure complete-findings plus summary cue against four fresh executions. Both cases pass; pooled credits fall 8.49% and provider time 17.06%.
+- [x] Test line-addressed packets on the qualified complete-checks control and repeat the combination against four fresh executions. All case gates pass; repeat credits fall 2.34% and provider time 21.90%.
+- [x] Validate the combined runtime on an unrelated frozen build-cache holdout. Five faults are found, but clean depth is 86.25 and fails the fixed floor; discard the combination despite lower credits and time.
+- [x] Integrate complete-case numeric run summaries after frozen paid stages finish. Forty focused quality/report tests pass; 22 portable holdout tests pass without skips.
+- [x] Verify the final functional source against the complete gate and commit measured outcomes.
+- Draft stacked delivery and exact CI results are tracked in the final PR.
+
+The instruction components remain private and unretained. The combined runtime
+passes the dispatcher but fails the independent clean holdout depth floor. Mean
+holdout quality rises 92.19 to 92.50 while minimum stays 86.25; the mean cannot
+override that failed case gate. No scoring policy or rubric was relaxed.
+
+### Next bounded experiment
+
+- [x] Validate a private immutable snapshot batch contract with real captured tool output. Sixteen new tests and 182 existing focused checks pass; no production adoption.
+- [x] Test a general caller/state-flow inspection cue without fixture-specific hints; the clean holdout fails its quality floor.
+- [x] Run finite heldout measurements only after local proof and prompt contracts pass; keep proof-invalid measurements separate.
+
+Native live-source batching remains off. A preserved reproduction shows ambiguous
+joined producer output can be credited to incorrect individual source ranges.
+Current-coverage rejects persistent source mutation, but restoration before audit
+cannot prove which producer supplied each byte. A prospective pinned-snapshot
+contract must avoid that ambiguity; original streams, audits and scores stay frozen.
+
+The first aggregate gate catches six read-only mutation-copy errors and one flaky
+shared argv-spy assertion during concurrent roster probes. Temporary copies now
+copy bytes rather than frozen modes; all 22 holdout tests pass under a sealed tree.
+The probe test records each process's arguments separately, preserving its original
+availability assertion. Its 19 focused assertions pass. The repaired frozen gate passes 353 shell cases, 4,701 assertions, 229 Python tests
+and all three validators. All five terminal logs and hashes are verified. Tested tree:
+28afabf094c45fa2474c9857c30d7bc98af5fd267548b8f5bdde0f459fd9f33c.
+Only this task record differs from the sealed tested source.
+
+The next cheaper screen isolates finite patch completion plus a generic caller/state-flow
+cue on the experimental packet anchor. Local rendering must preserve all unaffected
+phase/adapter bytes before a finite two-call heldout stage, using exact frozen controls.
+
+### Finite-completion screen
+
+Two Luna/xhigh calls complete with valid proof, no probes, graders or retries.
+Both avoid empty patch probes. All five faults are found with accurate citations;
+complex quality is 98.75 and clean quality 86.875. Pooled credits fall 15.69% and
+provider time 16.00%, but the clean floor fails. The combined runtime is discarded.
+The private immutable-source prototype passes its local lane and exact reused-control
+identity check; a separate two-call heldout screen is running.
+
+### Source producer validation
+
+The immutable-source screen completes both paid executions, but both exact audits
+fail on merged Apple Git sandbox diagnostics. Full quality remains unknown and
+no qualified savings percentage is published. All raw artifacts stay frozen.
+A separate producer correction will be tested locally before another finite stage.
+The optional native live-file compound proof path is independently retired after
+587 focused assertions and 21 unchanged-prompt comparisons. Its new portable
+regression is registered; the active complete frozen-source gate is running.
+
+agentic-kb: codex-seats-git-show-base-fails-read-audit explains the merged sandbox
+stderr failure and helped avoid loosening byte proof. Usage and a generic current
+sandbox CLI recipe are pushed from an isolated clean KB checkout in 6914a65;
+the original KB checkout's existing merge conflicts remain untouched.
+
+The prospective proof correction passes the complete frozen gate: 354 shell cases,
+4,701 assertions, 229 Python tests and all three validators. All five terminal
+logs and hashes verify exit 0. Tested tree is
+006cdc2c6212fe7ed76a08c4ac8c99fad53b557a94bd18c5c09664c05d2bb7ab.
+Signed commit dbff79b retains only that independent correction. New result metadata
+and task prose differ from the frozen tree; code, tests and fixtures are identical.
+
+### Exact stderr suppression screen
+
+- [x] Prove the real read-only sandbox failure and exact producer correction locally. Nineteen focused tests pass; warning-like source bytes remain unchanged.
+- [x] Measure the signed corrected immutable-source candidate on both heldout cases with two fresh executions and unchanged frozen controls.
+- [x] Retain only if each case passes fixed correctness, citation, source-flow and quality gates; the unchanged dispatcher transfer fails, so discard runtime changes.
+
+Candidate db5dce0a0e546207548b9d0f93d568b109057b46 is isolated. No arbitrary
+stderr stripping, score revision or reinterpretation of wave 16 is permitted.
+
+Wave 17 passes both case gates: A 98.75 and B 91.25, mean 95.00 and minimum
+91.25. Pooled estimated credits fall 20.05% and provider time 37.68%. Original
+wave 16 remains invalid. An unchanged two-call dispatcher transfer is running,
+with a private prospective integration preserving retired native compound proof.
+No runtime is adopted before transfer and fresh paired validation.
+
+### Completed transfer and stopping decision
+
+Wave 18 finds all six dispatcher faults with accurate citations (98.00), but its
+clean twin exposes no storage ranges and scores 80.00. Pooled credits rise 7.78%
+and time 36.44%. The combination is discarded; the private prospective integration
+remains clean at dbff79b with no code edits. Four-case mean is 92.00 versus 90.91,
+minimum 80.00 versus 86.25. Lower pooled credits cannot override that failed gate.
+Distinct evidence-backed cost mechanisms are exhausted for this pass; no further
+paid cue retries or unmeasurable tool/prefix canaries are justified.
+
+- [x] Preserve every completed stage, exact identities, manual adjudications and numeric comparison.
+- [x] Reconcile 14 unique execution cost components and bind their public inputs.
+- [x] Verify final metadata and commit the transfer disposition.
+- Final draft-PR delivery and both operating-system CI results are tracked in the PR.
+
+Final pre-push verification confirms all 285 tracked functional files match the
+complete gate snapshot in bytes and executable modes. All five terminal logs
+match receipt hashes and exit 0. Later changes are benchmark records and prose;
+complete-case summaries, component totals and bound input hashes verify separately.
+
+### Standalone component closure
+
+The final untested component isolation uses two new Luna/xhigh executions with
+control packets and source-read rules. Candidate source exactly matches wave 11.
+Wave 19 scores A 98.75 and B 86.25: all five faults and accurate citations, but
+only one clean source flow. Credits fall 8.44% and time rises 14.04%. The standalone
+output instructions are discarded independently of packet and batching changes.
+Their four-case mean is 93.15, minimum 86.25, pooled credits -8.46% and time +1.73%.
+Six new executions and two reused controls are explicitly recorded. No scoring
+policy, rubric or original stream changes. All evidence-backed screens are closed.
+
+PR #29 at bb4c168 passes macOS and Ubuntu CI. The final added files contain only
+wave 19 records and prose; functional code remains identical to that verified head.

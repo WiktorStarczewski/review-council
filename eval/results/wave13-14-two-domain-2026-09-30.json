@@ -1,0 +1,121 @@
+{
+  "schema_version": 1,
+  "experiment": "fresh-combined-two-domain-evaluation",
+  "executions": 8,
+  "input_records": [
+    {
+      "path": "wave13-2026-09-30.json",
+      "sha256": "162920610d4d3a3d165f4201e446fe78e6b3c5d46b7a8e167af48245300271bc"
+    },
+    {
+      "path": "wave14-2026-09-30.json",
+      "sha256": "1f725dec50caab2329aecbd95207324529f074d0ec1046e26eb04788751423eb"
+    }
+  ],
+  "identity": {
+    "sources": {
+      "baseline": "89eceace2ce3a31347d367008ef58e01f619b85e0e4433998e73e6be0c93f08b",
+      "candidate": "f0c5a0ab6676e7981c0ea69e3e83424f321db8dbc9feffaae3d7bfc294d9767d"
+    },
+    "model": "gpt-6-luna",
+    "effort": "xhigh",
+    "engine": {
+      "cost_bench.py": "31ff69bc9eccd19f793e8fa67434cf53e8c44e097af0438f43311c6338a6c794",
+      "bench_local.py": "8529b16410e4cea612d440b7c0dcc9dd3514d3ad2913269ef753018f93024a7c",
+      "bench_metrics.py": "6b292cf797c71117831fe4361329b448088e486213709bc5cc1777526603c81a",
+      "bench_score.py": "72e8753ce5177897dd9e96e7a8023edafc2322ff623fa887db230e4fb9f25579",
+      "bench_quality.py": "741c6763a9ef0361b1a04deac522866722ef808ea19a0d670acc0b3e9e4dc3c3"
+    },
+    "codex_version": "codex-cli 0.159.0",
+    "rate_card": "874356631b4c6a1eb60a02f59bbdeb8123f8b3a3fa13f4ce4e3bcda429fed9ac",
+    "collector": "f3aaabecb46f6db7229092874e1c2c7ddd4f621482e51eb7c9349a99c51e1fa5"
+  },
+  "quality_summaries": {
+    "baseline": {
+      "status": "known",
+      "quality_score": 90.90625,
+      "minimum_quality_score": 86.25,
+      "complete_cases": 4,
+      "expected_cases": 4,
+      "maximum": 100,
+      "score_version": "quality-v1",
+      "aggregation_version": "quality-equal-case-v1",
+      "case_identities": [
+        {
+          "case": "incremental-build-a",
+          "case_sha256": "2e250e8f76b960dbd6f9c803d27e03a132983ea194a9e348d5656509c6087d1d",
+          "rubric_sha256": "0cbc4962cb33ed6e594ab975a1bcd4638067567739ee65430fdc28bc1fa26e04"
+        },
+        {
+          "case": "incremental-build-b",
+          "case_sha256": "c71714e7dcbdf8d9899f753b5c79a11fa92b151204bc2e0585daef851732ef11",
+          "rubric_sha256": "77ae75c8e8d843c59de4e3b7f161d8492ddc8e06725c9dac018869764b0e646b"
+        },
+        {
+          "case": "job-dispatcher-a",
+          "case_sha256": "d56d1d5f8295fd95dec4ad980ce0078244ba14788b3994dd2f7cbf478f511964",
+          "rubric_sha256": "b23e271e8323e69a9d02825e2e1c813597e614f511d13e1548452b844e4f6953"
+        },
+        {
+          "case": "job-dispatcher-b",
+          "case_sha256": "356eb9408ce022a175cb3454dc20b375121038396c92624e7ce1d22182e09d17",
+          "rubric_sha256": "39392b7fe63388e2f4eef4f1480389ca9a724534ecd785bc780cb72bce843231"
+        }
+      ],
+      "unavailable": []
+    },
+    "candidate": {
+      "status": "known",
+      "quality_score": 93.5625,
+      "minimum_quality_score": 86.25,
+      "complete_cases": 4,
+      "expected_cases": 4,
+      "maximum": 100,
+      "score_version": "quality-v1",
+      "aggregation_version": "quality-equal-case-v1",
+      "case_identities": [
+        {
+          "case": "incremental-build-a",
+          "case_sha256": "2e250e8f76b960dbd6f9c803d27e03a132983ea194a9e348d5656509c6087d1d",
+          "rubric_sha256": "0cbc4962cb33ed6e594ab975a1bcd4638067567739ee65430fdc28bc1fa26e04"
+        },
+        {
+          "case": "incremental-build-b",
+          "case_sha256": "c71714e7dcbdf8d9899f753b5c79a11fa92b151204bc2e0585daef851732ef11",
+          "rubric_sha256": "77ae75c8e8d843c59de4e3b7f161d8492ddc8e06725c9dac018869764b0e646b"
+        },
+        {
+          "case": "job-dispatcher-a",
+          "case_sha256": "d56d1d5f8295fd95dec4ad980ce0078244ba14788b3994dd2f7cbf478f511964",
+          "rubric_sha256": "b23e271e8323e69a9d02825e2e1c813597e614f511d13e1548452b844e4f6953"
+        },
+        {
+          "case": "job-dispatcher-b",
+          "case_sha256": "356eb9408ce022a175cb3454dc20b375121038396c92624e7ce1d22182e09d17",
+          "rubric_sha256": "39392b7fe63388e2f4eef4f1480389ca9a724534ecd785bc780cb72bce843231"
+        }
+      ],
+      "unavailable": []
+    }
+  },
+  "pooled": {
+    "baseline": {
+      "estimated_credits": 0.9486149999999999,
+      "wall_seconds": 709.542630956
+    },
+    "candidate": {
+      "estimated_credits": 0.8614250000000001,
+      "wall_seconds": 563.5671472930001
+    }
+  },
+  "observed_reduction_percent": {
+    "estimated_credits": 9.191294676976414,
+    "wall_seconds": 20.573180143710378
+  },
+  "acceptable": false,
+  "disposition": "discarded-heldout-clean-depth-floor",
+  "limits": [
+    "Two sequential frozen suites with identical reviewer, source, engine and rate identities; no statistical equivalence or full Council certification.",
+    "Mean is descriptive; per-case gates still control retention."
+  ]
+}

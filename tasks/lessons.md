@@ -1,5 +1,14 @@
 # Lessons
 
+- A lower credit bill and unchanged finding count can hide a lost critical defect.
+  Freeze severity, citation and evidence-depth gates before paid comparisons; never
+  let an aggregate quality mean override a failing case.
+
+- Discard an optimization implementation after a negative result. Keep its sealed
+  measurements for learning; making the losing behavior optional is not a measured win.
+- Tiny planted bugs are screening canaries. Trustworthy review-quality claims also
+  require a complex multi-file case, executable behavioral truth and clean controls.
+
 - PR review automation needs an explicit association boundary. If the reviewed
   branch has no open PR, skip cleanly; never infer or choose another publication target.
 
@@ -241,7 +250,7 @@
   benchmark execution. A confirmation does not prove the active task received the change.
 - Identify the active client before giving permission instructions. In the CLI use
   `/permissions`; desktop composer controls are not CLI instructions.
-- Frozen verification trees are read-only. Tests and benchmark setup must make their private working copies writable, preserve the sealed originals, and exercise the read-only case directly.
+- Frozen verification trees are read-only. Tests and benchmark setup must make their private working copies writable, preserve the sealed originals, and exercise the read-only case directly. Mutation-test copies should copy source bytes without inheriting frozen file modes; check each new fixture under a sealed tree before the full gate.
 - Preserve an executable snapshot of the benchmark engine as well as its hash, so retained experiments remain reportable after harness fixes.
 - After a frozen-copy permission failure, inspect every new copy-and-write setup before restarting the complete gate; Python and shell copies can have the same failure.
 

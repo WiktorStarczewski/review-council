@@ -23,12 +23,6 @@ class Blocked(Exception):
     pass
 
 
-class SourceBatchBlocked(Blocked):
-    def __init__(self, code, detail):
-        super().__init__(detail)
-        self.code = code
-
-
 def emit_pretool_deny(reason, terminal=False):
     response = {
         'hookSpecificOutput': {
@@ -208,95 +202,6 @@ def split_segments(text):
         raise Blocked('unbalanced quote')
     segs.append(''.join(cur))
     return [s for s in segs if s.strip()]
-
-
-def _source_batch_segments(text):
-    if '`' in text or '$' in text or '\n' in text:
-        raise SourceBatchBlocked('unsupported-source-batch', 'source batches require literal commands')
-    segments, current = [], []
-    quote = None
-    escaped = False
-    for char in text:
-        if escaped:
-            current.append(char)
-            escaped = False
-            continue
-        if char == '\\' and quote != "'":
-            current.append(char)
-            escaped = True
-            continue
-        if quote:
-            current.append(char)
-            if char == quote:
-                quote = None
-            continue
-        if char in ("'", '"'):
-            quote = char
-            current.append(char)
-            continue
-        if char == ';':
-            if not ''.join(current).strip():
-                raise SourceBatchBlocked('unsupported-source-batch', 'empty source batch producer')
-            segments.append(''.join(current).strip())
-            current = []
-            continue
-        if char in '|&<>':
-            raise SourceBatchBlocked('unsupported-source-batch', 'source batch operator is not allowed')
-        current.append(char)
-    if quote or escaped or not ''.join(current).strip():
-        raise SourceBatchBlocked('unsupported-source-batch', 'malformed source batch')
-    segments.append(''.join(current).strip())
-    if len(segments) < 2:
-        raise SourceBatchBlocked('unsupported-source-batch', 'source batch needs multiple producers')
-    return segments
-
-
-def strict_source_batch(text, root):
-    root = os.path.realpath(os.fspath(root))
-    ranges = []
-    total_lines = 0
-    for segment in _source_batch_segments(text):
-        try:
-            words = shlex.split(segment, comments=False, posix=True)
-        except ValueError as error:
-            raise SourceBatchBlocked('unsupported-source-batch', 'cannot parse source batch') from error
-        if len(words) != 4 or words[:2] != ['sed', '-n']:
-            raise SourceBatchBlocked(
-                'unsupported-source-batch', 'source batch producers must be pure sed windows')
-        match = re.fullmatch(r'([1-9][0-9]*),([1-9][0-9]*)p', words[2])
-        if match is None:
-            raise SourceBatchBlocked('unsupported-source-batch', 'source batch range is malformed')
-        start, end = map(int, match.groups())
-        count = end - start + 1
-        if count < 1 or count > 240:
-            raise SourceBatchBlocked('unsupported-source-batch', 'source batch window exceeds 240 lines')
-        total_lines += count
-        if total_lines > 240:
-            raise SourceBatchBlocked(
-                'source-batch-lines-too-large', 'source batch exceeds 240 selected lines')
-        raw_path = words[3]
-        if (not raw_path or raw_path.startswith(('-', '~'))
-                or any(char in raw_path for char in '*?[]{}')):
-            raise SourceBatchBlocked('unsupported-source-batch', 'source batch path is not literal')
-        path = os.path.realpath(raw_path if os.path.isabs(raw_path) else os.path.join(root, raw_path))
-        try:
-            if os.path.commonpath((root, path)) != root:
-                raise SourceBatchBlocked('unsupported-source-batch', 'source batch path is out of scope')
-        except ValueError as error:
-            raise SourceBatchBlocked('unsupported-source-batch', 'source batch path is out of scope') from error
-        if not os.path.isfile(path):
-            raise SourceBatchBlocked('unsupported-source-batch', 'source batch path is not a file')
-        with open(path, 'rb') as source:
-            raw = source.read()
-        line_count = raw.count(b'\n') + (1 if raw and not raw.endswith(b'\n') else 0)
-        if end > line_count:
-            raise SourceBatchBlocked('unsupported-source-batch', 'source batch range exceeds the file')
-        if any(path == other_path and start <= other_end and other_start <= end
-               for other_path, other_start, other_end in ranges):
-            raise SourceBatchBlocked(
-                'overlapping-source-batch', 'source batch windows overlap or repeat')
-        ranges.append((path, start, end))
-    return ranges
 
 
 def mask_quotes(seg):
@@ -552,7 +457,7 @@ def check_segment(seg):
         check_find(args)
 
 
-def validate(text, depth=0, allow_source_batch=False):
+def validate(text, depth=0, inspect_compound=False):
     if '`' in text:
         raise Blocked('backtick command substitution')
     stripped = strip_substitutions(text, depth)
@@ -564,8 +469,8 @@ def validate(text, depth=0, allow_source_batch=False):
         except ValueError:
             words = []
         sed_producers += bool(words and os.path.basename(words[0]) == 'sed')
-    if sed_producers > 1 and not allow_source_batch:
-        raise Blocked('multiple source producers require the Codex source-batch contract')
+    if sed_producers > 1 and not inspect_compound:
+        raise Blocked('native compound source reads are retired; use standalone bounded reads')
     for seg in segments:
         check_segment(seg)
 

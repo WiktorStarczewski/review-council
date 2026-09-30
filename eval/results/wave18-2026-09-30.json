@@ -1,0 +1,543 @@
+{
+  "schema_version": 1,
+  "experiment": "wave18-pinned-source-transfer-20260930",
+  "disposition": "discarded-transfer-clean-depth-floor",
+  "executions": 2,
+  "paid_probes": 0,
+  "paid_graders": 0,
+  "automatic_retries": 0,
+  "identity": {
+    "sources": {
+      "baseline": "89eceace2ce3a31347d367008ef58e01f619b85e0e4433998e73e6be0c93f08b",
+      "candidate": "955ce5462ef893839c6e7e15ae372e06087389d40c74379213ad63281b76b20f"
+    },
+    "cases": "c1300ce72d302cb844e579ee9d92190a4428e46daaa8729f68192d42010406eb",
+    "baseline_commit": "aa837dadf9c72e6a4ca01d458eceb3644fbfd67d",
+    "model": "gpt-6-luna",
+    "effort": "xhigh",
+    "codex_version": "codex-cli 0.159.0",
+    "rate_card": "874356631b4c6a1eb60a02f59bbdeb8123f8b3a3fa13f4ce4e3bcda429fed9ac",
+    "collector": "f3aaabecb46f6db7229092874e1c2c7ddd4f621482e51eb7c9349a99c51e1fa5",
+    "engine": {
+      "cost_bench.py": "31ff69bc9eccd19f793e8fa67434cf53e8c44e097af0438f43311c6338a6c794",
+      "bench_local.py": "8529b16410e4cea612d440b7c0dcc9dd3514d3ad2913269ef753018f93024a7c",
+      "bench_metrics.py": "6b292cf797c71117831fe4361329b448088e486213709bc5cc1777526603c81a",
+      "bench_score.py": "72e8753ce5177897dd9e96e7a8023edafc2322ff623fa887db230e4fb9f25579",
+      "bench_quality.py": "741c6763a9ef0361b1a04deac522866722ef808ea19a0d670acc0b3e9e4dc3c3"
+    }
+  },
+  "rows": [
+    {
+      "case": "job-dispatcher-a",
+      "variant": "candidate",
+      "valid": true,
+      "schema_valid": true,
+      "audit_valid": true,
+      "wall_seconds": 304.33290516700004,
+      "machine_seconds": 305.85481466600004,
+      "tool_calls": 11,
+      "estimated_credits": 0.307653,
+      "usage": {
+        "provider": "codex",
+        "input_tokens": 332987,
+        "uncached_input_tokens": 38075,
+        "output_tokens": 11099,
+        "reasoning_output_tokens": 8897,
+        "processed_tokens": 344086,
+        "cached_input_tokens": 294912,
+        "cache_write_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_write_5m_input_tokens": 0,
+        "cache_write_1h_input_tokens": 0,
+        "cost_usd": null,
+        "cost_usd_known_calls": 0,
+        "cost_usd_unknown_calls": 1,
+        "unidentified_terminal_calls": 0,
+        "cache_reported": true,
+        "reasoning_reported": true
+      },
+      "quality": {
+        "candidate_matches": [
+          {
+            "finding": 0,
+            "defects": [
+              "tenant-dedup"
+            ],
+            "provisional": true
+          },
+          {
+            "finding": 1,
+            "defects": [
+              "running-cancellation"
+            ],
+            "provisional": true
+          },
+          {
+            "finding": 2,
+            "defects": [
+              "stale-lease-fence"
+            ],
+            "provisional": true
+          },
+          {
+            "finding": 3,
+            "defects": [
+              "partial-outbox-ack"
+            ],
+            "provisional": true
+          },
+          {
+            "finding": 4,
+            "defects": [
+              "retry-clock-origin"
+            ],
+            "provisional": true
+          },
+          {
+            "finding": 5,
+            "defects": [
+              "rollback-record-alias"
+            ],
+            "provisional": true
+          }
+        ],
+        "confirmed": true,
+        "defect_hits": [
+          "tenant-dedup",
+          "stale-lease-fence",
+          "retry-clock-origin",
+          "partial-outbox-ack",
+          "running-cancellation",
+          "rollback-record-alias"
+        ],
+        "defect_total": 6,
+        "recall": 1.0,
+        "false_positives": 0,
+        "true_positive_findings": 6,
+        "valid_extra_findings": 0,
+        "duplicate_findings": 0,
+        "precision": 1.0,
+        "findings_sha256": "4a10cd512c20fbad0dcac5aec55a675443d4afd3a2bd30c6f3b3492b8905d3f8"
+      },
+      "run_quality": {
+        "case_sha256": "d56d1d5f8295fd95dec4ad980ce0078244ba14788b3994dd2f7cbf478f511964",
+        "rubric_sha256": "b23e271e8323e69a9d02825e2e1c813597e614f511d13e1548452b844e4f6953",
+        "findings_sha256": "4a10cd512c20fbad0dcac5aec55a675443d4afd3a2bd30c6f3b3492b8905d3f8",
+        "audit_sha256": "0088c34eb1734b1e6dc025146728792b51eeef42a9787fd69b954eb8c6f0f5d9",
+        "evidence_manifest_sha256": "2fe6793857172788d33ea266e608df33720ca5013332a0c5c69670c393dc1684",
+        "schema_version": 1,
+        "score_version": "quality-v1",
+        "confirmed": true,
+        "quality_score": 98.0,
+        "core_score": 80.0,
+        "core_maximum": 80,
+        "maximum": 100,
+        "weighted_recall": 1.0,
+        "critical_defects": [
+          "tenant-dedup",
+          "stale-lease-fence",
+          "partial-outbox-ack",
+          "running-cancellation",
+          "rollback-record-alias"
+        ],
+        "critical_hits": [
+          "tenant-dedup",
+          "stale-lease-fence",
+          "partial-outbox-ack",
+          "running-cancellation",
+          "rollback-record-alias"
+        ],
+        "defect_hits": [
+          "tenant-dedup",
+          "stale-lease-fence",
+          "retry-clock-origin",
+          "partial-outbox-ack",
+          "running-cancellation",
+          "rollback-record-alias"
+        ],
+        "false_positives": 0,
+        "behavior_available": true,
+        "unavailable": [],
+        "clean_case_semantics": "clean recall points measure zero false positives; clean empty precision and citations earn full points",
+        "novel_scenarios": {
+          "grounded": 0,
+          "speculative": 0,
+          "substitutions": 0
+        },
+        "components": {
+          "defect_recall": {
+            "weight": 55,
+            "value": 1.0,
+            "points": 55.0
+          },
+          "precision": {
+            "weight": 15,
+            "value": 1.0,
+            "points": 15.0
+          },
+          "citation_accuracy": {
+            "weight": 10,
+            "value": 1.0,
+            "points": 10.0
+          },
+          "critical_flow_coverage": {
+            "weight": 15,
+            "value": 1.0,
+            "points": 15.0
+          },
+          "useful_hypotheses": {
+            "weight": 5,
+            "value": 0.6,
+            "points": 3.0
+          }
+        }
+      },
+      "proof_diagnostics": {
+        "violations": [],
+        "advisories": [],
+        "source_read_batches": 3,
+        "source_read_calls": 3,
+        "tool_turns": 11
+      }
+    },
+    {
+      "case": "job-dispatcher-b",
+      "variant": "candidate",
+      "valid": true,
+      "schema_valid": true,
+      "audit_valid": true,
+      "wall_seconds": 87.375432666,
+      "machine_seconds": 88.79415808299996,
+      "tool_calls": 8,
+      "estimated_credits": 0.1531325,
+      "usage": {
+        "provider": "codex",
+        "input_tokens": 194129,
+        "uncached_input_tokens": 30289,
+        "output_tokens": 2916,
+        "reasoning_output_tokens": 1824,
+        "processed_tokens": 197045,
+        "cached_input_tokens": 163840,
+        "cache_write_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "cache_write_5m_input_tokens": 0,
+        "cache_write_1h_input_tokens": 0,
+        "cost_usd": null,
+        "cost_usd_known_calls": 0,
+        "cost_usd_unknown_calls": 1,
+        "unidentified_terminal_calls": 0,
+        "cache_reported": true,
+        "reasoning_reported": true
+      },
+      "quality": {
+        "candidate_matches": [],
+        "confirmed": true,
+        "defect_hits": [],
+        "defect_total": 0,
+        "recall": null,
+        "false_positives": 0,
+        "true_positive_findings": 0,
+        "valid_extra_findings": 0,
+        "duplicate_findings": 0,
+        "precision": null,
+        "findings_sha256": "fc77d97c5e67c6bcad32f3182e8283d28f8abe23f4d5a77b94f0e1629a8d9a0b"
+      },
+      "run_quality": {
+        "case_sha256": "356eb9408ce022a175cb3454dc20b375121038396c92624e7ce1d22182e09d17",
+        "rubric_sha256": "39392b7fe63388e2f4eef4f1480389ca9a724534ecd785bc780cb72bce843231",
+        "findings_sha256": "fc77d97c5e67c6bcad32f3182e8283d28f8abe23f4d5a77b94f0e1629a8d9a0b",
+        "audit_sha256": "f7c2781fd95fed551527d1ad80a840b989276eae6cd5312d38a43175075aacfb",
+        "evidence_manifest_sha256": "0901a35dfaf63bc5f39e32670154322579397b8306158662948763f7a97df7c3",
+        "schema_version": 1,
+        "score_version": "quality-v1",
+        "confirmed": true,
+        "quality_score": 80.0,
+        "core_score": 80.0,
+        "core_maximum": 80,
+        "maximum": 100,
+        "weighted_recall": null,
+        "critical_defects": [],
+        "critical_hits": [],
+        "defect_hits": [],
+        "false_positives": 0,
+        "behavior_available": true,
+        "unavailable": [],
+        "clean_case_semantics": "clean recall points measure zero false positives; clean empty precision and citations earn full points",
+        "novel_scenarios": {
+          "grounded": 0,
+          "speculative": 0,
+          "substitutions": 0
+        },
+        "components": {
+          "defect_recall": {
+            "weight": 55,
+            "value": 1.0,
+            "points": 55.0
+          },
+          "precision": {
+            "weight": 15,
+            "value": 1.0,
+            "points": 15.0
+          },
+          "citation_accuracy": {
+            "weight": 10,
+            "value": 1.0,
+            "points": 10.0
+          },
+          "critical_flow_coverage": {
+            "weight": 15,
+            "value": 0.0,
+            "points": 0.0
+          },
+          "useful_hypotheses": {
+            "weight": 5,
+            "value": 0.0,
+            "points": 0.0
+          }
+        }
+      },
+      "proof_diagnostics": {
+        "violations": [],
+        "advisories": [],
+        "source_read_batches": 1,
+        "source_read_calls": 1,
+        "tool_turns": 8
+      }
+    }
+  ],
+  "pairs": [
+    {
+      "case": "job-dispatcher-a",
+      "baseline_status": "complete",
+      "candidate_status": "complete",
+      "valid_pair": true,
+      "metrics": {
+        "wall_seconds": {
+          "baseline": 198.959442666,
+          "candidate": 304.33290516700004,
+          "reduction_percent": -52.962282708991125
+        },
+        "input_tokens": {
+          "baseline": 317075,
+          "candidate": 332987,
+          "reduction_percent": -5.01837104785934
+        },
+        "cached_input_tokens": {
+          "baseline": 279808,
+          "candidate": 294912,
+          "reduction_percent": -5.397987191216835
+        },
+        "uncached_input_tokens": {
+          "baseline": 37267,
+          "candidate": 38075,
+          "reduction_percent": -2.168138030965734
+        },
+        "output_tokens": {
+          "baseline": 10101,
+          "candidate": 11099,
+          "reduction_percent": -9.88020988020988
+        },
+        "reasoning_output_tokens": {
+          "baseline": 8412,
+          "candidate": 8897,
+          "reduction_percent": -5.765572990965287
+        },
+        "processed_tokens": {
+          "baseline": 327176,
+          "candidate": 344086,
+          "reduction_percent": -5.168472015062229
+        },
+        "estimated_credits": {
+          "baseline": 0.289382,
+          "candidate": 0.307653,
+          "reduction_percent": -6.313799752576194
+        },
+        "prompt_words": {
+          "baseline": 1451,
+          "candidate": 1616,
+          "reduction_percent": -11.371467953135769
+        },
+        "prompt_bytes": {
+          "baseline": 10590,
+          "candidate": 11860,
+          "reduction_percent": -11.992445703493862
+        }
+      }
+    },
+    {
+      "case": "job-dispatcher-b",
+      "baseline_status": "complete",
+      "candidate_status": "complete",
+      "valid_pair": true,
+      "metrics": {
+        "wall_seconds": {
+          "baseline": 88.13474183299996,
+          "candidate": 87.375432666,
+          "reduction_percent": 0.8615321849342096
+        },
+        "input_tokens": {
+          "baseline": 193631,
+          "candidate": 194129,
+          "reduction_percent": -0.2571902226399698
+        },
+        "cached_input_tokens": {
+          "baseline": 170752,
+          "candidate": 163840,
+          "reduction_percent": 4.0479760119940025
+        },
+        "uncached_input_tokens": {
+          "baseline": 22879,
+          "candidate": 30289,
+          "reduction_percent": -32.387779186153246
+        },
+        "output_tokens": {
+          "baseline": 3062,
+          "candidate": 2916,
+          "reduction_percent": 4.768125408229915
+        },
+        "reasoning_output_tokens": {
+          "baseline": 2050,
+          "candidate": 1824,
+          "reduction_percent": 11.02439024390244
+        },
+        "processed_tokens": {
+          "baseline": 196693,
+          "candidate": 197045,
+          "reduction_percent": -0.1789590885288241
+        },
+        "estimated_credits": {
+          "baseline": 0.1381605,
+          "candidate": 0.1531325,
+          "reduction_percent": -10.836671841807185
+        },
+        "prompt_words": {
+          "baseline": 1447,
+          "candidate": 1612,
+          "reduction_percent": -11.402902557014514
+        },
+        "prompt_bytes": {
+          "baseline": 10406,
+          "candidate": 11668,
+          "reduction_percent": -12.127618681529887
+        }
+      }
+    }
+  ],
+  "quality_comparisons": [
+    {
+      "case": "job-dispatcher-a",
+      "acceptable": true,
+      "reasons": [],
+      "quality_delta": 7.5,
+      "policy": {
+        "quality_delta_tolerance": 3,
+        "minimum_quality": 90,
+        "minimum_weighted_recall": 0.9,
+        "allow_added_false_positives": false
+      },
+      "policy_sha256": "eff9db5ddce8c6eae7191faf9c15b96811f793f104a46150b409d2be06e2ab68",
+      "screening_only": false
+    },
+    {
+      "case": "job-dispatcher-b",
+      "acceptable": false,
+      "reasons": [
+        "quality-loss",
+        "quality-floor"
+      ],
+      "quality_delta": -8.75,
+      "policy": {
+        "quality_delta_tolerance": 3,
+        "minimum_quality": 90,
+        "minimum_weighted_recall": 0.9,
+        "allow_added_false_positives": false
+      },
+      "policy_sha256": "eff9db5ddce8c6eae7191faf9c15b96811f793f104a46150b409d2be06e2ab68",
+      "screening_only": false
+    }
+  ],
+  "pooled": {
+    "candidate": {
+      "estimated_credits": 0.4607855,
+      "wall_seconds": 391.70833783300003,
+      "mean_quality": 89.0,
+      "minimum_quality": 80.0
+    },
+    "baseline": {
+      "estimated_credits": 0.42754249999999994,
+      "wall_seconds": 287.094184499,
+      "mean_quality": 89.625,
+      "minimum_quality": 88.75
+    }
+  },
+  "observed_reduction_percent": {
+    "estimated_credits": -7.775367361139551,
+    "wall_seconds": -36.43896636797408
+  },
+  "limits": [
+    "Single Luna/xhigh screens; no full Council certification, dollars or subscription-capacity measurement.",
+    "Server cache state and provider load are uncontrolled.",
+    "Critical-flow exposure measures visible exact source, not comprehension.",
+    "Reused controls are screening evidence; they do not create a fresh paired execution."
+  ],
+  "quality_summaries": {
+    "baseline": {
+      "status": "known",
+      "quality_score": 89.625,
+      "minimum_quality_score": 88.75,
+      "complete_cases": 2,
+      "expected_cases": 2,
+      "maximum": 100,
+      "score_version": "quality-v1",
+      "aggregation_version": "quality-equal-case-v1",
+      "case_identities": [
+        {
+          "case": "job-dispatcher-a",
+          "case_sha256": "d56d1d5f8295fd95dec4ad980ce0078244ba14788b3994dd2f7cbf478f511964",
+          "rubric_sha256": "b23e271e8323e69a9d02825e2e1c813597e614f511d13e1548452b844e4f6953"
+        },
+        {
+          "case": "job-dispatcher-b",
+          "case_sha256": "356eb9408ce022a175cb3454dc20b375121038396c92624e7ce1d22182e09d17",
+          "rubric_sha256": "39392b7fe63388e2f4eef4f1480389ca9a724534ecd785bc780cb72bce843231"
+        }
+      ],
+      "unavailable": []
+    },
+    "candidate": {
+      "status": "known",
+      "quality_score": 89.0,
+      "minimum_quality_score": 80.0,
+      "complete_cases": 2,
+      "expected_cases": 2,
+      "maximum": 100,
+      "score_version": "quality-v1",
+      "aggregation_version": "quality-equal-case-v1",
+      "case_identities": [
+        {
+          "case": "job-dispatcher-a",
+          "case_sha256": "d56d1d5f8295fd95dec4ad980ce0078244ba14788b3994dd2f7cbf478f511964",
+          "rubric_sha256": "b23e271e8323e69a9d02825e2e1c813597e614f511d13e1548452b844e4f6953"
+        },
+        {
+          "case": "job-dispatcher-b",
+          "case_sha256": "356eb9408ce022a175cb3454dc20b375121038396c92624e7ce1d22182e09d17",
+          "rubric_sha256": "39392b7fe63388e2f4eef4f1480389ca9a724534ecd785bc780cb72bce843231"
+        }
+      ],
+      "unavailable": []
+    }
+  },
+  "quality_summary_provenance": {
+    "aggregation_version": "quality-equal-case-v1",
+    "module": "eval/bench_quality.py",
+    "module_sha256": "f3d73dc5de6482b57c1fc8523303b7e2dbff62e22a94f7c600b6078293bfe989",
+    "source_commit": "17c64af52f2718d15de097fdcf097a3f4be2a0a7",
+    "measurement_engine_unchanged": true
+  },
+  "reference": {
+    "path": "wave13-combined-repeat-20260930",
+    "variant": "baseline",
+    "manifest_sha256": "e605353e87256f0ba5c02a793c08364c745b9856239f50b86028ac865294b8be"
+  }
+}

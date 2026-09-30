@@ -1,0 +1,630 @@
+{
+  "id": "job-dispatcher-a",
+  "mode": "evidence",
+  "files": [
+    "jobs.py",
+    "leases.py",
+    "outbox.py",
+    "retry.py",
+    "store.py",
+    "worker.py"
+  ],
+  "defects": [
+    {
+      "id": "tenant-dedup",
+      "file": "jobs.py",
+      "line_start": 28,
+      "line_end": 28,
+      "line_label": "            previous = self.store.find_dedup(dedup_key) if dedup_key is not None else None",
+      "severity": "P1",
+      "description": "Submission omits the tenant from the dedup lookup, returning another tenant's job and payload for a shared key.",
+      "keyword_groups": [
+        [
+          "tenant",
+          "namespace"
+        ],
+        [
+          "dedup",
+          "key",
+          "leak",
+          "isolation",
+          "lookup"
+        ]
+      ]
+    },
+    {
+      "id": "stale-lease-fence",
+      "file": "leases.py",
+      "line_start": 43,
+      "line_end": 43,
+      "line_label": "        if current.owner != token.owner:",
+      "severity": "P1",
+      "description": "Generation fencing is omitted, so a late completion from the same worker identity can commit a reclaimed attempt.",
+      "keyword_groups": [
+        [
+          "lease",
+          "token",
+          "generation",
+          "attempt"
+        ],
+        [
+          "stale",
+          "fenc",
+          "reclaim",
+          "old",
+          "expired"
+        ]
+      ]
+    },
+    {
+      "id": "retry-clock-origin",
+      "file": "retry.py",
+      "line_start": 29,
+      "line_end": 29,
+      "line_label": "        return RetryPlan(True, job.created_at + delay, delay, 'retryable')",
+      "severity": "P2",
+      "description": "Retry readiness is based on creation time rather than failure time, making a long-running failure immediately eligible.",
+      "keyword_groups": [
+        [
+          "retry",
+          "backoff",
+          "delay"
+        ],
+        [
+          "creation",
+          "created",
+          "failure",
+          "clock",
+          "ready",
+          "time"
+        ]
+      ]
+    },
+    {
+      "id": "partial-outbox-ack",
+      "file": "outbox.py",
+      "line_start": 35,
+      "line_end": 35,
+      "line_label": "            if accepted_ids:",
+      "severity": "P1",
+      "description": "A partial receipt marks unacknowledged events delivered, so committed transitions are never published to the sink.",
+      "keyword_groups": [
+        [
+          "ack",
+          "receipt",
+          "partial",
+          "accept"
+        ],
+        [
+          "event",
+          "outbox",
+          "deliver",
+          "lost",
+          "loss",
+          "pending"
+        ]
+      ]
+    },
+    {
+      "id": "running-cancellation",
+      "file": "jobs.py",
+      "line_start": 44,
+      "line_end": 44,
+      "line_label": "            job.cancel_requested = job.state == JobState.READY",
+      "severity": "P1",
+      "description": "An active cancellation request fails to retain its intent, allowing the worker to publish a success outcome.",
+      "keyword_groups": [
+        [
+          "cancel"
+        ],
+        [
+          "active",
+          "running",
+          "lease",
+          "complete",
+          "success",
+          "intent"
+        ]
+      ]
+    },
+    {
+      "id": "rollback-record-alias",
+      "file": "store.py",
+      "line_start": 31,
+      "line_end": 31,
+      "line_label": "        saved_jobs = dict(self.jobs)",
+      "severity": "P1",
+      "description": "A shallow job checkpoint retains aliases to existing mutable records, so an event write failure rolls back leases and events but preserves the terminal job transition.",
+      "keyword_groups": [
+        [
+          "rollback",
+          "transaction",
+          "checkpoint"
+        ],
+        [
+          "shallow",
+          "alias",
+          "mutat",
+          "copy",
+          "record",
+          "atomic"
+        ]
+      ]
+    }
+  ],
+  "lens": "correctness-boundaries+tests-observability-maintenance-regression",
+  "reviewer_role": "cumulative",
+  "decision_context": true,
+  "clean_controls": [
+    {
+      "id": "direct-tenant-read-isolation",
+      "expected": true,
+      "rationale": "Globally allocated IDs do not authorize another tenant to read a job."
+    },
+    {
+      "id": "caller-payload-ownership",
+      "expected": [
+        3,
+        3
+      ],
+      "rationale": "Mutating submission, snapshot, and handler data is permitted without altering stored payload ownership."
+    },
+    {
+      "id": "exact-lease-deadline",
+      "expected": [
+        true,
+        2,
+        20.0,
+        1
+      ],
+      "rationale": "Strictly before a deadline the lease is active; exactly at the deadline reclaim is intentional."
+    },
+    {
+      "id": "expired-token-rejection",
+      "expected": "leased",
+      "rationale": "An expired token fails even when no recovery sweep has yet changed the stored job state."
+    },
+    {
+      "id": "retry-cap-and-exhaustion",
+      "expected": [
+        [
+          5.0,
+          10.0,
+          12.0,
+          12.0
+        ],
+        "failed",
+        1
+      ],
+      "rationale": "The delay cap applies to exponential waits, and the final attempt becomes terminal."
+    },
+    {
+      "id": "queued-cancellation",
+      "expected": [
+        true,
+        false,
+        null,
+        "cancelled"
+      ],
+      "rationale": "Waiting work cancels immediately; a repeated cancellation request is an idempotent no-op."
+    },
+    {
+      "id": "new-insert-rollback",
+      "expected": [
+        1,
+        "job-1",
+        1,
+        0
+      ],
+      "rationale": "A transaction rolls back newly indexed jobs and ID allocation, including in the aliased-record variant."
+    },
+    {
+      "id": "sink-replay-deduplication",
+      "expected": [
+        true,
+        1,
+        2
+      ],
+      "rationale": "At-least-once replay of the identical event is valid and causes one consumer effect."
+    },
+    {
+      "id": "zero-ack-progress-stop",
+      "expected": [
+        1,
+        0,
+        1,
+        1
+      ],
+      "rationale": "A valid empty receipt retains pending work and terminates drain without spinning."
+    },
+    {
+      "id": "transport-failure-retains-pending",
+      "expected": [
+        0,
+        1,
+        true,
+        1,
+        1
+      ],
+      "rationale": "A failed publish preserves pending work, and the next call can deliver it."
+    },
+    {
+      "id": "unknown-ack-rejection",
+      "expected": [
+        1,
+        1
+      ],
+      "rationale": "An acknowledgement outside the batch is rejected without marking pending events delivered."
+    }
+  ],
+  "behavior_rubric": {
+    "schema_version": 1,
+    "measurement": "observable tool evidence and manually adjudicated hypotheses",
+    "critical_flows": [
+      {
+        "id": "tenant-submission",
+        "required_sources": [
+          {
+            "path": "jobs.py",
+            "line_start": 13,
+            "line_end": 35
+          },
+          {
+            "path": "store.py",
+            "line_start": 73,
+            "line_end": 78
+          },
+          {
+            "path": "store.py",
+            "line_start": 58,
+            "line_end": 64
+          }
+        ],
+        "rationale": "Trace the external tenant boundary through lookup and indexed insertion."
+      },
+      {
+        "id": "attempt-fencing",
+        "required_sources": [
+          {
+            "path": "leases.py",
+            "line_start": 16,
+            "line_end": 34
+          },
+          {
+            "path": "leases.py",
+            "line_start": 36,
+            "line_end": 45
+          },
+          {
+            "path": "leases.py",
+            "line_start": 65,
+            "line_end": 89
+          },
+          {
+            "path": "worker.py",
+            "line_start": 29,
+            "line_end": 44
+          }
+        ],
+        "rationale": "Check which attempt owns an outcome after expiry and a new claim."
+      },
+      {
+        "id": "retry-readiness",
+        "required_sources": [
+          {
+            "path": "worker.py",
+            "line_start": 46,
+            "line_end": 66
+          },
+          {
+            "path": "retry.py",
+            "line_start": 19,
+            "line_end": 29
+          },
+          {
+            "path": "store.py",
+            "line_start": 80,
+            "line_end": 84
+          }
+        ],
+        "rationale": "Follow failure time through scheduling into the next eligible claim."
+      },
+      {
+        "id": "cancellation-outcome",
+        "required_sources": [
+          {
+            "path": "jobs.py",
+            "line_start": 37,
+            "line_end": 51
+          },
+          {
+            "path": "worker.py",
+            "line_start": 29,
+            "line_end": 44
+          },
+          {
+            "path": "worker.py",
+            "line_start": 46,
+            "line_end": 66
+          }
+        ],
+        "rationale": "Follow an accepted active cancellation to both terminal outcome paths."
+      },
+      {
+        "id": "transactional-event",
+        "required_sources": [
+          {
+            "path": "store.py",
+            "line_start": 22,
+            "line_end": 47
+          },
+          {
+            "path": "store.py",
+            "line_start": 86,
+            "line_end": 95
+          },
+          {
+            "path": "worker.py",
+            "line_start": 29,
+            "line_end": 44
+          }
+        ],
+        "rationale": "Check shared rollback of a mutable existing record, lease, and event on write failure."
+      },
+      {
+        "id": "partial-delivery",
+        "required_sources": [
+          {
+            "path": "outbox.py",
+            "line_start": 17,
+            "line_end": 37
+          },
+          {
+            "path": "outbox.py",
+            "line_start": 39,
+            "line_end": 51
+          },
+          {
+            "path": "transport.py",
+            "line_start": 18,
+            "line_end": 39
+          }
+        ],
+        "rationale": "Compare partial acceptance and replay semantics against the sink contract."
+      }
+    ],
+    "hypotheses": [
+      {
+        "id": "shared-dedup-key",
+        "description": "Two tenants submit the same key with different payloads.",
+        "required_sources": [
+          {
+            "path": "jobs.py",
+            "line_start": 13,
+            "line_end": 35
+          },
+          {
+            "path": "store.py",
+            "line_start": 73,
+            "line_end": 78
+          },
+          {
+            "path": "store.py",
+            "line_start": 58,
+            "line_end": 64
+          }
+        ]
+      },
+      {
+        "id": "reused-worker-generation",
+        "description": "A lease expires and the same worker name claims a new generation before the old completion arrives.",
+        "required_sources": [
+          {
+            "path": "leases.py",
+            "line_start": 16,
+            "line_end": 34
+          },
+          {
+            "path": "leases.py",
+            "line_start": 36,
+            "line_end": 45
+          },
+          {
+            "path": "leases.py",
+            "line_start": 65,
+            "line_end": 89
+          },
+          {
+            "path": "worker.py",
+            "line_start": 29,
+            "line_end": 44
+          }
+        ]
+      },
+      {
+        "id": "long-running-failure",
+        "description": "An attempt fails much later than creation and must still wait its configured delay.",
+        "required_sources": [
+          {
+            "path": "worker.py",
+            "line_start": 46,
+            "line_end": 66
+          },
+          {
+            "path": "retry.py",
+            "line_start": 19,
+            "line_end": 29
+          },
+          {
+            "path": "store.py",
+            "line_start": 80,
+            "line_end": 84
+          }
+        ]
+      },
+      {
+        "id": "partial-sink-acceptance",
+        "description": "A sink accepts one event from a larger committed batch; a later dispatch must publish the remainder.",
+        "required_sources": [
+          {
+            "path": "outbox.py",
+            "line_start": 17,
+            "line_end": 37
+          },
+          {
+            "path": "outbox.py",
+            "line_start": 39,
+            "line_end": 51
+          },
+          {
+            "path": "transport.py",
+            "line_start": 18,
+            "line_end": 39
+          }
+        ]
+      },
+      {
+        "id": "cancellation-after-claim",
+        "description": "A caller requests cancellation after a claim and before completion.",
+        "required_sources": [
+          {
+            "path": "jobs.py",
+            "line_start": 37,
+            "line_end": 51
+          },
+          {
+            "path": "worker.py",
+            "line_start": 29,
+            "line_end": 44
+          },
+          {
+            "path": "worker.py",
+            "line_start": 46,
+            "line_end": 66
+          }
+        ]
+      },
+      {
+        "id": "event-write-failure",
+        "description": "Event insertion fails after an existing job record was changed inside a transaction.",
+        "required_sources": [
+          {
+            "path": "store.py",
+            "line_start": 22,
+            "line_end": 47
+          },
+          {
+            "path": "store.py",
+            "line_start": 86,
+            "line_end": 95
+          },
+          {
+            "path": "worker.py",
+            "line_start": 29,
+            "line_end": 44
+          }
+        ]
+      },
+      {
+        "id": "zero-ack-progress",
+        "description": "A valid receipt accepts nothing and bounded drain should stop without spinning.",
+        "required_sources": [
+          {
+            "path": "outbox.py",
+            "line_start": 17,
+            "line_end": 37
+          },
+          {
+            "path": "outbox.py",
+            "line_start": 39,
+            "line_end": 51
+          },
+          {
+            "path": "transport.py",
+            "line_start": 18,
+            "line_end": 39
+          }
+        ]
+      },
+      {
+        "id": "exact-lease-deadline",
+        "description": "A claim occurs exactly at the prior lease deadline.",
+        "required_sources": [
+          {
+            "path": "leases.py",
+            "line_start": 16,
+            "line_end": 34
+          },
+          {
+            "path": "leases.py",
+            "line_start": 65,
+            "line_end": 89
+          }
+        ]
+      },
+      {
+        "id": "exhausted-attempt-budget",
+        "description": "A failure on the final configured attempt must become terminal instead of ready.",
+        "required_sources": [
+          {
+            "path": "worker.py",
+            "line_start": 46,
+            "line_end": 66
+          },
+          {
+            "path": "retry.py",
+            "line_start": 19,
+            "line_end": 29
+          }
+        ]
+      },
+      {
+        "id": "caller-payload-ownership",
+        "description": "Submission data, a public snapshot, and a handler local copy are independently mutated.",
+        "required_sources": [
+          {
+            "path": "jobs.py",
+            "line_start": 13,
+            "line_end": 35
+          },
+          {
+            "path": "jobs.py",
+            "line_start": 53,
+            "line_end": 59
+          },
+          {
+            "path": "worker.py",
+            "line_start": 68,
+            "line_end": 84
+          }
+        ]
+      }
+    ]
+  },
+  "source_sha256": {
+    "before": {
+      "AGENTS.md": "75f952a1b041b85088f07d1a44c6686cd454e1d333afa63715099bb4232ab43d",
+      "__init__.py": "ebc4996037c6b6c5aeafb5e9756c84c8b0088675f9535d6fd92835ceb3757be5",
+      "jobs.py": "dac7ad17b3ae70c30de57974fcb56a2c9197ecdf4b9e43c7b3534ee7fe75c6cf",
+      "leases.py": "68ec4bf552d23c0008fc1caf30ad8ff46378bf029b66595bb6928f74b7218b38",
+      "models.py": "bdca4878519a4809f8ea01a1a296dbc2cfeed5d6fe8c027a969e9280f5039489",
+      "outbox.py": "8832be9a08d62465b166f2910f9a4f50dbdf246fb11c67f8fa25121f4ed95026",
+      "retry.py": "43c15b83a1dfd0ace764c8c09365e624ba628750fdc4cbf7ef4d109ce4ba61bc",
+      "store.py": "37cbdf05e5fd492c487c09f86e3b10a5dd6f31a0d97178e4e7abb382c20c8432",
+      "transport.py": "46ed878a54a667805d73c19a72307402416b4a44bf93ecb515e4f890f0de4b51",
+      "worker.py": "64fbaa5ce95404c3c8ca7c4a6644bd34929628ba9c8d2edb1489eb88f9fa7849"
+    },
+    "after": {
+      "AGENTS.md": "75f952a1b041b85088f07d1a44c6686cd454e1d333afa63715099bb4232ab43d",
+      "__init__.py": "ebc4996037c6b6c5aeafb5e9756c84c8b0088675f9535d6fd92835ceb3757be5",
+      "jobs.py": "48d87c144f07fd8b90f2363839a1723b17d4d6d5a15fd88302e6ee7e9ed93692",
+      "leases.py": "738c1c9b48f89e9b1f12d7b6b66e200eb9a7edb3e828c52a8ea25bcf23d65648",
+      "models.py": "bdca4878519a4809f8ea01a1a296dbc2cfeed5d6fe8c027a969e9280f5039489",
+      "outbox.py": "f4f8f0debd9fd3e6958d684ec40066d68ff6a3bebdaf9177cd446630fbc75779",
+      "retry.py": "1afe28ff6621653c0119c15231bf97f0fe51068a7d92a585fbb3d2773f76081f",
+      "store.py": "26dff694b4bb12c924867bd6f0da10a338087ac211ad91b4a081abbc539ef7b8",
+      "transport.py": "46ed878a54a667805d73c19a72307402416b4a44bf93ecb515e4f890f0de4b51",
+      "worker.py": "0032685a0a173d40e3ee92a3e554d116077ba2e299cf6b74270c35838d4a493c"
+    }
+  }
+}

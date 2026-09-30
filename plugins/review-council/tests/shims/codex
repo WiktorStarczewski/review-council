@@ -3,6 +3,7 @@
 # Records ENV and CWD next to argv (like the claude shim): a seat must carry REV_ACTIVE=1 (the recursion
 # guard) and must run against the repo root - neither is visible in the arguments alone.
 [ -n "${SHIM_ARGS_FILE:-}" ] && printf '%s\n' "$@" > "$SHIM_ARGS_FILE"
+[ -z "${SHIM_ARGS_DIR:-}" ] || printf '%s\n' "$@" > "$SHIM_ARGS_DIR/$$.args"
 [ -z "${SHIM_CALLS_FILE:-}" ] || printf '%s\n' call >> "$SHIM_CALLS_FILE"
 [ -n "${SHIM_ARGS_FILE:-}" ] && printf 'REV_ACTIVE=%s\nNO_PUSH=%s\nNO_SQUASH=%s\ncwd=%s\nHOME=%s\nCODEX_HOME=%s\nCODEX_AUTH_LINK=%s\n' \
   "${REV_ACTIVE:-unset}" "${NO_PUSH:-unset}" "${NO_SQUASH:-unset}" "$PWD" "$HOME" "${CODEX_HOME:-unset}" \

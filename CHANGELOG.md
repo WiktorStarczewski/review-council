@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.7
+
+- OpenAI review models support `latest-sol` and `latest-luna` selectors with an
+  explicit `codex_effort`. Each run resolves the provider catalog once, freezes
+  exact model and effort identities, and refuses unavailable configurations.
+- CLI reviewers use compact read-only startup instructions. Local contract checks
+  precede provider probes, and phase context and status remain provider-free.
+- An unchanged final red-team panel can also satisfy verification when a current
+  enforced receipt covers every assignment. Any subsequent fix requires fresh
+  verification; native Agent receipts retain separate verification.
+- Usage accounting preserves cached input, reasoning within output, failed attempts
+  and unknown charges. Reusable cost, timing and quality benchmarks include paired
+  faulty and clean multi-file cases, executable truth and held-out transfer tests.
+- Complete bounded evidence-index reads are accepted. Ambiguous native compound
+  source proofs are refused; exact standalone source reads remain supported.
+
 ## 0.5.6
 
 - The advisory read audit of Agent seats runs only when `REV_UNENFORCED_AUDIT=1`. Every

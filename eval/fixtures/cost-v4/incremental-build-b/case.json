@@ -1,0 +1,432 @@
+{
+  "id": "incremental-build-b",
+  "mode": "evidence",
+  "files": [
+    "builds.py",
+    "compiler.py",
+    "graph.py",
+    "planner.py"
+  ],
+  "defects": [],
+  "lens": "correctness-boundaries+tests-observability-maintenance-regression",
+  "reviewer_role": "cumulative",
+  "decision_context": true,
+  "clean_controls": [
+    {
+      "id": "project-heads-and-global-content",
+      "expected": [
+        true,
+        true,
+        1
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "cancel-after-staging",
+      "expected": [
+        true,
+        false,
+        true,
+        true,
+        1
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "project-version-fences",
+      "expected": [
+        true,
+        true,
+        1
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "identical-input-noops",
+      "expected": [
+        false,
+        false,
+        1
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "caller-snapshot-ownership",
+      "expected": [
+        [
+          [
+            "input",
+            "6f6e65"
+          ]
+        ],
+        {
+          "mode": "debug"
+        },
+        []
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "invalid-graph-rejection",
+      "expected": 3,
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "weak-cache-rebuild",
+      "expected": [
+        1,
+        true,
+        3
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "root-order-and-deduplication",
+      "expected": [
+        [
+          "leaf",
+          "root"
+        ],
+        [
+          "leaf",
+          "middle",
+          "root"
+        ],
+        3
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "canonical-option-order",
+      "expected": [
+        false,
+        true,
+        true,
+        1
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "partial-target-head-merge",
+      "expected": [
+        [
+          "a",
+          "b"
+        ],
+        true,
+        []
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "project-scoped-ticket-access",
+      "expected": [
+        2,
+        "planned"
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    }
+  ],
+  "behavior_rubric": {
+    "schema_version": 1,
+    "measurement": "observable source exposure and manually adjudicated concrete hypotheses",
+    "critical_flows": [
+      {
+        "id": "canonical-planning-and-consumption",
+        "required_sources": [
+          {
+            "path": "planner.py",
+            "line_start": 19,
+            "line_end": 38
+          },
+          {
+            "path": "planner.py",
+            "line_start": 9,
+            "line_end": 12
+          },
+          {
+            "path": "graph.py",
+            "line_start": 31,
+            "line_end": 51
+          },
+          {
+            "path": "compiler.py",
+            "line_start": 9,
+            "line_end": 18
+          }
+        ],
+        "rationale": "Follow requested target normalization and input identities into the deterministic compiler."
+      },
+      {
+        "id": "publication-and-active-ownership",
+        "required_sources": [
+          {
+            "path": "builds.py",
+            "line_start": 59,
+            "line_end": 70
+          },
+          {
+            "path": "builds.py",
+            "line_start": 78,
+            "line_end": 95
+          },
+          {
+            "path": "builds.py",
+            "line_start": 102,
+            "line_end": 110
+          },
+          {
+            "path": "publication.py",
+            "line_start": 10,
+            "line_end": 26
+          },
+          {
+            "path": "artifacts.py",
+            "line_start": 40,
+            "line_end": 48
+          }
+        ],
+        "rationale": "Follow compiled object ownership through validation, cancellation, collection, and head replacement."
+      },
+      {
+        "id": "project-scoped-reuse-and-reads",
+        "required_sources": [
+          {
+            "path": "catalog.py",
+            "line_start": 24,
+            "line_end": 39
+          },
+          {
+            "path": "catalog.py",
+            "line_start": 48,
+            "line_end": 52
+          },
+          {
+            "path": "builds.py",
+            "line_start": 59,
+            "line_end": 70
+          },
+          {
+            "path": "builds.py",
+            "line_start": 118,
+            "line_end": 124
+          }
+        ],
+        "rationale": "Distinguish a shared content-addressed blob from a project-owned cache entry and manifest."
+      }
+    ],
+    "hypotheses": [
+      {
+        "id": "duplicate-requested-roots",
+        "required_sources": [
+          {
+            "path": "planner.py",
+            "line_start": 19,
+            "line_end": 38
+          },
+          {
+            "path": "graph.py",
+            "line_start": 31,
+            "line_end": 51
+          },
+          {
+            "path": "builds.py",
+            "line_start": 59,
+            "line_end": 70
+          }
+        ],
+        "description": "Repeated and differently ordered requested roots still compile a dependency closure once."
+      },
+      {
+        "id": "canonical-option-reordering",
+        "required_sources": [
+          {
+            "path": "catalog.py",
+            "line_start": 66,
+            "line_end": 74
+          },
+          {
+            "path": "planner.py",
+            "line_start": 19,
+            "line_end": 38
+          },
+          {
+            "path": "planner.py",
+            "line_start": 9,
+            "line_end": 12
+          },
+          {
+            "path": "compiler.py",
+            "line_start": 9,
+            "line_end": 18
+          }
+        ],
+        "description": "Reordering identical option pairs preserves the input version, fingerprint, and output bytes."
+      },
+      {
+        "id": "explicit-order-flag",
+        "required_sources": [
+          {
+            "path": "graph.py",
+            "line_start": 31,
+            "line_end": 51
+          },
+          {
+            "path": "compiler.py",
+            "line_start": 9,
+            "line_end": 18
+          }
+        ],
+        "description": "The explicit ascending-order argument preserves dependency-before-consumer execution and canonical output ordering."
+      },
+      {
+        "id": "changed-cancellation-diagnostic",
+        "required_sources": [
+          {
+            "path": "builds.py",
+            "line_start": 102,
+            "line_end": 110
+          },
+          {
+            "path": "builds.py",
+            "line_start": 78,
+            "line_end": 95
+          },
+          {
+            "path": "artifacts.py",
+            "line_start": 28,
+            "line_end": 29
+          },
+          {
+            "path": "artifacts.py",
+            "line_start": 40,
+            "line_end": 48
+          }
+        ],
+        "description": "Cancellation after compilation still rejects publication and frees staging despite changed diagnostic wording."
+      },
+      {
+        "id": "all-output-references",
+        "required_sources": [
+          {
+            "path": "publication.py",
+            "line_start": 10,
+            "line_end": 26
+          },
+          {
+            "path": "catalog.py",
+            "line_start": 82,
+            "line_end": 92
+          },
+          {
+            "path": "builds.py",
+            "line_start": 118,
+            "line_end": 124
+          }
+        ],
+        "description": "A manifest with an available first object and missing later object is rejected without replacing a valid head."
+      },
+      {
+        "id": "staging-between-compile-and-finish",
+        "required_sources": [
+          {
+            "path": "builds.py",
+            "line_start": 59,
+            "line_end": 70
+          },
+          {
+            "path": "artifacts.py",
+            "line_start": 23,
+            "line_end": 26
+          },
+          {
+            "path": "artifacts.py",
+            "line_start": 40,
+            "line_end": 48
+          },
+          {
+            "path": "builds.py",
+            "line_start": 78,
+            "line_end": 95
+          }
+        ],
+        "description": "Collection between explicit compile and finish retains active output objects and allows publication."
+      },
+      {
+        "id": "cross-project-identical-content",
+        "required_sources": [
+          {
+            "path": "catalog.py",
+            "line_start": 24,
+            "line_end": 39
+          },
+          {
+            "path": "catalog.py",
+            "line_start": 48,
+            "line_end": 52
+          },
+          {
+            "path": "catalog.py",
+            "line_start": 82,
+            "line_end": 92
+          },
+          {
+            "path": "builds.py",
+            "line_start": 118,
+            "line_end": 124
+          }
+        ],
+        "description": "Identical bytes across tenant projects may share a blob while public reads still require that project to publish its own head."
+      },
+      {
+        "id": "collected-cache-only-artifact",
+        "required_sources": [
+          {
+            "path": "builds.py",
+            "line_start": 59,
+            "line_end": 70
+          },
+          {
+            "path": "artifacts.py",
+            "line_start": 40,
+            "line_end": 48
+          },
+          {
+            "path": "catalog.py",
+            "line_start": 82,
+            "line_end": 92
+          }
+        ],
+        "description": "A cache record whose object was collected causes rebuilding instead of a dangling manifest."
+      }
+    ]
+  },
+  "source_sha256": {
+    "before": {
+      "AGENTS.md": "dc2d584b5e9c9f0e4e1c39baa51fb8c81113e4cd49ea86618f95479fca532331",
+      "__init__.py": "4ac07cdd5a2e9eeaad0dbd19c335d1b10a5c3dc8bf22d915306978240245c71d",
+      "artifacts.py": "721fed2d010b56814a156771998c7a90b60e5ea08361d6d0e855dfac8f44cbee",
+      "builds.py": "698e412d5148dc08b540f09ff1295dd2d507e233919a303f74d5b1d310cc62a8",
+      "catalog.py": "f24bfc2bf8176d803e4c3a2567795f8ff36368f987d0581378536c2c3478adb6",
+      "compiler.py": "ca547424d910ba392612a4010221c7424c1c59a3fe379f0de9af3b47bda53aa4",
+      "errors.py": "b61e0f3e75144b0fc1ff30317640a4c94150334a48a4c75db0e95098b2046b0c",
+      "graph.py": "e4c9122b735114aa59b639688164f0a5a42e24185c220a135a5f56dc92778280",
+      "models.py": "812c41d8d608664b4936553e7ba15ed56a1112ffe20e427cb4a573af92b22b06",
+      "planner.py": "af353d5558ca9b83924e9bdbaf5ec2345c6edf1b179fb4db7296c66eb72dc7f6",
+      "publication.py": "48a34bde9ad954685123bda2a8105fb65db9815fdd7e8baca74a42fbea82b3cc"
+    },
+    "after": {
+      "AGENTS.md": "dc2d584b5e9c9f0e4e1c39baa51fb8c81113e4cd49ea86618f95479fca532331",
+      "__init__.py": "4ac07cdd5a2e9eeaad0dbd19c335d1b10a5c3dc8bf22d915306978240245c71d",
+      "artifacts.py": "721fed2d010b56814a156771998c7a90b60e5ea08361d6d0e855dfac8f44cbee",
+      "builds.py": "8874be7641919d1cbfdbda40d82d06ca562f2f099a871b8191859c96644cc030",
+      "catalog.py": "f24bfc2bf8176d803e4c3a2567795f8ff36368f987d0581378536c2c3478adb6",
+      "compiler.py": "1e6fbda6b7f3a24e160a4e2f9ec085cabb1363d943f86b80a5d9521888a2f7b1",
+      "errors.py": "b61e0f3e75144b0fc1ff30317640a4c94150334a48a4c75db0e95098b2046b0c",
+      "graph.py": "16d034359214be67dcd714a583b45aa0b1c00afb4318b56f56ce176e87e72bbf",
+      "models.py": "812c41d8d608664b4936553e7ba15ed56a1112ffe20e427cb4a573af92b22b06",
+      "planner.py": "65834f2b6ff4eed6b5262a96869f9a193ae683ea14a5b6db694b6d76cd1c7a3a",
+      "publication.py": "48a34bde9ad954685123bda2a8105fb65db9815fdd7e8baca74a42fbea82b3cc"
+    }
+  }
+}

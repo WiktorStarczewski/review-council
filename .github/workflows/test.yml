@@ -41,5 +41,12 @@ jobs:
                   result = {}
               if result.get("exit_code") != 0:
                   print("failed verifier log: " + path.name)
+                  failures = [i for i, line in enumerate(lines)
+                              if line.lstrip().startswith(("FAIL", "ERROR:", "Traceback"))]
+                  for i in failures[:10]:
+                      print("failure context at log line " + str(i + 1))
+                      print("\n".join(lines[max(0, i - 2):i + 9])[:2000])
+                  if len(failures) > 10:
+                      print(str(len(failures) - 10) + " additional failure contexts omitted")
                   print(text[-20000:])
           PY

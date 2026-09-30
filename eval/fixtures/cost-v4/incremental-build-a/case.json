@@ -1,0 +1,600 @@
+{
+  "id": "incremental-build-a",
+  "mode": "evidence",
+  "files": [
+    "artifacts.py",
+    "builds.py",
+    "compiler.py",
+    "graph.py",
+    "planner.py",
+    "publication.py"
+  ],
+  "defects": [
+    {
+      "id": "transitive-input-identity",
+      "file": "planner.py",
+      "line_start": 32,
+      "line_end": 32,
+      "line_label": "            dependencies = tuple((item, item) for item in sorted(target.dependencies))",
+      "severity": "P1",
+      "description": "Planning replaces dependency fingerprints with names, so changing a leaf leaves consumer cache identities unchanged.",
+      "keyword_groups": [
+        [
+          "dependenc",
+          "transitive",
+          "upstream"
+        ],
+        [
+          "fingerprint",
+          "identity",
+          "cache",
+          "stale"
+        ]
+      ]
+    },
+    {
+      "id": "reverse-invalidation-closure",
+      "file": "graph.py",
+      "line_start": 62,
+      "line_end": 62,
+      "line_label": "                    pending.extend(())",
+      "severity": "P1",
+      "description": "Reverse traversal never queues discovered parents, leaving higher consumers current and readable after an input change.",
+      "keyword_groups": [
+        [
+          "invalidat",
+          "dirty",
+          "dependen"
+        ],
+        [
+          "transitive",
+          "parent",
+          "closure",
+          "recursive",
+          "stale"
+        ]
+      ]
+    },
+    {
+      "id": "complete-manifest-validation",
+      "file": "publication.py",
+      "line_start": 18,
+      "line_end": 18,
+      "line_label": "        references = tuple(owned_outputs.values())[:1]",
+      "severity": "P1",
+      "description": "Publication checks only the first object reference and can replace a valid project head with missing later artifacts.",
+      "keyword_groups": [
+        [
+          "manifest",
+          "publish",
+          "publication"
+        ],
+        [
+          "missing",
+          "reference",
+          "first",
+          "complete",
+          "artifact"
+        ]
+      ]
+    },
+    {
+      "id": "active-staging-retention",
+      "file": "artifacts.py",
+      "line_start": 43,
+      "line_end": 43,
+      "line_label": "        staged = set()",
+      "severity": "P2",
+      "description": "Collection ignores active staging pins and deletes compiled bytes before their build can publish.",
+      "keyword_groups": [
+        [
+          "collect",
+          "gc",
+          "garbage"
+        ],
+        [
+          "staging",
+          "active",
+          "pin",
+          "build",
+          "retain"
+        ]
+      ]
+    },
+    {
+      "id": "compiler-option-identity",
+      "file": "planner.py",
+      "line_start": 11,
+      "line_end": 11,
+      "line_label": "                          'options': ()}, sort_keys=True, separators=(',', ':')).encode()",
+      "severity": "P2",
+      "description": "Fingerprint encoding omits compiler options, allowing changed options to reuse a stale compiled artifact.",
+      "keyword_groups": [
+        [
+          "option",
+          "config",
+          "flag"
+        ],
+        [
+          "fingerprint",
+          "cache",
+          "identity",
+          "stale"
+        ]
+      ]
+    }
+  ],
+  "lens": "correctness-boundaries+tests-observability-maintenance-regression",
+  "reviewer_role": "cumulative",
+  "decision_context": true,
+  "clean_controls": [
+    {
+      "id": "project-heads-and-global-content",
+      "expected": [
+        true,
+        true,
+        1
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "cancel-after-staging",
+      "expected": [
+        true,
+        false,
+        true,
+        true,
+        1
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "project-version-fences",
+      "expected": [
+        true,
+        true,
+        1
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "identical-input-noops",
+      "expected": [
+        false,
+        false,
+        1
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "caller-snapshot-ownership",
+      "expected": [
+        [
+          [
+            "input",
+            "6f6e65"
+          ]
+        ],
+        {
+          "mode": "debug"
+        },
+        []
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "invalid-graph-rejection",
+      "expected": 3,
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "weak-cache-rebuild",
+      "expected": [
+        1,
+        true,
+        3
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "root-order-and-deduplication",
+      "expected": [
+        [
+          "leaf",
+          "root"
+        ],
+        [
+          "leaf",
+          "middle",
+          "root"
+        ],
+        3
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "canonical-option-order",
+      "expected": [
+        false,
+        true,
+        true,
+        1
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "partial-target-head-merge",
+      "expected": [
+        [
+          "a",
+          "b"
+        ],
+        true,
+        []
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    },
+    {
+      "id": "project-scoped-ticket-access",
+      "expected": [
+        2,
+        "planned"
+      ],
+      "rationale": "The literal public caller observation remains valid in both snapshots."
+    }
+  ],
+  "behavior_rubric": {
+    "schema_version": 1,
+    "measurement": "observable source exposure and manually adjudicated concrete hypotheses",
+    "critical_flows": [
+      {
+        "id": "recursive-input-identity",
+        "required_sources": [
+          {
+            "path": "planner.py",
+            "line_start": 19,
+            "line_end": 38
+          },
+          {
+            "path": "planner.py",
+            "line_start": 9,
+            "line_end": 12
+          },
+          {
+            "path": "compiler.py",
+            "line_start": 9,
+            "line_end": 18
+          },
+          {
+            "path": "builds.py",
+            "line_start": 59,
+            "line_end": 70
+          }
+        ],
+        "rationale": "Trace dependency and option inputs from planning through cache lookup and compilation."
+      },
+      {
+        "id": "source-edit-currentness",
+        "required_sources": [
+          {
+            "path": "catalog.py",
+            "line_start": 54,
+            "line_end": 64
+          },
+          {
+            "path": "graph.py",
+            "line_start": 53,
+            "line_end": 63
+          },
+          {
+            "path": "builds.py",
+            "line_start": 118,
+            "line_end": 124
+          }
+        ],
+        "rationale": "Trace a source edit through reverse dependency invalidation into public current-output reads."
+      },
+      {
+        "id": "complete-manifest-installation",
+        "required_sources": [
+          {
+            "path": "publication.py",
+            "line_start": 10,
+            "line_end": 26
+          },
+          {
+            "path": "catalog.py",
+            "line_start": 82,
+            "line_end": 92
+          },
+          {
+            "path": "builds.py",
+            "line_start": 118,
+            "line_end": 124
+          }
+        ],
+        "rationale": "Validate all object references before replacing a project head and serving its outputs."
+      },
+      {
+        "id": "active-artifact-lifetime",
+        "required_sources": [
+          {
+            "path": "builds.py",
+            "line_start": 59,
+            "line_end": 70
+          },
+          {
+            "path": "artifacts.py",
+            "line_start": 23,
+            "line_end": 26
+          },
+          {
+            "path": "artifacts.py",
+            "line_start": 40,
+            "line_end": 48
+          },
+          {
+            "path": "builds.py",
+            "line_start": 78,
+            "line_end": 95
+          },
+          {
+            "path": "artifacts.py",
+            "line_start": 28,
+            "line_end": 29
+          }
+        ],
+        "rationale": "Trace staging ownership across collection and terminal publication."
+      },
+      {
+        "id": "tenant-project-content-boundary",
+        "required_sources": [
+          {
+            "path": "catalog.py",
+            "line_start": 24,
+            "line_end": 39
+          },
+          {
+            "path": "catalog.py",
+            "line_start": 48,
+            "line_end": 52
+          },
+          {
+            "path": "catalog.py",
+            "line_start": 82,
+            "line_end": 92
+          },
+          {
+            "path": "builds.py",
+            "line_start": 118,
+            "line_end": 124
+          }
+        ],
+        "rationale": "Trace project-scoped catalog state around intentionally shared immutable content storage."
+      }
+    ],
+    "hypotheses": [
+      {
+        "id": "upstream-source-fingerprint",
+        "required_sources": [
+          {
+            "path": "planner.py",
+            "line_start": 19,
+            "line_end": 38
+          },
+          {
+            "path": "planner.py",
+            "line_start": 9,
+            "line_end": 12
+          },
+          {
+            "path": "builds.py",
+            "line_start": 59,
+            "line_end": 70
+          }
+        ],
+        "description": "Editing a leaf input changes its direct and transitive consumers' cache identities."
+      },
+      {
+        "id": "multi-level-source-refresh",
+        "required_sources": [
+          {
+            "path": "catalog.py",
+            "line_start": 54,
+            "line_end": 64
+          },
+          {
+            "path": "graph.py",
+            "line_start": 53,
+            "line_end": 63
+          },
+          {
+            "path": "builds.py",
+            "line_start": 118,
+            "line_end": 124
+          }
+        ],
+        "description": "A leaf input edit prevents reading both its direct consumer and the consumer's parent until rebuilt."
+      },
+      {
+        "id": "incomplete-publication-batch",
+        "required_sources": [
+          {
+            "path": "publication.py",
+            "line_start": 10,
+            "line_end": 26
+          },
+          {
+            "path": "catalog.py",
+            "line_start": 82,
+            "line_end": 92
+          },
+          {
+            "path": "builds.py",
+            "line_start": 118,
+            "line_end": 124
+          }
+        ],
+        "description": "An available first artifact does not authorize publishing a later unavailable artifact."
+      },
+      {
+        "id": "collection-during-staging",
+        "required_sources": [
+          {
+            "path": "builds.py",
+            "line_start": 59,
+            "line_end": 70
+          },
+          {
+            "path": "artifacts.py",
+            "line_start": 23,
+            "line_end": 26
+          },
+          {
+            "path": "artifacts.py",
+            "line_start": 40,
+            "line_end": 48
+          },
+          {
+            "path": "builds.py",
+            "line_start": 78,
+            "line_end": 95
+          }
+        ],
+        "description": "A compiled build remains publishable when collection runs before finish."
+      },
+      {
+        "id": "changed-compiler-options",
+        "required_sources": [
+          {
+            "path": "catalog.py",
+            "line_start": 66,
+            "line_end": 74
+          },
+          {
+            "path": "planner.py",
+            "line_start": 19,
+            "line_end": 38
+          },
+          {
+            "path": "planner.py",
+            "line_start": 9,
+            "line_end": 12
+          },
+          {
+            "path": "compiler.py",
+            "line_start": 9,
+            "line_end": 18
+          },
+          {
+            "path": "builds.py",
+            "line_start": 59,
+            "line_end": 70
+          }
+        ],
+        "description": "Changing compiler options with unchanged source bytes produces a fresh correctly configured output."
+      },
+      {
+        "id": "post-compile-cancellation",
+        "required_sources": [
+          {
+            "path": "builds.py",
+            "line_start": 102,
+            "line_end": 110
+          },
+          {
+            "path": "builds.py",
+            "line_start": 78,
+            "line_end": 95
+          },
+          {
+            "path": "artifacts.py",
+            "line_start": 28,
+            "line_end": 29
+          },
+          {
+            "path": "artifacts.py",
+            "line_start": 40,
+            "line_end": 48
+          }
+        ],
+        "description": "Cancellation after compilation preserves the prior head and frees the new staging objects."
+      },
+      {
+        "id": "shared-content-private-heads",
+        "required_sources": [
+          {
+            "path": "catalog.py",
+            "line_start": 24,
+            "line_end": 39
+          },
+          {
+            "path": "catalog.py",
+            "line_start": 48,
+            "line_end": 52
+          },
+          {
+            "path": "catalog.py",
+            "line_start": 82,
+            "line_end": 92
+          },
+          {
+            "path": "builds.py",
+            "line_start": 118,
+            "line_end": 124
+          }
+        ],
+        "description": "A tenant project cannot read another project's output merely because their source content matches."
+      },
+      {
+        "id": "cache-reference-after-collection",
+        "required_sources": [
+          {
+            "path": "builds.py",
+            "line_start": 59,
+            "line_end": 70
+          },
+          {
+            "path": "artifacts.py",
+            "line_start": 40,
+            "line_end": 48
+          },
+          {
+            "path": "catalog.py",
+            "line_start": 82,
+            "line_end": 92
+          }
+        ],
+        "description": "Returning to a previously cached input rebuilds its artifact if the weak cache object was collected."
+      }
+    ]
+  },
+  "source_sha256": {
+    "before": {
+      "AGENTS.md": "dc2d584b5e9c9f0e4e1c39baa51fb8c81113e4cd49ea86618f95479fca532331",
+      "__init__.py": "4ac07cdd5a2e9eeaad0dbd19c335d1b10a5c3dc8bf22d915306978240245c71d",
+      "artifacts.py": "721fed2d010b56814a156771998c7a90b60e5ea08361d6d0e855dfac8f44cbee",
+      "builds.py": "698e412d5148dc08b540f09ff1295dd2d507e233919a303f74d5b1d310cc62a8",
+      "catalog.py": "f24bfc2bf8176d803e4c3a2567795f8ff36368f987d0581378536c2c3478adb6",
+      "compiler.py": "ca547424d910ba392612a4010221c7424c1c59a3fe379f0de9af3b47bda53aa4",
+      "errors.py": "b61e0f3e75144b0fc1ff30317640a4c94150334a48a4c75db0e95098b2046b0c",
+      "graph.py": "e4c9122b735114aa59b639688164f0a5a42e24185c220a135a5f56dc92778280",
+      "models.py": "812c41d8d608664b4936553e7ba15ed56a1112ffe20e427cb4a573af92b22b06",
+      "planner.py": "af353d5558ca9b83924e9bdbaf5ec2345c6edf1b179fb4db7296c66eb72dc7f6",
+      "publication.py": "48a34bde9ad954685123bda2a8105fb65db9815fdd7e8baca74a42fbea82b3cc"
+    },
+    "after": {
+      "AGENTS.md": "dc2d584b5e9c9f0e4e1c39baa51fb8c81113e4cd49ea86618f95479fca532331",
+      "__init__.py": "4ac07cdd5a2e9eeaad0dbd19c335d1b10a5c3dc8bf22d915306978240245c71d",
+      "artifacts.py": "5baae15f1661e41930a1eb3802ca35823216798e55198d2a39c68751e3210bc7",
+      "builds.py": "8874be7641919d1cbfdbda40d82d06ca562f2f099a871b8191859c96644cc030",
+      "catalog.py": "f24bfc2bf8176d803e4c3a2567795f8ff36368f987d0581378536c2c3478adb6",
+      "compiler.py": "1e6fbda6b7f3a24e160a4e2f9ec085cabb1363d943f86b80a5d9521888a2f7b1",
+      "errors.py": "b61e0f3e75144b0fc1ff30317640a4c94150334a48a4c75db0e95098b2046b0c",
+      "graph.py": "ef95c8b4b43c5a36b856140600ee29f2c21a4303ad083f211bc3d4986558736f",
+      "models.py": "812c41d8d608664b4936553e7ba15ed56a1112ffe20e427cb4a573af92b22b06",
+      "planner.py": "ba63545c8a29d620e66a12847bad14db9f8334608f9f70cce23feeb57d679909",
+      "publication.py": "a797376f5c0e002ad3bc10fbdf297a71dfcbf32e16b3df54231eabfc48fed2e9"
+    }
+  }
+}

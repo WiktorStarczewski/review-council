@@ -340,17 +340,13 @@ SH
       '^Codex source batching enabled: false$'
     assert_nogrep "default Codex prompt does not invite source batching" "$first" \
       'one Bash call may contain semicolon-separated pure'
-    local batch_prompt
-    batch_prompt=$(REV_CODEX_SOURCE_BATCH=1 "$SCRIPTS/rev-prompt.sh" "$S" 1 sol \
-      correctness-boundaries verification --evidence "$manifest") || return
-    assert_grep "Codex source batching opt-in is frozen into the prompt" "$batch_prompt" \
-      '^Codex source batching enabled: true$'
-    assert_grep "opt-in Codex prompt permits only strict semicolon source batches" "$batch_prompt" \
-      "Codex source batching:.*semicolon-separated.*sed -n 'START,ENDp' 'FILE'"
-    assert_grep "opt-in Codex prompt caps total source-batch lines and bytes" "$batch_prompt" \
-      'combined selected lines.*240.*combined visible output.*32 KiB'
-    assert_grep "opt-in Codex prompt forbids overlap and mixed batch producers" "$batch_prompt" \
-      'Do not overlap or duplicate windows.*mix.*searches.*metadata.*transforms'
+    REV_CODEX_SOURCE_BATCH=1 "$SCRIPTS/rev-prompt.sh" "$S" 1 sol \
+      correctness-boundaries verification --evidence "$manifest" \
+      > "$T/retired-batch.out" 2> "$T/retired-batch.err"
+    assert_eq "retired Codex source batching explicitly refuses an opt-in" "$?" 1
+    assert_grep "retired source batching explains the bounded standalone alternative" "$T/retired-batch.err" \
+      'REV_CODEX_SOURCE_BATCH=1.*retired.*standalone bounded'
+    assert_exit "refused source batch opt-in publishes no stale prompt" 1 test -e "$S/r1-sol.prompt.md"
 
     local disabled_manifest disabled_prompt
     disabled_manifest=$(REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=0 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 12 \
