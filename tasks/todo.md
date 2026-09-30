@@ -1,3 +1,20 @@
+# Release 0.5.7
+
+- [x] Confirm the retained wave 1 and wave 2 changes and discarded experiment scope.
+- [x] Verify the signed stable 0.5.6 tag and inspect remote PR and release state.
+- [x] Prepare matching 0.5.7 manifests and release notes.
+- [ ] Run the complete frozen candidate gate and resolve the stable release-review requirement.
+- [ ] Push and squash-merge the three stacked PRs with exact-head green CI.
+- [ ] Verify the merged release tree, publish a signed tag and GitHub release.
+- [ ] Update both installed hosts and verify version, source identity and skill discovery.
+
+### Release review
+
+Publication is authorized. The repository release procedure requires a prior-stable
+four-seat panel; the earlier OpenAI-only restriction and unavailable Claude quota
+must be resolved before that requirement can be satisfied or explicitly waived.
+Single-seat benchmark results do not certify the release implementation.
+
 # CLI Claude seats and a fast plan gate (#7, #8)
 
 - [x] WP1 #7 roster: `claude_adapter` (cli/agent/auto) + env override, one resolver, padding follows it; `plan_seats` config recorded in roster.json only when `all`.
