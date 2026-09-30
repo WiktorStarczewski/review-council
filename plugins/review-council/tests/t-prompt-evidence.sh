@@ -178,8 +178,8 @@ test_prompt_evidence_contract() {
         'Never run an interpreter or inline script \(`node`, `python3`, `bash -c`, `eval`\)'
       assert_grep "$seat prompt reports an execution-only claim instead of running code" "$prompt" \
         'say in the finding that it is unverified at runtime'
-      assert_grep "$seat prompt states that a bad chunk read fails the review" "$prompt" \
-        'A skipped, partial, repeated, or out-of-order chunk read fails your whole review'
+      assert_nogrep "$seat window prompt excludes inactive chunk failure guidance" "$prompt" \
+        'out-of-order chunk read fails your whole review'
       assert_grep "$seat prompt never counts another revision as source" "$prompt" \
         '`git show` of the base or any other revision is context only and never satisfies a required read or a citation'
       assert_grep "$seat prompt stops answered evidence paths" "$prompt" 'Stop that evidence path when the question is answered'
@@ -383,7 +383,7 @@ PY
     assert_eq "patch chunks default to auto while source context remains opt-in" "$?" 0
 
     local clean
-    clean=$("$SCRIPTS/rev-prompt.sh" "$S" 1 sol clean-room design) || return
+    clean=$("$SCRIPTS/rev-prompt.sh" "$S" 17 sol clean-room design) || return
     local clean_rule protocol_rule
     clean_rule=$(grep -n 'Do NOT read the diff first' "$clean" | cut -d: -f1 | head -1)
     protocol_rule=$(grep -n '^## Bounded evidence protocol$' "$clean" | cut -d: -f1)
@@ -392,7 +392,7 @@ PY
     else
       fail "clean-room design comes before bounded evidence reads" "clean=$clean_rule protocol=$protocol_rule"
     fi
-    clean=$("$SCRIPTS/rev-prompt.sh" "$S" 1 terra clean-room design) || return
+    clean=$("$SCRIPTS/rev-prompt.sh" "$S" 18 terra clean-room design) || return
     assert_nogrep "Terra clean-room prompt does not order an immediate diff read" "$clean" 'FIRST run your tools: read the diff'
 
     printf '1. Verify the caller.\n' > "$S/fix-plan.md"
@@ -408,12 +408,12 @@ PY
     assert_grep "legacy prompt names its exact frozen patch" "$legacy" \
       "^Exact frozen assigned patch: $session_real/r8-full\\.patch$"
     assert_grep "legacy Codex prompt makes a portable patch read the first evidence action" "$legacy" \
-      '^First evidence action after any required clean-room design: run portable bounded sed windows over '
+      '^First evidence action: run portable bounded sed windows over '
     local legacy_agent
     printf '%s\n' '{"seats":[{"seat":"opus","adapter":"agent"}]}' > "$S/roster.json"
     legacy_agent=$("$SCRIPTS/rev-prompt.sh" "$S" 8 opus regression numeric) || return
     assert_grep "legacy Agent prompt uses the Claude Read tool" "$legacy_agent" \
-      '^First evidence action after any required clean-room design: use Read to read the exact frozen assigned patch '
+      '^First evidence action: use Read to read the exact frozen assigned patch '
     printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
     assert_nogrep "legacy prompt never asks for a live git diff" "$legacy" \
       'Produce the diff yourself|run `git diff|use `git diff'
@@ -471,7 +471,7 @@ PY
     assert_nogrep "external directory symlink does not read its target" "$symlink_prompt" 'OUTSIDE_DIRECTORY_SENTINEL'
     printf 'a.txt\npackage-lock.json\n' > "$S/files.txt"
 
-    local composite sol_prefix terra_prefix opus_prefix
+    local composite sol_prefix terra_prefix opus_prefix claude_prefix
     composite=$("$SCRIPTS/rev-prompt.sh" "$S" 8 sol \
       correctness-boundaries+security-state-api composite) || return
     assert_grep "composite lens keeps correctness instructions" "$composite" \
@@ -479,22 +479,23 @@ PY
     assert_grep "composite lens keeps security instructions" "$composite" \
       '^Check trust boundaries, authorization, durable-state invariants, serialization, idempotency, compatibility, and public API behavior\.'
 
-    python3 - "$first" "$clean" "$composite" "$T" <<'PY'
+    python3 - "$frozen" "$clean" "$composite" "$S/r1-opus.prompt.md" "$T" <<'PY'
 from pathlib import Path
 import sys
-for source, name in zip(sys.argv[1:4], ('sol', 'terra', 'composite')):
+for source, name in zip(sys.argv[1:5], ('sol', 'terra', 'composite', 'claude')):
     text = Path(source).read_text()
     assert text.startswith('# Reviewer contract\n')
     prefix, marker, _ = text.partition('\n## Review assignment\n')
     assert marker
-    Path(sys.argv[4], name + '.prefix').write_text(prefix + '\n')
+    Path(sys.argv[5], name + '.prefix').write_text(prefix + '\n')
 PY
     sol_prefix="$T/sol.prefix"; terra_prefix="$T/terra.prefix"; opus_prefix="$T/composite.prefix"
-    assert_exit "invariant prefix is byte-stable across seat and lens" 0 cmp -s "$sol_prefix" "$terra_prefix"
-    assert_exit "invariant prefix is byte-stable for composite bundles" 0 cmp -s "$sol_prefix" "$opus_prefix"
-    assert_grep "stable prefix carries clean-room ordering" "$sol_prefix" 'clean-room lens, write the smallest design before any patch or source read'
-    assert_grep "stable prefix carries exact Read bound" "$sol_prefix" 'offset.*limit.*240'
-    assert_grep "stable prefix carries exact search bound" "$sol_prefix" 'result limit.*80'
+    claude_prefix="$T/claude.prefix"
+    assert_nogrep "ordinary prefix excludes clean-room ordering" "$sol_prefix" 'Clean-room ordering:'
+    assert_nogrep "legacy composite prefix excludes packet guidance" "$opus_prefix" 'source-context packet'
+    assert_grep "clean-room prefix carries design ordering" "$terra_prefix" 'write the smallest design before any patch or source read'
+    assert_grep "Claude prefix carries exact Read bound" "$claude_prefix" 'offset.*limit.*240'
+    assert_grep "Claude prefix carries exact search bound" "$claude_prefix" 'result limit.*80'
     assert_grep "stable prefix carries the shell overflow sentinel" "$sol_prefix" \
       '\| head -81.*81st line invalidates the audit'
     assert_grep "stable prefix carries per-turn byte bound" "$sol_prefix" '32 KiB combined output ceiling'
@@ -519,7 +520,7 @@ PY
       'summary.*INCOMPLETE PROOF:.*unfinished obligations'
     assert_nogrep "Terra prompt keeps source batching disabled" "$clean" \
       'Codex source batching:'
-    assert_grep "patch chunks use the rendered per-turn batch limit" "$first" \
+    assert_grep "patch chunks use the rendered per-turn batch limit" "$large_prompt" \
       'rendered patch chunk batch limit'
     assert_nogrep "volatile repository path stays after prefix" "$sol_prefix" "$ROOT"
 

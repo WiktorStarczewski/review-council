@@ -135,6 +135,9 @@ preflight choice.
    scripts, `Cargo.toml`, `Makefile` - whatever the project uses) and write
    `$S/baseline.md`: one line per gate, `pass` or `fail` with the failing test/lint
    names. Pre-existing failures are not regressions later.
+   Optional `$S/baseline.json` uses the [structured baseline format](../../../../docs/cost-accounting.md)
+   and replaces `baseline.md` in reviewer prompts. Record every relevant check,
+   including applicability, skipped checks and failure evidence.
 3. Read the diff yourself - the same command as the baseline patch above, plus every
    file in `$S/untracked.txt` read in full (nothing in a diff will show them). You
    triage; you need your own model of the change before you see anyone else's.
@@ -152,6 +155,10 @@ preflight choice.
    settled: do not re-raise them, and append this run's entries below the existing
    ones. `>` there would have deleted the ledger the resume note tells seats to read.
    Make a todo list with one item per planned panel.
+   At a phase handoff or resume, run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-context.py "$S"`
+   for a compact briefing from current state, exact roster identities and artifacts.
+   Follow its references when evaluating a claim; it does not evaluate certification
+   or replace collection and receipt checks.
 5. Arm the status tick, once (not in stack-leg mode):
    ```
    Monitor({ command: "while true; do sleep 600; ${CLAUDE_PLUGIN_ROOT}/scripts/rev-status.sh <S>; done",
@@ -765,7 +772,8 @@ complete suite once for each material tree. Record the tree hash and successful
 command so an unchanged tree reuses that gate result.
 Before a paid panel after adapter, prompt, manifest, or audit changes, preflight
 replays the preserved provider envelopes through the current auditor.
-Replay runs after the roster probe and before any reviewer launch.
+Static replay runs before the roster probe for changed provider boundaries. It cannot
+certify a session. Authoritative replay runs after the roster probe and before any reviewer launch.
 The probe binds the exact models and efforts. Preflight reuses a hash-keyed pass receipt
 only when the boundary, fixtures, contract tests, and provider versions match; a replay
 failure blocks the paid run.
@@ -978,6 +986,12 @@ one sentence saying what you are doing right now. Do this even mid-round; the us
 asked for it. Keep `state.json` honest - it is the only thing the tick can see:
 `round`, `phase`, `seats`, `dropped`, `open.*`, `fixed`, and `agent_transcripts` for `agent` rows. If the
 loop stops early, the last relayed line says why.
+
+For a bounded local watch, use `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-context.py "$S" --watch --duration 600`.
+It emits state changes and a fixed ten-minute scheduled tick without provider calls.
+Relay every scheduled event and keep the Monitor above armed; a change does not reset
+the scheduled cadence. The briefing reports missing or invalid results explicitly
+and leaves certification to the receipt checks.
 
 ## Failure handling
 

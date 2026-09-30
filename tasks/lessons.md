@@ -234,3 +234,13 @@
   file kept the old wording and failed the full gate.
 - Apply a subprocess-environment rule to every launch site of that binary in the same change.
   Scrubbing the parent session for seats and probes but not stack legs left the third site open.
+- Compile benchmark evidence with the compiler's canonical roster-order assignment, including
+  the combined first bundle for three seats. Run an actual compiler integration check before
+  freezing a live schedule; provider-free unit tests alone do not prove that topology is valid.
+- After a permission change, require a successful fresh network check before reserving a live
+  benchmark execution. A confirmation does not prove the active task received the change.
+- Identify the active client before giving permission instructions. In the CLI use
+  `/permissions`; desktop composer controls are not CLI instructions.
+- Frozen verification trees are read-only. Tests and benchmark setup must make their private working copies writable, preserve the sealed originals, and exercise the read-only case directly.
+- Preserve an executable snapshot of the benchmark engine as well as its hash, so retained experiments remain reportable after harness fixes.
+- After a frozen-copy permission failure, inspect every new copy-and-write setup before restarting the complete gate; Python and shell copies can have the same failure.

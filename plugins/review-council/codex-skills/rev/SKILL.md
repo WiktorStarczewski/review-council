@@ -105,6 +105,11 @@ resumed ledger. Record state via `rev-state.sh "$S" key=value ...`:
 `round`, `min_rounds` (the explicit override or `adaptive`), `phase`, `seats` (JSON array), `dropped`, `open.P0` through
 `open.P3`, and `fixed`. State updates are sequential.
 
+An optional `S/baseline.json` records each check's command, outcome, applicability,
+and failure evidence using the [structured baseline format](../../../../docs/cost-accounting.md).
+When present it replaces `baseline.md` in reviewer prompts; include the full baseline,
+including skipped checks and pre-existing failures.
+
 ## Run the adaptive panels
 
 Read the roster and use every non-extra seat. Adaptive default panels use core seats
@@ -158,6 +163,11 @@ or another nontrivial fix. A P3 or one-line P2 follow-up needs the project gates
 every other accepted fix needs a full adaptive verification panel. Never append the cumulative findings ledger to a
 prompt. For a resumed run, write `S/context.md` as a concise digest of
 settled decisions; the renderer includes it automatically. Do not copy `findings.md` into it.
+
+At a phase handoff or resume, run `python3 "$PLUGIN/scripts/rev-context.py" "$S"`
+for the current state, exact seat identities, outstanding results, and artifact references.
+Read the linked evidence when deciding a finding or coverage obligation. The briefing
+does not evaluate certification and never replaces collection or receipt validation.
 
 ### Panel setup
 
@@ -616,7 +626,8 @@ contract cluster, and the complete suite once for each material tree. Record the
 hash and successful command so an unchanged tree reuses that gate result. Before a
 paid panel after adapter, prompt, manifest, or audit changes, preflight replays the
 preserved provider envelopes through the current auditor.
-Replay runs after the roster probe and before any reviewer launch.
+Static replay runs before the roster probe for changed provider boundaries. It cannot
+certify a session. Authoritative replay runs after the roster probe and before any reviewer launch.
 The probe binds the exact models and efforts. Preflight reuses a hash-keyed pass receipt
 only when the boundary, fixtures, contract tests, and provider versions match; a replay
 failure blocks the paid run.
@@ -625,6 +636,10 @@ Update state and the ledger after every phase. During foreground work send conci
 progress regularly, including `rev-status.sh "$S"` when useful; use waits of at most
 60 seconds so the user can steer. The status script reads artifacts without model
 calls. Large changes deserve explicit remaining-coverage notes, not just counts.
+Use `python3 "$PLUGIN/scripts/rev-context.py" "$S" --watch --duration 600` in an
+attached execution to wait locally for state changes and the fixed ten-minute status
+tick. Relay every scheduled event and keep foreground progress updates. Extend the
+bounded watch as needed; changes do not reset its scheduled cadence.
 
 ## Finish
 

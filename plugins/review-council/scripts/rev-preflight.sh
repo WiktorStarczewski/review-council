@@ -130,6 +130,10 @@ else
   CONTRACT_SESSION="$STAGE"
 fi
 trap 'rm -rf -- "$STAGE"' EXIT
+STATIC_RESULT="$STAGE/static-contract.json"
+python3 "$HERE/rev-contract-check.py" --root "$ROOT" --session "$STAGE" --base "$BASE" \
+  --static-check --static-result "$STATIC_RESULT" >/dev/null \
+  || die "provider contract replay failed before the roster probe"
 ROSTER_ARGS=(--probe --brief --write "$RJSON")
 if [ ${#QUOTA_FAILED_SEATS[@]} -gt 0 ]; then
   for FAILED_SEAT in "${QUOTA_FAILED_SEATS[@]}"; do
@@ -167,7 +171,8 @@ PY
 fi
 [ "$RC" = 0 ] || die "roster.sh failed (exit $RC) - run $HERE/roster.sh --json to see why"
 python3 "$HERE/rev-contract-check.py" --root "$ROOT" --session "$CONTRACT_SESSION" --base "$BASE" \
-  --roster "$RJSON" >/dev/null || die "provider contract replay failed after the roster probe"
+  --roster "$RJSON" --static-result "$STATIC_RESULT" >/dev/null \
+  || die "provider contract replay failed after the roster probe"
 # A degraded panel runs, loudly. The roster line already ends in `· DEGRADED: …`; this second line makes
 # it impossible to miss in a transcript, and the skill copies the sentence verbatim into the report.
 WARN=$(ROSTER_JSON="$RJSON" python3 - <<'PY'

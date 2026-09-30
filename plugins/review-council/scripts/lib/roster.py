@@ -16,6 +16,7 @@ The JSON is printed either way and `excluded[]` says why each CLI is missing. St
 """
 
 import hashlib
+import importlib.util
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -32,6 +33,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from session_inputs import SessionInputsError, assert_unsealed, install_inputs
+
+_HOME_SPEC = importlib.util.spec_from_file_location(
+    'isolated_seat_home', Path(__file__).resolve().with_name('isolated-seat-home.py'))
+_HOME_HELPER = importlib.util.module_from_spec(_HOME_SPEC)
+_HOME_SPEC.loader.exec_module(_HOME_HELPER)
 
 EFFORTS = ('max', 'xhigh', 'high')   # highest first; a mid tier is never seated
 PANEL = 3                            # seats a round needs; a thinner roster is padded, never refused
@@ -66,8 +72,10 @@ PROBE_CMD = {
     'claude': lambda m, e: ['claude', '-p', 'Reply with exactly OK', '--model', m,
                          '--effort', e,
                          '--permission-mode', 'plan', '--tools', '', '--setting-sources', '',
-                         '--strict-mcp-config', '--no-session-persistence', '--max-turns', '1'],
-    'codex':  lambda m, e: ['codex', 'exec', '--ephemeral', '--skip-git-repo-check',
+                         '--strict-mcp-config', '--no-session-persistence', '--max-turns', '1',
+                         '--exclude-dynamic-system-prompt-sections', '--disable-slash-commands'],
+    'codex':  lambda m, e: ['codex', 'exec', '--ephemeral', '--ignore-user-config',
+                         '--skip-git-repo-check', '-c', 'project_doc_max_bytes=0',
                          '-s', 'read-only', '-m', m, '-c', 'model_reasoning_effort=' + e,
                          'Reply with exactly OK'],
     'gemini': lambda m, _e: ['gemini', '-p', 'Reply with exactly OK', '-m', m, '--approval-mode', 'plan',
@@ -110,7 +118,7 @@ def finish_process_launch():
         raise SystemExit(128 + signum)
 
 
-def run(cmd, timeout):
+def run(cmd, timeout, environment=None):
     """Run cmd with no stdin. → (rc, stdout, stderr); rc is None on timeout, 127 if it cannot start."""
     try:
         output_limit = int(os.environ.get('REVIEW_COUNCIL_PROVIDER_OUTPUT_BYTES', 1024 * 1024))
@@ -119,9 +127,10 @@ def run(cmd, timeout):
     if output_limit < 256 or output_limit > 64 * 1024 * 1024:
         output_limit = 1024 * 1024
     p = None
-    env = None
+    env = environment
     if cmd[0] == 'claude':
-        env = {k: v for k, v in os.environ.items() if k not in CLAUDE_SESSION_ENV}
+        env = {k: v for k, v in (environment or os.environ).items()
+               if k not in CLAUDE_SESSION_ENV}
     begin_process_launch()
     try:
         try:
@@ -722,7 +731,18 @@ def classify_provider_failure(adapter, stdout='', stderr='', summary_log=None):
 
 def probe_seat(s):
     """Return (reason, class, sanitized cause), with reason None when the seat answers."""
-    rc, out, err = run(PROBE_CMD[s['adapter']](s['model'], s.get('effort')), PROBE_TIMEOUT)
+    command = PROBE_CMD[s['adapter']](s['model'], s.get('effort'))
+    if s['adapter'] == 'codex':
+        state_home = Path(env_path('CODEX_HOME', '~/.codex'))
+        auth = state_home / 'auth.json'
+        identity = 'probe:%s:%s:%s' % (os.getpid(), s['model'], time.monotonic_ns())
+        try:
+            with _HOME_HELPER.leased_home('codex', identity, auth if auth.is_file() else None) as home:
+                rc, out, err = run(command, PROBE_TIMEOUT, {**os.environ, 'CODEX_HOME': str(home)})
+        except (OSError, ValueError) as error:
+            return 'probe isolation failed: ' + str(error), 'other', 'probe isolation failed'
+    else:
+        rc, out, err = run(command, PROBE_TIMEOUT)
     if rc is None:
         return 'probe timed out', 'other', 'probe timed out'
     if rc == 0:

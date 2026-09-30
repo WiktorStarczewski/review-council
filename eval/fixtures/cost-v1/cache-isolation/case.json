@@ -1,0 +1,24 @@
+{
+  "id": "cache-isolation",
+  "mode": "evidence",
+  "files": ["cache.py"],
+  "defects": [
+    {
+      "id": "tenant-key",
+      "file": "cache.py",
+      "line_start": 26,
+      "line_end": 30,
+      "description": "The cache key drops tenant, so identical names leak or overwrite values across tenant namespaces, including invalidation.",
+      "keyword_groups": [["tenant", "namespace"], ["key", "collision", "overwrite", "leak", "isolation"]]
+    },
+    {
+      "id": "nested-read-alias",
+      "file": "cache.py",
+      "line_start": 56,
+      "line_end": 57,
+      "description": "get uses a shallow dict copy, exposing shared nested payload state that a caller can mutate and change future reads.",
+      "keyword_groups": [["shallow", "nested", "deepcopy", "deep copy"], ["mutat", "alias", "share", "isolation", "copy"]]
+    }
+  ],
+  "lens": "correctness-boundaries"
+}
