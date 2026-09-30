@@ -10,16 +10,23 @@ Verify the stable tag before using any stable code:
 
 ```bash
 git status --short
-git verify-tag review-council--v0.4.3
+git verify-tag review-council--v0.5.6
 STABLE_PARENT=$(mktemp -d /tmp/review-council-stable.XXXXXX)
-STABLE_TREE="$STABLE_PARENT/review-council-0.4.3"
-git worktree add --detach "$STABLE_TREE" review-council--v0.4.3
+STABLE_TREE="$STABLE_PARENT/review-council-0.5.6"
+git worktree add --detach "$STABLE_TREE" review-council--v0.5.6
 STABLE_PLUGIN="$STABLE_TREE/plugins/review-council"
 ```
 
-The release roster is exactly Sol, Terra, Opus, and Sonnet at maximum effort. Grok and
-Astra are excluded. Stop if a configured model is unavailable rather than substituting
-another model.
+The release roster is latest Sol and latest Luna at xhigh effort, plus Opus and
+Sonnet aliases at supported maximum effort. Resolve the OpenAI families from the
+provider catalog and freeze exact identities before launching. Stable engines
+without selector support receive those resolved slugs in a release-specific config.
+Grok and Astra are excluded. Stop if a configured model or effort is unavailable
+rather than substituting or downgrading.
+
+Any explicit release-panel waiver must be recorded with the release artifacts and
+associated PR. Deterministic verification and CI remain required, and the release
+must not be described as Council-certified.
 
 Run the existing deterministic candidate gate:
 
@@ -72,15 +79,15 @@ Then push the candidate, wait for required CI, and squash-merge the pull request
 From a clean checkout of the merged commit, publish the signed release:
 
 ```bash
-git tag -s review-council--v0.4.4 -m "review-council 0.4.4" "$MERGE_COMMIT"
-git push origin review-council--v0.4.4
-git verify-tag review-council--v0.4.4
-gh release create review-council--v0.4.4 --verify-tag \
-  --title "review-council 0.4.4" --generate-notes
+git tag -s review-council--v0.5.7 -m "review-council 0.5.7" "$MERGE_COMMIT"
+git push origin review-council--v0.5.7
+git verify-tag review-council--v0.5.7
+gh release create review-council--v0.5.7 --verify-tag \
+  --title "review-council 0.5.7" --generate-notes
 ```
 
 Reinstall `review-council@review-council`. In fresh Claude and Codex sessions, require
-both hosts to discover `rev` and `stack` at version `0.4.4`, and compare installed file
+both hosts to discover `rev` and `stack` at version `0.5.7`, and compare installed file
 and mode identity with the released tag.
 
 Finally remove the stable worktree while preserving external review and verifier

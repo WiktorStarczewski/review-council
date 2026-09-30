@@ -3,17 +3,19 @@
 - [x] Confirm the retained wave 1 and wave 2 changes and discarded experiment scope.
 - [x] Verify the signed stable 0.5.6 tag and inspect remote PR and release state.
 - [x] Prepare matching 0.5.7 manifests and release notes.
-- [ ] Run the complete frozen candidate gate and resolve the stable release-review requirement.
+- [x] Run the complete frozen candidate gate and resolve the stable release-review requirement.
 - [ ] Push and squash-merge the three stacked PRs with exact-head green CI.
 - [ ] Verify the merged release tree, publish a signed tag and GitHub release.
 - [ ] Update both installed hosts and verify version, source identity and skill discovery.
 
 ### Release review
 
-Publication is authorized. The repository release procedure requires a prior-stable
-four-seat panel; the earlier OpenAI-only restriction and unavailable Claude quota
-must be resolved before that requirement can be satisfied or explicitly waived.
-Single-seat benchmark results do not certify the release implementation.
+The stable release panel is explicitly waived for 0.5.7. Publication remains gated
+on deterministic verification and green CI. The local candidate gate passes 354
+shell cases, 4,701 assertions, 229 Python tests and all three validators. Single-seat
+benchmark results do not certify the release implementation. The release procedure
+now names the latest Sol and Luna families at xhigh, preserving exact frozen run
+identities and supported maximum effort for Opus and Sonnet.
 
 # CLI Claude seats and a fast plan gate (#7, #8)
 
