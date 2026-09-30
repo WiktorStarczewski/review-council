@@ -29,7 +29,7 @@ This command retains the original identity checks and launches no reviewers. Tem
 
 ## Correctness
 
-Each fixture contains two planted regressions, two baseline checks and four clean controls. Oracles prove the regressions occur; mutation tests prove the oracles fail when the regressions are restored. The reviewer sees source and the change, with no oracle or defect descriptions in its repository.
+The original cost-v1 fixtures each contain two planted regressions, two baseline checks and four clean controls. Larger suites below use independent multi-file faults and repaired clean twins. Oracles prove the regressions occur; mutation tests prove the oracles fail when the regressions are restored. The reviewer sees source and the change, with no oracle or defect descriptions in its repository.
 
 Keyword and source-range matches are suggestions. Inspect every finding, then write `runs/<case>/<version>/adjudication.json`:
 
@@ -119,7 +119,8 @@ edits. Six planted faults require following tenant identity, lease generations,
 retry clocks, cancellation, transactional rollback and partial acknowledgement
 contracts across modules. Truth, independent repair mutations and behavior rubrics
 remain outside both reviewed source roots. One paired suite needs four executions;
-a candidate-only stage needs two. Each new stage requires its own explicit budget.
+a candidate-only stage needs two. Record a finite cap for each stage within the
+authorized experiment budget or standing autonomous testing scope.
 
 Quality v1 is a fixed 0-100 score:
 
@@ -158,9 +159,44 @@ experiment, not statistical equivalence or full-panel certification. Freeze this
 policy and score version when comparing runs; recalibration requires replaying both
 sides using a newly versioned scorer.
 
+Each variant also has a descriptive equal-case mean and minimum out of 100,
+using `quality-v1` and aggregation version `quality-equal-case-v1`. A known
+aggregate requires every expected frozen case exactly once, with valid,
+provenance-confirmed full scores and matching case/rubric identities. Missing,
+invalid, unconfirmed, core-only or mixed-version scores leave both aggregate
+values unknown; a known subset is never averaged. Reports show complete/expected
+case counts, and JSON records exact identities and unavailable reasons.
+Per-case retention gates remain required even when the aggregate mean is high.
+
 A retained control can be reused without another baseline execution using
 `report --reference <frozen-pair> --reference-variant baseline` on a later
 candidate-only stage. The selected reference source must exactly match the new
 baseline; all other identity checks still apply. This saves development calls, but
 increases temporal separation and does not create a fresh contemporaneous pair.
 Reusing a control does not erase failed or invalid attempts from either ledger.
+Reference comparisons produce both variant summaries from the paired cases and
+preserve the reference's JSON, CSV and Markdown report files.
+
+## Independent build-cache holdout
+
+`--suite eval/fixtures/cost-v4` selects a different 541-line subsystem across ten
+Python modules and its repaired clean twin. Five independent faults cover recursive
+cache identities, compiler options, transitive invalidation, active artifact
+ownership and complete manifest publication. Eleven clean controls and isolated
+repairs produce 32 oracle observations per case. Shared immutable blobs and private
+project heads exercise a different boundary from dispatcher tenant deduplication.
+
+```sh
+python3 -m unittest discover -s tests -p test_build_fixtures.py -v
+python3 eval/fixtures/cost-v4/seal_fixture.py
+python3 eval/cost_bench.py prepare --baseline <control-commit> --suite eval/fixtures/cost-v4 --out /tmp/rev-build-holdout --max-calls 4
+python3 eval/cost_bench.py local --out /tmp/rev-build-holdout --repetitions 5
+python3 eval/cost_bench.py live --out /tmp/rev-build-holdout --timeout 900
+```
+
+Adjudicate and report using the same frozen quality-v1 contract. Truth, executable
+oracles, references and rubrics remain outside the review checkouts. The seal binds
+dated historical scorer references; compatibility checks separately validate the
+current API. A reporting-only source change therefore does not invalidate the
+fixture's historical provenance. Compare identical case and rubric identities,
+and retain per-case gates across both domains before keeping an optimization.

@@ -516,10 +516,10 @@ def verified_quality_provenance(out, manifest, row, result, case, audit):
             'snapshot_packet_ranges': snapshot_ranges}
 
 
-def report(out, reference=None, reference_variant='candidate'):
+def report(out, reference=None, reference_variant='candidate', *, write_outputs=True):
     from bench_metrics import paired_deltas
     from bench_score import score_findings
-    from bench_quality import score_run, compare_quality
+    from bench_quality import score_run, compare_quality, summarize_quality
     manifest = load_manifest(out)
     rows = []
     for path in sorted((out / 'runs').glob('*/*/measurement.json')):
@@ -545,7 +545,7 @@ def report(out, reference=None, reference_variant='candidate'):
     paired_rows = rows
     reference_identity = None
     if reference is not None:
-        original = report(reference)
+        original = report(reference, write_outputs=False)
         check_reference(original['manifest'], manifest, reference_variant)
         originals = [dict(row, variant='baseline') for row in original['rows']
                      if row['variant'] == reference_variant]
@@ -573,6 +573,10 @@ def report(out, reference=None, reference_variant='candidate'):
         if set(pair) == {'baseline', 'candidate'}:
             result['quality_comparisons'].append(dict(case=case_id,
                 **compare_quality(pair['baseline'], pair['candidate'])))
+    expected_cases = [json.loads(path.read_text()) for path in sorted((out / 'cases').glob('*/case.json'))]
+    result['quality_summaries'] = summarize_quality(paired_rows, expected_cases)
+    if not write_outputs:
+        return result
     write_json(out / 'report.json', result)
     fields = ['case', 'variant', 'status', 'valid', 'wall_seconds', 'prompt_words', 'prompt_bytes',
               'tool_calls', 'estimated_credits', 'input_tokens', 'cached_input_tokens',
@@ -588,7 +592,7 @@ def report(out, reference=None, reference_variant='candidate'):
             writer.writerow({key: values.get(key) for key in fields})
     text = ['# Review cost benchmark', '', 'Baseline: `' + manifest['identity']['baseline_commit'] + '`.',
             'Model: `' + manifest['identity']['model'] + '`, effort `' + manifest['identity']['effort'] + '`.', '',
-            '| Case | Version | Status | Seconds | Estimated credits | Recall | FP | Quality /100 | Core /80 |',
+            '| Case | Variant | Status | Seconds | Estimated credits | Recall | FP | Quality /100 | Core /80 |',
             '| --- | --- | --- | ---: | ---: | --- | --- | ---: | ---: |']
     for row in rows:
         usage, quality = row.get('usage') or {}, row.get('quality') or {}
@@ -598,6 +602,20 @@ def report(out, reference=None, reference_variant='candidate'):
             row.get('estimated_credits'), quality.get('recall'), quality.get('false_positives'),
             run_quality.get('quality_score'), run_quality.get('core_score')))
     text += ['', 'Dollars are unknown unless reported. Credits are a dated Standard estimate.', '']
+    versions = result['quality_summaries']['baseline']
+    text += ['## Run quality', '',
+             'Descriptive equal-case scores use %s and %s. Every expected case requires a valid full score.' % (
+                 versions['score_version'], versions['aggregation_version']),
+             'Per-case quality gates remain required. Exact case/rubric identities and unknown reasons are in JSON.', '',
+             '| Variant | Equal-case mean /100 | Minimum /100 | Complete expected cases | Status |',
+             '| --- | ---: | ---: | ---: | --- |']
+    for variant, summary in result['quality_summaries'].items():
+        mean, minimum = summary['quality_score'], summary['minimum_quality_score']
+        text.append('| %s | %s | %s | %d/%d | %s |' % (
+            variant, 'unknown' if mean is None else '%.2f' % mean,
+            'unknown' if minimum is None else '%.2f' % minimum,
+            summary['complete_cases'], summary['expected_cases'], summary['status']))
+    text += ['']
     if result['quality_comparisons']:
         text += ['## Quality gates', '',
                  'A missing score is unknown. Observable source coverage is a proxy for inspection,',
@@ -608,7 +626,7 @@ def report(out, reference=None, reference_variant='candidate'):
                 '; '.join(comparison['reasons']) or 'all frozen quality gates pass'))
         text += ['']
     if result['local']:
-        text += ['## Local lane', '', '| Case | Version | Prompt words | Median compile seconds |',
+        text += ['## Local lane', '', '| Case | Variant | Prompt words | Median compile seconds |',
                  '| --- | --- | ---: | ---: |']
         for row in result['local']['compile_summaries']:
             text.append('| %s | %s | %d | %.3f |' % (row['case'], row['variant'], row['prompt_words'], row['median_compile_seconds']))

@@ -603,7 +603,7 @@ new experiments; its original two-execution ledger remains unchanged.
 - [x] Add a versioned 0-100 quality score from severity-weighted recall, precision, citation accuracy, observable source-flow coverage and manually verified hypotheses.
 - [x] Require valid proof, no lost P0/P1, no added false positives, at least 90/100 quality and at most a 3-point paired drop before retaining an optimization.
 - [x] Test packets without routed digest restoration on complex and clean cases. Discard after quality regression.
-- [ ] Test explicit complete-read transition cues against redundant EOF tool turns.
+- [x] Test explicit complete-read transition cues against redundant EOF tool turns. Discard after a fresh pair fails.
 - [x] Evaluate duplicate schema prose: the current adapter already supplies schema exactly once, so no change qualifies.
 - [ ] Evaluate further backlog ideas with local contracts before paid canaries.
 - [ ] Preserve unsuccessful experiments and retain measured improvements separately.
@@ -632,3 +632,51 @@ The independent bounded-index correction and reusable quality/complex-case suite
 Read-cue and source-batch screens reuse exactly matching frozen baseline controls,
 with fresh two-execution candidate ledgers, no paid probes, graders or retries.
 Full Council certification remains pending while fewer than three allowed seats are available.
+
+### Continued screening results
+
+Waves 5-9 are measured and losing runtime candidates remain isolated. The uncapped
+complex result reaches 98/100 with all six faults, but its clean twin is 88.75 and
+fails the frozen floor. Both batching variants lose observable source-flow proof;
+the safer version also raises credits 8.8% and time 69.7%. Fresh read-cue testing
+reduces credits only 1.0% with lower quality and higher elapsed time. No score or
+rubric was relaxed after observing these results.
+
+### Transfer and aggregate quality checks
+
+- [x] Measure decisive-summary cue on both frozen cases with exact reused controls.
+- [x] Measure complete-findings plus summary cue against four fresh executions. Both cases pass; pooled credits fall 8.49% and provider time 17.06%.
+- [x] Test line-addressed packets on the qualified complete-checks control and repeat the combination against four fresh executions. All case gates pass; repeat credits fall 2.34% and provider time 21.90%.
+- [x] Validate the combined runtime on an unrelated frozen build-cache holdout. Five faults are found, but clean depth is 86.25 and fails the fixed floor; discard the combination despite lower credits and time.
+- [x] Integrate complete-case numeric run summaries after frozen paid stages finish. Forty focused quality/report tests pass; 22 portable holdout tests pass without skips.
+- [ ] Run the final active-source gate, commit and push a draft stacked PR.
+
+The instruction components remain private and unretained. The combined runtime
+passes the dispatcher but fails the independent clean holdout depth floor. Mean
+holdout quality rises 92.19 to 92.50 while minimum stays 86.25; the mean cannot
+override that failed case gate. No scoring policy or rubric was relaxed.
+
+### Next bounded experiment
+
+- [x] Validate a private immutable snapshot batch contract with real captured tool output. Sixteen new tests and 182 existing focused checks pass; no production adoption.
+- [ ] Test a general caller/state-flow inspection cue without fixture-specific hints.
+- [ ] Run fresh paired measurements only after local proof and prompt contracts pass.
+
+Native live-source batching remains off. A preserved reproduction shows ambiguous
+joined producer output can be credited to incorrect individual source ranges.
+Current-coverage rejects persistent source mutation, but restoration before audit
+cannot prove which producer supplied each byte. A prospective pinned-snapshot
+contract must avoid that ambiguity; original streams, audits and scores stay frozen.
+
+The first aggregate gate catches six read-only mutation-copy errors and one flaky
+shared argv-spy assertion during concurrent roster probes. Temporary copies now
+copy bytes rather than frozen modes; all 22 holdout tests pass under a sealed tree.
+The probe test records each process's arguments separately, preserving its original
+availability assertion. Its 19 focused assertions pass. The repaired frozen gate passes 353 shell cases, 4,701 assertions, 229 Python tests
+and all three validators. All five terminal logs and hashes are verified. Tested tree:
+28afabf094c45fa2474c9857c30d7bc98af5fd267548b8f5bdde0f459fd9f33c.
+Only this task record differs from the sealed tested source.
+
+The next cheaper screen isolates finite patch completion plus a generic caller/state-flow
+cue on the experimental packet anchor. Local rendering must preserve all unaffected
+phase/adapter bytes before a finite two-call heldout stage, using exact frozen controls.

@@ -14,7 +14,7 @@ roster_env() {   # roster_env <bin-dir> [shim …] - install the named shims and
   export REVIEW_COUNCIL_CONFIG="$HOME/no-such-config.json"
   export REVIEW_COUNCIL_GEMINI_CREDS="$HOME/.gemini/oauth_creds.json"
   unset GEMINI_API_KEY REVIEW_COUNCIL_GEMINI_MODEL REVIEW_COUNCIL_CLAUDE_SEAT REVIEW_COUNCIL_CLAUDE_ADAPTER \
-        SHIM_MODE SHIM_ARGS_FILE
+        SHIM_MODE SHIM_ARGS_FILE SHIM_ARGS_DIR
 }
 roster_creds() { mkdir -p "$(dirname "$REVIEW_COUNCIL_GEMINI_CREDS")"; echo '{"access_token":"x"}' > "$REVIEW_COUNCIL_GEMINI_CREDS"; }
 roster_lines() {  # roster_lines <json> <out> - flatten the roster into greppable lines
@@ -867,6 +867,7 @@ SH
     chmod +x "$B/gemini"
     rm -f "$B/args" "$B/probes"
     export SHIM_PROBE_FILE="$B/probes"
+    export SHIM_ARGS_DIR="$B/codex-calls"; mkdir -p "$SHIM_ARGS_DIR"
     printf '%s' '{"min_labs":3,"extras":false}' > "$REVIEW_COUNCIL_CONFIG"
     "$SCRIPTS/roster.sh" --probe > "$B/retryable.json"
     assert_eq "a satisfiable floor with a failed provider is retryable" "$?" 5
@@ -875,6 +876,8 @@ SH
       '^strict_reason 2 lab\(s\) available, min_labs=3$'
     assert_eq "the temporarily unavailable provider was probed once" \
       "$(wc -l < "$B/probes" | tr -d ' ')" 1
-    assert_grep "the other CLI provider was also probed" "$B/args" '^Reply with exactly OK$'
+    # Concurrent model probes cannot share a last-call argv file.
+    cat "$SHIM_ARGS_DIR/"*.args > "$B/probe-args"
+    assert_grep "the other CLI provider was also probed" "$B/probe-args" '^Reply with exactly OK$'
   )
 }
