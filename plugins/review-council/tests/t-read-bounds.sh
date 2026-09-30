@@ -675,6 +675,41 @@ JSON
       '"required_source_ranges_covered":0'
 
     cp "$S/r4-sol.stream.ndjson" "$T/source-evidence-with-index.ndjson"
+    python3 - "$SCRIPTS/lib/review-read-audit.py" "$S/r4-sol.stream.ndjson" \
+      "$prompt" "$R" "$S" "$evidence_index" <<'PY'
+import importlib.util, json, pathlib, shlex, sys, types
+spec = importlib.util.spec_from_file_location('read_audit', sys.argv[1])
+audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
+stream, prompt, root, session, index = (pathlib.Path(value).resolve() for value in sys.argv[2:])
+rows = [json.loads(line) for line in stream.read_text().splitlines()]
+args = types.SimpleNamespace(adapter='codex', raw=str(stream), prompt=str(prompt), root=str(root),
+                             session=str(session), deps=None,
+                             out=str(session / 'r4-sol.read-audit.json'))
+full = index.read_text()
+bounded = "sed -n '1,240p' " + shlex.quote(str(index))
+cases = [
+    (bounded, full, True),
+    ("sed -n '1,1p' " + shlex.quote(str(index)), full, False),
+    (bounded, full[:-1], False),
+    (bounded, 'changed' + full[7:], False),
+    (bounded + '; :', full, False),
+    (bounded + ' | head -240', full, False),
+]
+for command, output, expected in cases:
+    changed = json.loads(json.dumps(rows))
+    for row in changed:
+        item = row.get('item') or {}
+        if item.get('id') == 'i1':
+            item['command'] = '/bin/zsh -lc ' + shlex.quote(command)
+            if row['type'] == 'item.completed':
+                item['aggregated_output'] = output
+    stream.write_text(''.join(json.dumps(row) + '\n' for row in changed))
+    document, failures, _ = audit.assess(args, set())
+    codes = {row['code'] for row in document['violations'] + document['advisories']}
+    assert ('missing-evidence-index' not in codes) == expected, (command, output[:20], codes)
+stream.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+PY
+    assert_eq "exact bounded single-window index reads prove complete bytes only" "$?" 0
     python3 - "$S/r4-sol.stream.ndjson" <<'PY'
 import json, sys
 path = sys.argv[1]

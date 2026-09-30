@@ -1651,6 +1651,17 @@ def assigned_patch_ranges_for_call(name, data, patch, root, total_lines):
     return []
 
 
+def bounded_complete_index_read(name, data, path, root, total_lines):
+    if name.lower() in SHELL_TOOLS:
+        try:
+            parts = split_shell(unwrap_shell(data.get('command', '')))
+            if len(parts) != 1 or parts[0][1]:
+                return False
+        except (TypeError, ValueError):
+            return False
+    return assigned_patch_ranges_for_call(name, data, path, root, total_lines) == [(1, total_lines)]
+
+
 def plan_specialist_primary(manifest, seat, session):
     """Return the schema-4 specialist's mandatory first artifact and read mode."""
     assignment = manifest['assignments'][seat]
@@ -2306,15 +2317,18 @@ def assess(args, blocked):
             assigned = context['shards']
             assigned_paths = {session / shard['artifact']: shard for shard in assigned}
             evidence_index = session / f"r{manifest['label']}-evidence.md"
+            evidence_index_lines = file_line_count(evidence_index)
             for call_id, (name, data, _) in calls.items():
                 output = outputs.get(call_id)
                 if output is None or not output['success']:
                     continue
                 if (evidence_index in paths_opened_by_call(name, data, root)
-                        and complete_packet_read(name, data, evidence_index, root)
+                        and (complete_packet_read(name, data, evidence_index, root)
+                             or bounded_complete_index_read(
+                                 name, data, evidence_index, root, evidence_index_lines))
                         and delivered_matches(
                             args.adapter, name, output['value'], evidence_index,
-                            1, file_line_count(evidence_index))):
+                            1, evidence_index_lines)):
                     paced_index_calls.add(call_id)
                     if call_id not in blocked:
                         credited.add(call_id)
