@@ -1,0 +1,279 @@
+{
+  "score_version": "quality-v1",
+  "assessment": "retrospective-core-only",
+  "annotation_policy": "Cache faults P1, ledger boundary faults P2; added after original runs and hashed separately. Original truth and results are untouched.",
+  "limits": [
+    "Core maximum80; no rescaling or full-quality claim.",
+    "Behavior rubrics and provenance were not prepared for these historical cases.",
+    "Original invalid wave3 audit remains noncertifying."
+  ],
+  "rows": [
+    {
+      "batch": "profile-latest-xhigh-20260930-v2",
+      "case": "boundary-ledger",
+      "variant": "candidate",
+      "valid": true,
+      "model": "gpt-6-luna",
+      "effort": "xhigh",
+      "core_score": 80.0,
+      "core_maximum": 80,
+      "quality_score": null,
+      "components": {
+        "defect_recall": {
+          "weight": 55,
+          "value": 1.0,
+          "points": 55.0
+        },
+        "precision": {
+          "weight": 15,
+          "value": 1.0,
+          "points": 15.0
+        },
+        "citation_accuracy": {
+          "weight": 10,
+          "value": 1.0,
+          "points": 10.0
+        },
+        "critical_flow_coverage": {
+          "weight": 15,
+          "value": null,
+          "points": null
+        },
+        "useful_hypotheses": {
+          "weight": 5,
+          "value": null,
+          "points": null
+        }
+      },
+      "case_sha256": "d57279e3b54584ef64efc4299ea8a6968ab49beaf112bb36b6dd14713d9b2451",
+      "findings_sha256": "a0dbc574c8e5510cebcff8a3332210163bce493339488de6f7e13f8c37097026",
+      "unavailable": [
+        "behavior-rubric",
+        "verified-provenance",
+        "evidence-manifest"
+      ]
+    },
+    {
+      "batch": "profile-latest-xhigh-20260930-v2",
+      "case": "cache-isolation",
+      "variant": "candidate",
+      "valid": true,
+      "model": "gpt-6-luna",
+      "effort": "xhigh",
+      "core_score": 80.0,
+      "core_maximum": 80,
+      "quality_score": null,
+      "components": {
+        "defect_recall": {
+          "weight": 55,
+          "value": 1.0,
+          "points": 55.0
+        },
+        "precision": {
+          "weight": 15,
+          "value": 1.0,
+          "points": 15.0
+        },
+        "citation_accuracy": {
+          "weight": 10,
+          "value": 1.0,
+          "points": 10.0
+        },
+        "critical_flow_coverage": {
+          "weight": 15,
+          "value": null,
+          "points": null
+        },
+        "useful_hypotheses": {
+          "weight": 5,
+          "value": null,
+          "points": null
+        }
+      },
+      "case_sha256": "6898491b28f8422ee17660e16a525e1bf5a2aba29d8293dc70618565c5698a5b",
+      "findings_sha256": "40624eed2ffc2c74f099d8fcca0ffe27d7c3e3292579135e406503021d5f625e",
+      "unavailable": [
+        "behavior-rubric",
+        "verified-provenance"
+      ]
+    },
+    {
+      "batch": "wave2-context-rounds-20260930-v2",
+      "case": "boundary-ledger",
+      "variant": "candidate",
+      "valid": true,
+      "model": "gpt-6-luna",
+      "effort": "xhigh",
+      "core_score": 75.0,
+      "core_maximum": 80,
+      "quality_score": null,
+      "components": {
+        "defect_recall": {
+          "weight": 55,
+          "value": 1.0,
+          "points": 55.0
+        },
+        "precision": {
+          "weight": 15,
+          "value": 1.0,
+          "points": 15.0
+        },
+        "citation_accuracy": {
+          "weight": 10,
+          "value": 0.5,
+          "points": 5.0
+        },
+        "critical_flow_coverage": {
+          "weight": 15,
+          "value": null,
+          "points": null
+        },
+        "useful_hypotheses": {
+          "weight": 5,
+          "value": null,
+          "points": null
+        }
+      },
+      "case_sha256": "d57279e3b54584ef64efc4299ea8a6968ab49beaf112bb36b6dd14713d9b2451",
+      "findings_sha256": "6fd52ee5b7f0c12416df20a3e5c5ed8a4e5257c6bcebf74dbf592b24f229accc",
+      "unavailable": [
+        "behavior-rubric",
+        "verified-provenance",
+        "evidence-manifest"
+      ]
+    },
+    {
+      "batch": "wave2-context-rounds-20260930-v2",
+      "case": "cache-isolation",
+      "variant": "candidate",
+      "valid": true,
+      "model": "gpt-6-luna",
+      "effort": "xhigh",
+      "core_score": 80.0,
+      "core_maximum": 80,
+      "quality_score": null,
+      "components": {
+        "defect_recall": {
+          "weight": 55,
+          "value": 1.0,
+          "points": 55.0
+        },
+        "precision": {
+          "weight": 15,
+          "value": 1.0,
+          "points": 15.0
+        },
+        "citation_accuracy": {
+          "weight": 10,
+          "value": 1.0,
+          "points": 10.0
+        },
+        "critical_flow_coverage": {
+          "weight": 15,
+          "value": null,
+          "points": null
+        },
+        "useful_hypotheses": {
+          "weight": 5,
+          "value": null,
+          "points": null
+        }
+      },
+      "case_sha256": "6898491b28f8422ee17660e16a525e1bf5a2aba29d8293dc70618565c5698a5b",
+      "findings_sha256": "06e26a31d083e1ae8d7d15e5f17d928e7103c5320eb2bea1a37ca4b3d100a49c",
+      "unavailable": [
+        "behavior-rubric",
+        "verified-provenance"
+      ]
+    },
+    {
+      "batch": "wave3-context-20260930",
+      "case": "cache-isolation",
+      "variant": "baseline",
+      "valid": true,
+      "model": "gpt-6-luna",
+      "effort": "xhigh",
+      "core_score": 80.0,
+      "core_maximum": 80,
+      "quality_score": null,
+      "components": {
+        "defect_recall": {
+          "weight": 55,
+          "value": 1.0,
+          "points": 55.0
+        },
+        "precision": {
+          "weight": 15,
+          "value": 1.0,
+          "points": 15.0
+        },
+        "citation_accuracy": {
+          "weight": 10,
+          "value": 1.0,
+          "points": 10.0
+        },
+        "critical_flow_coverage": {
+          "weight": 15,
+          "value": null,
+          "points": null
+        },
+        "useful_hypotheses": {
+          "weight": 5,
+          "value": null,
+          "points": null
+        }
+      },
+      "case_sha256": "0a0d9632f1baf697be687f786a4169451daa0a823481e61d8464d400e5ebf04b",
+      "findings_sha256": "ebb79bb4fdc1e91e1be3bb54f8db66e386d7e44b676430b3ff5caf1c77aa6fbf",
+      "unavailable": [
+        "behavior-rubric",
+        "verified-provenance"
+      ]
+    },
+    {
+      "batch": "wave3-context-20260930",
+      "case": "cache-isolation",
+      "variant": "candidate",
+      "valid": false,
+      "model": "gpt-6-luna",
+      "effort": "xhigh",
+      "core_score": 80.0,
+      "core_maximum": 80,
+      "quality_score": null,
+      "components": {
+        "defect_recall": {
+          "weight": 55,
+          "value": 1.0,
+          "points": 55.0
+        },
+        "precision": {
+          "weight": 15,
+          "value": 1.0,
+          "points": 15.0
+        },
+        "citation_accuracy": {
+          "weight": 10,
+          "value": 1.0,
+          "points": 10.0
+        },
+        "critical_flow_coverage": {
+          "weight": 15,
+          "value": null,
+          "points": null
+        },
+        "useful_hypotheses": {
+          "weight": 5,
+          "value": null,
+          "points": null
+        }
+      },
+      "case_sha256": "0a0d9632f1baf697be687f786a4169451daa0a823481e61d8464d400e5ebf04b",
+      "findings_sha256": "994d8fbbc3380e57a20b9bc9fe36407b96489c033e79f345ae688777d3df5cd0",
+      "unavailable": [
+        "behavior-rubric",
+        "verified-provenance",
+        "valid-audit"
+      ]
+    }
+  ]
+}

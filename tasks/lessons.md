@@ -1,5 +1,14 @@
 # Lessons
 
+- A lower credit bill and unchanged finding count can hide a lost critical defect.
+  Freeze severity, citation and evidence-depth gates before paid comparisons; never
+  let an aggregate quality mean override a failing case.
+
+- Discard an optimization implementation after a negative result. Keep its sealed
+  measurements for learning; making the losing behavior optional is not a measured win.
+- Tiny planted bugs are screening canaries. Trustworthy review-quality claims also
+  require a complex multi-file case, executable behavioral truth and clean controls.
+
 - PR review automation needs an explicit association boundary. If the reviewed
   branch has no open PR, skip cleanly; never infer or choose another publication target.
 

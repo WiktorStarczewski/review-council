@@ -545,7 +545,7 @@ Results: `docs/cost-benchmark-wave1-2026-09-29.md`. Complete raw artifacts and a
 - [x] Measure the same two fixtures on the frozen candidate, staying inside four total calls.
 - [x] Adjudicate findings, compare correctness, time and credits, and document limitations.
 - [x] Run the configured gate and commit the verified wave 2 source.
-- [ ] Push a separate draft change.
+- [x] Push a separate draft change.
 
 ### Constraints
 
@@ -566,5 +566,69 @@ with model and effort changed. Combined-panel launch savings are contract-tested
 projections, require enforced CLI receipts, and have no live panel quality/cost result.
 
 The full local gate passes 353 shell cases, 4,700 assertions, 161 Python tests and
-all validators. Separate draft delivery remains pending. Global installed
+all validators. Signed commit 4571f99 and draft PR #28 deliver wave 2. Global installed
 plugin/config activation and full Council certification remain separate.
+
+# Cost optimization wave 3
+
+Plan: `docs/superpowers/plans/2026-09-30-review-cost-wave3.md`.
+User chose packets plus relevant decision digests and two paid reviewer test executions
+on one paired evidence case. Production retains four seats.
+
+- [x] Implement lean packets with identical source selection and strict v1/v2 validation.
+- [x] Implement optional conservative decision routing and full-context expansion proof.
+- [x] Freeze one paired specialist case, with unchanged cache truth and neutral history.
+- [x] Pass local contracts and run the two authorized Luna/xhigh test executions.
+- [x] Adjudicate and document correctness, time, credits and representation-size metrics.
+- [x] Complete the full local gate after discarding the runtime.
+- [ ] Commit and push a separate draft with preserved measurements.
+
+### Wave 3 results
+
+Both paid executions finish and both semantic results find 2/2 bugs with no false
+positives. The candidate spends 0.1976955 versus 0.195727 credits and takes 175.67
+versus 140.05 s. Its original audit is invalid, with all original files preserved.
+Offline replay passes after narrow EOF and complete bounded-index proof fixes.
+Packet bytes fall 49.3%, but digest restoration and extra tool turns erase any
+observed cost/time benefit. The combined implementation is discarded; its frozen artifacts remain for reproduction.
+
+# Continued cost experiments
+
+The user authorized autonomous continuation after the wave 3 pair, testing ideas,
+benchmarking and retaining what works. This supersedes the completed wave 3 cap for
+new experiments; its original two-execution ledger remains unchanged.
+
+- [x] Verify and commit wave 3 measurements and independent audit correction after discarding the losing runtime.
+- [x] Add a complex multi-file case with executable truth and clean controls before retention decisions.
+- [x] Add a versioned 0-100 quality score from severity-weighted recall, precision, citation accuracy, observable source-flow coverage and manually verified hypotheses.
+- [x] Require valid proof, no lost P0/P1, no added false positives, at least 90/100 quality and at most a 3-point paired drop before retaining an optimization.
+- [x] Test packets without routed digest restoration on complex and clean cases. Discard after quality regression.
+- [ ] Test explicit complete-read transition cues against redundant EOF tool turns.
+- [x] Evaluate duplicate schema prose: the current adapter already supplies schema exactly once, so no change qualifies.
+- [ ] Evaluate further backlog ideas with local contracts before paid canaries.
+- [ ] Preserve unsuccessful experiments and retain measured improvements separately.
+
+Use Luna at xhigh for low-cost screening, preserve production roster and independent
+review obligations, freeze each identity, and prohibit automatic reviewer retries.
+Use two executions per one-case screening pair, with four only when a second case
+is necessary to check a concrete quality risk. Report variance and toy-case limits.
+
+The next packet-only pair uses four executions because a wholly clean twin is
+needed to measure specificity alongside the complex defective subsystem. Both
+identities stay frozen. Quality scoring uses observed evidence and complete local
+adjudications, never hidden reasoning or a paid grader. Legacy cases without the
+private behavior rubric report an explicitly limited core score rather than an
+invented 100-point score. Scoring policy changes require a new version and replay
+of both sides of a comparison.
+
+### Numeric quality and packet-only screen
+
+The full frozen gate passes 353 shell cases, 4,701 assertions, 191 Python tests and
+all three validators. Receipt tree: 35e96b952b44bceb0ea16f4b693426f301406faf685012eb61beee44098d301e.
+Wave 4 completes four Luna/xhigh executions: pooled credits fall 24.6%, but complex
+quality falls 92.5 to 83.5 with a lost P1 and two inaccurate citations. Clean quality
+falls 91.25 to 88.75. Both candidates fail fixed retention gates and are discarded.
+The independent bounded-index correction and reusable quality/complex-case suite remain.
+Read-cue and source-batch screens reuse exactly matching frozen baseline controls,
+with fresh two-execution candidate ledgers, no paid probes, graders or retries.
+Full Council certification remains pending while fewer than three allowed seats are available.

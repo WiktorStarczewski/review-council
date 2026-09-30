@@ -757,6 +757,10 @@ The runner resolves the configured latest model and freezes its identity and rat
 Raw usage, dated credit estimates and manually adjudicated quality remain separate.
 The [second-wave results](docs/cost-benchmark-wave2-2026-09-30.md) measure 12.0% fewer
 estimated credits on two fixed-model canaries and distinguish projected round savings.
+The [third-wave results](docs/cost-benchmark-wave3-2026-09-30.md) preserve a one-case
+- [Packet-only experiment and numeric quality](docs/cost-benchmark-wave4-2026-09-30.md): measured cost savings rejected by the reusable 0-100 quality gates.
+attempt with 1.0% higher spend and 25.4% longer provider time, plus its offline audit repair.
+The unsuccessful combined packet/digest implementation was discarded.
 
 ## Stack reviews
 

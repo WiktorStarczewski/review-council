@@ -56,6 +56,32 @@ The local contract failure scenario replaces the roster executable with a counti
 
 Keep the suite ID, exact source identities, CLI version, model, effort, rate card and raw cache categories when comparing future runs. Existing `eval/bench.sh` remains the separate multi-seat held-out simplicity evaluation.
 
+## One-case context experiment
+
+`--suite eval/fixtures/cost-v2` selects one evidence case for a two-execution pair.
+The original cache regressions and oracle are unchanged. An unchanged presentation
+module and neutral decision history exercise relevant-context routing. Both versions
+give the measured Luna seat the same security-state-api specialist bundle; the
+unlaunched Sol row owns the combined full-state bundle. This is a specialist canary,
+so its results cannot be directly pooled with the earlier cumulative-owner runs.
+
+```bash
+python3 eval/cost_bench.py prepare --baseline <wave2-commit> --suite eval/fixtures/cost-v2 --out /tmp/rev-context-pair --max-calls 2
+python3 eval/cost_bench.py local --out /tmp/rev-context-pair
+python3 eval/cost_bench.py live --out /tmp/rev-context-pair --timeout 600
+python3 eval/cost_bench.py report --out /tmp/rev-context-pair
+```
+
+The sealed case's `context.md` is the sole decision text. Its sparse route template
+is bound to that text's SHA-256 and the prepared material tree before rendering.
+The archived wave 3 candidate routed global and relevant decisions and restored the
+full digest before repository expansion. Its combined optimization was discarded
+after a negative paired result. Current rendering supplies full decision history;
+the route template is retained as experimental fixture data. Packet bytes and
+delivered digest bytes are local size metrics, not
+provider-token or credit savings. One pair has ordering bias and cannot establish
+quality equivalence or production panel savings.
+
 ## Staged experiments
 
 Measure model settings before changing workflow. A two-case candidate-only stage
@@ -84,3 +110,57 @@ creating another batch does not confer another usage budget.
 Earlier Terra/max measurements use their archived engine and rate card. A migration
 comparison against those measurements changes model and effort, and must be labeled
 as a historical reference, separate from a workflow-only comparison.
+
+## Complex cases and numeric quality
+
+`--suite eval/fixtures/cost-v3` selects a 700-line dispatcher across nine Python
+files plus repository instructions, and a wholly correct twin retaining harmless
+edits. Six planted faults require following tenant identity, lease generations,
+retry clocks, cancellation, transactional rollback and partial acknowledgement
+contracts across modules. Truth, independent repair mutations and behavior rubrics
+remain outside both reviewed source roots. One paired suite needs four executions;
+a candidate-only stage needs two. Each new stage requires its own explicit budget.
+
+Quality v1 is a fixed 0-100 score:
+
+| Component | Maximum points | Evidence |
+| --- | ---: | --- |
+| Severity-weighted defect recall | 55 | Complete source/oracle adjudication; P0/P1/P2/P3 weights 8/4/2/1. |
+| Precision | 15 | All distinct findings adjudicated, including valid extra findings and false positives. |
+| Citation accuracy | 10 | Exact fault-range overlap plus manual evidence validation. |
+| Critical-flow coverage | 15 | Gapless audited source reads for every private flow; packet reads qualify only for the current snapshot. |
+| Useful hypotheses | 5 | Manually verified or refuted scenarios supported by the required source reads. |
+
+A clean case awards the recall component for specificity only when there are zero
+false positives. Empty clean results have an explicit precision/citation convention;
+an empty defective result receives zero outcome points. Novel, grounded scenarios
+are tracked separately and can substitute at most one untested hypothesis. More
+prose earns no additional credit. Exact validated snapshot packets can establish
+flow exposure without redundant rereads; base-revision packets cannot. Coverage
+proves exposure to source, not understanding;
+hidden reasoning is not available and is never requested or scored.
+
+After `adjudication.json`, write a complete `behavior-adjudication.json` using the
+[versioned scoring contract](../docs/superpowers/specs/2026-09-30-review-quality-score.md).
+The envelope binds the case, rubric, entire result, audit and evidence manifest.
+Reporting verifies original artifact hashes and independently replays the frozen
+read auditor before crediting flow coverage. Missing provenance, severities, rubric
+or complete adjudication leaves the corresponding score unknown. Legacy results
+can show a core score out of 80 when sufficient evidence exists; it is not silently
+rescaled into a 100-point score.
+
+JSON exposes every component, unavailable reason, policy identity and paired delta;
+CSV and Markdown show quality and core scores. Default retention requires valid
+proof, quality at least 90/100, weighted recall at least 90%, all planted P0/P1 found,
+no added false positives, and a paired drop no larger than 3 points. A cost saving
+with a failed quality gate is discarded. A passing small suite is evidence for an
+experiment, not statistical equivalence or full-panel certification. Freeze this
+policy and score version when comparing runs; recalibration requires replaying both
+sides using a newly versioned scorer.
+
+A retained control can be reused without another baseline execution using
+`report --reference <frozen-pair> --reference-variant baseline` on a later
+candidate-only stage. The selected reference source must exactly match the new
+baseline; all other identity checks still apply. This saves development calls, but
+increases temporal separation and does not create a fresh contemporaneous pair.
+Reusing a control does not erase failed or invalid attempts from either ledger.

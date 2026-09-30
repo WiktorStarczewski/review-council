@@ -122,6 +122,61 @@ class CostBenchTests(unittest.TestCase):
         self.assertEqual(json.loads((out / 'report.json').read_text())['manifest']['identity']['engine'],
                          bench.engine_identity())
 
+    def test_one_case_suite_freezes_a_two_call_pair_and_specialist_role(self):
+        candidate = self.root / 'candidate'
+        helper = candidate / 'plugins/review-council/scripts/lib/usage.py'
+        helper.parent.mkdir(parents=True)
+        shutil.copy2(REPO / 'plugins/review-council/scripts/lib/usage.py', helper)
+        helper.chmod(0o644)
+        bench.git(candidate, 'init', '-q', '-b', 'main')
+        bench.git(candidate, 'add', '.')
+        bench.git(candidate, '-c', 'commit.gpgsign=false', '-c', 'user.name=Fixture',
+                  '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Fixture')
+        suite = self.root / 'one-case-suite'
+        case_dir = suite / 'cache-isolation'
+        shutil.copytree(REPO / 'eval/fixtures/cost-v1/cache-isolation', case_dir)
+        bench.make_worktree_writable(case_dir)
+        case = json.loads((case_dir / 'case.json').read_text())
+        case['reviewer_role'] = 'specialist'
+        (case_dir / 'case.json').write_text(json.dumps(case))
+        rates = self.root / 'rates.json'
+        rates.write_text(json.dumps({'model': 'fixture-luna', 'input_per_million': 2,
+                                    'cached_per_million': 0.2, 'output_per_million': 10}))
+        original = bench.command
+        def command(argv, *args, **kwargs):
+            return 'codex-fixture' if argv == ['codex', '--version'] else original(argv, *args, **kwargs)
+        out = self.root / 'batch'
+        with patch.object(bench, 'command', command):
+            manifest = bench.prepare(out, 'main', candidate, 2, PROFILE,
+                                     rate_card=rates, suite=suite)
+        self.assertEqual(manifest['schedule'], [['cache-isolation', 'baseline'],
+                                              ['cache-isolation', 'candidate']])
+        frozen = json.loads((out / 'cases/cache-isolation/case.json').read_text())
+        self.assertEqual(frozen['reviewer_role'], 'specialist')
+        self.assertFalse((out / 'budget.json').exists())
+        self.assertEqual(bench.tree_identity(out / 'cases'), manifest['identity']['cases'])
+        limits = bench.report(out)['limits']
+        self.assertIn('1 case provides no statistical quality equivalence.', limits)
+        self.assertFalse(any('Two cases' in limit for limit in limits))
+
+    def test_context_suite_preserves_truth_and_unchanged_unrelated_source(self):
+        original = REPO / 'eval/fixtures/cost-v1/cache-isolation'
+        enriched = REPO / 'eval/fixtures/cost-v2/cache-isolation'
+        for snapshot in ('before', 'after'):
+            self.assertEqual((enriched / snapshot / 'cache.py').read_bytes(),
+                             (original / snapshot / 'cache.py').read_bytes())
+        self.assertEqual((enriched / 'before/reporting.py').read_bytes(),
+                         (enriched / 'after/reporting.py').read_bytes())
+        self.assertEqual((enriched / 'oracle.py').read_bytes(), (original / 'oracle.py').read_bytes())
+        checks = json.loads(bench.command([sys.executable, str(enriched / 'oracle.py'), '--json']))
+        self.assertTrue(checks['passed'])
+        self.assertEqual(len(checks['checks']), 8)
+        context = (enriched / 'context.md').read_text()
+        self.assertLessEqual(len(context.split()), 500)
+        for defect in json.loads((enriched / 'case.json').read_text())['defects']:
+            self.assertNotIn(defect['description'], context)
+            self.assertNotIn(defect['id'], context)
+
     def test_timeout_preserves_partial_output(self):
         log = self.root / 'partial.log'
         result = bench.run_process(
@@ -194,6 +249,60 @@ class CostBenchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'reference'):
             bench.check_reference(before, after)
 
+    def test_reusing_control_variant_requires_its_exact_frozen_source(self):
+        identity = {'model': 'fixture-luna', 'effort': 'xhigh', 'cases': 'truth',
+                    'codex_version': 'cli', 'rate_card': 'rates', 'collector': 'collector',
+                    'engine': {}, 'sources': {'baseline': 'control', 'candidate': 'loser'}}
+        original = {'identity': identity}
+        later = {'identity': dict(identity, sources={'baseline': 'control', 'candidate': 'next'})}
+        bench.check_reference(original, later, 'baseline')
+        with self.assertRaisesRegex(ValueError, 'source'):
+            bench.check_reference(original, later)
+        with self.assertRaisesRegex(ValueError, 'variant'):
+            bench.check_reference(original, later, 'unknown')
+
+    def test_quality_provenance_replays_bound_artifacts_and_excludes_base_packets(self):
+        import hashlib
+        session = self.root / 'runs/example/candidate'
+        session.mkdir(parents=True)
+        root = self.root / 'work/example/root'
+        root.mkdir(parents=True)
+        result = {'summary': 'No actionable defects', 'findings': []}
+        case = {'id': 'example', 'defects': []}
+        artifacts = {}
+        for key, content in (('prompt', b'contract'), ('raw', b'tool evidence'),
+                             ('findings', json.dumps(result).encode())):
+            path = session / (key + '.json')
+            path.write_bytes(content)
+            artifacts[key] = str(path.relative_to(self.root))
+        snapshot = 'a' * 40
+        packet_ranges = [dict(path='current.py', line_start=1, line_end=5, blob_tree=snapshot),
+                         dict(path='old.py', line_start=1, line_end=5, blob_tree='b' * 40)]
+        evidence_path = session / 'r1-evidence.manifest.json'
+        evidence_path.write_text(json.dumps({'snapshot_tree': snapshot, 'source_context': {
+            'seats': {PROFILE['seat']: {'shards': [{'ranges': packet_ranges}]}}}}))
+        audit = {'status': 'valid', 'violations': [], 'source_ranges': [
+            dict(path=r['path'], line_start=r['line_start'], line_end=r['line_end'], origin='packet')
+            for r in packet_ranges], 'evidence_manifest_sha256': hashlib.sha256(evidence_path.read_bytes()).hexdigest()}
+        for key, field in (('prompt', 'prompt_sha256'), ('raw', 'stream_sha256'), ('findings', 'result_sha256')):
+            audit[field] = hashlib.sha256((self.root / artifacts[key]).read_bytes()).hexdigest()
+        row = {'valid': True, 'variant': 'candidate', 'case': 'example', 'artifacts': artifacts}
+        manifest = {'identity': {'profile': PROFILE}}
+        def replay(argv, **kwargs):
+            Path(argv[argv.index('--out') + 1]).write_text(json.dumps(audit))
+            return ''
+        with patch.object(bench, 'command', replay):
+            provenance = bench.verified_quality_provenance(self.root, manifest, row, result, case, audit)
+        self.assertEqual(provenance['snapshot_packet_ranges'], [packet_ranges[0]])
+        def forged_replay(argv, **kwargs):
+            Path(argv[argv.index('--out') + 1]).write_text(json.dumps(dict(audit, source_ranges=[])))
+            return ''
+        with patch.object(bench, 'command', forged_replay), self.assertRaisesRegex(ValueError, 'replayed'):
+            bench.verified_quality_provenance(self.root, manifest, row, result, case, audit)
+        (self.root / artifacts['raw']).write_bytes(b'changed evidence')
+        with self.assertRaisesRegex(ValueError, 'artifact binding'):
+            bench.verified_quality_provenance(self.root, manifest, row, result, case, audit)
+
     def test_contract_refusal_never_launches_even_fake_roster_probe(self):
         local_spec = importlib.util.spec_from_file_location('bench_local', REPO / 'eval/bench_local.py')
         if not local_spec.loader or not (REPO / 'eval/bench_local.py').exists():
@@ -223,27 +332,47 @@ class CostBenchTests(unittest.TestCase):
         self.assertTrue(result['matches_truth'])
 
     def test_evidence_case_compiles_a_valid_canonical_topology_without_providers(self):
-        plugin = self.root / 'sources/candidate/plugins/review-council'
-        plugin.parent.mkdir(parents=True)
-        bench.snapshot_tree(REPO / 'plugins/review-council', plugin)
-        case_root = REPO / 'eval/fixtures/cost-v1/cache-isolation'
-        case = json.loads((case_root / 'case.json').read_text())
-        root = self.root / 'work/cache-isolation/root'
-        root.parent.mkdir(parents=True)
-        bench.snapshot_tree(case_root / 'before', root)
-        bench.make_worktree_writable(root)
-        bench.git(root, 'init', '-q', '-b', 'main')
-        bench.git(root, 'add', '.')
-        bench.git(root, '-c', 'commit.gpgsign=false', '-c', 'user.name=Fixture',
-                  '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Base')
-        bench.git(root, 'checkout', '-qb', 'change')
-        for file in case['files']:
-            (root / file).write_bytes((case_root / 'after' / file).read_bytes())
-        prompt, elapsed = bench.render(self.root, case, 'candidate', self.root / 'session', PROFILE)
-        self.assertTrue(prompt.is_file())
-        self.assertEqual(prompt.name, 'r1-codex-luna.prompt.md')
-        self.assertGreater(prompt.stat().st_size, 0)
-        self.assertFalse((self.root / 'budget.json').exists())
+        for suite_name in ('cost-v1', 'cost-v2'):
+            with self.subTest(suite=suite_name):
+                batch = self.root / suite_name
+                plugin = batch / 'sources/candidate/plugins/review-council'
+                plugin.parent.mkdir(parents=True)
+                bench.snapshot_tree(REPO / 'plugins/review-council', plugin)
+                case_root = REPO / 'eval/fixtures' / suite_name / 'cache-isolation'
+                case = json.loads((case_root / 'case.json').read_text())
+                frozen_case = batch / 'cases/cache-isolation'
+                frozen_case.parent.mkdir(parents=True)
+                bench.snapshot_tree(case_root, frozen_case)
+                root = batch / 'work/cache-isolation/root'
+                root.parent.mkdir(parents=True)
+                bench.snapshot_tree(case_root / 'before', root)
+                bench.make_worktree_writable(root)
+                bench.git(root, 'init', '-q', '-b', 'main')
+                bench.git(root, 'add', '.')
+                bench.git(root, '-c', 'commit.gpgsign=false', '-c', 'user.name=Fixture',
+                          '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'Base')
+                bench.git(root, 'checkout', '-qb', 'change')
+                for file in case['files']:
+                    (root / file).write_bytes((case_root / 'after' / file).read_bytes())
+                prompt, elapsed = bench.render(batch, case, 'candidate', batch / 'session', PROFILE)
+                self.assertTrue(prompt.is_file())
+                self.assertEqual(prompt.name, 'r1-codex-luna.prompt.md')
+                self.assertGreater(prompt.stat().st_size, 0)
+                self.assertFalse((batch / 'budget.json').exists())
+
+                manifest = json.loads((batch / 'session/r1-evidence.manifest.json').read_text())
+                if suite_name == 'cost-v2':
+                    self.assertEqual(manifest['mechanical_owner'], 'codex-sol')
+                    self.assertEqual(manifest['assignments']['codex-luna']['bundle'], 'security-state-api')
+                    self.assertFalse(manifest['assignments']['codex-luna']['full_state'])
+                    self.assertEqual((batch / 'session/context.md').read_bytes(), (case_root / 'context.md').read_bytes())
+                    routes = json.loads((batch / 'session/context.routes.json').read_text())
+                    self.assertEqual(routes['snapshot_tree'], manifest['snapshot_tree'])
+                    body = prompt.read_text()
+                    context = (case_root / 'context.md').read_text()
+                    self.assertIn(context, body)
+                else:
+                    self.assertEqual(manifest['mechanical_owner'], 'codex-luna')
 
 
 if __name__ == '__main__':

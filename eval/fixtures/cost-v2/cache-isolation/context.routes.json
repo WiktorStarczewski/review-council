@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "line_start": 1,
+      "line_end": 4,
+      "paths": []
+    },
+    {
+      "line_start": 5,
+      "line_end": 8,
+      "paths": [
+        "cache.py"
+      ]
+    },
+    {
+      "line_start": 9,
+      "line_end": 12,
+      "paths": [
+        "reporting.py"
+      ]
+    },
+    {
+      "line_start": 13,
+      "line_end": 16,
+      "paths": [
+        "reporting.py"
+      ]
+    },
+    {
+      "line_start": 17,
+      "line_end": 20,
+      "paths": [
+        "reporting.py"
+      ]
+    },
+    {
+      "line_start": 21,
+      "line_end": 24,
+      "paths": [
+        "reporting.py"
+      ]
+    }
+  ]
+}

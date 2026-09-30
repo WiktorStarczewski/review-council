@@ -205,7 +205,7 @@ def git(root, *args):
     return command(['git', '-C', str(root), *args])
 
 
-def prepare(out, baseline, candidate, maximum, profile, variants=('baseline', 'candidate'), rate_card=RATE):
+def prepare(out, baseline, candidate, maximum, profile, variants=('baseline', 'candidate'), rate_card=RATE, suite=SUITE):
     if out.exists() and any(out.iterdir()):
         raise ValueError('prepare requires an empty output directory')
     out.mkdir(parents=True, exist_ok=True)
@@ -224,7 +224,7 @@ def prepare(out, baseline, candidate, maximum, profile, variants=('baseline', 'c
     candidate_plugin.parent.mkdir(parents=True)
     sources = {'baseline': tree_identity(baseline_plugin),
                'candidate': snapshot_tree(candidate / 'plugins/review-council', candidate_plugin)}
-    snapshot_tree(SUITE, out / 'cases')
+    snapshot_tree(suite, out / 'cases')
     model_rates(json.loads(rate_card.read_text()), profile['model'])
     shutil.copy2(rate_card, out / 'rate-card.json')
     cases = [json.loads(path.read_text()) for path in sorted((out / 'cases').glob('*/case.json'))]
@@ -270,7 +270,8 @@ def prepare(out, baseline, candidate, maximum, profile, variants=('baseline', 'c
 
 def engine_identity():
     return {name: hashlib.sha256((REPO / 'eval' / name).read_bytes()).hexdigest()
-            for name in ('cost_bench.py', 'bench_local.py', 'bench_metrics.py', 'bench_score.py')}
+            for name in ('cost_bench.py', 'bench_local.py', 'bench_metrics.py', 'bench_score.py',
+                         'bench_quality.py')}
 
 
 def load_manifest(out):
@@ -294,7 +295,8 @@ def load_manifest(out):
 
 def environment():
     values = dict(os.environ, REV_PATCH_CHUNKS='0', REV_SOURCE_CONTEXT='1')
-    for key in ('REV_ACTIVE', 'REV_RG', 'REV_DEPS_DIR', 'REV_EVIDENCE_MANIFEST'):
+    for key in ('REV_ACTIVE', 'REV_RG', 'REV_DEPS_DIR', 'REV_EVIDENCE_MANIFEST',
+                'REV_CODEX_SOURCE_BATCH'):
         values.pop(key, None)
     return values
 
@@ -312,18 +314,32 @@ def render(out, case, variant, session, profile=None):
     (session / 'untracked.txt').write_text('')
     profile = profile or json.loads((out / 'manifest.json').read_text())['identity']['profile']
     seat = profile['seat']
-    rows = sorted(profile['roster'], key=lambda row: row['seat'] != seat)
-    other = next(row['seat'] for row in rows if row['adapter'] == 'codex' and row['seat'] != seat)
+    role = case.get('reviewer_role', 'cumulative')
+    if role not in ('cumulative', 'specialist') or (role == 'specialist' and case['mode'] != 'evidence'):
+        raise ValueError('invalid benchmark reviewer role')
+    other = next(row['seat'] for row in profile['roster'] if row['adapter'] == 'codex' and row['seat'] != seat)
+    full = other if role == 'specialist' else seat
+    specialist = seat if role == 'specialist' else other
+    rows = sorted(profile['roster'], key=lambda row: row['seat'] != full)
     write_json(session / 'roster.json', {'seats': rows})
-    lens = case['lens'] if case['mode'] == 'legacy' else 'correctness-boundaries+tests-observability-maintenance-regression'
+    if case.get('decision_context'):
+        shutil.copy2(out / 'cases' / case['id'] / 'context.md', session / 'context.md')
+    lens = case['lens'] if case['mode'] == 'legacy' else (
+        'security-state-api' if role == 'specialist' else
+        'correctness-boundaries+tests-observability-maintenance-regression')
     args = [str(scripts / 'rev-prompt.sh'), str(session), '1', seat, lens,
             'Review the behavior change and substantiate actionable correctness findings.']
     if case['mode'] == 'evidence':
         manifest = command([sys.executable, str(scripts / 'rev-evidence.py'), 'prepare',
                             str(session), '1', '--phase', 'risk', '--assignment',
-                            seat + '=correctness-boundaries+tests-observability-maintenance-regression', '--assignment',
-                            other + '=security-state-api', '--assignment',
+                            full + '=correctness-boundaries+tests-observability-maintenance-regression', '--assignment',
+                            specialist + '=security-state-api', '--assignment',
                             'opus=concurrency-resources-performance'], environment=environment())
+        if case.get('decision_context'):
+            routes = json.loads((out / 'cases' / case['id'] / 'context.routes.json').read_text())
+            routes.update(context_sha256=hashlib.sha256((session / 'context.md').read_bytes()).hexdigest(),
+                          snapshot_tree=json.loads(Path(manifest).read_text())['snapshot_tree'])
+            write_json(session / 'context.routes.json', routes)
         args += ['--evidence', manifest]
     prompt = Path(command(args, environment=environment()).splitlines()[-1])
     return prompt, time.monotonic() - start
@@ -444,18 +460,66 @@ def live(out, timeout):
             break
 
 
-def check_reference(before, after):
+def check_reference(before, after, variant='candidate'):
+    if variant not in ('baseline', 'candidate'):
+        raise ValueError('invalid reference variant')
     first, second = before['identity'], after['identity']
     for key in ('model', 'effort', 'profile', 'cases', 'codex_version', 'rate_card', 'collector', 'engine'):
         if first.get(key) != second.get(key):
             raise ValueError('reference differs in ' + key)
-    if first['sources']['candidate'] != second['sources']['baseline']:
+    if first['sources'][variant] != second['sources']['baseline']:
         raise ValueError('reference source differs from baseline')
 
 
-def report(out, reference=None):
+def verified_quality_provenance(out, manifest, row, result, case, audit):
+    from bench_quality import canonical_sha256
+    if not row.get('valid') or not audit or audit.get('status') != 'valid' or audit.get('violations'):
+        return None
+    paths = {key: out / value for key, value in row['artifacts'].items()}
+    for key, field in (('prompt', 'prompt_sha256'), ('raw', 'stream_sha256'),
+                       ('findings', 'result_sha256')):
+        if hashlib.sha256(paths[key].read_bytes()).hexdigest() != audit.get(field):
+            raise ValueError('quality audit artifact binding changed: ' + key)
+    if json.loads(paths['findings'].read_text()) != result:
+        raise ValueError('quality result differs from the bound artifact')
+    evidence_path = paths['prompt'].parent / 'r1-evidence.manifest.json'
+    if not evidence_path.exists():
+        return None
+    evidence = json.loads(evidence_path.read_text())
+    digest = hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+    if audit.get('evidence_manifest_sha256') != digest:
+        raise ValueError('quality evidence manifest binding changed')
+    plugin = out / 'sources' / row['variant'] / 'plugins/review-council'
+    root = out / 'work' / row['case'] / 'root'
+    with tempfile.TemporaryDirectory(prefix='review-quality-proof-') as temporary:
+        replay_path = Path(temporary) / 'audit.json'
+        command([sys.executable, str(plugin / 'scripts/lib/review-read-audit.py'),
+                 'audit', '--adapter', 'codex', '--raw', str(paths['raw']),
+                 '--prompt', str(paths['prompt']), '--root', str(root),
+                 '--session', str(paths['prompt'].parent), '--result', str(paths['findings']),
+                 '--out', str(replay_path)], cwd=root, environment=environment())
+        if json.loads(replay_path.read_text()) != audit:
+            raise ValueError('quality audit differs from replayed tool evidence')
+    packet_keys = {(r['path'], r['line_start'], r['line_end'])
+                   for r in audit.get('source_ranges', []) if r.get('origin') == 'packet'}
+    seat = manifest['identity']['profile']['seat']
+    packet = evidence.get('source_context', {}).get('seats', {}).get(seat, {})
+    snapshot_ranges = [dict(path=r['path'], line_start=r['line_start'], line_end=r['line_end'],
+                            blob_tree=r['blob_tree'])
+                       for shard in packet.get('shards', []) for r in shard['ranges']
+                       if r['blob_tree'] == evidence['snapshot_tree']
+                       and (r['path'], r['line_start'], r['line_end']) in packet_keys]
+    return {'case_sha256': canonical_sha256(case),
+            'findings_sha256': canonical_sha256(result),
+            'audit_sha256': canonical_sha256(audit),
+            'evidence_manifest_sha256': digest, 'snapshot_tree': evidence['snapshot_tree'],
+            'snapshot_packet_ranges': snapshot_ranges}
+
+
+def report(out, reference=None, reference_variant='candidate'):
     from bench_metrics import paired_deltas
     from bench_score import score_findings
+    from bench_quality import score_run, compare_quality
     manifest = load_manifest(out)
     rows = []
     for path in sorted((out / 'runs').glob('*/*/measurement.json')):
@@ -464,7 +528,16 @@ def report(out, reference=None):
         if adjudication.exists() and row.get('schema_valid'):
             case = json.loads((out / 'cases' / row['case'] / 'case.json').read_text())
             result = json.loads((path.parent / ('r1-' + manifest['identity']['profile']['seat'] + '.json')).read_text())
-            row['quality'] = score_findings(case, result, json.loads(adjudication.read_text()))
+            dispositions = json.loads(adjudication.read_text())
+            row['quality'] = score_findings(case, result, dispositions)
+            behavior_path = path.parent / 'behavior-adjudication.json'
+            audit_path = path.parent / ('r1-' + manifest['identity']['profile']['seat'] + '.audit.json')
+            behavior = json.loads(behavior_path.read_text()) if behavior_path.exists() else None
+            audit = json.loads(audit_path.read_text()) if audit_path.exists() else None
+            provenance = (verified_quality_provenance(out, manifest, row, result, case, audit)
+                          if behavior is not None and case.get('behavior_rubric') else None)
+            row['run_quality'] = score_run(case, result, dispositions, audit, behavior,
+                                           verified_provenance=provenance)
         rows.append(row)
     ledger = out / 'budget.json'
     attempts = json.loads(ledger.read_text())['attempts'] if ledger.exists() else []
@@ -473,43 +546,67 @@ def report(out, reference=None):
     reference_identity = None
     if reference is not None:
         original = report(reference)
-        check_reference(original['manifest'], manifest)
-        originals = [dict(row, variant='baseline') for row in original['rows'] if row['variant'] == 'candidate']
+        check_reference(original['manifest'], manifest, reference_variant)
+        originals = [dict(row, variant='baseline') for row in original['rows']
+                     if row['variant'] == reference_variant]
         if any(row['variant'] != 'candidate' for row in rows):
             raise ValueError('reference comparison requires a candidate-only stage')
         paired_rows = originals + rows
-        reference_identity = {'path': str(reference), 'manifest_sha256': hashlib.sha256((reference / 'manifest.json').read_bytes()).hexdigest()}
+        reference_identity = {'path': str(reference), 'variant': reference_variant,
+            'manifest_sha256': hashlib.sha256((reference / 'manifest.json').read_bytes()).hexdigest()}
+    case_count = len({case for case, _ in manifest['schedule']})
+    case_limit = (str(case_count) + (' case provides' if case_count == 1 else ' cases provide')
+                  + ' no statistical quality equivalence.')
     result = {'manifest': manifest, 'rows': rows, 'pairs': paired_deltas(paired_rows),
               'reference': reference_identity,
               'local': json.loads(local_path.read_text()) if local_path.exists() else None,
               'reserved_executions': len(attempts), 'maximum_executions': manifest['maximum'],
               'unmeasured_reservations': [x['run_id'] for x in attempts
                   if x['run_id'] not in {r['case'] + '/' + r['variant'] for r in rows}],
-              'limits': ['Two cases provide no statistical quality equivalence.',
+              'limits': [case_limit,
                          'Server cache cannot be cleared; single stages have temporal ordering bias.',
                          'No full panel certification or subscription cost claim.',
                          'One reviewer execution may include multiple provider HTTP requests.']}
+    result['quality_comparisons'] = []
+    for case_id in sorted({row['case'] for row in paired_rows}):
+        pair = {row['variant']: row for row in paired_rows if row['case'] == case_id}
+        if set(pair) == {'baseline', 'candidate'}:
+            result['quality_comparisons'].append(dict(case=case_id,
+                **compare_quality(pair['baseline'], pair['candidate'])))
     write_json(out / 'report.json', result)
     fields = ['case', 'variant', 'status', 'valid', 'wall_seconds', 'prompt_words', 'prompt_bytes',
               'tool_calls', 'estimated_credits', 'input_tokens', 'cached_input_tokens',
-              'uncached_input_tokens', 'output_tokens', 'reasoning_output_tokens', 'cost_usd']
+              'uncached_input_tokens', 'output_tokens', 'reasoning_output_tokens', 'cost_usd',
+              'quality_score', 'core_score', 'weighted_recall']
     with (out / 'report.csv').open('w', newline='') as stream:
         writer = csv.DictWriter(stream, fields)
         writer.writeheader()
         for row in rows:
             values = dict(row, **(row.get('usage') or {}))
+            values.update({key: (row.get('run_quality') or {}).get(key)
+                           for key in ('quality_score', 'core_score', 'weighted_recall')})
             writer.writerow({key: values.get(key) for key in fields})
     text = ['# Review cost benchmark', '', 'Baseline: `' + manifest['identity']['baseline_commit'] + '`.',
             'Model: `' + manifest['identity']['model'] + '`, effort `' + manifest['identity']['effort'] + '`.', '',
-            '| Case | Version | Status | Seconds | Input | Output | Estimated credits | Recall | FP |',
-            '| --- | --- | --- | ---: | ---: | ---: | ---: | --- | --- |']
+            '| Case | Version | Status | Seconds | Estimated credits | Recall | FP | Quality /100 | Core /80 |',
+            '| --- | --- | --- | ---: | ---: | --- | --- | ---: | ---: |']
     for row in rows:
         usage, quality = row.get('usage') or {}, row.get('quality') or {}
+        run_quality = row.get('run_quality') or {}
         text.append('| %s | %s | %s | %.2f | %s | %s | %s | %s | %s |' % (
             row['case'], row['variant'], row['status'], row['wall_seconds'],
-            usage.get('input_tokens', 'unknown'), usage.get('output_tokens', 'unknown'),
-            row.get('estimated_credits'), quality.get('recall'), quality.get('false_positives')))
+            row.get('estimated_credits'), quality.get('recall'), quality.get('false_positives'),
+            run_quality.get('quality_score'), run_quality.get('core_score')))
     text += ['', 'Dollars are unknown unless reported. Credits are a dated Standard estimate.', '']
+    if result['quality_comparisons']:
+        text += ['## Quality gates', '',
+                 'A missing score is unknown. Observable source coverage is a proxy for inspection,',
+                 'not a measurement of hidden reasoning. Components and policy hashes are in JSON.', '']
+        for comparison in result['quality_comparisons']:
+            text.append('- %s: acceptable %s, quality delta %s; %s.' % (
+                comparison['case'], comparison['acceptable'], comparison['quality_delta'],
+                '; '.join(comparison['reasons']) or 'all frozen quality gates pass'))
+        text += ['']
     if result['local']:
         text += ['## Local lane', '', '| Case | Version | Prompt words | Median compile seconds |',
                  '| --- | --- | ---: | ---: |']
@@ -538,6 +635,8 @@ def main():
     parser.add_argument('--reviewer', default='codex-luna')
     parser.add_argument('--variants', choices=('both', 'candidate'), default='both')
     parser.add_argument('--rate-card', type=Path, default=RATE)
+    parser.add_argument('--suite', type=Path, default=SUITE)
+    parser.add_argument('--reference-variant', choices=('baseline', 'candidate'), default='candidate')
     parser.add_argument('--reference', type=Path)
     args = parser.parse_args()
     out = args.out.expanduser().resolve()
@@ -547,7 +646,7 @@ def main():
         if args.command == 'prepare':
             profile = resolve_profile(args.candidate.resolve() / 'plugins/review-council', args.reviewer)
             variants = ('baseline', 'candidate') if args.variants == 'both' else ('candidate',)
-            prepare(out, args.baseline, args.candidate.resolve(), args.max_calls, profile, variants, args.rate_card)
+            prepare(out, args.baseline, args.candidate.resolve(), args.max_calls, profile, variants, args.rate_card, args.suite.resolve())
         elif args.command == 'local':
             result = local(out, args.repetitions)
             if not result['passed']:
@@ -556,7 +655,8 @@ def main():
             with (out / 'live.lock').open('a+') as lock:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 live(out, args.timeout)
-        result = report(out, args.reference.expanduser().resolve() if args.reference else None)
+        result = report(out, args.reference.expanduser().resolve() if args.reference else None,
+                        args.reference_variant)
         print(str(out / 'report.md') + ' (%d/%d reserved)' % (
             result['reserved_executions'], result['maximum_executions']))
     except (ValueError, OSError, subprocess.SubprocessError) as error:

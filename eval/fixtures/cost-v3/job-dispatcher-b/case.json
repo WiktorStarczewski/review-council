@@ -1,0 +1,289 @@
+{
+  "id": "job-dispatcher-b",
+  "mode": "evidence",
+  "files": [
+    "jobs.py",
+    "worker.py"
+  ],
+  "defects": [],
+  "lens": "correctness-boundaries+tests-observability-maintenance-regression",
+  "reviewer_role": "cumulative",
+  "decision_context": true,
+  "clean_controls": [
+    {
+      "id": "direct-tenant-read-isolation",
+      "expected": true,
+      "rationale": "Globally allocated IDs do not authorize another tenant to read a job."
+    },
+    {
+      "id": "caller-payload-ownership",
+      "expected": [
+        3,
+        3
+      ],
+      "rationale": "Mutating submission, snapshot, and handler data is permitted without altering stored payload ownership."
+    },
+    {
+      "id": "exact-lease-deadline",
+      "expected": [
+        true,
+        2,
+        20.0,
+        1
+      ],
+      "rationale": "Strictly before a deadline the lease is active; exactly at the deadline reclaim is intentional."
+    },
+    {
+      "id": "expired-token-rejection",
+      "expected": "leased",
+      "rationale": "An expired token fails even when no recovery sweep has yet changed the stored job state."
+    },
+    {
+      "id": "retry-cap-and-exhaustion",
+      "expected": [
+        [
+          5.0,
+          10.0,
+          12.0,
+          12.0
+        ],
+        "failed",
+        1
+      ],
+      "rationale": "The delay cap applies to exponential waits, and the final attempt becomes terminal."
+    },
+    {
+      "id": "queued-cancellation",
+      "expected": [
+        true,
+        false,
+        null,
+        "cancelled"
+      ],
+      "rationale": "Waiting work cancels immediately; a repeated cancellation request is an idempotent no-op."
+    },
+    {
+      "id": "new-insert-rollback",
+      "expected": [
+        1,
+        "job-1",
+        1,
+        0
+      ],
+      "rationale": "A transaction rolls back newly indexed jobs and ID allocation, including in the aliased-record variant."
+    },
+    {
+      "id": "sink-replay-deduplication",
+      "expected": [
+        true,
+        1,
+        2
+      ],
+      "rationale": "At-least-once replay of the identical event is valid and causes one consumer effect."
+    },
+    {
+      "id": "zero-ack-progress-stop",
+      "expected": [
+        1,
+        0,
+        1,
+        1
+      ],
+      "rationale": "A valid empty receipt retains pending work and terminates drain without spinning."
+    },
+    {
+      "id": "transport-failure-retains-pending",
+      "expected": [
+        0,
+        1,
+        true,
+        1,
+        1
+      ],
+      "rationale": "A failed publish preserves pending work, and the next call can deliver it."
+    },
+    {
+      "id": "unknown-ack-rejection",
+      "expected": [
+        1,
+        1
+      ],
+      "rationale": "An acknowledgement outside the batch is rejected without marking pending events delivered."
+    }
+  ],
+  "behavior_rubric": {
+    "schema_version": 1,
+    "measurement": "observable tool evidence and manually adjudicated hypotheses",
+    "critical_flows": [
+      {
+        "id": "ready-list-contract",
+        "required_sources": [
+          {
+            "path": "jobs.py",
+            "line_start": 53,
+            "line_end": 65
+          },
+          {
+            "path": "store.py",
+            "line_start": 80,
+            "line_end": 84
+          },
+          {
+            "path": "store.py",
+            "line_start": 106,
+            "line_end": 107
+          },
+          {
+            "path": "store.py",
+            "line_start": 66,
+            "line_end": 71
+          }
+        ],
+        "rationale": "Check the changed validation text without inventing a compatibility promise, and follow tenant-filtered owned ready-list data."
+      },
+      {
+        "id": "diagnostic-stats",
+        "required_sources": [
+          {
+            "path": "worker.py",
+            "line_start": 100,
+            "line_end": 102
+          },
+          {
+            "path": "store.py",
+            "line_start": 109,
+            "line_end": 113
+          },
+          {
+            "path": "store.py",
+            "line_start": 101,
+            "line_end": 104
+          }
+        ],
+        "rationale": "Follow the changed human-readable formatting through its actual tenant-filtered statistic keys and pending-event counts."
+      }
+    ],
+    "hypotheses": [
+      {
+        "id": "limit-type-and-empty-window",
+        "description": "Boolean, negative and zero limits retain their existing validation or empty-result behavior.",
+        "required_sources": [
+          {
+            "path": "jobs.py",
+            "line_start": 53,
+            "line_end": 65
+          },
+          {
+            "path": "store.py",
+            "line_start": 80,
+            "line_end": 84
+          },
+          {
+            "path": "store.py",
+            "line_start": 106,
+            "line_end": 107
+          },
+          {
+            "path": "store.py",
+            "line_start": 66,
+            "line_end": 71
+          }
+        ]
+      },
+      {
+        "id": "ready-list-tenant-and-ownership",
+        "description": "Ready listing remains tenant scoped, and mutation of returned payload data cannot change stored state.",
+        "required_sources": [
+          {
+            "path": "jobs.py",
+            "line_start": 53,
+            "line_end": 65
+          },
+          {
+            "path": "store.py",
+            "line_start": 80,
+            "line_end": 84
+          },
+          {
+            "path": "store.py",
+            "line_start": 106,
+            "line_end": 107
+          },
+          {
+            "path": "store.py",
+            "line_start": 66,
+            "line_end": 71
+          }
+        ]
+      },
+      {
+        "id": "diagnostic-key-coverage",
+        "description": "Every actual statistic key survives formatting, including pending_events rather than a renamed pending key.",
+        "required_sources": [
+          {
+            "path": "worker.py",
+            "line_start": 100,
+            "line_end": 102
+          },
+          {
+            "path": "store.py",
+            "line_start": 109,
+            "line_end": 113
+          },
+          {
+            "path": "store.py",
+            "line_start": 101,
+            "line_end": 104
+          }
+        ]
+      },
+      {
+        "id": "diagnostic-compatibility-promise",
+        "description": "The changed field names and ordering violate an existing machine-readable compatibility contract.",
+        "required_sources": [
+          {
+            "path": "worker.py",
+            "line_start": 100,
+            "line_end": 102
+          },
+          {
+            "path": "store.py",
+            "line_start": 109,
+            "line_end": 113
+          },
+          {
+            "path": "store.py",
+            "line_start": 101,
+            "line_end": 104
+          }
+        ]
+      }
+    ]
+  },
+  "source_sha256": {
+    "before": {
+      "AGENTS.md": "75f952a1b041b85088f07d1a44c6686cd454e1d333afa63715099bb4232ab43d",
+      "__init__.py": "ebc4996037c6b6c5aeafb5e9756c84c8b0088675f9535d6fd92835ceb3757be5",
+      "jobs.py": "dac7ad17b3ae70c30de57974fcb56a2c9197ecdf4b9e43c7b3534ee7fe75c6cf",
+      "leases.py": "68ec4bf552d23c0008fc1caf30ad8ff46378bf029b66595bb6928f74b7218b38",
+      "models.py": "bdca4878519a4809f8ea01a1a296dbc2cfeed5d6fe8c027a969e9280f5039489",
+      "outbox.py": "8832be9a08d62465b166f2910f9a4f50dbdf246fb11c67f8fa25121f4ed95026",
+      "retry.py": "43c15b83a1dfd0ace764c8c09365e624ba628750fdc4cbf7ef4d109ce4ba61bc",
+      "store.py": "37cbdf05e5fd492c487c09f86e3b10a5dd6f31a0d97178e4e7abb382c20c8432",
+      "transport.py": "46ed878a54a667805d73c19a72307402416b4a44bf93ecb515e4f890f0de4b51",
+      "worker.py": "64fbaa5ce95404c3c8ca7c4a6644bd34929628ba9c8d2edb1489eb88f9fa7849"
+    },
+    "after": {
+      "AGENTS.md": "75f952a1b041b85088f07d1a44c6686cd454e1d333afa63715099bb4232ab43d",
+      "__init__.py": "ebc4996037c6b6c5aeafb5e9756c84c8b0088675f9535d6fd92835ceb3757be5",
+      "jobs.py": "0d1eb2d9a672e7d1bfcb3c316bf0272a445f3adcf66503479290d9221f6d2572",
+      "leases.py": "68ec4bf552d23c0008fc1caf30ad8ff46378bf029b66595bb6928f74b7218b38",
+      "models.py": "bdca4878519a4809f8ea01a1a296dbc2cfeed5d6fe8c027a969e9280f5039489",
+      "outbox.py": "8832be9a08d62465b166f2910f9a4f50dbdf246fb11c67f8fa25121f4ed95026",
+      "retry.py": "43c15b83a1dfd0ace764c8c09365e624ba628750fdc4cbf7ef4d109ce4ba61bc",
+      "store.py": "37cbdf05e5fd492c487c09f86e3b10a5dd6f31a0d97178e4e7abb382c20c8432",
+      "transport.py": "46ed878a54a667805d73c19a72307402416b4a44bf93ecb515e4f890f0de4b51",
+      "worker.py": "0032685a0a173d40e3ee92a3e554d116077ba2e299cf6b74270c35838d4a493c"
+    }
+  }
+}
