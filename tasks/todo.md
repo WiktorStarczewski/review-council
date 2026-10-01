@@ -1,3 +1,13 @@
+# Release 0.5.9
+
+- [x] Bind `latest-sol` and `latest-luna` to the seat CLI catalog (issue 32).
+- [x] Match Claude and Codex manifests, changelog, and release procedure at 0.5.9.
+- [ ] Run the latest-roster tests and the candidate gate.
+- [ ] Open the pull request.
+- [ ] Review the candidate with signed stable 0.5.8. Repair verified P0/P1 only.
+- [ ] Wait for required CI, squash-merge, and publish the signed 0.5.9 release.
+- [ ] Reinstall on Claude and Codex and check `rev` and `stack` at 0.5.9.
+
 # Release 0.5.8
 
 - [x] Confirm main is `8a8104e`, one commit after the signed tag `review-council--v0.5.7`.

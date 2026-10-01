@@ -170,6 +170,112 @@ class LatestRosterTests(unittest.TestCase):
         self.assertTrue(all(seat["model"] == "gpt-8-luna" and seat["effort"] == "xhigh"
                             for seat in substitutes))
 
+    def codex_core(self, result):
+        return [seat["model"] for seat in result["seats"]
+                if seat["adapter"] == "codex" and not seat["extra"]]
+
+    def live_build(self, name, client_version, slugs, mode):
+        home = Path(self.temp.name) / name
+        home.mkdir()
+        payload = {"models": [self.model(slug) for slug in slugs]}
+        if client_version is not None:
+            payload["client_version"] = client_version
+        (home / "models_cache.json").write_text(json.dumps(payload))
+        bindir = Path(self.temp.name) / (name + "-bin")
+        bindir.mkdir()
+        calls = bindir / "calls"
+        refreshed = json.dumps({
+            "client_version": "0.159.3",
+            "models": [self.model("gpt-7.2-sol"), self.model("gpt-7-luna")],
+        })
+        script = """#!/bin/sh
+printf '%s\\n' "$*" >> "$CALLS"
+if [ "$1" = "--version" ]; then
+  printf '%s\\n' "codex-cli 0.159.3"
+  exit 0
+fi
+if [ "$1" = "debug" ] && [ "$2" = "models" ]; then
+  if [ "$REFRESH_MODE" = "fail" ] || [ "$REFRESH_MODE" = "forbidden" ]; then
+    printf '%s\\n' "catalog refresh failed" >&2
+    exit 1
+  fi
+  cat > "$CODEX_HOME/models_cache.json" <<'ENDCACHE'
+""" + refreshed + """
+ENDCACHE
+  exit 0
+fi
+printf '%s\\n' "unexpected codex command: $*" >&2
+exit 1
+"""
+        executable = bindir / "codex"
+        executable.write_text(script)
+        executable.chmod(0o755)
+        environment = {
+            "REVIEW_COUNCIL_CODEX_MODELS_CACHE": "",
+            "CODEX_HOME": str(home),
+            "CALLS": str(calls),
+            "REFRESH_MODE": mode,
+            "PATH": str(bindir) + os.pathsep + os.environ["PATH"],
+        }
+        with patch.dict(os.environ, environment), \
+                patch.object(self.roster, "load_config", return_value=(self.cfg, None)), \
+                patch.object(self.roster, "status_check",
+                             return_value=(True, None, "logged in")):
+            result, _, strict = self.roster.build(False)
+        text = calls.read_text() if calls.exists() else ""
+        return result, strict, text
+
+    def test_stale_cache_is_refreshed_before_latest_resolution(self):
+        result, strict, calls = self.live_build(
+            "refresh", "0.154.0", ["gpt-5.6-sol", "gpt-5.6-luna"], "rewrite")
+        self.assertIsNone(strict)
+        self.assertEqual(self.codex_core(result), ["gpt-7.2-sol", "gpt-7-luna"])
+        self.assertNotIn("gpt-5.6-sol", self.codex_core(result))
+        self.assertIn("--version", calls)
+        self.assertIn("debug models", calls)
+
+    def test_failed_refresh_names_both_versions_and_does_not_resolve(self):
+        for name, version, label in (("refuse", "0.154.0", "0.154.0"),
+                                     ("missing", None, "missing")):
+            with self.subTest(name=name):
+                result, strict, calls = self.live_build(
+                    name, version, ["gpt-5.6-sol", "gpt-5.6-luna"], "fail")
+                self.assertEqual(strict, "availability")
+                self.assertEqual(result["seats"], [])
+                self.assertIn("0.159.3", result["strict_reason"])
+                self.assertIn(label, result["strict_reason"])
+                self.assertNotIn("gpt-5.6-sol", result["strict_reason"])
+                self.assertIn("debug models", calls)
+
+    def test_matching_client_version_resolves_without_refresh(self):
+        result, strict, calls = self.live_build(
+            "match", "0.159.3", ["gpt-7-sol", "gpt-7-luna"], "forbidden")
+        self.assertIsNone(strict)
+        self.assertEqual(self.codex_core(result), ["gpt-7-sol", "gpt-7-luna"])
+        self.assertIn("--version", calls)
+        self.assertNotIn("debug models", calls)
+
+    def test_explicit_cache_pin_is_not_refreshed(self):
+        self.cache.write_text(json.dumps({
+            "client_version": "0.1.0",
+            "models": [self.model("gpt-4-sol"), self.model("gpt-4-luna")],
+        }))
+        commands = []
+
+        def fake_run(cmd, _timeout, environment=None):
+            commands.append(list(cmd))
+            if list(cmd)[:2] == ["claude", "auth"]:
+                return 0, '{"loggedIn":false}', ""
+            raise AssertionError("live codex command %r" % (cmd,))
+
+        with patch.object(self.roster, "run", side_effect=fake_run):
+            result, _, strict = self.build()
+        self.assertIsNone(strict)
+        self.assertEqual(self.codex_core(result), ["gpt-4-sol", "gpt-4-luna"])
+        self.assertFalse(any(cmd[:2] == ["codex", "--version"]
+                             or cmd[:3] == ["codex", "debug", "models"]
+                             for cmd in commands))
+
 
 if __name__ == "__main__":
     unittest.main()

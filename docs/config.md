@@ -12,7 +12,7 @@ Read by `scripts/roster.sh` (via `scripts/lib/roster.py`) on every invocation. A
 |---|---|---|---|
 | `exclude` | array of strings | `[]` | Lab or seat names to drop from the roster even if detected and signed in, e.g. `["gemini"]` or `["codex-review"]`. Applies to detected seats only: padded seats are added afterwards and cannot be excluded, because the three-seat floor is not something config is allowed to remove - excluding the Claude lab is instead recorded as overridden in `excluded[]`. |
 | `pin` | object | `{}` | Per-seat override of the detected `model`/`effort`, e.g. `{"codex-sol": {"effort": "ultra"}}`. Only overrides the given field(s); anything omitted keeps its detected value. A Codex model pin outside `codex_models` is excluded and reported. Applies to detected seats only: padded seats are added afterwards and cannot be pinned. |
-| `codex_models` | array of 1 or 2 unique strings | `["latest-sol", "latest-luna"]` | Exact visible model slugs or `latest-<family>` selectors, in order. Each selector resolves to the newest visible generation of that family in the current Codex cache, then freezes before pins, extras, and probes. Missing families or an unreadable cache exit 5; invalid values, unknown exact slugs, duplicate resolved models, or configuration conflicts exit 6. Every selected model must survive exclusions, pins, and probes before padding. Models from different generations that share a suffix receive generation-qualified seat IDs. |
+| `codex_models` | array of 1 or 2 unique strings | `["latest-sol", "latest-luna"]` | Exact visible model slugs or `latest-<family>` selectors, in order. Each selector resolves to the newest visible generation of that family in the seat CLI's catalog, then freezes before pins, extras, and probes. The shared `models_cache.json` counts only when its `client_version` matches `codex --version` for the `codex` binary on PATH. A mismatch is refreshed once with `codex debug models`; if the versions still differ, selection exits 5 and names both versions. A missing family stays a blocker. An unreadable cache exits 5. Invalid values, unknown exact slugs, duplicate resolved models, or configuration conflicts exit 6. Every selected model must survive exclusions, pins, and probes before padding. Models from different generations that share a suffix receive generation-qualified seat IDs. |
 | `codex_effort` | `"max"`, `"xhigh"` or `"high"` | `"xhigh"` | Require this exact effort on every selected OpenAI model and extra. Unsupported effort or a conflicting effort pin exits 6 before paid probes; selection never downgrades effort or backdates a latest-family selector to an older model. |
 | `claude_models` | array of 1 or 2 unique strings | absent | Exact Claude model families to seat, in order. Supported values are `opus` and `sonnet`; both run at `xhigh` with stable seat IDs. Every listed model must survive exclusions, pins, and probes before padding. This setting is mutually exclusive with `claude_seats`; malformed lists, incompatible pins, and using both settings exit 6. Provider availability failures exit 5. |
 | `claude_seats` | integer from 0 to 4 | `1` | Number of independent Opus runs. Invalid values exclude the detected Claude seats with the reason in `excluded[]`; they never fall back to one seat. When this key is explicitly positive, that many Opus seats must survive before padding. Permanent configuration conflicts exit 6; retryable provider availability exits 5. `0` disables detected Claude seats. If Claude-host padding must restore the three-seat floor, `excluded[]` records that override. `claude_seat: false` and `REVIEW_COUNCIL_CLAUDE_SEAT=0` also disable them. |
@@ -45,13 +45,15 @@ Environment variables take precedence over the config file, which takes preceden
 | Variable | Used by | Effect |
 |---|---|---|
 | `REVIEW_COUNCIL_CONFIG` | `roster.sh` | Path to the config file, instead of `~/.config/review-council/config.json`. |
-| `REVIEW_COUNCIL_CODEX_MODELS_CACHE` | `roster.sh` | Path to Codex's models cache, instead of `~/.codex/models_cache.json` - the source for which `gpt-<major>.<minor>` slugs exist and what effort levels each supports. |
+| `REVIEW_COUNCIL_CODEX_MODELS_CACHE` | `roster.sh` | Pinned Codex catalog, instead of `$CODEX_HOME/models_cache.json` (or `~/.codex/models_cache.json`). A pinned path skips the `client_version` check. The shared file does not: it is refreshed or refused when its `client_version` differs from `codex --version`. |
 | `REVIEW_COUNCIL_GEMINI_CREDS` | `roster.sh` | Path to Gemini's OAuth credentials file, instead of `~/.gemini/oauth_creds.json`, used as one of the two "signed in" signals (the other is `GEMINI_API_KEY`). |
 | `REVIEW_COUNCIL_GEMINI_MODEL` | `roster.sh` | Model slug for the Gemini seat, instead of `gemini-2.5-pro`. Gemini has no effort knob, so there is no matching effort variable. |
 | `GEMINI_API_KEY` | `roster.sh` | Presence alone counts as "signed in" for Gemini, alongside the credentials file. |
 | `REVIEW_COUNCIL_CLAUDE_SEAT` | `roster.sh` | `0` removes the `opus` seat for this invocation - the env-var form of `claude_seat: false`. |
 | `REVIEW_COUNCIL_CLAUDE_ADAPTER` | `roster.sh` | `cli`, `agent` or `auto` for this invocation - the env-var form of `claude_adapter`. Any other non-empty value exits 6. |
 | `REVIEW_COUNCIL_PROVIDER_OUTPUT_BYTES` | `roster.sh` | Combined stdout/stderr cap for each provider status or probe command. Defaults to 1 MiB. Exceeding it rejects that command and terminates its process group. |
+| `REVIEW_COUNCIL_CODEX_VERSION_TIMEOUT` | `roster.sh` | Seconds for `codex --version` before a live cache is unverified. Default 5. |
+| `REVIEW_COUNCIL_CATALOG_REFRESH_TIMEOUT` | `roster.sh` | Seconds for one `codex debug models` refresh when the shared cache's `client_version` differs. Default 30. |
 | `REVIEW_COUNCIL_CONTRACT_VERSION_TIMEOUT_SECONDS` | `rev-contract-check.py` | Per-provider CLI version timeout. Defaults to 5 seconds. |
 | `REVIEW_COUNCIL_CONTRACT_VERSION_OUTPUT_BYTES` | `rev-contract-check.py` | Output cap for each provider CLI version command. Defaults to 64 KiB. |
 | `REV_ACTIVE` | the loop | Set to `1` automatically inside every seat's environment once a review starts; a nested `/review-council:rev` refuses to start while it's set. Not meant to be set by hand. |
@@ -118,7 +120,11 @@ The differences are:
   name and `padded: true`; duplicates never count as another lab. No usable CLI exits
   5 even with the default `min_labs: 1`.
 - Codex models are read from `$CODEX_HOME/models_cache.json` when `CODEX_HOME` is set,
-  otherwise `~/.codex/models_cache.json`. The explicit cache override still wins.
+  otherwise `~/.codex/models_cache.json`. That file is shared by every Codex client.
+  `latest-sol` and `latest-luna` use it only when `client_version` matches
+  `codex --version` for the binary that launches seats. A mismatch is refreshed
+  with `codex debug models`, or the run stops with a retryable error naming both
+  versions. `REVIEW_COUNCIL_CODEX_MODELS_CACHE` is a pinned catalog and skips that check.
 - Codex stack defaults are `NO_PUSH=1` and `NO_SQUASH=1`; Claude Code defaults to `NO_SQUASH=1` too. Existing shell stack configs
   can override these, so inspect them before reusing a Claude stack configuration.
 - Claude session hooks, update notices, and auto-update settings are not installed

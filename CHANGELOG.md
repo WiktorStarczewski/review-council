@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.9
+
+- `latest-sol` and `latest-luna` follow the Codex binary that launches seats.
+  A shared model cache whose `client_version` differs from `codex --version` is
+  refreshed with that binary, or the run stops with a retryable error naming
+  both versions. A missing configured family stays a blocker.
+
 ## 0.5.8
 
 - The default council is the newest visible Sol, the newest visible Luna, Opus,
