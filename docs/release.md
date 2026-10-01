@@ -10,10 +10,10 @@ Verify the stable tag before using any stable code:
 
 ```bash
 git status --short
-git verify-tag review-council--v0.5.7
+git verify-tag review-council--v0.5.8
 STABLE_PARENT=$(mktemp -d /tmp/review-council-stable.XXXXXX)
-STABLE_TREE="$STABLE_PARENT/review-council-0.5.7"
-git worktree add --detach "$STABLE_TREE" review-council--v0.5.7
+STABLE_TREE="$STABLE_PARENT/review-council-0.5.8"
+git worktree add --detach "$STABLE_TREE" review-council--v0.5.8
 STABLE_PLUGIN="$STABLE_TREE/plugins/review-council"
 ```
 
@@ -79,15 +79,15 @@ Then push the candidate, wait for required CI, and squash-merge the pull request
 From a clean checkout of the merged commit, publish the signed release:
 
 ```bash
-git tag -s review-council--v0.5.8 -m "review-council 0.5.8" "$MERGE_COMMIT"
-git push origin review-council--v0.5.8
-git verify-tag review-council--v0.5.8
-gh release create review-council--v0.5.8 --verify-tag \
-  --title "review-council 0.5.8" --generate-notes
+git tag -s review-council--v0.5.9 -m "review-council 0.5.9" "$MERGE_COMMIT"
+git push origin review-council--v0.5.9
+git verify-tag review-council--v0.5.9
+gh release create review-council--v0.5.9 --verify-tag \
+  --title "review-council 0.5.9" --generate-notes
 ```
 
 Reinstall `review-council@review-council`. In fresh Claude and Codex sessions, require
-both hosts to discover `rev` and `stack` at version `0.5.8`, and compare installed file
+both hosts to discover `rev` and `stack` at version `0.5.9`, and compare installed file
 and mode identity with the released tag.
 
 Finally remove the stable worktree while preserving external review and verifier

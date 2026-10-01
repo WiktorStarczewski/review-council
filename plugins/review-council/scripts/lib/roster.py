@@ -46,6 +46,8 @@ DEFAULT_CODEX_MODELS = ['latest-sol', 'latest-luna']
 PANEL = 3                            # seats a round needs; a thinner roster is padded, never refused
 LOGIN_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_LOGIN_TIMEOUT', '20'))   # a wedged status command must not hang session start
 PROBE_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_PROBE_TIMEOUT', '60'))
+CODEX_VERSION_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_CODEX_VERSION_TIMEOUT', '5'))
+CODEX_CATALOG_REFRESH_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_CATALOG_REFRESH_TIMEOUT', '30'))
 _ACTIVE_PROCESSES = {}
 _ACTIVE_LOCK = threading.RLock()
 _CANCELLED = threading.Event()
@@ -389,6 +391,86 @@ def codex_catalog_path():
                     os.path.join(env_path('CODEX_HOME', '~/.codex'), 'models_cache.json'))
 
 
+def parse_codex_cli_version(text):
+    labeled = re.search(r'codex-cli\s+(\S+)', text or '')
+    if labeled:
+        return labeled.group(1)
+    generic = re.search(r'(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?)', text or '')
+    return generic.group(1) if generic else None
+
+
+def codex_cli_version():
+    """Version of the `codex` binary on PATH, the one seats exec."""
+    rc, out, err = run(['codex', '--version'], CODEX_VERSION_TIMEOUT)
+    if rc != 0:
+        detail = first_line(err) or first_line(out) or (
+            'timed out' if rc is None else 'exit %s' % rc)
+        return None, detail
+    version = parse_codex_cli_version(out) or parse_codex_cli_version(err)
+    if not version:
+        return None, 'unparsed version output'
+    return version, None
+
+
+def cache_client_version(path):
+    try:
+        with open(path, encoding='utf-8') as handle:
+            data = json.load(handle)
+    except Exception:
+        return None
+    version = data.get('client_version') if isinstance(data, dict) else None
+    if isinstance(version, str) and version.strip():
+        return version.strip()
+    return None
+
+
+def codex_cache_version_error(cache_version, cli_version, detail):
+    message = 'Codex model cache client_version %s does not match codex %s' % (
+        cache_version or 'missing', cli_version or 'unknown')
+    if detail:
+        message += ': %s' % detail
+    return message
+
+
+def ensure_codex_cache_matches_cli(path):
+    """The shared models cache is last-writer-wins across Codex clients.
+
+    A latest-family selector names the seat binary's catalog only when
+    client_version matches `codex --version`. One `codex debug models` rewrites
+    that binary's copy. A cache that still differs is a retryable blocker and
+    is not resolved.
+    """
+    cli_version, cli_error = codex_cli_version()
+    if not cli_version:
+        return codex_cache_version_error(
+            cache_client_version(path), None, cli_error or 'codex --version failed')
+    current = cache_client_version(path)
+    if current == cli_version:
+        return None
+    rc, out, err = run(['codex', 'debug', 'models'], CODEX_CATALOG_REFRESH_TIMEOUT)
+    if cache_client_version(path) == cli_version:
+        return None
+    if rc is None:
+        detail = 'refresh timed out'
+    elif rc != 0:
+        detail = first_line(err) or first_line(out) or 'refresh exit %s' % rc
+    else:
+        left = cache_client_version(path)
+        detail = 'refresh left client_version %s' % (left or 'missing')
+    return codex_cache_version_error(current, cli_version, detail)
+
+
+def load_codex_catalog():
+    """Read the catalog once. Callers freeze a build by storing the result."""
+    path = codex_catalog_path()
+    if os.environ.get('REVIEW_COUNCIL_CODEX_MODELS_CACHE') or shutil.which('codex') is None:
+        return codex_catalog(path)
+    mismatch = ensure_codex_cache_matches_cli(path)
+    if mismatch:
+        return [], mismatch
+    return codex_catalog(path)
+
+
 def _resolve_codex_config(cfg, catalog):
     effective = dict(cfg)
     allowed, error = codex_models_setting(cfg)
@@ -435,10 +517,15 @@ def _resolve_codex_config(cfg, catalog):
 
 
 def resolve_codex_config(cfg, catalog_path=None):
-    """Resolve latest-family selectors and explicit effort without running a provider CLI."""
+    """Resolve latest-family selectors and an explicit effort.
+
+    An explicit catalog path is read as given. The live shared cache is bound
+    to the seat CLI before it is resolved.
+    """
     if not codex_config_needs_resolution(cfg):
         return dict(cfg), None, None
-    return _resolve_codex_config(cfg, codex_catalog(catalog_path or codex_catalog_path()))
+    catalog = codex_catalog(catalog_path) if catalog_path else load_codex_catalog()
+    return _resolve_codex_config(cfg, catalog)
 
 
 def codex_seat_names(models):
@@ -487,7 +574,7 @@ def detect_codex(cfg):
     selectors = local.get('codex_models') or []
     if any(isinstance(model, str) and model.startswith('latest-') for model in selectors) \
             or 'codex_effort' not in cfg:
-        catalog = _RESOLVED.get('codex_catalog') or codex_catalog(codex_catalog_path())
+        catalog = _RESOLVED.get('codex_catalog') or load_codex_catalog()
         local, error, _ = _resolve_codex_config(local, catalog)
         if error:
             return [], error
@@ -495,7 +582,7 @@ def detect_codex(cfg):
     if config_error:
         return [], config_error
     cache = codex_catalog_path()
-    listed, catalog_error = (_RESOLVED.get('codex_catalog') or codex_catalog(cache)) \
+    listed, catalog_error = (_RESOLVED.get('codex_catalog') or load_codex_catalog()) \
                             if allowed is not None else (None, None)
     if listed:
         by_slug = {slug: model for _, model, slug in listed}
@@ -516,7 +603,7 @@ def detect_codex(cfg):
     if not ok:
         return [], reason
     if listed is None:
-        listed, catalog_error = codex_catalog(cache)
+        listed, catalog_error = _RESOLVED.get('codex_catalog') or load_codex_catalog()
     if catalog_error:
         return [], catalog_error
     models = select_codex_models(listed, allowed, local.get('codex_effort'))
@@ -1344,7 +1431,7 @@ def build(do_probe, quota_failed_seats=()):
     cfg, cfg_error = load_config()
     resolution_class = 'config'
     if not cfg_error and codex_config_needs_resolution(cfg):
-        _RESOLVED['codex_catalog'] = codex_catalog(codex_catalog_path())
+        _RESOLVED['codex_catalog'] = load_codex_catalog()
         cfg, cfg_error, resolution_class = _resolve_codex_config(cfg, _RESOLVED['codex_catalog'])
     if cfg_error:
         roster = {
