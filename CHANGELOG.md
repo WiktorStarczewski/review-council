@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.8
+
+- The default council is the newest visible Sol, the newest visible Luna, Opus,
+  and Sonnet, all at `xhigh`. An omitted config resolves `latest-sol` and
+  `latest-luna`. An explicit `codex_models` list stays a strict roster, and an
+  explicit `codex_effort` of `max` still selects `max`.
+
 ## 0.5.7
 
 - OpenAI review models support `latest-sol` and `latest-luna` selectors with an
