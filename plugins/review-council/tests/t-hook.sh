@@ -245,6 +245,6 @@ test_hook_real_root_no_shims() {
     # this is the line a Claude-Code-only machine sees at every session start.
     assert_grep "real plugin root, no CLIs on PATH: the banner is marked DEGRADED" "$T/ctx.txt" \
       'DEGRADED: only Claude is available - 3 Claude seats, no cross-lab decorrelation$'
-    assert_grep "…and still names the claude seat as present" "$T/ctx.txt" 'claude ✓ \(opus@max\)'
+    assert_grep "…and still names the claude seat as present" "$T/ctx.txt" 'claude ✓ \(opus@xhigh\)'
   )
 }

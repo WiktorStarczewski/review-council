@@ -2,7 +2,7 @@
 name: rev-reviewer-sonnet
 description: One Sonnet seat on the /review-council:rev multi-model review panel. Read-only reviewer that returns findings as JSON matching ${CLAUDE_PLUGIN_ROOT}/schema/findings.schema.json. Invoked by the rev skill with a prompt-file path; not for general use.
 model: sonnet
-effort: max
+effort: xhigh
 tools: Read, Grep
 disallowedTools: Write, Edit, NotebookEdit
 maxTurns: 80

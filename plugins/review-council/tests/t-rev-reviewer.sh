@@ -8,7 +8,7 @@ test_rev_reviewer() {
   ok "agent file exists"
   assert_grep "name field" "$A" '^name: rev-reviewer$'
   assert_grep "opus model" "$A" '^model: opus$'
-  assert_grep "max effort" "$A" '^effort: max$'
+  assert_grep "xhigh effort" "$A" '^effort: xhigh$'
   assert_grep "maxTurns 80" "$A" '^maxTurns: 80$'
 
   python3 - "$A" > "$T/rr-keys" <<'PY'
@@ -49,7 +49,7 @@ PY
   ok "Sonnet agent file exists"
   assert_grep "Sonnet agent name field" "$S" '^name: rev-reviewer-sonnet$'
   assert_grep "Sonnet model" "$S" '^model: sonnet$'
-  assert_grep "Sonnet max effort" "$S" '^effort: max$'
+  assert_grep "Sonnet xhigh effort" "$S" '^effort: xhigh$'
   assert_grep "Sonnet tools contain only receipted native reads" "$S" '^tools: Read, Grep$'
   assert_nogrep "Sonnet profile withholds unreceipted LSP" "$S" '^tools:.*LSP'
   assert_nogrep "Sonnet profile contains no Bash surface" "$S" 'Bash'

@@ -1,6 +1,6 @@
 {
   "claude-only": {
-    "brief": "review-council seats: codex ✗ not installed · gemini ✗ not installed · claude ✓ (opus@max) · DEGRADED: only Claude is available - 3 Claude seats, no cross-lab decorrelation\n",
+    "brief": "review-council seats: codex ✗ not installed · gemini ✗ not installed · claude ✓ (opus@xhigh) · DEGRADED: only Claude is available - 3 Claude seats, no cross-lab decorrelation\n",
     "brief_exit": 0,
     "json_exit": 0,
     "roster": {
@@ -23,7 +23,7 @@
       "seats": [
         {
           "adapter": "agent",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "anthropic",
           "model": "opus",
@@ -31,7 +31,7 @@
         },
         {
           "adapter": "agent",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "anthropic",
           "model": "opus",
@@ -40,7 +40,7 @@
         },
         {
           "adapter": "agent",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "anthropic",
           "model": "opus",
@@ -51,7 +51,7 @@
     }
   },
   "claude-seat-false-min-labs": {
-    "brief": "review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@max) · gemini ✗ not installed · claude ✗ disabled (1 padded seat) · DEGRADED: only openai, anthropic available - padded with 1 Claude seat · STRICT availability: 1 lab(s) available, min_labs=2\n",
+    "brief": "review-council seats: codex ✓ (gpt-5.6-sol@xhigh, gpt-5.6-luna@xhigh) · gemini ✗ not installed · claude ✗ disabled (1 padded seat) · DEGRADED: only openai, anthropic available - padded with 1 Claude seat · STRICT availability: 1 lab(s) available, min_labs=2\n",
     "brief_exit": 5,
     "json_exit": 5,
     "roster": {
@@ -83,7 +83,7 @@
       "seats": [
         {
           "adapter": "codex",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "openai",
           "model": "gpt-5.6-sol",
@@ -91,15 +91,15 @@
         },
         {
           "adapter": "codex",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "openai",
-          "model": "gpt-5.6-terra",
-          "seat": "codex-terra"
+          "model": "gpt-5.6-luna",
+          "seat": "codex-luna"
         },
         {
           "adapter": "codex",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": true,
           "lab": "openai",
           "mode": "review",
@@ -109,7 +109,7 @@
         },
         {
           "adapter": "agent",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "anthropic",
           "model": "opus",
@@ -122,7 +122,7 @@
     }
   },
   "claude-seats-excluded": {
-    "brief": "review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@max) · gemini ✗ not installed · claude ✓ (opus@max) · STRICT config: opus-2: excluded by config\n",
+    "brief": "review-council seats: codex ✓ (gpt-5.6-sol@xhigh, gpt-5.6-luna@xhigh) · gemini ✗ not installed · claude ✓ (opus@xhigh) · STRICT config: opus-2: excluded by config\n",
     "brief_exit": 6,
     "json_exit": 6,
     "roster": {
@@ -149,7 +149,7 @@
       "seats": [
         {
           "adapter": "codex",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "openai",
           "model": "gpt-5.6-sol",
@@ -157,15 +157,15 @@
         },
         {
           "adapter": "codex",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "openai",
-          "model": "gpt-5.6-terra",
-          "seat": "codex-terra"
+          "model": "gpt-5.6-luna",
+          "seat": "codex-luna"
         },
         {
           "adapter": "agent",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "anthropic",
           "model": "opus",
@@ -173,7 +173,7 @@
         },
         {
           "adapter": "codex",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": true,
           "lab": "openai",
           "mode": "review",
@@ -187,7 +187,7 @@
     }
   },
   "exact-probe": {
-    "brief": "review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@max) · gemini ✗ not installed · claude ✓ (opus@max, sonnet@max)\n",
+    "brief": "review-council seats: codex ✓ (gpt-5.6-sol@xhigh, gpt-5.6-terra@xhigh) · gemini ✗ not installed · claude ✓ (opus@xhigh, sonnet@xhigh)\n",
     "brief_exit": 0,
     "json_exit": 0,
     "roster": {
@@ -206,7 +206,7 @@
       "seats": [
         {
           "adapter": "codex",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "openai",
           "model": "gpt-5.6-sol",
@@ -214,7 +214,7 @@
         },
         {
           "adapter": "codex",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "openai",
           "model": "gpt-5.6-terra",
@@ -222,7 +222,7 @@
         },
         {
           "adapter": "agent",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "anthropic",
           "model": "opus",
@@ -230,7 +230,7 @@
         },
         {
           "adapter": "agent",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "anthropic",
           "model": "sonnet",
@@ -240,7 +240,7 @@
     }
   },
   "exclude-agent": {
-    "brief": "review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@max) · gemini ✗ not installed · claude ✗ excluded by config (1 padded seat) · DEGRADED: only openai, anthropic available - padded with 1 Claude seat\n",
+    "brief": "review-council seats: codex ✓ (gpt-5.6-sol@xhigh, gpt-5.6-luna@xhigh) · gemini ✗ not installed · claude ✗ excluded by config (1 padded seat) · DEGRADED: only openai, anthropic available - padded with 1 Claude seat\n",
     "brief_exit": 0,
     "json_exit": 0,
     "roster": {
@@ -268,7 +268,7 @@
       "seats": [
         {
           "adapter": "codex",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "openai",
           "model": "gpt-5.6-sol",
@@ -276,15 +276,15 @@
         },
         {
           "adapter": "codex",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "openai",
-          "model": "gpt-5.6-terra",
-          "seat": "codex-terra"
+          "model": "gpt-5.6-luna",
+          "seat": "codex-luna"
         },
         {
           "adapter": "codex",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": true,
           "lab": "openai",
           "mode": "review",
@@ -294,7 +294,7 @@
         },
         {
           "adapter": "agent",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "anthropic",
           "model": "opus",
@@ -305,7 +305,7 @@
     }
   },
   "full": {
-    "brief": "review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@max) · gemini ✓ (gemini-2.5-pro) · claude ✓ (opus@max)\n",
+    "brief": "review-council seats: codex ✓ (gpt-5.6-sol@xhigh, gpt-5.6-luna@xhigh) · gemini ✓ (gemini-2.5-pro) · claude ✓ (opus@xhigh)\n",
     "brief_exit": 0,
     "json_exit": 0,
     "roster": {
@@ -320,7 +320,7 @@
       "seats": [
         {
           "adapter": "codex",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "openai",
           "model": "gpt-5.6-sol",
@@ -328,11 +328,11 @@
         },
         {
           "adapter": "codex",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "openai",
-          "model": "gpt-5.6-terra",
-          "seat": "codex-terra"
+          "model": "gpt-5.6-luna",
+          "seat": "codex-luna"
         },
         {
           "adapter": "gemini",
@@ -344,7 +344,7 @@
         },
         {
           "adapter": "agent",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "anthropic",
           "model": "opus",
@@ -352,7 +352,7 @@
         },
         {
           "adapter": "codex",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": true,
           "lab": "openai",
           "mode": "review",
@@ -364,7 +364,7 @@
     }
   },
   "pin-conflict": {
-    "brief": "review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@max) · gemini ✗ not installed · claude ✓ (opus@max) · STRICT config: sonnet: pinned model opus does not match required model sonnet\n",
+    "brief": "review-council seats: codex ✓ (gpt-5.6-sol@xhigh, gpt-5.6-terra@xhigh) · gemini ✗ not installed · claude ✓ (opus@xhigh) · STRICT config: sonnet: pinned model opus does not match required model sonnet\n",
     "brief_exit": 6,
     "json_exit": 6,
     "roster": {
@@ -395,7 +395,7 @@
       "seats": [
         {
           "adapter": "codex",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "openai",
           "model": "gpt-5.6-sol",
@@ -403,7 +403,7 @@
         },
         {
           "adapter": "codex",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "openai",
           "model": "gpt-5.6-terra",
@@ -411,7 +411,7 @@
         },
         {
           "adapter": "agent",
-          "effort": "max",
+          "effort": "xhigh",
           "extra": false,
           "lab": "anthropic",
           "model": "opus",

@@ -3,7 +3,8 @@
 # roster_adapter_golden <roster.py> <out.json> <config|env> - run fixed Claude Code host scenarios with a
 # signed-in claude CLI on PATH, `claude_adapter: agent` set through config or the environment, and record
 # each exit code, roster (without generated_at) and --brief line. tests/fixtures/roster-agent-golden.json
-# was recorded from the unmodified 0.4.4 roster.py, which always seated Anthropic reviewers on `agent`.
+# records the current agent-adapter roster: an omitted Codex config seats the newest Sol and Luna
+# at xhigh, and Anthropic seats use xhigh.
 roster_adapter_golden() {
   python3 - "$1" "$2" "$3" "$SHIMS" "$FX" <<'PY'
 import json, os, shutil, subprocess, sys, tempfile
@@ -98,18 +99,18 @@ test_roster_adapter_resolution() {
     printf '%s' '{}' > "$REVIEW_COUNCIL_CONFIG"
     "$SCRIPTS/roster.sh" > "$B/auto.json"; assert_eq "auto roster exits 0" "$?" 0
     roster_lines "$B/auto.json" "$B/auto"
-    assert_grep "auto seats Opus on a signed-in claude CLI" "$B/auto" '^seat opus anthropic claude opus max false'
-    assert_grep "auto pads with the same CLI" "$B/auto" '^seat claude-2 anthropic claude opus max false'
+    assert_grep "auto seats Opus on a signed-in claude CLI" "$B/auto" '^seat opus anthropic claude opus xhigh false'
+    assert_grep "auto pads with the same CLI" "$B/auto" '^seat claude-2 anthropic claude opus xhigh false'
     assert_eq "auto checks sign-in once for resolution and detection" "$(grep -c '^auth$' "$RA_CALLS")" 1
     "$SCRIPTS/roster.sh" --brief > "$B/auto.brief"
-    assert_grep "a CLI seat reads like the Agent seat in the banner" "$B/auto.brief" 'claude ✓ \(opus@max\)'
+    assert_grep "a CLI seat reads like the Agent seat in the banner" "$B/auto.brief" 'claude ✓ \(opus@xhigh\)'
     assert_nogrep "a signed-in auto records no fallback" "$B/auto" '^excluded claude_adapter '
 
     : > "$RA_CALLS"
     RA_LOGGED_IN=false "$SCRIPTS/roster.sh" > "$B/signed-out.json"
     roster_lines "$B/signed-out.json" "$B/signed-out"
-    assert_grep "auto falls back to agent when the CLI is signed out" "$B/signed-out" '^seat opus anthropic agent opus max false'
-    assert_grep "auto pads signed-out hosts with agent seats" "$B/signed-out" '^seat claude-2 anthropic agent opus max false'
+    assert_grep "auto falls back to agent when the CLI is signed out" "$B/signed-out" '^seat opus anthropic agent opus xhigh false'
+    assert_grep "auto pads signed-out hosts with agent seats" "$B/signed-out" '^seat claude-2 anthropic agent opus xhigh false'
     assert_eq "a signed-out CLI is checked once" "$(grep -c '^auth$' "$RA_CALLS")" 1
     assert_grep "auto records why it fell back to agent" "$B/signed-out" \
       '^excluded claude_adapter -> auto -> agent \(claude CLI not signed in\): agent seats get no evidence mode or plan panel$'
@@ -117,7 +118,7 @@ test_roster_adapter_resolution() {
     mv "$B/claude" "$B/claude.off"; : > "$RA_CALLS"
     "$SCRIPTS/roster.sh" > "$B/missing.json"
     roster_lines "$B/missing.json" "$B/missing"
-    assert_grep "auto falls back to agent when the CLI is not installed" "$B/missing" '^seat opus anthropic agent opus max false'
+    assert_grep "auto falls back to agent when the CLI is not installed" "$B/missing" '^seat opus anthropic agent opus xhigh false'
     assert_grep "auto records a missing CLI as its fallback reason" "$B/missing" \
       '^excluded claude_adapter -> auto -> agent \(claude CLI not installed\): agent seats get no evidence mode or plan panel$'
     printf '%s' '{"claude_adapter":"cli"}' > "$REVIEW_COUNCIL_CONFIG"
@@ -130,17 +131,17 @@ test_roster_adapter_resolution() {
     : > "$RA_CALLS"
     "$SCRIPTS/roster.sh" > "$B/cli.json"
     roster_lines "$B/cli.json" "$B/cli"
-    assert_grep "cli seats Opus on the claude CLI" "$B/cli" '^seat opus anthropic claude opus max false'
+    assert_grep "cli seats Opus on the claude CLI" "$B/cli" '^seat opus anthropic claude opus xhigh false'
     assert_eq "cli checks sign-in once through detection" "$(grep -c '^auth$' "$RA_CALLS")" 1
     : > "$RA_CALLS"
     REVIEW_COUNCIL_CLAUDE_ADAPTER=agent "$SCRIPTS/roster.sh" > "$B/env-agent.json"
     roster_lines "$B/env-agent.json" "$B/env-agent"
-    assert_grep "the environment overrides config cli with agent" "$B/env-agent" '^seat opus anthropic agent opus max false'
+    assert_grep "the environment overrides config cli with agent" "$B/env-agent" '^seat opus anthropic agent opus xhigh false'
     assert_eq "agent never runs the claude CLI" "$(wc -c < "$RA_CALLS" | tr -d ' ')" 0
     printf '%s' '{"claude_adapter":"agent"}' > "$REVIEW_COUNCIL_CONFIG"
     REVIEW_COUNCIL_CLAUDE_ADAPTER=cli "$SCRIPTS/roster.sh" > "$B/env-cli.json"
     roster_lines "$B/env-cli.json" "$B/env-cli"
-    assert_grep "the environment overrides config agent with cli" "$B/env-cli" '^seat opus anthropic claude opus max false'
+    assert_grep "the environment overrides config agent with cli" "$B/env-cli" '^seat opus anthropic claude opus xhigh false'
 
     : > "$RA_CALLS"
     printf '%s' '{"claude_adapter":"yes"}' > "$REVIEW_COUNCIL_CONFIG"
@@ -196,9 +197,9 @@ test_roster_adapter_padding_follows_probe() {
     printf '%s' '{"claude_models":["sonnet"]}' > "$REVIEW_COUNCIL_CONFIG"
     "$SCRIPTS/roster.sh" --probe > "$B/sonnet.json"; assert_eq "a probed Sonnet CLI roster exits 0" "$?" 0
     roster_lines "$B/sonnet.json" "$B/sonnet"
-    assert_grep "Sonnet runs on the CLI" "$B/sonnet" '^seat sonnet anthropic claude sonnet max false'
-    assert_grep "padding follows the resolved CLI adapter" "$B/sonnet" '^seat claude-1 anthropic claude opus max false'
-    assert_grep "…for every padded seat" "$B/sonnet" '^seat claude-2 anthropic claude opus max false'
+    assert_grep "Sonnet runs on the CLI" "$B/sonnet" '^seat sonnet anthropic claude sonnet xhigh false'
+    assert_grep "padding follows the resolved CLI adapter" "$B/sonnet" '^seat claude-1 anthropic claude opus xhigh false'
+    assert_grep "…for every padded seat" "$B/sonnet" '^seat claude-2 anthropic claude opus xhigh false'
 
     printf '%s' '{}' > "$REVIEW_COUNCIL_CONFIG"
     RA_FAIL_MODEL=opus "$SCRIPTS/roster.sh" --probe > "$B/opus-failed.json"
@@ -206,8 +207,8 @@ test_roster_adapter_padding_follows_probe() {
     roster_lines "$B/opus-failed.json" "$B/opus-failed"
     assert_grep "the failed probe is reported" "$B/opus-failed" '^excluded opus -> probe failed: provider transport failed$'
     assert_grep "padding falls back to agent after an Opus probe failure" "$B/opus-failed" \
-      '^seat claude-1 anthropic agent opus max false'
-    assert_grep "…for the whole floor" "$B/opus-failed" '^seat claude-3 anthropic agent opus max false'
+      '^seat claude-1 anthropic agent opus xhigh false'
+    assert_grep "…for the whole floor" "$B/opus-failed" '^seat claude-3 anthropic agent opus xhigh false'
     assert_nogrep "no CLI seat survives a failed Opus probe" "$B/opus-failed" '^seat .* claude opus '
 
     printf '%s' '{"claude_adapter":"cli"}' > "$REVIEW_COUNCIL_CONFIG"
@@ -216,7 +217,7 @@ test_roster_adapter_padding_follows_probe() {
     roster_lines "$B/cli-signed-out.json" "$B/cli-signed-out"
     assert_grep "explicit cli reports the signed-out CLI" "$B/cli-signed-out" '^excluded claude -> not signed in$'
     assert_grep "explicit cli pads a signed-out host with agent seats" "$B/cli-signed-out" \
-      '^seat claude-1 anthropic agent opus max false'
+      '^seat claude-1 anthropic agent opus xhigh false'
     assert_nogrep "explicit cli never pads with a CLI that cannot sign in" "$B/cli-signed-out" '^seat .* claude opus '
   )
 }
