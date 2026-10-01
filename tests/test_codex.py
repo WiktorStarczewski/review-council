@@ -147,7 +147,7 @@ class CodexTests(unittest.TestCase):
         cache = self.root / 'cache.json'
         cache.write_text(json.dumps({'models': [
             {'slug': name, 'visibility': 'list', 'priority': priority,
-             'supported_reasoning_levels': [{'effort': 'max'}]}
+             'supported_reasoning_levels': [{'effort': 'xhigh'}, {'effort': 'max'}]}
             for name, priority in [('gpt-5.6-sol', 1), ('gpt-5.6-terra', 2),
                                    ('gpt-6-astra', 1)]]}))
         cfg = {'codex_models': ['gpt-5.6-sol', 'gpt-5.6-terra'], 'claude_seats': 2,
@@ -189,8 +189,8 @@ class CodexTests(unittest.TestCase):
             self.assertEqual(
                 [(seat['seat'], seat['adapter'], seat['model'], seat['effort'])
                  for seat in seats],
-                [('opus', adapter, 'opus', 'max'),
-                 ('sonnet', adapter, 'sonnet', 'max')],
+                [('opus', adapter, 'opus', 'xhigh'),
+                 ('sonnet', adapter, 'sonnet', 'xhigh')],
             )
 
     def test_invalid_exact_settings_fail_closed(self):
@@ -306,13 +306,13 @@ class CodexTests(unittest.TestCase):
                     {'codex_models': ['gpt-5.6-sol']})
                 self.assertEqual(seats, [])
                 self.assertEqual(reason,
-                                 'configured Codex model has no supported high effort: gpt-5.6-sol')
+                                 'configured Codex model gpt-5.6-sol does not support effort xhigh')
 
     def test_cross_generation_codex_suffixes_get_unique_seat_ids(self):
         cache = self.root / 'cache.json'
         cache.write_text(json.dumps({'models': [
             {'slug': slug, 'visibility': 'list', 'priority': 1,
-             'supported_reasoning_levels': [{'effort': 'max'}]}
+             'supported_reasoning_levels': [{'effort': 'xhigh'}, {'effort': 'max'}]}
             for slug in ('gpt-5.6-sol', 'gpt-6-sol')
         ]}))
         env = dict(self.env, REVIEW_COUNCIL_CODEX_MODELS_CACHE=str(cache))
@@ -421,7 +421,7 @@ class CodexTests(unittest.TestCase):
             ({'opus': {'model': 'sonnet'}, 'sonnet': {'model': 'opus'}},
              'opus: pinned model sonnet does not match required model opus'),
             ({'sonnet': {'effort': 'high'}},
-             'sonnet: pinned effort high does not match required effort max'),
+             'sonnet: pinned effort high does not match required effort xhigh'),
         )
         for codex_host, adapter in ((True, 'claude'), (False, 'agent')):
             for pins, expected in cases:
@@ -429,8 +429,8 @@ class CodexTests(unittest.TestCase):
                     self.roster.CODEX_HOST = codex_host
                     self.roster.ORDER = (adapter,)
                     detected = [
-                        self.roster.make_seat('opus', adapter, 'opus', 'max'),
-                        self.roster.make_seat('sonnet', adapter, 'sonnet', 'max'),
+                        self.roster.make_seat('opus', adapter, 'opus', 'xhigh'),
+                        self.roster.make_seat('sonnet', adapter, 'sonnet', 'xhigh'),
                     ]
                     roster, failed = self.build_roster(
                         {adapter: detected},
@@ -446,8 +446,8 @@ class CodexTests(unittest.TestCase):
                     )
 
     def test_excluding_an_exact_claude_model_is_permanent_config(self):
-        opus = self.roster.make_seat('opus', 'claude', 'opus', 'max')
-        sonnet = self.roster.make_seat('sonnet', 'claude', 'sonnet', 'max')
+        opus = self.roster.make_seat('opus', 'claude', 'opus', 'xhigh')
+        sonnet = self.roster.make_seat('sonnet', 'claude', 'sonnet', 'xhigh')
         calls = []
         roster, failed = self.build_roster(
             {'claude': [opus, sonnet]},
@@ -465,8 +465,8 @@ class CodexTests(unittest.TestCase):
         )
 
     def test_exact_claude_models_cannot_be_disabled_and_skip_probes(self):
-        opus = self.roster.make_seat('opus', 'claude', 'opus', 'max')
-        sonnet = self.roster.make_seat('sonnet', 'claude', 'sonnet', 'max')
+        opus = self.roster.make_seat('opus', 'claude', 'opus', 'xhigh')
+        sonnet = self.roster.make_seat('sonnet', 'claude', 'sonnet', 'xhigh')
         cases = (
             ({'claude_seat': False}, {},
              'claude_models conflicts with claude_seat: false'),
@@ -518,7 +518,7 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(failed, 'config')
         self.assertEqual(
             roster['strict_reason'],
-            'configured Codex models have no supported high effort: '
+            'configured Codex models do not support effort xhigh: '
             'gpt-5.6-sol, gpt-5.6-terra',
         )
 
@@ -819,8 +819,8 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(extra['effort'], 'ultra')
 
     def test_exact_claude_models_probe_each_model_and_require_both(self):
-        opus = self.roster.make_seat('opus', 'claude', 'opus', 'max')
-        sonnet = self.roster.make_seat('sonnet', 'claude', 'sonnet', 'max')
+        opus = self.roster.make_seat('opus', 'claude', 'opus', 'xhigh')
+        sonnet = self.roster.make_seat('sonnet', 'claude', 'sonnet', 'xhigh')
         calls = []
 
         def probe(seat):

@@ -62,21 +62,21 @@ test_roster_full() {
     assert_eq "nothing on stderr" "$(cat "$B/err")" ""
     roster_lines "$B/out.json" "$B/lines" || { fail "roster_full" "stdout is not JSON"; return 1; }
     assert_grep "written rosters require result receipts" "$B/lines" '^result_receipts 1 0$'
-    assert_grep "codex-sol seated at max"   "$B/lines" '^seat codex-sol openai codex gpt-5\.6-sol max false null null$'
-    assert_grep "codex-terra seated at max" "$B/lines" '^seat codex-terra openai codex gpt-5\.6-terra max false null null$'
+    assert_grep "codex-sol seated at xhigh"  "$B/lines" '^seat codex-sol openai codex gpt-5\.6-sol xhigh false null null$'
+    assert_grep "codex-luna seated at xhigh" "$B/lines" '^seat codex-luna openai codex gpt-5\.6-luna xhigh false null null$'
     assert_grep "gemini seated, no effort"  "$B/lines" '^seat gemini google gemini gemini-2\.5-pro null false null null$'
-    assert_grep "opus seated at max"        "$B/lines" '^seat opus anthropic agent opus max false null null$'
+    assert_grep "opus seated at xhigh"      "$B/lines" '^seat opus anthropic agent opus xhigh false null null$'
     assert_grep "codex-review extra is round 3"  "$B/lines" '^seat codex-review openai codex .* true review 3$'
     assert_grep "4 seats + 1 extra" "$B/lines" '^counts 4 5$'
     assert_grep "generated_at is a UTC timestamp" "$B/lines" '^generated_at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]+'
-    assert_nogrep "third-ranked model never seated"  "$B/lines" 'luna'
+    assert_nogrep "terra is not a default seat"      "$B/lines" 'codex-terra'
     assert_nogrep "hidden model never seated"        "$B/lines" 'hidden'
     assert_nogrep "older generation never seated"    "$B/lines" 'gpt-5\.5'
     assert_exit "--write stores exactly the JSON printed" 0 cmp -s "$B/written.json" "$B/out.json"
     "$SCRIPTS/roster.sh" --brief > "$B/brief" 2>&1; assert_eq "--brief exits 0" "$?" 0
     assert_eq "--brief is one line" "$(wc -l < "$B/brief" | tr -d ' ')" 1
     assert_eq "--brief line" "$(cat "$B/brief")" \
-      'review-council seats: codex ✓ (gpt-5.6-sol@max, gpt-5.6-terra@max) · gemini ✓ (gemini-2.5-pro) · claude ✓ (opus@max)'
+      'review-council seats: codex ✓ (gpt-5.6-sol@xhigh, gpt-5.6-luna@xhigh) · gemini ✓ (gemini-2.5-pro) · claude ✓ (opus@xhigh)'
     "$SCRIPTS/roster.sh" --brief --write "$B/brief.json" > "$B/brief2" 2>&1
     assert_eq "--brief --write exits 0" "$?" 0
     assert_eq "--brief --write still prints one line" "$(wc -l < "$B/brief2" | tr -d ' ')" 1
@@ -193,8 +193,9 @@ test_roster_effort_steps_down() {
     export REVIEW_COUNCIL_CODEX_MODELS_CACHE="$FX/roster-codex-cache-terra-xhigh.json"
     "$SCRIPTS/roster.sh" > "$B/out.json"; assert_eq "roster exits 0" "$?" 0
     roster_lines "$B/out.json" "$B/lines" || { fail "roster_effort" "stdout is not JSON"; return 1; }
-    assert_grep "sol keeps max"            "$B/lines" '^seat codex-sol .* gpt-5\.6-sol max false'
-    assert_grep "terra steps down to xhigh" "$B/lines" '^seat codex-terra .* gpt-5\.6-terra xhigh false'
+    assert_grep "sol stays at xhigh"  "$B/lines" '^seat codex-sol .* gpt-5\.6-sol xhigh false'
+    assert_grep "luna stays at xhigh" "$B/lines" '^seat codex-luna .* gpt-5\.6-luna xhigh false'
+    assert_nogrep "terra is not a default seat" "$B/lines" 'codex-terra'
   )
 }
 
@@ -223,20 +224,28 @@ test_roster_missing_and_signed_out() {
     assert_grep "codex excluded as not signed in" "$B/lines" '^excluded codex -> not signed in$'
     assert_nogrep "no codex seat"  "$B/lines" '^seat codex'
     assert_grep "gemini, the agent seat and one padded seat" "$B/lines" '^counts 3 3$'
-    assert_grep "the padded seat is a Claude seat" "$B/lines" '^seat claude-1 anthropic agent opus max false'
+    assert_grep "the padded seat is a Claude seat" "$B/lines" '^seat claude-1 anthropic agent opus xhigh false'
     SHIM_MODE=notauth "$SCRIPTS/roster.sh" --brief > "$B/brief"
     assert_eq "--brief exits 0 as well" "$?" 0
     assert_grep "brief marks codex signed out" "$B/brief" 'codex ✗ not signed in'
     assert_grep "brief says the panel is degraded" "$B/brief" 'DEGRADED: only google, anthropic available - padded with 1 Claude seat$'
   )
-  ( local B="$T/roster-toofew"; roster_env "$B" codex   # codex alone, and its cache lists one model
-    printf '%s' '{"models":[{"slug":"gpt-6.0-alpha","visibility":"list","priority":1,"supported_reasoning_levels":[{"effort":"high"},{"effort":"max"}]}]}' > "$B.home/one.json"
-    REVIEW_COUNCIL_CODEX_MODELS_CACHE="$B.home/one.json" "$SCRIPTS/roster.sh" > "$B/out.json"
-    assert_eq "two seats are padded to three" "$?" 0
+  ( local B="$T/roster-toofew"; roster_env "$B" codex   # newest version inside Sol and Luna, not another family
+    cat > "$B.home/families.json" <<'JSON'
+{"models":[
+  {"slug":"gpt-5.6-sol","visibility":"list","priority":2,"supported_reasoning_levels":[{"effort":"xhigh"},{"effort":"max"}]},
+  {"slug":"gpt-6.1-sol","visibility":"list","priority":2,"supported_reasoning_levels":[{"effort":"xhigh"},{"effort":"max"}]},
+  {"slug":"gpt-5.6-luna","visibility":"list","priority":3,"supported_reasoning_levels":[{"effort":"xhigh"},{"effort":"max"}]},
+  {"slug":"gpt-7-alpha","visibility":"list","priority":1,"supported_reasoning_levels":[{"effort":"xhigh"},{"effort":"max"}]}
+]}
+JSON
+    REVIEW_COUNCIL_CODEX_MODELS_CACHE="$B.home/families.json" "$SCRIPTS/roster.sh" > "$B/out.json"
+    assert_eq "newest Sol and Luna exit 0" "$?" 0
     roster_lines "$B/out.json" "$B/lines" || { fail "roster_toofew" "stdout is not JSON"; return 1; }
-    assert_grep "the JSON is still emitted" "$B/lines" '^counts 3 4$'
-    assert_grep "one seat padded in" "$B/lines" '^seat claude-1 anthropic agent opus max false'
-    assert_grep "newest generation parsed"  "$B/lines" '^seat codex-alpha openai codex gpt-6\.0-alpha max false null null$'
+    assert_grep "newest Sol is seated" "$B/lines" '^seat codex-sol openai codex gpt-6\.1-sol xhigh false'
+    assert_grep "newest Luna is seated" "$B/lines" '^seat codex-luna openai codex gpt-5\.6-luna xhigh false'
+    assert_nogrep "an older Sol is not seated" "$B/lines" 'gpt-5\.6-sol'
+    assert_nogrep "another family is not seated" "$B/lines" 'alpha'
     assert_grep "excluded says why (gemini)" "$B/lines" '^excluded gemini -> not installed$'
     REVIEW_COUNCIL_CODEX_MODELS_CACHE="$B.home/nope.json" "$SCRIPTS/roster.sh" > "$B/nc.json" 2> "$B/nc.err"
     assert_eq "a missing cache leaves one detected seat, padded to three" "$?" 0
@@ -260,7 +269,7 @@ test_roster_config() {
     "$SCRIPTS/roster.sh" > "$B/out.json"; assert_eq "pinning exits 0" "$?" 0
     roster_lines "$B/out.json" "$B/lines" || { fail "roster_cfg_pin" "stdout is not JSON"; return 1; }
     assert_grep "pinned effort wins"       "$B/lines" '^seat codex-sol openai codex gpt-5\.6-sol ultra false'
-    assert_grep "unpinned seat untouched"  "$B/lines" '^seat codex-terra openai codex gpt-5\.6-terra max false'
+    assert_grep "unpinned seat untouched"  "$B/lines" '^seat codex-luna openai codex gpt-5\.6-luna xhigh false'
   )
   ( local B="$T/roster-cfg-flags"; roster_env "$B" codex gemini; roster_creds
     export REVIEW_COUNCIL_CONFIG="$B.home/cfg.json"
@@ -316,20 +325,20 @@ EOF
     assert_grep "the probe ran gemini read-only" "$B/gemini-probe-args" '^--approval-mode$'
     assert_grep "the probe asked for one token" "$B/gemini-probe-args" '^Reply with exactly OK$'
     assert_grep "the Codex probe uses the selected effort" "$B/codex-probe-args" \
-      '^model_reasoning_effort=max$'
+      '^model_reasoning_effort=xhigh$'
   )
   ( local B="$T/roster-probe-fail"; roster_env "$B" codex gemini; roster_creds
     SHIM_MODE=ratelimit "$SCRIPTS/roster.sh" --probe > "$B/out.json" 2> "$B/err"
     assert_eq "every CLI probe failing still leaves a padded panel" "$?" 0
     roster_lines "$B/out.json" "$B/lines" || { fail "roster_probe_fail" "stdout is not JSON"; return 1; }
     assert_grep "codex-sol probe failure recorded"   "$B/lines" '^excluded codex-sol -> probe failed: '
-    assert_grep "codex-terra probe failure recorded" "$B/lines" '^excluded codex-terra -> probe failed: '
+    assert_grep "codex-luna probe failure recorded" "$B/lines" '^excluded codex-luna -> probe failed: '
     assert_grep "gemini probe failure recorded"      "$B/lines" '^excluded gemini -> probe failed: '
     assert_nogrep "no codex seat left"  "$B/lines" '^seat codex'
     assert_nogrep "no extras without their lab" "$B/lines" 'true review'
     # padding happens AFTER the probe: the seats a probe drops are replaced, never left short
     assert_grep "the agent seat plus two padded seats" "$B/lines" '^counts 3 3$'
-    assert_grep "padded after the probe" "$B/lines" '^seat claude-2 anthropic agent opus max false'
+    assert_grep "padded after the probe" "$B/lines" '^seat claude-2 anthropic agent opus xhigh false'
     assert_nogrep "no traceback on stderr" "$B/err" 'Traceback'
     # a probe drop is recorded against the SEAT, so the brief line has to find it through the seat's adapter
     SHIM_MODE=ratelimit "$SCRIPTS/roster.sh" --probe --brief > "$B/brief" 2>&1
@@ -538,7 +547,7 @@ EOF
       'codex:2 gemini:1'
     assert_eq "parallel probes preserve complete deterministic roster order" \
       "$(awk '$1 == "seat" && $7 == "false" {print $2}' "$B/lines" | paste -sd ' ' -)" \
-      'codex-sol codex-terra gemini opus'
+      'codex-sol codex-luna gemini opus'
   )
 }
 
@@ -566,11 +575,11 @@ EOF
     assert_grep "the failed first model is excluded" "$B/first-failed.lines" \
       '^excluded codex-sol -> probe failed:'
     assert_grep "the sibling model survives" "$B/first-failed.lines" \
-      '^seat codex-terra openai codex gpt-5\.6-terra '
+      '^seat codex-luna openai codex gpt-5\.6-luna '
     assert_nogrep "an extra does not ride a different model on the same adapter" \
       "$B/first-failed.lines" '^seat codex-review '
 
-    FAIL_MODEL=gpt-5.6-terra "$SCRIPTS/roster.sh" --probe > "$B/second-failed.json"
+    FAIL_MODEL=gpt-5.6-luna "$SCRIPTS/roster.sh" --probe > "$B/second-failed.json"
     assert_eq "the first Codex model keeps its matching extra usable" "$?" 0
     roster_lines "$B/second-failed.json" "$B/second-failed.lines"
     assert_grep "the matching base model survives" "$B/second-failed.lines" \
@@ -596,11 +605,11 @@ PY
     printf '%s' '{"codex_models":["gpt-5.6-sol","gpt-5.6-terra"],"claude_models":["opus","sonnet"],"extras":false}' > "$REVIEW_COUNCIL_CONFIG"
     "$SCRIPTS/roster.sh" > "$B/out.json"; assert_eq "exact panel exits 0" "$?" 0
     roster_lines "$B/out.json" "$B/lines" || { fail "roster_exact_panel" "stdout is not JSON"; return 1; }
-    assert_grep "exact panel seats Sol" "$B/lines" '^seat codex-sol openai codex gpt-5\.6-sol max false'
-    assert_grep "exact panel seats Terra" "$B/lines" '^seat codex-terra openai codex gpt-5\.6-terra max false'
+    assert_grep "exact panel seats Sol" "$B/lines" '^seat codex-sol openai codex gpt-5\.6-sol xhigh false'
+    assert_grep "exact panel seats Terra" "$B/lines" '^seat codex-terra openai codex gpt-5\.6-terra xhigh false'
     assert_nogrep "exact panel does not seat Astra" "$B/lines" 'gpt-6-astra'
-    assert_grep "exact panel seats Opus" "$B/lines" '^seat opus anthropic agent opus max false'
-    assert_grep "exact panel seats Sonnet" "$B/lines" '^seat sonnet anthropic agent sonnet max false'
+    assert_grep "exact panel seats Opus" "$B/lines" '^seat opus anthropic agent opus xhigh false'
+    assert_grep "exact panel seats Sonnet" "$B/lines" '^seat sonnet anthropic agent sonnet xhigh false'
     assert_grep "exact panel has four core seats" "$B/lines" '^counts 4 4$'
   )
 
@@ -609,8 +618,8 @@ PY
     printf '%s' '{"codex_models":["gpt-5.6-sol"],"claude_seats":2,"extras":false}' > "$REVIEW_COUNCIL_CONFIG"
     "$SCRIPTS/roster.sh" > "$B/out.json"; assert_eq "legacy Claude count still exits 0" "$?" 0
     roster_lines "$B/out.json" "$B/lines"
-    assert_grep "legacy count seats first Opus" "$B/lines" '^seat opus anthropic agent opus max false'
-    assert_grep "legacy count seats second Opus" "$B/lines" '^seat opus-2 anthropic agent opus max false'
+    assert_grep "legacy count seats first Opus" "$B/lines" '^seat opus anthropic agent opus xhigh false'
+    assert_grep "legacy count seats second Opus" "$B/lines" '^seat opus-2 anthropic agent opus xhigh false'
   )
 
   ( local B="$T/roster-exact-invalid"; roster_env "$B" codex gemini; roster_creds
@@ -699,7 +708,7 @@ JSON
     "$SCRIPTS/roster.sh" > "$B/unsupported-out.json"; assert_eq "unsupported exact effort refuses permanently" "$?" 6
     roster_lines "$B/unsupported-out.json" "$B/unsupported-lines"
     assert_grep "unsupported effort keeps its diagnostic" "$B/unsupported-lines" \
-      '^excluded codex -> configured Codex model has no supported high effort: gpt-5.6-sol$'
+      '^excluded codex -> configured Codex model gpt-5\.6-sol does not support effort xhigh$'
     assert_grep "unsupported effort is config strict" "$B/unsupported-lines" '^strict_class config$'
 
     printf '%s' '{"codex_models":"gpt-5.6-sol","min_labs":4}' > "$REVIEW_COUNCIL_CONFIG"
@@ -807,7 +816,7 @@ SH
     assert_eq "a default non-exact Claude pin remains allowed" "$?" 0
     roster_lines "$B/out.json" "$B/lines"
     assert_grep "the default Claude pin still applies" "$B/lines" \
-      '^seat opus anthropic agent sonnet max false'
+      '^seat opus anthropic agent sonnet xhigh false'
     assert_grep "the non-exact control reaches probes" "$B/args" '^Reply with exactly OK$'
   )
 
@@ -825,9 +834,9 @@ JSON
     assert_eq "two unsupported configured models are permanent config" "$?" 6
     roster_lines "$B/out.json" "$B/lines"
     assert_grep "the plural unsupported diagnostic is retained" "$B/lines" \
-      '^excluded codex -> configured Codex models have no supported high effort: gpt-5.6-sol, gpt-5.6-terra$'
+      '^excluded codex -> configured Codex models do not support effort xhigh: gpt-5\.6-sol, gpt-5\.6-terra$'
     assert_grep "the plural diagnostic owns the strict cause" "$B/lines" \
-      '^strict_reason configured Codex models have no supported high effort: gpt-5.6-sol, gpt-5.6-terra$'
+      '^strict_reason configured Codex models do not support effort xhigh: gpt-5\.6-sol, gpt-5\.6-terra$'
     assert_eq "plural unsupported models create one strict entry" \
       "$(grep -c '^excluded codex_models -> strict:' "$B/lines")" 1
     assert_nogrep "plural unsupported models fail before probes" "$B/args" '^Reply with exactly OK$'

@@ -91,7 +91,7 @@ assert [(s['seat'], s['substitutes_for']) for s in substitutes] == [
     ('codex-terra-fallback-2', 'sonnet'),
 ], substitutes
 assert all(s['adapter'] == 'codex' and s['model'] == 'gpt-5.6-terra'
-           and s['effort'] == 'max' and s.get('padded') is True
+           and s['effort'] == 'xhigh' and s.get('padded') is True
            for s in substitutes), substitutes
 reasons = {e['cli']: e['reason'] for e in d['excluded']}
 assert reasons['opus'] == 'probe quota exhausted; substituted by codex-terra-fallback-1', reasons
@@ -128,7 +128,7 @@ assert [(s['seat'], s['substitutes_for']) for s in substitutes] == [
     ('claude-sonnet-fallback-2', 'codex-terra'),
 ], substitutes
 assert all(s['adapter'] == 'claude' and s['model'] == 'sonnet'
-           and s['effort'] == 'max' and s.get('padded') is True
+           and s['effort'] == 'xhigh' and s.get('padded') is True
            for s in substitutes), substitutes
 assert d['padded'] == 2 and d['degraded'] is True, d
 assert 'quota fallback: codex-sol -> claude-sonnet-fallback-1' in d['degradation'], d
@@ -307,9 +307,9 @@ test_roster_claude_only_is_padded() {
     assert_eq "nothing on stderr" "$(cat "$B/err")" ""
     roster_lines "$B/out.json" "$B/lines" || { fail "roster_claude_only" "stdout is not JSON"; return 1; }
     roster_flags "$B/out.json" "$B/flags" || { fail "roster_claude_only" "flags unreadable"; return 1; }
-    assert_grep "the detected agent seat keeps its name" "$B/lines" '^seat opus anthropic agent opus max false null null$'
-    assert_grep "claude-1 is padded in"                  "$B/lines" '^seat claude-1 anthropic agent opus max false null null$'
-    assert_grep "claude-2 is padded in"                  "$B/lines" '^seat claude-2 anthropic agent opus max false null null$'
+    assert_grep "the detected agent seat keeps its name" "$B/lines" '^seat opus anthropic agent opus xhigh false null null$'
+    assert_grep "claude-1 is padded in"                  "$B/lines" '^seat claude-1 anthropic agent opus xhigh false null null$'
+    assert_grep "claude-2 is padded in"                  "$B/lines" '^seat claude-2 anthropic agent opus xhigh false null null$'
     assert_grep "three seats, no extras"                 "$B/lines" '^counts 3 3$'
     assert_grep "padded count is reported"     "$B/flags" '^padded 2$'
     assert_grep "the roster is flagged degraded" "$B/flags" '^degraded true$'
@@ -322,7 +322,7 @@ test_roster_claude_only_is_padded() {
     "$SCRIPTS/roster.sh" --brief > "$B/brief" 2>&1; assert_eq "--brief exits 0 too" "$?" 0
     assert_eq "--brief is still one line" "$(wc -l < "$B/brief" | tr -d ' ')" 1
     assert_eq "--brief ends with the DEGRADED clause" "$(cat "$B/brief")" \
-      'review-council seats: codex ✗ not installed · gemini ✗ not installed · claude ✓ (opus@max) · DEGRADED: only Claude is available - 3 Claude seats, no cross-lab decorrelation'
+      'review-council seats: codex ✗ not installed · gemini ✗ not installed · claude ✓ (opus@xhigh) · DEGRADED: only Claude is available - 3 Claude seats, no cross-lab decorrelation'
   )
 }
 
@@ -333,8 +333,8 @@ test_roster_pads_one_seat() {
     roster_lines "$B/out.json" "$B/lines" || { fail "roster_pads_one" "stdout is not JSON"; return 1; }
     roster_flags "$B/out.json" "$B/flags"
     assert_grep "Gemini seated"      "$B/lines" '^seat gemini google gemini gemini-2\.5-pro null false null null$'
-    assert_grep "opus seated"        "$B/lines" '^seat opus anthropic agent opus max false null null$'
-    assert_grep "one Claude seat padded in" "$B/lines" '^seat claude-1 anthropic agent opus max false null null$'
+    assert_grep "opus seated"        "$B/lines" '^seat opus anthropic agent opus xhigh false null null$'
+    assert_grep "one Claude seat padded in" "$B/lines" '^seat claude-1 anthropic agent opus xhigh false null null$'
     assert_nogrep "and only one"     "$B/lines" '^seat claude-2 '
     assert_grep "3 seats without extras" "$B/lines" '^counts 3 3$'
     assert_grep "padded count"   "$B/flags" '^padded 1$'
@@ -344,7 +344,7 @@ test_roster_pads_one_seat() {
       '^degradation only google, anthropic available - padded with 1 Claude seat$'
     "$SCRIPTS/roster.sh" --brief > "$B/brief"
     assert_eq "--brief carries it" "$(cat "$B/brief")" \
-      'review-council seats: codex ✗ not installed · gemini ✓ (gemini-2.5-pro) · claude ✓ (opus@max) · DEGRADED: only google, anthropic available - padded with 1 Claude seat'
+      'review-council seats: codex ✗ not installed · gemini ✓ (gemini-2.5-pro) · claude ✓ (opus@xhigh) · DEGRADED: only google, anthropic available - padded with 1 Claude seat'
   )
 }
 
@@ -418,8 +418,8 @@ test_roster_padding_overrides_claude_seat_false() {
     roster_lines "$B/out.json" "$B/lines" || { fail "roster_noclaude" "stdout is not JSON"; return 1; }
     roster_flags "$B/out.json" "$B/flags"
     assert_grep "three padded seats" "$B/lines" '^counts 3 3$'
-    assert_grep "claude-1" "$B/lines" '^seat claude-1 anthropic agent opus max false null null$'
-    assert_grep "claude-3" "$B/lines" '^seat claude-3 anthropic agent opus max false null null$'
+    assert_grep "claude-1" "$B/lines" '^seat claude-1 anthropic agent opus xhigh false null null$'
+    assert_grep "claude-3" "$B/lines" '^seat claude-3 anthropic agent opus xhigh false null null$'
     assert_nogrep "the disabled seat never gets its own name" "$B/lines" '^seat opus '
     assert_grep "the config choice is still reported" "$B/lines" '^excluded claude -> disabled$'
     assert_grep "…and so is the override" "$B/lines" \
@@ -441,7 +441,7 @@ test_roster_padding_records_claude_seats_zero() {
     assert_grep "claude_seats zero override is named" "$B/lines" '^excluded padding -> claude_seats: 0 overridden '
     assert_grep "claude_seats zero override explains the floor" "$B/lines" 'a panel needs 3 seats$'
     assert_grep "the zero setting is still recorded as disabled" "$B/lines" '^excluded claude -> disabled$'
-    assert_grep "the replacement seats are visibly padded" "$B/lines" '^seat claude-3 anthropic agent opus max false'
+    assert_grep "the replacement seats are visibly padded" "$B/lines" '^seat claude-3 anthropic agent opus xhigh false'
   )
 }
 

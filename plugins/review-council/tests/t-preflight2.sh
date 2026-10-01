@@ -53,7 +53,7 @@ SH
     export SHIM_FIXTURE_DIR="$FX"
     export REVIEW_COUNCIL_CODEX_MODELS_CACHE="$FX/roster-codex-cache-full.json"
     export REVIEW_COUNCIL_CONFIG="$HOME/exact-current.json"
-    printf '%s\n' '{"codex_models":["gpt-5.6-sol","gpt-5.6-terra"],"claude_models":["opus","sonnet"],"extras":false}' > "$REVIEW_COUNCIL_CONFIG"
+    printf '%s\n' '{"codex_models":["latest-sol","latest-luna"],"codex_effort":"xhigh","claude_models":["opus","sonnet"],"extras":false}' > "$REVIEW_COUNCIL_CONFIG"
     export REVIEW_COUNCIL_GEMINI_CREDS="$HOME/no-such-creds.json"
     unset GEMINI_API_KEY REVIEW_COUNCIL_GEMINI_MODEL REVIEW_COUNCIL_CLAUDE_SEAT SHIM_MODE SHIM_ARGS_FILE
     cd "$R" || { fail "pfr setup" "cannot cd to $R"; return 1; }
@@ -61,8 +61,8 @@ SH
     "$SCRIPTS/rev-preflight.sh" --write "$T/pfr-sess" > "$T/pfr.out" 2> "$T/pfr.err"
     assert_eq "real roster: four seats accepted" "$?" 0
     assert_grep "base line first" "$T/pfr.out" '^base=[0-9a-f]{7,} base_branch=main \(nearest fork point\) branch=feat '
-    assert_grep "roster line second" "$T/pfr.out" '^review-council seats: codex ✓ \(gpt-5\.6-sol@max, gpt-5\.6-terra@max\)'
-    assert_grep "exact current Claude pair is seated" "$T/pfr.out" 'claude ✓ \(opus@max, sonnet@max\)'
+    assert_grep "roster line second" "$T/pfr.out" '^review-council seats: codex ✓ \(gpt-5\.6-sol@xhigh, gpt-5\.6-luna@xhigh\)'
+    assert_grep "exact current Claude pair is seated" "$T/pfr.out" 'claude ✓ \(opus@xhigh, sonnet@xhigh\)'
     assert_grep "an absent lab is reported, not fatal" "$T/pfr.out" 'gemini ✗ not installed'
     assert_grep "roster.json holds the probed seats" "$T/pfr-sess/roster.json" '"seat": "codex-sol"'
     assert_grep "real roster marks current receipt policy" "$T/pfr-sess/roster.json" '"result_receipts"'

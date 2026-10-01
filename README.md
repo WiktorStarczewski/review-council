@@ -10,14 +10,13 @@ One required council, used throughout this README, is:
 | --- | --- | --- | --- | --- |
 | `codex-sol` | OpenAI | newest visible Sol | `xhigh` | independent review |
 | `codex-luna` | OpenAI | newest visible Luna | `xhigh` | independent review |
-| `opus` | Anthropic | `opus` | `max` | independent review |
-| `sonnet` | Anthropic | `sonnet` | `max` | independent review |
+| `opus` | Anthropic | `opus` | `xhigh` | independent review |
+| `sonnet` | Anthropic | `sonnet` | `xhigh` | independent review |
 
-The roster resolves `latest-sol` and `latest-luna` from the current Codex model
-catalog on each build, then freezes exact models and efforts before probing.
-Configuration makes this four-seat roster a requirement instead of a silent preference.
-Latest-family selectors and `xhigh` are opt-in configuration; unconfigured selection
-still chooses the newest two visible models at their highest supported effort.
+With no `codex_models` setting, the roster seats the newest visible Sol and the
+newest visible Luna, then freezes those exact slugs before probing. OpenAI and
+Anthropic seats use `xhigh` unless a setting names another effort. Adding
+`claude_models` makes the four-seat roster a requirement instead of a preference.
 
 Grok is retired from live rosters. Gemini remains supported as an optional seat but is
 excluded from the exact four-seat configuration above.
@@ -197,7 +196,7 @@ This means:
 
 - the newest visible Sol and Luna must support `xhigh` and pass their probes;
 - both configured Anthropic model families must pass their probes;
-- OpenAI seats use `xhigh`; Anthropic seats use `max`;
+- OpenAI and Anthropic seats use `xhigh`;
 - Gemini and the optional `codex-review` extra are absent;
 - at least two provider labs must be available before ordinary execution;
 - quota fallback may temporarily preserve seat count with visible substitutions.
@@ -907,8 +906,8 @@ and receipt implementation.
 | --- | --- | --- |
 | `exclude` | `[]` | omit detected labs or seats |
 | `pin` | `{}` | override a detected seat model or effort |
-| `codex_models` | newest two visible | require one or two exact slugs or `latest-<family>` selectors |
-| `codex_effort` | highest supported | require one supported high effort for all OpenAI seats |
+| `codex_models` | `latest-sol`, `latest-luna` | require one or two exact slugs or `latest-<family>` selectors |
+| `codex_effort` | `xhigh` | require one supported high effort for all OpenAI seats |
 | `claude_models` | absent | require exact `opus` and/or `sonnet` families |
 | `claude_seats` | `1` | legacy count of independent Opus seats, mutually exclusive with `claude_models` |
 | `claude_seat` | `true` | disable detected Claude seats when false |

@@ -40,6 +40,9 @@ _HOME_HELPER = importlib.util.module_from_spec(_HOME_SPEC)
 _HOME_SPEC.loader.exec_module(_HOME_HELPER)
 
 EFFORTS = ('max', 'xhigh', 'high')   # highest first; a mid tier is never seated
+CLAUDE_EFFORT = 'xhigh'              # Anthropic review seats; the CLI's max tier is not used
+CODEX_EFFORT = 'xhigh'               # OpenAI review seats; max stays available only as an explicit setting
+DEFAULT_CODEX_MODELS = ['latest-sol', 'latest-luna']
 PANEL = 3                            # seats a round needs; a thinner roster is padded, never refused
 LOGIN_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_LOGIN_TIMEOUT', '20'))   # a wedged status command must not hang session start
 PROBE_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_PROBE_TIMEOUT', '60'))
@@ -411,15 +414,22 @@ def _resolve_codex_config(cfg, catalog):
             return effective, 'codex_models resolves to duplicate model %s' % slug, 'config'
         resolved.append(slug)
     by_slug = {slug: model for _, model, slug in listed}
+    unsupported_effort = []
     for slug in resolved:
         if slug not in by_slug:
             return effective, 'unknown Codex model slug: %s' % slug, 'config'
         levels = by_slug[slug].get('supported_reasoning_levels')
         if effort and effort not in reasoning_efforts(levels):
-            return effective, 'configured Codex model %s does not support effort %s' \
-                              % (slug, effort), 'config'
+            unsupported_effort.append(slug)
+            continue
         if not effort and top_effort(levels) is None:
             return effective, 'configured Codex model has no supported high effort: %s' % slug, 'config'
+    if unsupported_effort:
+        if len(unsupported_effort) == 1:
+            return effective, 'configured Codex model %s does not support effort %s' \
+                              % (unsupported_effort[0], effort), 'config'
+        return effective, 'configured Codex models do not support effort %s: %s' \
+                          % (effort, ', '.join(unsupported_effort)), 'config'
     effective['codex_models'] = resolved
     return effective, None, None
 
@@ -471,7 +481,17 @@ def status_check(cmd, positive):
 
 
 def detect_codex(cfg):
-    allowed, config_error = codex_models_setting(cfg)
+    # Defaults stay off the stored config. An explicit codex_models value is a
+    # strict roster; an omission still seats the newest Sol and Luna at xhigh.
+    local = with_council_defaults(cfg)
+    selectors = local.get('codex_models') or []
+    if any(isinstance(model, str) and model.startswith('latest-') for model in selectors) \
+            or 'codex_effort' not in cfg:
+        catalog = _RESOLVED.get('codex_catalog') or codex_catalog(codex_catalog_path())
+        local, error, _ = _resolve_codex_config(local, catalog)
+        if error:
+            return [], error
+    allowed, config_error = codex_models_setting(local)
     if config_error:
         return [], config_error
     cache = codex_catalog_path()
@@ -499,7 +519,7 @@ def detect_codex(cfg):
         listed, catalog_error = codex_catalog(cache)
     if catalog_error:
         return [], catalog_error
-    models = select_codex_models(listed, allowed, cfg.get('codex_effort'))
+    models = select_codex_models(listed, allowed, local.get('codex_effort'))
     if not models:
         return [], 'no usable model in %s' % cache
     return [make_seat(name, 'codex', slug, effort)
@@ -550,7 +570,7 @@ def claude_model_seat_names(models):
 
 def opus_seats(adapter, count):
     return [make_seat('opus' if index == 0 else 'opus-%d' % (index + 1),
-                      adapter, 'opus', 'max') for index in range(count)]
+                      adapter, 'opus', CLAUDE_EFFORT) for index in range(count)]
 
 
 def claude_seats(adapter, cfg):
@@ -564,7 +584,7 @@ def claude_seats(adapter, cfg):
         return [], 'disabled'
     if models is None:
         return opus_seats(adapter, count), None
-    return [make_seat(name, adapter, model, 'max')
+    return [make_seat(name, adapter, model, CLAUDE_EFFORT)
             for name, model in zip(claude_model_seat_names(models), models)], None
 
 
@@ -646,6 +666,16 @@ DETECT = {'codex': detect_codex, 'gemini': detect_gemini,
 
 
 # ---------------------------------------------------------------- config
+
+def with_council_defaults(cfg):
+    """Fill an omitted OpenAI roster with the newest Sol and Luna at xhigh."""
+    cfg = dict(cfg)
+    if 'codex_models' not in cfg:
+        cfg['codex_models'] = list(DEFAULT_CODEX_MODELS)
+    if 'codex_effort' not in cfg:
+        cfg['codex_effort'] = CODEX_EFFORT
+    return cfg
+
 
 def load_config():
     """→ (config, error) - an unreadable or non-object file yields ({}, 'config unreadable')."""
@@ -738,10 +768,10 @@ def enforce_claude_models(cfg, seats, excluded):
                              'reason': 'pinned model %s duplicates another Claude seat'
                                        % seat['model']})
             continue
-        if not seat['extra'] and seat.get('effort') != 'max':
+        if not seat['extra'] and seat.get('effort') != CLAUDE_EFFORT:
             excluded.append({'cli': seat['seat'],
-                             'reason': 'pinned effort %s does not match required effort max'
-                                       % seat.get('effort')})
+                             'reason': 'pinned effort %s does not match required effort %s'
+                                       % (seat.get('effort'), CLAUDE_EFFORT)})
             continue
         if not seat['extra']:
             seen.add(seat['model'])
@@ -953,7 +983,7 @@ def claude_models_pin_conflict(cfg, allowed):
         model = pin.get('model') if isinstance(pin, dict) else None
         model = model if isinstance(model, str) and model else default_model
         effort = pin.get('effort') if isinstance(pin, dict) else None
-        effort = effort if isinstance(effort, str) and effort else 'max'
+        effort = effort if isinstance(effort, str) and effort else CLAUDE_EFFORT
         if model not in allowed:
             return seat, 'pinned model %s is outside claude_models' % model
         if model != default_model:
@@ -961,8 +991,9 @@ def claude_models_pin_conflict(cfg, allowed):
                          % (model, default_model)
         if model in seen:
             return seat, 'pinned model %s duplicates another Claude seat' % model
-        if effort != 'max':
-            return seat, 'pinned effort %s does not match required effort max' % effort
+        if effort != CLAUDE_EFFORT:
+            return seat, 'pinned effort %s does not match required effort %s' \
+                         % (effort, CLAUDE_EFFORT)
         seen.add(model)
     return None
 
@@ -1073,7 +1104,7 @@ def enforce_exact_seats(cfg, seats, excluded):
         matched.update(s['seat'] for s in seats
                        if s['adapter'] == adapter and not s['extra']
                        and not s.get('padded') and s['seat'] in required_names
-                       and s['model'] in allowed_claude and s.get('effort') == 'max')
+                       and s['model'] in allowed_claude and s.get('effort') == CLAUDE_EFFORT)
         expected = {'claude', 'agent', 'anthropic'} | required_names
         if cfg.get('claude_seat') is False:
             config_reason = 'claude_models conflicts with claude_seat: false'
@@ -1260,7 +1291,7 @@ def pad(seats, excluded, cfg, probe_results):
     # The Agent tool needs no sign-in, so a CLI that is unusable or whose Opus probe just failed
     # never pads the floor, even under an explicit `claude_adapter: cli`.
     adapter = anthropic_adapter(cfg)
-    probe = probe_results.get(('claude', 'opus', 'max'))
+    probe = probe_results.get(('claude', 'opus', CLAUDE_EFFORT))
     if adapter == 'claude' and (build_claude_cli_reason() is not None
                                 or probe is not None and probe[0] is not None):
         adapter = 'agent'
@@ -1273,7 +1304,7 @@ def pad(seats, excluded, cfg, probe_results):
             n += 1
             name = 'claude-%d' % n
         used.add(name)
-        seat = make_seat(name, adapter, 'opus', 'max')
+        seat = make_seat(name, adapter, 'opus', CLAUDE_EFFORT)
         seat['padded'] = True
         seats.append(seat)
     return missing

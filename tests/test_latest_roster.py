@@ -94,7 +94,7 @@ class LatestRosterTests(unittest.TestCase):
         result, _, _ = self.build(cfg)
         core = [seat for seat in result["seats"] if seat["adapter"] == "codex" and not seat["extra"]]
         self.assertEqual([seat["model"] for seat in core], cfg["codex_models"])
-        self.assertEqual([seat["effort"] for seat in core], ["max", "max"])
+        self.assertEqual([seat["effort"] for seat in core], ["xhigh", "xhigh"])
 
     def test_resolution_is_frozen_before_login_probe_pins_and_extras(self):
         cfg = {**self.cfg, "codex_models": ["latest-luna", "latest-sol"]}

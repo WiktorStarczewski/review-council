@@ -18,7 +18,7 @@ STABLE_PLUGIN="$STABLE_TREE/plugins/review-council"
 ```
 
 The release roster is latest Sol and latest Luna at xhigh effort, plus Opus and
-Sonnet aliases at supported maximum effort. Resolve the OpenAI families from the
+Sonnet aliases at xhigh. Resolve the OpenAI families from the
 provider catalog and freeze exact identities before launching. Stable engines
 without selector support receive those resolved slugs in a release-specific config.
 Grok and Astra are excluded. Stop if a configured model or effort is unavailable

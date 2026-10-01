@@ -5,7 +5,7 @@ test_roster2() {
     printf '{"pin":{"codex-review":{"effort":"ultra"}}}\n' > "$B/cfg.json"
     REVIEW_COUNCIL_CONFIG="$B/cfg.json" "$SCRIPTS/roster.sh" > "$B/out.json"; roster_lines "$B/out.json" "$B/lines"
     assert_grep "pinned extra takes the pin" "$B/lines" '^seat codex-review openai codex gpt-5.6-sol ultra true review 3$'
-    assert_grep "base seats untouched" "$B/lines" '^seat codex-sol openai codex gpt-5.6-sol max false'
+    assert_grep "base seats untouched" "$B/lines" '^seat codex-sol openai codex gpt-5.6-sol xhigh false'
     printf '{"exclude":["codex-review"]}\n' > "$B/cfg.json"
     REVIEW_COUNCIL_CONFIG="$B/cfg.json" "$SCRIPTS/roster.sh" > "$B/excluded.json"; roster_lines "$B/excluded.json" "$B/excluded-lines"
     assert_nogrep "excluded extra is not seated" "$B/excluded-lines" '^seat codex-review '
