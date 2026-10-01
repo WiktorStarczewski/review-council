@@ -1,3 +1,19 @@
+# Release 0.5.8
+
+- [x] Confirm main is `8a8104e`, one commit after the signed tag `review-council--v0.5.7`.
+- [x] Prepare matching 0.5.8 manifests and release notes.
+- [ ] Run the complete frozen candidate gate.
+- [ ] Push, wait for CI, and squash-merge.
+- [ ] Publish the signed tag and GitHub release.
+- [ ] Update Claude, Codex, and the Grok marketplace checkout. Verify `rev` and `stack` at 0.5.8.
+
+### Release review
+
+The stable release panel is explicitly waived for 0.5.8. Anthropic seats are out
+of tokens, so a four-seat stable review cannot complete. Publication stays gated
+on the deterministic candidate gate and green CI. This release is not
+Council-certified.
+
 # Release 0.5.7
 
 - [x] Confirm the retained wave 1 and wave 2 changes and discarded experiment scope.
