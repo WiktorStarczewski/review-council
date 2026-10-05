@@ -1,0 +1,137 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1036" width="1000" height="1036" role="img" aria-label="A large, high-risk review, step by step">
+<title>A large, high-risk review, step by step</title>
+<line x1="30" y1="50" x2="30" y2="956" stroke="#30363d" stroke-width="2"/>
+<text x="56" y="34" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#6e7681" text-anchor="start" letter-spacing="1.5">PREFLIGHT</text>
+<line x1="160" y1="30" x2="990" y2="30" stroke="#30363d" stroke-width="1"/>
+<circle cx="30" cy="68" r="8" fill="#0d1117" stroke="#8b949e" stroke-width="3"/>
+<text x="56" y="73" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#f0f6fc" text-anchor="start">Freeze and probe</text>
+<text x="56" y="96" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" fill="#9198a1" text-anchor="start">scope and roster frozen, CLI seats probed</text>
+<rect x="420" y="54" width="137" height="30" rx="8" fill="none" stroke="#30363d" stroke-width="1.5"/>
+<circle cx="434" cy="69" r="5" fill="#f5a524"/>
+<text x="446" y="74" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">Sol</text>
+<rect x="565" y="54" width="137" height="30" rx="8" fill="none" stroke="#30363d" stroke-width="1.5"/>
+<circle cx="579" cy="69" r="5" fill="#a78bfa"/>
+<text x="591" y="74" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">Luna</text>
+<rect x="710" y="54" width="137" height="30" rx="8" fill="none" stroke="#30363d" stroke-width="1.5"/>
+<circle cx="724" cy="69" r="5" fill="#ff7b63"/>
+<text x="736" y="74" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">Opus</text>
+<rect x="855" y="54" width="137" height="30" rx="8" fill="none" stroke="#30363d" stroke-width="1.5"/>
+<circle cx="869" cy="69" r="5" fill="#2dd4bf"/>
+<text x="881" y="74" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">Sonnet</text>
+<text x="56" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#6e7681" text-anchor="start" letter-spacing="1.5">DISCOVERY</text>
+<line x1="160" y1="124" x2="990" y2="124" stroke="#30363d" stroke-width="1"/>
+<circle cx="30" cy="162" r="8" fill="#4493f8" stroke="#4493f8" stroke-width="3"/>
+<text x="56" y="167" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#f0f6fc" text-anchor="start">Simplicity</text>
+<text x="56" y="190" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" fill="#9198a1" text-anchor="start">r1  ·  can the change be smaller?</text>
+<rect x="420" y="148" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="434" cy="163" r="5" fill="#f5a524"/>
+<text x="446" y="168" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">simplicity</text>
+<rect x="565" y="148" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="579" cy="163" r="5" fill="#a78bfa"/>
+<text x="591" y="168" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">simplicity</text>
+<rect x="710" y="148" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="724" cy="163" r="5" fill="#ff7b63"/>
+<text x="736" y="168" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">simplicity</text>
+<rect x="855" y="148" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="869" cy="163" r="5" fill="#2dd4bf"/>
+<text x="881" y="168" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">simplicity</text>
+<circle cx="30" cy="226" r="8" fill="#4493f8" stroke="#4493f8" stroke-width="3"/>
+<text x="56" y="231" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#f0f6fc" text-anchor="start">Risk</text>
+<text x="56" y="254" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" fill="#9198a1" text-anchor="start">r2  ·  over 25 files, 1,500 lines or a risky boundary</text>
+<rect x="420" y="212" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="434" cy="227" r="5" fill="#f5a524"/>
+<text x="446" y="232" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">correctness</text>
+<rect x="565" y="212" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="579" cy="227" r="5" fill="#a78bfa"/>
+<text x="591" y="232" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">security</text>
+<rect x="710" y="212" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="724" cy="227" r="5" fill="#ff7b63"/>
+<text x="736" y="232" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">concurrency</text>
+<rect x="855" y="212" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="869" cy="227" r="5" fill="#2dd4bf"/>
+<text x="881" y="232" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">regression</text>
+<circle cx="30" cy="290" r="8" fill="#4493f8" stroke="#4493f8" stroke-width="3"/>
+<text x="56" y="295" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#f0f6fc" text-anchor="start">Full red team</text>
+<text x="56" y="318" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" fill="#9198a1" text-anchor="start">r3  ·  once, for large or high-risk changes</text>
+<rect x="420" y="276" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="434" cy="291" r="5" fill="#f5a524"/>
+<text x="446" y="296" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">attacker</text>
+<rect x="565" y="276" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="579" cy="291" r="5" fill="#a78bfa"/>
+<text x="591" y="296" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">rollback</text>
+<rect x="710" y="276" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="724" cy="291" r="5" fill="#ff7b63"/>
+<text x="736" y="296" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">exhaustion</text>
+<rect x="855" y="276" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="869" cy="291" r="5" fill="#2dd4bf"/>
+<text x="881" y="296" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">compatibility</text>
+<text x="56" y="350" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#6e7681" text-anchor="start" letter-spacing="1.5">FIRST FIX</text>
+<line x1="160" y1="346" x2="990" y2="346" stroke="#30363d" stroke-width="1"/>
+<circle cx="30" cy="384" r="8" fill="#0d1117" stroke="#8b949e" stroke-width="3"/>
+<text x="56" y="389" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#f0f6fc" text-anchor="start">Triage</text>
+<text x="56" y="412" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" fill="#9198a1" text-anchor="start">every claim opened at its cited line, then clustered</text>
+<text x="432" y="389" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#6e7681" text-anchor="start">host session</text>
+<circle cx="30" cy="448" r="8" fill="#ab7df8" stroke="#ab7df8" stroke-width="3"/>
+<text x="56" y="453" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#f0f6fc" text-anchor="start">Plan</text>
+<text x="56" y="476" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" fill="#9198a1" text-anchor="start">r3p  ·  every site, test and prediction named</text>
+<rect x="420" y="434" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="434" cy="449" r="5" fill="#f5a524"/>
+<text x="446" y="454" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">completeness</text>
+<circle cx="30" cy="512" r="8" fill="#0d1117" stroke="#f0883e" stroke-width="3"/>
+<text x="56" y="517" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#f0f6fc" text-anchor="start">Fix and gates</text>
+<text x="56" y="540" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" fill="#9198a1" text-anchor="start">red test first, one commit per fix, mutation check</text>
+<text x="432" y="517" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#6e7681" text-anchor="start">host session</text>
+<circle cx="30" cy="576" r="8" fill="#3fb950" stroke="#3fb950" stroke-width="3"/>
+<text x="56" y="581" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#f0f6fc" text-anchor="start">Verification</text>
+<text x="56" y="604" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" fill="#9198a1" text-anchor="start">r4  ·  four bundles plus a sibling-site check</text>
+<rect x="420" y="562" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="434" cy="577" r="5" fill="#f5a524"/>
+<text x="446" y="582" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">correctness</text>
+<rect x="565" y="562" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="579" cy="577" r="5" fill="#a78bfa"/>
+<text x="591" y="582" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">security</text>
+<rect x="710" y="562" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="724" cy="577" r="5" fill="#ff7b63"/>
+<text x="736" y="582" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">concurrency</text>
+<rect x="855" y="562" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="869" cy="577" r="5" fill="#2dd4bf"/>
+<text x="881" y="582" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">regression</text>
+<text x="56" y="636" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#6e7681" text-anchor="start" letter-spacing="1.5">SECOND FIX</text>
+<line x1="170" y1="632" x2="990" y2="632" stroke="#30363d" stroke-width="1"/>
+<circle cx="30" cy="670" r="8" fill="#0d1117" stroke="#8b949e" stroke-width="3"/>
+<text x="56" y="675" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#f0f6fc" text-anchor="start">Triage</text>
+<text x="56" y="698" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" fill="#9198a1" text-anchor="start">r4 found a new P1 in the first fix</text>
+<text x="432" y="675" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#6e7681" text-anchor="start">host session</text>
+<circle cx="30" cy="734" r="8" fill="#ab7df8" stroke="#ab7df8" stroke-width="3"/>
+<text x="56" y="739" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#f0f6fc" text-anchor="start">Plan</text>
+<text x="56" y="762" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" fill="#9198a1" text-anchor="start">r4p  ·  the new fix is nontrivial</text>
+<rect x="420" y="720" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="434" cy="735" r="5" fill="#f5a524"/>
+<text x="446" y="740" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">completeness</text>
+<circle cx="30" cy="798" r="8" fill="#0d1117" stroke="#f0883e" stroke-width="3"/>
+<text x="56" y="803" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#f0f6fc" text-anchor="start">Fix and gates</text>
+<text x="56" y="826" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" fill="#9198a1" text-anchor="start">one more commit, gates at baseline or better</text>
+<text x="432" y="803" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#6e7681" text-anchor="start">host session</text>
+<circle cx="30" cy="862" r="8" fill="#3fb950" stroke="#3fb950" stroke-width="3"/>
+<text x="56" y="867" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#f0f6fc" text-anchor="start">Verification</text>
+<text x="56" y="890" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" fill="#9198a1" text-anchor="start">r5  ·  clean: no new or open P0/P1</text>
+<rect x="420" y="848" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="434" cy="863" r="5" fill="#f5a524"/>
+<text x="446" y="868" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">correctness</text>
+<rect x="565" y="848" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="579" cy="863" r="5" fill="#a78bfa"/>
+<text x="591" y="868" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">security</text>
+<rect x="710" y="848" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="724" cy="863" r="5" fill="#ff7b63"/>
+<text x="736" y="868" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">concurrency</text>
+<rect x="855" y="848" width="137" height="30" rx="8" fill="#21262d" stroke="none" stroke-width="1.5"/>
+<circle cx="869" cy="863" r="5" fill="#2dd4bf"/>
+<text x="881" y="868" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#f0f6fc" text-anchor="start">regression</text>
+<text x="56" y="922" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#6e7681" text-anchor="start" letter-spacing="1.5">DONE</text>
+<line x1="110" y1="918" x2="990" y2="918" stroke="#30363d" stroke-width="1"/>
+<circle cx="30" cy="956" r="8" fill="#0d1117" stroke="#3fb950" stroke-width="3"/>
+<text x="56" y="961" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#f0f6fc" text-anchor="start">Seal, push, publish</text>
+<text x="56" y="984" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" fill="#9198a1" text-anchor="start">receipt, report.md, push, one PR review</text>
+<text x="432" y="961" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#6e7681" text-anchor="start">host session</text>
+<text x="56" y="1022" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="600" fill="#6e7681" text-anchor="start">22 seat launches  ·  every code panel seals a receipt before the next edit</text>
+</svg>
