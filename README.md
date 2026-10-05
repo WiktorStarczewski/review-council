@@ -36,9 +36,8 @@ you run it from owns every edit, test, commit and publication.
   change independently.
 - **Agreement is not proof.** Every finding is checked against source before anything changes.
   Rejected claims are recorded with their reason, so later panels do not raise them again.
-- **Fixes get reviewed too.** In 11 past runs, 56% of findings were defects in an earlier
-  review fix ([churn analysis](docs/churn-analysis-2026-09-06.md)). A plan gate checks each
-  nontrivial fix before it is written, and a verification panel reviews the result.
+- **Fixes get reviewed too.** A plan gate checks each nontrivial fix before it is written, and
+  a verification panel reviews the result, so a fix cannot quietly break something else.
 - **Evidence is receipted.** Each adaptive code panel binds source, prompt, transcript, model
   and effort by hash. A run that cannot prove its panels is reported incomplete, never as a
   review.
@@ -133,7 +132,7 @@ the SDK and wallet branches as a dependency stack"*.
 | `.md`, `.txt` or `.rst` paths | the documents, read-only |
 | `--read-only` | findings only: no fixes, commits or push; an open PR still gets the review (`NO_PUSH=1` skips posting) |
 | `--base <ref>` | an explicit base, when the printed base is wrong |
-| a number | a minimum panel count on the legacy numbered schedule |
+| a number | a minimum panel count on the numbered schedule |
 
 Claude Code reviews another branch or a PR by checking it out in the current checkout;
 Codex uses an isolated worktree. Code reviews run the adaptive workflow. Read-only code
@@ -274,10 +273,9 @@ Every core seat looks for:
 - scope larger than the named consumer requires.
 
 A reuse finding must name the existing symbol, its location and version; scope cuts stay the
-author's call. On eight held-out PRs, four simplicity seats found 6 of 10 load-bearing
-simplifications, where earlier single-seat runs found about half. Swapping in a `clean-room`
-design seat, or showing seats the author's PR description, lowered recall, so both are opt-in
-([evaluation](docs/simplicity-lens-eval-2026-09-06.md)).
+author's call. Seats do not see the author's PR description, so they attack the change
+rather than review it inside the author's framing; it and a `clean-room` design seat are
+opt-in.
 
 </details>
 
@@ -353,7 +351,7 @@ seals. P2s gate the fix phase through the plan gate, never completion.
 changed; two receipted rounds with any since your last acknowledgement stop the run until you
 decide.
 
-**Numeric mode:** a round count is a minimum on the legacy schedule. The run continues while
+**Numeric mode:** a round count is a minimum on the numbered schedule. The run continues while
 the last numbered panel found a new P0/P1 or needed nontrivial fixes, a P0/P1 is open, or a
 lens or major file is unreviewed, and stops after two consecutive clean numbered code panels
 with gates at or better than baseline. Plan panels do not count.
@@ -364,7 +362,7 @@ review, then stop before any fix, commit or push.
 </details>
 
 <details>
-<summary><b>Legacy numeric schedule</b></summary>
+<summary><b>Numbered schedule</b></summary>
 
 <br>
 
@@ -666,7 +664,7 @@ only the latest completed session per repository. Details:
 </details>
 
 <details>
-<summary><b>Profiling and cost benchmarks</b></summary>
+<summary><b>Profiling and benchmarks</b></summary>
 
 <br>
 
@@ -677,15 +675,8 @@ python3 plugins/review-council/scripts/rev-profile.py /tmp/rev-<epoch>
 It separates completed, metered and unmetered calls, token categories, known and unknown
 cost, prompt and scope words, patch-proof reads and finding yield, and marks a mixed roster as
 a measurement boundary ([cost accounting](docs/cost-accounting.md)).
-[Reusable benchmarks](eval/COST_BENCHMARKS.md) compare frozen plugin versions:
-
-| Study | Result |
-| --- | --- |
-| [wave 1](docs/cost-benchmark-wave1-2026-09-29.md) | 6.8% fewer estimated credits and 14.7% less provider time over 4 live runs, both finding 4/4 defects |
-| [wave 2](docs/cost-benchmark-wave2-2026-09-30.md) | compact startup: 12.0% fewer credits and 14.4% less time on two canaries, recall 4/4; shipped |
-| [wave 3](docs/cost-benchmark-wave3-2026-09-30.md) | lean packets plus decision digests: 1.0% more credits and 25.4% more time; discarded |
-| [wave 4](docs/cost-benchmark-wave4-2026-09-30.md) | packet-only: 24.6% fewer credits but lower quality scores; discarded |
-| [screening](docs/cost-benchmark-screening-2026-09-30.md) | every later candidate failed the fixed quality gates |
+[Reusable benchmarks](eval/COST_BENCHMARKS.md) compare plugin versions on cost, time and
+review quality with provider-free checks and a bounded reviewer lane.
 
 </details>
 
@@ -733,7 +724,7 @@ upstream of the same branch name.
 | `codex_models` | absent: newest Sol and Luna | require one or two exact slugs or `latest-<family>` selectors |
 | `codex_effort` | absent: `xhigh` | require one effort (`max`, `xhigh` or `high`) on every OpenAI seat |
 | `claude_models` | absent | require exact `opus` and/or `sonnet` seats |
-| `claude_seats` | `1` | legacy count of Opus seats; mutually exclusive with `claude_models` |
+| `claude_seats` | `1` | number of Opus seats; mutually exclusive with `claude_models` |
 | `claude_seat` | `true` | `false` disables detected Claude seats |
 | `claude_adapter` | `auto` | Claude Code runs Anthropic seats on the CLI (`cli`), as Agent subagents (`agent`), or on the CLI when signed in (`auto`) |
 | `plan_seats` | `completeness` | one plan-completeness seat per plan panel, or `all` for the four-lens plan panel |
@@ -761,7 +752,6 @@ codes: [docs/config.md](docs/config.md).
 | `REV_UNENFORCED_AUDIT` | unset | `1` runs, and caches, the advisory read audit of Agent seats |
 | `REV_PLAN_SEARCH_TIMEOUT` | `30` | seconds shared by all plan sibling-site searches, at most 300 |
 | `REV_RG` | `rg` on PATH | the ripgrep that replays plan searches |
-| `REV_CODEX_SOURCE_BATCH` | `0` | retired Codex source-window batching; only `0` is accepted |
 | `REVIEW_COUNCIL_CLAUDE_ADAPTER` | unset | the environment form of `claude_adapter` |
 | `REVIEW_COUNCIL_CLAUDE_SEAT` | unset | `0` disables detected Claude seats |
 | `REVIEW_COUNCIL_CODEX_MODELS_CACHE` | shared cache | pin a Codex catalog and skip its version check |
@@ -825,9 +815,7 @@ without a fresh `stack-report.md` and `phase=stack-ready`.
 | `stack-report.md` | a stack leg completed locally and is ready to finish and publish |
 | `report.md` | publication succeeded or cleanly skipped, and the review completed |
 
-Current-session completion and finding yield require a schema-valid result with a successful
-exit receipt. Only exact hashed receiptless results recorded in a versioned legacy roster
-policy may omit one.
+Completion and finding counts require a schema-valid result with a successful exit receipt.
 
 </details>
 
@@ -842,9 +830,9 @@ The Claude Code plugin installs two hooks; Codex installs neither.
 summary and, with `check_updates: true`, reports an available update (cached for a day,
 bounded to 3 s, never self-replacing). It makes no model call.
 
-**Stop hook:** a review is a queue, and the recurring failure is ending a turn on a status
-summary while items remain. The hook blocks a stop while the newest review in the current
-working tree is unfinished, naming its round, phase and open findings. It allows the stop once
+**Stop hook:** keeps a turn from ending while a review still has work. It blocks a stop while
+the newest review in the current working tree is unfinished, naming its round, phase and open
+findings. It allows the stop once
 the session is `done`, `stack-ready` or `blocked`, has a report or `incomplete.md`, or is
 genuinely waiting on seats with everything triaged and the tree clean.
 
