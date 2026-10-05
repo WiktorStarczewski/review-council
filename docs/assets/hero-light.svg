@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 340" width="1200" height="340" role="img" aria-label="review-council: a multi-model review council for Claude Code and Codex">
+<title>review-council: a multi-model review council for Claude Code and Codex</title>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#f3f5f8"/><stop offset="1" stop-color="#ffffff"/></linearGradient>
+<pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="2" cy="2" r="1.2" fill="#d1d9e0"/></pattern>
+</defs>
+<rect x="1" y="1" width="1198" height="338" rx="22" fill="url(#bg)" stroke="#d1d9e0" stroke-width="1.5"/>
+<rect x="1" y="1" width="1198" height="338" rx="22" fill="url(#dots)" opacity="0.55"/>
+<circle cx="205" cy="170" r="118.0" fill="none" stroke="#d1d9e0" stroke-width="1.5" stroke-dasharray="3.0 7.0"/>
+<circle cx="205" cy="170" r="92.0" fill="none" stroke="#d1d9e0" stroke-width="1.2"/>
+<line x1="139.9" y1="104.9" x2="205" y2="170" stroke="#d97706" stroke-width="3.0" stroke-linecap="round" opacity="0.55"/>
+<line x1="270.1" y1="104.9" x2="205" y2="170" stroke="#7c3aed" stroke-width="3.0" stroke-linecap="round" opacity="0.55"/>
+<line x1="270.1" y1="235.1" x2="205" y2="170" stroke="#dc5a41" stroke-width="3.0" stroke-linecap="round" opacity="0.55"/>
+<line x1="139.9" y1="235.1" x2="205" y2="170" stroke="#0f8f84" stroke-width="3.0" stroke-linecap="round" opacity="0.55"/>
+<circle cx="139.9" cy="104.9" r="24.0" fill="#d97706" opacity="0.18"/>
+<circle cx="139.9" cy="104.9" r="15.0" fill="#d97706"/>
+<circle cx="270.1" cy="104.9" r="24.0" fill="#7c3aed" opacity="0.18"/>
+<circle cx="270.1" cy="104.9" r="15.0" fill="#7c3aed"/>
+<circle cx="270.1" cy="235.1" r="24.0" fill="#dc5a41" opacity="0.18"/>
+<circle cx="270.1" cy="235.1" r="15.0" fill="#dc5a41"/>
+<circle cx="139.9" cy="235.1" r="24.0" fill="#0f8f84" opacity="0.18"/>
+<circle cx="139.9" cy="235.1" r="15.0" fill="#0f8f84"/>
+<circle cx="205" cy="170" r="40.0" fill="#1f883d"/>
+<path d="M 189.0 171.0 L 201.0 183.0 L 223.0 158.0" fill="none" stroke="#ffffff" stroke-width="7.0" stroke-linecap="round" stroke-linejoin="round"/>
+<text x="380" y="148" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="64" font-weight="700" fill="#1f2328" text-anchor="start" letter-spacing="-1">review-council</text>
+<text x="382" y="198" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="25" font-weight="500" fill="#1f2328" text-anchor="start">A multi-model review council for Claude Code and Codex.</text>
+<text x="382" y="240" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="19" font-weight="400" fill="#59636e" text-anchor="start">Independent seats from different labs review one change.</text>
+<text x="382" y="270" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="19" font-weight="400" fill="#59636e" text-anchor="start">Every claim is checked against source, fixed, gated and re-verified.</text>
+<rect x="382" y="80" width="28" height="6" rx="3" fill="#d97706"/>
+<rect x="420" y="80" width="28" height="6" rx="3" fill="#7c3aed"/>
+<rect x="458" y="80" width="28" height="6" rx="3" fill="#dc5a41"/>
+<rect x="496" y="80" width="28" height="6" rx="3" fill="#0f8f84"/>
+</svg>

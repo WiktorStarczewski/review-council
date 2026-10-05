@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 244" width="1000" height="244" role="img" aria-label="How one review round runs">
+<title>How one review round runs</title>
+<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#6e7681"/></marker><marker id="back" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#f0883e"/></marker></defs>
+<clipPath id="clip-loop-discover"><rect x="11" y="62" width="178" height="106" rx="12"/></clipPath>
+<rect x="11" y="62" width="178" height="106" rx="12" fill="#161b22" stroke="none" stroke-width="1.5"/>
+<rect x="11" y="62" width="178" height="5" fill="#4493f8" clip-path="url(#clip-loop-discover)"/>
+<rect x="11" y="62" width="178" height="106" rx="12" fill="none" stroke="#30363d" stroke-width="1.5"/>
+<text x="27" y="98" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#f0f6fc" text-anchor="start">Discover</text>
+<text x="27" y="126" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="400" fill="#9198a1" text-anchor="start">every seat looks for</text>
+<text x="27" y="146" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="400" fill="#9198a1" text-anchor="start">a smaller change</text>
+<circle cx="128" cy="92" r="5.5" fill="#f5a524"/>
+<circle cx="143" cy="92" r="5.5" fill="#a78bfa"/>
+<circle cx="158" cy="92" r="5.5" fill="#ff7b63"/>
+<circle cx="173" cy="92" r="5.5" fill="#2dd4bf"/>
+<clipPath id="clip-loop-triage"><rect x="211" y="62" width="178" height="106" rx="12"/></clipPath>
+<rect x="211" y="62" width="178" height="106" rx="12" fill="#161b22" stroke="none" stroke-width="1.5"/>
+<rect x="211" y="62" width="178" height="5" fill="#8b949e" clip-path="url(#clip-loop-triage)"/>
+<rect x="211" y="62" width="178" height="106" rx="12" fill="none" stroke="#30363d" stroke-width="1.5"/>
+<text x="227" y="98" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#f0f6fc" text-anchor="start">Triage</text>
+<text x="227" y="126" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="400" fill="#9198a1" text-anchor="start">open every claim at</text>
+<text x="227" y="146" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="400" fill="#9198a1" text-anchor="start">its cited line</text>
+<text x="373" y="97" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="12" font-weight="500" fill="#6e7681" text-anchor="end">host</text>
+<line x1="193" y1="115.0" x2="207" y2="115.0" stroke="#6e7681" stroke-width="2" marker-end="url(#arrow)"/>
+<clipPath id="clip-loop-plan"><rect x="411" y="62" width="178" height="106" rx="12"/></clipPath>
+<rect x="411" y="62" width="178" height="106" rx="12" fill="#161b22" stroke="none" stroke-width="1.5"/>
+<rect x="411" y="62" width="178" height="5" fill="#ab7df8" clip-path="url(#clip-loop-plan)"/>
+<rect x="411" y="62" width="178" height="106" rx="12" fill="none" stroke="#30363d" stroke-width="1.5"/>
+<text x="427" y="98" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#f0f6fc" text-anchor="start">Plan</text>
+<text x="427" y="126" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="400" fill="#9198a1" text-anchor="start">if the fix is nontrivial,</text>
+<text x="427" y="146" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="400" fill="#9198a1" text-anchor="start">one seat checks it</text>
+<circle cx="573" cy="92" r="5.5" fill="#f5a524"/>
+<line x1="393" y1="115.0" x2="407" y2="115.0" stroke="#6e7681" stroke-width="2" marker-end="url(#arrow)"/>
+<clipPath id="clip-loop-fix"><rect x="611" y="62" width="178" height="106" rx="12"/></clipPath>
+<rect x="611" y="62" width="178" height="106" rx="12" fill="#161b22" stroke="none" stroke-width="1.5"/>
+<rect x="611" y="62" width="178" height="5" fill="#f0883e" clip-path="url(#clip-loop-fix)"/>
+<rect x="611" y="62" width="178" height="106" rx="12" fill="none" stroke="#30363d" stroke-width="1.5"/>
+<text x="627" y="98" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#f0f6fc" text-anchor="start">Fix + gates</text>
+<text x="627" y="126" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="400" fill="#9198a1" text-anchor="start">one commit per fix,</text>
+<text x="627" y="146" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="400" fill="#9198a1" text-anchor="start">gates at baseline</text>
+<text x="773" y="97" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="12" font-weight="500" fill="#6e7681" text-anchor="end">host</text>
+<line x1="593" y1="115.0" x2="607" y2="115.0" stroke="#6e7681" stroke-width="2" marker-end="url(#arrow)"/>
+<clipPath id="clip-loop-verify"><rect x="811" y="62" width="178" height="106" rx="12"/></clipPath>
+<rect x="811" y="62" width="178" height="106" rx="12" fill="#161b22" stroke="none" stroke-width="1.5"/>
+<rect x="811" y="62" width="178" height="5" fill="#3fb950" clip-path="url(#clip-loop-verify)"/>
+<rect x="811" y="62" width="178" height="106" rx="12" fill="none" stroke="#30363d" stroke-width="1.5"/>
+<text x="827" y="98" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#f0f6fc" text-anchor="start">Verify</text>
+<text x="827" y="126" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="400" fill="#9198a1" text-anchor="start">four risk bundles over</text>
+<text x="827" y="146" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="13.5" font-weight="400" fill="#9198a1" text-anchor="start">the latest state</text>
+<circle cx="928" cy="92" r="5.5" fill="#f5a524"/>
+<circle cx="943" cy="92" r="5.5" fill="#a78bfa"/>
+<circle cx="958" cy="92" r="5.5" fill="#ff7b63"/>
+<circle cx="973" cy="92" r="5.5" fill="#2dd4bf"/>
+<line x1="793" y1="115.0" x2="807" y2="115.0" stroke="#6e7681" stroke-width="2" marker-end="url(#arrow)"/>
+<path d="M 900.0 172 V 202 H 300.0 V 180" fill="none" stroke="#f0883e" stroke-width="2" stroke-dasharray="6 5" marker-end="url(#back)"/>
+<text x="600.0" y="226" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14" font-weight="500" fill="#f0883e" text-anchor="middle">new P0/P1 or another nontrivial fix: plan, fix and verify again</text>
+<text x="11" y="36" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="400" fill="#6e7681" text-anchor="start">preflight: freeze scope, probe every seat</text>
+<text x="989" y="36" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="400" fill="#6e7681" text-anchor="end">clean: seal receipt, report, PR review</text>
+</svg>
