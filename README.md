@@ -67,11 +67,15 @@ development and host differences.
 
 <br>
 
-| | Claude Code | Codex |
-| --- | --- | --- |
-| one-line install | `curl -fsSL https://raw.githubusercontent.com/WiktorStarczewski/review-council/main/install.sh \| bash` | `curl -fsSL https://raw.githubusercontent.com/WiktorStarczewski/review-council/main/install-codex.sh \| bash` |
-| update | `claude plugin update review-council` | `codex plugin marketplace upgrade review-council`, then `codex plugin add review-council@review-council` |
-| after install or update | restart or `/reload-plugins` | new chat |
+```bash
+# Claude Code: install in one line, or update; then restart or /reload-plugins
+curl -fsSL https://raw.githubusercontent.com/WiktorStarczewski/review-council/main/install.sh | bash
+claude plugin update review-council
+
+# Codex: install in one line, or update; then start a new chat
+curl -fsSL https://raw.githubusercontent.com/WiktorStarczewski/review-council/main/install-codex.sh | bash
+codex plugin marketplace upgrade review-council && codex plugin add review-council@review-council
+```
 
 The Claude Code one-liner also enables auto-update for the added marketplace. Pass
 `--no-auto-update` (`... | bash -s -- --no-auto-update`) or set
@@ -79,8 +83,9 @@ The Claude Code one-liner also enables auto-update for the added marketplace. Pa
 unchanged. Rerunning it updates an existing marketplace. It changes only Claude Code's
 marketplace configuration: the settings file is rewritten at 2-space indent with
 every other setting preserved. The rewrite is atomic, keeps the file mode, follows an
-existing symlink and refuses an unparseable file; a new file is created with mode 600. The Codex one-liner
-accepts `--ref <branch>` or `REVIEW_COUNCIL_REF` to install another branch.
+existing symlink and refuses an unparseable file; a new file is created with mode 600.
+The Codex one-liner accepts `--ref <branch>` or `REVIEW_COUNCIL_REF` to install another
+branch.
 
 **Requirements**
 
