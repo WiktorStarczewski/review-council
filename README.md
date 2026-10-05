@@ -98,7 +98,7 @@ accepts `--ref <branch>` or `REVIEW_COUNCIL_REF` to install another branch.
 | --- | --- |
 | `/review-council:rev` | reviews and fixes this branch against its base |
 | `/review-council:rev uncommitted --read-only` | reports findings on your working tree, changes nothing |
-| `/review-council:rev https://github.com/owner/repo/pull/123` | reviews a PR and posts the result to it |
+| `/review-council:rev https://github.com/o/r/pull/12` | reviews a PR and posts the result to it |
 | `/review-council:rev branch 4 --base origin/next` | at least four numbered panels against an explicit base |
 | `/review-council:rev docs/design.md` | read-only review of a document |
 | `/review-council:stack /absolute/path/to/stack-config.sh` | reviews a multi-repository change in dependency order |
@@ -402,10 +402,10 @@ signed in:
 
 | Seat | Model | Effort | Seated when |
 | --- | --- | --- | --- |
-| `codex-sol` | newest Sol in the Codex catalog | `xhigh` | the Codex CLI is signed in |
-| `codex-luna` | newest Luna in the Codex catalog | `xhigh` | the Codex CLI is signed in |
-| `opus` | `opus` | `xhigh` | the Claude CLI is signed in, or via Claude Code Agent seats |
-| `gemini` | `gemini-2.5-pro` | provider default | the Gemini CLI is installed and signed in |
+| `codex-sol` | newest Sol | `xhigh` | Codex CLI signed in |
+| `codex-luna` | newest Luna | `xhigh` | Codex CLI signed in |
+| `opus` | Opus | `xhigh` | Claude CLI signed in, or Claude Code Agent seats |
+| `gemini` | `gemini-2.5-pro` | default | Gemini CLI installed and signed in |
 
 Sol and Luna resolve once per run and freeze to exact slugs before probing. The
 `codex-review` extra is also available to explicit numeric schedules.

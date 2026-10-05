@@ -186,7 +186,7 @@ NAMES = {"sol": "Sol", "luna": "Luna", "opus": "Opus", "sonnet": "Sonnet"}
 # (key, title, note, phase, chips) steps; chips are (seat, label), empty for host work.
 LARGE = [
     ("round", "preflight"),
-    ("pre", "Freeze and probe", "scope, base, models and efforts frozen; gates baselined", "gate",
+    ("pre", "Freeze and probe", "scope and roster frozen, gates baselined", "gate",
      tuple((s, NAMES[s] + " probe") for s in SEATS)),
     ("round", "discovery"),
     ("r1", "Simplicity", "r1  ·  can the change be smaller?", "discover",
@@ -217,12 +217,12 @@ def chip(t, x, y, w, seat, label, outline=False):
     return "\n".join([
         box(x, y, w, 30, fill, stroke, rx=8),
         f'<circle cx="{x + 14}" cy="{y + 15}" r="5" fill="{t[seat]}"/>',
-        text(x + 26, y + 20, label, 12.5, t["text"], 500, MONO),
+        text(x + 26, y + 20, label, 13.5, t["text"], 500, MONO),
     ])
 
 
 def large(t):
-    w, spine, cx0, cw, cgap = 1000, 30, 408, 140, 8
+    w, spine, cx0, cw, cgap = 1000, 30, 420, 137, 8
     y, rows = 20, []
     launches = 0
     for row in LARGE:
@@ -235,24 +235,24 @@ def large(t):
             y += 30
             continue
         key, title, note, phase, chips = row
-        h = 58
+        h = 64
         probes = key == "pre"
         filled = t[phase] if chips and not probes else t["bg0"]
         rows.append(f'<circle cx="{spine}" cy="{y + 18}" r="8" fill="{filled}" stroke="{t[phase]}" '
                     f'stroke-width="3"/>')
-        rows.append(text(spine + 26, y + 23, title, 16.5, t["text"], 650))
-        rows.append(text(spine + 26, y + 44, note, 13, t["muted"]))
+        rows.append(text(spine + 26, y + 23, title, 18, t["text"], 650))
+        rows.append(text(spine + 26, y + 46, note, 14.5, t["muted"]))
         for i, (seat, label) in enumerate(chips):
             rows.append(chip(t, cx0 + i * (cw + cgap), y + 4, cw, seat, label, probes))
         launches += 0 if probes else len(chips)
         if not chips:
-            rows.append(text(cx0 + 12, y + 23, "host session", 12.5, t["faint"], 500, MONO))
+            rows.append(text(cx0 + 12, y + 23, "host session", 13.5, t["faint"], 500, MONO))
         y += h
-    h = y + 10
-    spine_line = (f'<line x1="{spine}" y1="50" x2="{spine}" y2="{h - 50}" stroke="{t["line"]}" '
+    h = y + 34
+    spine_line = (f'<line x1="{spine}" y1="50" x2="{spine}" y2="{y - 46}" stroke="{t["line"]}" '
                   f'stroke-width="2"/>')
-    total = text(w - 10, h - 26, f"{launches} seat launches, each panel receipted before the next edit",
-                 13, t["faint"], 600, MONO, "end")
+    total = text(spine + 26, h - 14, f"{launches} seat launches  ·  every panel seals its receipt before the next edit",
+                 14, t["faint"], 600, MONO)
     return svg(w, h, "\n".join([spine_line, *rows, total]), "A large, high-risk review, step by step")
 
 
