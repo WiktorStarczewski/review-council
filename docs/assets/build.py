@@ -91,7 +91,7 @@ def hero(t):
         text(380, 148, "review-council", 64, t["text"], 700, MONO, extra=' letter-spacing="-1"'),
         text(382, 198, "A multi-model review council for Claude Code and Codex.", 25, t["text"], 500),
         text(382, 240, "Independent seats from different labs review one change.", 19, t["muted"]),
-        text(382, 270, "Every claim is checked against source, fixed, gated and re-verified.", 19, t["muted"]),
+        text(382, 270, "Claims that hold up are fixed, gated and re-verified.", 19, t["muted"]),
     ]
     for i, seat in enumerate(SEATS):
         body.append(f'<rect x="{382 + i * 38}" y="80" width="28" height="6" rx="3" fill="{t[seat]}"/>')
@@ -174,7 +174,7 @@ def loop(t):
     body.append(text((centers[1] + centers[4]) / 2, yb + 24,
                      "new P0/P1 or another nontrivial fix: plan, fix and verify again", 14, t["fix"], 500,
                      anchor="middle"))
-    body.append(text(x0, 36, "preflight: freeze scope, probe every seat", 13.5, t["faint"], 400, MONO))
+    body.append(text(x0, 36, "preflight: freeze scope and roster", 13.5, t["faint"], 400, MONO))
     body.append(text(w - x0, 36, "clean: seal receipt, report, PR review", 13.5, t["faint"], 400, MONO, "end"))
     return svg(w, h, "\n".join(body), "How one review round runs")
 
@@ -186,8 +186,8 @@ NAMES = {"sol": "Sol", "luna": "Luna", "opus": "Opus", "sonnet": "Sonnet"}
 # (key, title, note, phase, chips) steps; chips are (seat, label), empty for host work.
 LARGE = [
     ("round", "preflight"),
-    ("pre", "Freeze and probe", "scope and roster frozen, gates baselined", "gate",
-     tuple((s, NAMES[s] + " probe") for s in SEATS)),
+    ("pre", "Freeze and probe", "scope and roster frozen, CLI seats probed", "gate",
+     tuple((s, NAMES[s]) for s in SEATS)),
     ("round", "discovery"),
     ("r1", "Simplicity", "r1  ·  can the change be smaller?", "discover",
      tuple((s, "simplicity") for s in SEATS)),
@@ -203,12 +203,12 @@ LARGE = [
     ("r4", "Verification", "r4  ·  four bundles plus a sibling-site check", "verify",
      tuple(zip(SEATS, BUNDLES))),
     ("round", "second fix"),
-    ("t2", "Triage", "r4 found a new P1 in a round-one fix", "gate", ()),
+    ("t2", "Triage", "r4 found a new P1 in the first fix", "gate", ()),
     ("r4p", "Plan", "r4p  ·  the new fix is nontrivial", "plan", (("sol", "completeness"),)),
     ("f2", "Fix and gates", "one more commit, gates at baseline or better", "fix", ()),
     ("r5", "Verification", "r5  ·  clean: no new or open P0/P1", "verify", tuple(zip(SEATS, BUNDLES))),
     ("round", "done"),
-    ("done", "Seal, push, publish", "receipt, report.md and one PR review", "ok", ()),
+    ("done", "Seal, push, publish", "receipt, report.md, push, one PR review", "ok", ()),
 ]
 
 
@@ -251,7 +251,7 @@ def large(t):
     h = y + 34
     spine_line = (f'<line x1="{spine}" y1="50" x2="{spine}" y2="{y - 46}" stroke="{t["line"]}" '
                   f'stroke-width="2"/>')
-    total = text(spine + 26, h - 14, f"{launches} seat launches  ·  every panel seals its receipt before the next edit",
+    total = text(spine + 26, h - 14, f"{launches} seat launches  ·  every code panel seals a receipt before the next edit",
                  14, t["faint"], 600, MONO)
     return svg(w, h, "\n".join([spine_line, *rows, total]), "A large, high-risk review, step by step")
 

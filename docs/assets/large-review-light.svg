@@ -5,19 +5,19 @@
 <line x1="160" y1="30" x2="990" y2="30" stroke="#d1d9e0" stroke-width="1"/>
 <circle cx="30" cy="68" r="8" fill="#ffffff" stroke="#57606a" stroke-width="3"/>
 <text x="56" y="73" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#1f2328" text-anchor="start">Freeze and probe</text>
-<text x="56" y="96" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" fill="#59636e" text-anchor="start">scope and roster frozen, gates baselined</text>
+<text x="56" y="96" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" fill="#59636e" text-anchor="start">scope and roster frozen, CLI seats probed</text>
 <rect x="420" y="54" width="137" height="30" rx="8" fill="none" stroke="#d1d9e0" stroke-width="1.5"/>
 <circle cx="434" cy="69" r="5" fill="#d97706"/>
-<text x="446" y="74" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#1f2328" text-anchor="start">Sol probe</text>
+<text x="446" y="74" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#1f2328" text-anchor="start">Sol</text>
 <rect x="565" y="54" width="137" height="30" rx="8" fill="none" stroke="#d1d9e0" stroke-width="1.5"/>
 <circle cx="579" cy="69" r="5" fill="#7c3aed"/>
-<text x="591" y="74" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#1f2328" text-anchor="start">Luna probe</text>
+<text x="591" y="74" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#1f2328" text-anchor="start">Luna</text>
 <rect x="710" y="54" width="137" height="30" rx="8" fill="none" stroke="#d1d9e0" stroke-width="1.5"/>
 <circle cx="724" cy="69" r="5" fill="#dc5a41"/>
-<text x="736" y="74" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#1f2328" text-anchor="start">Opus probe</text>
+<text x="736" y="74" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#1f2328" text-anchor="start">Opus</text>
 <rect x="855" y="54" width="137" height="30" rx="8" fill="none" stroke="#d1d9e0" stroke-width="1.5"/>
 <circle cx="869" cy="69" r="5" fill="#0f8f84"/>
-<text x="881" y="74" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#1f2328" text-anchor="start">Sonnet probe</text>
+<text x="881" y="74" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#1f2328" text-anchor="start">Sonnet</text>
 <text x="56" y="128" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="11.5" font-weight="700" fill="#8c959f" text-anchor="start" letter-spacing="1.5">DISCOVERY</text>
 <line x1="160" y1="124" x2="990" y2="124" stroke="#d1d9e0" stroke-width="1"/>
 <circle cx="30" cy="162" r="8" fill="#0969da" stroke="#0969da" stroke-width="3"/>
@@ -100,7 +100,7 @@
 <line x1="170" y1="632" x2="990" y2="632" stroke="#d1d9e0" stroke-width="1"/>
 <circle cx="30" cy="670" r="8" fill="#ffffff" stroke="#57606a" stroke-width="3"/>
 <text x="56" y="675" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#1f2328" text-anchor="start">Triage</text>
-<text x="56" y="698" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" fill="#59636e" text-anchor="start">r4 found a new P1 in a round-one fix</text>
+<text x="56" y="698" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" fill="#59636e" text-anchor="start">r4 found a new P1 in the first fix</text>
 <text x="432" y="675" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#8c959f" text-anchor="start">host session</text>
 <circle cx="30" cy="734" r="8" fill="#8250df" stroke="#8250df" stroke-width="3"/>
 <text x="56" y="739" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#1f2328" text-anchor="start">Plan</text>
@@ -131,7 +131,7 @@
 <line x1="110" y1="918" x2="990" y2="918" stroke="#d1d9e0" stroke-width="1"/>
 <circle cx="30" cy="956" r="8" fill="#ffffff" stroke="#1f883d" stroke-width="3"/>
 <text x="56" y="961" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="18" font-weight="650" fill="#1f2328" text-anchor="start">Seal, push, publish</text>
-<text x="56" y="984" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" fill="#59636e" text-anchor="start">receipt, report.md and one PR review</text>
+<text x="56" y="984" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif" font-size="14.5" font-weight="400" fill="#59636e" text-anchor="start">receipt, report.md, push, one PR review</text>
 <text x="432" y="961" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="13.5" font-weight="500" fill="#8c959f" text-anchor="start">host session</text>
-<text x="56" y="1022" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="600" fill="#8c959f" text-anchor="start">22 seat launches  ·  every panel seals its receipt before the next edit</text>
+<text x="56" y="1022" font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace" font-size="14" font-weight="600" fill="#8c959f" text-anchor="start">22 seat launches  ·  every code panel seals a receipt before the next edit</text>
 </svg>
