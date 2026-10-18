@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- Evidence preparation runs one at a time on the machine. On a large repository one `prepare`
+  held 12 to 14 GB, and two from different review sessions exhausted a 32 GB machine's memory
+  and swap until the kernel panicked. `prepare` now waits for a machine-wide lock in the cache
+  directory, starts only when 25% of memory is free, stops when free memory falls under 8%, and
+  runs again once memory frees, at most three attempts. Only a completed attempt's output
+  reaches stdout, so the host never reads a stopped attempt's partial output. When memory stays
+  short for 30 minutes, or after the third stopped attempt, `prepare` exits 75. A guarded
+  preparation exits when its supervisor dies, so an orphan never keeps running without the
+  lock. `REV_PREPARE_GUARD=0` turns the guard off, and `REV_PREPARE_MIN_FREE`,
+  `REV_PREPARE_FLOOR` and `REV_PREPARE_WAIT` set the thresholds and the wait. Each run appends
+  its wait, run time, attempts, peak memory and lowest free memory to `prepare.tsv` in the cache
+  directory.
+
 ## 0.5.10
 
 - `codex_models` takes one to four entries, and an entry may repeat: the model

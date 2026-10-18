@@ -1,3 +1,11 @@
+# Run one evidence preparation at a time on the machine
+
+- [x] Hold a machine-wide lock around every `prepare`, so sessions prepare one at a time.
+- [x] Start only with free memory, stop at a floor, retry up to three attempts, and forward only a completed attempt's output.
+- [x] Stop the guarded child when its supervisor dies.
+- [ ] Green CI on macOS and Ubuntu, then review.
+- [ ] Follow-up: cut `facts()` memory. It keeps a call-site row for every `name(` match of a changed symbol across the whole tree.
+
 # Release 0.5.10
 
 - [x] Let `codex_models` repeat an entry, one numbered seat per entry, up to four.
