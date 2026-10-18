@@ -29,9 +29,11 @@ if [ -n "$EXACT_TASK" ]; then
   RESULTS=$REVIEW_COUNCIL_TEST_RESULTS_FILE
 fi
 : > "$RESULTS"
+printf '100\n' > "$T/free-memory" || exit 1
 export REVIEW_COUNCIL_CONFIG="$T/no-such-config.json" \
        REVIEW_COUNCIL_CACHE_DIR="$T/cache" \
-       REVIEW_COUNCIL_UPDATE_URL="file://$FX/plugin-same.json"
+       REVIEW_COUNCIL_UPDATE_URL="file://$FX/plugin-same.json" \
+       REV_PREPARE_MEMORY_PROBE="$T/free-memory"
 ok()   { echo ok   >> "$RESULTS"; echo "  ok   $1"; }
 fail() { echo fail >> "$RESULTS"; echo "  FAIL $1${2:+ - $2}"; }
 assert_eq()     { [ "$2" = "$3" ] && ok "$1" || fail "$1" "expected '$3' got '$2'"; }

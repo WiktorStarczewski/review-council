@@ -31,6 +31,7 @@ from review_limits import (CLAUDE_MAX_TURNS, MANDATORY_REPOSITORY_READ_LIMIT,
                            PROVIDER_TURN_RESERVE, READ_LINES,
                            REPOSITORY_EXPANSION_CALL_LIMIT,
                            REPOSITORY_REFUTATION_CALL_RESERVE)
+import prepare_guard
 from session_inputs import session_input_lock, validate_standard_inputs
 
 BUNDLES = ('correctness-boundaries', 'security-state-api',
@@ -4583,6 +4584,7 @@ def attempt_module():
 
 
 def prepare(args):
+    prepare_guard.exit_with_parent()
     session = Path(args.session).resolve()
     with session_input_lock(session):
         validate_standard_inputs(session, require_all=True)
@@ -5482,7 +5484,7 @@ def review_origin(args):
                      sort_keys=True))
 
 
-def main():
+def main(program=False):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     prep = commands.add_parser('prepare')
@@ -5513,6 +5515,9 @@ def main():
     try:
         if hasattr(args, 'label') and not SAFE_NAME.fullmatch(args.label):
             raise ValueError('invalid label')
+        if program and args.command == 'prepare' and prepare_guard.should_supervise():
+            return prepare_guard.supervise(
+                [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]], args.session, args.label)
         with plan_search_signal_handlers():
             {'prepare': prepare, 'render': render, 'render-panel': render_panel,
              'verify': verify, 'same-source': same_source,
@@ -5525,4 +5530,4 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(main(program=True))
