@@ -449,18 +449,26 @@ SH
     cat > "$rt_bin/git" <<'SH'
 #!/bin/sh
 after_update=0
+pushing=0
 for argument in "$@"; do
   if [ "$after_update" = 1 ] && [ "$argument" = "${STACK_FAIL_TRACKING_HEAD:-}" ]; then
     exit 88
   fi
   [ "$argument" = update-ref ] && after_update=1
+  [ "$argument" = push ] && pushing=1
 done
+if [ "$pushing" = 1 ] && [ -n "${STACK_FAIL_TRACKING_HEAD:-}" ]; then
+  "$STACK_GIT_REAL" "$@" || exit
+  # Git 2.56 records the push in the tracking ref itself; a failed record leaves the ref where it was.
+  exec "$STACK_GIT_REAL" -C "$STACK_TRACKING_REPO" update-ref refs/remotes/origin/feat "$STACK_TRACKING_BEFORE"
+fi
 exec "$STACK_GIT_REAL" "$@"
 SH
     chmod +x "$rt_bin/git"
     export ROOT="$T/stack-tracking-retry-root" LOG="$T/stack-tracking-retry.log"
     export STACK_PUBLISH_CALLS="$T/stack-tracking-retry.calls"
     export STACK_GIT_REAL="$rt_git" STACK_FAIL_TRACKING_HEAD="$rt_head" NO_SQUASH=1
+    export STACK_TRACKING_REPO="$RT" STACK_TRACKING_BEFORE="$rt_before"
     : > "$STACK_PUBLISH_CALLS"
     PATH="$rt_bin:$PATH" SHIM_MODE=ok "$STACK/stack.sh" "$T/stack-tracking-retry.cfg" \
       > "$T/stack-tracking-retry.out" 2>&1

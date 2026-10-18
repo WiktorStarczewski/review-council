@@ -6,6 +6,9 @@
   is seated once per entry, so four `latest-luna` entries seat `codex-luna`
   through `codex-luna-4`. Two different selectors that resolve to one model
   still refuse, and a pin cannot seat a model more often than the list names it.
+- A stack push completes under Git 2.56, which records a push to a configured
+  remote's URL in that remote's tracking ref itself. Before, the stack's own
+  record of the push refused the ref Git had already moved and the leg failed.
 
 ## 0.5.9
 
