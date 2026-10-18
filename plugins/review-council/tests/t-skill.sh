@@ -809,7 +809,8 @@ test_skill_replacement_and_breaker_contract() {
   python3 - "$SK/skills/rev/SKILL.md" "$SK/codex-skills/rev/SKILL.md" <<'PY'
 import re, sys
 RULE = ('An assignment without a valid result gets at most one replacement on another eligible seat: '
-        'after its exact retry for an execution failure, immediately for a hard audit failure.')
+        'after its exact retry for an execution failure, immediately for a hard audit failure '
+        'or an `INCOMPLETE PROOF` result.')
 REMOVED = [
     'stop the current panel without another paid retry',
     'widen an evidence-audit failure into a full-state repair',

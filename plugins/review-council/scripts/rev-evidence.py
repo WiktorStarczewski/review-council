@@ -4356,12 +4356,15 @@ def validate_results(session, manifest, manifest_hash, seats=None, verdicts=None
             raise ValueError('invalid result generation selection')
     phase = manifest['phase']
     validator = Path(__file__).parent / 'lib' / 'validate-findings.py'
+    incomplete_proof = attempt_module().incomplete_proof
     for seat in selected:
         stem = session / f"r{manifest['label']}-{seat}"
         result = Path(str(stem) + '.json'); exit_path = Path(str(stem) + '.exit')
         prompt = Path(str(stem) + '.prompt.md')
         if exit_path.read_text().strip() != '0':
             raise ValueError('seat failed: ' + seat)
+        if incomplete_proof(result):
+            raise ValueError('incomplete proof: ' + seat)
         token = 'Evidence manifest SHA-256: ' + manifest_hash
         if token not in prompt.read_text().splitlines():
             raise ValueError('prompt manifest hash mismatch: ' + seat)

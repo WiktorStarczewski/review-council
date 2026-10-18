@@ -31,6 +31,18 @@ def hard_audit_failure(audit: Path) -> bool:
             and result.get('evidence_scoped') is True)
 
 
+def incomplete_proof(result: Path) -> bool:
+    """A seat out of tool budget says so in its summary; that result is never review-complete."""
+    if not safe_regular(result):
+        return False
+    try:
+        document = json.loads(result.read_text(encoding='utf-8'))
+    except (OSError, ValueError, RecursionError):
+        return False
+    return (isinstance(document, dict) and isinstance(document.get('summary'), str)
+            and document['summary'].startswith('INCOMPLETE PROOF'))
+
+
 def latched(session: Path, panel: str, seat: str) -> bool:
     """A hard audit failure latches only its own (label, seat); siblings and later labels launch."""
     invalid = session / f'r{panel}-{seat}.audit-invalid.json'
@@ -45,8 +57,8 @@ def record_path(session: Path, panel: str, seat: str, prompt: Path):
 
 
 def terminal_failure(session: Path, panel: str, seat: str, prompt: Path) -> bool:
-    """The assignment failed for good: a hard audit, or its one exact retry also exited 1 or 2."""
-    if latched(session, panel, seat):
+    """The assignment failed for good: a hard audit, an incomplete proof, or its one exact retry also exited 1 or 2."""
+    if latched(session, panel, seat) or incomplete_proof(session / f'r{panel}-{seat}.json'):
         return True
     exit_path = session / f'r{panel}-{seat}.exit'
     try:
@@ -98,6 +110,10 @@ def main():
         fcntl.flock(panel_lock, fcntl.LOCK_EX)
         if command == 'reserve' and latched(session, panel, seat):
             print(f'{seat} under label {panel} failed a hard evidence audit; replace the assignment '
+                  'on another eligible seat, never relaunch it', file=sys.stderr)
+            return 2
+        if command == 'reserve' and incomplete_proof(session / f'r{panel}-{seat}.json'):
+            print(f'{seat} under label {panel} returned an INCOMPLETE PROOF result; replace the assignment '
                   'on another eligible seat, never relaunch it', file=sys.stderr)
             return 2
         path, identity = record_path(session, panel, seat, Path(sys.argv[5]))
