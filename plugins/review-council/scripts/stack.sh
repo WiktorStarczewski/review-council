@@ -511,7 +511,9 @@ finish_repos() {
       note_failure "push:$(basename "$d")" "$d"
       continue
     fi
-    if ! git -C "$d" update-ref "$tracking_ref" "$head" "$remote_head"; then
+    # Git 2.56 and later record a push to a configured remote's URL in its tracking ref themselves.
+    if [ "$(git -C "$d" rev-parse -q --verify "$tracking_ref" 2>/dev/null)" != "$head" ] \
+      && ! git -C "$d" update-ref "$tracking_ref" "$head" "$remote_head"; then
       say "!!! cannot record the successful pinned push for $(basename "$d")"
       note_failure "push tracking:$(basename "$d")" "$d"
       continue
