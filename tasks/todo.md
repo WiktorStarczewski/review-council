@@ -1,3 +1,13 @@
+# Omit unsegmentable navigation context
+
+- [x] Count an extra-caller, extra-test or gate row on a line over 32 KiB as omitted, without listing it as a read target.
+- [x] Keep refusing when a declaration, plan site, production caller or related test needs that line.
+- [x] Pin both directions in `t-patch-chunks.sh`, with the test alone failing in CI before the fix.
+- [x] Count a related-test row on such a line as omitted too: a JSON fixture under a test path that names a changed symbol refused every preparation of a large repository.
+- [x] Keep refusing when a declaration, plan site or production caller needs that line, alone or beside a related test.
+- [ ] Green CI on macOS and Ubuntu for the fix, then review.
+- [ ] Follow-up: stop the call-site scanner from reading `name (` in prose and data files as a call.
+
 # Release 0.5.10
 
 - [x] Let `codex_models` repeat an entry, one numbered seat per entry, up to four.

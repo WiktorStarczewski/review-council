@@ -262,6 +262,109 @@ PY
   )
 }
 
+test_unsegmentable_source_context_rows() {
+  ( local R="$T/unsegmentable-context-root" S="$T/unsegmentable-context-session"
+    local D="$T/unsegmentable-declaration-session" base manifest owner
+    mkrepo "$R"; mkdir -p "$R/src" "$R/tests" "$S" "$D"
+    python3 - "$R" <<'PY'
+import pathlib, sys
+
+root = pathlib.Path(sys.argv[1])
+(root / 'src/widget.py').write_text('def render_widget():\n    return "widget"\n')
+(root / 'src/app.py').write_text('def main():\n    return render_widget()\n')
+(root / 'src/catalog.json').write_text(
+    '{"note": "' + 'x' * (33 * 1024) + ' render_widget (see app)"}\n')
+(root / 'tests/fixture.json').write_text(
+    '{"expect": "render_widget", "pad": "' + 'y' * (33 * 1024) + '"}\n')
+PY
+    git -C "$R" add src tests && git -C "$R" commit -qm "unsegmentable context base"
+    base=$(git -C "$R" rev-parse HEAD)
+    printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+      "$base" "$R" > "$S/scope.env"
+    printf 'src/widget.py\n' > "$S/files.txt"; : > "$S/untracked.txt"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+    cp "$S/scope.env" "$S/files.txt" "$S/untracked.txt" "$S/roster.json" "$D/"
+    python3 - "$R/src/widget.py" <<'PY'
+import pathlib, sys
+
+path = pathlib.Path(sys.argv[1])
+path.write_text(path.read_text().replace('"widget"', '"changed widget"'))
+PY
+    manifest=$(REV_SOURCE_CONTEXT=1 \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 1 --phase discovery 2> "$S/prepare.err")
+    assert_eq "prepare omits extra-caller and related-test rows on lines above 32 KiB" "$?" 0
+    assert_nogrep "neither row is refused as required source" "$S/prepare.err" \
+      'exceeds visible segment limit'
+    [ -n "$manifest" ] || return
+    python3 - "$manifest" <<'PY'
+import json, sys
+
+context = json.load(open(sys.argv[1]))['source_context']
+packets = [packet for packet in context['seats'].values() if packet['components']]
+assert packets
+for packet in packets:
+    listed = ([row['path'] for shard in packet['shards'] for row in shard['ranges']]
+              + [row['path'] for row in packet['required_source_ranges']]
+              + [row['path'] for row in packet['omitted_source_ranges']])
+    assert {'src/app.py', 'src/widget.py'} <= set(listed), listed
+    assert 'src/catalog.json' not in listed, listed
+    assert 'tests/fixture.json' not in listed, listed
+    assert packet['omitted']['extra-caller'] == 1, packet['omitted']
+    assert packet['omitted']['related-test'] == 1, packet['omitted']
+    assert packet['source_read_required'] is True
+PY
+    assert_eq "the unsegmentable row is counted as omitted but never listed" "$?" 0
+    python3 "$SCRIPTS/rev-evidence.py" verify "$manifest" >/dev/null 2> "$S/verify.err"
+    assert_eq "validator accepts a counted, unlisted omission" "$?" 0
+    owner=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["mechanical_owner"])' "$manifest") || return
+    python3 "$SCRIPTS/rev-evidence.py" render "$manifest" "$owner" > "$S/owner.txt" 2> "$S/render.err"
+    assert_eq "the owner evidence prompt renders" "$?" 0
+    assert_nogrep "no seat is told to read the unsegmentable line" "$S/owner.txt" 'src/catalog\.json'
+    assert_nogrep "no seat is told to read the unsegmentable test line" "$S/owner.txt" 'tests/fixture\.json'
+    assert_grep "the owner still has to read source" "$S/owner.txt" '^Source read required: true$'
+
+    python3 - "$R/src/widget.py" <<'PY'
+import pathlib, sys
+
+path = pathlib.Path(sys.argv[1])
+path.write_text(path.read_text().replace(
+    '    return', '    banner = "' + 'w' * (33 * 1024) + '"\n    return'))
+PY
+    REV_SOURCE_CONTEXT=1 python3 "$SCRIPTS/rev-evidence.py" prepare "$D" 1 --phase discovery \
+      >/dev/null 2> "$D/prepare.err"
+    assert_eq "prepare still refuses a declaration on a line above 32 KiB" "$?" 2
+    assert_grep "the declaration refusal names the segment limit" "$D/prepare.err" \
+      '^evidence: required source line exceeds visible segment limit$'
+
+    python3 - "$SCRIPTS/rev-evidence.py" <<'PY'
+import importlib.util, sys
+
+spec = importlib.util.spec_from_file_location('evidence', sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+wide = [b'w' * (33 * 1024) + b'\n']
+for reasons in (['related-test:c'], ['extra-caller:render_widget'], ['extra-test:c'],
+                ['gate:package.json:3'], ['extra-caller:render_widget', 'gate:package.json:3'],
+                ['related-test:c', 'extra-test:d']):
+    row = {'line_start': 1, 'line_end': 1, 'reasons': reasons}
+    assert module.oversized_context_segments(wide, row) is None, reasons
+for reasons in (['declaration:render_widget'], ['declaration:plan-site:C-01'],
+                ['declaration:changed-line-anchor'], ['production-caller:render_widget'],
+                ['related-test:c', 'production-caller:render_widget'],
+                ['extra-caller:render_widget', 'declaration:plan-site:C-01']):
+    row = {'line_start': 1, 'line_end': 1, 'reasons': reasons}
+    try:
+        module.oversized_context_segments(wide, row)
+    except ValueError as error:
+        assert str(error) == 'required source line exceeds visible segment limit', reasons
+    else:
+        raise AssertionError(reasons)
+row = {'line_start': 1, 'line_end': 1, 'reasons': ['extra-caller:render_widget']}
+assert len(module.oversized_context_segments([b'n' * (20 * 1024) + b'\n'], row)) == 1
+PY
+    assert_eq "only related-test, extra-caller, extra-test and gate rows skip an unsegmentable line" "$?" 0
+  )
+}
+
 test_patch_chunk_manifest_contract() {
   ( local R="$T/patch-chunk-manifest-root" S="$T/patch-chunk-manifest-session"
     mkrepo "$R"; mkdir -p "$R/src" "$S"
