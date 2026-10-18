@@ -146,6 +146,41 @@ test_mutate_refuses_a_command_that_stops_passing() {
     assert_eq "the fix is still in the tree" "$(cat "$D/f.txt")" "$(printf 'a\nB\nc\nd\nE\n')" )
 }
 
+# A restore that puts back the original mtime is older than the build the last mutation made, so an
+# mtime-based build keeps that build and the closing run fails a tree that passes.
+test_mutate_restores_files_newer_than_the_mutated_build() {
+  ( local D="$T/mut-mtime" S="$T/mut-mtime-session"; mkdir -p "$S"
+    mut_repo "$D" $'BAD\n' $'GOOD\n' || exit 1
+    touch -t 202001010000 f.txt
+    printf 'REV_ROOT=%s\n' "$D" > "$S/scope.env"
+    mut_phase "$S" fix
+    # out is rebuilt unless it is newer than f.txt, the way make decides.
+    "$MUTATE_SRC" "$S" '{ [ out -nt f.txt ] || cp f.txt out; } && grep -q GOOD out' \
+      > "$T/mut-mtime.out" 2>&1
+    assert_eq "an mtime-based build passes on the restored tree" "$?" 0
+    assert_grep "pins the hunk" "$T/mut-mtime.out" "rev-mutate: PINNED f\.txt hunk 1"
+    assert_nogrep "the closing run rebuilds from the restored file" "$T/mut-mtime.out" \
+      "stopped passing on the restored tree"
+    assert_eq "the fix is still in the tree" "$(cat f.txt)" "GOOD" )
+}
+
+# The exit trap restores the same way, so a run stopped mid-mutation left the next mtime-based
+# build looking current with the mutation's output.
+test_mutate_cleanup_restores_files_newer_than_the_mutated_build() {
+  ( local D="$T/mut-mtime-trap" S="$T/mut-mtime-trap-session"; mkdir -p "$S"
+    mut_repo "$D" $'BAD\n' $'GOOD\n' || exit 1
+    touch -t 202001010000 f.txt
+    printf 'REV_ROOT=%s\n' "$D" > "$S/scope.env"
+    mut_phase "$S" fix
+    # $$ in the command's subshell is rev-mutate itself, so TERM stops it with the mutation built.
+    "$MUTATE_SRC" "$S" '{ [ out -nt f.txt ] || cp f.txt out; } && grep -q GOOD out || kill -TERM $$' \
+      > "$T/mut-mtime-trap.out" 2>&1
+    assert_eq "a TERM during the mutated run exits 143" "$?" 143
+    assert_eq "the exit trap restores the fix" "$(cat f.txt)" "GOOD"
+    { [ out -nt f.txt ] || cp f.txt out; } && grep -q GOOD out
+    assert_eq "the next build rebuilds from the restored file" "$?" 0 )
+}
+
 # The one path where the script admits it destroyed uncommitted work must not also delete the
 # only surviving copy of it.
 test_mutate_preserves_the_backup_when_it_cannot_restore() {

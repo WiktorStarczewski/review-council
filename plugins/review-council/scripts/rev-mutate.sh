@@ -65,7 +65,7 @@ BK="$WORK/backup"; CUR=""; KEEP_WORK=0
 cleanup() {
   # A mutated file must never outlive this run, however it ends, and a backup this run could not
   # put back is the only copy of that work left: never delete it on the way out.
-  [ -z "$CUR" ] || [ ! -f "$BK" ] || cp -p -- "$BK" "$CUR" 2>/dev/null
+  [ -z "$CUR" ] || [ ! -f "$BK" ] || { cp -p -- "$BK" "$CUR" && touch -- "$CUR"; } 2>/dev/null
   [ "$KEEP_WORK" -eq 1 ] || rm -rf "$WORK"
 }
 trap cleanup EXIT
@@ -156,6 +156,9 @@ while IFS= read -r -d '' f <&3; do
       echo "rev-mutate: FATAL $f differs from the fix after its restore; the fix is preserved at $BK" >&2
       exit 1
     fi
+    # cp -p rewinds the mtime to before the build this hunk's run made, so an mtime-based build
+    # would keep the mutation's binary.
+    touch -- "$f"
     i=$((i + 1))
   done
   CUR=""
