@@ -56,9 +56,32 @@ def record_path(session: Path, panel: str, seat: str, prompt: Path):
     return session / 'attempts' / (hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest() + '.json'), identity
 
 
+def completed_launch(session: Path, panel: str, seat: str, prompt: Path) -> bool:
+    """Its exit holds 0, or the last launch recorded for this label, seat and prompt exited 0.
+
+    rev-seat.sh clears the exit before it reserves, and a refused relaunch writes its own code there,
+    so then only the record shows the completed launch."""
+    exit_path = session / f'r{panel}-{seat}.exit'
+    try:
+        if safe_regular(exit_path) and exit_path.read_text(encoding='utf-8').strip() == '0':
+            return True
+        path, _ = record_path(session, panel, seat, prompt)
+        launches = json.loads(path.read_text(encoding='utf-8')).get('launches') if safe_regular(path) else None
+    except (OSError, ValueError, AttributeError):
+        return False
+    return isinstance(launches, list) and bool(launches) and str(launches[-1]) == '0'
+
+
+def ended_by_incomplete_proof(session: Path, panel: str, seat: str, prompt: Path) -> bool:
+    """A completed launch's INCOMPLETE PROOF result ends its assignment; a failed launch keeps its exact retry."""
+    return (incomplete_proof(session / f'r{panel}-{seat}.json')
+            and completed_launch(session, panel, seat, prompt))
+
+
 def terminal_failure(session: Path, panel: str, seat: str, prompt: Path) -> bool:
-    """The assignment failed for good: a hard audit, an incomplete proof, or its one exact retry also exited 1 or 2."""
-    if latched(session, panel, seat) or incomplete_proof(session / f'r{panel}-{seat}.json'):
+    """The assignment failed for good: a hard audit, a completed launch's incomplete proof, or its one
+    exact retry also exited 1 or 2."""
+    if latched(session, panel, seat) or ended_by_incomplete_proof(session, panel, seat, prompt):
         return True
     exit_path = session / f'r{panel}-{seat}.exit'
     try:
@@ -112,7 +135,7 @@ def main():
             print(f'{seat} under label {panel} failed a hard evidence audit; replace the assignment '
                   'on another eligible seat, never relaunch it', file=sys.stderr)
             return 2
-        if command == 'reserve' and incomplete_proof(session / f'r{panel}-{seat}.json'):
+        if command == 'reserve' and ended_by_incomplete_proof(session, panel, seat, Path(sys.argv[5])):
             print(f'{seat} under label {panel} returned an INCOMPLETE PROOF result; replace the assignment '
                   'on another eligible seat, never relaunch it', file=sys.stderr)
             return 2

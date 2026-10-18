@@ -181,8 +181,8 @@ while :; do
     codex|gemini|claude)
       if [ "$rc" -eq 0 ] && ! has_tool_call; then
         echo "$ADAPTER answered without a single tool call (attempt $attempt) - not a review" >> "$LOG"
-        if [ "$attempt" -lt 2 ]; then continue; fi
         rm -f "$OUT"
+        if [ "$attempt" -lt 2 ]; then continue; fi
         rc=1
       fi;;
   esac
