@@ -4584,12 +4584,6 @@ def attempt_module():
 
 
 def prepare(args):
-    if prepare_guard.should_supervise():
-        code = prepare_guard.supervise(
-            [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]], args.session, args.label)
-        if code:
-            raise SystemExit(code)
-        return None
     prepare_guard.exit_with_parent()
     session = Path(args.session).resolve()
     with session_input_lock(session):
@@ -5521,6 +5515,9 @@ def main():
     try:
         if hasattr(args, 'label') and not SAFE_NAME.fullmatch(args.label):
             raise ValueError('invalid label')
+        if args.command == 'prepare' and prepare_guard.should_supervise():
+            return prepare_guard.supervise(
+                [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]], args.session, args.label)
         with plan_search_signal_handlers():
             {'prepare': prepare, 'render': render, 'render-panel': render_panel,
              'verify': verify, 'same-source': same_source,
