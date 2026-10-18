@@ -212,6 +212,19 @@ class CodexTests(unittest.TestCase):
         self.assertEqual(names([('gpt-6-luna', None), ('gpt-5.6-luna', None), ('gpt-6-luna', None)]),
                          ['codex-6-luna', 'codex-5-6-luna', 'codex-6-luna-2'])
 
+    def test_numbered_repeats_never_take_another_models_seat_name(self):
+        names = self.roster.codex_seat_names
+        self.assertEqual(names([('gpt-6-luna', None), ('gpt-6-luna', None), ('gpt-6-luna-2', None)]),
+                         ['codex-luna', 'codex-luna-3', 'codex-luna-2'])
+        self.assertEqual(names([('gpt-6-luna-2', None), ('gpt-6-luna', None), ('gpt-6-luna', None)]),
+                         ['codex-luna-2', 'codex-luna', 'codex-luna-3'])
+        allowed = ['gpt-6-luna', 'gpt-6-luna', 'gpt-6-luna-2']
+        seats = [self.roster.make_seat(name, 'codex', slug, 'xhigh')
+                 for name, slug in zip(names([(slug, None) for slug in allowed]), allowed)]
+        excluded = []
+        self.assertEqual(self.roster.enforce_exact_seats({'codex_models': allowed}, seats, excluded), (None, None))
+        self.assertEqual(excluded, [])
+
     def test_pins_may_not_seat_a_model_more_often_than_codex_models_lists_it(self):
         allowed = ['gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.6-luna']
         self.assertIsNone(self.roster.codex_pin_conflict({}, allowed))
