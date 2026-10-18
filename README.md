@@ -721,7 +721,7 @@ upstream of the same branch name.
 | --- | --- | --- |
 | `exclude` | `[]` | drop detected labs or seats, e.g. `["gemini"]` |
 | `pin` | `{}` | override a detected seat's model or effort |
-| `codex_models` | absent: newest Sol and Luna | require one or two exact slugs or `latest-<family>` selectors |
+| `codex_models` | absent: newest Sol and Luna | require one to four exact slugs or `latest-<family>` selectors; an entry listed twice seats its model twice |
 | `codex_effort` | absent: `xhigh` | require one effort (`max`, `xhigh` or `high`) on every OpenAI seat |
 | `claude_models` | absent | require exact `opus` and/or `sonnet` seats |
 | `claude_seats` | `1` | number of Opus seats; mutually exclusive with `claude_models` |

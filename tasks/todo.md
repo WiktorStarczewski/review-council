@@ -1,3 +1,13 @@
+# Release 0.5.10
+
+- [x] Let `codex_models` repeat an entry, one numbered seat per entry, up to four.
+- [x] Match Claude and Codex manifests, changelog, and release procedure at 0.5.10.
+- [ ] Run the roster tests and the candidate gate in CI.
+- [ ] Open the pull request.
+- [ ] Review the candidate with signed stable 0.5.9. Repair verified P0/P1 only.
+- [ ] Wait for required CI, squash-merge, and publish the signed 0.5.10 release.
+- [ ] Reinstall on Claude and Codex and check `rev` and `stack` at 0.5.10.
+
 # Release 0.5.9
 
 - [x] Bind `latest-sol` and `latest-luna` to the seat CLI catalog (issue 32).

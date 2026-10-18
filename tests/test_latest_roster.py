@@ -128,6 +128,19 @@ class LatestRosterTests(unittest.TestCase):
         self.assertIn("xhigh", result["strict_reason"])
         probe.assert_not_called()
 
+    def test_repeated_latest_selector_seats_its_model_once_per_entry(self):
+        cfg = {**self.cfg, "codex_models": ["latest-luna"] * 4, "claude_seats": 0, "extras": False}
+        del cfg["claude_models"]
+        effective, error, strict = self.roster.resolve_codex_config(cfg, self.cache)
+        self.assertIsNone(error)
+        self.assertIsNone(strict)
+        self.assertEqual(effective["codex_models"], ["gpt-8-luna"] * 4)
+        result, _, strict = self.build(cfg)
+        self.assertIsNone(strict)
+        self.assertEqual([(seat["seat"], seat["model"], seat["effort"]) for seat in result["seats"]],
+                         [("codex-luna", "gpt-8-luna", "xhigh"), ("codex-luna-2", "gpt-8-luna", "xhigh"),
+                          ("codex-luna-3", "gpt-8-luna", "xhigh"), ("codex-luna-4", "gpt-8-luna", "xhigh")])
+
     def test_invalid_effort_and_duplicate_resolved_models_are_configuration_errors(self):
         for cfg in ({**self.cfg, "codex_effort": "medium"},
                     {**self.cfg, "codex_models": ["latest-sol", "gpt-9.10-sol"]}):

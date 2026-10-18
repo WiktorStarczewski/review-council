@@ -175,6 +175,59 @@ class CodexTests(unittest.TestCase):
              ('opus-2', 'claude', 'opus')],
         )
 
+    def test_repeated_codex_model_detects_one_numbered_seat_per_entry(self):
+        cache = self.root / 'cache.json'
+        cache.write_text(json.dumps({'models': [
+            {'slug': name, 'visibility': 'list', 'priority': priority,
+             'supported_reasoning_levels': [{'effort': 'xhigh'}, {'effort': 'max'}]}
+            for name, priority in [('gpt-5.6-sol', 1), ('gpt-5.6-luna', 3)]]}))
+        cfg = {'codex_models': ['gpt-5.6-luna'] * 4, 'codex_effort': 'xhigh', 'claude_seats': 0,
+               'exclude': ['gemini'], 'extras': False}
+
+        def fake_run(cmd, _timeout):
+            if cmd[:3] == ['codex', 'login', 'status']:
+                return 0, 'Logged in using ChatGPT', ''
+            self.fail('unexpected command: %r' % cmd)
+
+        env = dict(self.env, REVIEW_COUNCIL_CODEX_MODELS_CACHE=str(cache))
+        with patch.dict(os.environ, env), \
+             patch.object(self.roster, 'load_config', return_value=(cfg, None)), \
+             patch.object(self.roster.shutil, 'which', return_value='/fixture/cli'), \
+             patch.object(self.roster, 'run', side_effect=fake_run):
+            roster, _, failed = self.roster.build(False)
+        self.assertFalse(failed)
+        self.assertEqual(
+            [(seat['seat'], seat['model'], seat['effort']) for seat in roster['seats']],
+            [('codex-luna', 'gpt-5.6-luna', 'xhigh'),
+             ('codex-luna-2', 'gpt-5.6-luna', 'xhigh'),
+             ('codex-luna-3', 'gpt-5.6-luna', 'xhigh'),
+             ('codex-luna-4', 'gpt-5.6-luna', 'xhigh')],
+        )
+
+    def test_codex_seat_names_number_repeats_and_keep_generations_for_shared_families(self):
+        names = self.roster.codex_seat_names
+        self.assertEqual(names([('gpt-6-luna', None)] * 3), ['codex-luna', 'codex-luna-2', 'codex-luna-3'])
+        self.assertEqual(names([('gpt-6.1-sol', None), ('gpt-6-luna', None), ('gpt-6-luna', None)]),
+                         ['codex-sol', 'codex-luna', 'codex-luna-2'])
+        self.assertEqual(names([('gpt-6-luna', None), ('gpt-5.6-luna', None), ('gpt-6-luna', None)]),
+                         ['codex-6-luna', 'codex-5-6-luna', 'codex-6-luna-2'])
+
+    def test_pins_may_not_seat_a_model_more_often_than_codex_models_lists_it(self):
+        allowed = ['gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-5.6-luna']
+        self.assertIsNone(self.roster.codex_pin_conflict({}, allowed))
+        self.assertIsNone(self.roster.codex_pin_conflict(
+            {'pin': {'codex-luna-2': {'effort': 'max'}}}, allowed))
+        self.assertEqual(
+            self.roster.codex_pin_conflict({'pin': {'codex-sol': {'model': 'gpt-5.6-luna'}}}, allowed),
+            ('codex-luna-2', 'pinned model gpt-5.6-luna duplicates another Codex seat'))
+        seats = [self.roster.make_seat(name, 'codex', 'gpt-5.6-luna', 'xhigh')
+                 for name in ('codex-sol', 'codex-luna', 'codex-luna-2')]
+        excluded = []
+        kept = self.roster.enforce_codex_models({'codex_models': allowed}, seats, excluded)
+        self.assertEqual([seat['seat'] for seat in kept], ['codex-sol', 'codex-luna'])
+        self.assertEqual(excluded, [{'cli': 'codex-luna-2',
+                                     'reason': 'pinned model gpt-5.6-luna duplicates another Codex seat'}])
+
     def test_exact_panel_detects_ordered_opus_and_sonnet_on_both_hosts(self):
         config = {'claude_models': ['opus', 'sonnet'], 'extras': False}
         for codex_host, adapter in ((True, 'claude'), (False, 'agent')):
@@ -196,8 +249,8 @@ class CodexTests(unittest.TestCase):
     def test_invalid_exact_settings_fail_closed(self):
         invalid_codex = [
             'gpt-5.6-sol', [],
-            ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-astra'],
-            ['gpt-5.6-sol', 3], ['gpt-5.6-sol', 'gpt-5.6-sol'],
+            ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-6-astra', 'gpt-5.6-luna', 'gpt-5.6-sol'],
+            ['gpt-5.6-sol', 3], ['gpt-5.6-sol', ' gpt-5.6-terra'], ['gpt-5.6-sol', ''],
         ]
         for value in invalid_codex:
             with self.subTest(codex_models=value), \

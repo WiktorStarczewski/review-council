@@ -43,6 +43,7 @@ EFFORTS = ('max', 'xhigh', 'high')   # highest first; a mid tier is never seated
 CLAUDE_EFFORT = 'xhigh'              # Anthropic review seats; the CLI's max tier is not used
 CODEX_EFFORT = 'xhigh'               # OpenAI review seats; max stays available only as an explicit setting
 DEFAULT_CODEX_MODELS = ['latest-sol', 'latest-luna']
+CODEX_MODELS_MAX = 4                 # OpenAI seats codex_models may require, repeats included
 PANEL = 3                            # seats a round needs; a thinner roster is padded, never refused
 LOGIN_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_LOGIN_TIMEOUT', '20'))   # a wedged status command must not hang session start
 PROBE_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_PROBE_TIMEOUT', '60'))
@@ -331,17 +332,18 @@ def codex_catalog(path):
 
 def select_codex_models(listed, allowed=None, requested_effort=None):
     if isinstance(allowed, list):
+        # A repeated slug is a repeated seat: codex_models lists each model once per seat it fills.
         by_slug = {slug: m for _, m, slug in listed}
         out = []
         for slug in allowed:
-            if not isinstance(slug, str) or slug not in by_slug or any(item[0] == slug for item in out):
+            if not isinstance(slug, str) or slug not in by_slug:
                 continue
             levels = by_slug[slug].get('supported_reasoning_levels')
             effort = (requested_effort if requested_effort in reasoning_efforts(levels) else None) \
                      if requested_effort else top_effort(levels)
             if effort:
                 out.append((slug, effort))
-            if len(out) == 2:
+            if len(out) == CODEX_MODELS_MAX:
                 break
         return out
     newest = max(gen for gen, _, _ in listed)
@@ -372,11 +374,10 @@ def codex_models_setting(cfg):
     if 'codex_models' not in cfg:
         return None, None
     raw = cfg.get('codex_models')
-    valid = (isinstance(raw, list) and 1 <= len(raw) <= 2
-             and all(isinstance(slug, str) and slug.strip() == slug and slug for slug in raw)
-             and len(set(raw)) == len(raw))
+    valid = (isinstance(raw, list) and 1 <= len(raw) <= CODEX_MODELS_MAX
+             and all(isinstance(slug, str) and slug.strip() == slug and slug for slug in raw))
     if not valid:
-        return None, 'invalid codex_models: expected 1 or 2 unique non-empty model slug strings'
+        return None, 'invalid codex_models: expected 1 to %d non-empty model slug strings' % CODEX_MODELS_MAX
     return raw, None
 
 
@@ -482,8 +483,11 @@ def _resolve_codex_config(cfg, catalog):
     listed, error = catalog
     if error:
         return effective, error, 'availability'
-    resolved = []
+    resolved, by_selector = [], {}
     for selector in allowed or [slug for slug, _ in select_codex_models(listed)]:
+        if selector in by_selector:
+            resolved.append(by_selector[selector])
+            continue
         if selector.startswith('latest-'):
             family = selector.removeprefix('latest-')
             matches = [(gen, slug) for gen, _, slug in listed if codex_suffix(slug) == family]
@@ -494,6 +498,7 @@ def _resolve_codex_config(cfg, catalog):
             slug = selector
         if slug in resolved:
             return effective, 'codex_models resolves to duplicate model %s' % slug, 'config'
+        by_selector[selector] = slug
         resolved.append(slug)
     by_slug = {slug: model for _, model, slug in listed}
     unsupported_effort = []
@@ -529,13 +534,18 @@ def resolve_codex_config(cfg, catalog_path=None):
 
 
 def codex_seat_names(models):
-    suffixes = [codex_suffix(slug) for slug, _ in models]
-    repeated = {suffix for suffix in suffixes if suffixes.count(suffix) > 1}
-    names = []
-    for (slug, _), suffix in zip(models, suffixes):
-        if suffix in repeated:
+    """Two models of one family carry their generation; a repeated model numbers its later seats."""
+    slugs = [slug for slug, _ in models]
+    suffixes = [codex_suffix(slug) for slug in dict.fromkeys(slugs)]
+    shared = {suffix for suffix in suffixes if suffixes.count(suffix) > 1}
+    names, seen = [], {}
+    for slug in slugs:
+        suffix = codex_suffix(slug)
+        if suffix in shared:
             suffix = re.sub(r'[^a-zA-Z0-9]+', '-', slug.removeprefix('gpt-')).strip('-')
-        names.append('codex-' + suffix if suffix else 'codex')
+        base = 'codex-' + suffix if suffix else 'codex'
+        seen[base] = seen.get(base, 0) + 1
+        names.append(base if seen[base] == 1 else '%s-%d' % (base, seen[base]))
     return names
 
 
@@ -802,7 +812,7 @@ def enforce_codex_models(cfg, seats, excluded):
     allowed, config_error = codex_models_setting(cfg)
     if allowed is None or config_error:
         return seats
-    kept, seen = [], set()
+    kept, left = [], {slug: allowed.count(slug) for slug in allowed}
     for seat in seats:
         if seat['adapter'] != 'codex':
             kept.append(seat)
@@ -816,12 +826,12 @@ def enforce_codex_models(cfg, seats, excluded):
                              'reason': 'pinned effort %s does not match required codex_effort %s'
                                        % (seat.get('effort'), cfg['codex_effort'])})
             continue
-        if not seat['extra'] and seat['model'] in seen:
+        if not seat['extra'] and left[seat['model']] == 0:
             excluded.append({'cli': seat['seat'],
                              'reason': 'pinned model %s duplicates another Codex seat' % seat['model']})
             continue
         if not seat['extra']:
-            seen.add(seat['model'])
+            left[seat['model']] -= 1
         kept.append(seat)
     return kept
 
@@ -1033,16 +1043,16 @@ def configured_lab_capacity(cfg):
 def codex_pin_conflict(cfg, allowed):
     """Return a static exact-model pin conflict, even when Codex itself is unavailable."""
     pins = cfg.get('pin') if isinstance(cfg.get('pin'), dict) else {}
-    seen = set()
+    left = {slug: allowed.count(slug) for slug in allowed}
     for seat, slug in zip(codex_seat_names([(slug, None) for slug in allowed]), allowed):
         pin = pins.get(seat)
         model = pin.get('model') if isinstance(pin, dict) else None
         model = model if isinstance(model, str) and model else slug
         if model not in allowed:
             return seat, 'pinned model %s is outside codex_models' % model
-        if model in seen:
+        if left[model] == 0:
             return seat, 'pinned model %s duplicates another Codex seat' % model
-        seen.add(model)
+        left[model] -= 1
     return None
 
 

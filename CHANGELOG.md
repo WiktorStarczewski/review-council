@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.10
+
+- `codex_models` takes one to four entries, and an entry may repeat: the model
+  is seated once per entry, so four `latest-luna` entries seat `codex-luna`
+  through `codex-luna-4`. Two different selectors that resolve to one model
+  still refuse, and a pin cannot seat a model more often than the list names it.
+
 ## 0.5.9
 
 - `latest-sol` and `latest-luna` follow the Codex binary that launches seats.
