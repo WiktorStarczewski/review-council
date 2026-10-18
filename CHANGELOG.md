@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- `rev-mutate.sh` touches each file it restores, in the hunk loop and in its
+  exit trap. Restoring with `cp -p` also put back the file's original mtime,
+  older than the build the last mutation triggered, so an mtime-based build
+  such as make or Cargo kept the mutation's output. The closing run then failed
+  a tree that passes and the run exited 4 with `the command stopped passing on
+  the restored tree`, and a run stopped mid-mutation left that stale output for
+  the next build.
+
 ## 0.5.10
 
 - `codex_models` takes one to four entries, and an entry may repeat: the model

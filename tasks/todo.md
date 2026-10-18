@@ -1,3 +1,11 @@
+# Touch files rev-mutate restores
+
+- [x] Touch each file after its hash-verified restore in the hunk loop, and after the exit trap's restore.
+- [x] Pin the closing run and the exit trap with an mtime-based command, with the tests alone failing in CI before the fix.
+- [ ] Green CI on macOS and Ubuntu for the fix, then review.
+- [ ] Follow-up: `failure_line` takes the first line matching fail, error, assert, expect or panic anywhere, which can be a passing test, a passing summary or quoted source.
+- [ ] Follow-up: `git diff -- "$f"` reads a changed path as a glob pathspec, so `[id].txt` also pulls in a changed `d.txt`; diff with `:(literal)`.
+
 # Release 0.5.10
 
 - [x] Let `codex_models` repeat an entry, one numbered seat per entry, up to four.
