@@ -5484,7 +5484,7 @@ def review_origin(args):
                      sort_keys=True))
 
 
-def main():
+def main(program=False):
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     prep = commands.add_parser('prepare')
@@ -5515,7 +5515,7 @@ def main():
     try:
         if hasattr(args, 'label') and not SAFE_NAME.fullmatch(args.label):
             raise ValueError('invalid label')
-        if args.command == 'prepare' and prepare_guard.should_supervise():
+        if program and args.command == 'prepare' and prepare_guard.should_supervise():
             return prepare_guard.supervise(
                 [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:]], args.session, args.label)
         with plan_search_signal_handlers():
@@ -5530,4 +5530,4 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    sys.exit(main(program=True))
