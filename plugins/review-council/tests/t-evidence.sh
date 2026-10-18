@@ -2397,6 +2397,10 @@ def reserve_launch(session, label, seat, prompt):
     return subprocess.run([sys.executable, str(script.parent / 'lib' / 'rev-attempt.py'), 'reserve',
                            session, label, seat, prompt], capture_output=True, text=True)
 
+def record_launch(session, label, seat, prompt, code):
+    return subprocess.run([sys.executable, str(script.parent / 'lib' / 'rev-attempt.py'), 'record',
+                           session, label, seat, prompt, code], capture_output=True, text=True)
+
 def incomplete_proof_is_never_a_valid_result():
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
         incomplete_proof_panel(session, call, prepare)
@@ -2432,6 +2436,25 @@ def incomplete_proof_latches_only_its_label_and_seat():
         assert sibling.returncode == 0, ('a sibling under the same label still launches', sibling.stderr)
         later = reserve_launch(session, '7', 'sol', prompt)
         assert later.returncode == 0, ('the same seat under a later label still launches', later.stderr)
+
+def incomplete_proof_from_a_failed_launch_keeps_its_retry():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        incomplete_proof_panel(session, call, prepare)
+        prompt, result = session / 'r6-sol.prompt.md', session / 'r6-sol.json'
+        # The first launch reserves before it answers, then exits 1 and leaves an INCOMPLETE PROOF result.
+        proof = result.read_bytes()
+        result.unlink()
+        assert reserve_launch(session, '6', 'sol', prompt).returncode == 0
+        result.write_bytes(proof)
+        (session / 'r6-sol.exit').write_text('1\n')
+        assert record_launch(session, '6', 'sol', prompt, '1').returncode == 0
+        retry = reserve_launch(session, '6', 'sol', prompt)
+        assert retry.returncode == 0, ('an exit-1 incomplete proof keeps its exact retry', retry.stderr)
+        call('prepare', session, '6x', '--phase', 'repair', '--assignment', 'terra=' + bundles[0],
+             '--parent-assignment', '6:sol', good=False, error='parent assignment has no recorded terminal failure')
+        assert record_launch(session, '6', 'sol', prompt, '1').returncode == 0
+        child = prepare('6x', 'repair', '--assignment', 'terra=' + bundles[0], '--parent-assignment', '6:sol')
+        assert list(child['assignments']) == ['terra'] and child['parent_assignment']['seat'] == 'sol', child
 
 def incomplete_proof_is_only_a_summary_prefix():
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
@@ -3143,7 +3166,8 @@ cases = (
     unenforced_audit_is_opt_in, unenforced_audit_cache_is_keyed_on_every_input,
     nested_walks_reuse_cached_audits, replacement_runs_on_another_seat,
     incomplete_proof_is_never_a_valid_result, incomplete_proof_is_replaced_at_once,
-    incomplete_proof_latches_only_its_label_and_seat, incomplete_proof_is_only_a_summary_prefix,
+    incomplete_proof_latches_only_its_label_and_seat, incomplete_proof_from_a_failed_launch_keeps_its_retry,
+    incomplete_proof_is_only_a_summary_prefix,
     review_origin_counts_the_reviews_own_lines, scoped_names_and_gitlink_lifecycle,
     component_and_full_tampering, offline_structure_and_predecessor_walk,
     local_ignored_instructions, overlapping_boundaries_keep_prior_owner_routing,
@@ -3183,6 +3207,7 @@ groups = {
     'replacement': (
         replacement_runs_on_another_seat, incomplete_proof_is_never_a_valid_result,
         incomplete_proof_is_replaced_at_once, incomplete_proof_latches_only_its_label_and_seat,
+        incomplete_proof_from_a_failed_launch_keeps_its_retry,
         incomplete_proof_is_only_a_summary_prefix, review_origin_counts_the_reviews_own_lines,
     ),
     'current_coverage': (current_coverage_receipts, current_coverage_replacements_and_refs),

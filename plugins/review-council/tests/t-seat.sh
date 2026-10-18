@@ -265,6 +265,77 @@ SH
     "$W/rblocked-codex-sol.log" '^persistent provider-call cap reached for this seat generation$'
   seat_env_reset "$_path"
 }
+test_seat_zero_tool_incomplete_proof_keeps_its_retry() {
+  local _path="$PATH"; seat_env
+  local S="$T/seat-zero-tool-proof" bin="$T/seat-zero-tool-bin" label
+  seat_roster "$S"; echo "review the diff" > "$S/p.md"; mkdir -p "$bin"
+  cat > "$bin/codex" <<'SH'
+#!/bin/bash
+printf '%s\n' call >> "$ZERO_TOOL_CALLS"
+[ "$(wc -l < "$ZERO_TOOL_CALLS" | tr -d ' ')" = 1 ] || exec "$SHIM_CODEX" "$@"
+out=""; prev=""
+for a in "$@"; do [ "$prev" = "-o" ] && out=$a; prev=$a; done
+cat > /dev/null
+echo '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"INCOMPLETE PROOF"}}'
+printf '%s\n' '{"summary":"INCOMPLETE PROOF: no assigned source was read","findings":[]}' > "$out"
+SH
+  chmod +x "$bin/codex"
+  SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" 2 "$S/p.md" >/dev/null 2>&1
+  assert_eq "label 2 starts with a completed launch on record" "$?" 0
+  # With a completed launch on record, only discarding the zero-tool answer lets label 2's retry reserve.
+  for label in 1 2; do
+    : > "$T/zero-tool-calls"
+    PATH="$bin:$PATH" ZERO_TOOL_CALLS="$T/zero-tool-calls" SHIM_CODEX="$SHIMS/codex" SHIM_MODE=ok \
+      "$SCRIPTS/rev-seat.sh" codex-sol "$S" "$label" "$S/p.md" >/dev/null 2>&1
+    assert_eq "label $label: a zero-tool INCOMPLETE PROOF answer still gets its retry" "$?" 0
+    assert_eq "label $label: the answer and its retry are two provider calls" \
+      "$(wc -l < "$T/zero-tool-calls" | tr -d ' ')" 2
+    assert_grep "label $label: the tool-using retry is the seat's result" \
+      "$S/r$label-codex-sol.json" '"severity": ?"P1"'
+    assert_grep "label $label: the log names the zero-tool answer" "$S/r$label-codex-sol.log" \
+      'answered without a single tool call \(attempt 1\)'
+  done
+  seat_env_reset "$_path"
+}
+test_seat_incomplete_proof_refuses_a_relaunch() {
+  local _path="$PATH"; seat_env
+  local S="$T/seat-incomplete-relaunch" bin="$T/seat-incomplete-bin"
+  seat_roster "$S"; echo "review the diff" > "$S/p.md"; mkdir -p "$bin"
+  cat > "$bin/codex" <<'SH'
+#!/bin/bash
+out=""; prev=""
+for a in "$@"; do [ "$prev" = "-o" ] && out=$a; prev=$a; done
+"$SHIM_CODEX" "$@" || exit
+printf '%s\n' '{"summary":"INCOMPLETE PROOF: the tool budget ran out with source unread","findings":[]}' > "$out"
+SH
+  chmod +x "$bin/codex"
+  : > "$T/incomplete-calls"
+  PATH="$bin:$PATH" SHIM_CODEX="$SHIMS/codex" SHIM_MODE=ok SHIM_CALLS_FILE="$T/incomplete-calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null 2>&1
+  assert_eq "a tool-using launch that returns an INCOMPLETE PROOF exits 0" "$?" 0
+  cp "$S/r1-codex-sol.json" "$T/incomplete-proof.json"
+  SHIM_MODE=ok SHIM_CALLS_FILE="$T/incomplete-calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null 2> "$T/incomplete-relaunch.err"
+  assert_eq "rev-seat.sh refuses to relaunch that seat under that label" "$?" 2
+  assert_eq "the refused relaunch spends no provider call" "$(wc -l < "$T/incomplete-calls" | tr -d ' ')" 1
+  assert_exit "the refused relaunch leaves the INCOMPLETE PROOF result in place" 0 \
+    cmp -s "$T/incomplete-proof.json" "$S/r1-codex-sol.json"
+  assert_grep "the refusal names the incomplete proof" "$T/incomplete-relaunch.err" \
+    'codex-sol under label 1 returned an INCOMPLETE PROOF result'
+  assert_grep "the refusal rewrote the exit" "$S/r1-codex-sol.exit" '^2$'
+  python3 - "$SCRIPTS/lib/rev-attempt.py" "$S" "$S/p.md" <<'PY'
+import importlib.util
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location('rev_attempt', sys.argv[1])
+attempt = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(attempt)
+assert attempt.terminal_failure(Path(sys.argv[2]), '1', 'codex-sol', Path(sys.argv[3]))
+PY
+  assert_eq "the assignment stays terminal after the refusal rewrote its exit" "$?" 0
+  seat_env_reset "$_path"
+}
 test_seat_process_group_cancellation_preserves_partial_stream() {
   local _path="$PATH"; seat_env
   local S="$T/seat-cancel"; seat_roster "$S"; echo "review the diff" > "$S/p.md"
