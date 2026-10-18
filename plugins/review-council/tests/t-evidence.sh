@@ -2380,6 +2380,69 @@ def replacement_runs_on_another_seat():
         assert child['assignments'][executor]['full_state'] is True
         assert child['assignments'][executor]['bundle'] == bundle
 
+def incomplete_proof_panel(session, call, prepare, summary='INCOMPLETE PROOF: assigned source remains unread'):
+    """A risk panel whose sol seat exits 0 with `summary` and a valid read audit."""
+    roster = {'seats': [{'seat': seat, 'extra': False, 'adapter': 'claude', 'model': 'model-' + seat,
+                         'effort': 'max'} for seat in seats]}
+    (session / 'roster.json').write_text(json.dumps(roster))
+    path = session / 'r6-evidence.manifest.json'
+    for seat in prepare('6', 'risk', *assign)['assignments']:
+        (session / f'r6-{seat}.prompt.md').write_text(call('render', path, seat))
+        (session / f'r6-{seat}.json').write_text(json.dumps(
+            {'summary': summary if seat == 'sol' else 'parent', 'findings': []}))
+        (session / f'r6-{seat}.exit').write_text('0\n')
+        write_agent_audit(session, '6', seat)
+
+def reserve_launch(session, label, seat, prompt):
+    return subprocess.run([sys.executable, str(script.parent / 'lib' / 'rev-attempt.py'), 'reserve',
+                           session, label, seat, prompt], capture_output=True, text=True)
+
+def incomplete_proof_is_never_a_valid_result():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        incomplete_proof_panel(session, call, prepare)
+        for command in ('verify-panel', 'receipt'):
+            call(command, session, '6', good=False, error='incomplete proof: sol')
+        assert not (session / 'r6-coverage.receipt.json').exists(), 'an incomplete proof seals nothing'
+
+def incomplete_proof_is_replaced_at_once():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        incomplete_proof_panel(session, call, prepare)
+        child = prepare('6x', 'repair', '--assignment', 'terra=' + bundles[0], '--parent-assignment', '6:sol')
+        assert list(child['assignments']) == ['terra'] and child['parent_assignment']['seat'] == 'sol', child
+        (session / 'r6x-terra.prompt.md').write_text(call('render', session / 'r6x-evidence.manifest.json', 'terra'))
+        (session / 'r6x-terra.json').write_text('{"summary":"child","findings":[]}')
+        (session / 'r6x-terra.exit').write_text('0\n')
+        write_agent_audit(session, '6x', 'terra')
+        call('receipt', session, '6', '--replacement', 'sol=6x')
+        receipt = json.loads((session / 'r6-coverage.receipt.json').read_text())
+        row = receipt['selected_generations']['sol']
+        assert (row['label'], row['seat']) == ('6x', 'terra'), row
+        assert row['result_sha256'] == module.digest((session / 'r6x-terra.json').read_bytes())
+        assert receipt['selected_generations']['terra']['label'] == '6'
+
+def incomplete_proof_latches_only_its_label_and_seat():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        incomplete_proof_panel(session, call, prepare)
+        prompt = session / 'r6-sol.prompt.md'
+        refused = reserve_launch(session, '6', 'sol', prompt)
+        assert refused.returncode == 2, (refused.returncode, refused.stderr)
+        assert 'sol under label 6 returned an INCOMPLETE PROOF result' in refused.stderr, refused.stderr
+        assert 'hard evidence audit' not in refused.stderr, refused.stderr
+        sibling = reserve_launch(session, '6', 'terra', session / 'r6-terra.prompt.md')
+        assert sibling.returncode == 0, ('a sibling under the same label still launches', sibling.stderr)
+        later = reserve_launch(session, '7', 'sol', prompt)
+        assert later.returncode == 0, ('the same seat under a later label still launches', later.stderr)
+
+def incomplete_proof_is_only_a_summary_prefix():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        incomplete_proof_panel(session, call, prepare, 'Every assigned range was read; no INCOMPLETE PROOF remains')
+        call('verify-panel', session, '6')
+        call('prepare', session, '6x', '--phase', 'repair', '--assignment', 'terra=' + bundles[0],
+             '--parent-assignment', '6:sol', good=False, error='parent assignment has no recorded terminal failure')
+        launched = reserve_launch(session, '6', 'sol', session / 'r6-sol.prompt.md')
+        assert launched.returncode == 0, launched.stderr
+        call('receipt', session, '6')
+
 def review_origin_counts_the_reviews_own_lines():
     state_script = script.parent / 'rev-state.sh'
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
@@ -3078,8 +3141,10 @@ cases = (
     receipt_read_audits, seat_local_recovery, narrow_seat_requires_proven_reads,
     full_seat_requires_proven_reads, unenforced_agent_seat_binds_only_its_prompt,
     unenforced_audit_is_opt_in, unenforced_audit_cache_is_keyed_on_every_input,
-    nested_walks_reuse_cached_audits, replacement_runs_on_another_seat, review_origin_counts_the_reviews_own_lines,
-    scoped_names_and_gitlink_lifecycle,
+    nested_walks_reuse_cached_audits, replacement_runs_on_another_seat,
+    incomplete_proof_is_never_a_valid_result, incomplete_proof_is_replaced_at_once,
+    incomplete_proof_latches_only_its_label_and_seat, incomplete_proof_is_only_a_summary_prefix,
+    review_origin_counts_the_reviews_own_lines, scoped_names_and_gitlink_lifecycle,
     component_and_full_tampering, offline_structure_and_predecessor_walk,
     local_ignored_instructions, overlapping_boundaries_keep_prior_owner_routing,
     current_coverage_receipts, current_coverage_replacements_and_refs,
@@ -3115,7 +3180,11 @@ groups = {
         unenforced_audit_is_opt_in, unenforced_audit_cache_is_keyed_on_every_input,
         nested_walks_reuse_cached_audits,
     ),
-    'replacement': (replacement_runs_on_another_seat, review_origin_counts_the_reviews_own_lines),
+    'replacement': (
+        replacement_runs_on_another_seat, incomplete_proof_is_never_a_valid_result,
+        incomplete_proof_is_replaced_at_once, incomplete_proof_latches_only_its_label_and_seat,
+        incomplete_proof_is_only_a_summary_prefix, review_origin_counts_the_reviews_own_lines,
+    ),
     'current_coverage': (current_coverage_receipts, current_coverage_replacements_and_refs),
 }
 partition = tuple(test for group in groups.values() for test in group)
