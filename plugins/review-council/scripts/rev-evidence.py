@@ -6,6 +6,7 @@ from bisect import bisect_right
 from collections import Counter
 from contextlib import contextmanager, redirect_stdout
 from difflib import SequenceMatcher
+import fcntl
 import hashlib
 import importlib.util
 import io
@@ -4582,9 +4583,29 @@ def attempt_module():
     return module
 
 
+PREPARE_LOCK = Path.home() / '.cache' / 'review-council' / 'evidence-prepare.lock'
+
+
+@contextmanager
+def machine_prepare_lock():
+    # A preparation on a large repository holds many gigabytes; two at once can exhaust memory.
+    PREPARE_LOCK.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = os.open(PREPARE_LOCK, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print('evidence: waiting for another evidence preparation on this machine',
+                  file=sys.stderr, flush=True)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
 def prepare(args):
     session = Path(args.session).resolve()
-    with session_input_lock(session):
+    with machine_prepare_lock(), session_input_lock(session):
         validate_standard_inputs(session, require_all=True)
         return _prepare_locked(args, session)
 
