@@ -534,18 +534,29 @@ def resolve_codex_config(cfg, catalog_path=None):
 
 
 def codex_seat_names(models):
-    """Two models of one family carry their generation; a repeated model numbers its later seats."""
+    """Two models of one family carry their generation; a repeated model numbers its later seats.
+
+    A number is never one another model's seat already carries, so gpt-6-luna listed twice beside
+    gpt-6-luna-2 seats codex-luna, codex-luna-3 and codex-luna-2.
+    """
     slugs = [slug for slug, _ in models]
     suffixes = [codex_suffix(slug) for slug in dict.fromkeys(slugs)]
     shared = {suffix for suffix in suffixes if suffixes.count(suffix) > 1}
-    names, seen = [], {}
+    bases = []
     for slug in slugs:
         suffix = codex_suffix(slug)
         if suffix in shared:
             suffix = re.sub(r'[^a-zA-Z0-9]+', '-', slug.removeprefix('gpt-')).strip('-')
-        base = 'codex-' + suffix if suffix else 'codex'
-        seen[base] = seen.get(base, 0) + 1
-        names.append(base if seen[base] == 1 else '%s-%d' % (base, seen[base]))
+        bases.append('codex-' + suffix if suffix else 'codex')
+    taken, names = set(bases), []
+    for base in bases:
+        name, number = base, 2
+        if base in names:
+            while '%s-%d' % (base, number) in taken:
+                number += 1
+            name = '%s-%d' % (base, number)
+            taken.add(name)
+        names.append(name)
     return names
 
 
