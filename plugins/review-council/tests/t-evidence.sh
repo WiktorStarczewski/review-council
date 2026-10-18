@@ -2448,6 +2448,9 @@ def incomplete_proof_from_a_failed_launch_keeps_its_retry():
         result.write_bytes(proof)
         (session / 'r6-sol.exit').write_text('1\n')
         assert record_launch(session, '6', 'sol', prompt, '1').returncode == 0
+        # While the exit still holds 1, the incomplete proof has not ended the assignment.
+        call('prepare', session, '6x', '--phase', 'repair', '--assignment', 'terra=' + bundles[0],
+             '--parent-assignment', '6:sol', good=False, error='parent assignment has no recorded terminal failure')
         # The retry removes the exit before it reserves, so only the record shows how the first launch ended.
         (session / 'r6-sol.exit').unlink()
         retry = reserve_launch(session, '6', 'sol', prompt)
