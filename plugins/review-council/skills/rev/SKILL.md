@@ -581,9 +581,9 @@ edit the working tree while seats run.
 | seat exit | action |
 |---|---|
 | `0` | done, unless the result's `summary` begins `INCOMPLETE PROOF` |
-| `1` or `2` with no invalid read audit | retry that seat once immediately at the same receipted effort while siblings continue, even if it left an `INCOMPLETE PROOF` result; still failing gets the one replacement below |
+| `1` or `2` with no invalid read audit | retry that seat once immediately at the same receipted effort while siblings continue, even if it left an `INCOMPLETE PROOF` result, unless `rev-attempt.py` refused the launch for one; still failing gets the one replacement below |
 | hard evidence-audit failure | keep siblings running; never relaunch that seat under that label. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure or an exit-0 `INCOMPLETE PROOF` result. |
-| `0` with an `INCOMPLETE PROOF` result | as for a hard evidence-audit failure: it is never a valid result; keep siblings running; never relaunch that seat under that label |
+| `0` with an `INCOMPLETE PROOF` result, or a relaunch `rev-attempt.py` refused for one | replace now, as for a hard evidence-audit failure: it is never a valid result; keep siblings running; never relaunch that seat under that label |
 | `3` | cancel pending siblings, stop the run, and tell the user which tool needs sign-in |
 | `4` | cancel pending siblings, stop the run, and name the usage or rate-limit blocker |
 
@@ -1014,9 +1014,9 @@ and leaves certification to the receipt checks.
 
 | Failure | Action |
 |---|---|
-| seat exit 1 or 2 with no invalid read audit | retry that seat once immediately at the same receipted effort, even if it left an `INCOMPLETE PROOF` result; still failing gets the one replacement |
+| seat exit 1 or 2 with no invalid read audit | retry that seat once immediately at the same receipted effort, even if it left an `INCOMPLETE PROOF` result, unless `rev-attempt.py` refused the launch for one; still failing gets the one replacement |
 | hard evidence-audit failure | keep siblings running; never relaunch that seat under that label. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure or an exit-0 `INCOMPLETE PROOF` result. |
-| seat exit 0 with an `INCOMPLETE PROOF` result | as for a hard evidence-audit failure: it is never a valid result; keep siblings running; never relaunch that seat under that label |
+| seat exit 0 with an `INCOMPLETE PROOF` result, or a relaunch `rev-attempt.py` refused for one | replace now, as for a hard evidence-audit failure: it is never a valid result; keep siblings running; never relaunch that seat under that label |
 | seat exit 3 | cancel pending siblings; stop; report which tool needs sign-in |
 | seat exit 4 | cancel pending siblings; stop; report the usage or rate-limit blocker |
 | fewer than 3 seats in a code round | stop; say so; do not self-review |

@@ -504,7 +504,7 @@ Inspect each `.exit`, `.json`, and `.log` as soon as that seat finishes; accept 
 exit created after the synchronous prelaunch removal for the current launch. Absence of
 findings is not success without a valid completed response, and a result whose `summary` begins `INCOMPLETE PROOF` is never one.
 Exit 1/2 with no invalid read audit: retry that seat
-once immediately with the same receipted effort while siblings continue, even if it left an `INCOMPLETE PROOF` result. A hard audit failure, or exit 0 with an `INCOMPLETE PROOF` result, never relaunches that seat under that label. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure or an exit-0 `INCOMPLETE PROOF` result. Exit 3 or 4:
+once immediately with the same receipted effort while siblings continue, even if it left an `INCOMPLETE PROOF` result, unless `rev-attempt.py` refused the launch for one. A hard audit failure, exit 0 with an `INCOMPLETE PROOF` result, or a relaunch `rev-attempt.py` refused for one: replace now, and never relaunch that seat under that label. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure or an exit-0 `INCOMPLETE PROOF` result. Exit 3 or 4:
 cancel every pending sibling, then stop and name the sign-in, usage, or rate-limit
 blocker.
 Never lower effort or drop a configured core seat. If fewer than three reviewers

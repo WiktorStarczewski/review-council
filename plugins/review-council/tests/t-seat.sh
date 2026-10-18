@@ -281,7 +281,10 @@ printf '%s\n' '{"summary":"INCOMPLETE PROOF: no assigned source was read","findi
 SH
   chmod +x "$bin/codex"
   SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" 2 "$S/p.md" >/dev/null 2>&1
-  assert_eq "label 2 starts with a completed launch on record" "$?" 0
+  assert_eq "label 2's setup launch exits 0" "$?" 0
+  assert_eq "label 2 starts with a completed launch on record" \
+    "$(python3 -c 'import glob,json,sys; print([r.get("launches") for r in (json.load(open(p)) for p in glob.glob(sys.argv[1] + "/attempts/*.json")) if (r.get("panel"), r.get("seat")) == ("2", "codex-sol")])' "$S")" \
+    "[[0]]"
   # With a completed launch on record, only discarding the zero-tool answer lets label 2's retry reserve.
   for label in 1 2; do
     : > "$T/zero-tool-calls"
