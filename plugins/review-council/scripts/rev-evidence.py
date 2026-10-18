@@ -57,6 +57,7 @@ DECLARATION_PAIR_LIMIT = 4096
 DECLARATION_PAIR_TOKEN_LIMIT = 1_000_000
 SOURCE_CONTEXT_REASONS = ('declaration', 'production-caller', 'related-test',
                           'gate', 'extra-caller', 'extra-test')
+SUPPLEMENTARY_CONTEXT_REASONS = ('extra-caller', 'extra-test', 'gate')
 NAVIGATION_ROW_LIMIT = 1024
 NAVIGATION_TOTAL_LIMIT = 16384
 SAFE_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*\Z')
@@ -258,6 +259,18 @@ def partition_source_segments(lines, line_start, line_end):
             'content_sha256': digest(raw),
         })
     return segments
+
+
+def oversized_context_segments(lines, row):
+    """Segment an oversized context row, or return None when only supplementary context needs a
+    line that cannot be segmented."""
+    try:
+        return partition_source_segments(lines, row['line_start'], row['line_end'])
+    except ValueError:
+        if all(reason.split(':', 1)[0] in SUPPLEMENTARY_CONTEXT_REASONS
+               for reason in row['reasons']):
+            return None
+        raise
 
 
 def patch_sets_for(scopes, patch_bodies, prefix, setting):
@@ -2699,12 +2712,16 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
             for reason in row['reasons']:
                 omitted[reason.split(':', 1)[0]] += 1
             if individually_oversized:
+                _, source_lines, _ = source_choice(row['path'], row['blob_tree'])[1]
+                segments = oversized_context_segments(source_lines, row)
+                if segments is None:
+                    # Counted above but not listed: each listed omission obliges a direct read,
+                    # and no bounded read can return this line.
+                    continue
                 required = {key: value for key, value in row.items() if key != 'content'}
                 required['required_payload_bytes'] = single_payload_bytes
                 required['required_payload_predicted_visible_bytes'] = single_payload_visible_bytes
-                _, source_lines, _ = source_choice(row['path'], row['blob_tree'])[1]
-                required['segments'] = partition_source_segments(
-                    source_lines, row['line_start'], row['line_end'])
+                required['segments'] = segments
                 required_ranges.append(required)
             else:
                 omitted_source_ranges.append({
