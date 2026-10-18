@@ -3,14 +3,15 @@
 ## Unreleased
 
 - Preparation with source context no longer refuses with `required source line
-  exceeds visible segment limit` when only extra callers, extra tests or gate
-  candidates need that line. A data file with one line over 32 KiB, whose prose
-  matched a changed symbol's name, became an extra-caller row that could not be
-  segmented, and with source context off the plan needed more mandatory windows
-  than the limit, so no setting could prepare it. Such a row is now counted as
-  omitted context but not listed as a read target, because no bounded read can
-  return the line. A declaration, plan site, production caller or related test
-  on such a line still refuses.
+  exceeds visible segment limit` when only related tests, extra callers, extra
+  tests or gate candidates need that line. A data file with one line over
+  32 KiB, whose prose matched a changed symbol's name, became an extra-caller row
+  that could not be segmented, and with source context off the plan needed more
+  mandatory windows than the limit, so no setting could prepare it. A JSON
+  fixture under a test path that names a changed symbol on such a line became a
+  related-test row the same way. Such a row is now counted as omitted context but
+  not listed as a read target, because no bounded read can return the line. A
+  declaration, plan site or production caller on such a line still refuses.
 
 ## 0.5.10
 

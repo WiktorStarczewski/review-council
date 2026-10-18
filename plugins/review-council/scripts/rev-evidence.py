@@ -57,7 +57,7 @@ DECLARATION_PAIR_LIMIT = 4096
 DECLARATION_PAIR_TOKEN_LIMIT = 1_000_000
 SOURCE_CONTEXT_REASONS = ('declaration', 'production-caller', 'related-test',
                           'gate', 'extra-caller', 'extra-test')
-SUPPLEMENTARY_CONTEXT_REASONS = ('extra-caller', 'extra-test', 'gate')
+OMITTABLE_CONTEXT_REASONS = ('related-test', 'extra-caller', 'extra-test', 'gate')
 NAVIGATION_ROW_LIMIT = 1024
 NAVIGATION_TOTAL_LIMIT = 16384
 SAFE_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*\Z')
@@ -262,12 +262,12 @@ def partition_source_segments(lines, line_start, line_end):
 
 
 def oversized_context_segments(lines, row):
-    """Segment an oversized context row, or return None when only supplementary context needs a
+    """Segment an oversized context row, or return None when only test or navigation context needs a
     line that cannot be segmented."""
     try:
         return partition_source_segments(lines, row['line_start'], row['line_end'])
     except ValueError:
-        if all(reason.split(':', 1)[0] in SUPPLEMENTARY_CONTEXT_REASONS
+        if all(reason.split(':', 1)[0] in OMITTABLE_CONTEXT_REASONS
                for reason in row['reasons']):
             return None
         raise
