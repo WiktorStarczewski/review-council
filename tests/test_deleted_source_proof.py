@@ -41,7 +41,13 @@ class SourceFixture:
         self.git('config', 'core.hooksPath', str(directory / 'no-hooks'))
         (self.root / 'keep.txt').write_text('unchanged nonsemantic context\n')
         if mode != 'current':
-            (self.root / 'aa_retired.py').write_text(self.declarations('retired', 110, 'old'))
+            self.historical_source = self.declarations('retired', 110, 'old')
+            if mode == 'deleted':
+                self.oversized_source = ('def retired_oversized():\n' + ''.join(
+                    f'    value_{index:03d} = "historical-{index:03d}-{"y" * 96}"\n'
+                    for index in range(180)) + '    return value_179\n')
+                self.historical_source += self.oversized_source
+            (self.root / 'aa_retired.py').write_text(self.historical_source)
         if mode in ('mixed', 'plan', 'current'):
             count = 110 if mode == 'current' else 8
             (self.root / 'zz_current.py').write_text(self.declarations('active', count, 'old'))
@@ -115,7 +121,7 @@ class SourceFixture:
         return {'path': path, 'line_start': int(start), 'line_end': int(end),
                 'blob_tree': tree, 'blob_oid': oid, 'content_sha256': digest}
 
-    def audit(self, source=None, result=None):
+    def audit(self, source=None, result=None, omitted_artifacts=()):
         events = []
 
         def read(command, output):
@@ -125,19 +131,20 @@ class SourceFixture:
             events.append({'type': 'item.completed', 'item': dict(
                 item, aggregated_output=output, exit_code=0)})
 
+        def read_artifact(path):
+            if path.name not in omitted_artifacts:
+                read(shlex.join(['cat', '--', str(path)]), path.read_text())
+
         assignment = self.manifest['assignments'][self.seat]
         for chunk in self.manifest['patch_sets'][assignment['patch_set']]['chunks']:
-            path = self.session / chunk['artifact']
-            read(shlex.join(['cat', '--', str(path)]), path.read_text())
+            read_artifact(self.session / chunk['artifact'])
         for shard in self.context['shards']:
-            path = self.session / shard['artifact']
-            read(shlex.join(['cat', '--', str(path)]), path.read_text())
+            read_artifact(self.session / shard['artifact'])
         for required in self.context['required_source_ranges']:
             for segment in required['segments']:
-                path = self.session / segment['artifact']
-                read(shlex.join(['cat', '--', str(path)]), path.read_text())
+                read_artifact(self.session / segment['artifact'])
         index = self.session / f'r{self.label}-evidence.md'
-        read(shlex.join(['cat', '--', str(index)]), index.read_text())
+        read_artifact(index)
         if source is not None:
             row, tree, output = source
             window = f"{row['line_start']},{row['line_end']}p"
@@ -220,10 +227,53 @@ class RequiredSourceProofTests(unittest.TestCase):
 
     def test_deletion_only_has_explicit_absence_and_retains_historical_reads(self):
         fixture = self.fixture('deleted')
-        rows = [row for shard in fixture.context['shards'] for row in shard['ranges']]
-        rows += fixture.context['required_source_ranges'] + fixture.context['omitted_source_ranges']
-        self.assertTrue(rows, 'deletion-only review must preserve historical source evidence')
-        self.assertTrue(all(row['blob_tree'] == fixture.manifest['base_tree'] for row in rows))
+        expected_packets = [f'r1-{fixture.seat}-source-context-{index}.json'
+                            for index in (1, 2, 3)]
+        self.assertEqual([shard['artifact'] for shard in fixture.context['shards']],
+                         expected_packets, 'deletion-only review must retain every historical packet')
+        historical_lines = fixture.historical_source.splitlines(keepends=True)
+        base_tree = fixture.manifest['base_tree']
+        expected_oid = fixture.git('rev-parse', fixture.base + ':aa_retired.py')
+        expected_reads = {}
+        expected_packet_ranges = 0
+        for shard in fixture.context['shards']:
+            raw = (fixture.session / shard['artifact']).read_bytes()
+            self.assertEqual(shard['sha256'], hashlib.sha256(raw).hexdigest())
+            self.assertEqual(shard['bytes'], len(raw))
+            payload = json.loads(raw)
+            self.assertTrue(payload['entries'], 'historical packets must contain actual source')
+            expected_packet_ranges += len(payload['entries'])
+            for row in payload['entries']:
+                self.assertEqual((row['path'], row['blob_tree'], row['blob_oid']),
+                                 ('aa_retired.py', base_tree, expected_oid))
+                expected = ''.join(historical_lines[row['line_start'] - 1:row['line_end']])
+                self.assertTrue(expected)
+                self.assertEqual(row['content'], expected)
+                self.assertEqual(row['content_sha256'], hashlib.sha256(expected.encode()).hexdigest())
+            expected_reads[shard['artifact']] = raw
+        required = fixture.context['required_source_ranges']
+        self.assertEqual(len(required), 1, 'the oversized historical declaration must require segments')
+        required = required[0]
+        oversized_offset = fixture.historical_source.index(fixture.oversized_source)
+        start = fixture.historical_source[:oversized_offset].count('\n') + 1
+        end = start + len(fixture.oversized_source.splitlines()) - 1
+        expected_proof = {
+            'path': 'aa_retired.py', 'line_start': start, 'line_end': end,
+            'blob_tree': base_tree, 'blob_oid': expected_oid,
+            'content_sha256': hashlib.sha256(fixture.oversized_source.encode()).hexdigest(),
+        }
+        self.assertEqual({key: required[key] for key in expected_proof}, expected_proof)
+        self.assertGreater(len(required['segments']), 1, 'historical source must exercise real segmentation')
+        segment_bytes = []
+        for segment in required['segments']:
+            raw = (fixture.session / segment['artifact']).read_bytes()
+            expected = ''.join(historical_lines[segment['line_start'] - 1:segment['line_end']]).encode()
+            self.assertEqual(raw, expected)
+            self.assertEqual(segment['raw_bytes'], len(expected))
+            self.assertEqual(segment['content_sha256'], hashlib.sha256(expected).hexdigest())
+            expected_reads[segment['artifact']] = expected
+            segment_bytes.append(raw)
+        self.assertEqual(b''.join(segment_bytes), fixture.oversized_source.encode())
         self.assertIsNone(TARGET.search(fixture.prompt.read_text()),
                           'deletion-only review must not invent a current source target')
         self.assertRegex(fixture.prompt.read_text(),
@@ -231,8 +281,37 @@ class RequiredSourceProofTests(unittest.TestCase):
                          'absence must state why no current source target exists')
         rc, audit = fixture.audit()
         self.assertEqual((rc, audit['violations']), (0, []))
+        self.assertEqual(audit['packet_shards'], len(expected_packets))
+        self.assertEqual(audit['packet_bytes'], sum(len(expected_reads[name]) for name in expected_packets))
+        self.assertEqual(audit['packet_ranges'], expected_packet_ranges)
+        self.assertEqual(audit['required_source_ranges_covered'], 1)
+        self.assertEqual(audit['required_source_range_proofs'], [expected_proof])
+        raw_path = fixture.session / f'r1-{fixture.seat}.stream.ndjson'
+        raw = raw_path.read_bytes()
+        self.assertEqual(audit['stream_sha256'], hashlib.sha256(raw).hexdigest())
+        observed_reads = []
+        for event in map(json.loads, raw.decode().splitlines()):
+            if event['type'] != 'item.completed':
+                continue
+            item = event['item']
+            path = Path(shlex.split(item['command'])[-1])
+            if path.name in expected_reads:
+                self.assertEqual(item['aggregated_output'].encode(), expected_reads[path.name])
+                observed_reads.append(path.name)
+        self.assertEqual(observed_reads, list(expected_reads),
+                         'historical packet and segment identities must be consumed exactly once in order')
         self.assertEqual(audit['source_ranges'], [],
                          'historical packet coverage must not earn snapshot citation proof')
+        fixture.receipt_gate(audit)
+        for omitted, code in ((expected_packets, 'missing-source-packet'),
+                              ([segment['artifact'] for segment in required['segments']],
+                               'missing-required-source-segment')):
+            with self.subTest(omitted=omitted):
+                rc, incomplete = fixture.audit(omitted_artifacts=omitted)
+                self.assertEqual(rc, 2, 'missing historical reads must never produce valid proof')
+                self.assertIn(code, [row['code'] for row in incomplete['violations']])
+                with self.assertRaises(ValueError):
+                    fixture.receipt_gate(incomplete)
 
     def test_exact_target_passes_both_transcript_and_receipt_gates(self):
         fixture = self.fixture('current')
