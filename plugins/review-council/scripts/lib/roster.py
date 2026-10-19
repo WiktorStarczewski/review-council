@@ -1589,11 +1589,11 @@ def build(do_probe, quota_failed_seats=()):
     # Padding comes LAST - after config, after exclusions, after the probe - so it replaces the seats
     # those steps actually removed rather than a count taken before they ran.
     pad(kept, excluded, cfg, probe_results)
-    # A silent fallback would hide why this session cannot run evidence mode or a plan panel.
+    # A silent fallback would hide partial, unenforced evidence and plan coverage.
     if (not CODEX_HOST and _RESOLVED.get('cli') and claude_adapter_setting(cfg)[0] == 'auto'
             and any(s['adapter'] == 'agent' for s in kept)):
         excluded.append({'cli': 'claude_adapter',
-                         'reason': 'auto -> agent (claude CLI %s): agent seats get no evidence mode or plan panel'
+                         'reason': 'auto -> agent (claude CLI %s): evidence and plan panels have partial, unenforced coverage'
                                    % _RESOLVED['cli']})
     padded = len([s for s in kept if not s['extra'] and s.get('padded')])
     labs, degraded, sentence = degradation(kept, padded)
