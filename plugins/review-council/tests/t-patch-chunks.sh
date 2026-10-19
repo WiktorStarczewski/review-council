@@ -350,8 +350,11 @@ spec=importlib.util.spec_from_file_location('receipt_evidence', script)
 evidence=importlib.util.module_from_spec(spec); spec.loader.exec_module(evidence)
 repository=evidence.Repository(session.resolve())
 for seat, assignment in m['assignments'].items():
-    prompt=session / f'r21-{seat}.prompt.md'
-    prompt.write_text(subprocess.check_output([script, 'render', str(manifest_path), seat], text=True))
+    expected_prompt=session / f'r21-{seat}.prompt.md'
+    prompt=pathlib.Path(subprocess.check_output([
+        str(pathlib.Path(script).with_name('rev-prompt.sh')),str(session),'21',seat,
+        assignment['bundle'],'chunks','--evidence',str(manifest_path)],text=True).strip()).resolve()
+    assert prompt == expected_prompt.resolve()
     result=session / f'r21-{seat}.json'; result.write_text('{"summary":"checked","findings":[]}\n')
     exit_path=session / f'r21-{seat}.exit'; exit_path.write_text('0\n')
     stream=session / f'r21-{seat}.stream.ndjson'; events=[]
