@@ -122,6 +122,52 @@ test_panel_verification_prompts_carry_sibling_site_check() {
     for seat in sol terra opus sonnet; do
       assert_exit "panel phase conflict removes the $seat prompt" 1 test -e "$S/r3-$seat.prompt.md"
     done
+
+    assert_exit "risk evidence cannot claim the discovery phase" 1 \
+      "$SCRIPTS/rev-prompt.sh" "$S" 3 sol correctness-boundaries 'round focus' --phase discovery --evidence "$risk"
+    local discovery discovery_repair discovery_rc
+    discovery=$(REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 5 \
+      --phase discovery) || return
+    prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 5 terra simplicity 'round focus' --phase discovery \
+      --evidence "$discovery") || return
+    python3 "$SCRIPTS/lib/rev-attempt.py" reserve "$S" 5 terra "$prompt" || return
+    printf '%s\n' '{"summary":"INCOMPLETE PROOF: assigned source remains unread","findings":[]}' > "$S/r5-terra.json"
+    printf '0\n' > "$S/r5-terra.exit"
+    python3 "$SCRIPTS/lib/rev-attempt.py" record "$S" 5 terra "$prompt" 0 || return
+    assert_exit "discovery replacement records the incomplete-proof retirement" 0 test -s "$S/r5-terra.incomplete-proof"
+    discovery_repair=$(python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 5x \
+      --phase repair --assignment sol=simplicity --parent-assignment 5:terra) || return
+    python3 - "$discovery" "$discovery_repair" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+
+parent_path, child_path = map(Path, sys.argv[1:])
+parent, child = (json.loads(path.read_text()) for path in (parent_path, child_path))
+binding = child['parent_assignment']
+assert parent['phase'] == 'discovery' and child['phase'] == 'repair'
+assert binding['manifest'] == 'r5-evidence.manifest.json' and binding['seat'] == 'terra'
+assert binding['manifest_sha256'] == hashlib.sha256(parent_path.read_bytes()).hexdigest()
+assert binding['bundle'] == parent['assignments']['terra']['bundle'] == 'simplicity'
+assert list(child['assignments']) == ['sol']
+assert child['assignments']['sol']['bundle'] == 'simplicity' and child['assignments']['sol']['scope'] == 'full'
+assert child['snapshot_tree'] == parent['snapshot_tree'] and child['source'] == parent['source']
+assert child['patch_chunks_mode'] == parent['patch_chunks_mode'] == 'auto'
+assert child['source_context']['enabled'] is parent['source_context']['enabled'] is True
+PY
+    assert_eq "discovery repair is bound to its actual parent assignment and evidence modes" "$?" 0
+    "$SCRIPTS/rev-prompt.sh" "$S" 5x sol simplicity 'round focus' --phase discovery \
+      --evidence "$discovery_repair" > "$T/panel-discovery-repair.out" 2> "$T/panel-discovery-repair.err"
+    discovery_rc=$?
+    assert_eq "a repair covering discovery renders its per-seat prompt" "$discovery_rc" 0
+    if [ "$discovery_rc" -ne 0 ]; then
+      cat "$T/panel-discovery-repair.err" >&2
+      return 0
+    fi
+    prompt=$(cat "$T/panel-discovery-repair.out")
+    assert_eq "a repair covering discovery keeps the original emphasis" \
+      "$(grep -Fxc -- 'Round emphasis: round focus' "$prompt")" 1
+    assert_eq "a repair covering discovery has no verification sibling-site check" \
+      "$(grep -Fc 'Sibling-site completeness:' "$prompt")" 0
   )
 }
 
