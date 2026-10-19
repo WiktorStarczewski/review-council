@@ -156,6 +156,13 @@ has_tool_call() {
 # one WITHOUT reading anything, even when the prompt says to run tools first (seen live: summary "I'll
 # inspect the diff…", zero findings, zero tool calls). An answer with no tool calls is not a review: retry
 # once at the same effort, then fail the seat so the orchestrator's retry/skip rule applies.
+check_error=$(python3 "$HERE/lib/rev-attempt.py" check "$SESSION" "$ROUND" "$SEAT" "$PROMPT" 2>&1)
+check_rc=$?
+if [ "$check_rc" -ne 0 ]; then
+  [ -z "$check_error" ] || printf 'rev-seat: %s\n' "$check_error" >&2
+  [ -z "$check_error" ] || printf '%s\n' "$check_error" >> "$LOG"
+  finish "$check_rc"
+fi
 rm -f "$EXITF"
 attempt=0
 while :; do

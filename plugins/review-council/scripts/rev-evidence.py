@@ -3981,7 +3981,7 @@ def validate_panel_coverage(manifest):
 
 
 def audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, result,
-               result_data, audit_path):
+               result_data, audit_path, result_raw=None):
     """Run the receipt's read-audit gate for one seat, raising on the first failure.
 
     Lifted out of validate_results unchanged so an UNENFORCED seat can run the same gate
@@ -3990,6 +3990,8 @@ def audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, r
     """
     component_by_id = {component['id']: component for component in manifest['components']}
     stream = Path(str(stem) + '.stream.ndjson')
+    if result_raw is None:
+        result_raw = attempt_module().private_bytes(result)
     audit = read_json(audit_path)
     narrow = assignment['scope'] != 'full'
     zero_tool_plan = (phase == 'plan' and assignment.get('plan_clusters') == []
@@ -4005,7 +4007,7 @@ def audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, r
                    for item in advisories)
             or audit.get('prompt_sha256') != digest(prompt.read_bytes())
             or audit.get('stream_sha256') != digest(stream.read_bytes())
-            or audit.get('result_sha256') != digest(result.read_bytes())
+            or audit.get('result_sha256') != digest(result_raw)
             or audit.get('evidence_manifest_sha256') != manifest_hash):
         raise ValueError('invalid or stale read audit: ' + seat)
     if (any(type(audit.get(key)) is not int or audit[key] < 0 for key in
@@ -4228,7 +4230,7 @@ UNENFORCED_AUDIT_CACHE_SUFFIX = '.unenforced-audit.cache'
 # Both receipt-path children are short-lived, take every input as an argument, and now run per
 # selected seat on every verify-panel, receipt and predecessor walk. Inheriting this process's
 # stdin is what lets one block forever, and neither bounds its own work on a pathological input,
-# so each gets a closed stdin and a deadline far above any real run.
+# so each gets closed stdin or captured result bytes followed by EOF, plus a deadline.
 CHILD_TIMEOUT_SECONDS = 300
 
 
@@ -4266,7 +4268,7 @@ def file_identity(path):
 
 
 def unenforced_verdict(session, manifest, manifest_hash, phase, seat, stem, assignment,
-                       prompt, result, result_data):
+                       prompt, result, result_data, result_raw=None):
     """Audit an unenforced seat's transcript and report whether it WOULD have passed the gate.
 
     Nothing here gates: every path returns a verdict, including the ones where the auditor
@@ -4334,7 +4336,7 @@ def unenforced_verdict(session, manifest, manifest_hash, phase, seat, stem, assi
         if isinstance(audit, dict) and isinstance(audit.get('status'), str):
             verdict['status'] = audit['status']
         audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, result,
-                   result_data, audit_path)
+                   result_data, audit_path, result_raw)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError,
             RecursionError) as error:
         verdict['reason'] = str(error)
@@ -4356,21 +4358,20 @@ def validate_results(session, manifest, manifest_hash, seats=None, verdicts=None
             raise ValueError('invalid result generation selection')
     phase = manifest['phase']
     validator = Path(__file__).parent / 'lib' / 'validate-findings.py'
-    incomplete_proof = attempt_module().incomplete_proof
+    attempt = attempt_module()
     for seat in selected:
         stem = session / f"r{manifest['label']}-{seat}"
         result = Path(str(stem) + '.json'); exit_path = Path(str(stem) + '.exit')
         prompt = Path(str(stem) + '.prompt.md')
         if exit_path.read_text().strip() != '0':
             raise ValueError('seat failed: ' + seat)
-        if incomplete_proof(result):
-            raise ValueError('incomplete proof: ' + seat)
+        result_raw = attempt.private_bytes(result)
         token = 'Evidence manifest SHA-256: ' + manifest_hash
         if token not in prompt.read_text().splitlines():
             raise ValueError('prompt manifest hash mismatch: ' + seat)
         try:
-            valid = subprocess.run([sys.executable, str(validator), str(result)],
-                                   capture_output=True, stdin=subprocess.DEVNULL,
+            valid = subprocess.run([sys.executable, str(validator), '/dev/stdin'],
+                                   capture_output=True, input=result_raw,
                                    timeout=CHILD_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             # main() does not catch SubprocessError, so an uncaught one would surface as a
@@ -4378,7 +4379,9 @@ def validate_results(session, manifest, manifest_hash, seats=None, verdicts=None
             raise ValueError('result validation timed out: ' + seat) from None
         if valid.returncode:
             raise ValueError('invalid result: ' + seat)
-        result_data = read_json(result)
+        result_data = json.loads(result_raw)
+        if attempt.incomplete_summary(result_data):
+            raise ValueError('incomplete proof: ' + seat)
         assignment = manifest['assignments'][seat]
         # An agent seat produces no read audit by construction (Claude Code subagents ignore the
         # hook frontmatter the enforced transcript depends on). Its result, exit status and
@@ -4393,23 +4396,25 @@ def validate_results(session, manifest, manifest_hash, seats=None, verdicts=None
             # this panel, so one filed under the wrong seat or round is not detected. The enforced
             # path gets that binding from the read audit, which names manifest, prompt, stream and
             # result in one record; an unenforced seat has no such record.
-            for artifact in (result, exit_path, prompt):
+            result_hashes[result.name] = digest(result_raw)
+            for artifact in (exit_path, prompt):
                 result_hashes[artifact.name] = digest(artifact.read_bytes())
             agent_stream = Path(str(stem) + '.stream.ndjson')
             if agent_stream.exists():
                 result_hashes[agent_stream.name] = digest(agent_stream.read_bytes())
             verdict = unenforced_verdict(session, manifest, manifest_hash, phase, seat, stem,
-                                         assignment, prompt, result, result_data)
+                                         assignment, prompt, result, result_data, result_raw)
             if verdicts is not None:
                 verdicts[seat] = verdict
             continue
         audit_path = Path(str(stem) + '.read-audit.json')
         stream = Path(str(stem) + '.stream.ndjson')
         audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, result,
-                   result_data, audit_path)
+                   result_data, audit_path, result_raw)
         for artifact in (audit_path, stream):
             result_hashes[artifact.name] = digest(artifact.read_bytes())
-        for artifact in (result, exit_path, prompt):
+        result_hashes[result.name] = digest(result_raw)
+        for artifact in (exit_path, prompt):
             result_hashes[artifact.name] = digest(artifact.read_bytes())
     return result_hashes
 
