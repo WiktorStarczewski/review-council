@@ -810,13 +810,15 @@ SH
   )
 
   ( local B="$T/roster-default-claude-pin"; roster_env "$B" codex
-    export REVIEW_COUNCIL_CONFIG="$B.home/cfg.json" SHIM_ARGS_FILE="$B/args"
+    export REVIEW_COUNCIL_CONFIG="$B.home/cfg.json" SHIM_ARGS_DIR="$B/args.d"
+    mkdir -p "$SHIM_ARGS_DIR"
     printf '%s' '{"extras":false,"pin":{"opus":{"model":"sonnet"}}}' > "$REVIEW_COUNCIL_CONFIG"
     "$SCRIPTS/roster.sh" --probe > "$B/out.json"
     assert_eq "a default non-exact Claude pin remains allowed" "$?" 0
     roster_lines "$B/out.json" "$B/lines"
     assert_grep "the default Claude pin still applies" "$B/lines" \
       '^seat opus anthropic agent sonnet xhigh false'
+    cat "$SHIM_ARGS_DIR/"*.args > "$B/args"
     assert_grep "the non-exact control reaches probes" "$B/args" '^Reply with exactly OK$'
   )
 
