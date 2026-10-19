@@ -208,8 +208,8 @@ PY
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r10-$seat.json"
 
     write_specialist_transcript() {
-      python3 - "$manifest" "$S/r10-$seat.stream.ndjson" "$seat" "$R" "$1" <<'PY'
-import json, pathlib, sys
+      python3 - "$manifest" "$S/r10-$seat.stream.ndjson" "$seat" "$R" "$1" "$SCRIPTS/rev-evidence.py" <<'PY'
+import hashlib, importlib.util, json, pathlib, re, shlex, sys
 manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2])
 seat, root, mode = sys.argv[3], pathlib.Path(sys.argv[4]), sys.argv[5]
 session = pathlib.Path(sys.argv[1]).parent; context = manifest['source_context']['seats'][seat]
@@ -237,6 +237,23 @@ index = session / f"r{manifest['label']}-evidence.md"
 command('evidence-index', "cat '" + str(index) + "'", index.read_text())
 if mode == 'unrelated':
     command('source-unrelated', "sed -n '1,1p' a.txt", (root / 'a.txt').read_text())
+elif context['source_read_required']:
+    target = re.search(r'^Required post-index original-source target: (.+):(\d+)-(\d+) '
+                       r'tree (\w+) blob (\w+) content SHA-256 (\w+) reasons ',
+                       (session / f"r{manifest['label']}-{seat}.prompt.md").read_text(), re.M)
+    assert target
+    path, start, end, tree, oid, content_hash = target.groups(); start, end = int(start), int(end)
+    spec = importlib.util.spec_from_file_location('specialist_evidence', sys.argv[6])
+    evidence = importlib.util.module_from_spec(spec); spec.loader.exec_module(evidence)
+    repository = evidence.Repository(session.resolve()); entry = repository.entries(tree)[path]
+    assert tree == manifest['snapshot_tree'] and entry[1] == oid
+    lines = evidence.split_lf_lines(repository.blob(entry))
+    assert hashlib.sha256(b''.join(lines[start-1:end])).hexdigest() == content_hash
+    for first in range(start, end + 1, 240):
+        last = min(first + 239, end)
+        command('current-' + str(first), shlex.join(['git', 'show', tree + ':' + path])
+                + ' | ' + shlex.join(['sed', '-n', f'{first},{last}p']),
+                b''.join(lines[first-1:last]).decode())
 with out.open('w') as stream:
     for event in events:
         stream.write(json.dumps(event) + '\n')
@@ -479,22 +496,27 @@ batch_calls['packet-2'] = ('Read', {}, 'later')
 assert audit.turn_batch_violations(
     batch_calls, set(batch_calls), 1, 'source-packet-batch-too-large', 'claude') == []
 
+snapshot = 'a' * 40
 context = {
     'source_read_required': True,
     'role': 'integration',
+    'shards': [],
     'required_source_ranges': [],
     'omitted_source_ranges': [
-        {'path':'src/caller.ts', 'line_start':10, 'line_end':14},
+        {'path':'src/caller.ts', 'line_start':10, 'line_end':14, 'priority':0,
+         'blob_tree':snapshot, 'reasons':['production-caller:example']},
     ],
 }
+boundary = {'src/declaration.ts', 'src/caller.ts'}
+declaration = {'path':'src/declaration.ts', 'line_start':1, 'line_end':5, 'origin':'tool'}
+partial = {'path':'src/caller.ts', 'line_start':12, 'line_end':12, 'origin':'tool'}
+complete = {'path':'src/caller.ts', 'line_start':10, 'line_end':14, 'origin':'tool'}
+for ranges, post_index in (([declaration], [declaration]), ([partial], [partial]), ([complete], [])):
+    assert audit.source_read_requirement_violations(
+        context, boundary, ranges, 'claude', snapshot, post_index) == [
+            {'code':'missing-required-source-read', 'tool':'claude'}]
 assert audit.source_read_requirement_violations(
-    context, {'src/declaration.ts', 'src/caller.ts'},
-    [{'path':'src/declaration.ts', 'line_start':1, 'line_end':5, 'origin':'tool'}],
-    'claude') == [{'code':'missing-required-source-read', 'tool':'claude'}]
-assert audit.source_read_requirement_violations(
-    context, {'src/declaration.ts', 'src/caller.ts'},
-    [{'path':'src/caller.ts', 'line_start':12, 'line_end':12, 'origin':'tool'}],
-    'claude') == []
+    context, boundary, [complete], 'claude', snapshot, [complete]) == []
 PY
     assert_eq "evidence phases enforce ordered packets, segments, index, and expansion" "$?" 0
   )
@@ -624,12 +646,27 @@ print(json.load(open(sys.argv[1]))['assignments']['sol']['patch'])
 PY
 ) || return
     evidence_index="$S/r4-evidence.md"
-    python3 - "$S/r4-sol.stream.ndjson" "$packet" "$assigned_patch" "$evidence_index" <<'PY'
-import json, sys
+    python3 - "$S/r4-sol.stream.ndjson" "$packet" "$assigned_patch" "$evidence_index" "$manifest" "$SCRIPTS/rev-evidence.py" <<'PY'
+import hashlib, importlib.util, json, pathlib, re, shlex, sys
 packet = open(sys.argv[2]).read(); patch = open(sys.argv[3]).read(); index = open(sys.argv[4]).read()
 packet_command = "cat '" + sys.argv[2] + "'"
 patch_command = "sed -n '1,240p' '" + sys.argv[3] + "'"
 index_command = "cat '" + sys.argv[4] + "'"
+manifest = json.load(open(sys.argv[5])); session = pathlib.Path(sys.argv[5]).parent
+assert manifest['source_context']['seats']['sol']['source_read_required'] is True
+target = re.search(r'^Required post-index original-source target: (.+):(\d+)-(\d+) '
+                   r'tree (\w+) blob (\w+) content SHA-256 (\w+) reasons ',
+                   (session / 'r4-sol.prompt.md').read_text(), re.M)
+assert target
+path, start, end, tree, oid, content_hash = target.groups(); start, end = int(start), int(end)
+spec = importlib.util.spec_from_file_location('source_evidence', sys.argv[6])
+evidence = importlib.util.module_from_spec(spec); spec.loader.exec_module(evidence)
+repository = evidence.Repository(session.resolve()); entry = repository.entries(tree)[path]
+assert tree == manifest['snapshot_tree'] and entry[1] == oid and end-start < 240
+lines = evidence.split_lf_lines(repository.blob(entry))
+source = b''.join(lines[start-1:end]).decode()
+assert hashlib.sha256(source.encode()).hexdigest() == content_hash
+source_command = shlex.join(['sed', '-n', f'{start},{end}p', path])
 events = [
     {'type':'item.started','item':{'id':'p2','type':'command_execution','command':patch_command}},
     {'type':'item.completed','item':{'id':'p2','type':'command_execution','command':patch_command,
@@ -640,9 +677,9 @@ events = [
     {'type':'item.started','item':{'id':'i1','type':'command_execution','command':index_command}},
     {'type':'item.completed','item':{'id':'i1','type':'command_execution','command':index_command,
                                      'aggregated_output':index,'exit_code':0}},
-    {'type':'item.started','item':{'id':'s1','type':'command_execution','command':"sed -n '1,1p' src/x.ts"}},
-    {'type':'item.completed','item':{'id':'s1','type':'command_execution','command':"sed -n '1,1p' src/x.ts",
-                                     'aggregated_output':'one\n','exit_code':0}},
+    {'type':'item.started','item':{'id':'s1','type':'command_execution','command':source_command}},
+    {'type':'item.completed','item':{'id':'s1','type':'command_execution','command':source_command,
+                                     'aggregated_output':source,'exit_code':0}},
 ]
 with open(sys.argv[1], 'w') as stream:
     for event in events:
@@ -720,11 +757,62 @@ PY
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
       --raw "$S/r4-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
       --out "$S/r4-sol.read-audit.json" >/dev/null 2>&1
+    assert_eq "mandatory current target rejects an omitted navigation index" "$?" 2
+    assert_grep "missing index cannot prove the mandatory post-index source read" "$S/r4-sol.read-audit.json" \
+      '"code":"missing-required-source-read"'
+
+    local A="$T/source-index-advisory-root" AS="$T/source-index-advisory-session"
+    local advisory_manifest advisory_prompt advisory_bundle
+    mkrepo "$A"; mkdir -p "$AS" "$A/src"
+    printf 'def current():\n    return 1\n' > "$A/src/current.py"
+    git -C "$A" add src/current.py && git -C "$A" commit -qm 'named source baseline'
+    printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+      "$(git -C "$A" rev-parse HEAD)" "$A" > "$AS/scope.env"
+    printf 'def current():\n    return 2\n' > "$A/src/current.py"
+    printf 'src/current.py\n' > "$AS/files.txt"; : > "$AS/untracked.txt"
+    cp "$S/roster.json" "$AS/roster.json"
+    advisory_manifest=$(REV_SOURCE_CONTEXT=1 python3 "$SCRIPTS/rev-evidence.py" prepare "$AS" 4a --phase discovery) || return
+    advisory_bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"]["sol"]["bundle"])' "$advisory_manifest") || return
+    advisory_prompt=$("$SCRIPTS/rev-prompt.sh" "$AS" 4a sol "$advisory_bundle" source-index --evidence "$advisory_manifest") || return
+    printf '%s\n' '{"summary":"checked","findings":[]}' > "$AS/r4a-sol.json"
+    python3 - "$advisory_manifest" "$AS/r4a-sol.stream.ndjson" <<'PY'
+import json, pathlib, shlex, sys
+manifest = json.load(open(sys.argv[1])); session = pathlib.Path(sys.argv[1]).parent
+context = manifest['source_context']['seats']['sol']; assignment = manifest['assignments']['sol']
+assert manifest['source_context']['enabled'] is True and context['source_read_required'] is False
+assert context['shards'] and not context['required_source_ranges'] and not any(context['omitted'].values())
+assert all('declaration:changed-line-anchor' not in row['reasons']
+           for shard in context['shards'] for row in shard['ranges'])
+events = []
+def command(identity, command, output):
+    events.extend([
+        {'type':'item.started','item':{'id':identity,'type':'command_execution','command':command}},
+        {'type':'item.completed','item':{'id':identity,'type':'command_execution','command':command,
+                                       'aggregated_output':output,'exit_code':0}},
+    ])
+if assignment['patch_read_mode'] == 'chunks':
+    for row in manifest['patch_sets'][assignment['patch_set']]['chunks']:
+        path = session / row['artifact']
+        command('chunk-' + str(row['index']), shlex.join(['cat', '--', str(path)]), path.read_text())
+else:
+    path = pathlib.Path(assignment['patch']); lines = path.read_text().splitlines(keepends=True)
+    for first in range(1, len(lines) + 1, 240):
+        last = min(first + 239, len(lines))
+        command('patch-' + str(first), shlex.join(['sed', '-n', f'{first},{last}p', str(path)]),
+                ''.join(lines[first-1:last]))
+for index, shard in enumerate(context['shards']):
+    path = session / shard['artifact']
+    command('packet-' + str(index), shlex.join(['cat', '--', str(path)]), path.read_text())
+pathlib.Path(sys.argv[2]).write_text(''.join(json.dumps(event) + '\n' for event in events))
+PY
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+      --raw "$AS/r4a-sol.stream.ndjson" --prompt "$advisory_prompt" --root "$A" --session "$AS" \
+      --out "$AS/r4a-sol.read-audit.json" >/dev/null 2>&1
     assert_eq "complete evidence remains valid when the navigation index is omitted" "$?" 0
-    assert_grep "omitted evidence index is recorded as an advisory" "$S/r4-sol.read-audit.json" \
+    assert_grep "omitted evidence index is recorded as an advisory" "$AS/r4a-sol.read-audit.json" \
       '"advisories":\[[^]]*"code":"missing-evidence-index"'
     assert_grep "omitted evidence index does not discard substantive proof" \
-      "$S/r4-sol.read-audit.json" '"violations":\[\]'
+      "$AS/r4a-sol.read-audit.json" '"violations":\[\]'
     cp "$T/source-evidence-with-index.ndjson" "$S/r4-sol.stream.ndjson"
 
     printf 'live mutation\nchanged\nthree\n' > "$R/src/x.ts"
@@ -791,30 +879,7 @@ JSON
     assert_grep "missing assigned packet has a stable code" "$S/r4-sol.read-audit.json" \
       '"code":"missing-source-packet"'
 
-    python3 - "$S/r4-sol.stream.ndjson" "$packet" "$assigned_patch" "$evidence_index" <<'PY'
-import json, sys
-path, packet, assigned_patch, evidence_index = sys.argv[1:]
-raw = open(packet).read(); command = "cat '" + packet + "'"
-patch = open(assigned_patch).read(); patch_command = "sed -n '1,240p' '" + assigned_patch + "'"
-index = open(evidence_index).read(); index_command = "cat '" + evidence_index + "'"
-events = [
-    {'type':'item.started','item':{'id':'p3','type':'command_execution','command':patch_command}},
-    {'type':'item.completed','item':{'id':'p3','type':'command_execution','command':patch_command,
-                                     'aggregated_output':patch,'exit_code':0}},
-    {'type':'item.started','item':{'id':'p2','type':'command_execution','command':command}},
-    {'type':'item.completed','item':{'id':'p2','type':'command_execution','command':command,
-                                     'aggregated_output':raw,'exit_code':0}},
-    {'type':'item.started','item':{'id':'index','type':'command_execution','command':index_command}},
-    {'type':'item.completed','item':{'id':'index','type':'command_execution','command':index_command,
-                                     'aggregated_output':index,'exit_code':0}},
-    {'type':'item.started','item':{'id':'s1','type':'command_execution','command':"sed -n '2,2p' src/x.ts"}},
-    {'type':'item.completed','item':{'id':'s1','type':'command_execution','command':"sed -n '2,2p' src/x.ts",
-                                     'aggregated_output':'changed\n','exit_code':0}},
-]
-with open(path, 'w') as stream:
-    for event in events:
-        stream.write(json.dumps(event) + '\n')
-PY
+    cp "$T/source-evidence-with-index.ndjson" "$S/r4-sol.stream.ndjson"
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
       --raw "$S/r4-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
       --out "$S/r4-sol.read-audit.json"
@@ -1073,8 +1138,8 @@ PY
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r9-sol.json"
 
     write_required_transcript() {
-      python3 - "$manifest" "$S/r9-sol.stream.ndjson" "$1" "$R" <<'PY'
-import json, pathlib, sys
+      python3 - "$manifest" "$S/r9-sol.stream.ndjson" "$1" "$R" "$SCRIPTS/rev-evidence.py" <<'PY'
+import hashlib, importlib.util, json, pathlib, re, shlex, sys
 manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2]); mode = sys.argv[3]
 complete = mode != 'partial'
 session = pathlib.Path(sys.argv[1]).parent; seat = 'sol'; context = manifest['source_context']['seats'][seat]
@@ -1143,6 +1208,23 @@ if mode == 'unassigned':
     command('source-unassigned', "cat '" + str(path) + "'", path.read_text())
 index = session / f"r{manifest['label']}-evidence.md"
 command('evidence-index', "cat '" + str(index) + "'", index.read_text())
+if context['source_read_required']:
+    target = re.search(r'^Required post-index original-source target: (.+):(\d+)-(\d+) '
+                       r'tree (\w+) blob (\w+) content SHA-256 (\w+) reasons ',
+                       (session / f"r{manifest['label']}-{seat}.prompt.md").read_text(), re.M)
+    assert target
+    path, start, end, tree, oid, content_hash = target.groups(); start, end = int(start), int(end)
+    spec = importlib.util.spec_from_file_location('required_evidence', sys.argv[5])
+    evidence = importlib.util.module_from_spec(spec); spec.loader.exec_module(evidence)
+    repository = evidence.Repository(session.resolve()); entry = repository.entries(tree)[path]
+    assert tree == manifest['snapshot_tree'] and entry[1] == oid
+    lines = evidence.split_lf_lines(repository.blob(entry))
+    assert hashlib.sha256(b''.join(lines[start-1:end])).hexdigest() == content_hash
+    for first in range(start, end + 1, 240):
+        last = min(first + 239, end)
+        command('current-' + str(first), shlex.join(['git', 'show', tree + ':' + path])
+                + ' | ' + shlex.join(['sed', '-n', f'{first},{last}p']),
+                b''.join(lines[first-1:last]).decode())
 if mode == 'live-window':
     live = (pathlib.Path(sys.argv[4]) / required['path']).read_text().splitlines(keepends=True)
     first = required['segments'][0]
@@ -2982,8 +3064,8 @@ PY
 # {"sed":[path,start,end],"tamper"}, {"batch":[[path,start,end],...],"tamper"}, {"oversized":true}
 # or, for gemini, {"tool","input","out"} and {"read":[path,offset,limit]}.
 severity_transcript() {
-  python3 - "$@" <<'PY'
-import json, pathlib, shlex, sys
+  python3 - "$@" "$SCRIPTS/rev-evidence.py" <<'PY'
+import hashlib, importlib.util, json, pathlib, re, shlex, sys
 session, label, adapter, spec = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3], json.loads(sys.argv[4])
 manifest = json.load(open(session / f'r{label}-evidence.manifest.json'))
 root = None
@@ -3062,6 +3144,26 @@ if spec.get('repeat'):
     turn_of(spec['repeat']).append(dict(named[spec['repeat']]))
 if spec.get('sibling'):
     turn_of(spec['sibling']).append({'oversized': True})
+if manifest['source_context']['enabled'] and context['source_read_required']:
+    target = re.search(r'^Required post-index original-source target: (.+):(\d+)-(\d+) '
+                       r'tree (\w+) blob (\w+) content SHA-256 (\w+) reasons ', prompt.read_text(), re.M)
+    assert target
+    path, start, end, tree, oid, content_hash = target.groups(); start, end = int(start), int(end)
+    module_spec = importlib.util.spec_from_file_location('severity_evidence', sys.argv[5])
+    evidence = importlib.util.module_from_spec(module_spec); module_spec.loader.exec_module(evidence)
+    repository = evidence.Repository(session.resolve()); entry = repository.entries(tree)[path]
+    assert tree == manifest['snapshot_tree'] and entry[1] == oid
+    lines = evidence.split_lf_lines(repository.blob(entry))
+    assert hashlib.sha256(b''.join(lines[start-1:end])).hexdigest() == content_hash
+    for first in range(start, end + 1, 240):
+        last = min(first + 239, end)
+        output = b''.join(lines[first-1:last]).decode()
+        call = ({'cmd': shlex.join(['git', 'show', tree + ':' + path]) + ' | '
+                       + shlex.join(['sed', '-n', f'{first},{last}p']), 'out': output}
+                if adapter == 'codex' else
+                {'tool': 'read_file', 'input': {'path': str(root / path), 'offset': first,
+                                               'limit': last-first+1}, 'out': output})
+        turns.append([call])
 turns.extend(spec.get('tail', []))
 events = []
 for turn in turns:

@@ -544,9 +544,9 @@ PY
         || { fail "profile fixture discovery prompt renders"; return; }
       printf '%s' '{"summary":"checked","findings":[]}' > "$S/r6-$seat.json"
       printf '0\n' > "$S/r6-$seat.exit"
-      python3 - "$S/r6-evidence.manifest.json" "$seat" "$S/r6-$seat.stream.ndjson" "$R/source_0.py" <<'PY'
-import json, pathlib, sys
-manifest_path, seat, stream_path, source_path = sys.argv[1:]
+      python3 - "$S/r6-evidence.manifest.json" "$seat" "$S/r6-$seat.stream.ndjson" "$R/source_0.py" "$SCRIPTS/rev-evidence.py" <<'PY'
+import hashlib, importlib.util, json, pathlib, re, sys
+manifest_path, seat, stream_path, source_path, script = sys.argv[1:]
 session = pathlib.Path(manifest_path).parent
 manifest = json.load(open(manifest_path))
 events = []
@@ -600,25 +600,28 @@ events.extend([
     {'type':'user','message':{'content':[{
         'type':'tool_result','tool_use_id':'evidence-index','content':index.read_text()}]}},
 ])
-if manifest['source_context']['seats'][seat]['source_read_required'] \
-        and not manifest['source_context']['seats'][seat]['required_source_ranges']:
-    context = manifest['source_context']['seats'][seat]
-    components = {component['id']: component for component in manifest['components']}
-    boundary = sorted({path for component_id in context['components']
-                       for path in components[component_id]['boundary']})
-    if not boundary:
-        raise SystemExit('missing assigned component boundary')
-    source = pathlib.Path(source_path).parent / boundary[0]
-    content = source.read_text().splitlines(keepends=True)
-    if not content:
-        raise SystemExit('assigned component boundary is empty')
-    events.extend([
-        {'type': 'assistant', 'message': {'id': 'source', 'content': [{
-            'type':'tool_use','id':'source','name':'Read',
-            'input':{'file_path':str(source),'offset':1,'limit':1}}]}},
-        {'type': 'user', 'message': {'content': [{
-            'type':'tool_result','tool_use_id':'source','content':content[0]}]}},
-    ])
+if manifest['source_context']['seats'][seat]['source_read_required']:
+    target = re.search(r'^Required post-index original-source target: (.+):(\d+)-(\d+) '
+                       r'tree (\w+) blob (\w+) content SHA-256 (\w+) reasons ',
+                       (session / f"r{manifest['label']}-{seat}.prompt.md").read_text(), re.M)
+    assert target
+    path, start, end, tree, oid, content_hash = target.groups(); start, end = int(start), int(end)
+    spec = importlib.util.spec_from_file_location('profile_evidence', script)
+    evidence = importlib.util.module_from_spec(spec); spec.loader.exec_module(evidence)
+    repository = evidence.Repository(session.resolve()); entry = repository.entries(tree)[path]
+    assert tree == manifest['snapshot_tree'] and entry[1] == oid
+    lines = evidence.split_lf_lines(repository.blob(entry))
+    assert hashlib.sha256(b''.join(lines[start - 1:end])).hexdigest() == content_hash
+    for first in range(start, end + 1, 240):
+        last = min(first + 239, end); identity = 'current-source-' + str(first)
+        events.extend([
+            {'type': 'assistant', 'message': {'id': identity, 'content': [{
+                'type':'tool_use','id':identity,'name':'Read',
+                'input':{'file_path':str(repository.root / path),'offset':first,'limit':last-first+1}}]}},
+            {'type': 'user', 'message': {'content': [{
+                'type':'tool_result','tool_use_id':identity,
+                'content':b''.join(lines[first-1:last]).decode()}]}},
+        ])
 with open(stream_path, 'w') as stream:
     for event in events:
         stream.write(json.dumps(event) + '\n')

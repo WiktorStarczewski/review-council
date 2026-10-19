@@ -343,47 +343,66 @@ PY
       --plan "$S/fix-plan.md" --evidence "$manifest"
 
     python3 - "$manifest" "$SCRIPTS/rev-evidence.py" <<'PY'
-import hashlib, json, pathlib, subprocess, sys
+import hashlib, importlib.util, json, pathlib, re, shlex, subprocess, sys
 manifest_path=pathlib.Path(sys.argv[1]); script=sys.argv[2]; session=manifest_path.parent
-m=json.load(open(manifest_path)); manifest_hash=hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+m=json.load(open(manifest_path))
+spec=importlib.util.spec_from_file_location('receipt_evidence', script)
+evidence=importlib.util.module_from_spec(spec); spec.loader.exec_module(evidence)
+repository=evidence.Repository(session.resolve())
 for seat, assignment in m['assignments'].items():
-    prompt=session / f'r21-{seat}.prompt.md'
-    prompt.write_text(subprocess.check_output([script, 'render', str(manifest_path), seat], text=True))
+    expected_prompt=session / f'r21-{seat}.prompt.md'
+    prompt=pathlib.Path(subprocess.check_output([
+        str(pathlib.Path(script).with_name('rev-prompt.sh')),str(session),'21',seat,
+        assignment['bundle'],'chunks','--evidence',str(manifest_path)],text=True).strip()).resolve()
+    assert prompt == expected_prompt.resolve()
     result=session / f'r21-{seat}.json'; result.write_text('{"summary":"checked","findings":[]}\n')
     exit_path=session / f'r21-{seat}.exit'; exit_path.write_text('0\n')
-    stream=session / f'r21-{seat}.stream.ndjson'; stream.write_text('{}\n')
+    stream=session / f'r21-{seat}.stream.ndjson'; events=[]
     context=m['source_context']['seats'][seat]
     assert not context['required_source_ranges']
-    ranges=[{'path':row['path'],'line_start':row['line_start'],'line_end':row['line_end'],'origin':'packet'}
-            for shard in context['shards'] for row in shard['ranges']]
-    source_calls=0
-    if context['source_read_required']:
-        component=next(c for c in m['components'] if c['id'] == context['components'][0])
-        ranges.append({'path':component['boundary'][0],'line_start':1,'line_end':1,'origin':'tool'})
-        source_calls=1
-    ranges.sort(key=lambda row:(row['path'],row['line_start'],row['line_end'],row['origin']))
+    def read(identity, path, content, start=None, end=None):
+        if assignment['adapter'] == 'codex':
+            command=shlex.join(['cat', '--', str(path)]) if start is None else shlex.join(
+                ['sed', '-n', f'{start},{end}p', str(path)])
+            events.extend([
+                {'type':'item.started','item':{'id':identity,'type':'command_execution','command':command}},
+                {'type':'item.completed','item':{'id':identity,'type':'command_execution',
+                    'command':command,'aggregated_output':content,'exit_code':0}},
+            ])
+        else:
+            data={'file_path':str(path)}
+            if start is not None:
+                data.update(offset=start,limit=end-start+1)
+            events.extend([
+                {'type':'assistant','message':{'id':identity,'content':[
+                    {'type':'tool_use','id':identity,'name':'Read','input':data}]}},
+                {'type':'user','message':{'content':[
+                    {'type':'tool_result','tool_use_id':identity,'content':content}]}},
+            ])
     chunks=m['patch_sets'][assignment['patch_set']]['chunks']
-    packet_bytes=sum(row['bytes'] for row in context['shards'])
-    calls=len(chunks)+len(context['shards'])+source_calls
-    audit={
-        'schema_version':2,'status':'valid','narrow':assignment['scope'] != 'full',
-        'adapter':assignment['adapter'],'prompt_sha256':hashlib.sha256(prompt.read_bytes()).hexdigest(),
-        'stream_sha256':hashlib.sha256(stream.read_bytes()).hexdigest(),
-        'result_sha256':hashlib.sha256(result.read_bytes()).hexdigest(),
-        'evidence_manifest_sha256':manifest_hash,'violations':[],'tool_calls':calls,'tool_turns':calls,
-        'tool_output_bytes':assignment['patch_bytes']+packet_bytes+source_calls,
-        'max_tool_output_bytes':max([row['bytes'] for row in chunks]+[row['bytes'] for row in context['shards']]+[source_calls]),
-        'recognized_tool_calls':calls,'source_read_calls':source_calls,'packet_shards':len(context['shards']),
-        'packet_bytes':packet_bytes,'packet_ranges':sum(row['origin']=='packet' for row in ranges),
-        'opened_source_ranges':sum(row['origin']=='tool' for row in ranges),'finding_citations':0,
-        'required_source_ranges_covered':0,'required_source_range_proofs':[],
-        'assigned_patch_sha256':assignment['patch_sha256'],'assigned_patch_bytes':assignment['patch_bytes'],
-        'assigned_patch_lines':assignment['patch_lines'],'assigned_patch_reads':len(chunks),
-        'assigned_patch_ranges':[],'patch_proof_mode':'chunks','patch_proof_calls':len(chunks),
-        'patch_proof_turns':len(chunks),'patch_proof_visible_bytes':assignment['patch_bytes'],
-        'expected_patch_chunks':len(chunks),'opened_patch_chunks':len(chunks),'source_ranges':ranges,
-    }
-    (session / f'r21-{seat}.read-audit.json').write_text(json.dumps(audit))
+    for row in chunks:
+        path=session / row['artifact']; read('chunk-'+str(row['index']),path,path.read_text())
+    for index,row in enumerate(context['shards']):
+        path=session / row['artifact']; read('packet-'+str(index),path,path.read_text())
+    index=session / f"r{m['label']}-evidence.md"
+    read('index',index,index.read_text())
+    if context['source_read_required']:
+        target=re.search(r'^Required post-index original-source target: (.+):(\d+)-(\d+) '
+                         r'tree (\w+) blob (\w+) content SHA-256 (\w+) reasons ',prompt.read_text(),re.M)
+        assert target
+        path,start,end,tree,oid,content_hash=target.groups(); start,end=int(start),int(end)
+        entry=repository.entries(tree)[path]
+        assert tree == m['snapshot_tree'] and entry[1] == oid
+        lines=evidence.split_lf_lines(repository.blob(entry))
+        assert hashlib.sha256(b''.join(lines[start-1:end])).hexdigest() == content_hash
+        for first in range(start,end+1,240):
+            last=min(first+239,end)
+            read('source-'+str(first),repository.root/path,b''.join(lines[first-1:last]).decode(),first,last)
+    stream.write_text(''.join(json.dumps(event)+'\n' for event in events))
+    subprocess.run([sys.executable,str(pathlib.Path(script).parent/'lib/review-read-audit.py'),
+                    'audit','--adapter',assignment['adapter'],'--raw',str(stream),
+                    '--prompt',str(prompt),'--root',str(repository.root),'--session',str(session),
+                    '--out',str(session/f'r21-{seat}.read-audit.json')],check=True)
 PY
     python3 "$SCRIPTS/rev-evidence.py" receipt "$S" 21 >/dev/null 2> "$S/receipt-valid.err"
     assert_eq "complete chunk proof passes before mutation" "$?" 0
@@ -524,8 +543,8 @@ PY
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r24-sol.json"
 
     write_transcript() {
-      python3 - "$manifest" "$S/r24-sol.stream.ndjson" "$R" "$1" <<'PY'
-import json, pathlib, shlex, sys
+      python3 - "$manifest" "$S/r24-sol.stream.ndjson" "$R" "$1" "$SCRIPTS/rev-evidence.py" <<'PY'
+import hashlib, importlib.util, json, pathlib, re, shlex, sys
 manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2])
 root = pathlib.Path(sys.argv[3]); mode = sys.argv[4]; session = pathlib.Path(sys.argv[1]).parent
 assignment = manifest['assignments']['sol']
@@ -581,11 +600,32 @@ if mode == 'unassigned':
     command('chunk-unassigned', 'cat -- ' + shlex.quote(str(extra)), extra.read_text())
 if mode != 'packet-first':
     packets(mode == 'search-before-final-packet')
+for number, required in enumerate(manifest['source_context']['seats']['sol']['required_source_ranges']):
+    for segment in required['segments']:
+        path = session / segment['artifact']
+        command('segment-%d-%d' % (number, segment['index']),
+                shlex.join(['cat', '--', str(path)]), path.read_text())
 index = session / f"r{manifest['label']}-evidence.md"
 command('evidence-index', 'cat -- ' + shlex.quote(str(index)), index.read_text())
-source = root / 'src/large.py'
 if manifest['source_context']['seats']['sol']['source_read_required']:
-    command('source', "sed -n '1,1p' 'src/large.py'", source.read_text().splitlines(keepends=True)[0])
+    prompt = (session / f"r{manifest['label']}-sol.prompt.md").read_text()
+    target = re.search(r'^Required post-index original-source target: (.+):(\d+)-(\d+) '
+                       r'tree (\w+) blob (\w+) content SHA-256 (\w+) reasons ', prompt, re.M)
+    assert target
+    path, start, end, tree, oid, content_hash = target.groups()
+    start, end = int(start), int(end)
+    spec = importlib.util.spec_from_file_location('chunk_evidence', sys.argv[5])
+    evidence = importlib.util.module_from_spec(spec); spec.loader.exec_module(evidence)
+    repository = evidence.Repository(session.resolve())
+    entry = repository.entries(tree)[path]
+    assert tree == manifest['snapshot_tree'] and entry[1] == oid
+    lines = evidence.split_lf_lines(repository.blob(entry))
+    assert hashlib.sha256(b''.join(lines[start - 1:end])).hexdigest() == content_hash
+    for first in range(start, end + 1, 240):
+        last = min(first + 239, end)
+        command('source-' + str(first), shlex.join(['git', 'show', tree + ':' + path])
+                + ' | ' + shlex.join(['sed', '-n', f'{first},{last}p']),
+                b''.join(lines[first - 1:last]).decode())
 if mode == 'expansion-overflow':
     for index in range(17):
         command('search-' + str(index), "rg -n 'value_1' . | head -80",
@@ -683,8 +723,8 @@ PY
       --evidence "$manifest") || return
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r24-opus.json"
     write_claude_order_transcript() {
-      python3 - "$manifest" "$S/r24-opus.stream.ndjson" "$R" "$1" <<'PY'
-import json, pathlib, sys
+      python3 - "$manifest" "$S/r24-opus.stream.ndjson" "$R" "$1" "$SCRIPTS/rev-evidence.py" <<'PY'
+import hashlib, importlib.util, json, pathlib, re, sys
 m=json.load(open(sys.argv[1])); out=pathlib.Path(sys.argv[2]); root=pathlib.Path(sys.argv[3])
 mode=sys.argv[4]
 session=pathlib.Path(sys.argv[1]).parent; assignment=m['assignments']['opus']
@@ -713,11 +753,28 @@ for index,row in enumerate(packets,1):
                       {'command':"rg -n 'value_1' . | head -80"},
                       'src/large.py:2:value_0001 = 0001\n'))
     turn('packet-'+str(index), calls)
+for number,required in enumerate(m['source_context']['seats']['opus']['required_source_ranges']):
+    for segment in required['segments']:
+        path=session/segment['artifact']; identity=f'segment-{number}-{segment["index"]}'
+        turn(identity,[(identity,'Read',{'file_path':str(path)},path.read_text())])
 index=session / f"r{m['label']}-evidence.md"
 turn('evidence-index', [('index-call','Read',{'file_path':str(index)},index.read_text())])
 if m['source_context']['seats']['opus']['source_read_required']:
-    path=root/'src/large.py'; turn('source-later',[
-        ('source-call','Read',{'file_path':str(path),'offset':1,'limit':1},path.read_text().splitlines(keepends=True)[0])])
+    target=re.search(r'^Required post-index original-source target: (.+):(\d+)-(\d+) '
+                     r'tree (\w+) blob (\w+) content SHA-256 (\w+) reasons ',
+                     (session/f"r{m['label']}-opus.prompt.md").read_text(),re.M)
+    assert target
+    path,start,end,tree,oid,content_hash=target.groups(); start,end=int(start),int(end)
+    spec=importlib.util.spec_from_file_location('claude_chunk_evidence',sys.argv[5])
+    evidence=importlib.util.module_from_spec(spec); spec.loader.exec_module(evidence)
+    repository=evidence.Repository(session.resolve()); entry=repository.entries(tree)[path]
+    assert tree == m['snapshot_tree'] and entry[1] == oid
+    lines=evidence.split_lf_lines(repository.blob(entry))
+    assert hashlib.sha256(b''.join(lines[start-1:end])).hexdigest() == content_hash
+    for first in range(start,end+1,240):
+        last=min(first+239,end); identity='source-'+str(first)
+        turn(identity,[(identity,'Read',{'file_path':str(root/path),'offset':first,'limit':last-first+1},
+                        b''.join(lines[first-1:last]).decode())])
 out.write_text(''.join(json.dumps(event)+'\n' for event in events))
 PY
     }
@@ -739,8 +796,8 @@ PY
       "$S/r24-opus.read-audit.json" '"advisories":\[[^]]*"code":"evidence-read-order"'
 
     write_provider_batch() {
-      python3 - "$manifest" "$S/r24-$1.stream.ndjson" "$R" "$1" "$2" <<'PY'
-import json, pathlib, sys
+      python3 - "$manifest" "$S/r24-$1.stream.ndjson" "$R" "$1" "$2" "$SCRIPTS/rev-evidence.py" <<'PY'
+import hashlib, importlib.util, json, pathlib, re, sys
 m=json.load(open(sys.argv[1])); out=pathlib.Path(sys.argv[2]); root=pathlib.Path(sys.argv[3])
 seat=sys.argv[4]; batch=int(sys.argv[5]); session=pathlib.Path(sys.argv[1]).parent
 adapter='claude'
@@ -766,13 +823,30 @@ for index,row in enumerate(context['shards'],1):
     path=session/row['artifact']; data={'file_path':str(path)}
     name='Read'; content=path.read_text()
     emit([('packet-'+str(index),name,data,content)], 'packet-'+str(index))
+for number,required in enumerate(context['required_source_ranges']):
+    for segment in required['segments']:
+        path=session/segment['artifact']; identity=f'segment-{number}-{segment["index"]}'
+        emit([(identity,'Read',{'file_path':str(path)},path.read_text())],identity)
 index=session / f"r{m['label']}-evidence.md"
 emit([('evidence-index','Read',{'file_path':str(index)},index.read_text())], 'evidence-index')
 if context['source_read_required']:
-    path=root/'src/large.py'; raw=path.read_text().splitlines(keepends=True)[0]
-    data={'file_path':str(path),'offset':1,'limit':1}
-    content='1\t'+raw.rstrip('\n')
-    emit([('source', 'Read', data, content)], 'source')
+    target=re.search(r'^Required post-index original-source target: (.+):(\d+)-(\d+) '
+                     r'tree (\w+) blob (\w+) content SHA-256 (\w+) reasons ',
+                     (session/f"r{m['label']}-{seat}.prompt.md").read_text(),re.M)
+    assert target
+    path,start,end,tree,oid,content_hash=target.groups(); start,end=int(start),int(end)
+    spec=importlib.util.spec_from_file_location('batch_chunk_evidence',sys.argv[6])
+    evidence=importlib.util.module_from_spec(spec); spec.loader.exec_module(evidence)
+    repository=evidence.Repository(session.resolve()); entry=repository.entries(tree)[path]
+    assert tree == m['snapshot_tree'] and entry[1] == oid
+    lines=evidence.split_lf_lines(repository.blob(entry))
+    assert hashlib.sha256(b''.join(lines[start-1:end])).hexdigest() == content_hash
+    for first in range(start,end+1,240):
+        last=min(first+239,end); identity='source-'+str(first)
+        data={'file_path':str(root/path),'offset':first,'limit':last-first+1}
+        content='\n'.join(str(line)+'\t'+raw.decode().rstrip('\n')
+                          for line,raw in enumerate(lines[first-1:last],first))
+        emit([(identity,'Read',data,content)],identity)
 out.write_text(''.join(json.dumps(event)+'\n' for event in events))
 PY
     }

@@ -6,6 +6,7 @@ on:
 jobs:
   verify:
     strategy:
+      fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
@@ -29,9 +30,33 @@ jobs:
         run: |
           python3 - <<'PY'
           import json
+          import os
           from pathlib import Path
+          import shutil
+          import stat
 
           root = Path.home() / ".cache/review-council/verification"
+          diagnostics = Path(os.environ["RUNNER_TEMP"]) / "council-verifier-diagnostics"
+          diagnostics.mkdir(parents=True, exist_ok=True)
+          sources = sorted(root.glob("*/logs/*.log")) + sorted(root.glob("*/receipt.json"))
+          copied_bytes = 0
+          if len(sources) > 128:
+              print("diagnostic file limit reached; some verifier logs were not copied")
+          for path in sources[:128]:
+              relative = path.relative_to(root)
+              metadata = path.lstat()
+              if (any((root / Path(*relative.parts[:end])).is_symlink()
+                      for end in range(1, len(relative.parts) + 1))
+                      or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1):
+                  print("skipping redirected diagnostic: " + str(relative))
+                  continue
+              if metadata.st_size > 64 * 1024 * 1024 or copied_bytes + metadata.st_size > 256 * 1024 * 1024:
+                  print("diagnostic byte limit reached; not copying " + str(relative))
+                  continue
+              target = diagnostics / relative
+              target.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copyfile(path, target)
+              copied_bytes += metadata.st_size
           for path in sorted(root.glob("*/logs/*.log")):
               text = path.read_text(errors="replace")
               lines = text.splitlines()
@@ -50,3 +75,11 @@ jobs:
                       print(str(len(failures) - 10) + " additional failure contexts omitted")
                   print(text[-20000:])
           PY
+      - name: Upload failed verifier diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: council-verifier-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/council-verifier-diagnostics
+          if-no-files-found: warn
+          retention-days: 7

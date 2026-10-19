@@ -28,7 +28,7 @@ rows = [{'path': 'main.py', 'blob_tree': '1' * 40, 'blob_mode': '100644', 'blob_
 manifest = {'source_context': {'snapshot_tree': '1' * 40, 'base_tree': '2' * 40, 'seats': {
     'sol': {'shards': [], 'omitted_source_ranges': rows, 'required_source_ranges': []}}}}
 with tempfile.TemporaryDirectory() as session:
-    module.validate_source_context_snapshot(Repo(), Path(session), manifest)
+    module.validate_source_context_bytes(Repo(), Path(session), manifest)
 assert Repo.listings == 1, Repo.listings
 PY
   assert_eq "source snapshot validation lists each tree once, not once per range" "$?" 0

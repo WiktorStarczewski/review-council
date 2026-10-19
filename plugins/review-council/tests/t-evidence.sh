@@ -3,14 +3,18 @@
 test_evidence_contract() {
   python3 - "$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" && pwd)/rev-evidence.py" <<'PY'
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
 
 script = sys.argv[1]
+spec = importlib.util.spec_from_file_location('evidence', script)
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
     root = Path(tmp) / 'repo'; root.mkdir()
     session = Path(tmp) / 'session'; session.mkdir()
@@ -32,26 +36,50 @@ with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
         proof_keys = ('path', 'line_start', 'line_end', 'blob_tree', 'blob_oid', 'content_sha256')
         proofs = [{key: required[key] for key in proof_keys}
                   for required in packet['required_source_ranges']]
-        ranges = [{'path': row['path'], 'line_start': row['line_start'], 'line_end': row['line_end'], 'origin': 'packet'}
-                  for shard in packet['shards'] for row in shard['ranges']]
+        repository = module.Repository(session.resolve())
+        entries = repository.entries(manifest['snapshot_tree'])
+        packet_ranges = [{'path': row['path'], 'line_start': row['line_start'],
+                          'line_end': row['line_end'], 'origin': 'packet'}
+                         for shard in packet['shards'] for row in shard['ranges']
+                         if row['blob_tree'] == manifest['snapshot_tree']]
         tool_ranges = []
+        source_calls = 0
+        source_bytes = 0
+        source_output_sizes = []
         for required in packet['required_source_ranges']:
-            tool_ranges.extend({'path': required['path'], 'line_start': segment['line_start'],
-                                'line_end': segment['line_end'], 'origin': 'tool'}
-                               for segment in required['segments'])
-        if packet['source_read_required'] and not tool_ranges:
-            if packet['omitted_source_ranges']:
-                omitted = packet['omitted_source_ranges'][0]
-                tool_ranges.append({'path': omitted['path'],
-                                    'line_start': omitted['line_start'],
-                                    'line_end': omitted['line_start'], 'origin': 'tool'})
-            else:
-                component = next(component for component in manifest['components']
-                                 if component['id'] == packet['components'][0])
-                tool_ranges.append({'path': component['boundary'][0], 'line_start': 1,
-                                    'line_end': 1, 'origin': 'tool'})
-        ranges.extend(tool_ranges); source_calls = len(tool_ranges)
-        ranges.sort(key=lambda row: (row['path'], row['line_start'], row['line_end'], row['origin']))
+            for segment in required['segments']:
+                raw = (session / segment['artifact']).read_bytes()
+                assert len(raw) == segment['raw_bytes']
+                assert module.digest(raw) == segment['content_sha256']
+                source_calls += 1; source_bytes += len(raw)
+                source_output_sizes.append(len(raw))
+                if required['blob_tree'] == manifest['snapshot_tree']:
+                    tool_ranges.append({'path': required['path'], 'line_start': segment['line_start'],
+                                        'line_end': segment['line_end'], 'origin': 'tool'})
+        post_index_ranges = []
+        if packet['source_read_required']:
+            prompt = (session / f'r{label}-{seat}.prompt.md').read_text()
+            match = re.search(r'^Required post-index original-source target: (.+):(\d+)-(\d+) '
+                              r'tree (\w+) blob (\w+) content SHA-256 (\w+) reasons ', prompt, re.M)
+            assert match, 'required current target must be rendered'
+            path, start, end, tree, oid, content_hash = match.groups()
+            start, end = int(start), int(end)
+            assert tree == manifest['snapshot_tree'] and entries[path][1] == oid
+            lines = module.split_lf_lines(repository.blob(entries[path]))
+            assert 1 <= start <= end <= len(lines)
+            assert module.digest(b''.join(lines[start - 1:end])) == content_hash
+            for first in range(start, end + 1, 240):
+                last = min(first + 239, end)
+                post_index_ranges.append({'path': path, 'line_start': first,
+                                          'line_end': last, 'origin': 'tool'})
+                size = len(b''.join(lines[first - 1:last]))
+                source_calls += 1; source_bytes += size; source_output_sizes.append(size)
+        tool_ranges.extend(post_index_ranges)
+        ranges = sorted({(row['path'], row['line_start'], row['line_end'], row['origin'])
+                         for row in packet_ranges + tool_ranges})
+        ranges = [{'path': path, 'line_start': start, 'line_end': end, 'origin': origin}
+                  for path, start, end, origin in ranges]
+        post_index_ranges = [row for row in ranges if row['origin'] == 'tool' and row in post_index_ranges]
         stream = session / f'r{label}-{seat}.stream.ndjson'; stream.write_text('{}\n')
         prompt = session / f'r{label}-{seat}.prompt.md'; result = session / f'r{label}-{seat}.json'
         patch = Path(assignment['patch']); patch_raw = patch.read_bytes(); patch_lines = len(patch_raw.splitlines())
@@ -60,6 +88,9 @@ with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
         patch_ranges = [] if chunks else [{'line_start': start, 'line_end': min(start + 239, patch_lines)}
                                           for start in range(1, patch_lines + 1, 240)]
         patch_reads = 0 if not patch_raw else len(chunks) if chunks else max(1, len(patch_ranges))
+        patch_output_sizes = ([chunk['bytes'] for chunk in chunks] if chunks else [
+            len(b''.join(patch_raw.splitlines(keepends=True)[row['line_start'] - 1:row['line_end']]))
+            for row in patch_ranges])
         calls = max(1, len(packet['shards']) + source_calls + patch_reads)
         packet_bytes = sum(shard['bytes'] for shard in packet['shards'])
         audit = {'schema_version':2, 'status':'valid', 'narrow':assignment['scope'] != 'full', 'adapter':'agent',
@@ -68,11 +99,12 @@ with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
                  'result_sha256':hashlib.sha256(result.read_bytes()).hexdigest(),
                  'evidence_manifest_sha256':hashlib.sha256((session / f'r{label}-evidence.manifest.json').read_bytes()).hexdigest(),
                  'violations':[], 'tool_calls':calls, 'tool_turns':calls,
-                 'tool_output_bytes':packet_bytes + source_calls + len(patch_raw),
-                 'max_tool_output_bytes':max([shard['bytes'] for shard in packet['shards']] + [source_calls, len(patch_raw)]),
+                 'tool_output_bytes':packet_bytes + source_bytes + len(patch_raw),
+                 'max_tool_output_bytes':max([0] + [shard['bytes'] for shard in packet['shards']] + source_output_sizes + patch_output_sizes),
                  'recognized_tool_calls':calls, 'source_read_calls':source_calls,
                  'packet_shards':len(packet['shards']), 'packet_bytes':packet_bytes,
-                 'packet_ranges':sum(1 for row in ranges if row['origin'] == 'packet'),
+                 'packet_ranges':sum(len(shard['ranges']) for shard in packet['shards']),
+                 'post_index_source_ranges':post_index_ranges,
                  'opened_source_ranges':sum(1 for row in ranges if row['origin'] == 'tool'),
                  'finding_citations':0, 'source_ranges':ranges,
                  'required_source_ranges_covered':len(packet['required_source_ranges']),
@@ -758,6 +790,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -778,33 +811,64 @@ def write_agent_audit(session, label, seat):
     proof_keys = ('path', 'line_start', 'line_end', 'blob_tree', 'blob_oid', 'content_sha256')
     proofs = [{key: required[key] for key in proof_keys}
               for required in packet['required_source_ranges']]
-    ranges = [{'path': row['path'], 'line_start': row['line_start'], 'line_end': row['line_end'], 'origin': 'packet'}
-              for shard in packet['shards'] for row in shard['ranges']]
+    repository = module.Repository(session.resolve())
+    entries = repository.entries(manifest['snapshot_tree'])
+    packet_ranges = [{'path': row['path'], 'line_start': row['line_start'],
+                      'line_end': row['line_end'], 'origin': 'packet'}
+                     for shard in packet['shards'] for row in shard['ranges']
+                     if row['blob_tree'] == manifest['snapshot_tree']]
+    tool_ranges = []
+    source_calls = 0
+    source_bytes = 0
+    source_output_sizes = []
+    for required in packet['required_source_ranges']:
+        for segment in required['segments']:
+            raw = (session / segment['artifact']).read_bytes()
+            assert len(raw) == segment['raw_bytes']
+            assert module.digest(raw) == segment['content_sha256']
+            source_calls += 1; source_bytes += len(raw)
+            source_output_sizes.append(len(raw))
+            if required['blob_tree'] == manifest['snapshot_tree']:
+                tool_ranges.append({'path': required['path'], 'line_start': segment['line_start'],
+                                    'line_end': segment['line_end'], 'origin': 'tool'})
+    post_index_ranges = []
+    if packet['source_read_required']:
+        prompt = (session / f'r{label}-{seat}.prompt.md').read_text()
+        match = re.search(r'^Required post-index original-source target: (.+):(\d+)-(\d+) '
+                          r'tree (\w+) blob (\w+) content SHA-256 (\w+) reasons ', prompt, re.M)
+        assert match, 'required current target must be rendered'
+        path, start, end, tree, oid, content_hash = match.groups()
+        start, end = int(start), int(end)
+        assert tree == manifest['snapshot_tree'] and entries[path][1] == oid
+        lines = module.split_lf_lines(repository.blob(entries[path]))
+        assert 1 <= start <= end <= len(lines)
+        assert module.digest(b''.join(lines[start - 1:end])) == content_hash
+        for first in range(start, end + 1, 240):
+            last = min(first + 239, end)
+            post_index_ranges.append({'path': path, 'line_start': first,
+                                      'line_end': last, 'origin': 'tool'})
+            size = len(b''.join(lines[first - 1:last]))
+            source_calls += 1; source_bytes += size; source_output_sizes.append(size)
+    tool_ranges.extend(post_index_ranges)
     findings = json.loads((session / f'r{label}-{seat}.json').read_text())['findings']
     missing = [finding for finding in findings if not any(
         row['path'] == finding['file'] and row['line_start'] <= finding['line_end']
-        and finding['line_start'] <= row['line_end'] for row in ranges)]
-    tool_ranges = []
-    for required in packet['required_source_ranges']:
-        tool_ranges.extend({'path': required['path'], 'line_start': segment['line_start'],
-                            'line_end': segment['line_end'], 'origin': 'tool'}
-                           for segment in required['segments'])
-    if packet['source_read_required'] and not tool_ranges:
-        if packet['omitted_source_ranges']:
-            omitted = packet['omitted_source_ranges'][0]
-            tool_ranges.append({'path': omitted['path'], 'line_start': omitted['line_start'],
-                                'line_end': omitted['line_start'], 'origin': 'tool'})
-        else:
-            component = next(component for component in manifest['components']
-                             if component['id'] == packet['components'][0])
-            tool_ranges.append({'path': component['boundary'][0], 'line_start': 1,
-                                'line_end': 1, 'origin': 'tool'})
-    tool_ranges.extend({'path': finding['file'], 'line_start': finding['line_start'],
-                        'line_end': finding['line_end'], 'origin': 'tool'} for finding in missing)
-    ranges.extend(tool_ranges)
-    ranges = sorted({(row['path'], row['line_start'], row['line_end'], row['origin']) for row in ranges})
+        and finding['line_start'] <= row['line_end'] for row in packet_ranges + tool_ranges)]
+    for finding in missing:
+        assert finding['file'] in entries, 'historical-only findings cannot earn current citation proof'
+        lines = module.split_lf_lines(repository.blob(entries[finding['file']]))
+        assert 1 <= finding['line_start'] <= finding['line_end'] <= len(lines)
+        for first in range(finding['line_start'], finding['line_end'] + 1, 240):
+            last = min(first + 239, finding['line_end'])
+            row = {'path': finding['file'], 'line_start': first, 'line_end': last, 'origin': 'tool'}
+            tool_ranges.append(row); post_index_ranges.append(row)
+            size = len(b''.join(lines[first - 1:last]))
+            source_calls += 1; source_bytes += size; source_output_sizes.append(size)
+    ranges = sorted({(row['path'], row['line_start'], row['line_end'], row['origin'])
+                     for row in packet_ranges + tool_ranges})
     ranges = [{'path': path, 'line_start': start, 'line_end': end, 'origin': origin}
               for path, start, end, origin in ranges]
+    post_index_ranges = [row for row in ranges if row['origin'] == 'tool' and row in post_index_ranges]
     stream = session / f'r{label}-{seat}.stream.ndjson'; stream.write_text('{}\n')
     prompt = session / f'r{label}-{seat}.prompt.md'; result = session / f'r{label}-{seat}.json'
     packet_bytes = sum(shard['bytes'] for shard in packet['shards'])
@@ -814,7 +878,10 @@ def write_agent_audit(session, label, seat):
     patch_ranges = [] if chunks else [{'line_start': start, 'line_end': min(start + 239, patch_lines)}
                                       for start in range(1, patch_lines + 1, 240)]
     patch_reads = 0 if not patch_raw else len(chunks) if chunks else max(1, len(patch_ranges))
-    calls = max(1, len(packet['shards']) + len(tool_ranges) + patch_reads)
+    patch_output_sizes = ([chunk['bytes'] for chunk in chunks] if chunks else [
+        len(b''.join(patch_raw.splitlines(keepends=True)[row['line_start'] - 1:row['line_end']]))
+        for row in patch_ranges])
+    calls = max(1, len(packet['shards']) + source_calls + patch_reads)
     cited = sum(any(row['path'] == finding['file'] and row['line_start'] <= finding['line_end']
                     and finding['line_start'] <= row['line_end'] for row in ranges) for finding in findings)
     audit = {'schema_version':2, 'status':'valid', 'narrow':assignment['scope'] != 'full',
@@ -822,11 +889,12 @@ def write_agent_audit(session, label, seat):
              'prompt_sha256':module.digest(prompt.read_bytes()), 'stream_sha256':module.digest(stream.read_bytes()),
              'result_sha256':module.digest(result.read_bytes()),
              'evidence_manifest_sha256':module.digest(manifest_path.read_bytes()), 'violations':[],
-             'tool_calls':calls, 'tool_turns':calls, 'tool_output_bytes':packet_bytes + len(tool_ranges) + len(patch_raw),
-             'max_tool_output_bytes':max([shard['bytes'] for shard in packet['shards']] + [len(tool_ranges), len(patch_raw)]),
-             'recognized_tool_calls':calls, 'source_read_calls':len(tool_ranges),
+             'tool_calls':calls, 'tool_turns':calls, 'tool_output_bytes':packet_bytes + source_bytes + len(patch_raw),
+             'max_tool_output_bytes':max([0] + [shard['bytes'] for shard in packet['shards']] + source_output_sizes + patch_output_sizes),
+             'recognized_tool_calls':calls, 'source_read_calls':source_calls,
              'packet_shards':len(packet['shards']), 'packet_bytes':packet_bytes,
-             'packet_ranges':sum(row['origin'] == 'packet' for row in ranges),
+             'packet_ranges':sum(len(shard['ranges']) for shard in packet['shards']),
+             'post_index_source_ranges':post_index_ranges,
              'opened_source_ranges':sum(row['origin'] == 'tool' for row in ranges),
              'finding_citations':cited, 'source_ranges':ranges,
              'required_source_ranges_covered':len(packet['required_source_ranges']),
@@ -1413,6 +1481,19 @@ def source_context_packets():
         call('prepare', session, 'badflag', '--phase', 'discovery', env=bad_env, good=False)
 
 def provider_visible_source_packet_limit():
+    for content in ('', 'plain', '"\\', '\b\f\n\r\t', ''.join(map(chr, range(32))),
+                    '\x7f', '\u00e9\u6f22\U0001f600'):
+        options = {'sort_keys': True, 'ensure_ascii': True, 'indent': 2}
+        assert module.json_content_bytes(content) == len(json.dumps(content, **options).encode()) - 2
+        payload = {'schema_version': 1, 'snapshot_tree': '1' * 40, 'base_tree': '2' * 40,
+                   'seat': 'sol', 'shard_index': 1, 'shard_count': 3,
+                   'entries': [{'content': content, 'path': 'main.py'}]}
+        raw = (json.dumps(payload, **options) + '\n').encode()
+        measured = module.source_payload_metrics(
+            '1' * 40, '2' * 40, 'sol', 1, 3, [{'content': '', 'path': 'main.py'}],
+            module.json_content_bytes(content))
+        assert measured == (len(raw), len(raw) + len(raw.splitlines()) * 8)
+
     class Repo:
         def __init__(self, raw):
             self.raw = raw
@@ -1461,7 +1542,7 @@ def provider_visible_source_packet_limit():
         }
         evidence['source_context'] = context
         module.validate_source_context(session, manifest, evidence)
-        module.validate_source_context_snapshot(Repo(raw), session, manifest)
+        module.validate_source_context_bytes(Repo(raw), session, manifest)
 
 def source_context_prefers_named_production_and_maps_gates():
     class Repo:
@@ -2145,7 +2226,7 @@ def receipt_read_audits():
             ('recognized_tool_calls',0,'invalid read audit counters'),
             ('packet_bytes',0,'read audit evidence coverage mismatch'),
             ('finding_citations',1,'read audit evidence coverage mismatch'),
-            ('source_ranges',[],'read audit did not open every assigned source context shard'),
+            ('source_ranges',[],'read audit packet ranges do not match complete assigned shards'),
         ]
         for key, bad, error in cases:
             path.write_text(json.dumps(dict(audit, **{key:bad})))
@@ -2563,16 +2644,32 @@ def review_origin_counts_the_reviews_own_lines():
         def cite(path, start, end=None):
             return {'severity': 'P3', 'file': path, 'line_start': start, 'line_end': end or start,
                     'claim': f'{path}:{start}', 'evidence': 'e', 'suggested_fix': 'f', 'confidence': 0.5}
+        def write_metric_input(label, manifest, routing):
+            manifest_path = session / f'r{label}-evidence.manifest.json'
+            result_hashes = {}
+            for seat in manifest['assignments']:
+                chosen = routing[seat]
+                name = f"r{chosen['label']}-{chosen['seat']}.json"
+                result_hashes[name] = module.digest((session / name).read_bytes())
+            # Hash-bound metric input only; its filename is fixed by the consumer API.
+            payload = {
+                'fixture_kind': 'review-origin-metric-input',
+                'manifest': manifest_path.name,
+                'manifest_sha256': module.digest(manifest_path.read_bytes()),
+                'snapshot_tree': manifest['snapshot_tree'],
+                'selected_generations': routing,
+                'results': result_hashes,
+            }
+            (session / f'r{label}-coverage.receipt.json').write_bytes(module.encoded(payload))
         def seal(label, cited, failed=None, executor=None):
             manifest = prepare(label, 'discovery')
             path = session / f'r{label}-evidence.manifest.json'
+            routing = {seat: {'label': label, 'seat': seat} for seat in manifest['assignments']}
             for seat in manifest['assignments']:
                 (session / f'r{label}-{seat}.prompt.md').write_text(call('render', path, seat))
                 findings = cited.get(seat, [])
                 (session / f'r{label}-{seat}.json').write_text(json.dumps({'summary': 's', 'findings': findings}))
                 (session / f'r{label}-{seat}.exit').write_text('0\n')
-                write_agent_audit(session, label, seat)
-            replacement = []
             if failed:
                 stem = session / f'r{label}-{failed}'
                 Path(str(stem) + '.json').rename(Path(str(stem) + '.audit-invalid.json'))
@@ -2583,9 +2680,8 @@ def review_origin_counts_the_reviews_own_lines():
                 (session / f'r{label}x-{executor}.prompt.md').write_text(call('render', child_path, executor))
                 (session / f'r{label}x-{executor}.json').write_text(json.dumps({'summary': 's', 'findings': [cite('main.py', 2)]}))
                 (session / f'r{label}x-{executor}.exit').write_text('0\n')
-                write_agent_audit(session, label + 'x', executor)
-                replacement = ['--replacement', failed + '=' + label + 'x']
-            call('receipt', session, label, *replacement)
+                routing[failed] = {'label': label + 'x', 'seat': executor}
+            write_metric_input(label, manifest, routing)
         def origin(label):
             return json.loads(call('review-origin', session, label))
         def fix(label, **extra):

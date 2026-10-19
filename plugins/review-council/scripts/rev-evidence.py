@@ -998,9 +998,18 @@ def brace_spans(lines, extension):
     return [] if stack else spans
 
 
-def facts(repo, tree, hunks, categories, base_tree=None):
-    entries = {p: e for p, e in repo.entries(tree).items() if repo.scoped(p)}
-    base_entries = ({p: e for p, e in repo.entries(base_tree).items() if repo.scoped(p)}
+def source_tree_entries(repo, tree, cache):
+    if tree not in cache:
+        cache[tree] = repo.entries(tree)
+    return cache[tree]
+
+
+def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
+    entries_by_tree = {} if entries_by_tree is None else entries_by_tree
+    entries = {p: e for p, e in source_tree_entries(repo, tree, entries_by_tree).items()
+               if repo.scoped(p)}
+    base_entries = ({p: e for p, e in source_tree_entries(repo, base_tree, entries_by_tree).items()
+                     if repo.scoped(p)}
                     if base_tree else {})
     seed_paths = {h['path'] for h in hunks}
     texts = {}
@@ -2411,10 +2420,91 @@ def grouped_plan_source_promotions(assignment, plan_clusters, delivered, omitted
         selected.update(min(choices)[-1])
 
 
-def source_context(repo, snapshot, base_tree, evidence, components, assigned, owner, prefix,
-                   enabled=True, plan_clusters=None):
-    entries = repo.entries(snapshot)
-    base_entries = repo.entries(base_tree)
+def repository_source_target(packet, snapshot):
+    """Choose one executable current-source obligation without discarding history."""
+    def eligible(row):
+        return (row['blob_tree'] == snapshot
+                and any(not reason.startswith('gate:') for reason in row['reasons']))
+
+    omitted = [row for row in packet['omitted_source_ranges'] if eligible(row)]
+    delivered = [row for shard in packet['shards'] for row in shard['ranges']]
+    delivered += packet['required_source_ranges']
+    rows = omitted or [row for row in delivered if eligible(row)]
+    if not rows:
+        return None
+    row = min(rows, key=lambda value: (
+        value['priority'], value['path'], value['blob_tree'], value['line_start'],
+        value['line_end']))
+    if row.get('segments'):
+        segment = row['segments'][0]
+        row = dict(row, **{key: segment[key] for key in (
+            'line_start', 'line_end', 'content_sha256')})
+    return row
+
+
+def repository_source_read_required(packet, enabled, snapshot, assignment=None):
+    if not enabled:
+        return bool(packet['components'])
+    rows = [row for shard in packet['shards'] for row in shard['ranges']]
+    rows += packet['required_source_ranges']
+    needs_read = (bool((assignment or {}).get('plan_clusters'))
+                  or any(packet['omitted'].values()) or any(
+                      'declaration:changed-line-anchor' in row['reasons'] for row in rows))
+    return needs_read and repository_source_target(packet, snapshot) is not None
+
+
+def source_target_covered(target, ranges):
+    cursor = target['line_start']
+    for row in sorted((row for row in ranges if row['path'] == target['path']),
+                      key=lambda row: (row['line_start'], row['line_end'])):
+        if row['line_end'] < cursor:
+            continue
+        if row['line_start'] > cursor:
+            return False
+        cursor = max(cursor, row['line_end'] + 1)
+        if cursor > target['line_end']:
+            return True
+    return False
+
+
+def source_context_inputs(repo, snapshot, base_tree, evidence, components, plan_clusters=None,
+                          entries_by_tree=None, blob_lines=None):
+    entries_by_tree = {} if entries_by_tree is None else entries_by_tree
+    entries = source_tree_entries(repo, snapshot, entries_by_tree)
+    base_entries = source_tree_entries(repo, base_tree, entries_by_tree)
+    paths = {path for component in components for path in component['files']}
+    boundaries = {path for component in components for path in component['boundary']}
+    paths.update(row['path'] for kind in ('symbols', 'call_sites', 'related_tests')
+                 for row in evidence[kind] if row['path'] in boundaries)
+    paths.update(gate['path'] for gate in evidence['gates'])
+    paths.update(site['path'] for cluster in plan_clusters or [] for site in cluster['paths'])
+    blobs = {entry: repo.blob(entry) for tree in (entries, base_entries)
+             for path, entry in tree.items() if path in paths and entry[0] in ('100644', '100755')}
+    return entries, base_entries, blobs, {} if blob_lines is None else blob_lines
+
+
+def json_content_bytes(content):
+    return len(content) + sum(
+        1 if match[0] in '"\\\b\f\n\r\t' else 5 if ord(match[0]) <= 0xffff else 11
+        for match in re.finditer(r'["\\\x00-\x1f]|[^\x00-\x7e]', content))
+
+
+def source_payload(snapshot, base_tree, seat, index, count, values):
+    return {'schema_version': 1, 'snapshot_tree': snapshot, 'base_tree': base_tree,
+            'seat': seat, 'shard_index': index, 'shard_count': count, 'entries': values}
+
+
+def source_payload_metrics(snapshot, base_tree, seat, index, count, values, content_bytes):
+    # Escaped source strings add bytes, but no physical JSON lines, to this template.
+    raw = encoded(source_payload(snapshot, base_tree, seat, index, count, values))
+    return len(raw) + content_bytes, predicted_source_visible_bytes(raw) + content_bytes
+
+
+def plan_source_context(snapshot, base_tree, evidence, components, assigned, owner, prefix,
+                        source_inputs, enabled=True, plan_clusters=None):
+    """Plan canonical ranges and packing from frozen inputs without artifact bodies."""
+    entries, base_entries, blobs, blob_lines = source_inputs
+    source_lines_cache = dict(blob_lines)
     hunks_by_path = {}
     for hunk in evidence['hunks']:
         hunks_by_path.setdefault(hunk['path'], []).append(hunk['sha256'])
@@ -2427,15 +2517,14 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
     result = {'schema_version': 3, 'enabled': enabled, 'snapshot_tree': snapshot,
               'base_tree': base_tree, 'max_shard_bytes': SOURCE_CONTEXT_LIMIT,
               'packet_batch_limit': SOURCE_PACKET_BATCH_LIMIT, 'seats': {}}
-    artifacts = {}
 
     generated_caller_cache = {}
     def unchanged_generated_caller(path):
         if path not in generated_caller_cache:
             entry = entries.get(path)
             generated_caller_cache[path] = bool(
-                entry and entry == base_entries.get(path)
-                and classify(path, repo.blob(entry), entry[0]) == 'generated')
+                entry and entry[0] in ('100644', '100755') and entry == base_entries.get(path)
+                and classify(path, blobs[entry], entry[0]) == 'generated')
         return generated_caller_cache[path]
 
     source_choice_cache = {}
@@ -2453,14 +2542,16 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
             return source_choice_cache[cache_key]
         readable = []
         for entry, blob_tree in choices:
-            raw = repo.blob(entry)
+            raw = blobs[entry]
             if raw is OVERSIZED_BLOB or b'\0' in raw:
                 continue
             try:
                 raw.decode('utf-8')
             except UnicodeDecodeError:
                 continue
-            readable.append((entry, split_lf_lines(raw), blob_tree))
+            if entry not in source_lines_cache:
+                source_lines_cache[entry] = split_lf_lines(raw)
+            readable.append((entry, source_lines_cache[entry], blob_tree))
         choice = next((value for value in readable if value[1]), readable[0] if readable else None)
         source_choice_cache[cache_key] = ('source' if choice else 'unrepresentable', choice)
         return source_choice_cache[cache_key]
@@ -2655,6 +2746,7 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
                 target['priority'] = min(target['priority'], row['priority'])
 
         context_entries = []
+        content_costs = {}
         for row in sorted(merged, key=lambda value: value['priority']):
             _, lines, _ = source_choice(row['path'], row['blob_tree'])[1]
             content = b''.join(lines[row['line_start'] - 1:row['line_end']]).decode('utf-8')
@@ -2662,6 +2754,8 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
             for priority, reason in row['reason_rows']:
                 reason_priority[reason] = min(priority, reason_priority.get(reason, priority))
             ids = sorted(row['component_ids'])
+            content_costs[(row['path'], row['blob_tree'], row['line_start'], row['line_end'])] = (
+                json_content_bytes(content))
             context_entries.append({'path': row['path'], 'line_start': row['line_start'],
                                     'line_end': row['line_end'],
                                     'reasons': [reason for reason, _ in sorted(
@@ -2671,24 +2765,24 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
                                     'blob_oid': row['blob_oid'], 'blob_mode': row['blob_mode'],
                                     'blob_tree': row['blob_tree'],
                                     'content_sha256': digest(content.encode()),
-                                    'priority': row['priority'], 'content': content})
+                                    'priority': row['priority']})
 
         limit = 3 if seat == integration or plan_clusters is not None else 1
         shards = []; current = []; current_visible_bytes = 0
 
-        def payload(index, values, count=limit):
-            return {'schema_version': 1, 'snapshot_tree': snapshot, 'base_tree': base_tree,
-                    'seat': seat, 'shard_index': index, 'shard_count': count, 'entries': values}
+        def payload_metrics(index, values, count=limit):
+            extra = sum(content_costs[(row['path'], row['blob_tree'], row['line_start'],
+                                       row['line_end'])] for row in values if row)
+            return source_payload_metrics(snapshot, base_tree, seat, index, count,
+                                          [dict(row, content='') if row else {} for row in values], extra)
 
         for row in context_entries:
             index = len(shards) + 1
-            single_payload = encoded(payload(index, [row]))
-            single_payload_bytes = len(single_payload)
-            single_payload_visible_bytes = predicted_source_visible_bytes(single_payload)
+            single_payload_bytes, single_payload_visible_bytes = payload_metrics(index, [row])
             if current:
                 continuation_visible_bytes = (
-                    predicted_source_visible_bytes(encoded(payload(index, [{}, row])))
-                    - predicted_source_visible_bytes(encoded(payload(index, [{}]))))
+                    payload_metrics(index, [{}, row])[1]
+                    - payload_metrics(index, [{}])[1])
                 trial_visible_bytes = current_visible_bytes + continuation_visible_bytes
             else:
                 trial_visible_bytes = single_payload_visible_bytes
@@ -2699,9 +2793,7 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
             if current and len(shards) + 1 < limit:
                 shards.append(current); current = []
                 index = len(shards) + 1
-                single_payload = encoded(payload(index, [row]))
-                single_payload_bytes = len(single_payload)
-                single_payload_visible_bytes = predicted_source_visible_bytes(single_payload)
+                single_payload_bytes, single_payload_visible_bytes = payload_metrics(index, [row])
                 if single_payload_visible_bytes <= SOURCE_CONTEXT_LIMIT:
                     current = [row]
                     current_visible_bytes = single_payload_visible_bytes
@@ -2733,13 +2825,11 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
             if index in promotion_cache:
                 return promotion_cache[index]
             _, source_lines, _ = source_choice(row['path'], row['blob_tree'])[1]
-            content = b''.join(source_lines[row['line_start'] - 1:row['line_end']]).decode('utf-8')
-            payload_entry = dict(row, content=content)
-            raw_payload = encoded(payload(1, [payload_entry], 1))
+            payload_bytes, visible_bytes = payload_metrics(1, [row], 1)
             required = dict(
                 row,
-                required_payload_bytes=len(raw_payload),
-                required_payload_predicted_visible_bytes=predicted_source_visible_bytes(raw_payload),
+                required_payload_bytes=payload_bytes,
+                required_payload_predicted_visible_bytes=visible_bytes,
                 segments=partition_source_segments(
                     source_lines, row['line_start'], row['line_end']),
             )
@@ -2766,24 +2856,20 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
         count = len(shards)
         for index, values in enumerate(shards, 1):
             name = f'{prefix}-{seat}-source-context-{index}.json'
-            raw = encoded(payload(index, values, count))
-            artifacts[name] = raw
+            payload_bytes, visible_bytes = payload_metrics(index, values, count)
             ranges = [{key: value for key, value in row.items() if key != 'content'} for row in values]
-            shard_rows.append({'artifact': name, 'sha256': digest(raw), 'bytes': len(raw),
-                               'predicted_visible_bytes': predicted_source_visible_bytes(raw),
+            shard_rows.append({'artifact': name, 'bytes': payload_bytes,
+                               'predicted_visible_bytes': visible_bytes,
                                'entries': len(values), 'ranges': ranges})
         required_ranges = sorted(
             required_ranges,
             key=lambda row: (row['path'], row['blob_tree'], row['line_start'],
                              row['line_end'], row['priority']))
         for range_index, required in enumerate(required_ranges, 1):
-            _, source_lines, _ = source_choice(required['path'], required['blob_tree'])[1]
             for segment in required['segments']:
                 name = (f'{prefix}-{seat}-source-segment-{range_index:03d}-'
                         f"{segment['index']:03d}.txt")
-                raw = b''.join(source_lines[segment['line_start'] - 1:segment['line_end']])
                 segment['artifact'] = name
-                artifacts[name] = raw
         # The promotion loop above already bounded what the seat must still open by hand.
         # Publish that exact window list: deriving it from every cited cluster row is what
         # two plan seats got wrong, each stopping a few windows short of the obligation.
@@ -2795,10 +2881,43 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
                                  'omitted_source_ranges': omitted_source_ranges,
                                  'required_source_ranges': required_ranges,
                                  'mandatory_source_windows': mandatory_source_windows,
-                                 'source_read_required': any(omitted.values()) or any(
-                                     'declaration:changed-line-anchor' in row['reasons']
-                                     for row in context_entries)}
-    return result, artifacts
+                                 'source_read_required': False}
+        packet = result['seats'][seat]
+        packet['source_read_required'] = repository_source_read_required(
+            packet, enabled, snapshot, assignment)
+    return result
+
+
+def source_context(repo, snapshot, base_tree, evidence, components, assigned, owner, prefix,
+                   enabled=True, plan_clusters=None):
+    inputs = (source_context_inputs(repo, snapshot, base_tree, evidence, components, plan_clusters)
+              if enabled else ({}, {}, {}, {}))
+    context = plan_source_context(snapshot, base_tree, evidence, components, assigned, owner,
+                                  prefix, inputs, enabled, plan_clusters)
+    blobs = inputs[2]
+    lines = dict(inputs[3])
+
+    def content(row):
+        key = (row['blob_mode'], row['blob_oid'])
+        if key not in lines:
+            lines[key] = split_lf_lines(blobs[key])
+        return b''.join(lines[key][row['line_start'] - 1:row['line_end']])
+
+    artifacts = {}
+    for seat, packet in context['seats'].items():
+        for index, shard in enumerate(packet['shards'], 1):
+            values = [dict(row, content=content(row).decode()) for row in shard['ranges']]
+            raw = encoded(source_payload(snapshot, base_tree, seat, index, len(packet['shards']), values))
+            if (len(raw), predicted_source_visible_bytes(raw)) != (
+                    shard['bytes'], shard['predicted_visible_bytes']):
+                raise ValueError('source packet packing mismatch')
+            shard['sha256'] = digest(raw)
+            artifacts[shard['artifact']] = raw
+        for required in packet['required_source_ranges']:
+            for segment in required['segments']:
+                artifacts[segment['artifact']] = content(dict(
+                    required, line_start=segment['line_start'], line_end=segment['line_end']))
+    return context, artifacts
 
 
 def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None):
@@ -2814,11 +2933,18 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None):
         delivered = [row for shard in packet['shards'] for row in shard['ranges']]
         delivered += packet['required_source_ranges']
         if plan_clusters is not None:
-            direct_calls = len(mandatory_repository_windows(
-                assignment, plan_clusters, delivered))
+            direct_windows = mandatory_repository_windows(assignment, plan_clusters, delivered)
+            target = (repository_source_target(packet, context['snapshot_tree'])
+                      if packet.get('source_read_required') and context.get('snapshot_tree') else None)
+            if target is not None:
+                direct_windows = merge_repository_windows([
+                    *direct_windows, (target['path'], target['line_start'], target['line_end'])])
+            direct_calls = len(direct_windows)
         elif packet.get('source_read_required'):
-            direct_calls = int(bool(packet.get('omitted_source_ranges'))
-                               or not packet['required_source_ranges'])
+            target = (repository_source_target(packet, context['snapshot_tree'])
+                      if context.get('snapshot_tree') else None)
+            direct_calls = ((target['line_end'] - target['line_start'] + READ_LINES) // READ_LINES
+                            if target is not None else 1)
         else:
             direct_calls = 0
         patch_turns = (patch_calls + batch - 1) // batch
@@ -2863,11 +2989,11 @@ def task_capacity_errors(capacity):
     return errors
 
 
-def validate_source_context_snapshot(repo, session, manifest):
+def validate_source_context_bytes(repo, session, manifest, entries_by_tree=None, blob_lines=None):
     """Bind recorded source packet ranges to their exact snapshot blobs."""
     context = manifest['source_context']
-    entries_by_tree = {}
-    blob_lines = {}
+    entries_by_tree = {} if entries_by_tree is None else entries_by_tree
+    blob_lines = {} if blob_lines is None else blob_lines
 
     def expected_bytes(row):
         tree = row['blob_tree']
@@ -2883,6 +3009,8 @@ def validate_source_context_snapshot(repo, session, manifest):
             if raw is OVERSIZED_BLOB:
                 raise ValueError('source context blob is oversized: ' + row['path'])
             blob_lines[key] = split_lf_lines(raw)
+        if not 1 <= row['line_start'] <= row['line_end'] <= len(blob_lines[key]):
+            raise ValueError('source context blob identity mismatch: ' + row['path'])
         return b''.join(blob_lines[key][row['line_start'] - 1:row['line_end']])
 
     for seat, packet in context['seats'].items():
@@ -2900,14 +3028,12 @@ def validate_source_context_snapshot(repo, session, manifest):
                 key: value for key, value in row.items()
                 if key not in ('required_payload_bytes',
                                'required_payload_predicted_visible_bytes', 'segments')}
-            source_entry['content'] = parent.decode()
-            candidate = encoded({
-                'schema_version': 1, 'snapshot_tree': context['snapshot_tree'],
-                'base_tree': context['base_tree'], 'seat': seat, 'shard_index': 1,
-                'shard_count': 1, 'entries': [source_entry]})
-            if (len(candidate) != row['required_payload_bytes']
-                    or predicted_source_visible_bytes(candidate)
-                    != row['required_payload_predicted_visible_bytes']):
+            source_entry['content'] = ''
+            payload_bytes, visible_bytes = source_payload_metrics(
+                context['snapshot_tree'], context['base_tree'], seat, 1, 1, [source_entry],
+                json_content_bytes(parent.decode()))
+            if (payload_bytes != row['required_payload_bytes']
+                    or visible_bytes != row['required_payload_predicted_visible_bytes']):
                 raise ValueError('required source payload size does not match snapshot: ' + row['path'])
             key = (row['blob_mode'], row['blob_oid'])
             canonical = partition_source_segments(
@@ -2916,7 +3042,8 @@ def validate_source_context_snapshot(repo, session, manifest):
                         for segment in row['segments']]
             if recorded != canonical:
                 raise ValueError('required source segments are not canonical: ' + row['path'])
-            rebuilt = b''
+            rebuilt_hash = hashlib.sha256()
+            rebuilt_bytes = 0
             for segment in row['segments']:
                 part = expected_bytes(dict(row, line_start=segment['line_start'],
                                            line_end=segment['line_end']))
@@ -2927,9 +3054,51 @@ def validate_source_context_snapshot(repo, session, manifest):
                         or len(part) + (segment['line_end'] - segment['line_start'] + 1) \
                         * SOURCE_SEGMENT_PREFIX_RESERVE != segment['predicted_visible_bytes']):
                     raise ValueError('required source segment does not match snapshot: ' + row['path'])
-                rebuilt += part
-            if rebuilt != parent or digest(parent) != row['content_sha256']:
+                rebuilt_hash.update(part)
+                rebuilt_bytes += len(part)
+            if (rebuilt_bytes != len(parent) or rebuilt_hash.hexdigest() != digest(parent)
+                    or digest(parent) != row['content_sha256']):
                 raise ValueError('required source content does not match snapshot: ' + row['path'])
+
+
+def validate_source_context_snapshot(repo, session, manifest, canonical_changes=None):
+    context = manifest['source_context']
+    entries_by_tree = {}
+    blob_lines = {}
+    validate_source_context_bytes(repo, session, manifest, entries_by_tree, blob_lines)
+    if context['enabled']:
+        if canonical_changes is None:
+            _, hunks, categories, _ = repo.changes(manifest['base_tree'], manifest['snapshot_tree'])
+        else:
+            hunks, categories = canonical_changes
+        canonical_facts = facts(repo, manifest['snapshot_tree'], hunks, categories,
+                                manifest['base_tree'], entries_by_tree)
+        canonical_facts['hunks'] = hunks
+        ordered_assignments = {
+            row['seat']: manifest['assignments'][row['seat']]
+            for row in read_json(session / 'roster.json')['seats']
+            if row.get('seat') in manifest['assignments']}
+        clusters = manifest.get('plan', {}).get('clusters')
+        inputs = source_context_inputs(
+            repo, manifest['snapshot_tree'], manifest['base_tree'], canonical_facts,
+            manifest['components'], clusters, entries_by_tree, blob_lines)
+        canonical = plan_source_context(
+            manifest['snapshot_tree'], manifest['base_tree'], canonical_facts,
+            manifest['components'], ordered_assignments, manifest['mechanical_owner'],
+            'r' + manifest['label'], inputs, True, clusters)
+        identity_keys = ('path', 'blob_tree', 'blob_oid', 'blob_mode', 'line_start',
+                         'line_end', 'content_sha256')
+
+        def target_identity(packet):
+            target = repository_source_target(packet, manifest['snapshot_tree'])
+            return {key: target[key] for key in identity_keys} if target is not None else None
+
+        for seat, packet in context['seats'].items():
+            expected = canonical['seats'][seat]
+            if target_identity(packet) != target_identity(expected):
+                raise ValueError('source context target does not match canonical snapshot: ' + seat)
+            if packet['source_read_required'] is not expected['source_read_required']:
+                raise ValueError('invalid source context read requirement: ' + seat)
 
 
 def generation_stem(manifest, generations, seat):
@@ -3332,12 +3501,8 @@ def validate_source_context(session, manifest, evidence):
             reason.split(':', 1)[0] for row in represented_omissions for reason in row['reasons'])
         if any(required_counts[key] > omitted[key] for key in SOURCE_CONTEXT_REASONS):
             raise ValueError('source omission ranges exceed omitted identities')
-        anchor_present = any(
-            'declaration:changed-line-anchor' in row['reasons']
-            for shard in shards for row in shard['ranges']) or any(
-                'declaration:changed-line-anchor' in row['reasons'] for row in required)
-        expected_read_required = (bool(expected_components) if not context['enabled']
-                                  else any(omitted.values()) or anchor_present)
+        expected_read_required = repository_source_read_required(
+            packet, context['enabled'], context['snapshot_tree'], assignment)
         if packet['source_read_required'] is not expected_read_required:
             raise ValueError('invalid source context read requirement: ' + seat)
     for ranges in seen_ranges.values():
@@ -3952,6 +4117,7 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
     capacity_failures = task_capacity_errors(expected_capacity)
     if capacity_failures:
         raise ValueError(capacity_failures[0])
+    canonical_changes = None
     if fresh and not offline:
         repo = Repository(session)
         current, unsafe = repo.snapshot(manifest['source'].get('ref'))
@@ -3960,6 +4126,7 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         if repo.tree(repo.scope['REV_BASE']) != manifest['base_tree']:
             raise ValueError('manifest base does not match pinned review base')
         patches, hunks, categories, _ = repo.changes(manifest['base_tree'], current)
+        canonical_changes = hunks, categories
         if (b''.join(p for _, p in patches) != (session / f'{prefix}-full.patch').read_bytes()
                 or sorted(categories) != manifest['paths'] or hunks != evidence.get('hunks')
                 or sorted(p for p in categories if categories[p] == 'semantic') != manifest['semantic_paths']):
@@ -3971,7 +4138,10 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
             manifest['source']['mode'] == 'worktree')
         if rows != manifest['instructions'] or packet != (session / f'{prefix}-instructions.md').read_bytes():
             raise ValueError('repository instruction coverage mismatch')
-        validate_source_context_snapshot(repo, session, manifest)
+    if not offline:
+        if not fresh:
+            repo = Repository(session)
+        validate_source_context_snapshot(repo, session, manifest, canonical_changes)
     return manifest, digest(raw)
 
 
@@ -4087,36 +4257,15 @@ def audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, r
         raise ValueError('noncanonical read audit source ranges: ' + seat)
     packet_ranges = [row for row in ranges if row['origin'] == 'packet']
     tool_ranges = [row for row in ranges if row['origin'] == 'tool']
-    opened = []
+    context = manifest['source_context']['seats'][seat]
+    opened = context['shards']
     packet_keys = {(row['path'], row['line_start'], row['line_end']) for row in packet_ranges}
-    for shard in manifest['source_context']['seats'][seat]['shards']:
-        shard_keys = {(row['path'], row['line_start'], row['line_end']) for row in shard['ranges']}
-        if shard_keys and shard_keys <= packet_keys:
-            opened.append(shard)
-    expected_packet_keys = {(row['path'], row['line_start'], row['line_end'])
-                            for shard in opened for row in shard['ranges']}
+    expected_packet_keys = {
+        (row['path'], row['line_start'], row['line_end'])
+        for shard in opened for row in shard['ranges']
+        if row['blob_tree'] == manifest['snapshot_tree']}
     if packet_keys != expected_packet_keys:
         raise ValueError('read audit packet ranges do not match complete assigned shards: ' + seat)
-    context = manifest['source_context']['seats'][seat]
-    if len(opened) != len(context['shards']):
-        raise ValueError('read audit did not open every assigned source context shard: ' + seat)
-    required_covered = 0
-    required_intersected = False
-    for required in context['required_source_ranges']:
-        cursor = required['line_start']
-        for row in tool_ranges:
-            if (row['path'] == required['path']
-                    and row['line_start'] <= required['line_end']
-                    and required['line_start'] <= row['line_end']):
-                required_intersected = True
-            if row['path'] != required['path'] or row['line_end'] < cursor:
-                continue
-            if row['line_start'] > cursor:
-                break
-            cursor = max(cursor, row['line_end'] + 1)
-            if cursor > required['line_end']:
-                break
-        required_covered += cursor > required['line_end']
     proof_keys = {'path', 'line_start', 'line_end', 'blob_tree', 'blob_oid', 'content_sha256'}
     proofs = audit.get('required_source_range_proofs')
     if (not isinstance(proofs, list)
@@ -4138,6 +4287,22 @@ def audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, r
     } for row in context['required_source_ranges']), key=proof_order)
     if any(proof not in expected_proofs for proof in proofs):
         raise ValueError('required source range proof identity mismatch: ' + seat)
+    required_covered = sum(
+        proof in proofs and (required['blob_tree'] != manifest['snapshot_tree']
+                            or source_target_covered(required, tool_ranges))
+        for required, proof in zip(sorted(context['required_source_ranges'], key=proof_order),
+                                   expected_proofs))
+    historical_segments = sum(
+        len(required['segments']) for required in context['required_source_ranges']
+        if required['blob_tree'] != manifest['snapshot_tree']
+        and {key: required[key] for key in proof_keys} in proofs)
+    target = (repository_source_target(context, manifest['snapshot_tree'])
+              if manifest['source_context']['enabled'] else None)
+    post_index_ranges = audit.get('post_index_source_ranges', [])
+    if (not isinstance(post_index_ranges, list)
+            or any(row not in tool_ranges for row in post_index_ranges)
+            or post_index_ranges != [row for row in tool_ranges if row in post_index_ranges]):
+        raise ValueError('read audit evidence coverage mismatch: ' + seat)
     plan_name = f"r{manifest['label']}-plan.md" if phase == 'plan' else None
     source_findings = [finding for finding in result_data['findings']
                        if finding['file'] != plan_name]
@@ -4148,27 +4313,28 @@ def audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, r
     boundary_paths = {path for component_id in context['components']
                       for path in component_by_id[component_id]['boundary']}
     boundary_intersected = any(row['path'] in boundary_paths for row in tool_ranges)
-    omitted_intersected = any(
-        row['path'] == omitted['path']
-        and row['line_start'] <= omitted['line_end']
-        and omitted['line_start'] <= row['line_end']
-        for row in tool_ranges for omitted in context['omitted_source_ranges'])
+    required_intersected = any(
+        row['path'] == required['path']
+        and row['line_start'] <= required['line_end']
+        and required['line_start'] <= row['line_end']
+        for row in tool_ranges for required in context['required_source_ranges']
+        if required['blob_tree'] == manifest['snapshot_tree'])
+    source_requirement_met = (
+        source_target_covered(target, post_index_ranges) if target is not None
+        else boundary_intersected or required_intersected)
     if (audit['packet_shards'] != len(opened)
             or audit['packet_bytes'] != sum(shard['bytes'] for shard in opened)
-            or audit['packet_ranges'] != len(packet_ranges)
+            or audit['packet_ranges'] != sum(len(shard['ranges']) for shard in opened)
             or audit['opened_source_ranges'] != len(tool_ranges)
-            or bool(tool_ranges) != bool(audit['source_read_calls'])
+            or bool(tool_ranges or historical_segments) != bool(audit['source_read_calls'])
+            or audit['source_read_calls'] < historical_segments
             or (context['source_read_required']
                 and (audit['source_read_calls'] < 1
-                     or (not omitted_intersected if context['omitted_source_ranges']
-                         else not (boundary_intersected or required_intersected))
-                     or (context['required_source_ranges'] and context['role'] == 'specialist'
-                         and not required_intersected)))
+                     or not source_requirement_met))
             or audit['required_source_ranges_covered'] != required_covered
             or audit['required_source_ranges_covered'] != len(proofs)
-            or (context['role'] == 'integration'
-                and (required_covered != len(context['required_source_ranges'])
-                     or proofs != expected_proofs))
+            or required_covered != len(context['required_source_ranges'])
+            or proofs != expected_proofs
             or audit['finding_citations'] != cited
             or cited != len(source_findings)):
         raise ValueError('read audit evidence coverage mismatch: ' + seat)
@@ -5011,6 +5177,7 @@ def render_panel(args):
     """Render every seat from one manifest read; validate-prompt binds the embedded hash."""
     raw = Path(args.manifest).read_bytes()
     manifest = json.loads(raw)
+    mh = digest(raw)
     output = Path(args.output_dir)
     if output.is_symlink() or not output.is_dir():
         raise ValueError('fragment output is not a directory')
@@ -5018,7 +5185,6 @@ def render_panel(args):
         raise ValueError('duplicate panel seat')
     if args.phase is not None and args.phase != manifest['phase']:
         raise ValueError('evidence manifest phase is ' + str(manifest['phase']) + ', not ' + args.phase)
-    mh = digest(raw)
     for seat in args.seats:
         if not SAFE_NAME.fullmatch(seat):
             raise ValueError('invalid panel seat: ' + seat)
@@ -5193,10 +5359,9 @@ def render_seat(manifest, mh, seat, plan_source):
     print('Evidence navigation index: '
           + str(Path(manifest['session']) / f"r{manifest['label']}-evidence.md"))
     omitted_ranges = context['omitted_source_ranges'] if manifest['source_context']['enabled'] else []
-    if omitted_ranges:
-        row = min(omitted_ranges, key=lambda value: (
-            value['priority'], value['path'], value['blob_tree'], value['line_start'],
-            value['line_end']))
+    row = (repository_source_target(context, manifest['snapshot_tree'])
+           if manifest['source_context']['enabled'] else None)
+    if row is not None and (omitted_ranges or context['source_read_required']):
         target_kind = 'Required' if context['source_read_required'] else 'Optional'
         print(target_kind + ' post-index original-source target: ' + row['path'] + ':'
               + str(row['line_start']) + '-' + str(row['line_end']) + ' tree '
@@ -5204,8 +5369,12 @@ def render_seat(manifest, mh, seat, plan_source):
               + row['content_sha256'] + ' reasons '
               + json.dumps(row['reasons'], ensure_ascii=True))
         print('Additional omitted source identities retained in manifest: '
-              + str(len(omitted_ranges) - 1)
+              + str(len(omitted_ranges) - int(row in omitted_ranges))
               + '. Read them only for a concrete question that could prove or refute a finding.')
+    elif manifest['source_context']['enabled'] and row is None:
+        print('No eligible current snapshot source target: assigned semantic source ranges '
+              + 'are historical-only or absent from the frozen snapshot; '
+              + 'every listed historical packet and source segment remains required.')
     print('Mechanical owner: ' + str(manifest['mechanical_owner']))
     print('After completing the post-patch evidence order, open original source to prove each '
           + 'finding; expand beyond this index when needed.')

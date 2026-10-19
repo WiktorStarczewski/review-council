@@ -201,7 +201,9 @@ test_prompt_evidence_contract() {
 from pathlib import Path
 import sys
 
-Path(sys.argv[1]).write_text(''.join(f'value_{index} = {index}\n' for index in range(300)))
+Path(sys.argv[1]).write_text(''.join(
+    f'def value_{index:03d}():\n    return "{index:03d}{"x" * 64}"\n\n'
+    for index in range(300)))
 PY
     local large_base; large_base=$(git -C "$LARGE_ROOT" rev-parse HEAD)
     printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
@@ -209,47 +211,30 @@ PY
     printf 'many.py\n' > "$LARGE_S/files.txt"
     printf 'many.py\n' > "$LARGE_S/untracked.txt"
     cp "$S/roster.json" "$LARGE_S/roster.json"
-    local large_manifest large_seat large_bundle omitted_count target_line large_prompt large_words
+    local large_manifest large_seat large_bundle omitted_count target_start target_end large_prompt large_words
     large_manifest=$(REV_PATCH_CHUNKS=1 REV_SOURCE_CONTEXT=1 \
       python3 "$SCRIPTS/rev-evidence.py" prepare "$LARGE_S" many --phase risk \
       "${assignments[@]}") || return
-    read -r large_seat large_bundle omitted_count target_line < <(python3 - "$large_manifest" "$LARGE_ROOT" <<'PY'
-import hashlib, json, pathlib, sys
+    read -r large_seat large_bundle omitted_count target_start target_end < <(python3 - "$large_manifest" <<'PY'
+import json, pathlib, sys
 
-manifest_path = pathlib.Path(sys.argv[1]); session = manifest_path.parent
-manifest = json.loads(manifest_path.read_text())
-evidence_path = session / 'rmany-evidence.json'
-evidence = json.loads(evidence_path.read_text())
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
 candidates = []
 for seat, packet in manifest['source_context']['seats'].items():
-    for shard in packet['shards']:
-        for row in shard['ranges']:
-            if row['path'] == 'many.py':
-                candidates.append((seat, packet, row))
-seat, packet, template = candidates[0]
-lines = (pathlib.Path(sys.argv[2]) / 'many.py').read_bytes().splitlines(keepends=True)
-used = [(row['line_start'], row['line_end']) for shard in packet['shards'] for row in shard['ranges']]
-used += [(row['line_start'], row['line_end']) for row in packet['required_source_ranges']]
-available = [line for line in range(1, len(lines) + 1)
-             if not any(start <= line <= end for start, end in used)][:120]
-assert len(available) == 120
-priority = max(row['priority'] for shard in packet['shards'] for row in shard['ranges']) + 1
-omitted = []
-for offset, line in enumerate(available):
-    row = dict(template, line_start=line, line_end=line, priority=priority + offset,
-               content_sha256=hashlib.sha256(lines[line - 1]).hexdigest())
-    omitted.append(row)
-    for reason in row['reasons']:
-        packet['omitted'][reason.split(':', 1)[0]] += 1
-packet['omitted_source_ranges'] = omitted
-for document in (manifest, evidence):
-    document['source_context']['seats'][seat] = packet
-encode = lambda value: json.dumps(value, sort_keys=True, ensure_ascii=True, indent=2) + '\n'
-evidence_raw = encode(evidence).encode(); evidence_path.write_bytes(evidence_raw)
-manifest['artifacts'][evidence_path.name] = {
-    'sha256': hashlib.sha256(evidence_raw).hexdigest(), 'words': len(evidence_raw.split())}
-manifest_path.write_text(encode(manifest))
-print(seat, manifest['assignments'][seat]['bundle'], len(omitted), omitted[0]['line_start'])
+    rows = [row for row in packet['omitted_source_ranges']
+            if row['path'] == 'many.py' and row['blob_tree'] == manifest['snapshot_tree']
+            and any(not reason.startswith('gate:') for reason in row['reasons'])]
+    if len(rows) >= 100:
+        candidates.append((len(packet['shards']), seat, packet, rows))
+assert candidates, 'real preparation must retain at least 100 current omissions'
+_, seat, packet, rows = min(candidates, key=lambda item: (item[0], item[1]))
+target = min(rows, key=lambda row: (
+    row['priority'], row['path'], row['blob_tree'], row['line_start'], row['line_end']))
+assert len(rows) == len(packet['omitted_source_ranges'])
+assert packet['source_read_required']
+assert target['line_end'] > target['line_start']
+print(seat, manifest['assignments'][seat]['bundle'], len(rows),
+      target['line_start'], target['line_end'])
 PY
 )
     if [ "$omitted_count" -ge 100 ]; then
@@ -263,7 +248,7 @@ PY
     assert_eq "large prompt renders one deterministic required post-index source target" \
       "$(grep -c '^Required post-index original-source target:' "$large_prompt")" 1
     assert_grep "large prompt chooses the highest-priority omitted source identity" \
-      "$large_prompt" "^Required post-index original-source target: many\\.py:$target_line-$target_line "
+      "$large_prompt" "^Required post-index original-source target: many\\.py:$target_start-$target_end "
     local large_index_line large_target_line
     large_index_line=$(grep -n '^Evidence navigation index:' "$large_prompt" | cut -d: -f1)
     large_target_line=$(grep -n '^Required post-index original-source target:' "$large_prompt" | cut -d: -f1)
