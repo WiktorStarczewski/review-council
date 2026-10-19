@@ -10,10 +10,10 @@ Verify the stable tag before using any stable code:
 
 ```bash
 git status --short
-git verify-tag review-council--v0.5.9
+git verify-tag review-council--v0.5.10
 STABLE_PARENT=$(mktemp -d /tmp/review-council-stable.XXXXXX)
-STABLE_TREE="$STABLE_PARENT/review-council-0.5.9"
-git worktree add --detach "$STABLE_TREE" review-council--v0.5.9
+STABLE_TREE="$STABLE_PARENT/review-council-0.5.10"
+git worktree add --detach "$STABLE_TREE" review-council--v0.5.10
 STABLE_PLUGIN="$STABLE_TREE/plugins/review-council"
 ```
 
@@ -28,7 +28,8 @@ Any explicit release-panel waiver must be recorded with the release artifacts an
 associated PR. Deterministic verification and CI remain required, and the release
 must not be described as Council-certified.
 
-Run the existing deterministic candidate gate:
+Run the complete existing deterministic candidate gate in CI for the exact candidate
+commit on macOS and Ubuntu:
 
 ```bash
 python3 scripts/verify-review-council.py --root .
@@ -37,6 +38,10 @@ python3 scripts/verify-review-council.py --root .
 Any failure stops the release until the candidate is fixed and the complete gate passes.
 
 ## Run the stable review
+
+If a recorded release-panel waiver applies, follow its authorized review method
+instead of this section and record that review's outcome with the release artifacts
+and associated PR. Otherwise, use the stable review below.
 
 Load and follow `$STABLE_PLUGIN/codex-skills/rev/SKILL.md` with
 `REVIEW_COUNCIL_HOST=codex` on every runner invocation. Review the candidate read-only
@@ -64,8 +69,9 @@ review.
 
 ## Publish, merge, and release
 
-After the stable decision is clean, build `pr-review.json` from the verified decisions
-and stable session artifacts according to [the PR review contract](../plugins/review-council/docs/pr-review.md).
+For a stable Council review, after its decision is clean, build `pr-review.json`
+from the verified decisions and stable session artifacts according to
+[the PR review contract](../plugins/review-council/docs/pr-review.md).
 Render and publish the canonical review on the open pull request:
 
 ```bash
@@ -74,20 +80,22 @@ python3 plugins/review-council/scripts/rev-pr-review.py publish "$REVIEW_SESSION
 ```
 
 Read back the GitHub review and require the rendered body and reviewed commit to match.
-Then push the candidate, wait for required CI, and squash-merge the pull request.
+For a recorded waiver, attach the authorized review outcome to the PR instead.
+In either case, push the candidate, wait for required CI on its current head, and
+squash-merge the pull request.
 
 From a clean checkout of the merged commit, publish the signed release:
 
 ```bash
-git tag -s review-council--v0.5.10 -m "review-council 0.5.10" "$MERGE_COMMIT"
-git push origin review-council--v0.5.10
-git verify-tag review-council--v0.5.10
-gh release create review-council--v0.5.10 --verify-tag \
-  --title "review-council 0.5.10" --generate-notes
+git tag -s review-council--v0.6.0 -m "review-council 0.6.0" "$MERGE_COMMIT"
+git push origin review-council--v0.6.0
+git verify-tag review-council--v0.6.0
+gh release create review-council--v0.6.0 --verify-tag \
+  --title "review-council 0.6.0" --generate-notes
 ```
 
 Reinstall `review-council@review-council`. In fresh Claude and Codex sessions, require
-both hosts to discover `rev` and `stack` at version `0.5.10`, and compare installed file
+both hosts to discover `rev` and `stack` at version `0.6.0`, and compare installed file
 and mode identity with the released tag.
 
 Finally remove the stable worktree while preserving external review and verifier
