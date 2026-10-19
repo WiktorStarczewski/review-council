@@ -1481,6 +1481,19 @@ def source_context_packets():
         call('prepare', session, 'badflag', '--phase', 'discovery', env=bad_env, good=False)
 
 def provider_visible_source_packet_limit():
+    for content in ('', 'plain', '"\\', '\b\f\n\r\t', ''.join(map(chr, range(32))),
+                    '\x7f', '\u00e9\u6f22\U0001f600'):
+        options = {'sort_keys': True, 'ensure_ascii': True, 'indent': 2}
+        assert module.json_content_bytes(content) == len(json.dumps(content, **options).encode()) - 2
+        payload = {'schema_version': 1, 'snapshot_tree': '1' * 40, 'base_tree': '2' * 40,
+                   'seat': 'sol', 'shard_index': 1, 'shard_count': 3,
+                   'entries': [{'content': content, 'path': 'main.py'}]}
+        raw = (json.dumps(payload, **options) + '\n').encode()
+        measured = module.source_payload_metrics(
+            '1' * 40, '2' * 40, 'sol', 1, 3, [{'content': '', 'path': 'main.py'}],
+            module.json_content_bytes(content))
+        assert measured == (len(raw), len(raw) + len(raw.splitlines()) * 8)
+
     class Repo:
         def __init__(self, raw):
             self.raw = raw
@@ -1529,7 +1542,7 @@ def provider_visible_source_packet_limit():
         }
         evidence['source_context'] = context
         module.validate_source_context(session, manifest, evidence)
-        module.validate_source_context_snapshot(Repo(raw), session, manifest)
+        module.validate_source_context_bytes(Repo(raw), session, manifest)
 
 def source_context_prefers_named_production_and_maps_gates():
     class Repo:

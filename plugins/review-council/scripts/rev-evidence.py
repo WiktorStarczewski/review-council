@@ -998,9 +998,18 @@ def brace_spans(lines, extension):
     return [] if stack else spans
 
 
-def facts(repo, tree, hunks, categories, base_tree=None):
-    entries = {p: e for p, e in repo.entries(tree).items() if repo.scoped(p)}
-    base_entries = ({p: e for p, e in repo.entries(base_tree).items() if repo.scoped(p)}
+def source_tree_entries(repo, tree, cache):
+    if tree not in cache:
+        cache[tree] = repo.entries(tree)
+    return cache[tree]
+
+
+def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
+    entries_by_tree = {} if entries_by_tree is None else entries_by_tree
+    entries = {p: e for p, e in source_tree_entries(repo, tree, entries_by_tree).items()
+               if repo.scoped(p)}
+    base_entries = ({p: e for p, e in source_tree_entries(repo, base_tree, entries_by_tree).items()
+                     if repo.scoped(p)}
                     if base_tree else {})
     seed_paths = {h['path'] for h in hunks}
     texts = {}
@@ -2458,10 +2467,44 @@ def source_target_covered(target, ranges):
     return False
 
 
-def source_context(repo, snapshot, base_tree, evidence, components, assigned, owner, prefix,
-                   enabled=True, plan_clusters=None):
-    entries = repo.entries(snapshot)
-    base_entries = repo.entries(base_tree)
+def source_context_inputs(repo, snapshot, base_tree, evidence, components, plan_clusters=None,
+                          entries_by_tree=None, blob_lines=None):
+    entries_by_tree = {} if entries_by_tree is None else entries_by_tree
+    entries = source_tree_entries(repo, snapshot, entries_by_tree)
+    base_entries = source_tree_entries(repo, base_tree, entries_by_tree)
+    paths = {path for component in components for path in component['files']}
+    boundaries = {path for component in components for path in component['boundary']}
+    paths.update(row['path'] for kind in ('symbols', 'call_sites', 'related_tests')
+                 for row in evidence[kind] if row['path'] in boundaries)
+    paths.update(gate['path'] for gate in evidence['gates'])
+    paths.update(site['path'] for cluster in plan_clusters or [] for site in cluster['paths'])
+    blobs = {entry: repo.blob(entry) for tree in (entries, base_entries)
+             for path, entry in tree.items() if path in paths and entry[0] in ('100644', '100755')}
+    return entries, base_entries, blobs, {} if blob_lines is None else blob_lines
+
+
+def json_content_bytes(content):
+    return len(content) + sum(
+        1 if match[0] in '"\\\b\f\n\r\t' else 5 if ord(match[0]) <= 0xffff else 11
+        for match in re.finditer(r'["\\\x00-\x1f]|[^\x00-\x7e]', content))
+
+
+def source_payload(snapshot, base_tree, seat, index, count, values):
+    return {'schema_version': 1, 'snapshot_tree': snapshot, 'base_tree': base_tree,
+            'seat': seat, 'shard_index': index, 'shard_count': count, 'entries': values}
+
+
+def source_payload_metrics(snapshot, base_tree, seat, index, count, values, content_bytes):
+    # Escaped source strings add bytes, but no physical JSON lines, to this template.
+    raw = encoded(source_payload(snapshot, base_tree, seat, index, count, values))
+    return len(raw) + content_bytes, predicted_source_visible_bytes(raw) + content_bytes
+
+
+def plan_source_context(snapshot, base_tree, evidence, components, assigned, owner, prefix,
+                        source_inputs, enabled=True, plan_clusters=None):
+    """Plan canonical ranges and packing from frozen inputs without artifact bodies."""
+    entries, base_entries, blobs, blob_lines = source_inputs
+    source_lines_cache = dict(blob_lines)
     hunks_by_path = {}
     for hunk in evidence['hunks']:
         hunks_by_path.setdefault(hunk['path'], []).append(hunk['sha256'])
@@ -2474,15 +2517,14 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
     result = {'schema_version': 3, 'enabled': enabled, 'snapshot_tree': snapshot,
               'base_tree': base_tree, 'max_shard_bytes': SOURCE_CONTEXT_LIMIT,
               'packet_batch_limit': SOURCE_PACKET_BATCH_LIMIT, 'seats': {}}
-    artifacts = {}
 
     generated_caller_cache = {}
     def unchanged_generated_caller(path):
         if path not in generated_caller_cache:
             entry = entries.get(path)
             generated_caller_cache[path] = bool(
-                entry and entry == base_entries.get(path)
-                and classify(path, repo.blob(entry), entry[0]) == 'generated')
+                entry and entry[0] in ('100644', '100755') and entry == base_entries.get(path)
+                and classify(path, blobs[entry], entry[0]) == 'generated')
         return generated_caller_cache[path]
 
     source_choice_cache = {}
@@ -2500,14 +2542,16 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
             return source_choice_cache[cache_key]
         readable = []
         for entry, blob_tree in choices:
-            raw = repo.blob(entry)
+            raw = blobs[entry]
             if raw is OVERSIZED_BLOB or b'\0' in raw:
                 continue
             try:
                 raw.decode('utf-8')
             except UnicodeDecodeError:
                 continue
-            readable.append((entry, split_lf_lines(raw), blob_tree))
+            if entry not in source_lines_cache:
+                source_lines_cache[entry] = split_lf_lines(raw)
+            readable.append((entry, source_lines_cache[entry], blob_tree))
         choice = next((value for value in readable if value[1]), readable[0] if readable else None)
         source_choice_cache[cache_key] = ('source' if choice else 'unrepresentable', choice)
         return source_choice_cache[cache_key]
@@ -2702,6 +2746,7 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
                 target['priority'] = min(target['priority'], row['priority'])
 
         context_entries = []
+        content_costs = {}
         for row in sorted(merged, key=lambda value: value['priority']):
             _, lines, _ = source_choice(row['path'], row['blob_tree'])[1]
             content = b''.join(lines[row['line_start'] - 1:row['line_end']]).decode('utf-8')
@@ -2709,6 +2754,8 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
             for priority, reason in row['reason_rows']:
                 reason_priority[reason] = min(priority, reason_priority.get(reason, priority))
             ids = sorted(row['component_ids'])
+            content_costs[(row['path'], row['blob_tree'], row['line_start'], row['line_end'])] = (
+                json_content_bytes(content))
             context_entries.append({'path': row['path'], 'line_start': row['line_start'],
                                     'line_end': row['line_end'],
                                     'reasons': [reason for reason, _ in sorted(
@@ -2718,24 +2765,24 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
                                     'blob_oid': row['blob_oid'], 'blob_mode': row['blob_mode'],
                                     'blob_tree': row['blob_tree'],
                                     'content_sha256': digest(content.encode()),
-                                    'priority': row['priority'], 'content': content})
+                                    'priority': row['priority']})
 
         limit = 3 if seat == integration or plan_clusters is not None else 1
         shards = []; current = []; current_visible_bytes = 0
 
-        def payload(index, values, count=limit):
-            return {'schema_version': 1, 'snapshot_tree': snapshot, 'base_tree': base_tree,
-                    'seat': seat, 'shard_index': index, 'shard_count': count, 'entries': values}
+        def payload_metrics(index, values, count=limit):
+            extra = sum(content_costs[(row['path'], row['blob_tree'], row['line_start'],
+                                       row['line_end'])] for row in values if row)
+            return source_payload_metrics(snapshot, base_tree, seat, index, count,
+                                          [dict(row, content='') if row else {} for row in values], extra)
 
         for row in context_entries:
             index = len(shards) + 1
-            single_payload = encoded(payload(index, [row]))
-            single_payload_bytes = len(single_payload)
-            single_payload_visible_bytes = predicted_source_visible_bytes(single_payload)
+            single_payload_bytes, single_payload_visible_bytes = payload_metrics(index, [row])
             if current:
                 continuation_visible_bytes = (
-                    predicted_source_visible_bytes(encoded(payload(index, [{}, row])))
-                    - predicted_source_visible_bytes(encoded(payload(index, [{}]))))
+                    payload_metrics(index, [{}, row])[1]
+                    - payload_metrics(index, [{}])[1])
                 trial_visible_bytes = current_visible_bytes + continuation_visible_bytes
             else:
                 trial_visible_bytes = single_payload_visible_bytes
@@ -2746,9 +2793,7 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
             if current and len(shards) + 1 < limit:
                 shards.append(current); current = []
                 index = len(shards) + 1
-                single_payload = encoded(payload(index, [row]))
-                single_payload_bytes = len(single_payload)
-                single_payload_visible_bytes = predicted_source_visible_bytes(single_payload)
+                single_payload_bytes, single_payload_visible_bytes = payload_metrics(index, [row])
                 if single_payload_visible_bytes <= SOURCE_CONTEXT_LIMIT:
                     current = [row]
                     current_visible_bytes = single_payload_visible_bytes
@@ -2780,13 +2825,11 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
             if index in promotion_cache:
                 return promotion_cache[index]
             _, source_lines, _ = source_choice(row['path'], row['blob_tree'])[1]
-            content = b''.join(source_lines[row['line_start'] - 1:row['line_end']]).decode('utf-8')
-            payload_entry = dict(row, content=content)
-            raw_payload = encoded(payload(1, [payload_entry], 1))
+            payload_bytes, visible_bytes = payload_metrics(1, [row], 1)
             required = dict(
                 row,
-                required_payload_bytes=len(raw_payload),
-                required_payload_predicted_visible_bytes=predicted_source_visible_bytes(raw_payload),
+                required_payload_bytes=payload_bytes,
+                required_payload_predicted_visible_bytes=visible_bytes,
                 segments=partition_source_segments(
                     source_lines, row['line_start'], row['line_end']),
             )
@@ -2813,24 +2856,20 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
         count = len(shards)
         for index, values in enumerate(shards, 1):
             name = f'{prefix}-{seat}-source-context-{index}.json'
-            raw = encoded(payload(index, values, count))
-            artifacts[name] = raw
+            payload_bytes, visible_bytes = payload_metrics(index, values, count)
             ranges = [{key: value for key, value in row.items() if key != 'content'} for row in values]
-            shard_rows.append({'artifact': name, 'sha256': digest(raw), 'bytes': len(raw),
-                               'predicted_visible_bytes': predicted_source_visible_bytes(raw),
+            shard_rows.append({'artifact': name, 'bytes': payload_bytes,
+                               'predicted_visible_bytes': visible_bytes,
                                'entries': len(values), 'ranges': ranges})
         required_ranges = sorted(
             required_ranges,
             key=lambda row: (row['path'], row['blob_tree'], row['line_start'],
                              row['line_end'], row['priority']))
         for range_index, required in enumerate(required_ranges, 1):
-            _, source_lines, _ = source_choice(required['path'], required['blob_tree'])[1]
             for segment in required['segments']:
                 name = (f'{prefix}-{seat}-source-segment-{range_index:03d}-'
                         f"{segment['index']:03d}.txt")
-                raw = b''.join(source_lines[segment['line_start'] - 1:segment['line_end']])
                 segment['artifact'] = name
-                artifacts[name] = raw
         # The promotion loop above already bounded what the seat must still open by hand.
         # Publish that exact window list: deriving it from every cited cluster row is what
         # two plan seats got wrong, each stopping a few windows short of the obligation.
@@ -2846,7 +2885,39 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
         packet = result['seats'][seat]
         packet['source_read_required'] = repository_source_read_required(
             packet, enabled, snapshot, assignment)
-    return result, artifacts
+    return result
+
+
+def source_context(repo, snapshot, base_tree, evidence, components, assigned, owner, prefix,
+                   enabled=True, plan_clusters=None):
+    inputs = (source_context_inputs(repo, snapshot, base_tree, evidence, components, plan_clusters)
+              if enabled else ({}, {}, {}, {}))
+    context = plan_source_context(snapshot, base_tree, evidence, components, assigned, owner,
+                                  prefix, inputs, enabled, plan_clusters)
+    blobs = inputs[2]
+    lines = dict(inputs[3])
+
+    def content(row):
+        key = (row['blob_mode'], row['blob_oid'])
+        if key not in lines:
+            lines[key] = split_lf_lines(blobs[key])
+        return b''.join(lines[key][row['line_start'] - 1:row['line_end']])
+
+    artifacts = {}
+    for seat, packet in context['seats'].items():
+        for index, shard in enumerate(packet['shards'], 1):
+            values = [dict(row, content=content(row).decode()) for row in shard['ranges']]
+            raw = encoded(source_payload(snapshot, base_tree, seat, index, len(packet['shards']), values))
+            if (len(raw), predicted_source_visible_bytes(raw)) != (
+                    shard['bytes'], shard['predicted_visible_bytes']):
+                raise ValueError('source packet packing mismatch')
+            shard['sha256'] = digest(raw)
+            artifacts[shard['artifact']] = raw
+        for required in packet['required_source_ranges']:
+            for segment in required['segments']:
+                artifacts[segment['artifact']] = content(dict(
+                    required, line_start=segment['line_start'], line_end=segment['line_end']))
+    return context, artifacts
 
 
 def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None):
@@ -2918,11 +2989,11 @@ def task_capacity_errors(capacity):
     return errors
 
 
-def validate_source_context_snapshot(repo, session, manifest):
+def validate_source_context_bytes(repo, session, manifest, entries_by_tree=None, blob_lines=None):
     """Bind recorded source packet ranges to their exact snapshot blobs."""
     context = manifest['source_context']
-    entries_by_tree = {}
-    blob_lines = {}
+    entries_by_tree = {} if entries_by_tree is None else entries_by_tree
+    blob_lines = {} if blob_lines is None else blob_lines
 
     def expected_bytes(row):
         tree = row['blob_tree']
@@ -2957,14 +3028,12 @@ def validate_source_context_snapshot(repo, session, manifest):
                 key: value for key, value in row.items()
                 if key not in ('required_payload_bytes',
                                'required_payload_predicted_visible_bytes', 'segments')}
-            source_entry['content'] = parent.decode()
-            candidate = encoded({
-                'schema_version': 1, 'snapshot_tree': context['snapshot_tree'],
-                'base_tree': context['base_tree'], 'seat': seat, 'shard_index': 1,
-                'shard_count': 1, 'entries': [source_entry]})
-            if (len(candidate) != row['required_payload_bytes']
-                    or predicted_source_visible_bytes(candidate)
-                    != row['required_payload_predicted_visible_bytes']):
+            source_entry['content'] = ''
+            payload_bytes, visible_bytes = source_payload_metrics(
+                context['snapshot_tree'], context['base_tree'], seat, 1, 1, [source_entry],
+                json_content_bytes(parent.decode()))
+            if (payload_bytes != row['required_payload_bytes']
+                    or visible_bytes != row['required_payload_predicted_visible_bytes']):
                 raise ValueError('required source payload size does not match snapshot: ' + row['path'])
             key = (row['blob_mode'], row['blob_oid'])
             canonical = partition_source_segments(
@@ -2973,7 +3042,8 @@ def validate_source_context_snapshot(repo, session, manifest):
                         for segment in row['segments']]
             if recorded != canonical:
                 raise ValueError('required source segments are not canonical: ' + row['path'])
-            rebuilt = b''
+            rebuilt_hash = hashlib.sha256()
+            rebuilt_bytes = 0
             for segment in row['segments']:
                 part = expected_bytes(dict(row, line_start=segment['line_start'],
                                            line_end=segment['line_end']))
@@ -2984,22 +3054,38 @@ def validate_source_context_snapshot(repo, session, manifest):
                         or len(part) + (segment['line_end'] - segment['line_start'] + 1) \
                         * SOURCE_SEGMENT_PREFIX_RESERVE != segment['predicted_visible_bytes']):
                     raise ValueError('required source segment does not match snapshot: ' + row['path'])
-                rebuilt += part
-            if rebuilt != parent or digest(parent) != row['content_sha256']:
+                rebuilt_hash.update(part)
+                rebuilt_bytes += len(part)
+            if (rebuilt_bytes != len(parent) or rebuilt_hash.hexdigest() != digest(parent)
+                    or digest(parent) != row['content_sha256']):
                 raise ValueError('required source content does not match snapshot: ' + row['path'])
+
+
+def validate_source_context_snapshot(repo, session, manifest, canonical_changes=None):
+    context = manifest['source_context']
+    entries_by_tree = {}
+    blob_lines = {}
+    validate_source_context_bytes(repo, session, manifest, entries_by_tree, blob_lines)
     if context['enabled']:
-        _, hunks, categories, _ = repo.changes(manifest['base_tree'], manifest['snapshot_tree'])
+        if canonical_changes is None:
+            _, hunks, categories, _ = repo.changes(manifest['base_tree'], manifest['snapshot_tree'])
+        else:
+            hunks, categories = canonical_changes
         canonical_facts = facts(repo, manifest['snapshot_tree'], hunks, categories,
-                                manifest['base_tree'])
+                                manifest['base_tree'], entries_by_tree)
         canonical_facts['hunks'] = hunks
         ordered_assignments = {
             row['seat']: manifest['assignments'][row['seat']]
             for row in read_json(session / 'roster.json')['seats']
             if row.get('seat') in manifest['assignments']}
-        canonical, _ = source_context(
+        clusters = manifest.get('plan', {}).get('clusters')
+        inputs = source_context_inputs(
             repo, manifest['snapshot_tree'], manifest['base_tree'], canonical_facts,
+            manifest['components'], clusters, entries_by_tree, blob_lines)
+        canonical = plan_source_context(
+            manifest['snapshot_tree'], manifest['base_tree'], canonical_facts,
             manifest['components'], ordered_assignments, manifest['mechanical_owner'],
-            'r' + manifest['label'], True, manifest.get('plan', {}).get('clusters'))
+            'r' + manifest['label'], inputs, True, clusters)
         identity_keys = ('path', 'blob_tree', 'blob_oid', 'blob_mode', 'line_start',
                          'line_end', 'content_sha256')
 
@@ -4031,6 +4117,7 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
     capacity_failures = task_capacity_errors(expected_capacity)
     if capacity_failures:
         raise ValueError(capacity_failures[0])
+    canonical_changes = None
     if fresh and not offline:
         repo = Repository(session)
         current, unsafe = repo.snapshot(manifest['source'].get('ref'))
@@ -4039,6 +4126,7 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         if repo.tree(repo.scope['REV_BASE']) != manifest['base_tree']:
             raise ValueError('manifest base does not match pinned review base')
         patches, hunks, categories, _ = repo.changes(manifest['base_tree'], current)
+        canonical_changes = hunks, categories
         if (b''.join(p for _, p in patches) != (session / f'{prefix}-full.patch').read_bytes()
                 or sorted(categories) != manifest['paths'] or hunks != evidence.get('hunks')
                 or sorted(p for p in categories if categories[p] == 'semantic') != manifest['semantic_paths']):
@@ -4053,7 +4141,7 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
     if not offline:
         if not fresh:
             repo = Repository(session)
-        validate_source_context_snapshot(repo, session, manifest)
+        validate_source_context_snapshot(repo, session, manifest, canonical_changes)
     return manifest, digest(raw)
 
 
@@ -5087,7 +5175,9 @@ def render(args):
 
 def render_panel(args):
     """Render every seat from one manifest read; validate-prompt binds the embedded hash."""
-    manifest, mh = validated_manifest(args.manifest, replay_plan_searches=False)
+    raw = Path(args.manifest).read_bytes()
+    manifest = json.loads(raw)
+    mh = digest(raw)
     output = Path(args.output_dir)
     if output.is_symlink() or not output.is_dir():
         raise ValueError('fragment output is not a directory')
