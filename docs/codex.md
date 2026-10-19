@@ -109,12 +109,19 @@ per Codex turn. Later verification uses the semantic fix delta only when a valid
 prior coverage and the delta plus its evidence is smaller. Otherwise, safe cumulative
 evidence keeps one full integration seat and gives specialists semantic components.
 Invalid predecessor state or any current-evidence error restores full cumulative scope
-for the affected assignment or panel according to the audited failure class. One failed
-seat first retries its exact generation. A repeated failure uses a full-scope child
-generation bound to that parent assignment, and a composite receipt retains the valid
-sibling generations while rejecting any changed snapshot, roster, bundle, model,
-effort, prompt, or result. Panel-global failures still restore full scope for the whole
-panel. Numeric and document reviews keep full scope.
+for the affected assignment or panel according to the audited failure class. A provider
+execution exit 1 or 2 without an invalid read audit gets one retry with the exact prompt,
+assignment, model, and effort, even if it left an `INCOMPLETE PROOF` result, unless
+prelaunch refuses an already retired assignment. A hard audit failure or exit-0 result
+whose summary begins `INCOMPLETE PROOF` retires that label and seat immediately;
+never relaunch it.
+After a repeated execution failure, or immediately after retirement, one failed
+assignment may use one full-scope child on another enforced roster seat, bound to
+that parent assignment. No eligible executor, a second failed assignment, or a failed
+replacement leaves the panel incomplete: preserve siblings and ask the user.
+A composite receipt retains valid sibling generations while rejecting any changed
+snapshot, roster, bundle, model, effort, prompt, or result. Panel-global failures
+still restore full scope for the whole panel. Numeric and document reviews keep full scope.
 
 Adaptive plan panels hash-bind every parsed fix-plan cluster and run after triage,
 before any edit. The plan-completeness seat keeps the full cumulative patch and every
@@ -130,13 +137,18 @@ suppression, redirects, saturated results, absent named sites, and producer erro
 closed. Successful shell proof uses `--null` and contains fewer than 80
 `path<NUL>line:text` match records; native text search cannot certify it.
 `verify-panel` validates the complete attempt without writing a receipt or advancing
-code coverage. A seat-local failure gets one exact retry with the same assignment while
-valid sibling results remain available. If it repeats, the plan panel stays incomplete.
+code coverage. The same exact-retry and retirement rules apply to plan seats.
+After the retry fails, or immediately after retirement, use an ordinary one-seat
+schema-4 plan panel on another enforced roster seat, retaining valid siblings and the
+one-replacement ceiling. If no eligible seat exists or the replacement fails, keep
+the plan incomplete and ask the user.
 Plan specialists never broaden to legacy full scope after either a seat-local or
 panel-global failure.
-An Agent adapter in the core plan roster refuses preparation before evidence artifacts
-are published because its native read hooks cannot enforce receipt-relative scope.
-Agent extras remain available outside the core plan assignments.
+Native Agent code and schema-4 plan seats run with partial, unenforced coverage.
+Their manifests list `unenforced_seats`; receipts hash their result, exit, and prompt
+but skip the enforced read audit and cannot certify the panel. Report that limitation
+explicitly and keep the schema-4 plan structure. Replacement executors must still be
+enforced seats.
 
 ## Provider and orchestration differences
 
@@ -150,10 +162,11 @@ Agent extras remain available outside the core plan assignments.
 | Stack engine | `claude -p` | `codex exec` |
 | Stack finishing defaults | Push, keep one commit per fix | Keep history and changes local |
 
-By default, Codex selects its newest visible model generation from its local model
-cache, up to two seats, using the existing supported effort ladder. Set
-`codex_models` to an ordered list of one or two unique visible slugs when the council
-must use exact models. Invalid values, unknown slugs, pins outside that list, and
+By default, Codex resolves `latest-sol` and `latest-luna` from its seat CLI's model
+catalog at `xhigh`. Set `codex_models` to an ordered list of one to four visible slugs
+or `latest-<family>` selectors. Repeated entries create separate seats. Distinct entries
+that resolve to the same model are refused, as are pins exceeding the configured
+multiplicity. Invalid values, unknown slugs, pins outside that list, and
 missing configured seats refuse the roster before padding. Set `claude_models` to an
 ordered list of unique Claude model families for distinct exact seats, or use
 `claude_seats` from 0 to 4 for the legacy repeated-Opus behavior. The settings are

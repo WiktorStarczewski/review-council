@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.0
+
+- An exit-0 result whose summary begins `INCOMPLETE PROOF` retires its assignment
+  instead of sealing it or relaunching the same seat under the same label. Result
+  validation and audit hashes use the same captured private-file bytes; prelaunch
+  checks preserve legacy completion evidence. Existing replacement limits remain.
+- Evidence-scoped prompts now describe overflowing searches and prefixed source
+  reads as advisories that earn no proof credit for that call. Required evidence,
+  citation checks, and hard audit failures still gate completion; legacy audit
+  wording stays strict.
+- Automatic production-caller proof skips unchanged generated files, including
+  incidental source-map matches. Changed generated files, authoritative changed
+  paths, and pinned dependency evidence retain their existing requirements.
+
 ## 0.5.10
 
 - `codex_models` takes one to four entries, and an entry may repeat: the model
