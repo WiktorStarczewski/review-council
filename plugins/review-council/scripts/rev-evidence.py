@@ -2429,6 +2429,15 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
               'packet_batch_limit': SOURCE_PACKET_BATCH_LIMIT, 'seats': {}}
     artifacts = {}
 
+    generated_caller_cache = {}
+    def unchanged_generated_caller(path):
+        if path not in generated_caller_cache:
+            entry = entries.get(path)
+            generated_caller_cache[path] = bool(
+                entry and entry == base_entries.get(path)
+                and classify(path, repo.blob(entry), entry[0]) == 'generated')
+        return generated_caller_cache[path]
+
     source_choice_cache = {}
     def source_choice(path, preferred_tree=None):
         cache_key = (path, preferred_tree)
@@ -2506,7 +2515,9 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
             calls = [call for call in calls_by_name.get(symbol['name'], [])
                      if not is_test_path(call['path'])
                      and (call['path'], call['line']) != (symbol['path'], symbol['line'])]
-            calls = [call for call in calls if mapped(call['path'], symbol_components)]
+            # Incidental source-map matches must not become mandatory source-segment reads.
+            calls = [call for call in calls if mapped(call['path'], symbol_components)
+                     and not unchanged_generated_caller(call['path'])]
             if calls:
                 call = calls[0]
                 add('production-caller', 'production-caller:' + symbol['name'], call['path'],
