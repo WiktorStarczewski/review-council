@@ -479,22 +479,27 @@ batch_calls['packet-2'] = ('Read', {}, 'later')
 assert audit.turn_batch_violations(
     batch_calls, set(batch_calls), 1, 'source-packet-batch-too-large', 'claude') == []
 
+snapshot = 'a' * 40
 context = {
     'source_read_required': True,
     'role': 'integration',
+    'shards': [],
     'required_source_ranges': [],
     'omitted_source_ranges': [
-        {'path':'src/caller.ts', 'line_start':10, 'line_end':14},
+        {'path':'src/caller.ts', 'line_start':10, 'line_end':14, 'priority':0,
+         'blob_tree':snapshot, 'reasons':['production-caller:example']},
     ],
 }
+boundary = {'src/declaration.ts', 'src/caller.ts'}
+declaration = {'path':'src/declaration.ts', 'line_start':1, 'line_end':5, 'origin':'tool'}
+partial = {'path':'src/caller.ts', 'line_start':12, 'line_end':12, 'origin':'tool'}
+complete = {'path':'src/caller.ts', 'line_start':10, 'line_end':14, 'origin':'tool'}
+for ranges, post_index in (([declaration], [declaration]), ([partial], [partial]), ([complete], [])):
+    assert audit.source_read_requirement_violations(
+        context, boundary, ranges, 'claude', snapshot, post_index) == [
+            {'code':'missing-required-source-read', 'tool':'claude'}]
 assert audit.source_read_requirement_violations(
-    context, {'src/declaration.ts', 'src/caller.ts'},
-    [{'path':'src/declaration.ts', 'line_start':1, 'line_end':5, 'origin':'tool'}],
-    'claude') == [{'code':'missing-required-source-read', 'tool':'claude'}]
-assert audit.source_read_requirement_violations(
-    context, {'src/declaration.ts', 'src/caller.ts'},
-    [{'path':'src/caller.ts', 'line_start':12, 'line_end':12, 'origin':'tool'}],
-    'claude') == []
+    context, boundary, [complete], 'claude', snapshot, [complete]) == []
 PY
     assert_eq "evidence phases enforce ordered packets, segments, index, and expansion" "$?" 0
   )

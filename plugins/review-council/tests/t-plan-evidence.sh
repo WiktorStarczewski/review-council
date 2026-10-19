@@ -1971,8 +1971,33 @@ for seat, assignment in manifest['assignments'].items():
     direct = [source for source in mandatory if not any(
         row['path'] == source['path'] and row['line_start'] <= source['line_start']
         and row['line_end'] >= source['line_end'] for row in delivered)]
-    assert len(direct) <= 12, (seat, len(direct))
-    assert capacity['seats'][seat]['mandatory_repository_reads'] == len(direct)
+    windows = [(source['path'], source['line_start'], source['line_end']) for source in direct]
+    if context['source_read_required']:
+        candidates = [row for row in context['omitted_source_ranges']
+                      if row['blob_tree'] == manifest['snapshot_tree']
+                      and any(not reason.startswith('gate:') for reason in row['reasons'])]
+        candidates = candidates or [row for row in delivered
+                                    if row['blob_tree'] == manifest['snapshot_tree']
+                                    and any(not reason.startswith('gate:') for reason in row['reasons'])]
+        assert candidates
+        target = min(candidates, key=lambda row: (
+            row['priority'], row['path'], row['blob_tree'], row['line_start'], row['line_end']))
+        interval = target['segments'][0] if target.get('segments') else target
+        windows.append((target['path'], interval['line_start'], interval['line_end']))
+    grouped = {}
+    for path, start, end in windows:
+        grouped.setdefault(path, []).append((start, end))
+    count = 0
+    for intervals in grouped.values():
+        merged = []
+        for start, end in sorted(intervals):
+            if merged and start <= merged[-1][1] + 1:
+                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+            else:
+                merged.append((start, end))
+        count += sum((end - start + 240) // 240 for start, end in merged)
+    assert count <= 12, (seat, count)
+    assert capacity['seats'][seat]['mandatory_repository_reads'] == count
     if assignment['adapter'] == 'claude':
         assert capacity['seats'][seat]['projected_turns'] <= 160
 required = [row for packet in manifest['source_context']['seats'].values()
