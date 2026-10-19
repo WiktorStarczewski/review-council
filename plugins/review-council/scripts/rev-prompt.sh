@@ -263,7 +263,7 @@ elif [ -n "$EVIDENCE" ]; then
     "$EVIDENCE") || die "cannot read evidence manifest phase: $EVIDENCE"
   # A repair seat may name the phase of the panel it covers.
   case "$EVIDENCE_PHASE:$PHASE" in
-    *:|repair:risk|repair:verification) ;;
+    *:|repair:discovery|repair:risk|repair:verification) ;;
     *) [ "$PHASE" = "$EVIDENCE_PHASE" ] || die "evidence manifest phase is $EVIDENCE_PHASE, not $PHASE: $EVIDENCE";;
   esac
   PHASE=${PHASE:-$EVIDENCE_PHASE}
