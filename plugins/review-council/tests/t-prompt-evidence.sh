@@ -492,16 +492,50 @@ PY
     assert_grep "clean-room prefix carries design ordering" "$terra_prefix" 'write the smallest design before any patch or source read'
     assert_grep "Claude prefix carries exact Read bound" "$claude_prefix" 'offset.*limit.*240'
     assert_grep "Claude prefix carries exact search bound" "$claude_prefix" 'result limit.*80'
-    assert_grep "stable prefix carries the shell overflow sentinel" "$sol_prefix" \
+    local recovery_adapter recovery_prefix
+    for recovery_adapter in codex claude; do
+      case "$recovery_adapter" in
+        codex) recovery_prefix="$sol_prefix";;
+        claude) recovery_prefix="$claude_prefix";;
+      esac
+      assert_grep "$recovery_adapter prefix keeps the shell overflow sentinel and 80-result bound" \
+        "$recovery_prefix" '\| head -81.*at most 80 result lines'
+      assert_grep "$recovery_adapter prefix identifies search overflow as an advisory" \
+        "$recovery_prefix" '81st line.*advisory'
+      assert_grep "$recovery_adapter prefix gives overflowing search no proof credit" \
+        "$recovery_prefix" '81st line.*no proof credit'
+      assert_grep "$recovery_adapter prefix narrows and repeats an overflowing search" \
+        "$recovery_prefix" '[Nn]arrow.*repeat.*search'
+      assert_grep "$recovery_adapter prefix gives transformed source no proof credit" \
+        "$recovery_prefix" 'added prefixes.*no proof credit'
+      assert_grep "$recovery_adapter prefix recovers needed source with byte-preserving bounded reads" \
+        "$recovery_prefix" '[Rr]epeat.*byte-preserving.*bounded.*read'
+      assert_nogrep "$recovery_adapter prefix does not turn an advisory into whole-audit failure" \
+        "$recovery_prefix" '81st line invalidates the audit|a rejected call invalidates the audit'
+      assert_grep "$recovery_adapter prefix keeps hard audit failures invalid" \
+        "$recovery_prefix" '[Hh]ard audit (failures|violations).*invalid'
+      assert_grep "$recovery_adapter prefix keeps missing proof invalid" \
+        "$recovery_prefix" '[Mm]issing.*required.*proof.*invalid'
+      assert_grep "$recovery_adapter prefix keeps unsupported citations invalid" \
+        "$recovery_prefix" '[Uu]nsubstantiated.*citation.*invalid'
+      assert_grep "$recovery_adapter prefix keeps inclusive 240-line source windows" \
+        "$recovery_prefix" 'END - START \+ 1 <= 240'
+      assert_grep "$recovery_adapter prefix carries per-turn byte bound" \
+        "$recovery_prefix" '32 KiB combined output ceiling'
+      assert_grep "$recovery_adapter prefix carries ordered proof turn bound" \
+        "$recovery_prefix" 'at most the rendered proof read limit.*60 KiB combined output ceiling'
+      assert_grep "$recovery_adapter prefix keeps source packets on the ordinary cap" \
+        "$recovery_prefix" 'Source-context packets and repository reads keep the ordinary 32 KiB turn ceiling'
+      assert_grep "$recovery_adapter prefix preserves the post-proof completion window" \
+        "$recovery_prefix" 'use at most 16 repository tool calls.*no new evidence path after call 12'
+      assert_grep "$recovery_adapter prefix names unfinished obligations in its incomplete result" \
+        "$recovery_prefix" 'summary.*INCOMPLETE PROOF:.*unfinished obligations'
+      assert_grep "$recovery_adapter prefix never treats an incomplete result as complete" \
+        "$recovery_prefix" 'Such a result is never review-complete'
+    done
+    assert_grep "legacy prefix keeps receiptless search overflow fatal" "$legacy" \
       '\| head -81.*81st line invalidates the audit'
-    assert_grep "stable prefix carries per-turn byte bound" "$sol_prefix" '32 KiB combined output ceiling'
-    assert_grep "stable prefix carries ordered proof turn bound" "$sol_prefix" \
-      'at most the rendered proof read limit.*60 KiB combined output ceiling'
-    assert_grep "stable prefix keeps source packets on the ordinary cap" "$sol_prefix" \
-      'Source-context packets and repository reads keep the ordinary 32 KiB turn ceiling'
     assert_grep "stable prefix asks for batched independent tool calls" "$sol_prefix" 'Batch independent bounded tool calls into one turn'
-    assert_grep "stable prefix defines inclusive shell window arithmetic" "$sol_prefix" \
-      'END - START \+ 1 <= 240'
     assert_grep "stable prefix rejects per-file search caps as global bounds" "$sol_prefix" \
       'rg --max-count.*per file'
     assert_grep "stable prefix keeps one-producer behavior as the default" "$sol_prefix" \
@@ -510,10 +544,6 @@ PY
       'Never mix source reads and searches in one shell call'
     assert_grep "stable prefix reserves the required structured result" "$sol_prefix" \
       'reserve capacity to return the required JSON'
-    assert_grep "stable prefix reserves a bounded post-proof completion window" "$sol_prefix" \
-      'use at most 16 repository tool calls.*no new evidence path after call 12'
-    assert_grep "stable prefix marks unfinished proof without another tool call" "$sol_prefix" \
-      'summary.*INCOMPLETE PROOF:.*unfinished obligations'
     assert_nogrep "Terra prompt keeps source batching disabled" "$clean" \
       'Codex source batching:'
     assert_grep "patch chunks use the rendered per-turn batch limit" "$large_prompt" \
