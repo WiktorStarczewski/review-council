@@ -2601,12 +2601,17 @@ def assess(args, blocked):
                 path for component in manifest['components']
                 if component['id'] in component_ids for path in component['boundary']
             }
-            index_turn = min((calls[call_id][2] for call_id in exact_evidence_index_calls),
-                             default=None)
+            call_positions = {call_id: position for position, call_id in enumerate(calls)}
+            index_position = min((call_positions[call_id] for call_id in exact_evidence_index_calls),
+                                 default=None)
+            index_turn = (calls[next(call_id for call_id in exact_evidence_index_calls
+                                     if call_positions[call_id] == index_position)][2]
+                          if index_position is not None else None)
             post_index_source_ranges = [
                 {key: row[key] for key in ('path', 'line_start', 'line_end', 'origin')}
                 for call_id, ranges in verified_call_ranges.items()
-                if index_turn is not None and calls[call_id][2] > index_turn
+                if index_position is not None and call_positions[call_id] > index_position
+                and calls[call_id][2] != index_turn
                 for row in ranges]
             post_index_source_ranges = sorted(
                 {tuple(row.items()): row for row in post_index_source_ranges}.values(),
