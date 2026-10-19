@@ -301,7 +301,7 @@ SH
   seat_env_reset "$_path"
 }
 seat_incomplete_relaunch_case() {
-  local variant=$1 expected_calls=1
+  local variant=$1 expected_calls=1 legacy=0 refusals=1 refusal relaunch_rc
   local _path="$PATH"; seat_env
   local S="$T/seat-incomplete-$variant" bin="$T/seat-incomplete-$variant-bin"
   local calls="$T/incomplete-$variant-calls" artifact
@@ -328,6 +328,19 @@ SH
   assert_eq "$variant: a tool-using incomplete launch exits 0" "$?" 0
   assert_eq "$variant: only the initial launch and any internal retry call the provider" \
     "$(wc -l < "$calls" | tr -d ' ')" "$expected_calls"
+  case "$variant" in
+    legacy-*)
+      legacy=1; refusals=2
+      # Legacy sessions retain the genuine completion but predate the retirement marker.
+      rm "$S/r1-codex-sol.incomplete-proof"
+      assert_exit "$variant: the fixture has no retirement marker" 1 \
+        test -e "$S/r1-codex-sol.incomplete-proof"
+      assert_grep "$variant: the legacy completion still has its original exit" \
+        "$S/r1-codex-sol.exit" '^0$'
+      cp "$S/r1-codex-sol.exit" "$S/before-precheck.exit"
+      mkdir "$S/before-reservation"
+      cp "$S"/attempts/*.json "$S/before-reservation/";;
+  esac
   if [ "$variant" = zero-tool ]; then
     python3 - "$S" <<'PY'
 import json
@@ -344,33 +357,89 @@ PY
   done
   cp "$S/p.md" "$S/launched-prompt.md"
   case "$variant" in
-    hardlink) ln "$S/r1-codex-sol.json" "$S/retained-result.json";;
-    symlink)
+    hardlink|legacy-hardlink) ln "$S/r1-codex-sol.json" "$S/retained-result.json";;
+    symlink|legacy-symlink)
       mv "$S/r1-codex-sol.json" "$S/retained-result.json"
       ln -s retained-result.json "$S/r1-codex-sol.json";;
     changed-prompt) printf '\nAlso check consumer ordering.\n' >> "$S/p.md";;
   esac
-  SHIM_MODE=ok SHIM_CALLS_FILE="$calls" \
-    "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null 2> "$S/relaunch.err"
-  assert_eq "$variant: rev-seat.sh refuses the same assignment" "$?" 2
-  assert_eq "$variant: refusal spends no additional provider call" "$(wc -l < "$calls" | tr -d ' ')" "$expected_calls"
-  for artifact in json read-audit.json stream.ndjson; do
-    assert_exit "$variant: refusal preserves the prior $artifact" 0 \
-      cmp -s "$S/before-relaunch.$artifact" "$S/r1-codex-sol.$artifact"
+  for ((refusal=1; refusal<=refusals; refusal++)); do
+    SHIM_MODE=ok SHIM_CALLS_FILE="$calls" \
+      "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null 2> "$S/relaunch.err"
+    relaunch_rc=$?
+    if [ "$legacy" = 1 ]; then
+      if [ "$relaunch_rc" -ne 0 ]; then ok "$variant: relaunch $refusal fails closed"
+      else fail "$variant: relaunch $refusal fails closed" "unsafe legacy result launched again"
+      fi
+      for artifact in "$S"/before-reservation/*.json; do
+        assert_exit "$variant: refusal $refusal spends no reservation" 0 \
+          cmp -s "$artifact" "$S/attempts/${artifact##*/}"
+      done
+      assert_exit "$variant: refusal $refusal invents no completion marker" 1 \
+        test -e "$S/r1-codex-sol.incomplete-proof"
+      assert_exit "$variant: refusal $refusal retains the original completion evidence" 0 \
+        cmp -s "$S/before-precheck.exit" "$S/r1-codex-sol.exit"
+      if [ "$variant" = legacy-symlink ]; then
+        assert_exit "$variant: refusal $refusal retains the unresolved symbolic link" 0 \
+          test -L "$S/r1-codex-sol.json"
+      else
+        assert_exit "$variant: refusal $refusal retains the unresolved hard link" 0 \
+          test "$S/r1-codex-sol.json" -ef "$S/retained-result.json"
+      fi
+    else
+      assert_eq "$variant: rev-seat.sh refuses the same assignment" "$relaunch_rc" 2
+      assert_grep "$variant: refusal identifies the incomplete result" "$S/relaunch.err" 'INCOMPLETE PROOF'
+      assert_grep "$variant: refusal publishes its exit" "$S/r1-codex-sol.exit" '^2$'
+    fi
+    assert_eq "$variant: refusal $refusal spends no additional provider call" \
+      "$(wc -l < "$calls" | tr -d ' ')" "$expected_calls"
+    for artifact in json read-audit.json stream.ndjson; do
+      assert_exit "$variant: refusal $refusal preserves the prior $artifact" 0 \
+        cmp -s "$S/before-relaunch.$artifact" "$S/r1-codex-sol.$artifact"
+    done
   done
-  assert_grep "$variant: refusal identifies the incomplete result" "$S/relaunch.err" 'INCOMPLETE PROOF'
-  assert_grep "$variant: refusal publishes its exit" "$S/r1-codex-sol.exit" '^2$'
-  python3 - "$SCRIPTS/lib/rev-attempt.py" "$S" "$S/p.md" <<'PY'
+  python3 - "$SCRIPTS/lib/rev-attempt.py" "$S" "$S/p.md" "$legacy" <<'PY'
 import importlib.util
 from pathlib import Path
+import shutil
 import sys
 
 spec = importlib.util.spec_from_file_location('rev_attempt', sys.argv[1])
 attempt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(attempt)
-assert attempt.terminal_failure(Path(sys.argv[2]), '1', 'codex-sol', Path(sys.argv[3]))
+if sys.argv[4] == '1':
+    session = Path(sys.argv[2])
+    try:
+        terminal = attempt.terminal_failure(session, '1', 'codex-sol', Path(sys.argv[3]))
+    except (OSError, ValueError):
+        terminal = False
+    assert not terminal, 'unsafe legacy bytes cannot establish replacement eligibility'
+    restored = session / 'restored-result.json'
+    shutil.copyfile(session / 'before-relaunch.json', restored)
+    restored.replace(session / 'r1-codex-sol.json')
+    assert attempt.terminal_failure(session, '1', 'codex-sol', Path(sys.argv[3])), \
+        'repairing only the result must restore genuine legacy completion eligibility'
+else:
+    assert attempt.terminal_failure(Path(sys.argv[2]), '1', 'codex-sol', Path(sys.argv[3]))
 PY
-  assert_eq "$variant: the assignment stays terminal after refusal" "$?" 0
+  assert_eq "$variant: refusal preserves honest replacement eligibility" "$?" 0
+  if [ "$legacy" = 1 ]; then
+    SHIM_MODE=ok SHIM_CALLS_FILE="$calls" \
+      "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null 2> "$S/repaired-relaunch.err"
+    assert_eq "$variant: the repaired legacy result retires without relaunching" "$?" 2
+    assert_exit "$variant: genuine completion now has a retirement record" 0 \
+      test -s "$S/r1-codex-sol.incomplete-proof"
+    assert_eq "$variant: repairing the result spends no provider call" \
+      "$(wc -l < "$calls" | tr -d ' ')" "$expected_calls"
+    for artifact in "$S"/before-reservation/*.json; do
+      assert_exit "$variant: recovering retirement spends no reservation" 0 \
+        cmp -s "$artifact" "$S/attempts/${artifact##*/}"
+    done
+    for artifact in json read-audit.json stream.ndjson; do
+      assert_exit "$variant: recovering retirement retains the original $artifact" 0 \
+        cmp -s "$S/before-relaunch.$artifact" "$S/r1-codex-sol.$artifact"
+    done
+  fi
   SHIM_MODE=ok SHIM_CALLS_FILE="$calls" \
     "$SCRIPTS/rev-seat.sh" codex-terra "$S" 1 "$S/p.md" >/dev/null 2>&1
   assert_eq "$variant: a sibling under the same label still launches" "$?" 0
@@ -386,9 +455,11 @@ test_seat_incomplete_proof_refuses_a_relaunch() {
 }
 test_seat_hardlinked_incomplete_proof_refuses_a_relaunch() {
   seat_incomplete_relaunch_case hardlink
+  seat_incomplete_relaunch_case legacy-hardlink
 }
 test_seat_symlinked_incomplete_proof_refuses_a_relaunch() {
   seat_incomplete_relaunch_case symlink
+  seat_incomplete_relaunch_case legacy-symlink
 }
 test_seat_incomplete_proof_refuses_a_changed_prompt_relaunch() {
   seat_incomplete_relaunch_case changed-prompt
