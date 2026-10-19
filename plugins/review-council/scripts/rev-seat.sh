@@ -161,6 +161,11 @@ check_rc=$?
 if [ "$check_rc" -ne 0 ]; then
   [ -z "$check_error" ] || printf 'rev-seat: %s\n' "$check_error" >&2
   [ -z "$check_error" ] || printf '%s\n' "$check_error" >> "$LOG"
+  if [ "$check_rc" -ne 2 ]; then
+    # No provider launched, so a local check error must preserve its previous completion evidence.
+    echo "seat=$SEAT round=$ROUND exit=$check_rc findings=-"
+    exit "$check_rc"
+  fi
   finish "$check_rc"
 fi
 rm -f "$EXITF"
