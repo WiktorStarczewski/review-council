@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1
+
+- Discovery-seat replacements render with the correct phase and retain their
+  canonical assignment instead of failing prompt preparation.
+- Required reads for deleted and renamed files bind to the reviewed snapshot.
+  Historical deletion lines remain context, and canonical validation preserves
+  the existing evidence-read and bounded-work gates.
+
 ## 0.6.0
 
 - An exit-0 result whose summary begins `INCOMPLETE PROOF` retires its assignment
