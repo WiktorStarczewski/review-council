@@ -491,8 +491,22 @@ EOC
     esac
     echo 'Only exact full-read artifacts and document inputs named in this prompt are exceptions.'
     printf '4. Shell commands that print source, diffs, or logs must select at most %s inclusive lines, so `END - START + 1 <= %s`. ' "$READ_LINES" "$READ_LINES"
+    printf 'Shell searches over multiple files need a global `| head -81` limiter; at most 80 result lines are accepted, '
+    if [ -n "$EVIDENCE" ]; then
+      printf 'and an 81st line is an advisory with no proof credit for that call when every hard proof obligation is satisfied. Narrow and repeat the search within the 80-result bound if its evidence is needed. '
+    else
+      printf 'and an 81st line invalidates the audit. '
+    fi
     cat <<'EOC'
-Shell searches over multiple files need a global `| head -81` limiter; at most 80 result lines are accepted, and an 81st line invalidates the audit. `rg --max-count` alone is per file. Use portable byte-preserving `sed -n 'START,ENDp' 'FILE'` for source windows. Never put backticks or command substitutions in shell search patterns. Do not use `nl -ba ... | sed`; its added prefixes change the bytes, and a rejected call invalidates the audit. `head` limits lines, not bytes: keep searches off generated or minified files such as `dist/`, where one line can pass the output ceiling. Read original source from the working tree; `git show` of the base or any other revision is context only and never satisfies a required read or a citation.
+`rg --max-count` alone is per file. Use portable byte-preserving `sed -n 'START,ENDp' 'FILE'` for source windows. Never put backticks or command substitutions in shell search patterns.
+EOC
+    if [ -n "$EVIDENCE" ]; then
+      echo 'Do not use `nl -ba ... | sed`; its added prefixes change the bytes and give that call no proof credit. Repeat needed source with byte-preserving bounded reads. An overflowing search or transformed exploratory read alone does not invalidate the whole assignment once every hard proof obligation is satisfied. Hard audit failures remain invalid. Missing required patch, chunk, segment, packet or original-source proof remains invalid. Unsubstantiated finding citations remain invalid.'
+    else
+      echo 'Do not use `nl -ba ... | sed`; its added prefixes change the bytes, and a rejected call invalidates the audit.'
+    fi
+    cat <<'EOC'
+`head` limits lines, not bytes: keep searches off generated or minified files such as `dist/`, where one line can pass the output ceiling. Read original source from the working tree; `git show` of the base or any other revision is context only and never satisfies a required read or a citation.
 EOC
     printf '5. Batch independent bounded tool calls into one turn with a 32 KiB combined output ceiling. '
     if [ -n "$EVIDENCE" ]; then
