@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
         proof_keys = ('path', 'line_start', 'line_end', 'blob_tree', 'blob_oid', 'content_sha256')
         proofs = [{key: required[key] for key in proof_keys}
                   for required in packet['required_source_ranges']]
-        repository = module.Repository(session)
+        repository = module.Repository(session.resolve())
         entries = repository.entries(manifest['snapshot_tree'])
         packet_ranges = [{'path': row['path'], 'line_start': row['line_start'],
                           'line_end': row['line_end'], 'origin': 'packet'}
@@ -811,7 +811,7 @@ def write_agent_audit(session, label, seat):
     proof_keys = ('path', 'line_start', 'line_end', 'blob_tree', 'blob_oid', 'content_sha256')
     proofs = [{key: required[key] for key in proof_keys}
               for required in packet['required_source_ranges']]
-    repository = module.Repository(session)
+    repository = module.Repository(session.resolve())
     entries = repository.entries(manifest['snapshot_tree'])
     packet_ranges = [{'path': row['path'], 'line_start': row['line_start'],
                       'line_end': row['line_end'], 'origin': 'packet'}

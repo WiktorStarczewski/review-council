@@ -524,8 +524,8 @@ PY
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r24-sol.json"
 
     write_transcript() {
-      python3 - "$manifest" "$S/r24-sol.stream.ndjson" "$R" "$1" <<'PY'
-import json, pathlib, shlex, sys
+      python3 - "$manifest" "$S/r24-sol.stream.ndjson" "$R" "$1" "$SCRIPTS/rev-evidence.py" <<'PY'
+import hashlib, importlib.util, json, pathlib, re, shlex, sys
 manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2])
 root = pathlib.Path(sys.argv[3]); mode = sys.argv[4]; session = pathlib.Path(sys.argv[1]).parent
 assignment = manifest['assignments']['sol']
@@ -581,11 +581,32 @@ if mode == 'unassigned':
     command('chunk-unassigned', 'cat -- ' + shlex.quote(str(extra)), extra.read_text())
 if mode != 'packet-first':
     packets(mode == 'search-before-final-packet')
+for number, required in enumerate(manifest['source_context']['seats']['sol']['required_source_ranges']):
+    for segment in required['segments']:
+        path = session / segment['artifact']
+        command('segment-%d-%d' % (number, segment['index']),
+                shlex.join(['cat', '--', str(path)]), path.read_text())
 index = session / f"r{manifest['label']}-evidence.md"
 command('evidence-index', 'cat -- ' + shlex.quote(str(index)), index.read_text())
-source = root / 'src/large.py'
 if manifest['source_context']['seats']['sol']['source_read_required']:
-    command('source', "sed -n '1,1p' 'src/large.py'", source.read_text().splitlines(keepends=True)[0])
+    prompt = (session / f"r{manifest['label']}-sol.prompt.md").read_text()
+    target = re.search(r'^Required post-index original-source target: (.+):(\d+)-(\d+) '
+                       r'tree (\w+) blob (\w+) content SHA-256 (\w+) reasons ', prompt, re.M)
+    assert target
+    path, start, end, tree, oid, content_hash = target.groups()
+    start, end = int(start), int(end)
+    spec = importlib.util.spec_from_file_location('chunk_evidence', sys.argv[5])
+    evidence = importlib.util.module_from_spec(spec); spec.loader.exec_module(evidence)
+    repository = evidence.Repository(session.resolve())
+    entry = repository.entries(tree)[path]
+    assert tree == manifest['snapshot_tree'] and entry[1] == oid
+    lines = evidence.split_lf_lines(repository.blob(entry))
+    assert hashlib.sha256(b''.join(lines[start - 1:end])).hexdigest() == content_hash
+    for first in range(start, end + 1, 240):
+        last = min(first + 239, end)
+        command('source-' + str(first), shlex.join(['git', 'show', tree + ':' + path])
+                + ' | ' + shlex.join(['sed', '-n', f'{first},{last}p']),
+                b''.join(lines[first - 1:last]).decode())
 if mode == 'expansion-overflow':
     for index in range(17):
         command('search-' + str(index), "rg -n 'value_1' . | head -80",

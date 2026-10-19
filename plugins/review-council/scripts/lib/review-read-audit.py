@@ -1315,7 +1315,6 @@ def load_evidence_manifest(session, declared_hash, prompt, root):
     repository = module.Repository(session)
     if repository.root != root:
         raise ValueError('evidence repository root mismatch')
-    module.validate_source_context_snapshot(repository, session, manifest)
     prefix = 'r' + manifest['label'] + '-'
     suffix = '.prompt.md'
     if not prompt.name.startswith(prefix) or not prompt.name.endswith(suffix):

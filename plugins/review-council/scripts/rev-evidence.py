@@ -2433,13 +2433,14 @@ def repository_source_target(packet, snapshot):
     return row
 
 
-def repository_source_read_required(packet, enabled, snapshot):
+def repository_source_read_required(packet, enabled, snapshot, assignment=None):
     if not enabled:
         return bool(packet['components'])
     rows = [row for shard in packet['shards'] for row in shard['ranges']]
     rows += packet['required_source_ranges']
-    needs_read = any(packet['omitted'].values()) or any(
-        'declaration:changed-line-anchor' in row['reasons'] for row in rows)
+    needs_read = (bool((assignment or {}).get('plan_clusters'))
+                  or any(packet['omitted'].values()) or any(
+                      'declaration:changed-line-anchor' in row['reasons'] for row in rows))
     return needs_read and repository_source_target(packet, snapshot) is not None
 
 
@@ -2843,7 +2844,8 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
                                  'mandatory_source_windows': mandatory_source_windows,
                                  'source_read_required': False}
         packet = result['seats'][seat]
-        packet['source_read_required'] = repository_source_read_required(packet, enabled, snapshot)
+        packet['source_read_required'] = repository_source_read_required(
+            packet, enabled, snapshot, assignment)
     return result, artifacts
 
 
@@ -2985,20 +2987,31 @@ def validate_source_context_snapshot(repo, session, manifest):
                 rebuilt += part
             if rebuilt != parent or digest(parent) != row['content_sha256']:
                 raise ValueError('required source content does not match snapshot: ' + row['path'])
-    absent = [seat for seat, packet in context['seats'].items()
-              if context['enabled'] and packet['components']
-              and repository_source_target(packet, manifest['snapshot_tree']) is None]
-    if absent:
+    if context['enabled']:
         _, hunks, categories, _ = repo.changes(manifest['base_tree'], manifest['snapshot_tree'])
         canonical_facts = facts(repo, manifest['snapshot_tree'], hunks, categories,
                                 manifest['base_tree'])
         canonical_facts['hunks'] = hunks
+        ordered_assignments = {
+            row['seat']: manifest['assignments'][row['seat']]
+            for row in read_json(session / 'roster.json')['seats']
+            if row.get('seat') in manifest['assignments']}
         canonical, _ = source_context(
             repo, manifest['snapshot_tree'], manifest['base_tree'], canonical_facts,
-            manifest['components'], manifest['assignments'], manifest['mechanical_owner'],
+            manifest['components'], ordered_assignments, manifest['mechanical_owner'],
             'r' + manifest['label'], True, manifest.get('plan', {}).get('clusters'))
-        for seat in absent:
-            if repository_source_target(canonical['seats'][seat], manifest['snapshot_tree']) is not None:
+        identity_keys = ('path', 'blob_tree', 'blob_oid', 'blob_mode', 'line_start',
+                         'line_end', 'content_sha256')
+
+        def target_identity(packet):
+            target = repository_source_target(packet, manifest['snapshot_tree'])
+            return {key: target[key] for key in identity_keys} if target is not None else None
+
+        for seat, packet in context['seats'].items():
+            expected = canonical['seats'][seat]
+            if target_identity(packet) != target_identity(expected):
+                raise ValueError('source context target does not match canonical snapshot: ' + seat)
+            if packet['source_read_required'] is not expected['source_read_required']:
                 raise ValueError('invalid source context read requirement: ' + seat)
 
 
@@ -3403,7 +3416,7 @@ def validate_source_context(session, manifest, evidence):
         if any(required_counts[key] > omitted[key] for key in SOURCE_CONTEXT_REASONS):
             raise ValueError('source omission ranges exceed omitted identities')
         expected_read_required = repository_source_read_required(
-            packet, context['enabled'], context['snapshot_tree'])
+            packet, context['enabled'], context['snapshot_tree'], assignment)
         if packet['source_read_required'] is not expected_read_required:
             raise ValueError('invalid source context read requirement: ' + seat)
     for ranges in seen_ranges.values():
@@ -4037,6 +4050,9 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
             manifest['source']['mode'] == 'worktree')
         if rows != manifest['instructions'] or packet != (session / f'{prefix}-instructions.md').read_bytes():
             raise ValueError('repository instruction coverage mismatch')
+    if not offline:
+        if not fresh:
+            repo = Repository(session)
         validate_source_context_snapshot(repo, session, manifest)
     return manifest, digest(raw)
 
@@ -5071,8 +5087,7 @@ def render(args):
 
 def render_panel(args):
     """Render every seat from one manifest read; validate-prompt binds the embedded hash."""
-    raw = Path(args.manifest).read_bytes()
-    manifest = json.loads(raw)
+    manifest, mh = validated_manifest(args.manifest, replay_plan_searches=False)
     output = Path(args.output_dir)
     if output.is_symlink() or not output.is_dir():
         raise ValueError('fragment output is not a directory')
@@ -5080,7 +5095,6 @@ def render_panel(args):
         raise ValueError('duplicate panel seat')
     if args.phase is not None and args.phase != manifest['phase']:
         raise ValueError('evidence manifest phase is ' + str(manifest['phase']) + ', not ' + args.phase)
-    mh = digest(raw)
     for seat in args.seats:
         if not SAFE_NAME.fullmatch(seat):
             raise ValueError('invalid panel seat: ' + seat)

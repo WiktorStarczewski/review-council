@@ -245,8 +245,8 @@ PY
         printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r1p-$seat.json"
       fi
       printf '0\n' > "$S/r1p-$seat.exit"
-      python3 - "$manifest" "$seat" "$S/r1p-$seat.stream.ndjson" <<'PY'
-import json, pathlib, sys
+      python3 - "$manifest" "$seat" "$S/r1p-$seat.stream.ndjson" "$SCRIPTS/rev-evidence.py" <<'PY'
+import hashlib, importlib.util, json, pathlib, re, shlex, sys
 m = json.load(open(sys.argv[1])); seat = sys.argv[2]; out = pathlib.Path(sys.argv[3])
 session = pathlib.Path(sys.argv[1]).parent; root = pathlib.Path(m['session']).parent / 'plan-evidence-root'
 events = []
@@ -280,11 +280,32 @@ else:
 context = m['source_context']['seats'][seat]
 for index, shard in enumerate(context['shards'], 1):
     path = session / shard['artifact']; call('packet-' + str(index), 'cat -- ' + str(path), path.read_text(), path)
+for index, required in enumerate(context['required_source_ranges'], 1):
+    for segment in required['segments']:
+        path = session / segment['artifact']
+        call('segment-%d-%d' % (index, segment['index']),
+             shlex.join(['cat', '--', str(path)]), path.read_text(), path)
 index = session / f"r{m['label']}-evidence.md"
 call('evidence-index', 'cat -- ' + str(index), index.read_text(), index)
 if context['source_read_required']:
-    path = root / 'src/service.ts'; call('source', "sed -n '1,2p' " + str(path),
-        ''.join(path.read_text().splitlines(keepends=True)[:2]), path, 1, 2)
+    prompt = (session / f"r{m['label']}-{seat}.prompt.md").read_text()
+    target = re.search(r'^Required post-index original-source target: (.+):(\d+)-(\d+) '
+                       r'tree (\w+) blob (\w+) content SHA-256 (\w+) reasons ', prompt, re.M)
+    assert target
+    relative, start, end, tree, oid, content_hash = target.groups()
+    start, end = int(start), int(end)
+    spec = importlib.util.spec_from_file_location('plan_evidence', sys.argv[4])
+    evidence = importlib.util.module_from_spec(spec); spec.loader.exec_module(evidence)
+    repository = evidence.Repository(session.resolve())
+    entry = repository.entries(tree)[relative]
+    assert tree == m['snapshot_tree'] and entry[1] == oid
+    lines = evidence.split_lf_lines(repository.blob(entry))
+    assert hashlib.sha256(b''.join(lines[start - 1:end])).hexdigest() == content_hash
+    for first in range(start, end + 1, 240):
+        last = min(first + 239, end)
+        call('source-' + str(first), shlex.join(['git', 'show', tree + ':' + relative])
+             + ' | ' + shlex.join(['sed', '-n', f'{first},{last}p']),
+             b''.join(lines[first - 1:last]).decode(), root / relative, first, last - first + 1)
 out.write_text(''.join(json.dumps(event) + '\n' for event in events))
 PY
       local adapter=codex
@@ -1839,8 +1860,8 @@ PY
       --plan "$S/r1p-plan.md" --evidence "$manifest") || return
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r1p-sol.json"
     printf '0\n' > "$S/r1p-sol.exit"
-    python3 - "$manifest" "$S/r1p-sol.stream.ndjson" "$R" <<'PY'
-import json, pathlib, sys
+    python3 - "$manifest" "$S/r1p-sol.stream.ndjson" "$R" "$SCRIPTS/rev-evidence.py" <<'PY'
+import hashlib, importlib.util, json, pathlib, re, shlex, sys
 m = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2]); root = pathlib.Path(sys.argv[3])
 session = pathlib.Path(sys.argv[1]).parent; assignment = m['assignments']['sol']; events = []
 def call(identity, path, output, command=None):
@@ -1868,9 +1889,24 @@ for index, row in enumerate(context['required_source_ranges'], 1):
         call('segment-%d-%d' % (index, segment['index']), path, path.read_text())
 index = session / 'r1p-evidence.md'; call('evidence-index', index, index.read_text())
 if context['source_read_required']:
-    path = root / 'src/service.ts'
-    call('source', path, ''.join(path.read_text().splitlines(keepends=True)[:2]),
-         "sed -n '1,2p' " + str(path))
+    prompt = (session / 'r1p-sol.prompt.md').read_text()
+    target = re.search(r'^Required post-index original-source target: (.+):(\d+)-(\d+) '
+                       r'tree (\w+) blob (\w+) content SHA-256 (\w+) reasons ', prompt, re.M)
+    assert target
+    relative, start, end, tree, oid, content_hash = target.groups()
+    start, end = int(start), int(end)
+    spec = importlib.util.spec_from_file_location('single_plan_evidence', sys.argv[4])
+    evidence = importlib.util.module_from_spec(spec); spec.loader.exec_module(evidence)
+    repository = evidence.Repository(session.resolve())
+    entry = repository.entries(tree)[relative]
+    assert tree == m['snapshot_tree'] and entry[1] == oid
+    lines = evidence.split_lf_lines(repository.blob(entry))
+    assert hashlib.sha256(b''.join(lines[start - 1:end])).hexdigest() == content_hash
+    for first in range(start, end + 1, 240):
+        last = min(first + 239, end)
+        call('source-' + str(first), root / relative, b''.join(lines[first - 1:last]).decode(),
+             shlex.join(['git', 'show', tree + ':' + relative])
+             + ' | ' + shlex.join(['sed', '-n', f'{first},{last}p']))
 out.write_text(''.join(json.dumps(event) + '\n' for event in events))
 PY
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
