@@ -1315,6 +1315,7 @@ def load_evidence_manifest(session, declared_hash, prompt, root):
     repository = module.Repository(session)
     if repository.root != root:
         raise ValueError('evidence repository root mismatch')
+    module.validate_source_context_snapshot(repository, session, manifest)
     prefix = 'r' + manifest['label'] + '-'
     suffix = '.prompt.md'
     if not prompt.name.startswith(prefix) or not prompt.name.endswith(suffix):
@@ -1846,17 +1847,21 @@ def ranges_intersect(left, right):
             and right['line_start'] <= left['line_end'])
 
 
-def source_read_requirement_violations(context, boundary_paths, tool_ranges, adapter):
+def source_read_requirement_violations(context, boundary_paths, tool_ranges, adapter,
+                                       snapshot=None, post_index_ranges=None):
     if not context['source_read_required']:
         return []
+    target = (_load_evidence_module().repository_source_target(context, snapshot)
+              if snapshot is not None else None)
+    if target is not None:
+        covered = _load_evidence_module().source_target_covered(
+            target, post_index_ranges or [])
+        return [] if covered else [violation('missing-required-source-read', adapter)]
     required = context['required_source_ranges']
-    omitted = context.get('omitted_source_ranges', [])
     boundary_reads = [row for row in tool_ranges if row['path'] in boundary_paths]
     required_reads = [row for row in tool_ranges
                       if any(ranges_intersect(row, wanted) for wanted in required)]
-    omitted_reads = [row for row in tool_ranges
-                     if any(ranges_intersect(row, wanted) for wanted in omitted)]
-    missing = not (omitted_reads if omitted else boundary_reads or required_reads)
+    missing = not (boundary_reads or required_reads)
     if context['role'] == 'specialist' and required and not required_reads:
         missing = True
     return [violation('missing-required-source-read', adapter)] if missing else []
@@ -2200,7 +2205,8 @@ def assess(args, blocked):
         if call_id in blocked:
             continue
         expected_values = []
-        trees = frozen_entries
+        trees = ({snapshot_tree: frozen_entries[snapshot_tree]}
+                 if snapshot_tree in frozen_entries else {})
         if any('tree' in row for row in call_ranges):
             # The base or any other revision is context only: never a receipt, never a citation.
             if snapshot_tree not in frozen_entries \
@@ -2243,12 +2249,16 @@ def assess(args, blocked):
         if matched:
             credited.add(call_id)
             source_read_call_ids.add(call_id)
+            call_ranges = [{key: row[key] for key in (
+                'path', 'line_start', 'line_end', 'origin')} for row in call_ranges]
             verified_call_ranges[call_id] = call_ranges
             tool_ranges.extend(call_ranges)
         else:
             failures.append(violation('source-output-mismatch', name))
 
     packet_ranges = []
+    post_index_source_ranges = []
+    packet_range_count = 0
     packet_bytes = 0
     packet_shards = 0
     assigned_patch_sha256 = None
@@ -2342,9 +2352,11 @@ def assess(args, blocked):
                 shard = assigned_paths[path]
                 packet_shards += 1
                 packet_bytes += shard['bytes']
+                packet_range_count += len(shard['ranges'])
                 for row in shard['ranges']:
-                    packet_ranges.append({'path': row['path'], 'line_start': row['line_start'],
-                                          'line_end': row['line_end'], 'origin': 'packet'})
+                    if row['blob_tree'] == snapshot_tree:
+                        packet_ranges.append({'path': row['path'], 'line_start': row['line_start'],
+                                              'line_end': row['line_end'], 'origin': 'packet'})
             failures.extend(turn_batch_violations(
                 calls, paced_packet_calls,
                 manifest['source_context']['packet_batch_limit'],
@@ -2514,9 +2526,10 @@ def assess(args, blocked):
                     observed_by_required[required_index].append(segment['index'])
                     observed_required_segments.append(identity)
                     required_segment_calls.append((call_id, turn))
-                    tool_ranges.append({'path': required['path'],
-                                        'line_start': segment['line_start'],
-                                        'line_end': segment['line_end'], 'origin': 'tool'})
+                    if required['blob_tree'] == snapshot_tree:
+                        tool_ranges.append({'path': required['path'],
+                                            'line_start': segment['line_start'],
+                                            'line_end': segment['line_end'], 'origin': 'tool'})
                     source_read_call_ids.add(call_id)
             for required_index, required in enumerate(required_source_ranges):
                 try:
@@ -2588,8 +2601,19 @@ def assess(args, blocked):
                 path for component in manifest['components']
                 if component['id'] in component_ids for path in component['boundary']
             }
+            index_turn = min((calls[call_id][2] for call_id in exact_evidence_index_calls),
+                             default=None)
+            post_index_source_ranges = [
+                {key: row[key] for key in ('path', 'line_start', 'line_end', 'origin')}
+                for call_id, ranges in verified_call_ranges.items()
+                if index_turn is not None and calls[call_id][2] > index_turn
+                for row in ranges]
+            post_index_source_ranges = sorted(
+                {tuple(row.items()): row for row in post_index_source_ranges}.values(),
+                key=lambda row: (row['path'], row['line_start'], row['line_end'], row['origin']))
             failures.extend(source_read_requirement_violations(
-                context, boundary_paths, tool_ranges, args.adapter))
+                context, boundary_paths, tool_ranges, args.adapter, snapshot_tree,
+                post_index_source_ranges))
         except (KeyError, OSError, TypeError, ValueError):
             failures.append(violation('invalid-source-context', args.adapter))
 
@@ -2732,7 +2756,8 @@ def assess(args, blocked):
         'source_read_batches': source_read_batches,
         'packet_shards': packet_shards,
         'packet_bytes': packet_bytes,
-        'packet_ranges': sum(row['origin'] == 'packet' for row in source_ranges),
+        'packet_ranges': packet_range_count,
+        'post_index_source_ranges': post_index_source_ranges,
         'opened_source_ranges': sum(row['origin'] == 'tool' for row in source_ranges),
         'required_source_ranges_covered': required_source_ranges_covered,
         'required_source_range_proofs': required_source_range_proofs,

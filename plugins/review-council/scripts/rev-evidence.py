@@ -2411,6 +2411,52 @@ def grouped_plan_source_promotions(assignment, plan_clusters, delivered, omitted
         selected.update(min(choices)[-1])
 
 
+def repository_source_target(packet, snapshot):
+    """Choose one executable current-source obligation without discarding history."""
+    def eligible(row):
+        return (row['blob_tree'] == snapshot
+                and any(not reason.startswith('gate:') for reason in row['reasons']))
+
+    omitted = [row for row in packet['omitted_source_ranges'] if eligible(row)]
+    delivered = [row for shard in packet['shards'] for row in shard['ranges']]
+    delivered += packet['required_source_ranges']
+    rows = omitted or [row for row in delivered if eligible(row)]
+    if not rows:
+        return None
+    row = min(rows, key=lambda value: (
+        value['priority'], value['path'], value['blob_tree'], value['line_start'],
+        value['line_end']))
+    if row.get('segments'):
+        segment = row['segments'][0]
+        row = dict(row, **{key: segment[key] for key in (
+            'line_start', 'line_end', 'content_sha256')})
+    return row
+
+
+def repository_source_read_required(packet, enabled, snapshot):
+    if not enabled:
+        return bool(packet['components'])
+    rows = [row for shard in packet['shards'] for row in shard['ranges']]
+    rows += packet['required_source_ranges']
+    needs_read = any(packet['omitted'].values()) or any(
+        'declaration:changed-line-anchor' in row['reasons'] for row in rows)
+    return needs_read and repository_source_target(packet, snapshot) is not None
+
+
+def source_target_covered(target, ranges):
+    cursor = target['line_start']
+    for row in sorted((row for row in ranges if row['path'] == target['path']),
+                      key=lambda row: (row['line_start'], row['line_end'])):
+        if row['line_end'] < cursor:
+            continue
+        if row['line_start'] > cursor:
+            return False
+        cursor = max(cursor, row['line_end'] + 1)
+        if cursor > target['line_end']:
+            return True
+    return False
+
+
 def source_context(repo, snapshot, base_tree, evidence, components, assigned, owner, prefix,
                    enabled=True, plan_clusters=None):
     entries = repo.entries(snapshot)
@@ -2795,9 +2841,9 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
                                  'omitted_source_ranges': omitted_source_ranges,
                                  'required_source_ranges': required_ranges,
                                  'mandatory_source_windows': mandatory_source_windows,
-                                 'source_read_required': any(omitted.values()) or any(
-                                     'declaration:changed-line-anchor' in row['reasons']
-                                     for row in context_entries)}
+                                 'source_read_required': False}
+        packet = result['seats'][seat]
+        packet['source_read_required'] = repository_source_read_required(packet, enabled, snapshot)
     return result, artifacts
 
 
@@ -2814,11 +2860,18 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None):
         delivered = [row for shard in packet['shards'] for row in shard['ranges']]
         delivered += packet['required_source_ranges']
         if plan_clusters is not None:
-            direct_calls = len(mandatory_repository_windows(
-                assignment, plan_clusters, delivered))
+            direct_windows = mandatory_repository_windows(assignment, plan_clusters, delivered)
+            target = (repository_source_target(packet, context['snapshot_tree'])
+                      if packet.get('source_read_required') and context.get('snapshot_tree') else None)
+            if target is not None:
+                direct_windows = merge_repository_windows([
+                    *direct_windows, (target['path'], target['line_start'], target['line_end'])])
+            direct_calls = len(direct_windows)
         elif packet.get('source_read_required'):
-            direct_calls = int(bool(packet.get('omitted_source_ranges'))
-                               or not packet['required_source_ranges'])
+            target = (repository_source_target(packet, context['snapshot_tree'])
+                      if context.get('snapshot_tree') else None)
+            direct_calls = ((target['line_end'] - target['line_start'] + READ_LINES) // READ_LINES
+                            if target is not None else 1)
         else:
             direct_calls = 0
         patch_turns = (patch_calls + batch - 1) // batch
@@ -2883,6 +2936,8 @@ def validate_source_context_snapshot(repo, session, manifest):
             if raw is OVERSIZED_BLOB:
                 raise ValueError('source context blob is oversized: ' + row['path'])
             blob_lines[key] = split_lf_lines(raw)
+        if not 1 <= row['line_start'] <= row['line_end'] <= len(blob_lines[key]):
+            raise ValueError('source context blob identity mismatch: ' + row['path'])
         return b''.join(blob_lines[key][row['line_start'] - 1:row['line_end']])
 
     for seat, packet in context['seats'].items():
@@ -2930,6 +2985,21 @@ def validate_source_context_snapshot(repo, session, manifest):
                 rebuilt += part
             if rebuilt != parent or digest(parent) != row['content_sha256']:
                 raise ValueError('required source content does not match snapshot: ' + row['path'])
+    absent = [seat for seat, packet in context['seats'].items()
+              if context['enabled'] and packet['components']
+              and repository_source_target(packet, manifest['snapshot_tree']) is None]
+    if absent:
+        _, hunks, categories, _ = repo.changes(manifest['base_tree'], manifest['snapshot_tree'])
+        canonical_facts = facts(repo, manifest['snapshot_tree'], hunks, categories,
+                                manifest['base_tree'])
+        canonical_facts['hunks'] = hunks
+        canonical, _ = source_context(
+            repo, manifest['snapshot_tree'], manifest['base_tree'], canonical_facts,
+            manifest['components'], manifest['assignments'], manifest['mechanical_owner'],
+            'r' + manifest['label'], True, manifest.get('plan', {}).get('clusters'))
+        for seat in absent:
+            if repository_source_target(canonical['seats'][seat], manifest['snapshot_tree']) is not None:
+                raise ValueError('invalid source context read requirement: ' + seat)
 
 
 def generation_stem(manifest, generations, seat):
@@ -3332,12 +3402,8 @@ def validate_source_context(session, manifest, evidence):
             reason.split(':', 1)[0] for row in represented_omissions for reason in row['reasons'])
         if any(required_counts[key] > omitted[key] for key in SOURCE_CONTEXT_REASONS):
             raise ValueError('source omission ranges exceed omitted identities')
-        anchor_present = any(
-            'declaration:changed-line-anchor' in row['reasons']
-            for shard in shards for row in shard['ranges']) or any(
-                'declaration:changed-line-anchor' in row['reasons'] for row in required)
-        expected_read_required = (bool(expected_components) if not context['enabled']
-                                  else any(omitted.values()) or anchor_present)
+        expected_read_required = repository_source_read_required(
+            packet, context['enabled'], context['snapshot_tree'])
         if packet['source_read_required'] is not expected_read_required:
             raise ValueError('invalid source context read requirement: ' + seat)
     for ranges in seen_ranges.values():
@@ -4087,36 +4153,15 @@ def audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, r
         raise ValueError('noncanonical read audit source ranges: ' + seat)
     packet_ranges = [row for row in ranges if row['origin'] == 'packet']
     tool_ranges = [row for row in ranges if row['origin'] == 'tool']
-    opened = []
+    context = manifest['source_context']['seats'][seat]
+    opened = context['shards']
     packet_keys = {(row['path'], row['line_start'], row['line_end']) for row in packet_ranges}
-    for shard in manifest['source_context']['seats'][seat]['shards']:
-        shard_keys = {(row['path'], row['line_start'], row['line_end']) for row in shard['ranges']}
-        if shard_keys and shard_keys <= packet_keys:
-            opened.append(shard)
-    expected_packet_keys = {(row['path'], row['line_start'], row['line_end'])
-                            for shard in opened for row in shard['ranges']}
+    expected_packet_keys = {
+        (row['path'], row['line_start'], row['line_end'])
+        for shard in opened for row in shard['ranges']
+        if row['blob_tree'] == manifest['snapshot_tree']}
     if packet_keys != expected_packet_keys:
         raise ValueError('read audit packet ranges do not match complete assigned shards: ' + seat)
-    context = manifest['source_context']['seats'][seat]
-    if len(opened) != len(context['shards']):
-        raise ValueError('read audit did not open every assigned source context shard: ' + seat)
-    required_covered = 0
-    required_intersected = False
-    for required in context['required_source_ranges']:
-        cursor = required['line_start']
-        for row in tool_ranges:
-            if (row['path'] == required['path']
-                    and row['line_start'] <= required['line_end']
-                    and required['line_start'] <= row['line_end']):
-                required_intersected = True
-            if row['path'] != required['path'] or row['line_end'] < cursor:
-                continue
-            if row['line_start'] > cursor:
-                break
-            cursor = max(cursor, row['line_end'] + 1)
-            if cursor > required['line_end']:
-                break
-        required_covered += cursor > required['line_end']
     proof_keys = {'path', 'line_start', 'line_end', 'blob_tree', 'blob_oid', 'content_sha256'}
     proofs = audit.get('required_source_range_proofs')
     if (not isinstance(proofs, list)
@@ -4138,6 +4183,22 @@ def audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, r
     } for row in context['required_source_ranges']), key=proof_order)
     if any(proof not in expected_proofs for proof in proofs):
         raise ValueError('required source range proof identity mismatch: ' + seat)
+    required_covered = sum(
+        proof in proofs and (required['blob_tree'] != manifest['snapshot_tree']
+                            or source_target_covered(required, tool_ranges))
+        for required, proof in zip(sorted(context['required_source_ranges'], key=proof_order),
+                                   expected_proofs))
+    historical_segments = sum(
+        len(required['segments']) for required in context['required_source_ranges']
+        if required['blob_tree'] != manifest['snapshot_tree']
+        and {key: required[key] for key in proof_keys} in proofs)
+    target = (repository_source_target(context, manifest['snapshot_tree'])
+              if manifest['source_context']['enabled'] else None)
+    post_index_ranges = audit.get('post_index_source_ranges', [])
+    if (not isinstance(post_index_ranges, list)
+            or any(row not in tool_ranges for row in post_index_ranges)
+            or post_index_ranges != [row for row in tool_ranges if row in post_index_ranges]):
+        raise ValueError('read audit evidence coverage mismatch: ' + seat)
     plan_name = f"r{manifest['label']}-plan.md" if phase == 'plan' else None
     source_findings = [finding for finding in result_data['findings']
                        if finding['file'] != plan_name]
@@ -4148,27 +4209,28 @@ def audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, r
     boundary_paths = {path for component_id in context['components']
                       for path in component_by_id[component_id]['boundary']}
     boundary_intersected = any(row['path'] in boundary_paths for row in tool_ranges)
-    omitted_intersected = any(
-        row['path'] == omitted['path']
-        and row['line_start'] <= omitted['line_end']
-        and omitted['line_start'] <= row['line_end']
-        for row in tool_ranges for omitted in context['omitted_source_ranges'])
+    required_intersected = any(
+        row['path'] == required['path']
+        and row['line_start'] <= required['line_end']
+        and required['line_start'] <= row['line_end']
+        for row in tool_ranges for required in context['required_source_ranges']
+        if required['blob_tree'] == manifest['snapshot_tree'])
+    source_requirement_met = (
+        source_target_covered(target, post_index_ranges) if target is not None
+        else boundary_intersected or required_intersected)
     if (audit['packet_shards'] != len(opened)
             or audit['packet_bytes'] != sum(shard['bytes'] for shard in opened)
-            or audit['packet_ranges'] != len(packet_ranges)
+            or audit['packet_ranges'] != sum(len(shard['ranges']) for shard in opened)
             or audit['opened_source_ranges'] != len(tool_ranges)
-            or bool(tool_ranges) != bool(audit['source_read_calls'])
+            or bool(tool_ranges or historical_segments) != bool(audit['source_read_calls'])
+            or audit['source_read_calls'] < historical_segments
             or (context['source_read_required']
                 and (audit['source_read_calls'] < 1
-                     or (not omitted_intersected if context['omitted_source_ranges']
-                         else not (boundary_intersected or required_intersected))
-                     or (context['required_source_ranges'] and context['role'] == 'specialist'
-                         and not required_intersected)))
+                     or not source_requirement_met))
             or audit['required_source_ranges_covered'] != required_covered
             or audit['required_source_ranges_covered'] != len(proofs)
-            or (context['role'] == 'integration'
-                and (required_covered != len(context['required_source_ranges'])
-                     or proofs != expected_proofs))
+            or required_covered != len(context['required_source_ranges'])
+            or proofs != expected_proofs
             or audit['finding_citations'] != cited
             or cited != len(source_findings)):
         raise ValueError('read audit evidence coverage mismatch: ' + seat)
@@ -5193,10 +5255,9 @@ def render_seat(manifest, mh, seat, plan_source):
     print('Evidence navigation index: '
           + str(Path(manifest['session']) / f"r{manifest['label']}-evidence.md"))
     omitted_ranges = context['omitted_source_ranges'] if manifest['source_context']['enabled'] else []
-    if omitted_ranges:
-        row = min(omitted_ranges, key=lambda value: (
-            value['priority'], value['path'], value['blob_tree'], value['line_start'],
-            value['line_end']))
+    row = (repository_source_target(context, manifest['snapshot_tree'])
+           if manifest['source_context']['enabled'] else None)
+    if row is not None and (omitted_ranges or context['source_read_required']):
         target_kind = 'Required' if context['source_read_required'] else 'Optional'
         print(target_kind + ' post-index original-source target: ' + row['path'] + ':'
               + str(row['line_start']) + '-' + str(row['line_end']) + ' tree '
@@ -5204,8 +5265,12 @@ def render_seat(manifest, mh, seat, plan_source):
               + row['content_sha256'] + ' reasons '
               + json.dumps(row['reasons'], ensure_ascii=True))
         print('Additional omitted source identities retained in manifest: '
-              + str(len(omitted_ranges) - 1)
+              + str(len(omitted_ranges) - int(row in omitted_ranges))
               + '. Read them only for a concrete question that could prove or refute a finding.')
+    elif manifest['source_context']['enabled'] and row is None:
+        print('No eligible current snapshot source target: assigned semantic source ranges '
+              + 'are historical-only or absent from the frozen snapshot; '
+              + 'every listed historical packet and source segment remains required.')
     print('Mechanical owner: ' + str(manifest['mechanical_owner']))
     print('After completing the post-patch evidence order, open original source to prove each '
           + 'finding; expand beyond this index when needed.')
