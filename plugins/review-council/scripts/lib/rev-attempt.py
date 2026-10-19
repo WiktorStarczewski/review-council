@@ -20,6 +20,25 @@ def safe_regular(path):
     return not path.is_symlink() and stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1
 
 
+def private_bytes(path):
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+                         | getattr(os, 'O_NONBLOCK', 0))
+    with os.fdopen(descriptor, 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise ValueError('artifact is not a private regular file: ' + path.name)
+        raw = stream.read()
+        after = os.fstat(stream.fileno())
+        current = path.lstat()
+        def identity(metadata):
+            return (metadata.st_dev, metadata.st_ino, metadata.st_size,
+                    metadata.st_mtime_ns, metadata.st_ctime_ns, metadata.st_nlink)
+        if (not stat.S_ISREG(current.st_mode) or identity(before) != identity(after)
+                or identity(after) != identity(current)):
+            raise ValueError('artifact changed while reading: ' + path.name)
+    return raw
+
+
 def hard_audit_failure(audit: Path) -> bool:
     if not safe_regular(audit) or audit.stat().st_size == 0:
         return False
@@ -29,6 +48,22 @@ def hard_audit_failure(audit: Path) -> bool:
         return False
     return (result.get('schema_version') == 2 and result.get('status') == 'invalid'
             and result.get('evidence_scoped') is True)
+
+
+def incomplete_summary(document) -> bool:
+    return (isinstance(document, dict) and isinstance(document.get('summary'), str)
+            and document['summary'].startswith('INCOMPLETE PROOF'))
+
+
+def incomplete_proof(result: Path) -> bool:
+    try:
+        raw = private_bytes(result)
+    except FileNotFoundError:
+        return False
+    try:
+        return incomplete_summary(json.loads(raw))
+    except (ValueError, RecursionError):
+        return False
 
 
 def latched(session: Path, panel: str, seat: str) -> bool:
@@ -44,9 +79,72 @@ def record_path(session: Path, panel: str, seat: str, prompt: Path):
     return session / 'attempts' / (hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest() + '.json'), identity
 
 
+def retirement_path(session: Path, panel: str, seat: str):
+    return session / f'r{panel}-{seat}.incomplete-proof'
+
+
+def retired_incomplete_proof(session: Path, panel: str, seat: str) -> bool:
+    try:
+        record = json.loads(private_bytes(retirement_path(session, panel, seat)))
+    except FileNotFoundError:
+        return False
+    if (not isinstance(record, dict) or type(record.get('schema_version')) is not int
+            or record['schema_version'] != 1
+            or record.get('panel') != panel or record.get('seat') != seat
+            or type(record.get('exit')) is not int or record['exit'] != 0
+            or not incomplete_summary(record)
+            or any(not isinstance(record.get(key), str) or len(record[key]) != 64
+                   or not set(record[key]) <= set('0123456789abcdef')
+                   for key in ('prompt_sha256', 'result_sha256'))):
+        raise ValueError('invalid incomplete-proof retirement: ' + seat)
+    return True
+
+
+def remember_incomplete_proof(session: Path, panel: str, seat: str, prompt: Path):
+    if retired_incomplete_proof(session, panel, seat):
+        return
+    result = session / f'r{panel}-{seat}.json'
+    try:
+        raw = private_bytes(result)
+    except FileNotFoundError:
+        return
+    try:
+        document = json.loads(raw)
+    except (ValueError, RecursionError):
+        return
+    if not incomplete_summary(document):
+        return
+    _, identity = record_path(session, panel, seat, prompt)
+    record = dict(identity, schema_version=1, exit=0, summary=document['summary'],
+                  result_sha256=hashlib.sha256(raw).hexdigest())
+    descriptor, _ = open_private(retirement_path(session, panel, seat))
+    with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+        json.dump(record, stream, sort_keys=True, separators=(',', ':'))
+        stream.write('\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def completed_launch(session: Path, panel: str, seat: str, prompt: Path) -> bool:
+    """Only the current explicit exit can establish an unrecorded completion."""
+    exit_path = session / f'r{panel}-{seat}.exit'
+    try:
+        return private_bytes(exit_path).strip() == b'0'
+    except FileNotFoundError:
+        return False
+
+
+def ended_by_incomplete_proof(session: Path, panel: str, seat: str, prompt: Path) -> bool:
+    """A completed launch's INCOMPLETE PROOF result ends its assignment; a failed launch keeps its exact retry."""
+    return (retired_incomplete_proof(session, panel, seat)
+            or (completed_launch(session, panel, seat, prompt)
+                and incomplete_proof(session / f'r{panel}-{seat}.json')))
+
+
 def terminal_failure(session: Path, panel: str, seat: str, prompt: Path) -> bool:
-    """The assignment failed for good: a hard audit, or its one exact retry also exited 1 or 2."""
-    if latched(session, panel, seat):
+    """The assignment failed for good: a hard audit, a completed launch's incomplete proof, or its one
+    exact retry also exited 1 or 2."""
+    if latched(session, panel, seat) or ended_by_incomplete_proof(session, panel, seat, prompt):
         return True
     exit_path = session / f'r{panel}-{seat}.exit'
     try:
@@ -76,7 +174,7 @@ def open_private(path):
 
 def main():
     command = sys.argv[1] if len(sys.argv) > 1 else None
-    if (command, len(sys.argv)) not in (('reserve', 6), ('record', 7)):
+    if (command, len(sys.argv)) not in (('check', 6), ('reserve', 6), ('record', 7)):
         return 1
     session = Path(sys.argv[2]).resolve()
     panel, seat = sys.argv[3], sys.argv[4]
@@ -96,10 +194,17 @@ def main():
         return 1
     with os.fdopen(panel_descriptor, 'r+', encoding='utf-8') as panel_lock:
         fcntl.flock(panel_lock, fcntl.LOCK_EX)
-        if command == 'reserve' and latched(session, panel, seat):
+        if command in ('check', 'reserve') and latched(session, panel, seat):
             print(f'{seat} under label {panel} failed a hard evidence audit; replace the assignment '
                   'on another eligible seat, never relaunch it', file=sys.stderr)
             return 2
+        if command in ('check', 'reserve') and ended_by_incomplete_proof(session, panel, seat, Path(sys.argv[5])):
+            remember_incomplete_proof(session, panel, seat, Path(sys.argv[5]))
+            print(f'{seat} under label {panel} returned an INCOMPLETE PROOF result; replace the assignment '
+                  'on another eligible seat, never relaunch it', file=sys.stderr)
+            return 2
+        if command == 'check':
+            return 0
         path, identity = record_path(session, panel, seat, Path(sys.argv[5]))
         if command == 'record' and not path.exists():
             return 1
@@ -135,8 +240,14 @@ def main():
             stream.write('\n')
             stream.flush()
             os.fsync(stream.fileno())
+        if command == 'record' and sys.argv[6] == '0':
+            remember_incomplete_proof(session, panel, seat, Path(sys.argv[5]))
         return 0
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, RecursionError) as error:
+        print('attempt state: ' + str(error), file=sys.stderr)
+        sys.exit(1)

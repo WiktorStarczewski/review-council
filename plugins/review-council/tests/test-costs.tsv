@@ -234,8 +234,10 @@ t-runner.sh::test_runner_writable_fixture_copies_from_frozen_sources	1	normal
 t-scopeenv.sh::test_scopeenv	1	normal
 t-seat-claude.sh::test_seat_claude_cli_scrubs_parent_session	1	normal
 t-seat.sh::test_seat_codex	1	normal
+t-seat.sh::test_seat_incomplete_proof_refuses_a_relaunch	1	normal
 t-seat.sh::test_seat_process_group_cancellation_preserves_partial_stream	4	exclusive
 t-seat.sh::test_seat_rejects_retired_grok_adapter	1	normal
+t-seat.sh::test_seat_zero_tool_incomplete_proof_keeps_its_retry	1	normal
 t-seat2.sh::test_seat_classify_exec	1	normal
 t-skill.sh::test_skill_contract	1	normal
 t-squash.sh::test_squash	1	normal
@@ -353,3 +355,8 @@ t-prompt-cost.sh::test_prompt_cost_structured_baseline_invalid	5	normal
 t-seat.sh::test_seat_codex_instructions_required	1	normal
 t-evidence.sh::test_evidence_current_coverage	40	normal
 t-read-bounds.sh::test_native_source_batch_redistribution_retirement	3	normal
+t-seat.sh::test_seat_hardlinked_incomplete_proof_refuses_a_relaunch	1	normal
+t-seat.sh::test_seat_incomplete_proof_refuses_a_changed_prompt_relaunch	1	normal
+t-seat.sh::test_seat_symlinked_incomplete_proof_refuses_a_relaunch	1	normal
+t-seat.sh::test_seat_unrecorded_failed_incomplete_proof_keeps_its_exact_retry	1	normal
+t-seat.sh::test_seat_zero_tool_retry_completed_incomplete_proof_is_terminal	1	normal

@@ -156,6 +156,18 @@ has_tool_call() {
 # one WITHOUT reading anything, even when the prompt says to run tools first (seen live: summary "I'll
 # inspect the diff…", zero findings, zero tool calls). An answer with no tool calls is not a review: retry
 # once at the same effort, then fail the seat so the orchestrator's retry/skip rule applies.
+check_error=$(python3 "$HERE/lib/rev-attempt.py" check "$SESSION" "$ROUND" "$SEAT" "$PROMPT" 2>&1)
+check_rc=$?
+if [ "$check_rc" -ne 0 ]; then
+  [ -z "$check_error" ] || printf 'rev-seat: %s\n' "$check_error" >&2
+  [ -z "$check_error" ] || printf '%s\n' "$check_error" >> "$LOG"
+  if [ "$check_rc" -ne 2 ]; then
+    # No provider launched, so a local check error must preserve its previous completion evidence.
+    echo "seat=$SEAT round=$ROUND exit=$check_rc findings=-"
+    exit "$check_rc"
+  fi
+  finish "$check_rc"
+fi
 rm -f "$EXITF"
 attempt=0
 while :; do
@@ -181,8 +193,8 @@ while :; do
     codex|gemini|claude)
       if [ "$rc" -eq 0 ] && ! has_tool_call; then
         echo "$ADAPTER answered without a single tool call (attempt $attempt) - not a review" >> "$LOG"
-        if [ "$attempt" -lt 2 ]; then continue; fi
         rm -f "$OUT"
+        if [ "$attempt" -lt 2 ]; then continue; fi
         rc=1
       fi;;
   esac
