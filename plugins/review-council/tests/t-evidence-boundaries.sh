@@ -109,3 +109,134 @@ with tempfile.TemporaryDirectory(prefix='deleted-symbol-') as tmp:
 PY
   assert_eq "deleted declarations retain surviving caller evidence" "$?" 0
 }
+
+test_generated_lexical_callers_do_not_become_source_obligations() {
+  ( local R="$T/generated-caller-root" S="$T/generated-caller-session"
+    mkrepo "$R"; mkdir -p "$R/src" "$S"
+    python3 - "$R" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+(root / 'src/main.py').write_text('def options(value):\n    return value + 1\n')
+(root / 'src/consumer.py').write_text(
+    'from main import options\n\ndef consume():\n    return options(1)\n')
+(root / 'src/original.ts').write_text(
+    'export function consumeOriginal() { return options(2); }\n')
+source_map = json.dumps({
+    'version': 3, 'file': 'bundle.js', 'sources': ['../src/original.ts'],
+    'sourcesContent': ['options(2);\n' + 'x' * (20 * 1024)],
+    'names': ['options'], 'mappings': '',
+}, separators=(',', ':')) + '\n'
+outputs = {
+    '00-first.js.map': source_map,
+    'zz-last.js.map': source_map,
+    'dist/bundle.min.js': 'options(2);\n',
+    'generated/bundle.js': 'options(2);\n',
+    'emitted/bundle.js': '// @generated\noptions(2);\n',
+}
+for path, body in outputs.items():
+    target = root / path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body)
+PY
+    git -C "$R" add . && git -C "$R" commit -qm "generated caller base"
+    local base manifest
+    base=$(git -C "$R" rev-parse HEAD)
+    printf 'def options(value):\n    return value + 2\n' > "$R/src/main.py"
+    printf "REV_BASE='%s'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" "$base" "$R" > "$S/scope.env"
+    : > "$S/files.txt"; : > "$S/untracked.txt"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+    manifest=$(REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 1 --phase discovery) || return
+    python3 - "$manifest" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+manifest = json.loads(path.read_text())
+rows = [row for packet in manifest['source_context']['seats'].values()
+        for shard in packet['shards'] for row in shard['ranges']]
+rows += [row for packet in manifest['source_context']['seats'].values()
+         for row in packet['required_source_ranges']]
+for caller in ('src/consumer.py', 'src/original.ts'):
+    assert any(row['path'] == caller and any(
+        reason in ('production-caller:options', 'extra-caller:options')
+        for reason in row['reasons']) for row in rows), (caller, rows)
+generated = {'00-first.js.map', 'zz-last.js.map', 'dist/bundle.min.js',
+             'generated/bundle.js', 'emitted/bundle.js'}
+selected = [row for row in rows if row['path'] in generated]
+assert not selected, ('unchanged generated lexical callers became source obligations', selected)
+assert any(row['path'] in ('src/consumer.py', 'src/original.ts')
+           and 'production-caller:options' in row['reasons'] for row in rows), rows
+PY
+    assert_eq "generated lexical noise leaves authored caller proof selected" "$?" 0
+  )
+}
+
+test_generated_declarations_and_changed_outputs_remain_reviewable() {
+  ( local R="$T/generated-proof-root" S="$T/generated-proof-session" cargo_home="$T/generated-proof-cargo"
+    mkrepo "$R"; mkdir -p "$R/src" "$R/generated" "$S"
+    printf 'def options(value):\n    return value + 1\n' > "$R/src/main.py"
+    printf '// @generated\nexport function options(value: number): number;\n' > "$R/generated/api.d.ts"
+    printf '{"version":3,"sourcesContent":["options(1);"],"mappings":""}\n' > "$R/generated/bundle.js.map"
+    cat > "$R/Cargo.lock" <<'EOF'
+version = 3
+
+[[package]]
+name = "pinned"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0000000000000000000000000000000000000000000000000000000000000000"
+EOF
+    local dependency="$cargo_home/registry/src/index.crates.io-0/pinned-1.0.0"
+    mkdir -p "$dependency/src"
+    printf '// @generated\npub fn options() {}\n' > "$dependency/src/lib.rs"
+    git -C "$R" add . && git -C "$R" commit -qm "generated proof base"
+    local base manifest
+    base=$(git -C "$R" rev-parse HEAD)
+    printf 'def options(value):\n    return value + 2\n' > "$R/src/main.py"
+    printf '// @generated\nexport function options(value: number, strict: boolean): number;\n' > "$R/generated/api.d.ts"
+    printf '{"version":3,"sourcesContent":["options(2);"],"mappings":""}\n' > "$R/generated/bundle.js.map"
+    printf "REV_BASE='%s'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" "$base" "$R" > "$S/scope.env"
+    : > "$S/files.txt"; : > "$S/untracked.txt"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+    manifest=$(env -u REV_DEPS_DIR CARGO_HOME="$cargo_home" REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 1 --phase discovery) || return
+    python3 - "$manifest" "$dependency" "$SCRIPTS/rev-prompt.sh" <<'PY'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+path = Path(sys.argv[1])
+manifest = json.loads(path.read_text())
+owner = manifest['mechanical_owner']
+patch = Path(manifest['assignments'][owner]['patch']).read_text()
+assert 'generated/api.d.ts' in patch and 'strict: boolean' in patch, patch
+assert 'generated/bundle.js.map' in patch and 'options(2);' in patch, patch
+rows = [row for packet in manifest['source_context']['seats'].values()
+        for shard in packet['shards'] for row in shard['ranges']]
+rows += [row for packet in manifest['source_context']['seats'].values()
+         for row in packet['required_source_ranges']]
+assert any(row['path'] == 'generated/api.d.ts' and 'declaration:options' in row['reasons']
+           and row['blob_tree'] == manifest['snapshot_tree'] for row in rows), rows
+view = manifest['dependency_view']
+assert view['crates'] == ['pinned-1.0.0'], view
+linked = Path(view['path']) / 'pinned-1.0.0/src/lib.rs'
+assert linked.resolve() == Path(sys.argv[2]).resolve() / 'src/lib.rs'
+assert linked.read_text() == '// @generated\npub fn options() {}\n'
+env = dict(os.environ)
+env.pop('REV_DEPS_DIR', None)
+prompt_path = subprocess.check_output(
+    [sys.argv[3], str(path.parent), '1', owner, manifest['assignments'][owner]['bundle'],
+     'generated proof', '--evidence', str(path)], env=env, text=True).strip()
+prompt = Path(prompt_path).read_text()
+assert f'Read pinned dependency source only under {view["path"]}.' in prompt, prompt
+PY
+    assert_eq "generated declarations, changed output and explicit pinned dependencies stay reviewable" "$?" 0
+  )
+}
