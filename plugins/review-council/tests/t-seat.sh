@@ -300,32 +300,66 @@ SH
   done
   seat_env_reset "$_path"
 }
-test_seat_incomplete_proof_refuses_a_relaunch() {
+seat_incomplete_relaunch_case() {
+  local variant=$1 expected_calls=1
   local _path="$PATH"; seat_env
-  local S="$T/seat-incomplete-relaunch" bin="$T/seat-incomplete-bin"
+  local S="$T/seat-incomplete-$variant" bin="$T/seat-incomplete-$variant-bin"
+  local calls="$T/incomplete-$variant-calls" artifact
   seat_roster "$S"; echo "review the diff" > "$S/p.md"; mkdir -p "$bin"
   cat > "$bin/codex" <<'SH'
 #!/bin/bash
 out=""; prev=""
 for a in "$@"; do [ "$prev" = "-o" ] && out=$a; prev=$a; done
+if [ "${INCOMPLETE_MODE:-}" = zero-tool ] && [ ! -s "$SHIM_CALLS_FILE" ]; then
+  printf '%s\n' call >> "$SHIM_CALLS_FILE"
+  cat > /dev/null
+  echo '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"INCOMPLETE PROOF"}}'
+  printf '%s\n' '{"summary":"INCOMPLETE PROOF: no assigned source was read","findings":[]}' > "$out"
+  exit 0
+fi
 "$SHIM_CODEX" "$@" || exit
 printf '%s\n' '{"summary":"INCOMPLETE PROOF: the tool budget ran out with source unread","findings":[]}' > "$out"
 SH
   chmod +x "$bin/codex"
-  : > "$T/incomplete-calls"
-  PATH="$bin:$PATH" SHIM_CODEX="$SHIMS/codex" SHIM_MODE=ok SHIM_CALLS_FILE="$T/incomplete-calls" \
+  : > "$calls"
+  [ "$variant" != zero-tool ] || expected_calls=2
+  PATH="$bin:$PATH" SHIM_CODEX="$SHIMS/codex" INCOMPLETE_MODE="$variant" SHIM_MODE=ok SHIM_CALLS_FILE="$calls" \
     "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null 2>&1
-  assert_eq "a tool-using launch that returns an INCOMPLETE PROOF exits 0" "$?" 0
-  cp "$S/r1-codex-sol.json" "$T/incomplete-proof.json"
-  SHIM_MODE=ok SHIM_CALLS_FILE="$T/incomplete-calls" \
-    "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null 2> "$T/incomplete-relaunch.err"
-  assert_eq "rev-seat.sh refuses to relaunch that seat under that label" "$?" 2
-  assert_eq "the refused relaunch spends no provider call" "$(wc -l < "$T/incomplete-calls" | tr -d ' ')" 1
-  assert_exit "the refused relaunch leaves the INCOMPLETE PROOF result in place" 0 \
-    cmp -s "$T/incomplete-proof.json" "$S/r1-codex-sol.json"
-  assert_grep "the refusal names the incomplete proof" "$T/incomplete-relaunch.err" \
-    'codex-sol under label 1 returned an INCOMPLETE PROOF result'
-  assert_grep "the refusal rewrote the exit" "$S/r1-codex-sol.exit" '^2$'
+  assert_eq "$variant: a tool-using incomplete launch exits 0" "$?" 0
+  assert_eq "$variant: only the initial launch and any internal retry call the provider" \
+    "$(wc -l < "$calls" | tr -d ' ')" "$expected_calls"
+  if [ "$variant" = zero-tool ]; then
+    python3 - "$S" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+records = [json.loads(path.read_text()) for path in (Path(sys.argv[1]) / 'attempts').glob('*.json')]
+assert len(records) == 1 and records[0]['calls'] == 2 and records[0]['launches'] == [0], records
+PY
+    assert_eq "zero-tool: two reservations with one successful completion still retire an incomplete assignment" "$?" 0
+  fi
+  for artifact in json read-audit.json stream.ndjson; do
+    cp "$S/r1-codex-sol.$artifact" "$S/before-relaunch.$artifact"
+  done
+  cp "$S/p.md" "$S/launched-prompt.md"
+  case "$variant" in
+    hardlink) ln "$S/r1-codex-sol.json" "$S/retained-result.json";;
+    symlink)
+      mv "$S/r1-codex-sol.json" "$S/retained-result.json"
+      ln -s retained-result.json "$S/r1-codex-sol.json";;
+    changed-prompt) printf '\nAlso check consumer ordering.\n' >> "$S/p.md";;
+  esac
+  SHIM_MODE=ok SHIM_CALLS_FILE="$calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null 2> "$S/relaunch.err"
+  assert_eq "$variant: rev-seat.sh refuses the same assignment" "$?" 2
+  assert_eq "$variant: refusal spends no additional provider call" "$(wc -l < "$calls" | tr -d ' ')" "$expected_calls"
+  for artifact in json read-audit.json stream.ndjson; do
+    assert_exit "$variant: refusal preserves the prior $artifact" 0 \
+      cmp -s "$S/before-relaunch.$artifact" "$S/r1-codex-sol.$artifact"
+  done
+  assert_grep "$variant: refusal identifies the incomplete result" "$S/relaunch.err" 'INCOMPLETE PROOF'
+  assert_grep "$variant: refusal publishes its exit" "$S/r1-codex-sol.exit" '^2$'
   python3 - "$SCRIPTS/lib/rev-attempt.py" "$S" "$S/p.md" <<'PY'
 import importlib.util
 from pathlib import Path
@@ -336,7 +370,82 @@ attempt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(attempt)
 assert attempt.terminal_failure(Path(sys.argv[2]), '1', 'codex-sol', Path(sys.argv[3]))
 PY
-  assert_eq "the assignment stays terminal after the refusal rewrote its exit" "$?" 0
+  assert_eq "$variant: the assignment stays terminal after refusal" "$?" 0
+  SHIM_MODE=ok SHIM_CALLS_FILE="$calls" \
+    "$SCRIPTS/rev-seat.sh" codex-terra "$S" 1 "$S/p.md" >/dev/null 2>&1
+  assert_eq "$variant: a sibling under the same label still launches" "$?" 0
+  SHIM_MODE=ok SHIM_CALLS_FILE="$calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" 2 "$S/p.md" >/dev/null 2>&1
+  assert_eq "$variant: the same seat under the next label still launches" "$?" 0
+  assert_eq "$variant: only the sibling and later label spend new calls" \
+    "$(wc -l < "$calls" | tr -d ' ')" "$((expected_calls + 2))"
+  seat_env_reset "$_path"
+}
+test_seat_incomplete_proof_refuses_a_relaunch() {
+  seat_incomplete_relaunch_case regular
+}
+test_seat_hardlinked_incomplete_proof_refuses_a_relaunch() {
+  seat_incomplete_relaunch_case hardlink
+}
+test_seat_symlinked_incomplete_proof_refuses_a_relaunch() {
+  seat_incomplete_relaunch_case symlink
+}
+test_seat_incomplete_proof_refuses_a_changed_prompt_relaunch() {
+  seat_incomplete_relaunch_case changed-prompt
+}
+test_seat_zero_tool_retry_completed_incomplete_proof_is_terminal() {
+  seat_incomplete_relaunch_case zero-tool
+}
+test_seat_unrecorded_failed_incomplete_proof_keeps_its_exact_retry() {
+  local _path="$PATH"; seat_env
+  local S="$T/seat-unrecorded-failure" bin="$T/unrecorded-failure-bin" real_python
+  local calls="$T/unrecorded-failure-calls"
+  seat_roster "$S"; echo "review the diff" > "$S/p.md"; mkdir -p "$bin"
+  : > "$calls"
+  SHIM_MODE=ok SHIM_CALLS_FILE="$calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null 2>&1
+  assert_eq "the earlier complete launch exits 0" "$?" 0
+  real_python=$(command -v python3)
+  cat > "$bin/python3" <<'SH'
+#!/bin/bash
+if [ "$1" = "$ATTEMPT_HELPER" ] && [ "$2" = record ]; then exit 1; fi
+exec "$REAL_PYTHON" "$@"
+SH
+  cat > "$bin/codex" <<'SH'
+#!/bin/bash
+out=""; prev=""
+for a in "$@"; do [ "$prev" = "-o" ] && out=$a; prev=$a; done
+"$SHIM_CODEX" "$@" || exit
+printf '%s\n' '{"summary":"INCOMPLETE PROOF: the failed launch left source unread","findings":[]}' > "$out"
+exit 1
+SH
+  chmod +x "$bin/python3" "$bin/codex"
+  PATH="$bin:$PATH" REAL_PYTHON="$real_python" ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" \
+    SHIM_CODEX="$SHIMS/codex" SHIM_MODE=ok SHIM_CALLS_FILE="$calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null 2>&1
+  assert_eq "the next incomplete launch fails with exit 1" "$?" 1
+  assert_grep "the failed launch publishes its exit before recording" "$S/r1-codex-sol.exit" '^1$'
+  assert_grep "the fixture reaches the failed completion-record write" "$S/r1-codex-sol.log" \
+    '^cannot record this launch.s exit$'
+  python3 - "$S" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+records = [json.loads(path.read_text()) for path in (Path(sys.argv[1]) / 'attempts').glob('*.json')]
+assert len(records) == 1 and records[0]['calls'] == 2 and records[0]['launches'] == [0], records
+PY
+  assert_eq "the failed record leaves an older success after the new reservation" "$?" 0
+  cp "$S/r1-codex-sol.json" "$S/failed-result.json"
+  SHIM_MODE=ok SHIM_CALLS_FILE="$calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null 2>&1
+  assert_eq "the current failed incomplete launch keeps its real wrapper retry" "$?" 0
+  assert_eq "exactly one provider call is spent on the permitted retry" \
+    "$(wc -l < "$calls" | tr -d ' ')" 3
+  assert_grep "the retry's complete result replaces the failed incomplete result" \
+    "$S/r1-codex-sol.json" '"severity": ?"P1"'
+  assert_grep "the failed result remains available in the retained diagnostic" \
+    "$S/failed-result.json" 'INCOMPLETE PROOF'
   seat_env_reset "$_path"
 }
 test_seat_process_group_cancellation_preserves_partial_stream() {
