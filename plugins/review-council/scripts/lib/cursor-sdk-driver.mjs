@@ -204,7 +204,13 @@ async function runtime() {
   let identity;
   try { identity = JSON.parse(await command('python3',[join(HERE,'../cursor-sdk/verify-runtime.py'),directory])); }
   catch { refuse('runtime_invalid',5); }
-  return {...identity,directory:realpathSync(directory)};
+  if (identity.platform !== process.platform || identity.arch !== process.arch) {
+    refuse('runtime_platform_unavailable',5);
+  }
+  return {...identity,directory:realpathSync(directory),runtime_sha256:hash(JSON.stringify({
+    verified_runtime:identity.runtime_sha256,node:process.version,
+    platform:process.platform,arch:process.arch,
+  }))};
 }
 
 async function sdkImport(identity) {
