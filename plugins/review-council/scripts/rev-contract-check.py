@@ -204,8 +204,8 @@ def execution_policy():
 
 def contract_executor(subject_plugin, subject_alias):
     plugin = Path(__file__).resolve().parents[1]
-    manifest = plugin / '.codex-plugin' / 'plugin.json'
-    if not manifest.is_file() or not (plugin / 'scripts').is_dir():
+    manifests = [plugin / host / 'plugin.json' for host in ('.codex-plugin', '.cursor-plugin')]
+    if not any(manifest.is_file() for manifest in manifests) or not (plugin / 'scripts').is_dir():
         raise ValueError('checker-owned plugin root is unavailable')
     override = os.environ.get('REVIEW_COUNCIL_CONTRACT_RUNNER')
     if override:
