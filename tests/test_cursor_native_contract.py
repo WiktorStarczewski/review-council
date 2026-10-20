@@ -54,6 +54,9 @@ class CursorNativeContractTests(unittest.TestCase):
                             ignore=shutil.ignore_patterns('__pycache__', '*.pyc', 'node_modules',
                                                           '.archives', '.qualification-key'))
         shutil.copy2(REPO / 'LICENSE', source / 'LICENSE')
+        for copied in (source, *source.rglob('*')):
+            if not copied.is_symlink():
+                copied.chmod(copied.stat().st_mode | stat.S_IWUSR)
         plugin = source / 'plugins/review-council'
         before = {path.relative_to(plugin).as_posix():
                   (stat.S_IMODE(path.stat().st_mode), path.read_bytes())
@@ -64,7 +67,7 @@ class CursorNativeContractTests(unittest.TestCase):
                          'cursor-skills/rev/SKILL.md', 'hooks/session-start'):
             self.assertIn(required, before)
         builder = module(source / 'scripts/build-cursor-plugin.py')
-        with self.assertRaises(ValueError,
+        with self.assertRaisesRegex(ValueError, 'output overlaps package source',
                                msg='a generated bundle cannot replace the canonical source tree'):
             builder.build(plugin)
         after = {path.relative_to(plugin).as_posix():
