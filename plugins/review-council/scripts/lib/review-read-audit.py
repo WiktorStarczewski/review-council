@@ -144,13 +144,13 @@ def session_artifact(path, session):
         and path.parent == session
 
 
-def prompt_permissions(prompt, root, session):
+def prompt_permissions(prompt, root, session, *, text=None):
     """Return exact prompt-authorized paths and paths that may be read in full."""
-    prompt = Path(prompt).resolve()
+    prompt = Path(prompt).resolve() if text is None else Path(prompt)
     authorized = {prompt}
     complete = {prompt}
     try:
-        lines = prompt.read_text().splitlines()
+        lines = (prompt.read_text() if text is None else text).splitlines()
     except OSError:
         return authorized, complete
     try:
@@ -197,14 +197,14 @@ def prompt_permissions(prompt, root, session):
     return authorized, complete
 
 
-def validate_prompt_artifact_set(manifest, seat, prompt, root, session):
+def validate_prompt_artifact_set(manifest, seat, prompt, root, session, *, text=None):
     """Reject schema-4 plan prompts that authorize the wrong session artifacts."""
     if not isinstance(manifest, dict):
         return
     if manifest.get('schema_version') != 4 or manifest.get('phase') != 'plan':
         return
     session = Path(session).resolve()
-    prompt = Path(prompt).resolve()
+    prompt = Path(prompt).resolve() if text is None else Path(prompt)
     if Path(manifest.get('session', '')).resolve() != session:
         raise ValueError('prompt session does not match the evidence manifest')
     try:
@@ -216,7 +216,7 @@ def validate_prompt_artifact_set(manifest, seat, prompt, root, session):
             or len(names) != len(set(names))):
         raise ValueError('prompt artifact contract is invalid')
     expected = {session / name for name in names}
-    authorized, _ = prompt_permissions(prompt, root, session)
+    authorized, _ = prompt_permissions(prompt, root, session, text=text)
     actual = {path for path in authorized if path != prompt and path.parent == session}
     if actual != expected:
         missing = sorted(path.name for path in expected - actual)
@@ -268,18 +268,19 @@ def validate_prompt(args):
     return 0
 
 
-def validate_seat_prompt(manifest, manifest_hash, seat, prompt, root, session):
+def validate_seat_prompt(manifest, manifest_hash, seat, prompt, root, session, *, text=None):
     if seat not in manifest['assignments']:
         raise ValueError('prompt seat is absent from evidence manifest')
-    lines = prompt.read_text().splitlines()
+    text = prompt.read_text() if text is None else text
+    lines = text.splitlines()
     if lines.count('## Scope') != 1:
         raise ValueError('prompt must contain exactly one scope heading')
     evidence_scoped, declared_hash = evidence_manifest_declaration(lines)
     if not evidence_scoped or declared_hash != manifest_hash:
         raise ValueError('prompt does not bind the evidence manifest exactly once')
     validate_assignment_prompt_binding(manifest, seat, lines)
-    validate_plan_prompt_binding(manifest, seat, prompt, _load_evidence_module())
-    validate_prompt_artifact_set(manifest, seat, prompt, root, session)
+    validate_plan_prompt_binding(manifest, seat, prompt, _load_evidence_module(), text=text)
+    validate_prompt_artifact_set(manifest, seat, prompt, root, session, text=text)
 
 
 def session_path_allowed(path, session, authorized, dependency=None):
@@ -987,12 +988,12 @@ def shell_violations(command, roots, root, session, authorized=None, complete=No
 
 
 def validate_call(name, data, roots, root, session, authorized=None, complete=None, cache=None,
-                  dependency=None):
+                  dependency=None, *, target=None):
     normalized = name.lower()
     path = tool_path(data)
     if path is not None:
         try:
-            target = resolved(path, root)
+            target = resolved(path, root) if target is None else target
         except (OSError, ValueError):
             return [violation('unresolved-path-variable', name)]
         if not session_path_allowed(target, session, authorized, dependency):
@@ -1004,7 +1005,7 @@ def validate_call(name, data, roots, root, session, authorized=None, complete=No
         if path is None:
             return [violation('missing-read-path', name)]
         try:
-            may_read_complete = complete_path_allowed(resolved(path, root), session, complete)
+            may_read_complete = complete_path_allowed(target, session, complete)
         except OSError:
             return [violation('unresolved-path-variable', name)]
         if may_read_complete:
@@ -1455,14 +1456,14 @@ def claude_nonexecuted_exploration(adapter, name, data, output):
     return True
 
 
-def byte_exempt(name, data, root, session, complete=None):
+def byte_exempt(name, data, root, session, complete=None, *, target=None):
     if name.lower() not in READ_TOOLS:
         return False
     path = tool_path(data)
     try:
         if path is None:
             return False
-        target = resolved(path, root)
+        target = resolved(path, root) if target is None else target
         if complete is not None:
             return target in complete and not SOURCE_PACKET_NAME.fullmatch(target.name)
         return full_artifact(target, session) and not SOURCE_PACKET_NAME.fullmatch(target.name)
@@ -1510,12 +1511,12 @@ def load_evidence_manifest(session, declared_hash, prompt, root, *, fresh=False,
     return manifest, manifest_hash, seat, repository
 
 
-def validate_plan_prompt_binding(manifest, seat, prompt, module):
+def validate_plan_prompt_binding(manifest, seat, prompt, module, *, text=None):
     if manifest is None or manifest.get('phase') != 'plan':
         return
     session = Path(manifest['session'])
     plan = manifest['plan']
-    text = Path(prompt).read_text()
+    text = Path(prompt).read_text() if text is None else text
     plan_path = session / plan['artifact']
     lines = plan_path.read_text().splitlines()
     numbered = '\n'.join(f'{index:6d}\t{line}' for index, line in enumerate(lines, 1))
@@ -1782,6 +1783,7 @@ class CouncilReaderContext:
         self.prompt = Path(prompt).resolve()
         self.prompt_raw = regular_file_bytes(self.prompt, single_link=True)
         self.prompt_sha256 = hashlib.sha256(self.prompt_raw).hexdigest()
+        self.prompt_text = self.prompt_raw.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n')
         if prompt_sha256 is not None and prompt_sha256 != self.prompt_sha256:
             raise ValueError('reader prompt binding mismatch')
         self.manifest_path = Path(manifest).resolve() if manifest else None
@@ -1789,8 +1791,7 @@ class CouncilReaderContext:
         self.manifest_sha256 = None
         self.seat = None
         self.repository = None
-        declared, declared_hash = evidence_manifest_declaration(
-            self.prompt_raw.decode('utf-8').splitlines())
+        declared, declared_hash = evidence_manifest_declaration(self.prompt_text.splitlines())
         if declared:
             if self.manifest_path is None or declared_hash != manifest_sha256:
                 raise ValueError('reader manifest binding mismatch')
@@ -1807,14 +1808,15 @@ class CouncilReaderContext:
                         'r' + self.manifest['label'] + '-evidence.manifest.json')):
                 raise ValueError('reader assignment binding mismatch')
             validate_seat_prompt(self.manifest, manifest_sha256, seat,
-                                 self.prompt, self.root, self.session)
+                                 self.prompt, self.root, self.session, text=self.prompt_text)
         elif any(value is not None for value in (manifest, manifest_sha256, seat)):
             raise ValueError('reader has unexpected evidence binding')
         if deps is None and self.manifest is not None:
             deps = (self.manifest.get('dependency_view') or {}).get('path')
         self.dependency = Path(deps).resolve() if deps else None
         self.roots = allowed_roots(self.root, self.session, deps)
-        self.authorized, self.complete = prompt_permissions(self.prompt, self.root, self.session)
+        self.authorized, self.complete = prompt_permissions(
+            self.prompt, self.root, self.session, text=self.prompt_text)
         self.single_link_paths = {self.prompt}
         if self.manifest is not None:
             self.single_link_paths.update(
@@ -1842,11 +1844,13 @@ class CouncilReaderContext:
         if self.manifest_path is not None and hashlib.sha256(
                 regular_file_bytes(self.manifest_path)).hexdigest() != self.manifest_sha256:
             raise ValueError('reader manifest changed')
-        failures = validate_call('read_file', request, self.roots, self.root, self.session,
-                                 self.authorized, self.complete, self.cache, self.dependency)
+        target = resolved(request['path'], self.root)
+        canonical_request = dict(request, path=str(target))
+        failures = validate_call('read_file', canonical_request, self.roots, self.root, self.session,
+                                 self.authorized, self.complete, self.cache, self.dependency,
+                                 target=target)
         if failures:
             raise ValueError('reader authorization refused')
-        target = resolved(request['path'], self.root)
         lexical = Path(os.path.expandvars(os.path.expanduser(request['path'])))
         lexical = lexical if lexical.is_absolute() else self.root / lexical
         dependency = self.dependency is not None and (
@@ -1876,7 +1880,7 @@ class CouncilReaderContext:
         content = byte_range_lines(lines, request['offset'], request['offset'] + request['limit'] - 1) \
             if 'offset' in request else raw
         if len(content) > OUTPUT_BYTES and not byte_exempt(
-                'read_file', request, self.root, self.session, self.complete):
+                'read_file', canonical_request, self.root, self.session, self.complete, target=target):
             raise ValueError('reader output exceeds byte limit')
         text = content.decode('utf-8')
         metadata = {

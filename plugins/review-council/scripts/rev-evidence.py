@@ -113,7 +113,7 @@ def validate_live_roster_adapters(roster):
             or any(not isinstance(row, dict) for row in roster['seats'])):
         raise ValueError('invalid roster shape')
     unsupported = sorted({str(row.get('adapter')) for row in roster['seats']
-                          if row.get('adapter') not in ('codex', 'gemini', 'claude', 'agent')})
+                          if row.get('adapter') not in ('codex', 'gemini', 'claude', 'agent', 'cursor-sdk')})
     if unsupported:
         raise ValueError('unsupported or retired roster adapter: ' + ', '.join(unsupported))
 
