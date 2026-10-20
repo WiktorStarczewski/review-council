@@ -1145,14 +1145,17 @@ class CursorSDKTranscript:
             self.identity = identity
         call_id = event.get('call_id')
         if kind == 'council_read_result':
+            if not isinstance(call_id, str) or not call_id:
+                raise ValueError('missing SDK callback identity')
             running = self.running.get(call_id)
-            if (running is None or not cursor_reader_call(running)
-                    or call_id in self.callbacks or call_id in self.completed
+            if (call_id in self.callbacks or call_id in self.completed
                     or event.get('session_id') != self.identity[0]
-                    or event.get('input') != running['args']['args']
+                    or (running is not None and (not cursor_reader_call(running)
+                        or event.get('input') != running['args']['args']))
                     or not isinstance(event.get('text_sha256'), str)
                     or re.fullmatch(r'[0-9a-f]{64}', event['text_sha256']) is None):
                 raise ValueError('unpaired SDK callback')
+            cursor_read_request(event.get('input'))
             self.callbacks[call_id] = event
             return
         if (event.get('agent_id'), event.get('run_id')) != self.identity:
@@ -1174,6 +1177,9 @@ class CursorSDKTranscript:
             if event.get('status') == 'running':
                 if call_id in self.running or 'result' in event:
                     raise ValueError('duplicate SDK invocation')
+                callback = self.callbacks.get(call_id)
+                if callback is not None and (not reader or callback['input'] != event['args']['args']):
+                    raise ValueError('unpaired SDK callback')
                 self.running[call_id] = event
                 return
             running = self.running.get(call_id)
@@ -1229,7 +1235,9 @@ class CursorSDKTranscript:
             raise ValueError('unexpected SDK discovery tool')
 
     def finish(self):
-        if not self.terminal or self.completed != set(self.running):
+        readers = {call_id for call_id, event in self.running.items() if cursor_reader_call(event)}
+        if (not self.terminal or self.completed != set(self.running)
+                or set(self.callbacks) != readers):
             raise ValueError('incomplete SDK transport proof')
 
 
