@@ -273,7 +273,11 @@ class CursorSDKStatusStreamTests(CursorSDKCase):
         self.assertEqual(len(directories), 1, process.stdout + process.stderr)
         fixture.probe = directories[0]
         fixture.session = fixture.probe / 'session'
-        fixture.manifest = json.loads((fixture.session / 'r1-evidence.manifest.json').read_text())
+        manifest = fixture.session / 'r1-evidence.manifest.json'
+        self.assertTrue(manifest.is_file(),
+                        f'probe exit {process.returncode}\nstdout: {process.stdout[-4096:]}'
+                        f'\nstderr: {process.stderr[-4096:]}')
+        fixture.manifest = json.loads(manifest.read_text())
         fixture.context = fixture.manifest['source_context']['seats']['grok']
         fixture.raw = fixture.session / 'r1-grok.stream.ndjson'
         fixture.events = [json.loads(line) for line in fixture.raw.read_text().splitlines()]
