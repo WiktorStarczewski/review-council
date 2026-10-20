@@ -119,6 +119,53 @@ class CursorSDKStatusStreamTests(CursorSDKCase):
         source = self.source()
         self.assert_full_proof(source, self.canonical_events(source, legacy=True))
 
+    def callback_first_events(self, source, legacy=False, mixed=False):
+        events = self.canonical_events(source, legacy=legacy)
+        reordered = [events[0]]
+        for index in range(1, len(events) - 1, 3):
+            running, callback, completed = events[index:index + 3]
+            self.assertEqual(running['status'], 'running')
+            self.assertEqual(callback['type'], 'council_read_result')
+            self.assertEqual(completed['status'], 'completed')
+            reordered.extend([running, callback, completed] if mixed and index % 4 == 1
+                             else [callback, running, completed])
+        return [*reordered, events[-1]]
+
+    def test_real_callback_and_stream_arrival_orders_earn_full_canonical_proof(self):
+        source = self.source()
+        for legacy in (False, True):
+            for mixed in (False, True):
+                with self.subTest(legacy=legacy, mixed=mixed):
+                    self.assert_full_proof(source, self.callback_first_events(source, legacy, mixed))
+
+    def test_callback_first_requires_unique_exact_eventual_invocation_and_completion(self):
+        source = self.source()
+        for mutation in ('wrong-input', 'wrong-session', 'wrong-hash', 'duplicate-callback',
+                         'completion-first', 'completion-before-running', 'orphan-callback'):
+            with self.subTest(mutation=mutation):
+                events = self.callback_first_events(source)
+                if mutation == 'wrong-input':
+                    events[1]['input']['path'] = 'unassigned.py'
+                elif mutation == 'wrong-session':
+                    events[1]['session_id'] = 'different-agent'
+                elif mutation == 'wrong-hash':
+                    events[1]['text_sha256'] = '0' * 64
+                elif mutation == 'duplicate-callback':
+                    events.insert(2, copy.deepcopy(events[1]))
+                elif mutation == 'completion-first':
+                    events[1], events[3] = events[3], events[1]
+                elif mutation == 'completion-before-running':
+                    events[2], events[3] = events[3], events[2]
+                else:
+                    orphan = copy.deepcopy(events[1])
+                    orphan['call_id'] = 'unmatched-genuine-callback'
+                    events.insert(-1, orphan)
+                process, report = self.audit(source, events)
+                self.assertNotEqual(process.returncode, 0)
+                self.assertEqual(report['status'], 'invalid')
+                self.assertIn('cursor-sdk-transport-proof',
+                              [row['code'] for row in report['violations']])
+
     def test_status_identity_and_initial_order_are_mandatory(self):
         source = self.source()
         for mutation in ('missing-agent', 'missing-run', 'empty-agent', 'empty-run',
@@ -168,7 +215,7 @@ class CursorSDKStatusStreamTests(CursorSDKCase):
 
     def test_status_reader_identity_bytes_completion_and_order_remain_mandatory(self):
         source = self.source()
-        for mutation in ('missing-callback', 'completion-before-callback', 'callback-before-running',
+        for mutation in ('missing-callback', 'completion-before-callback', 'callback-before-status',
                          'wrong-call', 'wrong-session', 'wrong-input', 'wrong-hash', 'wrong-text',
                          'missing-completion', 'duplicate-completion', 'unexpected-tool'):
             with self.subTest(mutation=mutation):
@@ -177,8 +224,8 @@ class CursorSDKStatusStreamTests(CursorSDKCase):
                     del events[2]
                 elif mutation == 'completion-before-callback':
                     events[2], events[3] = events[3], events[2]
-                elif mutation == 'callback-before-running':
-                    events[1], events[2] = events[2], events[1]
+                elif mutation == 'callback-before-status':
+                    events[0], events[2] = events[2], events[0]
                 elif mutation == 'wrong-call':
                     events[3]['call_id'] = 'different-call'
                 elif mutation == 'wrong-session':
