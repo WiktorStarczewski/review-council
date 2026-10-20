@@ -32,7 +32,7 @@
 
 ---
 
-### Task1: Define regression contracts before implementation
+### Task 1: Define regression contracts before implementation
 
 **Files:** Create tests/test_cursor.py and tests/test_cursor_sdk.py. Create plugins/review-council/tests/fixtures/cursor-sdk-* synthetic stream/catalog fixtures. Existing Python discovery runs these in the complete verifier; no workflow change is needed to discover them.
 
@@ -45,7 +45,7 @@
 - [ ] Make missing feature implementations produce explicit target assertions rather than unrelated import/setup crashes. Keep existing suites running.
 - [ ] Commit the test-only packet, obtain normal independent review, push the expected-red checkpoint as a draft feature PR and inspect exact-head macOS/Ubuntu failures. Accept only intended contract assertions and passing controls; preserve raw logs.
 
-### Task2: Canonical bounded reader and SDK evidence normalization
+### Task 2: Canonical bounded reader and SDK evidence normalization
 
 **Files:** Modify plugins/review-council/scripts/lib/review-read-audit.py. Create plugins/review-council/scripts/lib/cursor-read-helper.py and cursor-sdk-reader.mjs. Extend tests/test_cursor_sdk.py.
 
@@ -58,7 +58,7 @@
 - [ ] Decode raw SDK custom-reader events into the existing native-read audit path. Require exact returned content, pairing and nontruncation; reject unexpected execution and preserve all existing packet, segment, context and finding gates.
 - [ ] Run the focused checks in CI, obtain normal SPEC and TASK QUALITY reviews, apply findings and commit the reader task.
 
-### Task3: Optional local SDK driver and runtime
+### Task 3: Optional local SDK driver and runtime
 
 **Files:** Create plugins/review-council/scripts/lib/cursor-sdk-driver.mjs, scripts/seats.d/cursor-sdk.sh, optional runtime package.json/package-lock.json and installation helper under plugins/review-council/scripts/cursor-sdk/. Extend tests/test_cursor_sdk.py.
 
@@ -70,7 +70,7 @@
 - [ ] Persist raw events and exact optional usage; require terminal run.wait() and disposal. Reject incomplete identity, unexpected tools/resources and malformed final findings.
 - [ ] Test against an injected offline SDK double in CI. Keep double evidence distinct from actual provider qualification. Obtain normal review and commit.
 
-### Task4: Roster, evidence, status and stack integration
+### Task 4: Roster, evidence, status and stack integration
 
 **Files:** Modify scripts/lib/roster.py, rev-seat.sh, rev-evidence.py, rev-contract-check.py, lib/stream-summary.py, usage/profile integration as needed and stack.sh. Extend existing roster, evidence, seat, status and stack fixtures without weakening them.
 
@@ -82,7 +82,7 @@
 - [ ] Add explicit Cursor stack orchestration using supported Cursor-host instructions and existing CLI transports; never invoke a native Claude seat by fallthrough.
 - [ ] Run integration cases in CI, normal-review cumulative changes and commit fixes separately.
 
-### Task5: Native Cursor package and documentation
+### Task 5: Native Cursor package and documentation
 
 **Files:** Create scripts/build-cursor-plugin.py, plugins/review-council/.cursor-plugin/plugin.json, cursor-skills/rev/SKILL.md and cursor-skills/stack/SKILL.md. Update package inventory, README, docs/config.md, docs/seats.md and Cursor installation guide. Preserve existing Codex/Claude generation.
 
@@ -93,7 +93,7 @@
 - [ ] Document optional SDK setup, supported authentication, strict availability refusals and known proof limits. Keep implementation details out of normal review instructions unless needed to act.
 - [ ] Obtain normal independent review and current complete macOS/Ubuntu CI for the coherent feature head.
 
-### Task6: Qualify, merge and release
+### Task 6: Qualify, merge and release
 
 **Files:** Add a bounded public live-qualification fixture/harness and release documentation; update synchronized version metadata only after feature qualification. Keep private credentials and run evidence outside tracked source.
 
