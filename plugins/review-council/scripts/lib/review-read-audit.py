@@ -1601,6 +1601,10 @@ def validate_assignment_prompt_binding(manifest, seat, prompt_lines):
     )
     if any(prompt_lines.count(line) != 1 for line in required):
         raise ValueError('prompt omits or duplicates its assigned scope, bundle, or lens')
+    if 'emphasis' in assignment:
+        lines = [line for line in prompt_lines if line.startswith('Round emphasis:')]
+        if lines != ['Round emphasis: ' + assignment['emphasis']]:
+            raise ValueError('prompt omits, changes or duplicates its numeric emphasis')
 
 
 def paths_opened_by_call(name, data, root):

@@ -55,6 +55,9 @@ if [ -n "$PANEL" ]; then
   [ "${#SEATS[@]}" -gt 0 ] || die "panel assignments are empty: $PANEL"
   RENDER_OUT="$S/r${N}-render.json"
 fi
+for NAME in "$N" "${SEATS[@]}"; do
+  case "$NAME" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9_.-]*) die "invalid prompt label or seat: $NAME";; esac
+done
 for SEAT in "${SEATS[@]}"; do OUTS+=("$S/r${N}-${SEAT}.prompt.md"); done
 # A failed same-label rerender must not leave the prior prompt looking current.
 for OUT in "${OUTS[@]}" ${RENDER_OUT:+"$RENDER_OUT"}; do
@@ -74,9 +77,16 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$PHASE" in
-  ''|discovery|risk|verification|repair|plan) ;;
-  *) die "--phase must be discovery, risk, verification, repair, or plan: $PHASE";;
+  ''|discovery|risk|verification|repair|plan|numeric) ;;
+  *) die "--phase must be discovery, risk, verification, repair, plan, or numeric: $PHASE";;
 esac
+if [ "$PHASE" = numeric ]; then
+  [[ "$N" =~ ^[1-9][0-9]*x?$ ]] || die "invalid numeric prompt label: $N"
+  for PRIOR in "$S/r${N}-"*.prompt.md; do
+    rm -f -- "$PRIOR" || die "cannot invalidate prior numeric prompt: $PRIOR"
+  done
+  [ -n "$EVIDENCE" ] || die "numeric prompts require their bound evidence manifest"
+fi
 if [ -n "$RO" ] && [ -n "$EVIDENCE" ]; then
   die "--evidence applies to code and plan prompts, not --read-only document prompts"
 fi
@@ -154,6 +164,17 @@ if [ "$HAS_CONTEXT" = 1 ] && [ -s "$S/context.md" ]; then SHOW_CONTEXT=1; fi
 ADAPTERS=()
 if is_present "$S/roster.json"; then
   require_regular "$S/roster.json" "roster"
+  if [ -n "$RO" ]; then
+    python3 - "$S/roster.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding='utf-8') as stream:
+    roster = json.load(stream)
+if any(row.get('adapter') == 'cursor-sdk' for row in roster['seats']):
+    sys.stderr.write('cursor-sdk document mode is unsupported\n')
+    raise SystemExit(1)
+PY
+    [ "$?" = 0 ] || die "document roster is unsupported"
+  fi
   ROSTER_ADAPTERS=$(python3 - "$S/roster.json" "${SEATS[@]}" <<'PY' 2>/dev/null
 import json, sys
 with open(sys.argv[1], encoding='utf-8') as source:
@@ -254,16 +275,44 @@ PY
   BASELINE_FILE=$BASELINE_TMP
 fi
 if [ -n "$EVIDENCE" ] && [ -n "$PANEL" ]; then
+  if [ "$PHASE" = numeric ]; then
+    python3 - "$EVIDENCE" "$PANEL" <<'PY'
+import json
+from pathlib import Path
+import sys
+manifest = Path(sys.argv[1])
+data = json.loads(manifest.read_bytes())
+panel = Path(sys.argv[2])
+if (data.get('phase') != 'numeric' or panel.is_symlink()
+        or panel.resolve() != manifest.parent / data.get('numeric', {}).get('panel', '')):
+    raise SystemExit('numeric renderer needs its exact prepared panel')
+PY
+    [ "$?" = 0 ] || die "numeric panel does not match its evidence manifest"
+  fi
   FRAGMENTS=$(mktemp -d "$S/.rev-evidence-fragment.XXXXXX") || die "cannot create evidence fragments in $S"
   # The manifest phase is authoritative; render-panel rejects a conflicting --phase.
   PHASE=$(render_evidence_panel) || die "cannot render panel evidence from $EVIDENCE"
 elif [ -n "$EVIDENCE" ]; then
   SEAT=${SEATS[0]}
-  EVIDENCE_PHASE=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["phase"])' \
-    "$EVIDENCE") || die "cannot read evidence manifest phase: $EVIDENCE"
+  EVIDENCE_PHASE=$(python3 - "$EVIDENCE" "$PHASE" <<'PY'
+import json
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+manifest = json.loads(path.read_bytes())
+if manifest['phase'] == 'repair' and manifest.get('parent_assignment'):
+    name = manifest['parent_assignment']['manifest']
+    if Path(name).name != name:
+        raise SystemExit('invalid repair parent')
+    parent = json.loads((path.parent / name).read_bytes())
+    if (parent['phase'] == 'numeric') != (sys.argv[2] == 'numeric'):
+        raise SystemExit('numeric repair must retain its parent covered phase')
+print(manifest['phase'])
+PY
+  ) || die "cannot bind evidence manifest phase: $EVIDENCE"
   # A repair seat may name the phase of the panel it covers.
   case "$EVIDENCE_PHASE:$PHASE" in
-    *:|repair:discovery|repair:risk|repair:verification) ;;
+    *:|repair:discovery|repair:risk|repair:verification|repair:numeric) ;;
     *) [ "$PHASE" = "$EVIDENCE_PHASE" ] || die "evidence manifest phase is $EVIDENCE_PHASE, not $PHASE: $EVIDENCE";;
   esac
   PHASE=${PHASE:-$EVIDENCE_PHASE}

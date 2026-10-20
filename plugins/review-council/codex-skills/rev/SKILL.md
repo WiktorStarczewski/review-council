@@ -82,7 +82,7 @@ Substitute the resolved scope and append `--base <ref>` when specified. Fresh pr
 `scope.env`, `files.txt`, `untracked.txt`, and the **probed** `roster.json`. Preflight
 refuses empty scopes or shared branches; use a worktree if a code review needs one.
 For documents, write absolute paths to `S/docs.txt`, set `REV_REPO` to their root,
-and run `roster.sh --probe --brief --write "$S/roster.json"` without git preflight.
+and run `roster.sh --probe --brief --write "$S/roster.json" --review-mode documents` without git preflight.
 Probes and reviews contact the configured providers and consume their usage.
 
 Print the roster and any `degradation` reason before reviewing. Never replace a
@@ -287,8 +287,15 @@ one. Every segment must be read once in order before the parent range
 earns a receipt.
 
 Evidence preparation applies to adaptive code panels and accepted-fix plan panels.
-Explicit numeric panels use the full cumulative patch, omit evidence preparation,
-and leave `MANIFEST` and `PANEL_PHASE` empty.
+Explicit numeric panels use the full cumulative patch for every launched seat.
+Without a `cursor-sdk` row, keep the legacy path: omit evidence preparation and
+leave `MANIFEST` and `PANEL_PHASE` empty. With an SDK row, use the explicit numeric
+evidence protocol below; retain the numbered schedule, lenses, final composed
+emphases and actual launched set. Numeric evidence is never adaptive verification.
+Scheduled opaque extras such as `codex-review` refuse before launch with
+`cursor-sdk numeric extra mode is unsupported`; they cannot be silently dropped.
+`extras:false` removes them explicitly. A dormant extra does not block its other
+rounds. SDK document panels are unsupported and refuse before provider discovery.
 Document panels read every supplied document in full,
 omit evidence preparation, and render each seat with the per-seat form and
 `--read-only "$S/docs.txt"`.
@@ -334,11 +341,38 @@ so a misfiling is the realistic failure here, not an attacker.
 Report such a panel as an unenforced plan panel; never describe it as certified.
 Do not replace the schema-4 plan with a legacy full-scope task.
 
-Before adaptive fan-out, set `PANEL_LABEL` to the artifact label and `PANEL_PHASE` to
-`discovery`, `risk`, `verification`, or `repair`. Build `EVIDENCE_ARGS` from the exact
+Before evidence-backed fan-out, set `PANEL_LABEL` to the artifact label and `PANEL_PHASE` to
+`discovery`, `risk`, `verification`, `repair`, or SDK `numeric`. Build `EVIDENCE_ARGS` from the exact
 launched seats: discovery passes `--full-seat` for the first core seat; risk and
 verification pass one `--assignment "$SEAT=$BUNDLE_OR_COMPOSITE"` per seat plus
-`--full-seat` for the first regression-bundle seat; a replacement passes its one assignment and `--parent-assignment` (see the replacement rule below). Then prepare once:
+`--full-seat` for the first regression-bundle seat; a replacement passes its one assignment and `--parent-assignment` (see the replacement rule below).
+
+Before numeric SDK preparation, finish every scheduled lens and composed emphasis,
+then write the exact three-column panel TSV described below in `LAUNCHED_SEATS`
+order. Set `PANEL_PHASE=numeric`, keep `PANEL_LABEL` equal to the numbered round,
+and bind the requested minimum already recorded in `state.json`:
+
+```bash
+NUMERIC_MIN_ROUNDS=$(python3 - "$S/state.json" <<'PYMIN'
+import json, sys
+value = json.load(open(sys.argv[1], encoding='utf-8'))['min_rounds']
+if type(value) is not int or value < 1:
+    raise SystemExit('numeric minimum must be the explicit positive request')
+print(value)
+PYMIN
+) || exit 1
+EVIDENCE_ARGS=(--numeric-round "$PANEL_LABEL" --numeric-min-rounds "$NUMERIC_MIN_ROUNDS" --numeric-panel "$S/r$PANEL_LABEL-panel.tsv")
+```
+
+All numeric SDK assignments receive identical full cumulative patch bytes, including
+mechanical changes, under the exact legacy lens and final emphasis. The manifest
+freezes the round, minimum and ordered TSV identity. Its receipt proves this numeric
+panel only; it never updates adaptive `coverage-head.json`, supplies an adaptive
+predecessor or makes `current-coverage` eligible. A numeric-parent repair inherits
+the parent's full scope, round/minimum binding, lens and exact emphasis and renders
+with `COVERED_PHASE=numeric`. Never substitute an adaptive covered phase.
+
+Then prepare once:
 
 ```bash
 MANIFEST=
@@ -346,6 +380,10 @@ if CANDIDATE=$(REV_PATCH_CHUNKS=${REV_PATCH_CHUNKS:-auto} REV_SOURCE_CONTEXT=${R
   case "$CANDIDATE" in
     "$S/r$PANEL_LABEL-evidence.manifest.json") [ -r "$CANDIDATE" ] && MANIFEST=$CANDIDATE ;;
   esac
+fi
+if [ -z "$MANIFEST" ] && { [ "$PANEL_PHASE" = numeric ] || [ "${COVERED_PHASE:-}" = numeric ]; }; then
+  echo 'numeric evidence preparation failed; preserve diagnostics and stop incomplete' >&2
+  exit 1
 fi
 ```
 
@@ -357,7 +395,8 @@ required-source segments. Baseline measurements may set both paths explicitly, b
 must otherwise use the same snapshot, roster, models, efforts, bundles, and host steps.
 Both runs keep the same component assignments and patch narrowing.
 
-Build the optional flags once. Write one `<seat>`, tab, `<lens>`, tab, `<emphasis>`
+Build the optional flags once. SDK numeric reuses its already bound TSV byte for byte.
+For other modes, write one `<seat>`, tab, `<lens>`, tab, `<emphasis>`
 line per launched seat, in `LAUNCHED_SEATS` order, to `$S/r$PANEL_LABEL-panel.tsv`;
 each emphasis is one line with no tab.
 Render every seat before any reviewer process starts, with one `--panel` call and the
@@ -374,10 +413,13 @@ PHASE_PROMPT_ARGS=()
 `--panel` loads the evidence manifest once, writes every `r<label>-<seat>.prompt.md`,
 prints their paths in order, and publishes none when any seat fails. Render a single `<N>x` replacement seat with the per-seat form
 `"$PLUGIN/scripts/rev-prompt.sh" "$S" "$PANEL_LABEL" "$SEAT" "$LENS" "$EMPHASIS" --phase "$COVERED_PHASE" "${EVIDENCE_PROMPT_ARGS[@]}"`,
-where `COVERED_PHASE` is the phase of the panel it replaces into (`discovery`, `risk`, or `verification`).
+where `COVERED_PHASE` is the phase of the panel it replaces into (`discovery`, `risk`, `verification`, or `numeric` for a bound numeric parent).
 An exact seat retry reuses its already-rendered prompt.
 
-If any evidence prompt render fails, discard the narrowed panel.
+If numeric SDK preparation or rendering fails, or its numeric-parent repair fails
+to render, stop incomplete and preserve the diagnostics. Never clear its manifest,
+rerender it as legacy, narrow its coverage or launch a partial panel.
+For other modes, if any evidence prompt render fails, discard the narrowed panel.
 Set `MANIFEST=` and `EVIDENCE_PROMPT_ARGS=()`.
 Render every seat again without `--evidence`. A failed legacy render stops the panel. Never mix evidence and legacy
 prompts in one panel, reuse a partially prepared manifest, or narrow coverage after
@@ -423,7 +465,7 @@ REVIEW_COUNCIL_HOST=codex "$PLUGIN/scripts/rev-preflight.sh" --scope "$REV_SCOPE
 ```
 
 Before switching the active session to `FALLBACK_S`, run `"$PLUGIN/scripts/rev-state.sh" "$FALLBACK_S" inherit-breaker "$PARENT_S"` so the review-origin window carries over, then require its `scope.env`, `files.txt`, and `untracked.txt` to byte-match the files in `PARENT_S`. Require a nonempty parent evidence manifest and require the generated roster to identify every temporary
-substitution. Set `FALLBACK_LABEL` to a fresh label, rebuild `FALLBACK_EVIDENCE_ARGS` from that roster's assignments, build `FALLBACK_LAUNCHED_SEATS` from every seat in the fresh roster, and prepare its fresh full-panel evidence manifest without launching:
+substitution. For SDK numeric recovery, keep the same numbered `FALLBACK_LABEL` in the fresh session, rebuild its TSV from the fresh actual roster and final emphases, and set `FALLBACK_EVIDENCE_ARGS=(--numeric-round "$FALLBACK_LABEL" --numeric-min-rounds "$NUMERIC_MIN_ROUNDS" --numeric-panel "$FALLBACK_S/r$FALLBACK_LABEL-panel.tsv")`; loss of the required SDK identity stops recovery. For other phases, set `FALLBACK_LABEL` to a fresh label, rebuild `FALLBACK_EVIDENCE_ARGS` from that roster's assignments, build `FALLBACK_LAUNCHED_SEATS` from every seat in the fresh roster, and prepare its fresh full-panel evidence manifest without launching:
 
 ```bash
 FALLBACK_MANIFEST=$(python3 "$PLUGIN/scripts/rev-evidence.py" prepare \
@@ -451,7 +493,10 @@ Exit 7 is local attempt exhaustion, not provider quota. Preserve valid siblings 
 
 Retain each completed valid result; a result whose `summary` begins `INCOMPLETE PROOF` is never one. Triage completed valid results as they arrive, but do not edit until the receipt seals. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure or an exit-0 `INCOMPLETE PROOF` result. An eligible seat is another enforced (non-Agent) roster seat, and the failed assignment needs a recorded terminal failure: its archived `r<N>-<seat>.audit-invalid.json`, its exit-0 `INCOMPLETE PROOF` result, or an exact retry that also exited 1 or 2. Prepare the child with `"$PLUGIN/scripts/rev-evidence.py" prepare "$S" "<N>x" --phase repair --assignment "$EXECUTOR=$PARENT_BUNDLE" --parent-assignment "<N>:$FAILED_SEAT"`, which refuses an ineligible executor, a parent with no recorded terminal failure, and a second replacement in the panel. Render it with the per-seat form above, record `"$PLUGIN/scripts/rev-state.sh" "$S" phase=repair round=<N>x "seats=[\"$EXECUTOR\"]"`, launch it, and seal with `REPLACEMENT_ARGS=(--replacement "$FAILED_SEAT=<N>x")`. Discovery uses the same rule, and the child has full scope. With no eligible seat, a second failed assignment in the panel, or a failed replacement, the panel is incomplete: ask the user, and never start a new session for it.
 
-After every assigned seat has a valid result, certify discovery after its complete simplicity panel.
+After every assigned seat has a valid result, seal an SDK numeric panel only after
+its exact complete launched set has valid full-scope generations, including its
+one replacement when applicable. Its receipt stays numeric and preserves any
+existing adaptive coverage head. Certify discovery after its complete simplicity panel.
 For risk and verification, certify only after the complete four-bundle panel is
 collected:
 
@@ -617,7 +662,7 @@ editing. Keep one rule per root-cause cluster with a compact site table, invaria
 and falsifiable tests.
 
 Before the first edit, write `rev-state.sh "$S" phase=fix`.
-`phase=fix` also counts, for each code round with a sealed receipt, the chosen citations that land on lines this review changed since its first receipt, and refuses once two rounds since the last acknowledgement have a nonzero count. Ask the user before anything else, and recommend that they revert the cited review changes and defer the originating findings. Record the decision with `"$PLUGIN/scripts/rev-state.sh" "$S" review_origin_ack=<N>` and put the outcome in the report. Numeric, stack and legacy rounds have no receipt and are not counted.
+`phase=fix` also counts, for each code round with a sealed receipt, the chosen citations that land on lines this review changed since its first receipt, and refuses once two rounds since the last acknowledgement have a nonzero count. Ask the user before anything else, and recommend that they revert the cited review changes and defer the originating findings. Record the decision with `"$PLUGIN/scripts/rev-state.sh" "$S" review_origin_ack=<N>` and put the outcome in the report. Receiptless legacy numeric rounds are not counted. SDK numeric receipts also support this review-origin accounting; they still never grant adaptive coverage.
 Run the test named in Prediction before the fix exists and watch it fail, once per
 cluster's Prediction, not once for the round. Record the observed failure line in
 fix-plan.md beside the Prediction it belongs to: a failure whose message does not

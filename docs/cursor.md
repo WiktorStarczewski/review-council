@@ -132,7 +132,8 @@ qualification. After a valid probe, add these keys to the existing Council confi
 ```json
 {
   "cursor_sdk_models": ["latest-grok"],
-  "cursor_sdk_effort": "xhigh"
+  "cursor_sdk_effort": "xhigh",
+  "extras": false
 }
 ```
 
@@ -140,6 +141,19 @@ Other configured seats remain in the roster. A missing runtime, authentication, 
 effort or qualification refuses availability before a reviewer launch. Invalid
 settings are configuration errors. There is no fallback to a direct xAI adapter,
 older model, lower effort or unqualified CLI transport. See [configuration](config.md).
+
+SDK seats support prepared code reviews, including read-only code, numbered rounds
+and Cursor CLI stack legs. A numbered panel binds its requested minimum, actual
+seat order, legacy lenses and final emphases in one manifest; every seat receives
+the full cumulative patch. Its numeric receipt cannot become adaptive verification
+or an adaptive coverage predecessor. Existing bounded repair preserves its exact
+parent assignment and valid siblings.
+
+SDK document-list reviews are unsupported and refuse before authentication,
+catalog discovery or provider probes. Code fix-plan manifests remain supported.
+The opaque `codex-review` extra cannot consume numeric SDK evidence and refuses
+when its configured round is scheduled. The example explicitly removes extras;
+the default remains `extras:true`. A dormant extra does not block other rounds.
 
 The driver offers one bounded custom reader in a private workspace with ambient
 settings, MCP servers and agents empty and SDK retries disabled. Backend tool

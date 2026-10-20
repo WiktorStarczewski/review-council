@@ -79,6 +79,14 @@ runtime, catalog and qualification hashes. The dispatcher binds the runtime and
 qualification paths from that frozen identity before launch. Changed qualification
 or model identity is refused. SDK attempts have no implicit retry or resume.
 
+Numbered code panels with an SDK seat prepare explicit numeric evidence. The
+manifest freezes round/minimum, ordered launch TSV, legacy lens and final emphasis;
+every assignment and its bounded repair receives the full cumulative patch.
+Numeric receipts never advance or supply adaptive coverage. Scheduled opaque
+`codex-review` extras refuse before launch, while non-SDK numeric behavior stays
+unchanged. SDK document-list panels are unsupported and refuse at roster admission
+and rendering; prepared code fix-plan panels remain supported.
+
 The driver exposes only `council_read` on `custom-user-tools`, with the qualified
 metadata inventory. Native reads, shell, edits, web and delegation are excluded;
 ambient setting sources, MCP servers and agents are empty. The bounded reader

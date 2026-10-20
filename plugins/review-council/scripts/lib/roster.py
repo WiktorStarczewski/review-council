@@ -1774,10 +1774,13 @@ def degradation(seats, padded):
 
 # ---------------------------------------------------------------- assembly
 
-def build(do_probe, quota_failed_seats=()):
+def build(do_probe, quota_failed_seats=(), *, review_mode='code'):
     _RESOLVED.clear()
     cfg, cfg_error = load_config()
     resolution_class = 'config'
+    if not cfg_error and review_mode == 'documents' and cfg.get('cursor_sdk_models'):
+        _, error, cause = resolve_cursor_sdk_config(cfg, [])
+        cfg_error = (error if cause == 'config' else 'cursor-sdk document mode is unsupported')
     if not cfg_error and 'cursor_sdk_models' in cfg:
         cfg, cfg_error, resolution_class = prepare_cursor_sdk_config(cfg)
     if not cfg_error and codex_config_needs_resolution(cfg):
@@ -2010,7 +2013,7 @@ def brief_line(roster, adapter_of):
 def usage(message):
     sys.stderr.write(
         'roster: %s\nusage: roster.sh [--json|--brief] [--probe] '
-        '[--quota-failed-seat <seat>] [--write <file>]\n' % message)
+        '[--quota-failed-seat <seat>] [--write <file>] [--review-mode code|documents]\n' % message)
     return 1
 
 
@@ -2025,6 +2028,7 @@ def main(argv):
         sys.stdout.write(failure_class + '\n')
         return 0
     fmt, do_probe, write = 'json', False, None
+    review_mode = 'code'
     quota_failed_seats = []
     args = list(argv)
     while args:
@@ -2035,6 +2039,10 @@ def main(argv):
             fmt = 'brief'
         elif a == '--probe':
             do_probe = True
+        elif a == '--review-mode':
+            if not args or args[0] not in ('code', 'documents'):
+                return usage('--review-mode needs code or documents')
+            review_mode = args.pop(0)
         elif a == '--quota-failed-seat':
             if not args:
                 return usage('--quota-failed-seat needs a seat')
@@ -2062,7 +2070,10 @@ def main(argv):
             except SessionInputsError as exc:
                 sys.stderr.write('roster: cannot write %s: %s\n' % (write, exc))
                 return 1
-    roster, adapter_of, strict_class = build(do_probe, quota_failed_seats)
+    if review_mode == 'code':
+        roster, adapter_of, strict_class = build(do_probe, quota_failed_seats)
+    else:
+        roster, adapter_of, strict_class = build(do_probe, quota_failed_seats, review_mode=review_mode)
     if write:
         roster['result_receipts'] = result_receipt_policy(write)
     text = json.dumps(roster, indent=2, ensure_ascii=False) + '\n'

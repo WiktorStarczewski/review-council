@@ -746,7 +746,7 @@ rev skill and default to `NO_PUSH=1 NO_SQUASH=1`. A missing Cursor host is a blo
 | `claude_seat` | `true` | `false` disables detected Claude seats |
 | `claude_adapter` | `auto` | Claude Code runs Anthropic seats on the CLI (`cli`), as Agent subagents (`agent`), or on the CLI when signed in (`auto`) |
 | `plan_seats` | `completeness` | one plan-completeness seat per plan panel, or `all` for the four-lens plan panel |
-| `extras` | `true` | expose `codex-review` to explicit numeric schedules |
+| `extras` | `true` | expose `codex-review` to explicit numeric schedules; SDK numeric panels refuse it when scheduled |
 | `min_labs` | `1` | minimum detected provider labs before padding |
 | `quota_fallback` | `false` | allow temporary cross-provider quota substitution |
 | `check_updates` | `false` | print an available-update line in Claude Code |
@@ -873,7 +873,7 @@ override its paths.
 - Quota fallback covers quota and capacity only, and an OpenAI outage can fall back only to a
   probed Sonnet CLI seat.
 - A panel with an Agent-adapter seat is never certified.
-- Numeric code reviews and document reviews keep full scope and carry no evidence receipt.
+- Legacy numeric code reviews and document reviews keep full scope without an evidence receipt. SDK numeric code panels carry a full-scope receipt that never grants adaptive coverage; SDK document reviews are unsupported.
 - Chunk reads prove the change was read; they do not replace source reads for a finding.
 - Publication cannot find a PR whose head branch lives on a fork and skips it as if there
   were none; post the rendered `pr-review.md` by hand.
