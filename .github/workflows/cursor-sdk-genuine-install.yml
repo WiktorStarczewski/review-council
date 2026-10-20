@@ -1,0 +1,480 @@
+name: cursor-sdk-genuine-install
+on:
+  push:
+    branches: [ci/cursor-sdk-genuine-install-fix2]
+permissions:
+  contents: read
+jobs:
+  genuine-install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - id: checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - id: node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Prepare immutable proof inputs
+        id: prepare
+        run: |
+          set -euo pipefail
+          proof_base=$(python3 -c 'import os; from pathlib import Path; print(Path(os.environ["RUNNER_TEMP"]).resolve() / "sdk-genuine-install")')
+          mkdir -m 700 "$proof_base"
+          cat > "$proof_base/proof.py" <<'PROOF'
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import platform
+          import stat
+          import subprocess
+          import sys
+
+          SOURCE = 'dfa8f8a0ef659a41e5ceb2618e70d4294dbbc766'
+          SOURCE_TREE = 'da32cf72c6e06df716bdefe742f815c133ed54c4'
+          WORKFLOW = '.github/workflows/cursor-sdk-genuine-install.yml'
+          BRANCH = 'refs/heads/ci/cursor-sdk-genuine-install-fix2'
+          ROOT = Path(os.environ['GITHUB_WORKSPACE']).resolve()
+          BASE = Path(os.environ['RUNNER_TEMP']).resolve() / 'sdk-genuine-install'
+          EVIDENCE = BASE / 'evidence'
+          RUNTIME = BASE / 'runtime'
+          SCRIPTS = ROOT / 'plugins/review-council/scripts'
+
+
+          def write(name, value):
+              (EVIDENCE / name).write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
+
+
+          def sha(raw):
+              return hashlib.sha256(raw).hexdigest()
+
+
+          def git(*args):
+              return subprocess.check_output(['git', *args], cwd=ROOT)
+
+
+          def tree(revision):
+              entries = []
+              for row in git('ls-tree', '-rz', revision).split(b'\0'):
+                  if not row:
+                      continue
+                  metadata, raw_path = row.split(b'\t', 1)
+                  mode, kind, oid = metadata.decode().split()
+                  path = raw_path.decode()
+                  assert kind == 'blob' and mode in ('100644', '100755', '120000')
+                  raw = git('cat-file', 'blob', oid)
+                  entries.append({'path': path, 'mode': mode, 'oid': oid,
+                                  'bytes': len(raw), 'sha256': sha(raw)})
+              return entries
+
+
+          def source_state(label):
+              expected = tree('HEAD')
+              actual = []
+              for entry in expected:
+                  path = ROOT / entry['path']
+                  info = path.lstat()
+                  raw = os.readlink(path).encode() if stat.S_ISLNK(info.st_mode) else path.read_bytes()
+                  mode = ('120000' if stat.S_ISLNK(info.st_mode) else
+                          '100755' if info.st_mode & 0o111 else '100644')
+                  actual.append(dict(entry, mode=mode, bytes=len(raw), sha256=sha(raw),
+                                     filesystem_mode=oct(stat.S_IMODE(info.st_mode))))
+              status = git('status', '--porcelain=v1', '--untracked-files=all')
+              index = git('diff', '--cached', '--raw')
+              diff = git('diff', '--raw')
+              result = {'label': label, 'entries': actual, 'status': status.decode(),
+                        'index_diff': index.decode(), 'working_diff': diff.decode()}
+              write('source-' + label + '.json', result)
+              assert not status and not index and not diff
+              assert [{key: row[key] for key in ('path', 'mode', 'oid', 'bytes', 'sha256')}
+                      for row in actual] == expected
+              if label != 'prepared':
+                  prepared = json.loads((EVIDENCE / 'source-prepared.json').read_text())
+                  assert actual == prepared['entries']
+
+
+          def runtime_inventory(label):
+              entries = []
+              for directory, dirs, files in os.walk(RUNTIME, followlinks=False):
+                  for name in sorted(dirs + files):
+                      path = Path(directory) / name
+                      info = path.lstat()
+                      assert not stat.S_ISLNK(info.st_mode)
+                      kind = 'directory' if stat.S_ISDIR(info.st_mode) else 'file'
+                      assert kind == 'directory' or (stat.S_ISREG(info.st_mode) and info.st_nlink == 1)
+                      row = {'path': path.relative_to(RUNTIME).as_posix(), 'kind': kind,
+                             'mode': oct(stat.S_IMODE(info.st_mode)), 'uid': info.st_uid}
+                      if kind == 'file':
+                          raw = path.read_bytes()
+                          row.update(bytes=len(raw), sha256=sha(raw), nlink=info.st_nlink)
+                      entries.append(row)
+              entries.sort(key=lambda row: row['path'])
+              info = RUNTIME.lstat()
+              assert stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700
+              result = {'runtime_mode': oct(stat.S_IMODE(info.st_mode)), 'entries': entries}
+              write('runtime-' + label + '.json', result)
+              if label in ('restored', 'final'):
+                  assert result == json.loads((EVIDENCE / 'runtime-before.json').read_text())
+              return entries
+
+
+          def prepare():
+              EVIDENCE.mkdir(mode=0o700, parents=True, exist_ok=False)
+              for name in ('proof.py', 'capture.sh'):
+                  (EVIDENCE / name).write_bytes((BASE / name).read_bytes())
+              for name in ('home', 'config', 'npm-cache'):
+                  (BASE / name).mkdir(mode=0o700)
+              for name in ('npm-user-config', 'npm-global-config'):
+                  (BASE / name).write_text('')
+                  (BASE / name).chmod(0o600)
+              credentials = ('CURSOR_API_KEY', 'CURSOR_AUTH_TOKEN', 'ANTHROPIC_API_KEY',
+                             'OPENAI_API_KEY', 'NODE_AUTH_TOKEN', 'NPM_TOKEN',
+                             'NPM_CONFIG__AUTH', 'NPM_CONFIG__AUTHTOKEN')
+              present = {name: name in os.environ for name in credentials}
+              write('credential-presence.json', {'present': present, 'values_retained': False})
+              assert not any(present.values())
+              values = {'SDK_PROOF_BASE': str(BASE), 'SDK_PROOF_EVIDENCE': str(EVIDENCE),
+                        'SDK_PROOF_RUNTIME': str(RUNTIME), 'HOME': str(BASE / 'home'),
+                        'XDG_CONFIG_HOME': str(BASE / 'config'),
+                        'NPM_CONFIG_USERCONFIG': str(BASE / 'npm-user-config'),
+                        'NPM_CONFIG_GLOBALCONFIG': str(BASE / 'npm-global-config'),
+                        'NPM_CONFIG_CACHE': str(BASE / 'npm-cache'),
+                        'NPM_CONFIG_IGNORE_SCRIPTS': 'true', 'CI': 'true'}
+              with open(os.environ['GITHUB_ENV'], 'a') as stream:
+                  for key, value in values.items():
+                      assert '\n' not in value and '\r' not in value
+                      stream.write(key + '=' + value + '\n')
+              os.environ.update(values)
+              head = git('rev-parse', 'HEAD').decode().strip()
+              head_tree = git('rev-parse', 'HEAD^{tree}').decode().strip()
+              parents = git('rev-list', '--parents', '-n', '1', 'HEAD').decode().split()[1:]
+              provenance = {key: os.environ[key] for key in (
+                  'GITHUB_REPOSITORY', 'GITHUB_SHA', 'GITHUB_REF', 'GITHUB_EVENT_NAME',
+                  'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_WORKFLOW_REF', 'GITHUB_WORKFLOW_SHA',
+                  'RUNNER_OS', 'RUNNER_ARCH')}
+              provenance.update(head=head, tree=head_tree, parents=parents,
+                                source=SOURCE, source_tree=SOURCE_TREE,
+                                payload_limit='Runtime and archive payload bytes are not uploaded; full byte/mode inventories and lock-bound archive identities are retained.')
+              write('provenance.json', provenance)
+              assert provenance['GITHUB_REPOSITORY'] == 'WiktorStarczewski/review-council'
+              assert provenance['GITHUB_EVENT_NAME'] == 'push' and provenance['GITHUB_REF'] == BRANCH
+              assert provenance['GITHUB_SHA'] == head and provenance['GITHUB_WORKFLOW_SHA'] == head
+              assert provenance['GITHUB_WORKFLOW_REF'] == provenance['GITHUB_REPOSITORY'] + '/' + WORKFLOW + '@' + BRANCH
+              assert parents == [SOURCE] and git('rev-parse', SOURCE + '^{tree}').decode().strip() == SOURCE_TREE
+              source, transport = tree(SOURCE), tree('HEAD')
+              write('source-tree-map.json', source)
+              write('transport-tree-map.json', transport)
+              assert len(source) == 376 and len(transport) == 377
+              assert [row for row in transport if row['path'] != WORKFLOW] == source
+              assert [row['path'] for row in transport if row['path'] not in {x['path'] for x in source}] == [WORKFLOW]
+              for label, revision, kind in (('source-commit', SOURCE, 'commit'),
+                                             ('source-tree', SOURCE_TREE, 'tree'),
+                                             ('transport-commit', head, 'commit'),
+                                             ('transport-tree', head_tree, 'tree')):
+                  (EVIDENCE / (label + '.raw')).write_bytes(git('cat-file', kind, revision))
+              (EVIDENCE / 'workflow.yml').write_bytes((ROOT / WORKFLOW).read_bytes())
+              fixed = ['cursor-sdk/verify-runtime.py', 'cursor-sdk/launch.mjs',
+                       'cursor-sdk/package.json', 'cursor-sdk/package-lock.json',
+                       'lib/cursor-sdk-driver.mjs', 'lib/cursor-sdk-reader.mjs',
+                       'lib/cursor-read-helper.py', 'lib/review-read-audit.py', 'seats.d/cursor-sdk.sh']
+              controllers = sorted(set(fixed + ['cursor-sdk/install.py', 'rev-evidence.py', 'rev-prompt.sh']
+                                       + [str(p.relative_to(SCRIPTS)) for p in (SCRIPTS / 'lib').glob('*.py')]))
+              write('controller-inputs.json', {'fixed_nine': fixed, 'entries': [
+                  {'path': path, 'sha256': sha((SCRIPTS / path).read_bytes()),
+                   'bytes': (SCRIPTS / path).stat().st_size} for path in controllers]})
+              versions = {}
+              for name, command in (('node', ['node', '--version']), ('npm', ['npm', '--version']),
+                                     ('python', ['python3', '--version']), ('git', ['git', '--version'])):
+                  versions[name] = subprocess.check_output(command, text=True).strip()
+              assert int(versions['node'].lstrip('v').split('.')[0]) == 22
+              write('tools.json', versions)
+              source_state('prepared')
+
+
+          def installed_identity():
+              entries = runtime_inventory('before')
+              lock = json.loads((SCRIPTS / 'cursor-sdk/package-lock.json').read_text())
+              system = {'Darwin': 'darwin', 'Linux': 'linux'}[platform.system()]
+              arch = {'arm64': 'arm64', 'aarch64': 'arm64', 'x86_64': 'x64', 'AMD64': 'x64'}[platform.machine()]
+              helper = '@cursor/sdk-' + system + '-' + arch
+              packages = []
+              for location, package in sorted(lock['packages'].items()):
+                  if not location or (package.get('os') and system not in package['os']) or (package.get('cpu') and arch not in package['cpu']):
+                      continue
+                  raw = (RUNTIME / '.archives' / (sha(package['integrity'].encode()) + '.tgz')).read_bytes()
+                  assert hashlib.sha512(raw).digest() == base64.b64decode(package['integrity'][7:], validate=True)
+                  installed = json.loads((RUNTIME / location / 'package.json').read_text())
+                  assert installed['version'] == package['version']
+                  packages.append({'location': location, 'version': installed['version'],
+                                   'resolved': package['resolved'], 'integrity': package['integrity'],
+                                   'archive_bytes': len(raw), 'archive_sha256': sha(raw)})
+              helper_package = json.loads((RUNTIME / 'node_modules' / helper / 'package.json').read_text())
+              assert helper_package['version'] == '1.0.38'
+              helper_files = [row for row in entries if row['kind'] == 'file'
+                              and row['path'].startswith('node_modules/' + helper + '/')]
+              executables = [row for row in helper_files if int(row['mode'], 8) & 0o111]
+              assert executables
+              write('installed-identity.json', {'sdk_version': '1.0.38', 'helper': helper,
+                    'helper_version': helper_package['version'], 'platform': system, 'arch': arch,
+                    'packages': packages, 'helper_files': helper_files, 'helper_executables': executables,
+                    'sdk_imported': False, 'helper_executed': False, 'provider_called': False})
+
+
+          def mutate():
+              sdk = RUNTIME / 'node_modules/@cursor/sdk'
+              target = sdk / 'dist/esm/index.js'
+              info = target.lstat()
+              raw = target.read_bytes()
+              assert stat.S_ISREG(info.st_mode) and info.st_nlink == 1 and raw
+              original = BASE / 'mutation-original.bin'
+              original.write_bytes(raw)
+              original.chmod(0o600)
+              (EVIDENCE / 'mutation-original.bin').write_bytes(raw)
+              changed = bytes([raw[0] ^ 1]) + raw[1:]
+              manifest = {'path': target.relative_to(RUNTIME).as_posix(), 'offset': 0,
+                          'before_byte_hex': raw[:1].hex(), 'mutated_byte_hex': changed[:1].hex(),
+                          'mode': oct(stat.S_IMODE(info.st_mode)), 'bytes': len(raw),
+                          'before_sha256': sha(raw), 'mutated_sha256': sha(changed)}
+              write('mutation.json', manifest)
+              target.write_bytes(changed)
+              target.chmod(stat.S_IMODE(info.st_mode))
+              assert target.read_bytes() == changed
+              (EVIDENCE / 'mutation-mutated.bin').write_bytes(target.read_bytes())
+              before = json.loads((EVIDENCE / 'runtime-before.json').read_text())['entries']
+              after = runtime_inventory('mutated')
+              differences = [row['path'] for row, current in zip(before, after) if row != current]
+              assert len(before) == len(after) and differences == [manifest['path']]
+              (EVIDENCE / 'mutation.patch').write_text(
+                  manifest['path'] + ': byte 0 ' + raw[:1].hex() + ' -> ' + changed[:1].hex() + '\n')
+
+
+          def restore():
+              manifest = json.loads((EVIDENCE / 'mutation.json').read_text())
+              target = RUNTIME / manifest['path']
+              raw = (BASE / 'mutation-original.bin').read_bytes()
+              assert sha(raw) == manifest['before_sha256'] and len(raw) == manifest['bytes']
+              target.write_bytes(raw)
+              target.chmod(int(manifest['mode'], 8))
+              assert target.read_bytes() == raw and stat.S_IMODE(target.stat().st_mode) == int(manifest['mode'], 8)
+              (EVIDENCE / 'mutation-restored.bin').write_bytes(target.read_bytes())
+              write('restoration.json', {'path': manifest['path'], 'sha256': sha(target.read_bytes()),
+                                       'mode': oct(stat.S_IMODE(target.stat().st_mode)), 'exact': True})
+
+
+          def validate():
+              outcomes = json.loads(os.environ['PROOF_OUTCOMES'])
+              write('step-outcomes.json', outcomes)
+              required = ('checkout', 'node', 'prepare', 'install', 'post_install', 'positive',
+                          'inventory', 'mutate', 'post_mutation', 'mutant', 'restore',
+                          'post_restore', 'restored', 'final_inventory')
+              assert set(outcomes) == set(required) and all(outcomes[name] == 'success' for name in required)
+              for name, expected in (('install', 0), ('positive', 0), ('mutant', 5), ('restored', 0)):
+                  result = json.loads((EVIDENCE / (name + '.exits.json')).read_text())
+                  assert result == {'command': expected, 'expected': expected, 'stdout_tee': 0, 'stderr_tee': 0}
+                  assert (EVIDENCE / (name + '.stdout')).exists() and (EVIDENCE / (name + '.stderr')).exists()
+              assert (EVIDENCE / 'positive.stderr').read_bytes() == b''
+              assert (EVIDENCE / 'restored.stderr').read_bytes() == b''
+              assert (EVIDENCE / 'mutant.stdout').read_bytes() == b''
+              assert (EVIDENCE / 'mutant.stderr').read_bytes() == b'runtime_invalid\n'
+              positive_raw = (EVIDENCE / 'positive.stdout').read_bytes()
+              restored_raw = (EVIDENCE / 'restored.stdout').read_bytes()
+              assert positive_raw == restored_raw and len(positive_raw) <= 4096
+              identity = json.loads(positive_raw)
+              assert set(identity) == {'version', 'sdk_version', 'runtime_sha256', 'platform', 'arch', 'helper'}
+              assert identity['version'] == 1 and identity['sdk_version'] == '1.0.38'
+              assert len(identity['runtime_sha256']) == 64 and all(c in '0123456789abcdef' for c in identity['runtime_sha256'])
+              installed = json.loads((EVIDENCE / 'installed-identity.json').read_text())
+              assert all(identity[key] == installed[key] for key in ('sdk_version', 'platform', 'arch', 'helper'))
+              assert not any(installed[key] for key in ('sdk_imported', 'helper_executed', 'provider_called'))
+              before = json.loads((EVIDENCE / 'runtime-before.json').read_text())
+              restored = json.loads((EVIDENCE / 'runtime-restored.json').read_text())
+              assert before == restored
+              original = (EVIDENCE / 'mutation-original.bin').read_bytes()
+              mutated = (EVIDENCE / 'mutation-mutated.bin').read_bytes()
+              assert original == (EVIDENCE / 'mutation-restored.bin').read_bytes()
+              assert len(original) == len(mutated) and original
+              assert [i for i, (a, b) in enumerate(zip(original, mutated)) if a != b] == [0]
+              assert mutated[0] == original[0] ^ 1
+              mutation = json.loads((EVIDENCE / 'mutation.json').read_text())
+              assert sha(original) == mutation['before_sha256'] and sha(mutated) == mutation['mutated_sha256']
+              before_entries = before['entries']
+              mutated_entries = json.loads((EVIDENCE / 'runtime-mutated.json').read_text())['entries']
+              assert len(before_entries) == len(mutated_entries)
+              assert [a['path'] for a, b in zip(before_entries, mutated_entries) if a != b] == [mutation['path']]
+              for label in ('post-install', 'post-mutation', 'post-restore'):
+                  state = json.loads((EVIDENCE / ('source-' + label + '.json')).read_text())
+                  assert state['entries'] == json.loads((EVIDENCE / 'source-prepared.json').read_text())['entries']
+                  assert state['status'] == state['index_diff'] == state['working_diff'] == ''
+              provenance = json.loads((EVIDENCE / 'provenance.json').read_text())
+              final_provenance = {
+                  'head': git('rev-parse', 'HEAD').decode().strip(),
+                  'tree': git('rev-parse', 'HEAD^{tree}').decode().strip(),
+                  'parents': git('rev-list', '--parents', '-n', '1', 'HEAD').decode().split()[1:],
+                  'source_tree': git('rev-parse', SOURCE + '^{tree}').decode().strip()}
+              write('final-provenance.json', final_provenance)
+              assert final_provenance == {key: provenance[key] for key in final_provenance}
+              assert final_provenance['head'] == os.environ['GITHUB_SHA'] == os.environ['GITHUB_WORKFLOW_SHA']
+              assert final_provenance['parents'] == [SOURCE] and final_provenance['source_tree'] == SOURCE_TREE
+              assert git('cat-file', 'commit', 'HEAD') == (EVIDENCE / 'transport-commit.raw').read_bytes()
+              assert git('cat-file', 'tree', 'HEAD^{tree}') == (EVIDENCE / 'transport-tree.raw').read_bytes()
+              source_state('final')
+              runtime_inventory('final')
+              assert json.loads((EVIDENCE / 'runtime-final.json').read_text()) == restored
+              expected = {'credential-presence.json', 'provenance.json', 'source-tree-map.json',
+                          'transport-tree-map.json', 'source-commit.raw', 'source-tree.raw',
+                          'transport-commit.raw', 'transport-tree.raw', 'workflow.yml', 'controller-inputs.json',
+                          'tools.json', 'source-prepared.json', 'source-post-install.json',
+                          'source-post-mutation.json', 'source-post-restore.json', 'source-final.json',
+                          'final-provenance.json', 'runtime-before.json', 'runtime-final.json',
+                          'runtime-mutated.json', 'runtime-restored.json', 'installed-identity.json',
+                          'mutation.json', 'mutation.patch', 'mutation-original.bin', 'mutation-mutated.bin',
+                          'mutation-restored.bin', 'restoration.json', 'step-outcomes.json',
+                          'proof.py', 'capture.sh'}
+              expected.update(name + suffix for name in ('install', 'positive', 'mutant', 'restored')
+                              for suffix in ('.stdout', '.stderr', '.exits.json'))
+              assert {p.name for p in EVIDENCE.iterdir()} == expected
+              write('validation.json', {'version': 1, 'status': 'GENUINE_INSTALL_MUTATION_RESTORE_COMPLETE',
+                                      'runtime_identity': identity, 'required_input_files': len(expected),
+                                      'upload_is_separate_required_gate': True,
+                                      'helper_startup_live_qualification_and_native_discovery': 'UNRUN'})
+              manifest = [{'path': p.name, 'bytes': p.stat().st_size, 'sha256': sha(p.read_bytes())}
+                          for p in sorted(EVIDENCE.iterdir())]
+              write('evidence-manifest.json', {'version': 1, 'entries': manifest})
+              print('GENUINE_INSTALL_MUTATION_RESTORE_COMPLETE')
+
+
+          if __name__ == '__main__':
+              operation = sys.argv[1]
+              if operation == 'prepare':
+                  prepare()
+              elif operation == 'source':
+                  source_state(sys.argv[2])
+              elif operation == 'inventory':
+                  installed_identity()
+              elif operation == 'mutate':
+                  mutate()
+              elif operation == 'restore':
+                  restore()
+              elif operation == 'restored-inventory':
+                  runtime_inventory('restored')
+              elif operation == 'validate':
+                  validate()
+              else:
+                  raise ValueError('unknown operation')
+          PROOF
+          cat > "$proof_base/capture.sh" <<'CAPTURE'
+          #!/bin/bash
+          set -u
+          name=$1
+          expected=$2
+          shift 2
+          set +e
+          "$@" >"$SDK_PROOF_EVIDENCE/$name.stdout" 2>"$SDK_PROOF_EVIDENCE/$name.stderr"
+          command_rc=$?
+          tee /dev/null <"$SDK_PROOF_EVIDENCE/$name.stdout"
+          stdout_tee=$?
+          tee /dev/null <"$SDK_PROOF_EVIDENCE/$name.stderr" >&2
+          stderr_tee=$?
+          python3 - "$SDK_PROOF_EVIDENCE/$name.exits.json" "$command_rc" "$expected" "$stdout_tee" "$stderr_tee" <<'EXITS'
+          import json
+          from pathlib import Path
+          import sys
+          Path(sys.argv[1]).write_text(json.dumps(dict(zip(
+              ('command', 'expected', 'stdout_tee', 'stderr_tee'), map(int, sys.argv[2:]))), sort_keys=True) + '\n')
+          EXITS
+          record_rc=$?
+          if [ "$record_rc" -ne 0 ] || [ "$command_rc" -ne "$expected" ] || [ "$stdout_tee" -ne 0 ] || [ "$stderr_tee" -ne 0 ]; then
+            exit 1
+          fi
+          CAPTURE
+          python3 "$proof_base/proof.py" prepare
+      - name: Install the genuine pinned optional runtime
+        id: install
+        if: ${{ always() && steps.prepare.outcome == 'success' }}
+        run: bash "$SDK_PROOF_BASE/capture.sh" install 0 python3 plugins/review-council/scripts/cursor-sdk/install.py "$SDK_PROOF_RUNTIME"
+      - name: Check source after installation
+        id: post_install
+        if: ${{ always() && steps.prepare.outcome == 'success' }}
+        run: python3 "$SDK_PROOF_BASE/proof.py" source post-install
+      - name: Verify the genuine installed runtime
+        id: positive
+        if: ${{ always() && steps.install.outcome == 'success' }}
+        run: bash "$SDK_PROOF_BASE/capture.sh" positive 0 python3 plugins/review-council/scripts/cursor-sdk/verify-runtime.py "$SDK_PROOF_RUNTIME"
+      - name: Inventory genuine packages and applicable helper without execution
+        id: inventory
+        if: ${{ always() && steps.install.outcome == 'success' }}
+        run: python3 "$SDK_PROOF_BASE/proof.py" inventory
+      - name: Mutate exactly one installed SDK source byte
+        id: mutate
+        if: ${{ always() && steps.positive.outcome == 'success' && steps.inventory.outcome == 'success' }}
+        run: python3 "$SDK_PROOF_BASE/proof.py" mutate
+      - name: Check source after mutation
+        id: post_mutation
+        if: ${{ always() && steps.prepare.outcome == 'success' }}
+        run: python3 "$SDK_PROOF_BASE/proof.py" source post-mutation
+      - name: Require unchanged verifier to reject the mutant
+        id: mutant
+        if: ${{ always() && steps.mutate.outcome == 'success' }}
+        run: bash "$SDK_PROOF_BASE/capture.sh" mutant 5 python3 plugins/review-council/scripts/cursor-sdk/verify-runtime.py "$SDK_PROOF_RUNTIME"
+      - name: Restore the exact original installed bytes and mode
+        id: restore
+        if: ${{ always() && steps.prepare.outcome == 'success' && steps.install.outcome == 'success' }}
+        run: python3 "$SDK_PROOF_BASE/proof.py" restore
+      - name: Check source after restoration
+        id: post_restore
+        if: ${{ always() && steps.prepare.outcome == 'success' }}
+        run: python3 "$SDK_PROOF_BASE/proof.py" source post-restore
+      - name: Verify the restored runtime has the original identity
+        id: restored
+        if: ${{ always() && steps.restore.outcome == 'success' }}
+        run: bash "$SDK_PROOF_BASE/capture.sh" restored 0 python3 plugins/review-council/scripts/cursor-sdk/verify-runtime.py "$SDK_PROOF_RUNTIME"
+      - name: Compare complete restored runtime byte and mode inventory
+        id: final_inventory
+        if: ${{ always() && steps.restore.outcome == 'success' }}
+        run: python3 "$SDK_PROOF_BASE/proof.py" restored-inventory
+      - name: Require every independent proof gate and complete evidence
+        id: validate
+        if: always()
+        env:
+          PROOF_OUTCOMES: >-
+            {"checkout":"${{ steps.checkout.outcome }}","node":"${{ steps.node.outcome }}","prepare":"${{ steps.prepare.outcome }}","install":"${{ steps.install.outcome }}","post_install":"${{ steps.post_install.outcome }}","positive":"${{ steps.positive.outcome }}","inventory":"${{ steps.inventory.outcome }}","mutate":"${{ steps.mutate.outcome }}","post_mutation":"${{ steps.post_mutation.outcome }}","mutant":"${{ steps.mutant.outcome }}","restore":"${{ steps.restore.outcome }}","post_restore":"${{ steps.post_restore.outcome }}","restored":"${{ steps.restored.outcome }}","final_inventory":"${{ steps.final_inventory.outcome }}"}
+        run: python3 "${SDK_PROOF_BASE:-$RUNNER_TEMP/sdk-genuine-install}/proof.py" validate
+      - name: Upload complete genuine-install proof
+        id: upload
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cursor-sdk-genuine-install-${{ runner.os }}-${{ runner.arch }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/sdk-genuine-install/evidence
+          if-no-files-found: error
+          retention-days: 7
+      - name: Require artifact upload independently
+        if: always()
+        env:
+          VALIDATION_OUTCOME: ${{ steps.validate.outcome }}
+          UPLOAD_OUTCOME: ${{ steps.upload.outcome }}
+          ARTIFACT_ID: ${{ steps.upload.outputs.artifact-id }}
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          result = {name: os.environ[name] for name in (
+              'VALIDATION_OUTCOME', 'UPLOAD_OUTCOME', 'ARTIFACT_ID', 'ARTIFACT_DIGEST')}
+          print(json.dumps(result, sort_keys=True))
+          assert result['VALIDATION_OUTCOME'] == result['UPLOAD_OUTCOME'] == 'success'
+          assert result['ARTIFACT_ID'].isdigit() and len(result['ARTIFACT_DIGEST']) == 64
+          PY
