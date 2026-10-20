@@ -92,6 +92,11 @@ setup. The driver discards the returned credential and
 prints only a closed success state. See the [official authentication guide](https://cursor.com/docs/sdk/typescript#authentication)
 and [browser sign-in API](https://cursor.com/docs/sdk/typescript#cursor-auth-login).
 
+Public probe and reviewer calls also forward Ctrl+C or termination to their owned
+SDK process. They retain the thirty-minute attempt deadline and allow two seconds
+for cleanup before terminating that process. Cancellation returns a nonzero status;
+it does not guarantee remote rollback or cleanup of detached helpers.
+
 `auth-status` reports local SDK login presence, absence or an environment override.
 It does not verify remote entitlement, revocation, model access or qualification.
 Discovery and reviewer calls never start or renew sign-in automatically. If the

@@ -587,22 +587,22 @@ export async function runDriver(argv) {
         clearTimeout(deadline);
         clearTimeout(grace);
         for (const [name,forward] of signals) process.removeListener(name,forward);
-        resolveCode(cancelled ? 3 : Number.isInteger(value) ? value : 1);
+        resolveCode(cancelled ? (operation === 'login' ? 3 : 2) : Number.isInteger(value) ? value : 1);
       };
       const cancel = name => {
         if (finished || cancelled) return;
         cancelled = true;
         clearTimeout(deadline);
-        grace = setTimeout(() => { child.kill('SIGKILL'); },500);
+        grace = setTimeout(() => { child.kill('SIGKILL'); },operation === 'login' ? 500 : 2000);
         child.kill(name);
       };
-      if (operation === 'login') {
+      if (['login','probe','seat'].includes(operation)) {
         for (const name of ['SIGINT','SIGTERM']) {
           const forward = () => cancel(name);
           process.on(name,forward);
           signals.push([name,forward]);
         }
-        deadline = setTimeout(() => cancel('SIGTERM'),LOGIN_MS);
+        deadline = setTimeout(() => cancel('SIGTERM'),operation === 'login' ? LOGIN_MS : ATTEMPT_MS);
       }
       child.on('error',() => finish(1));
       child.on('close',finish);
