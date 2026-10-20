@@ -1,0 +1,100 @@
+name: cursor-subscription-runtime-export
+on:
+  push:
+    branches: [ci/cursor-subscription-runtime-export]
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install and archive the frozen Darwin arm64 runtime
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import platform
+          import stat
+          import subprocess
+          import sys
+          import tarfile
+
+          baseline = 'ac8a24dc2db5ca7d38c0b12b57d9ed3a4c548e1d'
+          workflow = '.github/workflows/cursor-subscription-runtime-export.yml'
+          def git(*args):
+              return subprocess.check_output(['git', *args])
+          if sys.platform != 'darwin' or platform.machine() != 'arm64':
+              raise RuntimeError('Darwin arm64 runner required')
+          if git('diff', '--name-only', baseline, 'HEAD', '--').decode().splitlines() != [workflow]:
+              raise RuntimeError('export branch must preserve the frozen feature source')
+          if git('status', '--porcelain'):
+              raise RuntimeError('clean checkout required')
+          source = []
+          for entry in git('ls-tree', '-rz', '--full-tree', 'HEAD').split(b'\0'):
+              if not entry:
+                  continue
+              header, name = entry.split(b'\t', 1)
+              mode, kind, blob = header.decode().split()
+              path = Path(os.fsdecode(name))
+              if kind != 'blob' or not stat.S_ISREG(path.lstat().st_mode):
+                  raise RuntimeError('regular source file required: ' + str(path))
+              raw = path.read_bytes()
+              source.append({'path': path.as_posix(), 'git_blob': blob, 'git_mode': mode,
+                             'sha256': hashlib.sha256(raw).hexdigest(), 'bytes': len(raw),
+                             'mode': format(stat.S_IMODE(path.stat().st_mode), '04o')})
+          controller = Path('plugins/review-council/scripts/cursor-sdk')
+          runtime = Path(os.environ['RUNNER_TEMP']) / 'cursor-subscription-sdk-runtime-darwin-arm64'
+          installed = subprocess.run([sys.executable, str(controller / 'install.py'), str(runtime)],
+                                     check=True, stdout=subprocess.PIPE, text=True)
+          verified = json.loads(installed.stdout.splitlines()[-1])
+          if (verified['platform'], verified['arch'], verified['helper']) != (
+                  'darwin', 'arm64', '@cursor/sdk-darwin-arm64'):
+              raise RuntimeError('verified runtime platform mismatch')
+          output = Path(os.environ['RUNNER_TEMP']) / 'cursor-subscription-runtime-export'
+          output.mkdir(mode=0o700)
+          archive = output / 'cursor-subscription-sdk-runtime-darwin-arm64.tar.gz'
+          inventory = []
+          with tarfile.open(archive, 'w:gz', dereference=False) as bundle:
+              for path in [runtime, *sorted(runtime.rglob('*'))]:
+                  info = path.lstat()
+                  if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+                      raise RuntimeError('nonregular runtime entry: ' + str(path))
+                  regular = stat.S_ISREG(info.st_mode)
+                  raw = path.read_bytes() if regular else b''
+                  name = path.relative_to(runtime.parent).as_posix()
+                  inventory.append({'path': name, 'kind': 'file' if regular else 'directory',
+                                    'sha256': hashlib.sha256(raw).hexdigest() if regular else None,
+                                    'bytes': len(raw), 'mode': format(stat.S_IMODE(info.st_mode), '04o')})
+                  bundle.add(path, arcname=name, recursive=False)
+          lock = json.loads((controller / 'package-lock.json').read_text())
+          raw = archive.read_bytes()
+          metadata = {
+              'version': 1, 'source_commit': git('rev-parse', 'HEAD').decode().strip(),
+              'source_tree': git('rev-parse', 'HEAD^{tree}').decode().strip(),
+              'baseline_commit': baseline, 'baseline_tree': git('rev-parse', baseline + '^{tree}').decode().strip(),
+              'source_entries': sorted(source, key=lambda row: row['path']),
+              'verification': verified, 'helper_lock': lock['packages']['node_modules/' + verified['helper']],
+              'workflow_commit': os.environ['GITHUB_SHA'], 'run_id': os.environ['GITHUB_RUN_ID'],
+              'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'archive': {'path': archive.name, 'sha256': hashlib.sha256(raw).hexdigest(), 'bytes': len(raw)},
+              'inventory': sorted(inventory, key=lambda row: row['path']),
+          }
+          (output / 'runtime-metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
+          PY
+      - name: Upload the installed runtime and its identities
+        uses: actions/upload-artifact@v4
+        with:
+          name: cursor-subscription-runtime-darwin-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/cursor-subscription-runtime-export/
+          if-no-files-found: error
+          retention-days: 7
