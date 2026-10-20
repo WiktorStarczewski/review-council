@@ -56,13 +56,13 @@ class CursorIntegrationTests(CursorSDKCase):
         scripts = directory / 'scripts'
         shutil.copytree(SCRIPTS, scripts)
         adapter = scripts / 'seats.d/cursor-sdk.sh'
+        adapter.chmod(0o755)
         adapter.write_text(
             '#!/bin/bash\n'
             'printf "called\\n" >> "$LOG.launches"\n'
             'printf "%s\\n%s\\n" "$REVIEW_COUNCIL_CURSOR_SDK_RUNTIME" '
             '"$REVIEW_COUNCIL_CURSOR_SDK_QUALIFICATION" > "$LOG.environment"\n'
             'exit ' + str(code) + '\n')
-        adapter.chmod(0o755)
         session = directory / 'session'
         session.mkdir()
         row = self.sdk_seat(directory)
