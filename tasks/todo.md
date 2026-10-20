@@ -816,3 +816,17 @@ policy, rubric or original stream changes. All evidence-backed screens are close
 
 PR #29 at bb4c168 passes macOS and Ubuntu CI. The final added files contain only
 wave 19 records and prose; functional code remains identical to that verified head.
+
+## Cursor host and optional SDK Grok release
+
+- [x] Verify official CLI automation support and known per-run isolation limitation.
+- [x] User approved native Cursor host plus SDK Grok with strict qualification, unchanged defaults.
+- [x] Builder check and detailed implementation plan complete.
+- [ ] Task1 test-only contracts, normal review and actual expected-red CI.
+- [ ] Task2 canonical bounded reader and SDK audit normalization.
+- [ ] Task3 optional SDK driver, catalog, auth availability and runtime.
+- [ ] Task4 roster/evidence/status/stack integration.
+- [ ] Task5 native Cursor packaging/discovery and documentation.
+- [ ] Task6 live qualification, normal cumulative reviews, full both-OS CI and signed release.
+
+Review results: pending. SDK credentials absent; no live SDK qualification or product code exists yet. Existing wallet runtimes remain frozen.

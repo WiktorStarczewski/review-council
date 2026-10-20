@@ -258,3 +258,7 @@
   new model settings first, then change the workflow and compare at that exact identity.
 - A request for latest models means provider discovery, not replacing an old version
   pin with a newer one. Freeze resolved slugs in run artifacts for reproducibility.
+
+- For Cursor automation, verify the supported public interface before treating a rejected internal option as a general prohibition. Keep CLI compatibility, ambient configuration controls and delivered source proof as separate claims.
+- Preserve existing complete-packet and context exceptions when adding a transport; applying a blanket cap or symlink ban can invalidate faithful reviews without improving the canonical proof.
+- A verification assertion and a later mutation must be sequential tool operations or a fail-fast script. A failing assertion must never fall through to a commit, seat launch or publication.
