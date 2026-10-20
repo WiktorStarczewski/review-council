@@ -227,6 +227,43 @@ if [ "$ADAPTER" = cursor-sdk ] && [ "$rc" -ne 0 ]; then
   case "$rc" in 1|2|3|4) finish "$rc";; *) finish 1;; esac
 fi
 
+if [ "$ADAPTER" = cursor-sdk ] && [ "$rc" -eq 0 ]; then
+  SDK_STRICT_DIR=$(mktemp -d "$BASEN.strict-result.XXXXXX") || {
+    [ ! -s "$OUT" ] || mv "$OUT" "$BASEN.transport-invalid.json"
+    finish 2
+  }
+  if python3 "$HERE/lib/stream-summary.py" cursor-sdk "$SDK_STRICT_DIR/result.json" < "$RAW" >>"$LOG" 2>&1 &&
+    python3 - "$SDK_STRICT_DIR/result.json" "$OUT" >>"$LOG" 2>&1 <<'PY'
+import json, sys
+
+def unique(rows):
+    value = {}
+    for key, item in rows:
+        if key in value:
+            raise ValueError('duplicate published result key')
+        value[key] = item
+    return value
+
+def finite(token):
+    raise ValueError('non-finite published result')
+
+def canonical(path):
+    with open(path) as source:
+        value = json.load(source, object_pairs_hook=unique, parse_constant=finite)
+    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
+
+if canonical(sys.argv[1]) != canonical(sys.argv[2]):
+    raise ValueError('SDK terminal and published result disagree')
+PY
+  then
+    rm -rf "$SDK_STRICT_DIR"
+  else
+    rm -rf "$SDK_STRICT_DIR"
+    [ ! -s "$OUT" ] || mv "$OUT" "$BASEN.transport-invalid.json"
+    finish 2
+  fi
+fi
+
 if [ "$ADAPTER" = codex ] && [ "$MODE" = review ] && [ -s "$OUT" ] && ! python3 "$VALIDATE" "$OUT" >/dev/null 2>&1; then
   # `codex exec review` ignores --output-schema and answers in prose; keep the prose and convert it.
   cp "$OUT" "$BASEN.native.txt"
