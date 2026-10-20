@@ -118,6 +118,8 @@ node plugins/review-council/scripts/lib/cursor-sdk-driver.mjs catalog
 Use that catalog's exact `ModelSelection` for the newest available Grok at `xhigh`,
 including its actual parameter IDs and values. Save a private JSON object with
 `effort` equal to `"xhigh"` and `selection` equal to that complete `ModelSelection`.
+When several xhigh variants exist, Council preserves the qualified context, speed
+and Max selection and requires its parameters to match one unique catalog variant.
 Do not copy a CLI slug or invent a parameter. The output's parent must already be
 a private directory owned by you, and the output file must not exist. The bounded
 public probe then makes a real model call:

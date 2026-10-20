@@ -438,7 +438,7 @@ def validate_cursor_sdk_qualification(seat):
         raise ValueError('cursor-sdk qualification is missing, invalid or changed') from None
 
 
-def resolve_cursor_sdk_config(cfg, catalog):
+def resolve_cursor_sdk_config(cfg, catalog, qualified_selection=None):
     """Resolve exact SDK selections without I/O, credentials or a provider turn."""
     effective = copy.deepcopy(cfg)
     if 'cursor_sdk_models' not in cfg:
@@ -507,6 +507,17 @@ def resolve_cursor_sdk_config(cfg, catalog):
                 continue
             if all(row['value'] in definitions.get(row['id'], set()) for row in candidate['params']):
                 choices.append(candidate)
+        if qualified_selection is not None:
+            try:
+                qualified = cursor_sdk_selection(qualified_selection)
+            except ValueError:
+                qualified = None
+            matching = [value for value in choices if qualified is not None
+                        and value['id'] == qualified['id']
+                        and value['params'] == qualified['params']]
+            choices = ([qualified] if len(matching) == 1
+                       and bool(matching[0].get('maxMode')) == bool(qualified.get('maxMode'))
+                       else [])
         if len(choices) != 1:
             return effective, 'cursor-sdk xhigh selection unavailable or ambiguous: ' + model_id, 'availability'
         selected.append(choices[0])
@@ -549,7 +560,7 @@ def prepare_cursor_sdk_config(cfg):
             raise ValueError()
     except (ValueError, TypeError):
         return cfg, 'cursor-sdk catalog or qualified runtime unavailable', 'availability'
-    effective, error, cause = resolve_cursor_sdk_config(cfg, catalog.get('models'))
+    effective, error, cause = resolve_cursor_sdk_config(cfg, catalog.get('models'), proof.get('selection'))
     if error:
         return effective, error, cause
     if any(value != proof.get('selection') for value in effective['cursor_sdk_model_selections']):
