@@ -1139,6 +1139,101 @@ def cumulative_verification_routing():
                    for assignment in mechanical['assignments'].values())
         assert mechanical['fallback_reason'] == 'no semantic components'
 
+def verification_source_context_change(change):
+    with fixture(adapter='codex') as (root, session, git, write, call, prepare, finish):
+        write('padding.py', ''.join(f'value_{i} = {i}\n' for i in range(1000)))
+        (session / 'files.txt').write_text('main.py\npadding.py\n')
+        (session / 'untracked.txt').write_text('padding.py\n')
+        frozen_inputs = {name: (session / name).read_bytes() for name in (
+            'scope.env', 'roster.json', 'files.txt', 'untracked.txt')}
+        reviewed = prepare('reviewed', 'risk', *assign)
+        assert reviewed['source_context']['enabled'] is True
+        assert set(reviewed['assignments']) == set(seats)
+        assert {a['bundle'] for a in reviewed['assignments'].values()} == set(bundles)
+        assert reviewed['mechanical_owner'] == 'sonnet'
+        finish('reviewed')
+        prior_reference = json.loads((session / 'coverage-head.json').read_text())
+        sealed = {path.name: path.read_bytes() for path in session.glob('rreviewed-*')}
+        repository = module.Repository(session.resolve())
+        prior = module.prior_coverage(session, repository, reviewed['base_tree'])
+        assert prior['status'] == 'valid', prior
+        assert prior['coverage']['snapshot_tree'] == reviewed['snapshot_tree']
+        assert prior_reference == {
+            'receipt': 'rreviewed-coverage.receipt.json',
+            'sha256': hashlib.sha256(sealed['rreviewed-coverage.receipt.json']).hexdigest()}
+        original = git('show', git('rev-parse', 'HEAD') + ':main.py') + '\n'
+        if change == 'restored':
+            write('main.py', original)
+            assert (root / 'main.py').read_bytes() == original.encode()
+            assert git('diff', 'HEAD', '--', 'main.py') == ''
+        elif change == 'ordinary':
+            write('main.py', (root / 'main.py').read_text().replace('return 2', 'return 3', 1))
+        elif change == 'partial-deletion':
+            write('main.py', 'def second():\n    return 2\n')
+        elif change == 'deleted':
+            (root / 'main.py').unlink()
+        else:
+            raise AssertionError('unknown verification source fixture: ' + change)
+        snapshot, unsafe = repository.snapshot()
+        assert unsafe == []
+        cumulative, _, categories, opaque = repository.changes(reviewed['base_tree'], snapshot)
+        delta, _, delta_categories, delta_opaque = repository.changes(reviewed['snapshot_tree'], snapshot)
+        assert opaque == delta_opaque == []
+        assert [path for path, _ in delta] == ['main.py']
+        assert delta_categories == {'main.py': 'semantic'}
+        expected_paths = ['padding.py'] if change == 'restored' else ['main.py', 'padding.py']
+        assert [path for path, _ in cumulative] == expected_paths
+        assert {name: (session / name).read_bytes() for name in frozen_inputs} == frozen_inputs
+        manifest = prepare('verify', 'verification', *assign)
+        assert (manifest['snapshot_tree'], manifest['base_tree']) == (snapshot, reviewed['base_tree'])
+        assert manifest['source_context']['enabled'] is True
+        assert manifest['inputs'] == {name: hashlib.sha256(raw).hexdigest()
+                                      for name, raw in frozen_inputs.items()}
+        assert manifest['semantic_paths'] == [path for path in expected_paths
+                                              if categories[path] == 'semantic']
+        assert manifest['delta_paths'] == ['main.py']
+        assert manifest['predecessor'] == prior_reference
+        assert (session / 'rverify-delta.patch').read_bytes() == delta[0][1]
+        assert (session / 'rverify-full.patch').read_bytes() == b''.join(raw for _, raw in cumulative)
+        owner = manifest['mechanical_owner']
+        assert manifest['assignments'][owner]['full_state'] is True
+        assert manifest['assignments'][owner]['scope'] == 'full'
+        component = next(component for component in manifest['components']
+                         if 'main.py' in component['files'])
+        assert component['full_state_owner'] == owner and component['specialists']
+        assert any('diff --git a/main.py b/main.py' in Path(assignment['patch']).read_text()
+                   for seat, assignment in manifest['assignments'].items() if seat != owner)
+        for seat, assignment in manifest['assignments'].items():
+            if component['id'] not in assignment['components']:
+                continue
+            packet = manifest['source_context']['seats'][seat]
+            rows = [row for shard in packet['shards'] for row in shard['ranges']]
+            rows += packet['required_source_ranges'] + packet['omitted_source_ranges']
+            expected_tree = reviewed['base_tree'] if change == 'deleted' else snapshot
+            assert any(row['path'] == 'main.py' and row['blob_tree'] == expected_tree
+                       and component['id'] in row['component_ids'] for row in rows), (change, seat)
+            for row in rows:
+                entries = repository.entries(row['blob_tree'])
+                entry = entries[row['path']]
+                assert (row['blob_mode'], row['blob_oid']) == entry
+                lines = module.split_lf_lines(repository.blob(entry))
+                raw = b''.join(lines[row['line_start'] - 1:row['line_end']])
+                assert raw and row['content_sha256'] == hashlib.sha256(raw).hexdigest()
+        call('verify', session / 'rverify-evidence.manifest.json')
+        finish('verify')
+        coverage = json.loads(call('current-coverage', session))
+        assert coverage['eligible'] is True, coverage
+        assert coverage['snapshot_tree'] == snapshot
+        assert {name: (session / name).read_bytes() for name in frozen_inputs} == frozen_inputs
+        assert {name: (session / name).read_bytes() for name in sealed} == sealed
+
+def verification_delta_retains_restored_path_source_context():
+    verification_source_context_change('restored')
+
+def verification_delta_source_context_controls():
+    for change in ('ordinary', 'partial-deletion', 'deleted'):
+        verification_source_context_change(change)
+
 def coverage_head_publication_is_monotonic():
     with fixture() as (root, session, git, write, call, prepare, finish):
         prepare('first'); finish('first')
@@ -3333,7 +3428,8 @@ cases = (
     storage_redirects, quoted_paths, changed_symbols, empty_patch_needs_no_fake_read,
     conservative_mechanical_classification, bounded_navigation_markdown, opaque_transitions,
     opaque_mode_transition, invalid_manifests, phase_and_predecessor_integrity,
-    cumulative_verification_routing, coverage_head_publication_is_monotonic,
+    cumulative_verification_routing, verification_delta_retains_restored_path_source_context,
+    verification_delta_source_context_controls, coverage_head_publication_is_monotonic,
     same_stat_and_index_flags, cstyle_enclosing_bodies, wallet_scale,
     literal_scope_and_inventories, sparse_gitlink_and_special, roster_bundle_coverage,
     source_context_packets, provider_visible_source_packet_limit,
@@ -3366,7 +3462,8 @@ groups = {
         phase_and_predecessor_integrity,
     ),
     'routing': (
-        cumulative_verification_routing, coverage_head_publication_is_monotonic,
+        cumulative_verification_routing, verification_delta_retains_restored_path_source_context,
+        verification_delta_source_context_controls, coverage_head_publication_is_monotonic,
         same_stat_and_index_flags, literal_scope_and_inventories,
         sparse_gitlink_and_special, roster_bundle_coverage,
         scoped_names_and_gitlink_lifecycle, component_and_full_tampering,
