@@ -1308,7 +1308,7 @@ def verification_nested_instruction_restoration(large=False):
         assert component['full_state_owner'] == owner and component['specialists']
         assert any('diff --git a/src/main.py b/src/main.py' in Path(assignment['patch']).read_text()
                    for seat, assignment in manifest['assignments'].items() if seat != owner)
-        expected_oid = git('rev-parse', snapshot + ':src/main.py')
+        expected_oid = git('rev-parse', base + ':src/main.py')
         for seat, assignment in manifest['assignments'].items():
             if component['id'] not in assignment['components']:
                 continue
