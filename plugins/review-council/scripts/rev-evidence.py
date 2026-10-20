@@ -2051,6 +2051,7 @@ def selected_instruction_paths(paths, exists):
 
 def instruction_coverage_paths(evidence, changed, clusters=None):
     paths = set(changed)
+    paths.update(hunk['path'] for hunk in evidence.get('source_context_hunks', []))
     for field in ('symbols', 'call_sites', 'related_tests', 'gates'):
         paths.update(row['path'] for row in evidence.get(field, []) if isinstance(row, dict))
     for edge in evidence.get('dependencies', []):
@@ -2483,6 +2484,30 @@ def source_context_inputs(repo, snapshot, base_tree, evidence, components, plan_
     return entries, base_entries, blobs, {} if blob_lines is None else blob_lines
 
 
+def source_context_hunks(hunks, delta_hunks, delta_categories):
+    cumulative_paths = {hunk['path'] for hunk in hunks}
+    return hunks + [hunk for hunk in delta_hunks
+                    if hunk['path'] not in cumulative_paths
+                    and delta_categories[hunk['path']] == 'semantic']
+
+
+def source_context_evidence(repo, snapshot, evidence, entries_by_tree=None):
+    if 'source_context_hunks' not in evidence:
+        return evidence
+    cumulative_paths = {hunk['path'] for hunk in evidence['hunks']}
+    delta_hunks = [hunk for hunk in evidence['source_context_hunks']
+                   if hunk['path'] not in cumulative_paths]
+    # Delta old-line coordinates belong to the predecessor, not the review base.
+    delta_facts = facts(repo, snapshot, delta_hunks, {hunk['path'] for hunk in delta_hunks},
+                        entries_by_tree=entries_by_tree)
+    result = dict(evidence, hunks=evidence['source_context_hunks'])
+    for field in ('symbols', 'call_sites', 'related_tests', 'gates'):
+        known = {encoded(row) for row in evidence[field]}
+        result[field] = evidence[field] + [row for row in delta_facts[field]
+                                          if encoded(row) not in known]
+    return result
+
+
 def json_content_bytes(content):
     return len(content) + sum(
         1 if match[0] in '"\\\b\f\n\r\t' else 5 if ord(match[0]) <= 0xffff else 11
@@ -2890,6 +2915,8 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
 
 def source_context(repo, snapshot, base_tree, evidence, components, assigned, owner, prefix,
                    enabled=True, plan_clusters=None):
+    if enabled:
+        evidence = source_context_evidence(repo, snapshot, evidence)
     inputs = (source_context_inputs(repo, snapshot, base_tree, evidence, components, plan_clusters)
               if enabled else ({}, {}, {}, {}))
     context = plan_source_context(snapshot, base_tree, evidence, components, assigned, owner,
@@ -3061,7 +3088,8 @@ def validate_source_context_bytes(repo, session, manifest, entries_by_tree=None,
                 raise ValueError('required source content does not match snapshot: ' + row['path'])
 
 
-def validate_source_context_snapshot(repo, session, manifest, canonical_changes=None):
+def validate_source_context_snapshot(repo, session, manifest, canonical_changes=None,
+                                     canonical_delta=None):
     context = manifest['source_context']
     entries_by_tree = {}
     blob_lines = {}
@@ -3071,9 +3099,30 @@ def validate_source_context_snapshot(repo, session, manifest, canonical_changes=
             _, hunks, categories, _ = repo.changes(manifest['base_tree'], manifest['snapshot_tree'])
         else:
             hunks, categories = canonical_changes
+        context_hunks = hunks
+        if (manifest['phase'] == 'verification' and not manifest['fallback_reason']
+                and verification_specialist_mode(
+                    manifest['assignments'], manifest['mechanical_owner']) == 'delta'):
+            if canonical_delta is None:
+                prior = prior_coverage(session, repo, manifest['base_tree'], manifest['predecessor'])
+                if prior['status'] != 'valid':
+                    raise ValueError('invalid source context predecessor: ' + str(prior['reason']))
+                _, delta_hunks, delta_categories, _ = repo.changes(
+                    prior['coverage']['snapshot_tree'], manifest['snapshot_tree'])
+            else:
+                delta_hunks, delta_categories = canonical_delta
+            context_hunks = source_context_hunks(hunks, delta_hunks, delta_categories)
+        recorded = read_json(session / f"r{manifest['label']}-evidence.json")
+        expected = context_hunks if context_hunks != hunks else None
+        if recorded.get('source_context_hunks') != expected:
+            raise ValueError('source context hunks do not match the actual snapshot delta')
         canonical_facts = facts(repo, manifest['snapshot_tree'], hunks, categories,
                                 manifest['base_tree'], entries_by_tree)
         canonical_facts['hunks'] = hunks
+        if expected is not None:
+            canonical_facts['source_context_hunks'] = expected
+        canonical_facts = source_context_evidence(
+            repo, manifest['snapshot_tree'], canonical_facts, entries_by_tree)
         ordered_assignments = {
             row['seat']: manifest['assignments'][row['seat']]
             for row in read_json(session / 'roster.json')['seats']
@@ -3262,8 +3311,13 @@ def validate_source_context(session, manifest, evidence):
     assigned = manifest['assignments']; components = manifest['components']
     component_by_id = {component['id']: component for component in components}
     owner = manifest['mechanical_owner'] if manifest['mechanical_owner'] in assigned else next(iter(assigned))
+    if 'source_context_hunks' in evidence and (
+            not context['enabled'] or manifest['phase'] != 'verification'
+            or manifest['fallback_reason']
+            or verification_specialist_mode(assigned, owner) != 'delta'):
+        raise ValueError('supplementary source context hunks require enabled delta verification')
     hunk_by_path = {}
-    for hunk in evidence['hunks']:
+    for hunk in evidence.get('source_context_hunks', evidence['hunks']):
         hunk_by_path.setdefault(hunk['path'], []).append(hunk['sha256'])
     seen_ranges = {}
     binding_cache = {}
@@ -4048,6 +4102,7 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         raise ValueError('manifest word counts mismatch')
     validate_components(session, manifest, evidence)
     validate_source_context(session, manifest, evidence)
+    canonical_delta = None
     verification_mode = (verification_specialist_mode(assigned, owner)
                          if phase == 'verification' and not fallback else None)
     if verification_mode == 'delta':
@@ -4067,7 +4122,8 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
             previous = prior['coverage']
             if prior['status'] != 'valid' or previous['snapshot_tree'] == manifest['snapshot_tree']:
                 raise ValueError('invalid delta predecessor: ' + str(prior['reason']))
-            changes, _, categories, unsafe = repo.changes(previous['snapshot_tree'], manifest['snapshot_tree'])
+            changes, delta_hunks, categories, unsafe = repo.changes(previous['snapshot_tree'], manifest['snapshot_tree'])
+            canonical_delta = delta_hunks, categories
             actual = b''.join(patch for name, patch in changes if categories[name] == 'semantic')
             if unsafe or delta != actual:
                 raise ValueError('delta is unsafe or incomplete')
@@ -4141,7 +4197,7 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
     if not offline:
         if not fresh:
             repo = Repository(session)
-        validate_source_context_snapshot(repo, session, manifest, canonical_changes)
+        validate_source_context_snapshot(repo, session, manifest, canonical_changes, canonical_delta)
     return manifest, digest(raw)
 
 
@@ -4929,9 +4985,9 @@ def _prepare_locked(args, session):
              else {'status': 'absent', 'coverage': None, 'reason': None})
     previous = prior['coverage']
     fallback = prior['reason']
-    delta = b''; delta_unsafe = []; delta_categories = {}; changes = []
+    delta = b''; delta_unsafe = []; delta_categories = {}; delta_hunks = []; changes = []
     if previous and args.phase in ('verification', 'plan'):
-        changes, _, delta_categories, delta_unsafe = repo.changes(previous['snapshot_tree'], snapshot)
+        changes, delta_hunks, delta_categories, delta_unsafe = repo.changes(previous['snapshot_tree'], snapshot)
         delta = b''.join(patch for path, patch in changes if delta_categories[path] == 'semantic')
     use_delta = False
     if args.phase == 'verification':
@@ -5079,6 +5135,13 @@ def _prepare_locked(args, session):
                         'routing_version': 1, 'delta_mode': plan_delta_mode,
                         'delta_reason': plan_delta_reason,
                         'common_artifacts': [prefix + '-evidence.md']}
+    if use_delta and source_context_enabled:
+        context_hunks = source_context_hunks(hunks, delta_hunks, delta_categories)
+        if context_hunks != hunks:
+            data['source_context_hunks'] = context_hunks
+            data['instructions'], instruction_packet = instructions(
+                repo, snapshot, instruction_coverage_paths(data, categories),
+                source['mode'] == 'worktree')
     data['source_context'], source_artifacts = source_context(
         repo, snapshot, base_tree, data, components, scopes, owner, prefix, source_context_enabled,
         plan_clusters)
