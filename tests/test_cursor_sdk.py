@@ -1237,7 +1237,7 @@ class CursorSDKOrchestrationTests(CursorSDKCase):
     def assert_closed(self, observed, code):
         outcome = observed['outcome']
         self.assertEqual(outcome['exitCode'], code)
-        self.assertRegex(outcome['reason'], r'^[a-z][a-z0-9_]{0,63}$')
+        self.assertRegex(outcome['reason'], r'\A[a-z][a-z0-9_]{0,63}\Z')
         self.assertFalse(outcome.get('qualified'))
         self.assertFalse(outcome.get('valid'))
         self.assertNotIn('error', outcome, 'raw exception objects must stay private')
