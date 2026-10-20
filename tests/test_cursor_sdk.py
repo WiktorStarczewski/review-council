@@ -1182,5 +1182,342 @@ console.log('synthetic option construction only');
                                      'qualification refusal must preserve frozen controller bindings')
 
 
+class CursorSDKOrchestrationTests(CursorSDKCase):
+    """Synthetic transport behavior stays separate from canonical and live proof."""
+
+    events = CursorStreamTests.events
+    require_decoder = CursorStreamTests.require_decoder
+    canonical_fixture = CursorStreamTests.canonical_fixture
+    canonical_events = CursorStreamTests.canonical_events
+    audit = CursorStreamTests.audit
+
+    def setUp(self):
+        super().setUp()
+        self.audit_module = module(SCRIPTS / 'lib/review-read-audit.py')
+        self.root = self.directory / 'source'
+        (self.root / 'src').mkdir(parents=True)
+        (self.root / 'src/sample.ts').write_text('alpha\nbeta\ngamma\ndelta\n')
+        self.session = self.directory / 'session'
+        self.session.mkdir()
+        self.prompt = self.session / 'r1-grok.prompt.md'
+        self.prompt.write_text('Review src/sample.ts using bounded source reads.\n')
+        self.workspace = self.directory / 'private-empty-workspace'
+        self.workspace.mkdir(mode=0o700)
+
+    def spec(self):
+        events = self.events()
+        return {'synthetic': True, 'selection': copy.deepcopy(SELECTION),
+                'prompt': 'Frozen synthetic review prompt.\nExact bytes: β\n',
+                'events': [event for event in events[:-1]
+                           if event['type'] != 'council_read_result'],
+                'terminal': {key: value for key, value in events[-1].items()
+                             if key not in ('type', 'agent_id', 'run_id')}}
+
+    def exercise(self, spec=None):
+        self.require_entry(DRIVER)
+        fixture = FIXTURES / 'cursor-sdk-driver-double.mjs'
+        self.require_entry(fixture)
+        path = self.directory / 'synthetic-driver-spec.json'
+        path.write_text(json.dumps(spec if spec is not None else self.spec()))
+        process = self.node(fixture, DRIVER, path, self.workspace)
+        self.assertEqual(process.returncode, 0,
+                         'actual runSdkSession orchestration contract: ' + process.stderr)
+        self.assertEqual(process.stderr, '', 'transport must emit no unredacted SDK diagnostics')
+        self.assertNotIn('synthetic-key-user-exception-canary', process.stdout + process.stderr)
+        observed = json.loads(process.stdout)
+        self.assertTrue(observed['synthetic'])
+        self.assertNotIn('uncaught', observed['outcome'],
+                         'SDK failures must return a closed classification rather than escape')
+        self.assertEqual(observed['lateEvents'], 0, 'settled attempts cannot publish late data')
+        self.assertEqual(observed['workspaceEntries'], [], 'SDK workspace must remain empty')
+        self.assertEqual(list(self.workspace.iterdir()), [])
+        self.assertEqual(self.workspace.stat().st_mode & 0o777, 0o700)
+        return observed
+
+    def assert_closed(self, observed, code):
+        outcome = observed['outcome']
+        self.assertEqual(outcome['exitCode'], code)
+        self.assertRegex(outcome['reason'], r'^[a-z][a-z0-9_]{0,63}$')
+        self.assertFalse(outcome.get('qualified'))
+        self.assertFalse(outcome.get('valid'))
+        self.assertNotIn('error', outcome, 'raw exception objects must stay private')
+
+    def assert_lifecycle(self, observed, create=1, send=1, cancel=0, close=1):
+        trace = observed['trace']
+        for name, count in (('Agent.create', create), ('agent:send', send),
+                            ('run:cancel', cancel), ('agent:close', close),
+                            ('reader:dispose', 1)):
+            self.assertEqual(trace.count(name), count, name + ': ' + str(trace))
+        for forbidden in ('Agent.resume', 'Agent.prompt', 'agent:reload',
+                          'agent:getUsage', 'agent:listArtifacts', 'agent:downloadArtifact',
+                          'agent:asyncDispose', 'Cursor.auth.login'):
+            self.assertNotIn(forbidden, trace)
+
+    def test_one_sdk_agent_run_uses_exact_supported_isolated_options(self):
+        observed = self.exercise()
+        self.assert_closed(observed, 0)
+        self.assertEqual(observed['outcome']['reason'], 'transport_finished')
+        self.assert_lifecycle(observed)
+        options = observed['receivedOptions']
+        self.assertEqual(options['model'], SELECTION)
+        for key in ('keyExact', 'storeExact', 'readerExact'):
+            self.assertIs(options[key], True)
+        self.assertEqual(options['cwd'], str(self.workspace))
+        self.assertEqual(options['settingSources'], [])
+        self.assertIs(options['enableAgentRetries'], False)
+        self.assertEqual(options['customToolNames'], ['council_read'])
+        self.assertEqual(options['tools'], ['mcp'])
+        self.assertEqual(options['mcpServers'], {})
+        self.assertEqual(options['agents'], {})
+        for tool in ('task', 'shell', 'read', 'edit', 'delete', 'webSearch', 'webFetch'):
+            self.assertIn(tool, options['disallowedTools'])
+        self.assertNotIn('mcp', options['disallowedTools'])
+        for key in ('cloud', 'dirs', 'agentId', 'resume', 'reload', 'sandboxOptions'):
+            self.assertNotIn(key, options['topKeys'])
+            self.assertNotIn(key, options['localKeys'])
+
+    def test_raw_sdk_messages_and_actual_terminal_fields_are_preserved(self):
+        spec = self.spec()
+        spec['events'].insert(1, {'type': 'thinking', 'agent_id': 'synthetic-agent',
+                                 'run_id': 'synthetic-run', 'text': 'β\r\n\t"exact"',
+                                 'thinking_duration_ms': 7})
+        spec['terminal'].update(requestId='synthetic-request', durationMs=17)
+        observed = self.exercise(spec)
+        self.assert_closed(observed, 0)
+        self.assertEqual(observed['sdkMessages'], spec['events'])
+        self.assertEqual([event for event in observed['raw']
+                          if event['type'] not in ('council_read_result', 'result')], spec['events'])
+        self.assertEqual(observed['raw'][-1], dict(spec['terminal'], type='result',
+                                                 agent_id='synthetic-agent', run_id='synthetic-run'))
+        self.assertEqual(observed['outcome']['terminal'], spec['terminal'])
+        self.assert_lifecycle(observed)
+
+    def test_stream_exhaustion_waits_for_actual_terminal_before_returning_or_closing(self):
+        observed = self.exercise()
+        self.assert_closed(observed, 0)
+        self.assertIs(observed['waitEntered'], True)
+        self.assertIs(observed['waitResolved'], True)
+        trace = observed['trace']
+        self.assertEqual(trace.count('run:stream'), 1)
+        self.assertEqual(trace.count('run:wait'), 1)
+        self.assertLess(trace.index('run:wait_resolved'), trace.index('raw:result'))
+        self.assertLess(trace.index('raw:result'), trace.index('agent:close'))
+        self.assertLess(trace.index('run:wait_resolved'), trace.index('reader:dispose'))
+        self.assert_lifecycle(observed)
+
+    def test_optional_sdk_usage_is_preserved_exactly_without_extra_billing_calls(self):
+        spec = self.spec()
+        usage = {'inputTokens': 13, 'outputTokens': 5, 'cacheReadTokens': 2,
+                 'cacheWriteTokens': 3, 'totalTokens': 18, 'reasoningTokens': 4}
+        spec['events'].append({'type': 'usage', 'agent_id': 'synthetic-agent',
+                               'run_id': 'synthetic-run', 'usage': usage})
+        spec['terminal']['usage'] = copy.deepcopy(usage)
+        observed = self.exercise(spec)
+        self.assert_closed(observed, 0)
+        self.assertEqual(observed['raw'][-2], spec['events'][-1])
+        self.assertEqual(observed['raw'][-1]['usage'], usage)
+        self.assertEqual(observed['outcome']['terminal']['usage'], usage)
+        self.assert_lifecycle(observed)
+
+    def test_absent_sdk_usage_stays_absent_and_canonical_accounting_unknown(self):
+        observed = self.exercise()
+        self.assert_closed(observed, 0)
+        self.assertNotIn('usage', observed['outcome']['terminal'])
+        self.assertNotIn('usage', observed['raw'][-1])
+        raw = self.directory / 'transport-without-usage.ndjson'
+        raw.write_text(''.join(json.dumps(event) + '\n' for event in observed['raw']))
+        reported, _, _, invalid = module(SCRIPTS / 'lib/usage.py').read_stream(raw, 'cursor-sdk')
+        self.assertIsNone(reported)
+        self.assertEqual(invalid, [])
+        self.assert_lifecycle(observed)
+
+    def test_terminal_exact_selection_and_run_identity_cannot_be_replaced_by_expected_values(self):
+        self.require_entry(DRIVER)
+        for mutation in ('id', 'params', 'maxMode', 'missing-model', 'run-id', 'run-agent'):
+            with self.subTest(mutation=mutation):
+                spec = self.spec()
+                if mutation == 'missing-model':
+                    del spec['terminal']['model']
+                elif mutation == 'run-id':
+                    spec['terminal']['id'] = 'another-run'
+                elif mutation == 'run-agent':
+                    spec['runAgentId'] = 'another-agent'
+                else:
+                    spec['terminal']['model'][mutation] = {
+                        'id': 'older-grok', 'params': [{'id': 'reasoning', 'value': 'high'}],
+                        'maxMode': False}[mutation]
+                observed = self.exercise(spec)
+                self.assert_closed(observed, 2)
+                if 'terminal' in observed['outcome']:
+                    self.assertEqual(observed['outcome']['terminal'], spec['terminal'])
+                for terminal in (event for event in observed['raw'] if event['type'] == 'result'):
+                    self.assertEqual(terminal['id'], spec['terminal']['id'])
+                    self.assertEqual(terminal.get('model'), spec['terminal'].get('model'))
+                self.assert_lifecycle(observed, cancel=1)
+
+    def test_missing_cancelled_or_error_terminal_cannot_finish_transport(self):
+        self.require_entry(DRIVER)
+        for status, code in ((None, 2), ('cancelled', 2), ('error', 1)):
+            with self.subTest(status=status):
+                spec = self.spec()
+                if status is None:
+                    spec['terminal'] = None
+                else:
+                    spec['terminal']['status'] = status
+                observed = self.exercise(spec)
+                self.assert_closed(observed, code)
+                self.assert_lifecycle(observed, cancel=1)
+
+    def test_sdk_failures_at_each_lifecycle_stage_close_once_without_retry_or_secret_output(self):
+        self.require_entry(DRIVER)
+        for stage in ('create', 'send', 'stream', 'wait'):
+            for status, name, code in ((401, 'AuthenticationError', 3),
+                                       (429, 'RateLimitError', 4), (503, 'NetworkError', 1)):
+                with self.subTest(stage=stage, status=status):
+                    spec = self.spec()
+                    spec['failure'] = {'stage': stage, 'status': status, 'name': name}
+                    observed = self.exercise(spec)
+                    self.assert_closed(observed, code)
+                    self.assert_lifecycle(observed, send=0 if stage == 'create' else 1,
+                                          close=0 if stage == 'create' else 1,
+                                          cancel=1 if stage in ('stream', 'wait') else 0)
+                    self.assertFalse(any(event['type'] == 'result' for event in observed['raw']))
+
+    def test_cleanup_failure_is_closed_and_does_not_trigger_a_second_cleanup_or_turn(self):
+        self.require_entry(DRIVER)
+        for stage in ('dispose', 'close', 'cancel'):
+            with self.subTest(stage=stage):
+                spec = self.spec()
+                spec['failure'] = {'stage': stage}
+                if stage == 'cancel':
+                    spec['abortAt'] = 'stream'
+                observed = self.exercise(spec)
+                self.assert_closed(observed, 1 if stage != 'cancel' else 2)
+                self.assert_lifecycle(observed, cancel=1 if stage == 'cancel' else 0)
+
+    def test_already_aborted_attempt_disposes_reader_without_creating_an_sdk_agent(self):
+        spec = self.spec()
+        spec['abortAt'] = 'before'
+        observed = self.exercise(spec)
+        self.assert_closed(observed, 2)
+        self.assert_lifecycle(observed, create=0, send=0, close=0)
+        self.assertEqual(observed['raw'], [])
+
+    def test_abort_during_stream_read_or_wait_cancels_and_disposes_without_late_delivery(self):
+        self.require_entry(DRIVER)
+        for stage in ('stream', 'read', 'wait'):
+            with self.subTest(stage=stage):
+                spec = self.spec()
+                spec['abortAt'] = stage
+                observed = self.exercise(spec)
+                self.assert_closed(observed, 2)
+                self.assert_lifecycle(observed, cancel=1)
+                self.assertFalse(any(event['type'] == 'result' for event in observed['raw']))
+                if stage == 'read':
+                    self.assertEqual(observed['readDeliveries'], 0)
+                    self.assertFalse(any(event['type'] == 'council_read_result'
+                                         for event in observed['raw']))
+
+    def test_raw_event_sink_failure_cancels_once_and_does_not_publish_terminal_success(self):
+        spec = self.spec()
+        spec['failure'] = {'stage': 'sink'}
+        observed = self.exercise(spec)
+        self.assert_closed(observed, 1)
+        self.assert_lifecycle(observed, cancel=1)
+        self.assertEqual(len(observed['raw']), 1)
+        self.assertEqual(observed['raw'][0]['type'], 'system')
+
+    def canonical_spec(self):
+        self.require_entry(DRIVER)
+        fixture = self.canonical_fixture('current')
+        events, _ = self.canonical_events(fixture)
+        spec = self.spec()
+        spec['events'] = [event for event in events[:-1] if event['type'] != 'council_read_result']
+        spec['prompt'] = fixture.prompt.read_text()
+        spec['readerPath'] = str(READER)
+        spec['readerOptions'] = {'root': str(fixture.root), 'session': str(fixture.session),
+                                 'prompt': str(fixture.prompt), 'manifest': str(fixture.manifest_path),
+                                 'manifestSha256': hashlib.sha256(
+                                     fixture.manifest_path.read_bytes()).hexdigest(), 'seat': fixture.seat}
+        return fixture, spec
+
+    def test_actual_canonical_reader_and_auditor_accept_captured_source_bound_transport_control(self):
+        fixture, spec = self.canonical_spec()
+        before = {path: path.read_bytes() for path in (fixture.prompt, fixture.manifest_path,
+                                                      fixture.root / 'keep.txt')}
+        observed = self.exercise(spec)
+        self.assert_closed(observed, 0)
+        self.assert_lifecycle(observed)
+        process, report = self.audit(observed['raw'], fixture)
+        self.assertEqual(process.returncode, 0, process.stderr + json.dumps(report))
+        self.assertEqual(report['status'], 'valid')
+        self.assertEqual(report['required_source_ranges_covered'],
+                         len(fixture.context['required_source_ranges']))
+        self.assertTrue(report['post_index_source_ranges'])
+        self.assertEqual(report['stream_sha256'], hashlib.sha256(
+            (fixture.session / f'r{fixture.label}-{fixture.seat}.stream.ndjson').read_bytes()).hexdigest())
+        for path, content in before.items():
+            self.assertEqual(path.read_bytes(), content)
+        self.assertFalse(any('qualification' in path.name for path in self.directory.rglob('*')))
+
+    def test_captured_unknown_native_noncustom_malformed_and_unpaired_events_fail_actual_audit(self):
+        fixture, control = self.canonical_spec()
+        accepted = self.exercise(control)
+        process, report = self.audit(accepted['raw'], fixture)
+        self.assertEqual(process.returncode, 0, process.stderr + json.dumps(report))
+        for mutation in ('native-tool', 'unknown-tool', 'noncustom-server', 'truncated',
+                         'error-result', 'unpaired', 'malformed', 'wrong-run', 'delivery-mismatch'):
+            with self.subTest(mutation=mutation):
+                spec = copy.deepcopy(control)
+                running = next(event for event in spec['events'] if event['type'] == 'tool_call')
+                completed = next(event for event in spec['events']
+                                 if event['type'] == 'tool_call' and event['status'] == 'completed')
+                if mutation in ('native-tool', 'unknown-tool'):
+                    running['name'] = completed['name'] = 'read' if mutation == 'native-tool' else 'unknown'
+                elif mutation == 'noncustom-server':
+                    running['args']['providerIdentifier'] = completed['args']['providerIdentifier'] = 'foreign'
+                elif mutation == 'truncated':
+                    completed['truncated'] = {'result': True}
+                elif mutation == 'error-result':
+                    completed['status'] = 'error'
+                    completed['result'] = {'status': 'error', 'error': 'synthetic reader error'}
+                elif mutation == 'unpaired':
+                    completed['call_id'] = 'unpaired-completion'
+                elif mutation == 'malformed':
+                    spec['events'].insert(1, {'type': 'assistant', 'agent_id': 'synthetic-agent',
+                                             'run_id': 'synthetic-run', 'message': {'content': [True]}})
+                elif mutation == 'wrong-run':
+                    completed['run_id'] = 'foreign-run'
+                else:
+                    completed['result']['value']['content'][0]['text']['text'] = 'wrong source bytes\n'
+                observed = self.exercise(spec)
+                self.assert_closed(observed, 0)
+                self.assert_lifecycle(observed)
+                process, report = self.audit(observed['raw'], fixture)
+                self.assertNotEqual(process.returncode, 0,
+                                    'transport success cannot grant enforced delivery proof')
+                self.assertEqual(report['status'], 'invalid')
+                self.assertTrue(any(row['code'] == 'cursor-sdk-transport-proof'
+                                    for row in report['violations']), json.dumps(report))
+
+    def test_malformed_findings_cannot_be_published_from_finished_transport(self):
+        self.require_entry(DRIVER)
+        for result in ('not findings JSON', '{"summary":"missing findings"}',
+                       '{"summary":"one","findings":[]}\n{"summary":"two","findings":[]}'):
+            with self.subTest(result=result):
+                spec = self.spec()
+                spec['terminal']['result'] = result
+                observed = self.exercise(spec)
+                self.assert_closed(observed, 0)
+                output = self.directory / 'malformed-findings.json'
+                output.unlink(missing_ok=True)
+                process = subprocess.run([
+                    os.sys.executable, str(SCRIPTS / 'lib/stream-summary.py'), 'cursor-sdk', str(output)],
+                    input=''.join(json.dumps(event) + '\n' for event in observed['raw']),
+                    env=self.env, capture_output=True, text=True, timeout=10)
+                self.assertFalse(output.exists(), 'finished transport cannot publish malformed findings')
+                self.assertNotIn('synthetic-key-user-exception-canary', process.stdout + process.stderr)
+
+
 if __name__ == '__main__':
     unittest.main()
