@@ -1,0 +1,17 @@
+{
+  "classification": "synthetic-offline-contract-fixtures",
+  "live_qualification": false,
+  "fixtures": ["cursor-sdk-catalog.json", "cursor-sdk-stream.ndjson", "cursor-sdk-discovery.json"],
+  "sdk_declaration_version": "1.0.38",
+  "sdk_message_fields": "Public SDKMessage and SDKToolUseMessage declarations",
+  "mcp_result_fields": "Public McpToolCallSchema normalized content.text.text and isError",
+  "discovery_limit": "GetMcpTools name is documented; synthetic result is controller metadata, not a captured live envelope or complete live inventory",
+  "controller_records": {
+    "council_read_result": "Callback identity, unchanged input and exact returned-text hash; never sufficient delivered-byte proof",
+    "result": "Terminal projection of actual RunResult id/status/model/result; missing observed identity must not be filled from requested settings"
+  },
+  "source_text": "alpha\nbeta\ngamma\ndelta\n",
+  "bounded_read": {"path": "src/sample.ts", "offset": 2, "limit": 2},
+  "expected_text": "beta\ngamma\n",
+  "expected_text_sha256": "aa5989aacb57830a365b63654addd2b3e7427ce3e8869f52e261ac98cc318734"
+}
