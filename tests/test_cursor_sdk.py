@@ -830,31 +830,64 @@ console.log('synthetic option construction only');
 
     def test_missing_or_fabricated_qualification_cannot_launch_an_enforced_seat(self):
         self.require_entry(DRIVER)
+
+        class SDKSourceFixture(SourceFixture):
+            def run(source, *arguments):
+                if arguments[0] == 'prepare':
+                    roster_path = source.session / 'roster.json'
+                    roster = json.loads(roster_path.read_text())
+                    for seat in roster['seats']:
+                        seat.update(adapter='cursor-sdk', lab='xai', model='grok-9.10',
+                                    effort='xhigh', model_selection=copy.deepcopy(SELECTION))
+                    roster_path.write_text(json.dumps(roster))
+                return super().run(*arguments)
+
+        fixture_directory = self.directory / 'canonical'
+        fixture_directory.mkdir()
+        try:
+            fixture = SDKSourceFixture(fixture_directory, 'current')
+        except subprocess.CalledProcessError as error:
+            self.fail('canonical SDK controller bindings must be valid: ' + (error.stderr or str(error)))
+        self.assertEqual(fixture.manifest['assignments'][fixture.seat]['adapter'], 'cursor-sdk')
+        binding_paths = [fixture.session / 'roster.json', fixture.manifest_path, fixture.prompt,
+                         fixture.session / 'scope.env']
+        frozen_bindings = {path: path.read_bytes() for path in binding_paths}
         runtime, marker = self.poison_runtime()
-        session = self.directory / 'session'
-        session.mkdir()
-        prompt = session / 'r1-grok.prompt.md'
-        prompt.write_text('Read only the synthetic public fixture.\n')
-        (session / 'roster.json').write_text(json.dumps({'seats': [{
-            'seat': 'grok', 'adapter': 'cursor-sdk', 'lab': 'xai', 'model': 'grok-9.10',
-            'effort': 'xhigh', 'model_selection': SELECTION}]}))
+        stem = fixture.session / f'r{fixture.label}-{fixture.seat}'
         qualification = self.directory / 'qualification.json'
         environment = dict(self.env, REVIEW_COUNCIL_CURSOR_SDK_RUNTIME=str(runtime),
                            REVIEW_COUNCIL_CURSOR_SDK_QUALIFICATION=str(qualification),
-                           SDK_IMPORT_MARKER=str(marker), CURSOR_API_KEY='synthetic-key-canary')
-        for proof in (None, {'qualified': True},
-                      {'type': 'council_read_result', 'call_id': 'fake', 'input': {'path': 'x'},
-                       'text_sha256': hashlib.sha256(b'synthetic').hexdigest()}):
+                           SDK_IMPORT_MARKER=str(marker), CURSOR_API_KEY='synthetic-key-canary',
+                           REV_PATCH_CHUNKS='1', REV_SOURCE_CONTEXT='1', SEAT=fixture.seat,
+                           MODEL='grok-9.10', EFFORT='xhigh', MODE='', ROOT=str(fixture.root),
+                           PROMPT=str(fixture.prompt), BASE=fixture.base,
+                           SCHEMA=str(SCRIPTS.parent / 'schema/findings.schema.json'),
+                           OUT=str(stem) + '.json', LOG=str(stem) + '.log',
+                           RAW=str(stem) + '.stream.ndjson')
+        for proof, reason in ((None, 'qualification_missing'),
+                              ({'qualified': True}, 'qualification_invalid'),
+                              ({'type': 'council_read_result', 'call_id': 'fake',
+                                'input': {'path': 'x'},
+                                'text_sha256': hashlib.sha256(b'synthetic').hexdigest()},
+                               'qualification_invalid')):
             with self.subTest(proof=proof):
+                qualification.unlink(missing_ok=True)
                 if proof is not None:
                     qualification.write_text(json.dumps(proof))
-                process = self.node(DRIVER, 'seat', '--session', session, '--round', '1',
-                                    '--seat', 'grok', '--prompt', prompt, '--root', self.directory,
+                process = self.node(DRIVER, 'seat', '--session', fixture.session,
+                                    '--round', fixture.label, '--seat', fixture.seat,
+                                    '--prompt', fixture.prompt, '--root', fixture.root,
                                     environment=environment)
-                self.assertNotEqual(process.returncode, 0, 'unqualified SDK cannot receive enforced credit')
+                self.assertEqual(process.returncode, 2,
+                                 'only qualification-specific proof refusal satisfies this contract')
+                self.assertEqual(process.stderr, reason + '\n')
+                self.assertEqual(process.stdout, '')
                 self.assertFalse(marker.exists(), 'unqualified seat must stop before SDK import/call')
-                self.assertFalse((session / 'r1-grok.read-audit.json').exists())
+                self.assertFalse(Path(str(stem) + '.read-audit.json').exists())
                 self.assertNotIn('synthetic-key-canary', process.stdout + process.stderr)
+                for path, content in frozen_bindings.items():
+                    self.assertEqual(path.read_bytes(), content,
+                                     'qualification refusal must preserve frozen controller bindings')
 
 
 if __name__ == '__main__':
