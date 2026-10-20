@@ -169,8 +169,17 @@ class CursorRuntimeIntegrityTests(CursorSDKCase):
     def test_changed_archive_bytes_fail_the_committed_integrity(self):
         fixture = self.fixture()
         self.valid(fixture)
-        archive = fixture.archive_path()
-        archive.write_bytes(archive.read_bytes() + b'unauthenticated-canary')
+        original_lock = json.loads(json.dumps(fixture.lock))
+        original_archive = fixture.archive_path()
+        alternate_files = dict(fixture.sdk_files)
+        alternate_files['dist/esm/index.js'] = b'export const synthetic = false;\n'
+        alternate_archive = fixture.write_package('@cursor/sdk', alternate_files)
+        fixture.write_template('package-lock.json', fixture.lock)
+        self.valid(fixture)
+        alternate_bytes = alternate_archive.read_bytes()
+        fixture.lock = original_lock
+        fixture.write_template('package-lock.json', original_lock)
+        original_archive.write_bytes(alternate_bytes)
         self.refused(fixture)
 
     def test_changed_installed_bytes_cannot_be_replaced_by_archive_metadata(self):
@@ -338,7 +347,16 @@ class CursorRuntimeIntegrityTests(CursorSDKCase):
         self.archive_member_refused('outside/file.js')
 
     def test_duplicate_archive_members_are_refused(self):
-        self.archive_member_refused('package/dist/esm/index.js')
+        fixture = self.fixture()
+        self.valid(fixture)
+        original = fixture.sdk_files['dist/esm/index.js']
+        duplicate = tarfile.TarInfo('package/dist/esm/index.js')
+        duplicate.size = len(original)
+        duplicate.mode = 0o644
+        fixture.replace_sdk_archive([(duplicate, original)])
+        before = fixture.files()
+        self.refused(fixture)
+        self.assertEqual(fixture.files(), before, 'duplicate members must never be extracted')
 
     def test_archive_symbolic_link_is_refused(self):
         self.archive_member_refused('package/link', tarfile.SYMTYPE, '../../outside')
@@ -415,11 +433,33 @@ class CursorRuntimeIntegrityTests(CursorSDKCase):
     def test_controller_source_changes_alter_the_runtime_digest(self):
         fixture = self.fixture()
         first = self.valid(fixture)
-        driver = fixture.scripts / 'lib/cursor-sdk-driver.mjs'
-        self.assertTrue(driver.is_file(), 'runtime digest must bind the fixed controller driver')
-        driver.write_bytes(driver.read_bytes() + b'\n')
-        second = self.valid(fixture)
-        self.assertNotEqual(second['runtime_sha256'], first['runtime_sha256'])
+        inputs = (
+            'cursor-sdk/verify-runtime.py', 'cursor-sdk/launch.mjs',
+            'cursor-sdk/package.json', 'cursor-sdk/package-lock.json',
+            'lib/cursor-sdk-driver.mjs', 'lib/cursor-sdk-reader.mjs',
+            'lib/cursor-read-helper.py', 'lib/review-read-audit.py',
+            'seats.d/cursor-sdk.sh',
+        )
+        runtime_templates = {'launch.mjs', 'package.json', 'package-lock.json'}
+        for name in inputs:
+            with self.subTest(controller_input=name):
+                source = fixture.scripts / name
+                self.assertTrue(source.is_file(), 'runtime digest must bind ' + name)
+                originals = {source: source.read_bytes()}
+                if name.startswith('cursor-sdk/') and source.name in runtime_templates:
+                    installed = fixture.runtime / source.name
+                    originals[installed] = installed.read_bytes()
+                try:
+                    for path, original in originals.items():
+                        path.write_bytes(original + b'\n')
+                    changed = self.valid(fixture)
+                    self.assertNotEqual(changed['runtime_sha256'], first['runtime_sha256'],
+                                        'runtime digest omitted controller input: ' + name)
+                finally:
+                    for path, original in originals.items():
+                        path.write_bytes(original)
+                self.assertEqual(self.valid(fixture), first,
+                                 'restoring ' + name + ' must restore the stable baseline')
 
     def test_authenticated_archive_bytes_cannot_be_swapped_before_member_parsing(self):
         fixture = self.fixture()
