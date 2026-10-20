@@ -14,13 +14,13 @@ The official Cursor CLI supports headless automation and code review. A live off
 
 Cursor staff confirm that the CLI lacks documented per-run controls establishing a no-hooks/no-plugins/no-subagents configuration. An internal context-exclusion flag was rejected for this account, team or model. Do not ship a production adapter that depends on undocumented flags, assumes private config directories remove managed startup resources, or claims stream monitoring prevents effects that precede telemetry.
 
-Cursor recommends its local SDK for documented ambient-configuration and toolset controls. The current public package is 1.0.38 and requires Node >=22.13. Its normalized native Read declarations omit bounded ranges. The SDK requires a user or service-account API key, which is distinct from the current CLI login; no suitable key exists in this session's environment. Supported browser sign-in can mint an expiring SDK key. No credential extraction or login has occurred.
+Cursor recommends its local SDK for documented ambient-configuration and toolset controls. The current public package is 1.0.38 and requires Node >=22.13. Its normalized native Read declarations omit bounded ranges. Explicit SDK browser sign-in uses the existing Cursor account and stores its own expiring credential through the public SDK. No manually copied Cursor or Grok key is required. A private environment key override remains optional; app and CLI credentials are not extracted. No credential extraction or login has occurred.
 
 ## Architecture requiring a user choice
 
 | Option | Cost | Risk | Result |
 | --- | --- | --- | --- |
-| A: Native Cursor host plus local SDK Grok seats | Optional pinned SDK runtime, Node 22.13+, explicit API-key setup, custom bounded reader | Qualification must establish tool inventory, delivered bytes and model identity | Recommended route to preserve enforced Council proof using documented controls |
+| A: Native Cursor host plus local SDK Grok seats | Optional pinned SDK runtime, Node 22.13+, explicit SDK browser sign-in, custom bounded reader | Qualification must establish tool inventory, delivered bytes and model identity | Recommended route to preserve enforced Council proof using documented controls |
 | B: Native Cursor host plus official CLI Grok seats with partial coverage | Reuses existing CLI login and native stream | Cannot claim enforced startup isolation; must visibly remain partial and cannot satisfy enforced-seat gates | Basic Grok participation with an explicit proof limitation |
 | C: Native Cursor host now, defer Grok transport | Smaller release, no new SDK credential | Does not complete requested Grok support until a supported CLI control exists | Host support only; Grok remains unavailable |
 
@@ -34,7 +34,7 @@ Cursor-hosted Council can invoke existing supported transports even when the opt
 
 ## Recommended Grok transport
 
-Use a local SDK child process with an explicit key, private empty workspace and private store. Supply empty settingSources, inline MCP servers and agents; no additional directories, resume or reload. Disable SDK agent retries. Do not invent a team identity, bypass account restrictions or use private service endpoints.
+Use a local SDK child process with normal SDK stored-login resolution or an optional private environment key override, private empty workspace and private store. Supply empty settingSources, inline MCP servers and agents; no additional directories, resume or reload. Disable SDK agent retries. Do not invent a team identity, bypass account restrictions or use private service endpoints.
 
 Expose exactly one custom bounded reader through the SDK's supported custom-tool facility. Offer the MCP capability group required for that reader and exclude native file, shell, web and delegation tools. Enumerate permitted discovery events and the synthetic custom-reader server explicitly. The documented backend toolset restriction and empty ambient sources are the prevention contract; the stream audit remains the acceptance gate. Do not describe the SDK as providing an independently proved local executor deny mechanism.
 
@@ -46,9 +46,9 @@ Resolve the newest available Grok family and required xhigh effort from the auth
 
 ## Installation and authentication
 
-Keep SDK support optional so existing users do not require Node or an SDK key. Pin and verify the qualified SDK and matching platform helper as runtime dependencies; do not vendor proprietary implementation. An installation helper may prepare an isolated dependency directory after design approval. Shared Cursor configuration, login files and Keychain entries are not modified by a reviewer seat.
+Keep SDK support optional so existing users do not require Node or SDK sign-in. Pin and verify the qualified SDK and matching platform helper as runtime dependencies; do not vendor proprietary implementation. An installation helper may prepare an isolated dependency directory after design approval. Shared Cursor configuration, login files and Keychain entries are not modified by a reviewer seat.
 
-Accept an explicit API key through a private environment lease. Never print it or place it in process arguments or artifacts. If absent, report unavailable before a model call. Document the supported SDK login flow and expiring-key lifecycle; no automatic login, key minting or persistent credential change is part of a review. Account access and billing availability are checked through supported APIs, without claiming equivalence to CLI plan allowances.
+Provide explicit, cancellable SDK browser sign-in and sanitized local status as setup commands. Use the SDK's own stored-login resolution when an environment override is absent or blank. Accept an optional explicit API key through a private environment lease; never print it or place it in process arguments or artifacts. Authentication failure reports unavailable without creating a reviewer. No automatic login, renewal or persistent credential change is part of discovery or a review. Check account access and billing availability through supported APIs without extracting app or CLI credentials or treating their login state as SDK authentication.
 
 ## Qualification and release gates
 

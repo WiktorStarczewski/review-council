@@ -15,8 +15,8 @@
 - Normal independent reviews only for Council code; no Council self review.
 - Heavy tests, builds and process fixtures run in CI. Light checks use ci-local; exit75 is unrun.
 - Actual expected-red CI precedes implementation. Current-head macOS and Ubuntu CI and live qualification precede release.
-- No default roster change, hidden CLI controls, private endpoint client, silent model/effort downgrade, credential extraction or automatic credential minting.
-- Optional SDK installation is explicit and isolated. Missing runtime/key/model/qualification fails availability before a seat call.
+- No default roster change, hidden CLI controls, private endpoint client, silent model/effort downgrade, credential extraction or automatic sign-in during discovery or review.
+- Optional SDK installation and browser sign-in are explicit. Installation remains isolated. Missing runtime/authentication/model/qualification fails availability before a seat call.
 - Use a private empty cwd and store, empty ambient sources/MCP/agents, no additional directories, no resume and retries disabled.
 - Preserve existing complete-artifact exceptions and dependency-context semantics. Do not invent universal line/byte caps or blanket bans beyond the canonical reader.
 - New signed commits only, sole-user attribution, no amend, no em/en dashes.
@@ -24,7 +24,7 @@
 
 ## Review Focus
 
-- Optional runtime or key missing: default reviews still work and no hidden paid call occurs. Task1 and Task3 test this.
+- Optional runtime or SDK sign-in unavailable: default reviews still work and no hidden paid call occurs. Task1 and Task3 test this.
 - Complete packet/context reads differ from source excerpts: canonical completeness and citation credit remain exact. Task1 and Task2 test this.
 - Caller edits a source or swaps a path after preflight: reject the mismatched immutable identity before delivering data. Task2 tests this.
 - Model/catalog names differ between CLI and SDK: only the SDK selection and observed run identity authorize the seat. Task3 and Task4 test this.
@@ -39,7 +39,7 @@
 **Interfaces:** Tests define build-cursor-plugin.py build(output:Path), the cursor host value, cursor-sdk adapter identity, cursor_read({path,offset?,limit?}) and the driver modes catalog/probe/seat. Fixtures are explicitly synthetic, never live-qualification proof.
 
 - [ ] Add host assertions for self-contained rev/stack discovery, cursor manifest, explicit host selection, package file modes and no implicit native Claude Agent seat.
-- [ ] Add SDK absence/key absence tests, exact catalog parameter resolution tests and unchanged default-roster controls.
+- [ ] Add SDK absence/authentication absence tests, exact catalog parameter resolution tests and unchanged default-roster controls.
 - [ ] Add read tests for whole authorized artifacts, bounded source ranges, packet completeness, historical/dependency context, stale blobs, traversal, unauthorized roots, malformed bounds, unauthorized symlinks and output mismatch.
 - [ ] Add stream tests for the custom-reader server, exact completed text/call IDs, metadata-only discovery, unknown tools/servers, truncation, duplicates, error/partial streams, schema extraction and absent usage.
 - [ ] Make missing feature implementations produce explicit target assertions rather than unrelated import/setup crashes. Keep existing suites running.
@@ -62,10 +62,10 @@
 
 **Files:** Create plugins/review-council/scripts/lib/cursor-sdk-driver.mjs, scripts/seats.d/cursor-sdk.sh, optional runtime package.json/package-lock.json and installation helper under plugins/review-council/scripts/cursor-sdk/. Extend tests/test_cursor_sdk.py.
 
-**Interfaces:** Driver supports catalog, probe and seat commands. Catalog emits bounded sanitized model/variant/parameter JSON. Probe emits a versioned qualification receipt without secrets. Seat writes raw SDK events plus an explicit terminal record and returns the existing adapter exit classification. It never silently installs or logs in. The shell adapter consumes existing frozen MODEL/EFFORT/ROOT/PROMPT/session bindings.
+**Interfaces:** Driver supports explicit login and auth-status setup commands plus catalog, probe and seat commands. Login uses the public SDK browser flow with a finite cancellation deadline and discards returned credentials. Status emits only sanitized local presence. Catalog emits bounded sanitized model/variant/parameter JSON. Probe emits a versioned qualification receipt without secrets. Seat writes raw SDK events plus an explicit terminal record and returns the existing adapter exit classification. It never silently installs or logs in. The shell adapter consumes existing frozen MODEL/EFFORT/ROOT/PROMPT/session bindings.
 
-- [ ] Pin package integrity/version and matching native helper; preserve user-supplied keys only in process environment. Refuse implicit app/CLI auth fallback.
-- [ ] Configure local-only explicit key, private empty cwd/store, settingSources:[], mcpServers:{}, agents:{}, one custom reader, approved MCP metadata tools, no native reads/writes/shell/web/task and enableAgentRetries:false.
+- [ ] Pin package integrity/version and matching native helper; use public SDK stored-login resolution after explicit browser sign-in, with an optional private environment key override. Refuse app/CLI credential extraction and automatic login.
+- [ ] Configure local-only SDK authentication, private empty cwd/store, settingSources:[], mcpServers:{}, agents:{}, one custom reader, approved MCP metadata tools, no native reads/writes/shell/web/task and enableAgentRetries:false.
 - [ ] Resolve exact ModelSelection id/params/maxMode from the supported account catalog. Select newest Grok with required xhigh; reject ambiguity or unavailable effort rather than using a CLI slug, Auto or fallback.
 - [ ] Persist raw events and exact optional usage; require terminal run.wait() and disposal. Reject incomplete identity, unexpected tools/resources and malformed final findings.
 - [ ] Test against an injected offline SDK double in CI. Keep double evidence distinct from actual provider qualification. Obtain normal review and commit.
@@ -97,7 +97,7 @@
 
 **Files:** Add a bounded public live-qualification fixture/harness and release documentation; update synchronized version metadata only after feature qualification. Keep private credentials and run evidence outside tracked source.
 
-- [ ] Prepare concrete SDK credential setup using the supported API-key or browser-login flow. If user interaction is needed, present the exact setup at that point; do not extract an existing CLI credential.
+- [ ] Prepare explicit SDK browser sign-in using the existing Cursor account, with an optional private environment key override. Present the exact interactive setup for the user to start and complete; do not extract an existing app or CLI credential.
 - [ ] Run a tiny actual Grok custom-reader fixture. Verify catalog/run model and xhigh agreement, exact read text/ranges/call IDs, approved live tool inventory, absent harmless ambient canaries, no retries, disposal and terminal success. Preserve failure evidence and refuse availability if it fails.
 - [ ] Verify actual native Cursor application discovery and rev/stack invocation with loaded package/version identity. Metadata parsing alone is insufficient. Preserve existing host acceptance.
 - [ ] Finish normal cumulative source reviews and fixes; require current-head full macOS/Ubuntu CI and all applicable live gates. A missing credential or failed live proof blocks Grok completion.

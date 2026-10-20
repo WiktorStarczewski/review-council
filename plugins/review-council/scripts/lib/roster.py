@@ -524,8 +524,6 @@ def prepare_cursor_sdk_config(cfg):
     receipt = os.environ.get('REVIEW_COUNCIL_CURSOR_SDK_QUALIFICATION')
     if not runtime or not Path(runtime).is_dir():
         return cfg, 'cursor-sdk runtime unavailable', 'availability'
-    if not os.environ.get('CURSOR_API_KEY', '').strip():
-        return cfg, 'cursor-sdk key unavailable', 'availability'
     if not receipt:
         return cfg, 'cursor-sdk qualification unavailable', 'availability'
     try:
@@ -538,8 +536,10 @@ def prepare_cursor_sdk_config(cfg):
             raise ValueError()
     except (OSError, ValueError, TypeError, AttributeError):
         return cfg, 'cursor-sdk qualification unavailable or invalid', 'availability'
-    rc, stdout, _ = run(['node', str(Path(__file__).with_name('cursor-sdk-driver.mjs')), 'catalog'],
-                        CODEX_CATALOG_REFRESH_TIMEOUT)
+    rc, stdout, stderr = run(['node', str(Path(__file__).with_name('cursor-sdk-driver.mjs')), 'catalog'],
+                             CODEX_CATALOG_REFRESH_TIMEOUT)
+    if rc != 0 and 'sdk_unauthenticated' in (stderr or '').splitlines():
+        return cfg, 'cursor-sdk authentication unavailable; run cursor-sdk-driver.mjs login', 'availability'
     try:
         catalog = json.loads(stdout)
         if (rc != 0 or not isinstance(catalog, dict) or catalog.get('version') != 1

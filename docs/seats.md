@@ -71,7 +71,8 @@ An adapter must, in order:
 client. Its lab is `xai`; provenance records Cursor transport and Cursor/SpaceXAI
 model lineage without counting two laboratories. Existing defaults and historical
 standalone Grok fixtures remain unchanged. See [Cursor setup](cursor.md) for the
-explicit runtime, API-key and live-qualification requirements.
+explicit runtime, SDK browser sign-in and live-qualification requirements. A private
+environment key override is optional; review discovery never starts sign-in.
 
 The roster freezes `model_selection` and `cursor_sdk` identity fields, including
 runtime, catalog and qualification hashes. The dispatcher binds the runtime and

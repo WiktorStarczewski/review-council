@@ -14,6 +14,7 @@ const MAX_EVENTS = 4096;
 const MAX_RAW_BYTES = 32 * 1024 * 1024;
 const MAX_READS = 160;
 const ATTEMPT_MS = 30 * 60 * 1000;
+const LOGIN_MS = 5 * 60 * 1000;
 const hash = value => createHash('sha256').update(value).digest('hex');
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -197,7 +198,6 @@ function argumentsFor(argv, allowed) {
 async function runtime() {
   const directory = process.env.REVIEW_COUNCIL_CURSOR_SDK_RUNTIME;
   if (!directory || !existsSync(directory)) refuse('runtime_missing',5);
-  if (!process.env.CURSOR_API_KEY?.trim()) refuse('sdk_key_missing',5);
   if (Number(process.versions.node.split('.')[0]) < 22
       || (Number(process.versions.node.split('.')[0]) === 22
         && Number(process.versions.node.split('.')[1]) < 13)) refuse('node_version_unavailable',5);
@@ -263,8 +263,60 @@ function sanitizeCatalog(models) {
 }
 
 async function catalog(sdk, identity, apiKey) {
-  const models = sanitizeCatalog(await sdk.Cursor.models.list({apiKey}));
+  let available;
+  try { available = await sdk.Cursor.models.list({apiKey}); }
+  catch (error) {
+    if (classified(error,sdk).exitCode === 3) {
+      process.stderr.write('Sign in with: node "$PLUGIN/scripts/lib/cursor-sdk-driver.mjs" login\n');
+      refuse('sdk_unauthenticated',5);
+    }
+    throw error;
+  }
+  const models = sanitizeCatalog(available);
   return {version:1,sdk_version:SDK_VERSION,runtime_sha256:identity.runtime_sha256,models};
+}
+
+async function login(sdk) {
+  const abort = new AbortController();
+  const cancel = () => abort.abort();
+  const interrupted = new Promise((_,reject) => {
+    abort.signal.addEventListener('abort',() => reject(new Refusal('sdk_login_cancelled',3)),{once:true});
+  });
+  const timer = setTimeout(cancel,LOGIN_MS);
+  process.on('SIGINT',cancel);
+  process.on('SIGTERM',cancel);
+  try {
+    await Promise.race([
+      Promise.resolve().then(() => sdk.Cursor.auth.login({signal:abort.signal})),interrupted,
+    ]);
+    if (abort.signal.aborted) refuse('sdk_login_cancelled',3);
+    process.stdout.write(JSON.stringify({version:1,status:'signed-in'}) + '\n');
+  } catch (error) {
+    if (error instanceof Refusal) throw error;
+    const failure = classified(error,sdk);
+    refuse(failure.reason,failure.exitCode);
+  } finally {
+    clearTimeout(timer);
+    process.removeListener('SIGINT',cancel);
+    process.removeListener('SIGTERM',cancel);
+  }
+}
+
+async function authStatus(sdk, apiKey) {
+  let status = 'environment-override-present';
+  if (apiKey === undefined) {
+    let current;
+    try { current = await sdk.Cursor.auth.status(); }
+    catch (error) {
+      const failure = classified(error,sdk);
+      refuse(failure.reason,failure.exitCode);
+    }
+    if (!object(current) || !['logged-in','logged-out'].includes(current.status)) {
+      refuse('sdk_auth_status_invalid',1);
+    }
+    status = current.status === 'logged-in' ? 'sdk-login-present' : 'sdk-login-absent';
+  }
+  process.stdout.write(JSON.stringify({version:1,status}) + '\n');
 }
 
 function exactSelection(selected, models) {
@@ -494,7 +546,7 @@ async function probe(args, sdk, identity, apiKey) {
 
 export async function runDriver(argv) {
   const [operation,...rest] = argv;
-  if (!['catalog','probe','seat'].includes(operation)) refuse('command_invalid',6);
+  if (!['login','auth-status','catalog','probe','seat'].includes(operation)) refuse('command_invalid',6);
   let args, binding;
   if (operation === 'seat') {
     args = argumentsFor(rest,['--session','--round','--seat','--prompt','--root']);
@@ -527,16 +579,28 @@ export async function runDriver(argv) {
     const code = await new Promise(resolveCode => {
       const child = spawn(process.execPath,[launcher,fileURLToPath(import.meta.url),...argv],
         {shell:false,stdio:'inherit'});
-      child.on('error',() => resolveCode(1));
-      child.on('close',value => resolveCode(Number.isInteger(value) ? value : 1));
+      const signals = operation === 'login' ? ['SIGINT','SIGTERM'].map(name => {
+        const forward = () => { child.kill(name); };
+        process.on(name,forward);
+        return [name,forward];
+      }) : [];
+      const finish = value => {
+        for (const [name,forward] of signals) process.removeListener(name,forward);
+        resolveCode(Number.isInteger(value) ? value : 1);
+      };
+      child.on('error',() => finish(1));
+      child.on('close',finish);
     });
     process.exitCode = code;
     return;
   }
-  const apiKey = process.env.CURSOR_API_KEY;
+  const override = process.env.CURSOR_API_KEY;
+  const apiKey = override?.trim() ? override : undefined;
   delete process.env.CURSOR_API_KEY;
   delete process.env.CURSOR_AUTH_TOKEN;
   const sdk = await sdkImport(identity);
+  if (operation === 'login') { await login(sdk); return; }
+  if (operation === 'auth-status') { await authStatus(sdk,apiKey); return; }
   if (operation === 'catalog') {
     try { process.stdout.write(JSON.stringify(await catalog(sdk,identity,apiKey)) + '\n'); }
     catch (error) { refuse(error instanceof Refusal ? error.reason : 'catalog_unavailable',5); }

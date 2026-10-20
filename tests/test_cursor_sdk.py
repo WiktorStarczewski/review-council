@@ -1064,7 +1064,7 @@ class CursorDriverTests(CursorSDKCase):
             'throw new Error("synthetic SDK import poison");\n')
         return runtime, marker
 
-    def test_cli_auth_token_is_not_an_sdk_key_and_missing_key_precedes_import(self):
+    def test_cli_auth_token_cannot_bypass_runtime_validation_before_sdk_import(self):
         self.require_entry(DRIVER)
         runtime, marker = self.poison_runtime()
         environment = dict(self.env, REVIEW_COUNCIL_CURSOR_SDK_RUNTIME=str(runtime),
@@ -1076,8 +1076,8 @@ class CursorDriverTests(CursorSDKCase):
         process = self.node(DRIVER, 'catalog', environment=environment)
         output = process.stdout + process.stderr
         self.assertEqual(process.returncode, 5, output)
-        self.assertIn('key', output.lower(), 'missing SDK key must have a closed availability reason')
-        self.assertFalse(marker.exists(), 'missing explicit SDK key must stop before SDK import')
+        self.assertEqual(process.stderr, 'runtime_invalid\n')
+        self.assertFalse(marker.exists(), 'an unverified runtime must stop before SDK import')
         self.assertEqual(auth.read_bytes(), before)
         for canary in ('cli-token-canary', 'ambient-auth-canary', 'synthetic SDK import poison'):
             self.assertNotIn(canary, output)

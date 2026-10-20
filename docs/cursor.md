@@ -31,6 +31,20 @@ loader. These are Cursor's documented [local plugin loading rules](https://curso
 Keep active installations unchanged during other reviews. A successful build or
 manifest validation establishes package structure, not actual application discovery.
 
+The signed-in Cursor CLI can load a package directly for a discovery check:
+
+```bash
+agent --workspace /absolute/project --plugin-dir /absolute/review-council \
+  --model grok-4.7-xhigh --mode ask --sandbox enabled --trust -p \
+  'Read the loaded review-council manifest and both native skill entries.'
+```
+
+Use an available model slug for your account and a trusted project. This path has
+loaded the native manifest and both skill entries with Grok 4.7 256K Extra High
+using normal CLI sign-in. It establishes CLI discovery only. GUI Customize
+discovery, Council invocation and enforced SDK reviewer qualification are separate
+acceptance gates.
+
 ## Invoke Council in Cursor
 
 In a fresh chat, select the native `rev` or `stack` skill, or ask:
@@ -63,25 +77,33 @@ The installer downloads the pinned packages, retains authenticated archives and
 verifies installed bytes and modes. It does not qualify a model. Keep the runtime
 private and outside the checkout; do not install into the plugin source tree.
 
-Provide a user or service-account API key through `CURSOR_API_KEY` in the runner's
-private environment. Cursor documents creating these through Dashboard API Keys
-or team service accounts; Team Admin keys are unsupported. The SDK also offers
-`Cursor.auth.login()`, an explicit browser flow that mints a key, normally valid
-for 90 days, and stores it by default. Its `store: null` option returns the key
-without saving a login. See the [official SDK authentication guide](https://cursor.com/docs/sdk/typescript#authentication)
-and [browser login API](https://cursor.com/docs/sdk/typescript#cursor-auth-login).
+Sign in with your existing Cursor account through the official SDK browser flow.
+Set `PLUGIN` to the loaded package directory, then run setup explicitly:
 
-Council requires the explicit environment key and does not consume the SDK's
-stored login or app/CLI credentials. Complete any login or key creation separately
-with the account owner's authorization, then pass the key privately. Never print
-it, place it in command arguments, commit it, or include it in review artifacts.
-Expiry or revocation requires a new environment lease. Account access and usage
-remain subject to the supported SDK service; a CLI login does not establish SDK
-authentication or Grok availability.
+```bash
+node "$PLUGIN/scripts/lib/cursor-sdk-driver.mjs" auth-status
+node "$PLUGIN/scripts/lib/cursor-sdk-driver.mjs" login
+```
+
+Complete normal Cursor sign-in in the browser. The SDK manages its stored login;
+you do not obtain or paste a Grok key or API key. Setup has a five-minute deadline
+and supports Ctrl+C cancellation. The driver discards the returned credential and
+prints only a closed success state. See the [official authentication guide](https://cursor.com/docs/sdk/typescript#authentication)
+and [browser sign-in API](https://cursor.com/docs/sdk/typescript#cursor-auth-login).
+
+`auth-status` reports local SDK login presence, absence or an environment override.
+It does not verify remote entitlement, revocation, model access or qualification.
+Discovery and reviewer calls never start or renew sign-in automatically. If the
+stored login expires or is revoked, run setup explicitly again. App/CLI sign-in is
+not extracted or assumed to authenticate the SDK.
+
+An explicit user or service-account `CURSOR_API_KEY` remains an optional private
+environment override. A blank override uses the SDK's stored login. Never print a
+credential, put it in arguments, commit it or include it in review artifacts.
 
 ## Qualification before opt-in
 
-With the runtime and key available, the driver can read the authenticated catalog:
+With the runtime and SDK sign-in available, the driver can read the authenticated catalog:
 
 ```bash
 node plugins/review-council/scripts/lib/cursor-sdk-driver.mjs catalog
@@ -113,7 +135,7 @@ qualification. After a valid probe, add these keys to the existing Council confi
 }
 ```
 
-Other configured seats remain in the roster. A missing runtime, key, exact model,
+Other configured seats remain in the roster. A missing runtime, authentication, exact model,
 effort or qualification refuses availability before a reviewer launch. Invalid
 settings are configuration errors. There is no fallback to a direct xAI adapter,
 older model, lower effort or unqualified CLI transport. See [configuration](config.md).

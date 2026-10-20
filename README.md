@@ -70,7 +70,8 @@ Build the native package with
 follow [Cursor setup](docs/cursor.md) to load the real directory and verify both
 skills in the application. Cursor hosting keeps the existing default roster.
 Optional Grok reviewers require a separately installed pinned SDK runtime, an
-explicit API key and live qualification; package tests do not qualify them.
+explicit SDK browser sign-in and live qualification; an environment key override
+is optional. Package tests do not qualify reviewers.
 
 > [!NOTE]
 > Seats come from the provider CLIs you have signed in: Codex for OpenAI, Claude for
