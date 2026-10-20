@@ -579,15 +579,31 @@ export async function runDriver(argv) {
     const code = await new Promise(resolveCode => {
       const child = spawn(process.execPath,[launcher,fileURLToPath(import.meta.url),...argv],
         {shell:false,stdio:'inherit'});
-      const signals = operation === 'login' ? ['SIGINT','SIGTERM'].map(name => {
-        const forward = () => { child.kill(name); };
-        process.on(name,forward);
-        return [name,forward];
-      }) : [];
+      let deadline, grace, cancelled = false, finished = false;
+      const signals = [];
       const finish = value => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(deadline);
+        clearTimeout(grace);
         for (const [name,forward] of signals) process.removeListener(name,forward);
-        resolveCode(Number.isInteger(value) ? value : 1);
+        resolveCode(cancelled ? 3 : Number.isInteger(value) ? value : 1);
       };
+      const cancel = name => {
+        if (finished || cancelled) return;
+        cancelled = true;
+        clearTimeout(deadline);
+        grace = setTimeout(() => { child.kill('SIGKILL'); },500);
+        child.kill(name);
+      };
+      if (operation === 'login') {
+        for (const name of ['SIGINT','SIGTERM']) {
+          const forward = () => cancel(name);
+          process.on(name,forward);
+          signals.push([name,forward]);
+        }
+        deadline = setTimeout(() => cancel('SIGTERM'),LOGIN_MS);
+      }
       child.on('error',() => finish(1));
       child.on('close',finish);
     });

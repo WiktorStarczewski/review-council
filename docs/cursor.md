@@ -86,8 +86,9 @@ node "$PLUGIN/scripts/lib/cursor-sdk-driver.mjs" login
 ```
 
 Complete normal Cursor sign-in in the browser. The SDK manages its stored login;
-you do not obtain or paste a Grok key or API key. Setup has a five-minute deadline
-and supports Ctrl+C cancellation. The driver discards the returned credential and
+you do not obtain or paste a Grok key or API key. After runtime verification, login
+has a five-minute operation deadline and a short cancellation grace. Ctrl+C cancels
+setup. The driver discards the returned credential and
 prints only a closed success state. See the [official authentication guide](https://cursor.com/docs/sdk/typescript#authentication)
 and [browser sign-in API](https://cursor.com/docs/sdk/typescript#cursor-auth-login).
 
