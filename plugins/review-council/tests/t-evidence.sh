@@ -1234,6 +1234,111 @@ def verification_delta_source_context_controls():
     for change in ('ordinary', 'partial-deletion', 'deleted'):
         verification_source_context_change(change)
 
+def verification_nested_instruction_restoration(large=False):
+    with fixture(adapter='codex') as (root, session, git, write, call, prepare, finish):
+        write('main.py', git('show', 'HEAD:main.py') + '\n')
+        original = 'def nested():\n    return 1\n'
+        instruction = 'rule ' * 6000 + '\n' if large else 'Keep nested return values consistent.\n'
+        write('src/main.py', original)
+        write('src/AGENTS.md', instruction)
+        git('add', '.'); git('commit', '-qm', 'nested instruction base')
+        base = git('rev-parse', 'HEAD')
+        (session / 'scope.env').write_text(''.join(
+            key + '=' + shlex.quote(value) + '\n' for key, value in (
+                ('REV_BASE', base), ('REV_ROOT', str(root)), ('REV_SCOPE', 'branch'))))
+        write('padding.py', ''.join(f'value_{i} = {i}\n' for i in range(1000)))
+        write('src/main.py', original.replace('return 1', 'return 2'))
+        (session / 'files.txt').write_text('padding.py\nsrc/main.py\n')
+        (session / 'untracked.txt').write_text('padding.py\n')
+        frozen = {name: (session / name).read_bytes() for name in (
+            'scope.env', 'roster.json', 'files.txt', 'untracked.txt')}
+        reviewed = prepare('nested-reviewed', 'risk', *assign)
+        instruction_row = {'path': 'src/AGENTS.md',
+                           'sha256': hashlib.sha256(instruction.encode()).hexdigest()}
+        assert reviewed['instructions'] == [instruction_row]
+        finish('nested-reviewed')
+        reference = json.loads((session / 'coverage-head.json').read_text())
+        sealed = {path.name: path.read_bytes() for path in session.glob('rnested-reviewed-*')}
+        repository = module.Repository(session.resolve())
+        prior = module.prior_coverage(session, repository, reviewed['base_tree'])
+        assert prior['status'] == 'valid', prior
+        assert prior['coverage']['snapshot_tree'] == reviewed['snapshot_tree']
+        write('src/main.py', original)
+        assert git('diff', base, '--', 'src/main.py', 'src/AGENTS.md') == ''
+        snapshot, unsafe = repository.snapshot()
+        cumulative, _, _, cumulative_unsafe = repository.changes(reviewed['base_tree'], snapshot)
+        delta, _, _, delta_unsafe = repository.changes(reviewed['snapshot_tree'], snapshot)
+        assert unsafe == cumulative_unsafe == delta_unsafe == []
+        assert [path for path, _ in cumulative] == ['padding.py']
+        assert [path for path, _ in delta] == ['src/main.py']
+        assert {name: (session / name).read_bytes() for name in frozen} == frozen
+        label = 'nested-verify'
+        env = dict(os.environ, REV_PATCH_CHUNKS='auto', REV_SOURCE_CONTEXT='1')
+        result = subprocess.run(
+            [sys.executable, str(script), 'prepare', str(session), label,
+             '--phase', 'verification', *assign], env=env, capture_output=True, text=True, timeout=30)
+        assert 'Traceback' not in result.stderr, result.stderr
+        assert result.returncode in (0, 2), (result.returncode, result.stdout, result.stderr)
+        if result.returncode == 2:
+            assert large, ('short nested instruction closure must prepare', result.stderr)
+            assert 'source context instruction expansion exceeds delta budget' in result.stderr, result.stderr
+            assert not list(session.glob('rnested-verify-*')), 'refusal must precede evidence publication'
+            assert {name: (session / name).read_bytes() for name in frozen} == frozen
+            assert {name: (session / name).read_bytes() for name in sealed} == sealed
+            return
+        mpath = session / 'rnested-verify-evidence.manifest.json'
+        manifest = json.loads(mpath.read_text())
+        assert manifest['snapshot_tree'] == snapshot and manifest['base_tree'] == reviewed['base_tree']
+        assert manifest['source_context']['enabled'] is True
+        assert manifest['predecessor'] == reference
+        assert manifest['inputs'] == {name: hashlib.sha256(raw).hexdigest() for name, raw in frozen.items()}
+        assert (session / 'rnested-verify-full.patch').read_bytes() == b''.join(raw for _, raw in cumulative)
+        assert (session / 'rnested-verify-delta.patch').read_bytes() == delta[0][1]
+        assert manifest['instructions'] == [instruction_row]
+        expected_packet = ('# src/AGENTS.md\n\n' + instruction.rstrip() + '\n').encode()
+        packet_path = session / 'rnested-verify-instructions.md'
+        assert packet_path.read_bytes() == expected_packet
+        assert manifest['artifacts'][packet_path.name]['sha256'] == hashlib.sha256(expected_packet).hexdigest()
+        assert (root / 'src/AGENTS.md').read_bytes() == instruction.encode()
+        owner = manifest['mechanical_owner']
+        assert manifest['assignments'][owner]['full_state'] is True
+        components = [component for component in manifest['components'] if 'src/main.py' in component['files']]
+        assert len(components) == 1, 'successful preparation must retain the restored source obligation'
+        component = components[0]
+        assert component['full_state_owner'] == owner and component['specialists']
+        assert any('diff --git a/src/main.py b/src/main.py' in Path(assignment['patch']).read_text()
+                   for seat, assignment in manifest['assignments'].items() if seat != owner)
+        expected_oid = git('rev-parse', snapshot + ':src/main.py')
+        for seat, assignment in manifest['assignments'].items():
+            if component['id'] not in assignment['components']:
+                continue
+            context = manifest['source_context']['seats'][seat]
+            rows = [row for shard in context['shards'] for row in shard['ranges']]
+            rows += context['required_source_ranges'] + context['omitted_source_ranges']
+            rows = [row for row in rows if row['path'] == 'src/main.py'
+                    and component['id'] in row['component_ids']]
+            assert rows, ('restored source context is required', seat)
+            for row in rows:
+                assert (row['blob_tree'], row['blob_mode'], row['blob_oid']) == (snapshot, '100644', expected_oid)
+                raw = b''.join(original.encode().splitlines(keepends=True)[row['line_start'] - 1:row['line_end']])
+                assert raw and row['content_sha256'] == hashlib.sha256(raw).hexdigest()
+        verified = subprocess.run([sys.executable, str(script), 'verify', str(mpath)],
+                                  env=env, capture_output=True, text=True, timeout=30)
+        assert verified.returncode == 0, (
+            'successful prepare published nested restoration evidence rejected by verify',
+            verified.returncode, verified.stdout, verified.stderr)
+        finish(label)
+        coverage = json.loads(call('current-coverage', session))
+        assert coverage['eligible'] is True and coverage['snapshot_tree'] == snapshot, coverage
+        assert {name: (session / name).read_bytes() for name in frozen} == frozen
+        assert {name: (session / name).read_bytes() for name in sealed} == sealed
+
+def verification_nested_restoration_retains_instruction_context():
+    verification_nested_instruction_restoration()
+
+def verification_nested_restoration_refuses_unusable_instruction_budget():
+    verification_nested_instruction_restoration(large=True)
+
 def coverage_head_publication_is_monotonic():
     with fixture() as (root, session, git, write, call, prepare, finish):
         prepare('first'); finish('first')
@@ -3429,7 +3534,8 @@ cases = (
     conservative_mechanical_classification, bounded_navigation_markdown, opaque_transitions,
     opaque_mode_transition, invalid_manifests, phase_and_predecessor_integrity,
     cumulative_verification_routing, verification_delta_retains_restored_path_source_context,
-    verification_delta_source_context_controls, coverage_head_publication_is_monotonic,
+    verification_delta_source_context_controls, verification_nested_restoration_retains_instruction_context,
+    verification_nested_restoration_refuses_unusable_instruction_budget, coverage_head_publication_is_monotonic,
     same_stat_and_index_flags, cstyle_enclosing_bodies, wallet_scale,
     literal_scope_and_inventories, sparse_gitlink_and_special, roster_bundle_coverage,
     source_context_packets, provider_visible_source_packet_limit,
@@ -3463,7 +3569,8 @@ groups = {
     ),
     'routing': (
         cumulative_verification_routing, verification_delta_retains_restored_path_source_context,
-        verification_delta_source_context_controls, coverage_head_publication_is_monotonic,
+        verification_delta_source_context_controls, verification_nested_restoration_retains_instruction_context,
+        verification_nested_restoration_refuses_unusable_instruction_budget, coverage_head_publication_is_monotonic,
         same_stat_and_index_flags, literal_scope_and_inventories,
         sparse_gitlink_and_special, roster_bundle_coverage,
         scoped_names_and_gitlink_lifecycle, component_and_full_tampering,
