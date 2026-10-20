@@ -218,16 +218,19 @@ class CursorIntegrationTests(CursorSDKCase):
                                 baseline['signature'])
 
     def test_opted_in_sdk_missing_runtime_is_availability_and_never_falls_through(self):
-        roster = module(SCRIPTS / 'lib/roster.py')
         config = {'cursor_sdk_models': ['latest-grok'], 'extras': False}
-        detectors = {adapter: lambda _config: ([], None) for adapter in roster.DETECT}
-        with patch.dict(os.environ, self.env, clear=True), \
-                patch.object(roster, 'load_config', return_value=(config, None)), \
-                patch.object(roster, 'DETECT', detectors), \
-                patch.object(roster.shutil, 'which', return_value=None), \
-                patch.object(roster, 'run', side_effect=AssertionError('no SDK turn allowed')):
-            result, _, strict = roster.build(False)
+        with patch.dict(os.environ, self.env, clear=True):
+            roster = module(SCRIPTS / 'lib/roster.py')
+            detectors = {adapter: lambda _config: ([], None) for adapter in roster.DETECT}
+            with patch.object(roster, 'load_config', return_value=(config, None)), \
+                    patch.object(roster, 'DETECT', detectors), \
+                    patch.object(roster.shutil, 'which', return_value=None), \
+                    patch.object(roster, 'run', side_effect=AssertionError('no SDK turn allowed')):
+                result, _, strict = roster.build(False)
         self.assertEqual(strict, 'availability', 'explicit SDK availability must be enforced')
+        reason = result.get('strict_reason', '').lower()
+        self.assertTrue(('cursor-sdk' in reason or 'cursor_sdk' in reason) and 'runtime' in reason,
+                        'availability must identify the missing SDK runtime, not a generic host floor')
         self.assertEqual(result['seats'], [], 'a missing SDK cannot be replaced with another transport')
 
     def test_reported_sdk_usage_is_normalized_without_inventing_a_known_cost(self):
