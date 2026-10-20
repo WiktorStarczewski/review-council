@@ -460,7 +460,7 @@ class CursorNumericTests(CursorSDKCase):
         roster_path = fixture.session / 'roster.json'
         roster_path.write_text(json.dumps({'seats': fixture.roster['seats'][:2]}))
         control = subprocess.run([
-            str(SCRIPTS / 'rev-prompt.sh'), str(fixture.session), 'docs-control',
+            str(SCRIPTS / 'rev-prompt.sh'), str(fixture.session), 'control-docs',
             'sol', 'correctness', 'Read the public document', '--read-only', str(listing)],
             env=fixture.env, capture_output=True, text=True, timeout=30)
         self.assertEqual(control.returncode, 0, control.stderr)
