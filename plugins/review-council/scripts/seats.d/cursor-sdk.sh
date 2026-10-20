@@ -12,5 +12,5 @@ fi
 set -o pipefail
 node "$HERE/../lib/cursor-sdk-driver.mjs" seat --session "$SESSION" --round "$ROUND" \
   --seat "$SEAT" --prompt "$PROMPT" --root "$ROOT" 2>>"$LOG" \
-  | python3 -u "$HERE/../lib/stream-summary.py" cursor-sdk "$OUT" >>"$LOG"
+  | python3 -u "$HERE/../lib/stream-summary.py" cursor-sdk "$OUT.summary-candidate.json" >>"$LOG"
 exit "${PIPESTATUS[0]}"
