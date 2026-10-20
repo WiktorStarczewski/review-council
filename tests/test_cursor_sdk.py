@@ -352,6 +352,15 @@ assert.deepEqual(await active.execute(request, context),
 await disposeCouncilReader(active);
 await disposeCouncilReader(active);
 await assert.rejects(active.execute(request, context), {message:'reader_disposed'});
+const disposalRecords = [];
+const disposing = createCouncilReader({...options,onRead:e=>disposalRecords.push(e)});
+const pendingDisposal = disposing.execute(request,
+  {toolCallId:'pending-disposal-call',sessionId:'lifecycle-session'});
+const disposedRejection = assert.rejects(pendingDisposal, {message:'reader_disposed'});
+const disposal = disposeCouncilReader(disposing);
+await Promise.all([disposedRejection,disposal]);
+await disposeCouncilReader(disposing);
+assert.deepEqual(disposalRecords, [], 'disposed pending read must never publish delivery');
 for (const alreadyAborted of [false,true]) {
   const controller = new AbortController();
   const records = [];
@@ -428,6 +437,30 @@ try {
     await assert.rejects(reader.execute(request,context), {message:'reader_context_invalid'});
   }
   assert.equal(records.length, 1, 'missing SDK identity must never be fabricated');
+  const firstPending = reader.execute({path:'keep.txt',offset:1,limit:1},
+    {toolCallId:'overlap-keep',sessionId:'actual-sdk-session'});
+  const secondPending = reader.execute({path:'zz_current.py',offset:1,limit:1},
+    {toolCallId:'overlap-current',sessionId:'actual-sdk-session'});
+  const [firstResponse,secondResponse] = await Promise.all([firstPending,secondPending]);
+  assert.deepEqual(firstResponse,
+    {content:[{type:'text',text:'unchanged nonsemantic context\n'}]});
+  assert.deepEqual(secondResponse, {content:[{type:'text',text:'def active_000():\n'}]});
+  assert.equal(records.length, 3);
+  for (const [callId,input,text] of [
+    ['overlap-keep',{path:'keep.txt',offset:1,limit:1},'unchanged nonsemantic context\n'],
+    ['overlap-current',{path:'zz_current.py',offset:1,limit:1},'def active_000():\n'],
+  ]) {
+    const matching = records.filter(event=>event.call_id === callId);
+    assert.equal(matching.length, 1, 'each overlapping read needs exactly one paired sideband');
+    const paired = matching[0];
+    assert.equal(paired.type, 'council_read_result');
+    assert.equal(paired.call_id, callId);
+    assert.equal(paired.session_id, 'actual-sdk-session');
+    assert.deepEqual(paired.input, input);
+    assert.equal(paired.text_sha256, createHash('sha256').update(text).digest('hex'));
+    assert.equal(paired.meta.manifest_sha256, options.manifestSha256);
+    assert.deepEqual(paired.meta.input, input);
+  }
 } finally {
   await disposeCouncilReader(reader);
 }
