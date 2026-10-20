@@ -149,11 +149,21 @@ def build(output):
         raise ValueError('output directory must be named review-council')
     if output.is_symlink():
         raise ValueError('refusing to replace a symlink')
+    destination = output.resolve()
+    inputs = (REPO / 'plugins/review-council', REPO / 'docs', REPO / 'scripts', REPO / 'LICENSE')
+    for source in inputs:
+        source = source.resolve()
+        if (destination == source or source in destination.parents
+                or destination in source.parents):
+            raise ValueError('output overlaps package source')
     if output.exists():
         manifest = output / '.cursor-plugin/plugin.json'
         if (manifest.is_symlink() or not manifest.is_file()
                 or json.loads(manifest.read_text()).get('name') != output.name):
             raise ValueError('existing output is not a review-council Cursor bundle')
+        if any((output / name).exists() or (output / name).is_symlink()
+               for name in ('.claude-plugin', '.codex-plugin', 'hooks', 'skills', 'codex-skills')):
+            raise ValueError('existing output contains another host discovery path')
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='.review-council-build-', dir=output.parent) as temp:
         stage = Path(temp) / 'review-council'
