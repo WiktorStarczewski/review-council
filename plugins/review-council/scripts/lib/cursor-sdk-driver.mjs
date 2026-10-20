@@ -465,7 +465,11 @@ async function probeFixture(directory, selected) {
   await git('init','-q');
   const nonce = randomBytes(24).toString('hex');
   const source = value => Array.from({length:110},(_,index) =>
-    `def qualification_${String(index).padStart(3,'0')}():\n    return "${value}-${nonce}-${'x'.repeat(320)}"\n\n`).join('');
+    `def qualification_${String(index).padStart(3,'0')}():\n    return "${value}-${nonce}-${'x'.repeat(320)}"\n\n`).join('')
+    + 'def qualification_required_source():\n'
+    + Array.from({length:180},(_,index) =>
+      `    value_${index} = "${value}-${nonce}-${'x'.repeat(96)}"\n`).join('')
+    + '    return value_179\n';
   writeFileSync(join(root,'sample.py'),source('before'),{mode:0o600});
   await git('add','sample.py');
   const tree = (await git('write-tree')).trim();
@@ -483,7 +487,7 @@ async function probeFixture(directory, selected) {
   const document = json(manifest);
   await command('bash',[join(HERE,'../rev-prompt.sh'),session,'1','grok',
     document.assignments.grok.bundle,
-    'Qualification fixture only. Discover custom-user-tools with GetMcpTools. Read every assigned artifact completely and every required bounded source range. Return exactly one JSON object with summary and findings; findings may be empty.',
+    'Qualification fixture only. Use custom-user-tools council_read. Read every assigned artifact completely and every required bounded source range. Return exactly one JSON object with summary and findings; findings may be empty.',
     '--evidence',manifest],{env:environment});
   return frozenBinding({'--session':session,'--round':'1','--seat':'grok',
     '--root':root,'--prompt':join(session,'r1-grok.prompt.md')});
@@ -517,7 +521,8 @@ async function probe(args, sdk, identity, apiKey) {
   }
   const report = await audit(binding,raw,result,auditPath,true);
   const events = bytes(raw).toString('utf8').trimEnd().split('\n').map(line => JSON.parse(line));
-  if (!events.some(event => event.type === 'tool_call' && event.name === 'GetMcpTools'
+  if (!events.some(event => event.type === 'tool_call' && event.name === 'mcp'
+      && event.args?.providerIdentifier === 'custom-user-tools' && event.args?.toolName === 'council_read'
       && event.status === 'completed') || !events.some(event => event.type === 'council_read_result')
       || report.required_source_ranges_covered < 1 || !report.post_index_source_ranges?.length) {
     refuse('qualification_proof_incomplete',2);

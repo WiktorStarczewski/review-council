@@ -1137,7 +1137,12 @@ class CursorSDKTranscript:
             self.model = event['model']
             return
         if self.identity is None:
-            raise ValueError('missing SDK initialization')
+            if kind != 'status' or event.get('status') not in ('CREATING', 'RUNNING'):
+                raise ValueError('missing SDK initialization')
+            identity = event.get('agent_id'), event.get('run_id')
+            if not all(isinstance(item, str) and item for item in identity):
+                raise ValueError('missing SDK identity')
+            self.identity = identity
         call_id = event.get('call_id')
         if kind == 'council_read_result':
             running = self.running.get(call_id)
@@ -1186,9 +1191,12 @@ class CursorSDKTranscript:
             self.completed.add(call_id)
             return
         if kind == 'result':
-            if (event.get('status') != 'finished' or event.get('model') != self.model
+            if (event.get('status') != 'finished'
+                    or not cursor_model_selection(event.get('model'))
+                    or (self.model is not None and event.get('model') != self.model)
                     or event.get('id') != self.identity[1]):
                 raise ValueError('invalid SDK terminal result')
+            self.model = event['model']
             self.terminal = True
             return
         if kind in ('assistant', 'user'):
