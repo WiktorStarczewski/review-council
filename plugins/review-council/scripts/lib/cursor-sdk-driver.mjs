@@ -554,7 +554,11 @@ export async function runDriver(argv) {
   }
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+const isMain = import.meta.main ?? (
+  !process.execArgv.some(argument => /^(?:--(?:eval|print)(?:=|$)|-[ep])/.test(argument))
+  && process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+);
+if (isMain) {
   runDriver(process.argv.slice(2)).catch(error => {
     const failure = driverFailure(error);
     process.stderr.write(failure.reason + '\n');
