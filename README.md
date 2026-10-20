@@ -63,6 +63,15 @@ codex plugin add review-council@review-council
 Start a new Codex chat. [Codex setup](docs/codex.md) covers branch installs, local
 development and host differences.
 
+**Cursor**
+
+Build the native package with
+`python3 scripts/build-cursor-plugin.py --output dist/cursor/review-council`, then
+follow [Cursor setup](docs/cursor.md) to load the real directory and verify both
+skills in the application. Cursor hosting keeps the existing default roster.
+Optional Grok reviewers require a separately installed pinned SDK runtime, an
+explicit API key and live qualification; package tests do not qualify them.
+
 > [!NOTE]
 > Seats come from the provider CLIs you have signed in: Codex for OpenAI, Claude for
 > Anthropic, and optionally Gemini. A roster of fewer than three seats is padded with extra
@@ -111,6 +120,9 @@ roster needs.
 In Codex, ask in plain words: *"Use review-council to review this branch against
 origin/main"*, *"... for one round, read-only, on my uncommitted changes"*, or *"... to review
 the SDK and wallet branches as a dependency stack"*.
+
+In Cursor, select the native `rev` or `stack` skill and use the same requests.
+Verify the loaded package identity as described in [Cursor setup](docs/cursor.md).
 
 > [!TIP]
 > Run it from a working branch: preflight refuses to start on `main`, `master`, the default
@@ -708,6 +720,9 @@ defaults to `NO_PUSH=0` and pushes and publishes; Codex defaults to `NO_PUSH=1`.
 to `NO_SQUASH=1`, so review commits stay one per fix on both hosts. A real push needs an
 upstream of the same branch name.
 
+Cursor legs run `cursor-agent` or `agent`, explicitly load their packaged Cursor
+rev skill and default to `NO_PUSH=1 NO_SQUASH=1`. A missing Cursor host is a blocker.
+
 </details>
 
 ## Reference
@@ -724,6 +739,8 @@ upstream of the same branch name.
 | `codex_models` | absent: newest Sol and Luna | require one to four exact slugs or `latest-<family>` selectors; an entry listed twice seats its model twice |
 | `codex_effort` | absent: `xhigh` | require one effort (`max`, `xhigh` or `high`) on every OpenAI seat |
 | `claude_models` | absent | require exact `opus` and/or `sonnet` seats |
+| `cursor_sdk_models` | absent, disabled | opt in to qualified Grok SDK model IDs or `latest-grok` |
+| `cursor_sdk_effort` | `xhigh` when enabled | require exact qualified SDK effort |
 | `claude_seats` | `1` | number of Opus seats; mutually exclusive with `claude_models` |
 | `claude_seat` | `true` | `false` disables detected Claude seats |
 | `claude_adapter` | `auto` | Claude Code runs Anthropic seats on the CLI (`cli`), as Agent subagents (`agent`), or on the CLI when signed in (`auto`) |
@@ -824,7 +841,7 @@ Completion and finding counts require a schema-valid result with a successful ex
 
 <br>
 
-The Claude Code plugin installs two hooks; Codex installs neither.
+The Claude Code plugin installs two hooks; Codex and Cursor install neither.
 
 **Session hook** (`startup`, `clear`, `compact`): injects the review policy and the roster
 summary and, with `check_updates: true`, reports an available update (cached for a day,
@@ -884,6 +901,10 @@ four workers). Tests use local CLI shims and never contact providers.
 `python3 scripts/install-codex-plugin.py` builds the Codex bundle into
 `~/plugins/review-council` and registers it in your personal marketplace, atomically;
 `scripts/build-codex-plugin.py --output dist/review-council` only builds it for inspection.
+`scripts/build-cursor-plugin.py --output dist/cursor/review-council` builds the
+separate native Cursor bundle. Its manifest, paths and executable modes are
+validated before atomic replacement; its host contracts run in the existing Python
+test inventory. [Cursor setup](docs/cursor.md) records the separate live gates.
 Each release is reviewed by the previous signed release; see
 [the release procedure](docs/release.md).
 

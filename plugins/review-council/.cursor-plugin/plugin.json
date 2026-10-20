@@ -1,0 +1,13 @@
+{
+  "name": "review-council",
+  "version": "0.6.1",
+  "description": "Independent multi-model reviews with verified findings, fix loops, and coordinated reviews across repositories.",
+  "author": {
+    "name": "Wiktor Starczewski"
+  },
+  "homepage": "https://github.com/WiktorStarczewski/review-council",
+  "repository": "https://github.com/WiktorStarczewski/review-council",
+  "license": "MIT",
+  "skills": "./cursor-skills/",
+  "agents": []
+}

@@ -1,6 +1,6 @@
 # Seats: the adapter contract, and how to add a lab
 
-A "seat" is one reviewer in the `/review-council:rev` panel: a lab (`openai`, `google`, `anthropic`), an adapter that knows how to drive that lab's CLI, and a model/effort pair the roster picked for it. This document is for adding a new lab, not for using the plugin - see the root `README.md` for that.
+A "seat" is one reviewer in the `/review-council:rev` panel: a lab (`openai`, `google`, `anthropic`, or optional `xai`), an adapter that drives its provider transport, and a model/effort pair the roster picked for it. This document covers adapter development; see the root `README.md` for usage.
 
 ## The roster
 
@@ -23,7 +23,7 @@ A "seat" is one reviewer in the `/review-council:rev` panel: a lab (`openai`, `g
 
 `result_receipts` makes current completion depend on a successful sibling `.exit` file. When an older session is first reopened, `legacy_no_exit_sha256` records only the exact receiptless result bytes that predate this contract; an overwritten or new result needs a receipt. `strict_class` and `strict_reason` are absent when the roster can run. A refusal records `availability` for retryable exit 5 or `config` for permanent exit 6, plus the reason for the winning class. The `--brief` line carries both. Config wins if both causes occur.
 
-Claude rows use adapter `claude` (the Claude CLI) or `agent` (Claude Code subagents): `claude_adapter` chooses on a Claude Code host, and a Codex host always uses `claude`. Every non-agent seat names an `adapter` - the script in `scripts/seats.d/` that knows how to drive that CLI. Several seats can share one adapter (`codex-sol`, `codex-terra` and the `codex-review` extra all use `seats.d/codex.sh`, distinguished by `model` and `mode`).
+Claude rows use adapter `claude` (the Claude CLI) or `agent` (Claude Code subagents): `claude_adapter` chooses on a Claude Code host, and Codex and Cursor hosts always use `claude`. Every non-agent seat names an `adapter` in `scripts/seats.d/`. Several seats can share one adapter (`codex-sol`, `codex-terra` and the `codex-review` extra all use `seats.d/codex.sh`, distinguished by `model` and `mode`).
 
 ## `rev-seat.sh`: the dispatcher
 
@@ -31,7 +31,7 @@ Claude rows use adapter `claude` (the Claude CLI) or `agent` (Claude Code subage
 
 1. Reads `<session-dir>/roster.json` and looks up `<seat>`. An unknown seat, or a missing roster file, exits `1` with `run preflight first` - it never guesses a model or adapter.
 2. Uses the roster's probed effort as the launch value. A legacy `--effort` argument must equal that value or the launch is refused.
-3. Allows only the shipped `codex`, `gemini`, and `claude` CLI adapters. The `agent` adapter is dispatched separately by the skill. Any other or retired adapter is refused before path lookup.
+3. Allows only the shipped `codex`, `gemini`, `claude` and optional `cursor-sdk` adapters. The `agent` adapter is dispatched separately by the Claude Code skill. Any other or retired adapter is refused before path lookup.
 4. Executes `scripts/seats.d/<adapter>.sh` with the environment described below, capturing its exit code.
 5. Validates the JSON left at `<session-dir>/r<round>-<seat>.json` against `schema/findings.schema.json`, retries once at the same exact effort on a zero-tool-call result, and writes `<session-dir>/r<round>-<seat>.exit`.
 6. Prints one summary line: `seat=<s> round=<n> exit=<c> findings=<k>`.
@@ -64,6 +64,33 @@ An adapter must, in order:
 4. Exit with the CLI's own exit code - the adapter does not reinterpret it; `rev-seat.sh` does the exit-code classification.
 
 `rev-seat.sh` exports `REV_ACTIVE=1` into the adapter's environment so a reviewer's CLI can never itself launch another review loop.
+
+## Optional Cursor SDK transport
+
+`cursor-sdk` is an opt-in Grok transport through Cursor, not a separate direct xAI
+client. Its lab is `xai`; provenance records Cursor transport and Cursor/SpaceXAI
+model lineage without counting two laboratories. Existing defaults and historical
+standalone Grok fixtures remain unchanged. See [Cursor setup](cursor.md) for the
+explicit runtime, API-key and live-qualification requirements.
+
+The roster freezes `model_selection` and `cursor_sdk` identity fields, including
+runtime, catalog and qualification hashes. The dispatcher binds the runtime and
+qualification paths from that frozen identity before launch. Changed qualification
+or model identity is refused. SDK attempts have no implicit retry or resume.
+
+The driver exposes only `council_read` on `custom-user-tools`, with the qualified
+metadata inventory. Native reads, shell, edits, web and delegation are excluded;
+ambient setting sources, MCP servers and agents are empty. The bounded reader
+reuses canonical Python source authorization. A callback's exact returned text
+earns proof only when matching completed SDK events deliver the same text and
+arguments under the same call identity. Unknown tools, mismatches, partial/error
+streams, missing terminal success and invalid findings fail closed.
+
+Qualification binds the actual selected SDK catalog/model/effort and runtime.
+Synthetic stream tests, callback logs and manifest checks do not establish live
+source delivery or native application discovery. The backend tool restriction is
+the prevention contract; auditing is the acceptance gate. No separate local
+executor deny guarantee is claimed. Missing usage and cost remain unknown.
 
 ## Adding a new lab
 
