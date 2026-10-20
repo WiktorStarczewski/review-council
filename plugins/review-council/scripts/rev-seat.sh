@@ -247,12 +247,24 @@ def unique(rows):
 def finite(token):
     raise ValueError('non-finite published result')
 
-def canonical(path):
+def load(path):
     with open(path) as source:
         value = json.load(source, object_pairs_hook=unique, parse_constant=finite)
-    return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
+    json.dumps(value, allow_nan=False)
+    return value
 
-if canonical(sys.argv[1]) != canonical(sys.argv[2]):
+def same(left, right):
+    if type(left) in (int, float) and type(right) in (int, float):
+        return left == right
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(same(left[key], right[key]) for key in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(same(a, b) for a, b in zip(left, right))
+    return left == right
+
+if not same(load(sys.argv[1]), load(sys.argv[2])):
     raise ValueError('SDK terminal and published result disagree')
 PY
   then

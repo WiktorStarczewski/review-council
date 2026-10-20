@@ -19,9 +19,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / 'lib'))
 
 
 BOUNDARIES = (
+    '.cursor-plugin/plugin.json',
     'agents/rev-reviewer.md',
     'agents/rev-reviewer-sonnet.md',
     'codex-skills/rev/SKILL.md',
+    'cursor-skills/rev/SKILL.md',
+    'cursor-skills/stack/SKILL.md',
+    'docs/cursor-review-workflow.md',
+    'docs/cursor-stack-workflow.md',
     'schema/findings.schema.json',
     'scripts/lib/review-read-audit.py',
     'scripts/lib/stream-summary.py',
@@ -80,9 +85,11 @@ def git(root, *args):
 
 def source_plugin(root):
     nested = root / 'plugins' / 'review-council'
-    if (nested / '.codex-plugin' / 'plugin.json').is_file():
+    manifests = ('.codex-plugin', '.cursor-plugin')
+    if any((nested / host / 'plugin.json').is_file() for host in manifests):
         return nested, 'plugins/review-council/'
-    if (root / '.codex-plugin' / 'plugin.json').is_file() and (root / 'scripts').is_dir():
+    if (any((root / host / 'plugin.json').is_file() for host in manifests)
+            and (root / 'scripts').is_dir()):
         return root, ''
     return None, None
 

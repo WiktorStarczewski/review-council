@@ -289,7 +289,7 @@ ${extra}
 
 ${VACUITY}${resume}"
     elif [ "$STACK_HOST" = cursor ]; then
-      local skill="$HERE/../cursor-skills/rev/SKILL.md"
+      local skill="$(dirname "$HERE")/cursor-skills/rev/SKILL.md"
       [ -f "$skill" ] || { say "!!! missing Cursor rev skill: $skill"; note_failure "$label" "$repo"; return 1; }
       local cursor_cli
       cursor_cli=$(command -v cursor-agent || command -v agent) || {
