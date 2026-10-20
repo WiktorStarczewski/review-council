@@ -320,6 +320,132 @@ console.log('synthetic callback fixture only');
         self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
 
 
+class CursorReaderTransitionTests(CursorSDKCase):
+    def setUp(self):
+        super().setUp()
+        self.audit = module(SCRIPTS / 'lib/review-read-audit.py')
+
+    def context(self, fixture, deps=None, prompt_sha256=None):
+        return self.audit.CouncilReaderContext(
+            fixture.root, fixture.session, fixture.prompt, deps,
+            fixture.manifest_path, hashlib.sha256(fixture.manifest_path.read_bytes()).hexdigest(),
+            fixture.seat, prompt_sha256=prompt_sha256)
+
+    def canary_opens(self, canary):
+        metadata = canary.stat()
+        identity = metadata.st_dev, metadata.st_ino
+        original_open = os.open
+        opened = []
+
+        def observe_open(*args, **kwargs):
+            descriptor = original_open(*args, **kwargs)
+            actual = os.fstat(descriptor)
+            if (actual.st_dev, actual.st_ino) == identity:
+                opened.append(True)
+            return descriptor
+
+        return opened, patch('os.open', side_effect=observe_open)
+
+    def test_dependency_alias_retarget_after_authorization_never_opens_outside_canary(self):
+        fixture = SourceFixture(self.directory, 'current')
+        approved = self.directory / 'approved-crate'
+        outside = self.directory / 'outside-crate'
+        approved.mkdir()
+        outside.mkdir()
+        (approved / 'lib.rs').write_text('approved dependency context\n')
+        canary = outside / 'lib.rs'
+        canary.write_text('outside dependency canary\n')
+        deps = fixture.session / 'deps'
+        deps.mkdir(exist_ok=True)
+        alias = deps / 'pinned'
+        alias.symlink_to(approved, target_is_directory=True)
+        context = self.context(fixture, deps)
+        request = {'path': str(alias / 'lib.rs'), 'offset': 1, 'limit': 1}
+        control = context.read(request)
+        self.assertEqual(control['text'], 'approved dependency context\n')
+        self.assertEqual(control['meta']['source'], 'dependency')
+        original_validate = self.audit.validate_call
+        switched = []
+
+        def authorize_then_retarget(*args, **kwargs):
+            failures = original_validate(*args, **kwargs)
+            if not failures and not switched:
+                alias.unlink()
+                alias.symlink_to(outside, target_is_directory=True)
+                switched.append(True)
+            return failures
+
+        opened, observation = self.canary_opens(canary)
+        response = None
+        with patch.object(self.audit, 'validate_call', side_effect=authorize_then_retarget), observation:
+            try:
+                response = context.read(request)
+            except (OSError, ValueError):
+                pass
+        self.assertTrue(switched, 'the real authorization must precede the alias transition')
+        self.assertFalse(opened, 'the retargeted outside canary was opened after authorization')
+        if response is not None:
+            self.assertEqual(response['text'], 'approved dependency context\n')
+
+    def test_restored_prompt_never_retains_permissions_from_intervening_expansion(self):
+        fixture = SourceFixture(self.directory, 'current')
+        approved = self.directory / 'approved-complete-document.txt'
+        approved_text = 'approved complete context\n' * 2000
+        approved.write_text(approved_text)
+        canary = self.directory / 'unlisted-complete-document.txt'
+        canary.write_text('outside prompt permission canary\n')
+        fixture.prompt.write_text(fixture.prompt.read_text().replace(
+            '## Scope\n', '## Scope\nDocuments to review (read them in full):\n- '
+            + str(approved) + '\n\n', 1))
+        original = fixture.prompt.read_bytes()
+        prompt_hash = hashlib.sha256(original).hexdigest()
+        control = self.context(fixture, prompt_sha256=prompt_hash)
+        self.assertGreater(len(approved_text.encode()), 32768)
+        self.assertEqual(control.read({'path': str(approved)})['text'], approved_text)
+        expanded = original.replace(
+            ('- ' + str(approved) + '\n').encode(),
+            ('- ' + str(approved) + '\n- ' + str(canary) + '\n').encode(), 1)
+        original_read = self.audit.regular_file_bytes
+        original_permissions = self.audit.prompt_permissions
+        captured = []
+
+        def capture_then_expand(path, *args, **kwargs):
+            raw = original_read(path, *args, **kwargs)
+            if Path(path) == fixture.prompt and not captured:
+                fixture.prompt.write_bytes(expanded)
+                captured.append(True)
+            return raw
+
+        def permissions_then_restore(*args, **kwargs):
+            try:
+                return original_permissions(*args, **kwargs)
+            finally:
+                fixture.prompt.write_bytes(original)
+
+        opened, observation = self.canary_opens(canary)
+        context = None
+        response = None
+        with patch.object(self.audit, 'regular_file_bytes', side_effect=capture_then_expand), \
+                patch.object(self.audit, 'prompt_permissions', side_effect=permissions_then_restore), \
+                observation:
+            try:
+                context = self.context(fixture, prompt_sha256=prompt_hash)
+            except (OSError, ValueError):
+                pass
+            finally:
+                fixture.prompt.write_bytes(original)
+            if context is not None:
+                self.assertEqual(context.read({'path': str(approved)})['text'], approved_text)
+                try:
+                    response = context.read({'path': str(canary)})
+                except (OSError, ValueError):
+                    pass
+        self.assertTrue(captured, 'the prompt must expand after the bound raw capture')
+        self.assertEqual(fixture.prompt.read_bytes(), original)
+        self.assertFalse(opened, 'an intervening prompt permission opened the unlisted canary')
+        self.assertIsNone(response, 'restoring the prompt must not preserve an unlisted full read')
+
+
 class CursorBridgeLifecycleTests(CursorSDKCase):
     def options(self, fixture):
         return {'root': str(fixture.root), 'session': str(fixture.session),
