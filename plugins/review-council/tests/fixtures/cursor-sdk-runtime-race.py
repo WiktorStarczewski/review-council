@@ -79,7 +79,12 @@ def watched_os_open(file, *args, **kwargs):
     return result
 
 
-if mode == 'archive':
+if mode == 'owner':
+    uid, euid = os.getuid(), os.geteuid()
+    marker.write_text('synthetic principal changed\n')
+    os.getuid = lambda: uid + 1
+    os.geteuid = lambda: euid + 1
+elif mode == 'archive':
     hashlib.sha512 = WatchedDigest
 
     def watched_hash_new(name, data=b'', **kwargs):

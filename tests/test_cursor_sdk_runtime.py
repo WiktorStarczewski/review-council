@@ -232,6 +232,15 @@ class CursorRuntimeIntegrityTests(CursorSDKCase):
         fixture.runtime.chmod(0o755)
         self.refused(fixture)
 
+    def test_runtime_owned_by_a_different_effective_user_is_refused(self):
+        fixture = self.fixture()
+        self.valid(fixture)
+        marker = self.directory / 'synthetic-principal-changed'
+        target = fixture.runtime / 'package.json'
+        self.refused(fixture, FIXTURES / 'cursor-sdk-runtime-race.py', 'owner',
+                     target, target, target, marker)
+        self.assertEqual(marker.read_text(), 'synthetic principal changed\n')
+
     def test_symlink_runtime_root_is_refused(self):
         fixture = self.fixture()
         self.valid(fixture)
