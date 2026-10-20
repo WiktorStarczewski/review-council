@@ -16,7 +16,9 @@ The JSON is printed either way and `excluded[]` says why each CLI is missing. St
 """
 
 import hashlib
+import hmac
 import importlib.util
+import copy
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -24,6 +26,7 @@ import re
 import selectors
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -56,9 +59,12 @@ _LAUNCH_STATE = threading.local()
 _RESOLVED = {}   # one build()'s Anthropic adapter, and the claude CLI check `auto` ran to choose it
 
 CODEX_HOST = os.environ.get('REVIEW_COUNCIL_HOST') == 'codex'
-LABS = {'codex': 'openai', 'gemini': 'google', 'agent': 'anthropic', 'claude': 'anthropic'}
+CURSOR_HOST = os.environ.get('REVIEW_COUNCIL_HOST') == 'cursor'
+LABS = {'codex': 'openai', 'gemini': 'google', 'agent': 'anthropic', 'claude': 'anthropic',
+        'cursor-sdk': 'xai'}
 # the name an adapter answers to in the --brief line, in `excluded[].cli` and in config `exclude`
-NAMES = {'codex': 'codex', 'gemini': 'gemini', 'agent': 'claude', 'claude': 'claude'}
+NAMES = {'codex': 'codex', 'gemini': 'gemini', 'agent': 'claude', 'claude': 'claude',
+         'cursor-sdk': 'cursor-sdk'}
 # detection order; build() seats the Anthropic slot on anthropic_adapter()
 ORDER = ('codex', 'gemini', 'claude')
 # (adapter, seat, mode, round) - an extra pass is seated whenever its lab has a seat
@@ -287,6 +293,296 @@ def make_seat(name, adapter, model, effort, mode=None, round_=None):
         s['mode'] = mode
         s['round'] = round_
     return s
+
+
+SDK_VERSION = '1.0.38'
+SDK_PROVENANCE = {'transport': 'Cursor', 'model_lineage': ['Cursor', 'SpaceXAI'],
+                  'laboratory': 'xai'}
+SDK_EFFORT_IDS = ('reasoning', 'reasoning_effort', 'effort')
+
+
+def cursor_sdk_selection(value):
+    if (not isinstance(value, dict) or set(value) - {'id', 'params', 'maxMode'}
+            or not isinstance(value.get('id'), str)
+            or re.fullmatch(r'grok[-.a-zA-Z0-9_]{1,120}', value['id']) is None
+            or 'maxMode' in value and type(value['maxMode']) is not bool
+            or not isinstance(value.get('params'), list) or len(value['params']) > 16):
+        raise ValueError('invalid cursor-sdk model selection')
+    params = value['params']
+    if (any(not isinstance(row, dict) or set(row) != {'id', 'value'}
+            or not isinstance(row['id'], str)
+            or re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', row['id']) is None
+            or not isinstance(row['value'], str)
+            or re.fullmatch(r'[a-zA-Z0-9_.-]{1,64}', row['value']) is None for row in params)
+            or len({row['id'] for row in params}) != len(params)
+            or [row['value'] for row in params if row['id'] in SDK_EFFORT_IDS] != ['xhigh']):
+        raise ValueError('invalid cursor-sdk xhigh parameters')
+    return copy.deepcopy(value)
+
+
+def cursor_sdk_identity(seat):
+    """Structural identity only; credit additionally requires authenticated qualification."""
+    if not isinstance(seat, dict):
+        raise ValueError('invalid cursor-sdk frozen identity')
+    selected = cursor_sdk_selection(seat.get('model_selection'))
+    identity = seat.get('cursor_sdk')
+    keys = {'sdk_version', 'runtime_sha256', 'catalog_sha256', 'runtime_path',
+            'qualification_path', 'qualification_sha256', 'provenance'}
+    if (seat.get('adapter') != 'cursor-sdk' or seat.get('lab') != 'xai'
+            or seat.get('model') != selected['id'] or seat.get('effort') != 'xhigh'
+            or not isinstance(identity, dict) or set(identity) != keys
+            or identity.get('sdk_version') != SDK_VERSION
+            or identity.get('provenance') != SDK_PROVENANCE):
+        raise ValueError('invalid cursor-sdk frozen identity')
+    for key in ('runtime_sha256', 'catalog_sha256', 'qualification_sha256'):
+        if not isinstance(identity[key], str) or re.fullmatch(r'[0-9a-f]{64}', identity[key]) is None:
+            raise ValueError('invalid cursor-sdk identity hash')
+    for key in ('runtime_path', 'qualification_path'):
+        value = identity[key]
+        if (not isinstance(value, str) or not value or not Path(value).is_absolute()
+                or re.search(r'[\x00-\x1f\x7f]', value) or '..' in Path(value).parts):
+            raise ValueError('invalid cursor-sdk controller path')
+    return {'model_selection': selected, 'cursor_sdk': copy.deepcopy(identity)}
+
+
+def cursor_sdk_bytes(path, private=False):
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+                         | getattr(os, 'O_NONBLOCK', 0))
+    with os.fdopen(descriptor, 'rb') as source:
+        before = os.fstat(source.fileno())
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or before.st_uid != os.getuid() or before.st_size > 2 * 1024 * 1024
+                or private and before.st_mode & 0o077):
+            raise ValueError('unsafe cursor-sdk qualification')
+        raw = source.read(2 * 1024 * 1024 + 1)
+        after = os.fstat(source.fileno())
+        current = Path(path).lstat()
+        def identity(row):
+            return row.st_dev, row.st_ino, row.st_size, row.st_mtime_ns, row.st_ctime_ns, row.st_nlink
+        if (len(raw) > 2 * 1024 * 1024 or not stat.S_ISREG(current.st_mode)
+                or identity(before) != identity(after) or identity(after) != identity(current)):
+            raise ValueError('changed cursor-sdk qualification')
+        return raw
+
+
+def cursor_sdk_environment(seat):
+    identity = cursor_sdk_identity(seat)['cursor_sdk']
+    raw = cursor_sdk_bytes(identity['qualification_path'])
+    if hashlib.sha256(raw).hexdigest() != identity['qualification_sha256']:
+        raise ValueError('changed cursor-sdk qualification')
+    runtime = Path(identity['runtime_path'])
+    if not runtime.is_dir() or runtime.resolve() != runtime:
+        raise ValueError('changed cursor-sdk runtime path')
+    return {'REVIEW_COUNCIL_CURSOR_SDK_RUNTIME': str(runtime),
+            'REVIEW_COUNCIL_CURSOR_SDK_QUALIFICATION': identity['qualification_path']}
+
+
+def validate_cursor_sdk_qualification(seat):
+    identity = cursor_sdk_identity(seat)
+    metadata = identity['cursor_sdk']
+    try:
+        cursor_sdk_environment(seat)
+        raw = cursor_sdk_bytes(metadata['qualification_path'], private=True)
+        if hashlib.sha256(raw).hexdigest() != metadata['qualification_sha256']:
+            raise ValueError()
+        proof = json.loads(raw)
+        signature = proof.pop('signature')
+        secret = cursor_sdk_bytes(Path(metadata['runtime_path']) / '.qualification-key', private=True)
+        payload = json.dumps(proof, ensure_ascii=False, separators=(',', ':'), allow_nan=False).encode()
+        if (len(secret) != 32 or not isinstance(signature, str)
+                or not hmac.compare_digest(signature, hmac.new(secret, payload, hashlib.sha256).hexdigest())
+                or proof.get('kind') != 'cursor-sdk-live-qualification' or proof.get('version') != 1
+                or proof.get('sdk_version') != metadata['sdk_version']
+                or proof.get('runtime_sha256') != metadata['runtime_sha256']
+                or proof.get('selection') != identity['model_selection']
+                or proof.get('effort') != 'xhigh' or proof.get('provenance') != SDK_PROVENANCE
+                or proof.get('platform') not in ('darwin', 'linux')
+                or proof.get('arch') not in ('arm64', 'x64')
+                or proof.get('helper') != '@cursor/sdk-%s-%s' % (proof.get('platform'), proof.get('arch'))
+                or not isinstance(proof.get('evidence'), dict) or not proof['evidence']):
+            raise ValueError()
+        for name in ('raw', 'result', 'audit', 'manifest', 'prompt'):
+            if proof.get(name) not in proof['evidence']:
+                raise ValueError()
+        for name, expected in proof['evidence'].items():
+            if not isinstance(expected, str) or re.fullmatch(r'[0-9a-f]{64}', expected) is None:
+                raise ValueError()
+            descriptor = os.open(name, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+                                 | getattr(os, 'O_NONBLOCK', 0))
+            with os.fdopen(descriptor, 'rb') as stream:
+                before = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                        or before.st_uid != os.getuid()):
+                    raise ValueError()
+                hasher = hashlib.sha256()
+                for block in iter(lambda: stream.read(1024 * 1024), b''):
+                    hasher.update(block)
+                digest = hasher.hexdigest()
+                after = os.fstat(stream.fileno())
+                current = Path(name).lstat()
+                def file_id(row):
+                    return (row.st_dev, row.st_ino, row.st_size, row.st_mtime_ns,
+                            row.st_ctime_ns, row.st_nlink)
+                if (not stat.S_ISREG(current.st_mode) or file_id(before) != file_id(after)
+                        or file_id(after) != file_id(current) or digest != expected):
+                    raise ValueError()
+        audit_raw = cursor_sdk_bytes(proof['audit'])
+        if hashlib.sha256(audit_raw).hexdigest() != proof['evidence'][proof['audit']]:
+            raise ValueError()
+        audit = json.loads(audit_raw)
+        if (audit.get('status') != 'valid' or audit.get('adapter') != 'cursor-sdk'
+                or audit.get('evidence_scoped') is not True or audit.get('narrow') is not False
+                or audit.get('violations') != []):
+            raise ValueError()
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, UnicodeError):
+        raise ValueError('cursor-sdk qualification is missing, invalid or changed') from None
+
+
+def resolve_cursor_sdk_config(cfg, catalog):
+    """Resolve exact SDK selections without I/O, credentials or a provider turn."""
+    effective = copy.deepcopy(cfg)
+    if 'cursor_sdk_models' not in cfg:
+        return effective, None, None
+    requested = cfg['cursor_sdk_models']
+    if (not isinstance(requested, list) or len(requested) > 4
+            or any(not isinstance(value, str) or (value != 'latest-grok'
+                   and re.fullmatch(r'grok[-.a-zA-Z0-9_]{1,120}', value) is None)
+                   for value in requested)
+            or cfg.get('cursor_sdk_effort', 'xhigh') != 'xhigh'):
+        return effective, 'invalid cursor_sdk_models or cursor_sdk_effort: require exact Grok IDs and xhigh', 'config'
+    if not requested:
+        effective['cursor_sdk_model_selections'] = []
+        return effective, None, None
+    if (not isinstance(catalog, list) or not catalog or len(catalog) > 512
+            or any(not isinstance(row, dict) or not isinstance(row.get('id'), str)
+                   or not row['id'] or len(row['id']) > 256
+                   or re.search(r'[\x00-\x1f\x7f]', row['id']) for row in catalog)
+            or len({row['id'] for row in catalog}) != len(catalog)):
+        return effective, 'cursor-sdk catalog unavailable or ambiguous', 'availability'
+    models = {row['id']: row for row in catalog}
+    selected = []
+    for requested_id in requested:
+        model_id = requested_id
+        if model_id == 'latest-grok':
+            generations = []
+            for name in models:
+                match = re.fullmatch(r'grok-([0-9]+(?:\.[0-9]+)*)(?:-[a-zA-Z0-9_]+)*', name)
+                if match:
+                    version = tuple(int(part) for part in match[1].split('.'))
+                    while len(version) > 1 and version[-1] == 0:
+                        version = version[:-1]
+                    generations.append((version, name))
+            newest = max((version for version, _ in generations), default=None)
+            matches = [name for version, name in generations if version == newest]
+            if len(matches) != 1:
+                return effective, 'cursor-sdk newest Grok model unavailable or ambiguous', 'availability'
+            model_id = matches[0]
+        model = models.get(model_id)
+        variants = model.get('variants') if model else None
+        parameters = model.get('parameters') if model else None
+        if (not isinstance(variants, list) or len(variants) > 128
+                or not isinstance(parameters, list) or len(parameters) > 16):
+            return effective, 'cursor-sdk model parameters unavailable: ' + model_id, 'availability'
+        definitions = {}
+        for parameter in parameters:
+            if (not isinstance(parameter, dict) or not isinstance(parameter.get('id'), str)
+                    or parameter['id'] in definitions or not isinstance(parameter.get('values'), list)
+                    or len(parameter['values']) > 32
+                    or any(not isinstance(row, dict) or not isinstance(row.get('value'), str)
+                           for row in parameter['values'])):
+                return effective, 'cursor-sdk parameter catalog ambiguous', 'availability'
+            if len({row['value'] for row in parameter['values']}) != len(parameter['values']):
+                return effective, 'cursor-sdk parameter catalog ambiguous', 'availability'
+            definitions[parameter['id']] = {row['value'] for row in parameter['values']}
+        choices = []
+        for variant in variants:
+            if not isinstance(variant, dict):
+                continue
+            value = {'id': model_id, 'params': variant.get('params')}
+            if 'isMaxMode' in variant:
+                value['maxMode'] = variant['isMaxMode']
+            try:
+                candidate = cursor_sdk_selection(value)
+            except ValueError:
+                continue
+            if all(row['value'] in definitions.get(row['id'], set()) for row in candidate['params']):
+                choices.append(candidate)
+        if len(choices) != 1:
+            return effective, 'cursor-sdk xhigh selection unavailable or ambiguous: ' + model_id, 'availability'
+        selected.append(choices[0])
+    effective['cursor_sdk_models'] = [row['id'] for row in selected]
+    effective['cursor_sdk_model_selections'] = selected
+    effective['cursor_sdk_effort'] = 'xhigh'
+    return effective, None, None
+
+
+def prepare_cursor_sdk_config(cfg):
+    checked, error, cause = resolve_cursor_sdk_config(cfg, [])
+    if cause == 'config' or not cfg.get('cursor_sdk_models'):
+        return checked, error, cause
+    runtime = os.environ.get('REVIEW_COUNCIL_CURSOR_SDK_RUNTIME')
+    receipt = os.environ.get('REVIEW_COUNCIL_CURSOR_SDK_QUALIFICATION')
+    if not runtime or not Path(runtime).is_dir():
+        return cfg, 'cursor-sdk runtime unavailable', 'availability'
+    if not os.environ.get('CURSOR_API_KEY', '').strip():
+        return cfg, 'cursor-sdk key unavailable', 'availability'
+    if not receipt:
+        return cfg, 'cursor-sdk qualification unavailable', 'availability'
+    try:
+        raw = cursor_sdk_bytes(receipt)
+        proof = json.loads(raw)
+        if (proof.get('kind') != 'cursor-sdk-live-qualification' or proof.get('version') != 1
+                or proof.get('sdk_version') != SDK_VERSION
+                or proof.get('effort') != 'xhigh' or proof.get('provenance') != SDK_PROVENANCE
+                or re.fullmatch(r'[0-9a-f]{64}', str(proof.get('signature', ''))) is None):
+            raise ValueError()
+    except (OSError, ValueError, TypeError, AttributeError):
+        return cfg, 'cursor-sdk qualification unavailable or invalid', 'availability'
+    rc, stdout, _ = run(['node', str(Path(__file__).with_name('cursor-sdk-driver.mjs')), 'catalog'],
+                        CODEX_CATALOG_REFRESH_TIMEOUT)
+    try:
+        catalog = json.loads(stdout)
+        if (rc != 0 or not isinstance(catalog, dict) or catalog.get('version') != 1
+                or catalog.get('sdk_version') != SDK_VERSION
+                or re.fullmatch(r'[0-9a-f]{64}', str(catalog.get('runtime_sha256', ''))) is None
+                or catalog['runtime_sha256'] != proof.get('runtime_sha256')):
+            raise ValueError()
+    except (ValueError, TypeError):
+        return cfg, 'cursor-sdk catalog or qualified runtime unavailable', 'availability'
+    effective, error, cause = resolve_cursor_sdk_config(cfg, catalog.get('models'))
+    if error:
+        return effective, error, cause
+    if any(value != proof.get('selection') for value in effective['cursor_sdk_model_selections']):
+        return cfg, 'cursor-sdk exact model lacks matching live qualification', 'availability'
+    _RESOLVED['cursor_sdk_identity'] = {
+        'sdk_version': SDK_VERSION, 'runtime_sha256': catalog['runtime_sha256'],
+        'catalog_sha256': hashlib.sha256(stdout.encode()).hexdigest(),
+        'runtime_path': str(Path(runtime).resolve()), 'qualification_path': str(Path(receipt).resolve()),
+        'qualification_sha256': hashlib.sha256(raw).hexdigest(), 'provenance': copy.deepcopy(SDK_PROVENANCE),
+    }
+    _RESOLVED['cursor_sdk_catalog'] = catalog
+    try:
+        for index, value in enumerate(effective['cursor_sdk_model_selections'], 1):
+            seat = make_seat('grok-%d' % index, 'cursor-sdk', value['id'], 'xhigh')
+            seat.update(model_selection=value, cursor_sdk=_RESOLVED['cursor_sdk_identity'])
+            validate_cursor_sdk_qualification(seat)
+    except (OSError, ValueError, TypeError):
+        _RESOLVED.pop('cursor_sdk_identity', None)
+        _RESOLVED.pop('cursor_sdk_catalog', None)
+        return cfg, 'cursor-sdk qualification is missing, invalid or changed', 'availability'
+    return effective, None, None
+
+
+def detect_cursor_sdk(cfg):
+    seats = []
+    for index, value in enumerate(cfg.get('cursor_sdk_model_selections', []), 1):
+        seat = make_seat('grok' if index == 1 else 'grok-%d' % index,
+                         'cursor-sdk', value['id'], 'xhigh')
+        seat.update(model_selection=copy.deepcopy(value),
+                    cursor_sdk=copy.deepcopy(_RESOLVED['cursor_sdk_identity']))
+        cursor_sdk_identity(seat)
+        seats.append(seat)
+    return seats, None
 
 
 # ---------------------------------------------------------------- detection
@@ -747,7 +1043,7 @@ def anthropic_adapter(cfg):
     """The adapter this build seats Anthropic reviewers on: `claude` (the CLI) or `agent` (the host's
     Agent tool). A Codex host has no Agent tool. `auto` prefers a signed-in CLI, whose evidence the
     host can audit, and checks it once per build."""
-    if CODEX_HOST:
+    if CODEX_HOST or CURSOR_HOST:
         return 'claude'
     if 'adapter' not in _RESOLVED:
         setting, _ = claude_adapter_setting(cfg)
@@ -758,8 +1054,9 @@ def anthropic_adapter(cfg):
 
 
 def provider_order(cfg):
+    order = ORDER + (('cursor-sdk',) if cfg.get('cursor_sdk_models') else ())
     return tuple(anthropic_adapter(cfg) if LABS[adapter] == 'anthropic' else adapter
-                 for adapter in ORDER)
+                 for adapter in order)
 
 
 def plan_seats_setting(cfg):
@@ -770,7 +1067,7 @@ def plan_seats_setting(cfg):
 
 
 DETECT = {'codex': detect_codex, 'gemini': detect_gemini,
-          'agent': detect_agent, 'claude': detect_claude}
+          'agent': detect_agent, 'claude': detect_claude, 'cursor-sdk': detect_cursor_sdk}
 
 
 # ---------------------------------------------------------------- config
@@ -927,6 +1224,12 @@ def classify_provider_failure(adapter, stdout='', stderr='', summary_log=None):
         cli_text = '\n'.join(lines)
     else:
         cli_text = '\n'.join([stderr or ''] + provider_stream_errors(adapter, stdout))
+    if adapter == 'cursor-sdk':
+        labels = set(cli_text.splitlines())
+        if 'sdk_unauthenticated' in labels:
+            return 'auth', 'authentication unavailable'
+        if 'sdk_quota' in labels:
+            return 'quota', 'quota exhausted'
     if AUTH_FAILURE.search(cli_text):
         return 'auth', 'authentication unavailable'
     if QUOTA_FAILURE.search(cli_text):
@@ -935,7 +1238,13 @@ def classify_provider_failure(adapter, stdout='', stderr='', summary_log=None):
 
 
 def probe_seat(s):
-    """Return (reason, class, sanitized cause), with reason None when the seat answers."""
+    """Return (reason, class, sanitized cause), with reason None for an available seat."""
+    if s['adapter'] == 'cursor-sdk':
+        try:
+            validate_cursor_sdk_qualification(s)
+        except (OSError, ValueError, TypeError):
+            return 'cursor-sdk qualification unavailable', 'other', 'qualification unavailable'
+        return None, None, None
     command = PROBE_CMD[s['adapter']](s['model'], s.get('effort'))
     if s['adapter'] == 'codex':
         state_home = Path(env_path('CODEX_HOME', '~/.codex'))
@@ -1148,6 +1457,24 @@ def enforce_exact_seats(cfg, seats, excluded):
             append_exclusion(excluded, key, 'strict: %s' % setting_error)
             strict_class, strict_reason = strict_winner(
                 strict_class, strict_reason, 'config', setting_error)
+    if cfg.get('cursor_sdk_models'):
+        expected = cfg['cursor_sdk_model_selections']
+        actual = []
+        for seat in seats:
+            if seat['adapter'] != 'cursor-sdk' or seat.get('extra'):
+                continue
+            try:
+                actual.append(cursor_sdk_identity(seat)['model_selection'])
+            except ValueError:
+                strict_class, strict_reason = strict_winner(
+                    strict_class, strict_reason, 'config', 'cursor-sdk pin changes the frozen identity')
+        if actual != expected:
+            dropped = excluded_names(cfg)
+            configured_names = {'grok' if index == 1 else 'grok-%d' % index
+                                for index in range(1, len(expected) + 1)}
+            cause = 'config' if dropped & ({'cursor-sdk', 'xai'} | configured_names) else 'availability'
+            strict_class, strict_reason = strict_winner(
+                strict_class, strict_reason, cause, 'cursor-sdk exact configured seats unavailable')
     allowed, config_error = codex_models_setting(cfg)
     if config_error:
         append_exclusion(excluded, 'codex_models', 'strict: %s' % config_error)
@@ -1365,8 +1692,8 @@ def pad(seats, excluded, cfg, probe_results):
     missing = PANEL - len([s for s in seats if not s['extra']])
     if missing <= 0:
         return 0
-    if CODEX_HOST:
-        # Codex has no implicit Anthropic agent. Reuse only a real surviving CLI,
+    if CODEX_HOST or CURSOR_HOST:
+        # These hosts have no implicit Anthropic agent. Reuse a surviving transport,
         # after exclusions and probes; independent runs are not independent labs.
         bases = [s for s in seats if not s['extra']]
         if not bases:
@@ -1451,6 +1778,8 @@ def build(do_probe, quota_failed_seats=()):
     _RESOLVED.clear()
     cfg, cfg_error = load_config()
     resolution_class = 'config'
+    if not cfg_error and 'cursor_sdk_models' in cfg:
+        cfg, cfg_error, resolution_class = prepare_cursor_sdk_config(cfg)
     if not cfg_error and codex_config_needs_resolution(cfg):
         _RESOLVED['codex_catalog'] = load_codex_catalog()
         cfg, cfg_error, resolution_class = _resolve_codex_config(cfg, _RESOLVED['codex_catalog'])
@@ -1525,7 +1854,7 @@ def build(do_probe, quota_failed_seats=()):
         targets = {}
         for s in kept:
             key = (s['adapter'], s['model'], s.get('effort'))
-            if s['adapter'] in PROBE_CMD:
+            if s['adapter'] in PROBE_CMD or s['adapter'] == 'cursor-sdk':
                 targets.setdefault(key, s)
         with ThreadPoolExecutor(max_workers=min(4, len(targets) or 1)) as pool:
             pending = {key: pool.submit(probe_seat, seat) for key, seat in targets.items()}
@@ -1590,7 +1919,7 @@ def build(do_probe, quota_failed_seats=()):
     # those steps actually removed rather than a count taken before they ran.
     pad(kept, excluded, cfg, probe_results)
     # A silent fallback would hide partial, unenforced evidence and plan coverage.
-    if (not CODEX_HOST and _RESOLVED.get('cli') and claude_adapter_setting(cfg)[0] == 'auto'
+    if (not (CODEX_HOST or CURSOR_HOST) and _RESOLVED.get('cli') and claude_adapter_setting(cfg)[0] == 'auto'
             and any(s['adapter'] == 'agent' for s in kept)):
         excluded.append({'cli': 'claude_adapter',
                          'reason': 'auto -> agent (claude CLI %s): evidence and plan panels have partial, unenforced coverage'
@@ -1611,7 +1940,7 @@ def build(do_probe, quota_failed_seats=()):
     quota_labs.discard(None)
     quota_floor_met = (not floor_error and fallback_enabled and quota_labs
                        and len(set(real) | quota_labs) >= floor)
-    labs_strict = (not floor_error and (floor > 1 or CODEX_HOST)
+    labs_strict = (not floor_error and (floor > 1 or CODEX_HOST or CURSOR_HOST)
                    and len(real) < floor and not quota_floor_met)
     if labs_strict:
         append_exclusion(excluded, 'min_labs',
@@ -1627,6 +1956,8 @@ def build(do_probe, quota_failed_seats=()):
 
     roster = {'generated_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
               'seats': kept, 'labs': labs, 'padded': padded, 'degraded': degraded}
+    if 'cursor_sdk_catalog' in _RESOLVED:
+        roster['cursor_sdk_catalog'] = _RESOLVED['cursor_sdk_catalog']
     if degraded:
         roster['degradation'] = sentence
     if plan_seats_setting(cfg)[0] == 'all':
@@ -1643,7 +1974,10 @@ def brief_line(roster, adapter_of):
     for e in roster['excluded']:
         by_cli.setdefault(e['cli'], e['reason'])
     parts = []
-    for adapter in ORDER:
+    order = ORDER + (('cursor-sdk',) if any(
+        row.get('adapter') == 'cursor-sdk' for row in roster['seats'])
+        or any('cursor-sdk' in row.get('reason', '') for row in roster['excluded']) else ())
+    for adapter in order:
         name = NAMES[adapter]
         # padded seats are not something this lab was detected offering - they belong to the DEGRADED clause
         seated = [s for s in roster['seats']

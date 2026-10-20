@@ -15,6 +15,7 @@ LIB_DIR = Path(__file__).resolve().parent / "lib"
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
 from usage import USAGE_FIELDS, add_usage, empty_usage, host_usage, reviewer_streams
+from roster import cursor_sdk_identity
 
 
 REVIEW_ARTIFACT = re.compile(r"^r[A-Za-z0-9][A-Za-z0-9_.-]*-")
@@ -134,13 +135,22 @@ def roster_identity(directory):
         substitute = item.get("substitutes_for")
         if isinstance(substitute, str) and substitute:
             fields["substitutes_for"] = substitute
+        if item.get("adapter") == "cursor-sdk":
+            try:
+                fields.update(cursor_sdk_identity(item))
+            except (ValueError, TypeError, KeyError):
+                complete = False
         core_seats.append(fields)
     if not core_seats:
         return {"signature": "unavailable", "complete": False, "core_seats": []}
     signature = ",".join(
-        "%s=%s:%s@%s%s" % (
+        "%s=%s:%s@%s%s%s" % (
             item["seat"], item["adapter"], item["model"], item["effort"],
             "[for=%s]" % item["substitutes_for"] if "substitutes_for" in item else "",
+            "[sdk=%s]" % hashlib.sha256(json.dumps(
+                {key: item[key] for key in ("model_selection", "cursor_sdk")},
+                sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            if "cursor_sdk" in item else "",
         )
         for item in core_seats
     )
@@ -572,6 +582,24 @@ def is_completed_result(path, receipt_version=0, legacy_no_exit_sha256=None):
     ).returncode == 0
 
 
+def is_completed_sdk_result(path, seat):
+    try:
+        label = path.stem[1:-(len(seat) + 1)]
+        if path.name != 'r%s-%s.json' % (label, seat):
+            return False
+        spec = importlib.util.spec_from_file_location('sdk_result_evidence', EVIDENCE_SCRIPT)
+        evidence = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(evidence)
+        manifest, manifest_hash = evidence.validated_manifest(
+            path.parent / ('r%s-evidence.manifest.json' % label), fresh=False, offline=True)
+        if manifest['assignments'][seat]['adapter'] != 'cursor-sdk':
+            return False
+        evidence.validate_results(path.parent, manifest, manifest_hash, [seat])
+        return True
+    except (ImportError, OSError, ValueError, TypeError, KeyError, StopIteration):
+        return False
+
+
 def profile_session(directory, stream_usage=None):
     adapters, receipt_version, legacy_no_exit_sha256 = roster_metadata(directory)
     if stream_usage is None:
@@ -587,10 +615,17 @@ def profile_session(directory, stream_usage=None):
     results = {"code": {"calls": 0, "findings": 0}, "plan": {"calls": 0, "findings": 0}}
     completed = []
     for path in directory.glob("*.json"):
+        if path.name.endswith('.json.summary-candidate.json'):
+            continue
         key = artifact_key(path)
         if key is None:
             continue
-        if not is_completed_result(path, receipt_version, legacy_no_exit_sha256):
+        adapter = adapter_for_key(key, adapters)
+        if adapter == 'cursor-sdk':
+            seat = max((name for name in adapters if key.endswith('-' + name)), key=len)
+            if not is_completed_sdk_result(path, seat):
+                continue
+        elif not is_completed_result(path, receipt_version, legacy_no_exit_sha256):
             continue
         try:
             document = json.loads(path.read_text(errors="replace"))
@@ -601,7 +636,7 @@ def profile_session(directory, stream_usage=None):
         phase = "plan" if is_plan(path) else "code"
         results[phase]["calls"] += 1
         results[phase]["findings"] += len(document["findings"])
-        completed.append((key, adapter_for_key(key, adapters)))
+        completed.append((key, adapter))
 
     usage = empty_usage()
     providers = {}
@@ -612,7 +647,8 @@ def profile_session(directory, stream_usage=None):
         key = artifact_key(path)
         item, invalid = stream_usage[path]
         invalid_usage.extend(invalid)
-        if item is None or (item["processed_tokens"] == 0 and item["cost_usd_known_calls"] == 0):
+        if item is None or (item["processed_tokens"] == 0 and item["cost_usd_known_calls"] == 0
+                            and item["provider"] != 'cursor-sdk'):
             continue
         add_usage(usage, item)
         metered_keys.add(key)

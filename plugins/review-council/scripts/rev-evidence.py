@@ -32,6 +32,7 @@ from review_limits import (CLAUDE_MAX_TURNS, MANDATORY_REPOSITORY_READ_LIMIT,
                            REPOSITORY_EXPANSION_CALL_LIMIT,
                            REPOSITORY_REFUTATION_CALL_RESERVE)
 from session_inputs import session_input_lock, validate_standard_inputs
+from roster import cursor_sdk_identity, validate_cursor_sdk_qualification
 
 BUNDLES = ('correctness-boundaries', 'security-state-api',
            'concurrency-resources-performance', 'tests-observability-maintenance-regression')
@@ -73,6 +74,11 @@ def phase_bundles(phase):
 
 def read_batch_limit(adapter):
     return 2 if adapter == 'claude' else 1
+
+
+def read_tool_name(adapter):
+    return ('Read' if adapter in ('agent', 'claude') else
+            'council_read' if adapter == 'cursor-sdk' else 'read_file')
 
 
 def plan_search_timeout(environment):
@@ -3954,6 +3960,12 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
     adapters = {s['seat']: s.get('adapter', '') for s in roster['seats']}
     if any(a.get('adapter') != adapters[s] for s, a in assigned.items()):
         raise ValueError('assignment adapter mismatch')
+    for seat, assignment in assigned.items():
+        row = next(row for row in roster['seats'] if row['seat'] == seat)
+        if adapters[seat] == 'cursor-sdk' and ('cursor_sdk' in row or 'cursor_sdk' in assignment):
+            identity = cursor_sdk_identity(row)
+            if any(assignment.get(key) != value for key, value in identity.items()):
+                raise ValueError('cursor-sdk assignment identity mismatch')
     # unenforced_seats decides whose read audit is skipped, so it is DERIVED here and compared,
     # never taken on the manifest's word. Declared and untyped, a hand-edited list could name a
     # CLI seat, or be a bare string whose `in` test degrades to a substring match.
@@ -4593,6 +4605,13 @@ def validate_results(session, manifest, manifest_hash, seats=None, verdicts=None
     validator = Path(__file__).parent / 'lib' / 'validate-findings.py'
     attempt = attempt_module()
     for seat in selected:
+        if manifest['assignments'][seat]['adapter'] == 'cursor-sdk':
+            roster = read_json(session / 'roster.json')
+            row = next(row for row in roster['seats'] if row.get('seat') == seat)
+            identity = cursor_sdk_identity(row)
+            if any(manifest['assignments'][seat].get(key) != value for key, value in identity.items()):
+                raise ValueError('cursor-sdk result identity mismatch')
+            validate_cursor_sdk_qualification(row)
         stem = session / f"r{manifest['label']}-{seat}"
         result = Path(str(stem) + '.json'); exit_path = Path(str(stem) + '.exit')
         prompt = Path(str(stem) + '.prompt.md')
@@ -4678,6 +4697,11 @@ def result_generation(session, manifest, manifest_hash, seat):
         'enforced': seat not in manifest.get('unenforced_seats', []),
         'exit_sha256': hashes[stem + '.exit'],
     }
+    if assignment['adapter'] == 'cursor-sdk':
+        identity = cursor_sdk_identity(roster_seat)
+        if any(assignment.get(key) != value for key, value in identity.items()):
+            raise ValueError('cursor-sdk receipt identity mismatch')
+        row.update(identity)
     # Only an unenforced seat carries one, so an all-CLI generation row is byte-identical to the
     # rows this receipt format already published.
     if seat in verdicts:
@@ -5108,6 +5132,9 @@ def _prepare_locked(args, session):
                         'full_state': mode == 'full', 'adapter': adapters[seat], 'components': component_ids,
                         'patch': str(session / name), 'patch_sha256': digest(patch_body),
                         'patch_bytes': len(patch_body), 'patch_lines': len(split_lf_lines(patch_body))}
+        roster_seat = next(row for row in roster['seats'] if row['seat'] == seat)
+        if adapters[seat] == 'cursor-sdk' and 'cursor_sdk' in roster_seat:
+            scopes[seat].update(cursor_sdk_identity(roster_seat))
         if args.phase == 'plan':
             scopes[seat]['plan_clusters'] = plan_assignments[seat]
             scopes[seat]['delta_clusters'] = plan_delta_assignments[seat]
@@ -5304,7 +5331,7 @@ def render_seat(manifest, mh, seat, plan_source):
             else:
                 primary_action = 'run ' + shlex.join(['cat', '--', primary])
         else:
-            tool = 'Read' if assignment['adapter'] in ('agent', 'claude') else 'read_file'
+            tool = read_tool_name(assignment['adapter'])
             if assignment['patch_bytes'] and patch_mode != 'chunks':
                 primary_action = ('use ' + tool + ' with offset 1 and limit 240 on '
                                   + primary)
@@ -5363,7 +5390,7 @@ def render_seat(manifest, mh, seat, plan_source):
             first_action = ('run ' + shlex.join(['cat', '--', first])
                             + '; then read one listed chunk per command in exact order.')
         else:
-            tool = 'Read' if assignment['adapter'] in ('agent', 'claude') else 'read_file'
+            tool = read_tool_name(assignment['adapter'])
             first_action = ('use ' + tool + ' to read ' + str(batch_limit)
                             + ' consecutive listed chunk' + ('' if batch_limit == 1 else 's')
                             + ' in full; continue in exact order.')
@@ -5378,7 +5405,7 @@ def render_seat(manifest, mh, seat, plan_source):
                             + shlex.quote(assignment['patch'])
                             + '; continue with consecutive windows of at most 240 lines.')
         else:
-            tool = 'Read' if assignment['adapter'] in ('agent', 'claude') else 'read_file'
+            tool = read_tool_name(assignment['adapter'])
             first_action = ('use ' + tool + ' with offset 1 and limit 240 on '
                             + assignment['patch'] + '; continue with consecutive windows.')
     if first_action is not None:
@@ -5396,7 +5423,7 @@ def render_seat(manifest, mh, seat, plan_source):
             if assignment['adapter'] == 'codex':
                 packet_action = 'run ' + shlex.join(['cat', '--', first_packet])
             else:
-                tool = 'Read' if assignment['adapter'] in ('agent', 'claude') else 'read_file'
+                tool = read_tool_name(assignment['adapter'])
                 packet_action = 'use ' + tool + ' to read ' + first_packet + ' in full'
             print('First source-context action: ' + packet_action
                   + ' as the only source-context packet read in this turn; continue with one '
@@ -5414,7 +5441,7 @@ def render_seat(manifest, mh, seat, plan_source):
                 if assignment['adapter'] == 'codex':
                     action = 'run ' + shlex.join(['cat', '--', path])
                 else:
-                    tool = 'Read' if assignment['adapter'] in ('agent', 'claude') else 'read_file'
+                    tool = read_tool_name(assignment['adapter'])
                     action = 'use ' + tool + ' to read ' + path + ' in full'
                 print('Required source segment ' + str(segment['index']) + '/' + str(total)
                       + ': ' + action + ' raw bytes ' + str(segment['raw_bytes'])

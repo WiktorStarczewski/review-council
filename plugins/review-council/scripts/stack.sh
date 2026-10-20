@@ -17,6 +17,12 @@
 # while a seat is mid-run (a false kill) and killing the child alone orphans the seats (leaked usage quota).
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
+STACK_HOST=${REVIEW_COUNCIL_HOST:-claude}
+case "$STACK_HOST" in
+  claude|codex|cursor) ;;
+  *) echo "stack: unsupported host '$STACK_HOST'" >&2; exit 1;;
+esac
+readonly STACK_HOST
 # shellcheck source=lib/compat.sh
 # Guarded: without rc_mtime/rc_newest_mtime the stall detector loses the file-activity half of its
 # two-condition kill rule and silently kills healthy legs, so a missing compat.sh is fatal, not a warning.
@@ -52,15 +58,20 @@ FAST_FAIL_SECS=${FAST_FAIL_SECS:-90}
 INFRA_SLEEP_SECS=${INFRA_SLEEP_SECS:-300}
 AUTH_WAIT_TRIES=${AUTH_WAIT_TRIES:-60}
 AUTH_WAIT_SECS=${AUTH_WAIT_SECS:-60}
-if [ "${REVIEW_COUNCIL_HOST:-claude}" = codex ]; then
+if [ "$STACK_HOST" = codex ] || [ "$STACK_HOST" = cursor ]; then
   NO_PUSH=${NO_PUSH:-1}
 else
   NO_PUSH=${NO_PUSH:-0}
 fi
-# Review commits stay one per fix on both hosts; NO_SQUASH=0 is a legacy opt-in that collapses them.
+# Review commits stay one per fix on all hosts; NO_SQUASH=0 is a legacy opt-in that collapses them.
 NO_SQUASH=${NO_SQUASH:-1}
 export NO_PUSH NO_SQUASH
 REV_SCRIPTS=${REV_SCRIPTS:-$HERE}   # roster.sh, rev-status.sh and rev-squash.sh live beside this script
+if [ "$STACK_HOST" = cursor ] && [ "$(cd "$REV_SCRIPTS" 2>/dev/null && pwd -P)" != "$(cd "$HERE" && pwd -P)" ]; then
+  echo "stack: Cursor host requires its packaged runtime at $HERE" >&2
+  exit 1
+fi
+[ "$STACK_HOST" != cursor ] || readonly REV_SCRIPTS
 SEAM_REPO=${SEAM_REPO:-}
 SEAM_PREMISE=${SEAM_PREMISE:-"Review the SEAMS between the PRs in this stack, not the code again: what each PR promises the others, what each assumes of the others, and every claim that a sibling PR invalidates."}
 CRITIC_REPO=${CRITIC_REPO:-}
@@ -80,7 +91,7 @@ note_failure() {  # <label> <repo-dir> - a failed leg must not be reported as a 
 }
 stack_retry_command() {
   printf 'REVIEW_COUNCIL_HOST=%q NO_PUSH=%q NO_SQUASH=%q ROOT=%q LOG=%q REV_SCRIPTS=%q REV_STACK_FOREGROUND=1 %q %q' \
-    "${REVIEW_COUNCIL_HOST:-claude}" "$NO_PUSH" "$NO_SQUASH" "$ROOT" "$LOG" \
+    "$STACK_HOST" "$NO_PUSH" "$NO_SQUASH" "$ROOT" "$LOG" \
     "$REV_SCRIPTS" "$HERE/stack.sh" "$CONFIG"
 }
 replace_tab_row() {  # <file> <key> <value> - replace one tab-separated row atomically
@@ -216,7 +227,7 @@ wait_for_auth() {
   # error and must fail immediately. A degraded panel is a panel, and the leg's report says so.
   local i rc
   for i in $(seq 1 "$AUTH_WAIT_TRIES"); do
-    ROSTER_BRIEF=$("$REV_SCRIPTS/roster.sh" --brief 2>>"${ROOT}/roster.err")
+    ROSTER_BRIEF=$(REVIEW_COUNCIL_HOST="$STACK_HOST" "$REV_SCRIPTS/roster.sh" --brief 2>>"${ROOT}/roster.err")
     rc=$?
     case "$rc" in
       0) return 0;;
@@ -268,10 +279,23 @@ NOTE: an earlier pass of this review exists. Read $S/findings.md FIRST and do no
 ${extra}
 
 ${VACUITY}${resume}"
-    if [ "${REVIEW_COUNCIL_HOST:-claude}" = codex ]; then
+    if [ "$STACK_HOST" = codex ]; then
       local skill="$HERE/../codex-skills/rev/SKILL.md"
       [ -f "$skill" ] || { say "!!! missing Codex rev skill: $skill"; note_failure "$label" "$repo"; return 1; }
       prompt="Read and follow the Codex review-council skill at $skill.
+Review branch $rounds rounds; use $S as the session dir. This is a stack leg: do not squash or push.
+
+${extra}
+
+${VACUITY}${resume}"
+    elif [ "$STACK_HOST" = cursor ]; then
+      local skill="$HERE/../cursor-skills/rev/SKILL.md"
+      [ -f "$skill" ] || { say "!!! missing Cursor rev skill: $skill"; note_failure "$label" "$repo"; return 1; }
+      local cursor_cli
+      cursor_cli=$(command -v cursor-agent || command -v agent) || {
+        say "!!! Cursor host executable unavailable"; note_failure "$label" "$repo"; return 1;
+      }
+      prompt="Read and follow the Cursor review-council skill at $skill using REVIEW_COUNCIL_HOST=cursor and the runtime at $HERE.
 Review branch $rounds rounds; use $S as the session dir. This is a stack leg: do not squash or push.
 
 ${extra}
@@ -304,10 +328,12 @@ ${VACUITY}${resume}"
     set -m   # give the leg its own process group, so the CPU veto and the kill can address the whole tree
     (
       cd "$dir" || exit 1
-      export REV_STACK_LEG=1
-      if [ "${REVIEW_COUNCIL_HOST:-claude}" = codex ]; then
+      export REV_STACK_LEG=1 REVIEW_COUNCIL_HOST="$STACK_HOST"
+      if [ "$STACK_HOST" = codex ]; then
         printf '%s\n' "$prompt" | codex exec --ephemeral -s workspace-write \
           -c sandbox_workspace_write.network_access=true --add-dir "$ROOT" --json -
+      elif [ "$STACK_HOST" = cursor ]; then
+        "$cursor_cli" -p "$prompt" --force --output-format stream-json </dev/null
       else
         # The leg is its own headless session, not a turn of the Claude Code session that started the stack.
         SESSION_ENV=$(cd "$HERE/lib" && python3 -c \

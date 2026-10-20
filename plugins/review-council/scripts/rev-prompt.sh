@@ -174,7 +174,7 @@ else
   for SEAT in "${SEATS[@]}"; do ADAPTERS+=(agent); done
 fi
 NEEDS_SCHEMA=0
-for ADAPTER in "${ADAPTERS[@]}"; do case "$ADAPTER" in agent|gemini) NEEDS_SCHEMA=1;; esac; done
+for ADAPTER in "${ADAPTERS[@]}"; do case "$ADAPTER" in agent|gemini|cursor-sdk) NEEDS_SCHEMA=1;; esac; done
 if [ "$NEEDS_SCHEMA" = 1 ]; then require_regular "$SCHEMA" "findings schema"; fi
 check_read() { cat -- "$1" >/dev/null || die "cannot read $2: $1"; }
 render_evidence() {
@@ -486,10 +486,15 @@ EOC
     case "$ADAPTER" in
       agent|claude)
         printf 'Every source Read call must set an explicit one-based `offset` and a `limit` of at most %s lines. Every Grep or search call must set a result limit of at most 80. ' "$READ_LINES";;
+      cursor-sdk)
+        printf 'Every source council_read call must set an explicit one-based `offset` and a `limit` of at most %s lines. ' "$READ_LINES";;
       codex) ;;
       *) printf 'Every source read_file call must select an explicit one-based start and at most %s lines. Every search call must set a result limit of at most 80. ' "$READ_LINES";;
     esac
     echo 'Only exact full-read artifacts and document inputs named in this prompt are exceptions.'
+    if [ "$ADAPTER" = cursor-sdk ]; then
+      echo '4. Use council_read for exact authorized paths. Omit offset and limit only for complete named artifacts and document inputs; read those in full. Use prepared sibling-search results and bounded source reads to locate related sites.'
+    else
     printf '4. Shell commands that print source, diffs, or logs must select at most %s inclusive lines, so `END - START + 1 <= %s`. ' "$READ_LINES" "$READ_LINES"
     printf 'Shell searches over multiple files need a global `| head -81` limiter; at most 80 result lines are accepted, '
     if [ -n "$EVIDENCE" ]; then
@@ -508,6 +513,7 @@ EOC
     cat <<'EOC'
 `head` limits lines, not bytes: keep searches off generated or minified files such as `dist/`, where one line can pass the output ceiling. Read original source from the working tree; `git show` of the base or any other revision is context only and never satisfies a required read or a citation.
 EOC
+    fi
     printf '5. Batch independent bounded tool calls into one turn with a 32 KiB combined output ceiling. '
     if [ -n "$EVIDENCE" ]; then
       printf 'Ordered '
@@ -517,7 +523,11 @@ EOC
       if [ "$HAS_PACKETS" = 1 ]; then printf 'Source-context packets and repository reads keep the ordinary 32 KiB turn ceiling, and '; fi
       printf 'repository expansion begins in a later turn. '
     fi
-    echo 'Keep each shell tool call to one producer pipeline. Never mix source reads and searches in one shell call.'
+    if [ "$ADAPTER" = cursor-sdk ]; then
+      echo 'Keep each council_read call to one path and obey the rendered read batch limits.'
+    else
+      echo 'Keep each shell tool call to one producer pipeline. Never mix source reads and searches in one shell call.'
+    fi
     printf '%s' "6. Expand to another bounded block, file, or pinned dependency only to answer a concrete question that could prove or refute a finding. Name the concrete symbol or invariant question in your reasoning, never as a comment inside the command, then make the tool call that bounded window."
     if [ -n "$DEPS_ROOT" ]; then printf ' Read pinned dependency source only under %s.' "$DEPS_ROOT"; fi
     echo
@@ -542,6 +552,10 @@ EOC
     echo "## Review assignment"
   else
     echo "You are one of several independent reviewers on a multi-model review panel. Others review the same documents on different models; your value is what you can substantiate yourself. Follow the scope and lens below, combine sibling issues under one root cause, and return no more than five distinct findings."
+    echo
+  fi
+  if [ "$ADAPTER" = cursor-sdk ]; then
+    echo 'Available evidence tool: council_read on custom-user-tools, with path and optional offset and limit. MCP metadata discovery is permitted only for that reader. Shell, search, execution, native file tools, web and delegation are unavailable. Resolve questions with prepared evidence and bounded reads; state unverified runtime claims explicitly.'
     echo
   fi
   if [ "$ADAPTER" = codex ] && [ -z "$RO" ]; then
@@ -574,6 +588,9 @@ EOC
             ;;
           agent|claude)
             echo "$FIRST_EVIDENCE: use Read to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most $READ_LINES lines, starting at line 1."
+            ;;
+          cursor-sdk)
+            echo "$FIRST_EVIDENCE: use council_read to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most $READ_LINES lines, starting at line 1."
             ;;
           *)
             echo "$FIRST_EVIDENCE: use read_file to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most $READ_LINES lines, starting at line 1."
@@ -676,7 +693,7 @@ for i in "${!SEATS[@]}"; do
   PATCH_MODE=${PATCH_MODES[$i]}; HAS_PACKETS=${PACKET_MODES[$i]}; HAS_SEGMENTS=${SEGMENT_MODES[$i]}
   CLEAN_ROOM=0; FIRST_EVIDENCE='First evidence action'
   case "+$LENS+" in *+clean-room+*) CLEAN_ROOM=1; FIRST_EVIDENCE+=' after required clean-room design';; esac
-  case "$ADAPTER" in agent|gemini) INLINE_SCHEMA=1;; *) INLINE_SCHEMA=0;; esac
+  case "$ADAPTER" in agent|gemini|cursor-sdk) INLINE_SCHEMA=1;; *) INLINE_SCHEMA=0;; esac
   [ "$PHASE" != verification ] || EMPH="${EMPH:+$EMPH }$SIBLING_SITE_CHECK"
   if [ -n "$FRAGMENTS" ]; then
     EVIDENCE_TMP="$FRAGMENTS/$SEAT"

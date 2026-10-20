@@ -2015,7 +2015,8 @@ def plan_specialist_first_call_contract(manifest, seat, session):
         else:
             action = 'run ' + shlex.join(['cat', '--', str(primary)])
     else:
-        tool = 'Read' if assignment['adapter'] in ('agent', 'claude') else 'read_file'
+        tool = ('Read' if assignment['adapter'] in ('agent', 'claude') else
+                'council_read' if assignment['adapter'] == 'cursor-sdk' else 'read_file')
         if mode == 'window':
             action = 'use ' + tool + ' with offset 1 and limit 240 on ' + str(primary)
         else:

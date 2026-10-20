@@ -15,6 +15,8 @@ import tempfile
 import threading
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'lib'))
+
 
 BOUNDARIES = (
     'agents/rev-reviewer.md',
@@ -32,7 +34,7 @@ BOUNDARIES = (
     'scripts/roster.sh',
     'skills/rev/SKILL.md',
 )
-CONTRACT_TREES = ('scripts/lib/', 'scripts/seats.d/', 'tests/')
+CONTRACT_TREES = ('scripts/lib/', 'scripts/seats.d/', 'scripts/cursor-sdk/', 'tests/')
 CONTRACT_FILES = (
     'tests/fixtures/codex-stream.ndjson',
     'tests/fixtures/grok-stream.ndjson',
@@ -417,7 +419,7 @@ def core_roster(path):
     for row in data['seats']:
         if not isinstance(row, dict):
             raise ValueError('invalid provider contract roster')
-        if row.get('adapter') not in ('codex', 'gemini', 'claude', 'agent'):
+        if row.get('adapter') not in ('codex', 'gemini', 'claude', 'agent', 'cursor-sdk'):
             raise ValueError('provider contract roster contains an unsupported or retired adapter')
         if row.get('extra'):
             continue
@@ -427,6 +429,9 @@ def core_roster(path):
                 or item['effort'] is not None
                 and (not isinstance(item['effort'], str) or not item['effort'])):
             raise ValueError('provider contract core roster lacks an exact identity')
+        if row['adapter'] == 'cursor-sdk':
+            from roster import cursor_sdk_identity
+            item.update(cursor_sdk_identity(row))
         result.append(item)
     if not result or len({row['seat'] for row in result}) != len(result):
         raise ValueError('invalid provider contract core roster')

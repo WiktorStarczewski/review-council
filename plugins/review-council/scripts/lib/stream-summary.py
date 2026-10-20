@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Summarise a codex `--json`, grok `--output-format streaming-json` or gemini `-o stream-json` event stream.
 
-Usage: stream-summary.py <codex|grok|gemini> <out.json>
+Usage: stream-summary.py <codex|claude|cursor-sdk|grok|gemini> <out.json>
   stdin:  NDJSON events, one per line, as the CLI emits them
   stdout: one short line per event that matters (unbuffered, so a status tick can read it live)
   grok:   the final {"type":"end"} record's structuredOutput is written to <out.json>
@@ -9,12 +9,18 @@ Usage: stream-summary.py <codex|grok|gemini> <out.json>
 Unknown or malformed lines are echoed clipped, never dropped silently.
 """
 import json
+import importlib.util
+from pathlib import Path
 import re
 import sys
 
 kind, out = sys.argv[1], sys.argv[2]
 text_buf = []
 last_message = ''
+sdk_terminal = None
+sdk_invalid = False
+if kind == 'cursor-sdk':
+    Path(out).unlink(missing_ok=True)
 
 
 def clip(s, n=160):
@@ -41,7 +47,7 @@ def outermost_object(text):
             continue
         try:
             obj = json.loads(body[i:j + 1])
-        except Exception:  # noqa: BLE001 — not JSON after all; the wrapper reports "no findings"
+        except Exception:  # noqa: BLE001 - not JSON after all; the wrapper reports "no findings"
             continue
         if isinstance(obj, dict):
             return obj
@@ -55,8 +61,15 @@ for raw in sys.stdin:
     try:
         e = json.loads(raw)
     except Exception:
+        if kind == 'cursor-sdk':
+            sdk_invalid = True
         flush_text()
         emit(clip(raw))
+        continue
+    if not isinstance(e, dict):
+        if kind == 'cursor-sdk':
+            sdk_invalid = True
+        emit('error: non-object event')
         continue
     t = e.get('type', '')
     if kind == 'codex':
@@ -92,8 +105,24 @@ for raw in sys.stdin:
             emit(f"end status={e.get('subtype')} turns={e.get('num_turns')}")
         elif t == 'error':
             emit(f"error: {clip(e.get('message', e))}")
+    elif kind == 'cursor-sdk':
+        if sdk_terminal is not None:
+            sdk_invalid = True
+        if t == 'tool_call':
+            args = e.get('args') or {}
+            name = e.get('name', '')
+            if isinstance(args, dict) and args.get('providerIdentifier') == 'custom-user-tools':
+                name = args.get('toolName', name)
+                args = args.get('args', {})
+            emit(f"tool_call {clip(name, 64)}: {clip(json.dumps(args))}")
+        elif t == 'result':
+            sdk_terminal = e
+            emit(f"end status={e.get('status')}")
+        elif t == 'error':
+            sdk_invalid = True
+            emit('error: sdk_run_failed')
     elif kind == 'gemini':
-        # Shape per the gemini CLI's documented `-o stream-json` NDJSON — assumed, not observed: there is
+        # Shape per the gemini CLI's documented `-o stream-json` NDJSON - assumed, not observed: there is
         # no gemini on the box this was written on. tests/fixtures/gemini-stream.ndjson is the reference:
         # {"type":"tool_use","tool_name":…,"parameters":{…}} · {"type":"message","role":"assistant","content":…}
         # · {"type":"result","status":…}. Anything else falls through to the clipped-echo path below.
@@ -142,3 +171,32 @@ if kind == 'gemini' and last_message:
     if obj is not None:
         with open(out, 'w') as f:
             json.dump(obj, f)
+
+if kind == 'cursor-sdk':
+    try:
+        if sdk_invalid or sdk_terminal is None or sdk_terminal.get('status') != 'finished':
+            raise ValueError('incomplete SDK stream')
+        result = sdk_terminal.get('result')
+        if not isinstance(result, str):
+            raise ValueError('invalid SDK result')
+        def pairs(rows):
+            value = {}
+            for key, item in rows:
+                if key in value:
+                    raise ValueError('duplicate SDK result key')
+                value[key] = item
+            return value
+        def finite(token):
+            raise ValueError('non-finite SDK result')
+        obj = json.loads(result, object_pairs_hook=pairs, parse_constant=finite)
+        spec = importlib.util.spec_from_file_location(
+            'findings_validator', Path(__file__).with_name('validate-findings.py'))
+        validator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(validator)
+        with open(validator.SCHEMA) as source:
+            validator.check(obj, json.load(source), '$')
+        with open(out, 'x') as target:
+            json.dump(obj, target, allow_nan=False)
+    except (OSError, ValueError, TypeError, SystemExit):
+        emit('error: sdk_findings_invalid')
+        sys.exit(2)
