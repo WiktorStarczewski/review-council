@@ -480,12 +480,20 @@ class CursorInstalledLauncherTests(CursorSDKCase):
 
     def test_installed_entry_closes_import_and_driver_failures_without_private_errors(self):
         launch, driver, record = self.fixture()
+        original = driver.read_bytes()
+        environment = dict(self.env, SYNTHETIC_LAUNCH_RECORD=str(record),
+                           SYNTHETIC_LAUNCH_NONCE='synthetic-launch-nonce')
         for source in ('throw new Error("private-import-canary");\n',
                        'export async function runDriver() { throw new Error("private-driver-canary"); }\n',
                        'export const unrelated = true;\n'):
             with self.subTest(source=source):
+                driver.write_bytes(original)
+                control = self.node(launch, driver, 'seat', environment=environment)
+                self.assertEqual((control.returncode, control.stdout, control.stderr), (0, '', ''))
+                self.assertEqual(json.loads(record.read_text())['calls'], 1)
+                record.unlink()
                 driver.write_text(source)
-                process = self.node(launch, driver, 'seat')
+                process = self.node(launch, driver, 'seat', environment=environment)
                 self.assertEqual(process.returncode, 1)
                 self.assertEqual(process.stdout, '')
                 self.assertRegex(process.stderr, r'\A[a-z][a-z0-9_]{0,63}\n\Z')
