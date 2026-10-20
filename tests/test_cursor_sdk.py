@@ -320,6 +320,139 @@ console.log('synthetic callback fixture only');
         self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
 
 
+class CursorBridgeLifecycleTests(CursorSDKCase):
+    def options(self, fixture):
+        return {'root': str(fixture.root), 'session': str(fixture.session),
+                'prompt': str(fixture.prompt), 'manifest': str(fixture.manifest_path),
+                'manifestSha256': hashlib.sha256(fixture.manifest_path.read_bytes()).hexdigest(),
+                'seat': fixture.seat}
+
+    def bridge(self, fixture, program, *arguments):
+        self.require_entry(READER)
+        self.require_entry(HELPER)
+        process = self.node('--input-type=module', '-e', program, READER,
+                            json.dumps(self.options(fixture)), *arguments)
+        self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+        self.assertEqual(process.stdout, '')
+        self.assertEqual(process.stderr, '', 'handled helper failures must not leak diagnostics')
+
+    def test_disposal_and_cancellation_prevent_late_or_reused_reader_delivery(self):
+        fixture = SourceFixture(self.directory, 'current')
+        self.bridge(fixture, r'''
+import assert from 'node:assert/strict';
+import {pathToFileURL} from 'node:url';
+const {createCouncilReader,disposeCouncilReader} = await import(pathToFileURL(process.argv[1]));
+assert.equal(typeof disposeCouncilReader, 'function', 'controller must own helper disposal');
+const options = JSON.parse(process.argv[2]);
+const request = {path:'keep.txt',offset:1,limit:1};
+const context = {toolCallId:'lifecycle-call',sessionId:'lifecycle-session'};
+const active = createCouncilReader(options);
+assert.deepEqual(await active.execute(request, context),
+  {content:[{type:'text',text:'unchanged nonsemantic context\n'}]});
+await disposeCouncilReader(active);
+await disposeCouncilReader(active);
+await assert.rejects(active.execute(request, context), {message:'reader_disposed'});
+for (const alreadyAborted of [false,true]) {
+  const controller = new AbortController();
+  const records = [];
+  if (alreadyAborted) controller.abort();
+  const reader = createCouncilReader({...options,signal:controller.signal,onRead:e=>records.push(e)});
+  const pending = reader.execute(request, context);
+  if (!alreadyAborted) controller.abort();
+  await assert.rejects(pending, {message:'reader_cancelled'});
+  await disposeCouncilReader(reader);
+  await disposeCouncilReader(reader);
+  assert.deepEqual(records, [], 'cancelled callback must not publish a delivery sideband');
+}
+''')
+
+    def test_helper_refusals_and_changed_prompt_or_manifest_remain_closed(self):
+        fixture = SourceFixture(self.directory, 'current')
+        outside = self.directory / 'outside-context.txt'
+        outside.write_text('outside-source-canary\n')
+        self.bridge(fixture, r'''
+import assert from 'node:assert/strict';
+import {readFileSync,writeFileSync} from 'node:fs';
+import {pathToFileURL} from 'node:url';
+const {createCouncilReader,disposeCouncilReader} = await import(pathToFileURL(process.argv[1]));
+const options = JSON.parse(process.argv[2]);
+const request = {path:'keep.txt',offset:1,limit:1};
+for (const mutation of ['unauthorized','prompt','manifest']) {
+  const records = [];
+  const reader = createCouncilReader({...options,onRead:e=>records.push(e)});
+  const bound = mutation === 'prompt' ? options.prompt : options.manifest;
+  const original = readFileSync(bound);
+  try {
+    await reader.execute(request, {toolCallId:mutation+'-initial',sessionId:'binding-session'});
+    if (mutation !== 'unauthorized') writeFileSync(bound, Buffer.concat([original,Buffer.from('\n')]));
+    const refused = mutation === 'unauthorized' ? {...request,path:process.argv[3]} : request;
+    await assert.rejects(reader.execute(refused,
+      {toolCallId:mutation+'-refused',sessionId:'binding-session'}), {message:'reader_refused'});
+    assert.equal(records.length, 1, 'a failed helper must not publish successful delivery');
+    assert.equal(records[0].call_id, mutation+'-initial');
+  } finally {
+    writeFileSync(bound, original);
+    await disposeCouncilReader(reader);
+  }
+}
+''', outside)
+
+    def test_private_sideband_binds_actual_context_and_preserves_exact_model_text(self):
+        fixture = SourceFixture(self.directory, 'current')
+        self.bridge(fixture, r'''
+import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+import {pathToFileURL} from 'node:url';
+const {createCouncilReader,disposeCouncilReader} = await import(pathToFileURL(process.argv[1]));
+const options = JSON.parse(process.argv[2]);
+const records = [];
+const controlled = {...options,onRead:record=>records.push(record)};
+const reader = createCouncilReader(controlled);
+controlled.root = '/model-cannot-rebind-controller-root';
+try {
+  const request = {path:'keep.txt',offset:1,limit:1};
+  const response = await reader.execute(request,
+    {toolCallId:'actual-callback-id',sessionId:'actual-sdk-session'});
+  assert.deepEqual(response, {content:[{type:'text',text:'unchanged nonsemantic context\n'}]});
+  assert.equal(records.length, 1);
+  const record = records[0];
+  assert.equal(record.type, 'council_read_result');
+  assert.equal(record.call_id, 'actual-callback-id');
+  assert.equal(record.session_id, 'actual-sdk-session');
+  assert.deepEqual(record.input, request);
+  assert.equal(record.text_sha256,
+    createHash('sha256').update('unchanged nonsemantic context\n').digest('hex'));
+  assert.equal(record.meta.manifest_sha256, options.manifestSha256);
+  assert.deepEqual(record.meta.input, request);
+  for (const context of [{},{toolCallId:'missing-session'},{sessionId:'missing-call'}]) {
+    await assert.rejects(reader.execute(request,context), {message:'reader_context_invalid'});
+  }
+  assert.equal(records.length, 1, 'missing SDK identity must never be fabricated');
+} finally {
+  await disposeCouncilReader(reader);
+}
+const throwing = createCouncilReader({...JSON.parse(process.argv[2]),onRead:()=>{
+  throw new Error('private-callback-error-canary');
+}});
+try {
+  await assert.rejects(throwing.execute({path:'keep.txt',offset:1,limit:1},
+    {toolCallId:'callback-error',sessionId:'actual-sdk-session'}), {message:'reader_callback_failed'});
+} finally {
+  await disposeCouncilReader(throwing);
+}
+''')
+
+    def test_canonical_fixture_control_earns_existing_source_receipt_without_sdk(self):
+        fixture = SourceFixture(self.directory, 'current')
+        target = fixture.target()
+        code, report = fixture.audit((target, None, fixture.current_bytes(target)))
+        self.assertEqual(code, 0, json.dumps(report))
+        self.assertEqual(report['status'], 'valid')
+        self.assertEqual(report['required_source_ranges_covered'],
+                         len(fixture.context['required_source_ranges']))
+        fixture.receipt_gate(report)
+
+
 class CursorStreamTests(CursorSDKCase):
     def setUp(self):
         super().setUp()
