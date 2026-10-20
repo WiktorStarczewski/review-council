@@ -187,6 +187,56 @@ class CursorSDKResultGateTests(unittest.TestCase):
                 self.assertFalse(artifacts['downstream'].exists())
                 self.assertFalse(artifacts['out'].exists())
 
+    def test_equivalent_numeric_confidence_reaches_downstream_after_driver_normalization(self):
+        for terminal_confidence, published_confidence in ((1.0, 1), (0.0, 0), (-0.0, 0)):
+            with self.subTest(confidence=repr(terminal_confidence)):
+                finding = {
+                    'severity': 'P2', 'file': 'src/sample.ts', 'line_start': 2, 'line_end': 2,
+                    'claim': 'Synthetic numeric normalization finding',
+                    'evidence': 'Local extraction fixture only',
+                    'suggested_fix': 'No production finding or review credit',
+                    'confidence': terminal_confidence,
+                }
+                terminal = {'summary': 'Synthetic numeric confidence', 'findings': [finding]}
+                published = {
+                    'summary': 'Synthetic numeric confidence',
+                    'findings': [dict(finding, confidence=published_confidence)],
+                }
+                events = self.events()
+                events[-1]['result'] = json.dumps(terminal)
+                process, artifacts = self.wrapper(events, published)
+                self.assertEqual(artifacts['summary_exit'].read_text(), '0\n')
+                candidate = json.loads(artifacts['candidate'].read_text())
+                self.assertIsInstance(candidate['findings'][0]['confidence'], float)
+                self.assertEqual(candidate, terminal)
+                self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+                self.assertEqual(artifacts['exit'].read_text(), '0\n')
+                self.assertEqual(artifacts['downstream'].read_text(), 'LOCAL TEST audit called\n')
+                self.assertEqual(json.loads(artifacts['out'].read_text()), published)
+
+    def test_boolean_or_different_numeric_confidence_is_rejected_before_downstream(self):
+        for terminal_confidence, published_confidence in ((1.0, True), (0.0, False), (1.0, 0)):
+            with self.subTest(terminal=repr(terminal_confidence),
+                              published=repr(published_confidence)):
+                finding = {
+                    'severity': 'P2', 'file': 'src/sample.ts', 'line_start': 2, 'line_end': 2,
+                    'claim': 'Synthetic confidence disagreement finding',
+                    'evidence': 'Local extraction fixture only',
+                    'suggested_fix': 'No production finding or review credit',
+                    'confidence': terminal_confidence,
+                }
+                terminal = {'summary': 'Synthetic confidence disagreement', 'findings': [finding]}
+                published = {
+                    'summary': 'Synthetic confidence disagreement',
+                    'findings': [dict(finding, confidence=published_confidence)],
+                }
+                events = self.events()
+                events[-1]['result'] = json.dumps(terminal)
+                process, artifacts = self.wrapper(events, published)
+                self.assertEqual(artifacts['summary_exit'].read_text(), '0\n')
+                self.assertEqual(json.loads(artifacts['candidate'].read_text()), terminal)
+                self.assert_extraction_rejected(process, artifacts)
+
 
 if __name__ == '__main__':
     unittest.main()
