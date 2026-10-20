@@ -5003,10 +5003,24 @@ def _prepare_locked(args, session):
             fallback = 'unsafe or opaque delta'
         elif not delta:
             pass
-        elif len(delta.split()) + len(packet.split()) + len(instruction_packet.split()) >= len(semantic.split()):
-            pass
         else:
-            fallback = None; use_delta = True
+            delta_data = data
+            delta_instructions = instruction_packet
+            delta_packet = packet
+            if source_context_enabled and not unknown_ref:
+                context_hunks = source_context_hunks(hunks, delta_hunks, delta_categories)
+                if context_hunks != hunks:
+                    delta_data = dict(data, source_context_hunks=context_hunks)
+                    delta_data['instructions'], delta_instructions = instructions(
+                        repo, snapshot, instruction_coverage_paths(delta_data, categories),
+                        source['mode'] == 'worktree')
+                    delta_packet = markdown(delta_data, session / (prefix + '-evidence.json'))
+            if len(delta.split()) + len(delta_packet.split()) + len(delta_instructions.split()) >= len(semantic.split()):
+                if delta_data is not data:
+                    raise ValueError('source context instruction expansion exceeds delta budget')
+            else:
+                data = delta_data; instruction_packet = delta_instructions
+                fallback = None; use_delta = True
     elif args.phase != 'plan':
         fallback = None
     if args.phase == 'risk' and (not bundle_coverage(chosen) or owner is None):
@@ -5135,13 +5149,6 @@ def _prepare_locked(args, session):
                         'routing_version': 1, 'delta_mode': plan_delta_mode,
                         'delta_reason': plan_delta_reason,
                         'common_artifacts': [prefix + '-evidence.md']}
-    if use_delta and source_context_enabled:
-        context_hunks = source_context_hunks(hunks, delta_hunks, delta_categories)
-        if context_hunks != hunks:
-            data['source_context_hunks'] = context_hunks
-            data['instructions'], instruction_packet = instructions(
-                repo, snapshot, instruction_coverage_paths(data, categories),
-                source['mode'] == 'worktree')
     data['source_context'], source_artifacts = source_context(
         repo, snapshot, base_tree, data, components, scopes, owner, prefix, source_context_enabled,
         plan_clusters)
