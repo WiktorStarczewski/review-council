@@ -249,6 +249,33 @@ class CursorSDKStatusStreamTests(CursorSDKCase):
         fixture = auth_cases.CursorSDKAuthTests.fixture(self)
         fixture.directory.chmod(0o700)
         shutil.copytree(SCRIPTS.parent / 'schema', fixture.scripts.parent / 'schema')
+        diagnostics = fixture.directory / 'synthetic-probe-diagnostics.ndjson'
+        diagnostics.write_text('')
+        diagnostics.chmod(0o600)
+        driver = fixture.driver.read_text()
+        log = json.dumps(str(diagnostics))
+        replacements = (
+            ('import {constants,', 'import {appendFileSync, constants,'),
+            ("    let stdout = '', size = 0, failed = false;",
+             "    let stdout = '', size = 0, failed = false;\n    let fixtureStderr = '';"),
+            ("    child.stderr.on('data',() => {});",
+             "    child.stderr.on('data',chunk => { fixtureStderr = (fixtureStderr + chunk).slice(-4096); });"),
+            ("    child.on('error',() => { failed = true; });",
+             "    child.on('error',error => { failed = true; fixtureStderr = String(error?.stack ?? error).slice(0,4096); });"),
+            ("    child.on('close',code => {\n      clearTimeout(timer);",
+             "    child.on('close',code => {\n      clearTimeout(timer);\n"
+             f"      try {{ appendFileSync({log}, JSON.stringify({{kind:'command',"
+             "executable:executable.split('/').pop(),stage:String(executable === 'git' ? args[2] : args[0]).split('/').pop(),"
+             "code,failed,stderr:fixtureStderr}) + '\\n'); } catch {}"),
+            ("export function driverFailure(error) {",
+             "export function driverFailure(error) {\n"
+             f"  try {{ appendFileSync({log}, JSON.stringify({{kind:'driver-error',"
+             "stack:String(error?.stack ?? error).slice(0,4096)}) + '\\n'); } catch {}"),
+        )
+        for original, replacement in replacements:
+            self.assertEqual(driver.count(original), 1, 'synthetic diagnostic copy substitution changed')
+            driver = driver.replace(original, replacement, 1)
+        fixture.driver.write_text(driver)
         extension = (FIXTURES / 'cursor-sdk-status-probe.mjs').read_text()
         fixture.sdk_files['dist/esm/index.js'] = (auth_cases.AUTH_SDK + extension).encode()
         fixture.write_package('@cursor/sdk', fixture.sdk_files)
@@ -269,14 +296,15 @@ class CursorSDKStatusStreamTests(CursorSDKCase):
             shutil.which('node'), str(fixture.driver), 'probe', '--selection', str(selection),
             '--output', str(fixture.output)], env=fixture.env,
             capture_output=True, text=True, timeout=90)
+        failure = (f'probe exit {process.returncode}\nstdout: {process.stdout[-4096:]}'
+                   f'\nstderr: {process.stderr[-4096:]}\nsynthetic diagnostic copy:\n'
+                   + diagnostics.read_text()).encode()[-8192:].decode(errors='ignore')
         directories = list(fixture.directory.glob('.cursor-sdk-probe-*'))
-        self.assertEqual(len(directories), 1, process.stdout + process.stderr)
+        self.assertEqual(len(directories), 1, failure)
         fixture.probe = directories[0]
         fixture.session = fixture.probe / 'session'
         manifest = fixture.session / 'r1-evidence.manifest.json'
-        self.assertTrue(manifest.is_file(),
-                        f'probe exit {process.returncode}\nstdout: {process.stdout[-4096:]}'
-                        f'\nstderr: {process.stderr[-4096:]}')
+        self.assertTrue(manifest.is_file(), failure)
         fixture.manifest = json.loads(manifest.read_text())
         fixture.context = fixture.manifest['source_context']['seats']['grok']
         fixture.raw = fixture.session / 'r1-grok.stream.ndjson'
@@ -329,7 +357,8 @@ class CursorSDKStatusStreamTests(CursorSDKCase):
             text = completed[call_id]['result']['value']['content'][0]['text']['text']
             self.assertEqual(callbacks[call_id]['text_sha256'], hashlib.sha256(text.encode()).hexdigest())
         for value in auth_cases.PRIVATE_VALUES:
-            self.assertNotIn(value, process.stdout + process.stderr + fixture.trace.read_text())
+            self.assertNotIn(value, process.stdout + process.stderr + fixture.trace.read_text()
+                             + diagnostics.read_text())
         return fixture, process
 
     def test_public_probe_without_init_or_discovery_qualifies_after_real_reader_audit(self):
