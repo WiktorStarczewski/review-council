@@ -605,6 +605,8 @@ EOC
   fi
   if [ "$ADAPTER" = cursor-sdk ]; then
     echo 'Available evidence tool: council_read on custom-user-tools, with path and optional offset and limit. MCP metadata discovery is permitted only for that reader. Shell, search, execution, native file tools, web and delegation are unavailable. Resolve questions with prepared evidence and bounded reads; state unverified runtime claims explicitly.'
+    echo 'Read each listed patch chunk, source-context packet, required source segment and evidence index as a complete artifact using only the path argument, without offset or limit. The chunk byte spans and segment raw-byte counts below describe their complete prepared contents. A prepared artifact can end inside a source line, declaration or diff hunk; that boundary is its actual EOF, not a truncated delivery.'
+    echo 'A successful path-only council_read returns the whole artifact. Continue to the next assigned artifact instead of probing its tail or EOF, repeating a completed chunk, or trying to complete the declaration at its boundary. Explicit offset and limit apply to bounded original-source reads, not to these complete artifacts. If delivery reports an error or truncation, return INCOMPLETE PROOF rather than treating partial reads as completion.'
     echo
   fi
   if [ "$ADAPTER" = codex ] && [ -z "$RO" ]; then
