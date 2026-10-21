@@ -31,7 +31,7 @@ class CursorInstallTests(unittest.TestCase):
             env['REVIEW_COUNCIL_REF'] = ref
         if path is not None:
             env['PATH'] = path
-        return subprocess.run(['bash', str(INSTALLER), *args], cwd=self.root, env=env,
+        return subprocess.run(['bash', str(INSTALLER), *args], env=env,
                               text=True, capture_output=True)
 
     def test_help_and_unknown_option(self):

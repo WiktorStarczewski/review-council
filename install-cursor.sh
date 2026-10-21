@@ -52,7 +52,15 @@ if [ -n "$SOURCE" ]; then
   ROOT=$SOURCE
 else
   command -v git >/dev/null 2>&1 || { echo 'review-council: git is required' >&2; exit 1; }
-  WORK=$(mktemp -d "${TMPDIR:-/tmp}/review-council-cursor.XXXXXX")
+  parent=${TMPDIR:-/tmp}
+  case "$parent" in
+    /*) ;;
+    *) parent=$(CDPATH= cd -- "$parent" && pwd) || {
+         echo "review-council: TMPDIR is not a directory: ${TMPDIR:-/tmp}" >&2
+         exit 1
+       } ;;
+  esac
+  WORK=$(mktemp -d "$parent/review-council-cursor.XXXXXX")
   git clone --depth 1 --branch "$REF" https://github.com/WiktorStarczewski/review-council.git "$WORK"
   ROOT=$WORK
 fi
