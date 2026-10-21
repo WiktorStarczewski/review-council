@@ -823,6 +823,7 @@ REMOVED = [
     'hard audit marker stops the panel',
     'returns at least three valid reviewers',
     'fresh review session',
+    'Numeric, stack and legacy rounds have no receipt and are not counted',
 ]
 problems = []
 for path in sys.argv[1:]:
@@ -854,7 +855,9 @@ for path in sys.argv[1:]:
     for phrase in ('"$S" review_origin_ack=<N>', 'inherit-breaker "$PARENT_S"',
                    'Ask the user before anything else', 'revert the cited review changes',
                    'defer the originating findings', 'An exit-4 quota substitution never uses a replacement child',
-                   'Numeric, stack and legacy rounds have no receipt and are not counted'):
+                   'Receiptless legacy numeric rounds are not counted.',
+                   'SDK numeric receipts also support this review-origin accounting;',
+                   'they still never grant adaptive coverage.'):
         if phrase not in flat:
             problems.append(f'{host}: missing: {phrase}')
 print('\n'.join(problems))

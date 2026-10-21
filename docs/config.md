@@ -15,10 +15,12 @@ Read by `scripts/roster.sh` (via `scripts/lib/roster.py`) on every invocation. A
 | `codex_models` | array of 1 to 4 strings | `["latest-sol", "latest-luna"]` | Exact visible model slugs or `latest-<family>` selectors, in order; repeated entries create separate seats. Each selector resolves to the newest visible generation of that family in the seat CLI's catalog, then freezes before pins, extras, and probes. The shared `models_cache.json` counts only when its `client_version` matches `codex --version` for the `codex` binary on PATH. A mismatch is refreshed once with `codex debug models`; if the versions still differ, selection exits 5 and names both versions. A missing family stays a blocker. An unreadable cache exits 5. Invalid values, unknown exact slugs, distinct entries resolving to the same model, pins exceeding the configured multiplicity, or configuration conflicts exit 6. Every selected entry must survive exclusions, pins, and probes before padding. Models from different generations that share a suffix receive generation-qualified seat IDs. |
 | `codex_effort` | `"max"`, `"xhigh"` or `"high"` | `"xhigh"` | Require this exact effort on every selected OpenAI model and extra. Unsupported effort or a conflicting effort pin exits 6 before paid probes; selection never downgrades effort or backdates a latest-family selector to an older model. |
 | `claude_models` | array of 1 or 2 unique strings | absent | Exact Claude model families to seat, in order. Supported values are `opus` and `sonnet`; both run at `xhigh` with stable seat IDs. Every listed model must survive exclusions, pins, and probes before padding. This setting is mutually exclusive with `claude_seats`; malformed lists, incompatible pins, and using both settings exit 6. Provider availability failures exit 5. |
+| `cursor_sdk_models` | array of 0 to 4 strings | absent, disabled | Opt in to exact authenticated SDK Grok model IDs or `latest-grok`. An empty array disables these seats. Each selector resolves from the SDK catalog and binds the exact model parameters, runtime and live qualification. Missing runtime, SDK authentication, catalog, model, effort or matching qualification exits 5. Malformed settings, exclusions of required seats or pins changing the frozen identity exit 6. No SDK discovery or call occurs when disabled. This adds seats without replacing the default roster. |
+| `cursor_sdk_effort` | `"xhigh"` | `"xhigh"` when enabled | Require exact SDK `xhigh` parameters. Other values exit 6 when `cursor_sdk_models` is configured. Unsupported or ambiguous catalog parameters exit 5; effort never downgrades. |
 | `claude_seats` | integer from 0 to 4 | `1` | Number of independent Opus runs. Invalid values exclude the detected Claude seats with the reason in `excluded[]`; they never fall back to one seat. When this key is explicitly positive, that many Opus seats must survive before padding. Permanent configuration conflicts exit 6; retryable provider availability exits 5. `0` disables detected Claude seats. If Claude-host padding must restore the three-seat floor, `excluded[]` records that override. `claude_seat: false` and `REVIEW_COUNCIL_CLAUDE_SEAT=0` also disable them. |
 | `claude_adapter` | `"cli"`, `"agent"` or `"auto"` | `"auto"` | How a Claude Code host runs Anthropic seats. `cli` seats them on adapter `claude`: the `claude` CLI, launched by `rev-seat.sh` like any CLI seat, probed by `--probe`, and usable by evidence mode and the plan panel. `agent` seats them on adapter `agent`, a Claude Code subagent that needs no separate CLI sign-in. Native code and schema-4 plan panels retain their structure with partial, unenforced coverage: manifests list `unenforced_seats`, validation skips their enforced read-audit gate, and receipts cannot certify the panel. Replacement executors must be enforced seats. `auto` picks `cli` when the `claude` CLI is on PATH and `claude auth status` reports signed in, else `agent`, checking once per roster build; when it falls back to `agent`, `roster.json` records why as an `excluded` entry for `claude_adapter`. Padded seats use the chosen adapter, except that a CLI that is not usable, or whose `--probe` of Opus failed, pads with `agent` instead. A CLI seat started from inside Claude Code drops the parent session's identity variables (`CLAUDECODE`, `CLAUDE_CODE_SESSION_ID` and similar) and keeps auth and provider variables. A Codex host always uses the CLI and ignores this key. Any other value exits 6. `REVIEW_COUNCIL_CLAUDE_ADAPTER` overrides it. |
 | `plan_seats` | `"completeness"` or `"all"` | `"completeness"` | Size of the plan panel. `completeness` is one plan-completeness seat: the first surviving core seat in roster order, preferring a non-`agent` adapter when available; an Agent-only roster runs it unenforced. `all` is the four-lens plan panel (completeness, soundness, simplicity, tests). The roster records `"plan_seats": "all"` at the top level only for `all`; absence means `completeness`. Any other value exits 6. |
-| `extras` | boolean | `true` | Makes the `codex-review` extra seat available to explicit numeric round plans. Adaptive defaults omit it. `false` removes it entirely. |
+| `extras` | boolean | `true` | Makes the `codex-review` extra seat available to explicit numeric round plans. Adaptive defaults omit it. `false` removes it entirely. An SDK numeric panel refuses this opaque extra when scheduled; it never silently drops the row. |
 | `claude_seat` | boolean | `true` | `false` removes the `opus` seat - equivalent to `REVIEW_COUNCIL_CLAUDE_SEAT=0`. It cannot empty the panel: if fewer than three seats remain, Claude seats are padded back in and `excluded[]` records the override. |
 | `min_labs` | integer at least 1 | `1` | Hard floor on how many distinct labs must be **detected** - padded seats never count towards it. Invalid values and floors above the maximum allowed by exclusions and disable settings exit 6 before probes. A satisfiable floor that current provider availability cannot meet exits 5. The default of `1` preserves graceful degradation. Set `2` to reject a single-lab review. Set `3` to require Codex, Gemini, and Claude. |
 | `quota_fallback` | boolean | `false` | Temporarily replaces each Claude seat blocked by a provider quota or capacity error with a unique selected Terra seat, or selected Luna seat when Terra is absent; each blocked OpenAI seat uses a unique Sonnet seat. Substitutes retain the selected target's exact model and effort. The active run records a `min_labs` waiver only when successful substitutions account for the complete diversity shortfall. Authentication, configuration, model, unknown, missing-target, and failed-target errors remain strict. The roster records every substitution and never changes this file. |
@@ -45,6 +47,10 @@ Environment variables take precedence over the config file, which takes preceden
 | Variable | Used by | Effect |
 |---|---|---|
 | `REVIEW_COUNCIL_CONFIG` | `roster.sh` | Path to the config file, instead of `~/.config/review-council/config.json`. |
+| `REVIEW_COUNCIL_HOST` | roster, preflight and stack | Explicit host: `claude`, `codex` or `cursor`. Generated bundles bind their own host in roster and stack entrypoints; skills set it on every invocation. Cursor never selects native Claude Agent seats. |
+| `REVIEW_COUNCIL_CURSOR_SDK_RUNTIME` | optional SDK driver | Private directory explicitly prepared by `scripts/cursor-sdk/install.py`; contains the pinned package, helper and verified archives. No automatic installation. |
+| `CURSOR_API_KEY` | optional SDK driver | Optional private user or service-account key override. When absent or blank, the public SDK resolves its stored browser sign-in. Council never extracts stored or app/CLI credentials. Never print the value or put it in arguments or artifacts. |
+| `REVIEW_COUNCIL_CURSOR_SDK_QUALIFICATION` | roster and SDK driver | Private live-qualification receipt with its retained evidence. Must match the exact runtime, catalog, model and effort. Missing or invalid qualification refuses an opted-in seat. |
 | `REVIEW_COUNCIL_CODEX_MODELS_CACHE` | `roster.sh` | Pinned Codex catalog, instead of `$CODEX_HOME/models_cache.json` (or `~/.codex/models_cache.json`). A pinned path skips the `client_version` check. The shared file does not: it is refreshed or refused when its `client_version` differs from `codex --version`. |
 | `REVIEW_COUNCIL_GEMINI_CREDS` | `roster.sh` | Path to Gemini's OAuth credentials file, instead of `~/.gemini/oauth_creds.json`, used as one of the two "signed in" signals (the other is `GEMINI_API_KEY`). |
 | `REVIEW_COUNCIL_GEMINI_MODEL` | `roster.sh` | Model slug for the Gemini seat, instead of `gemini-2.5-pro`. Gemini has no effort knob, so there is no matching effort variable. |
@@ -129,3 +135,37 @@ The differences are:
   can override these, so inspect them before reusing a Claude stack configuration.
 - Claude session hooks, update notices, and auto-update settings are not installed
   in Codex. Refresh the Git marketplace and reinstall, or rerun the curl installer, then start a new chat.
+
+## Cursor host
+
+The native bundle binds `REVIEW_COUNCIL_HOST=cursor` and discovers only
+`cursor-skills/rev` and `cursor-skills/stack`. It shares the canonical review
+workflow and runtime. Claude reviewers always use the CLI, including when
+`claude_adapter` requests `agent`; no built-in Claude seat is available. Padding
+uses surviving external seats and cannot satisfy an exact configured count.
+
+Cursor stack legs use the installed `cursor-agent` or `agent` CLI, load their own
+packaged rev entry and default to `NO_PUSH=1 NO_SQUASH=1`. They refuse another
+runtime or implicit host fallback. Claude discovery hooks and auto-update settings
+are not installed.
+
+Optional `cursor-sdk` Grok seats work through the same config independently of the
+orchestrator host. They count as laboratory `xai` once, with Cursor recorded as
+transport and Cursor/SpaceXAI model lineage. The SDK remains disabled by default.
+Authentication, installation and separate application/live-proof gates are in
+[Cursor setup](cursor.md). A package build, offline fixture or callback log is not
+live qualification.
+
+SDK seats support prepared code and numbered stack reviews. SDK numeric evidence
+binds the exact requested minimum, launch TSV, legacy lenses and final emphases;
+every assignment receives the full cumulative patch. Its receipt does not advance
+adaptive coverage or qualify as an adaptive predecessor. Non-SDK numeric reviews
+keep their existing manifestless behavior.
+
+`roster.sh --review-mode documents` refuses a nonempty `cursor_sdk_models` request
+with exit 6 and `cursor-sdk document mode is unsupported` before any SDK auth,
+catalog or provider work. The CLI option defaults to `code`; there is no new config
+key. Empty or absent SDK selection preserves ordinary document behavior. The
+renderer also rejects a frozen mixed SDK document roster. Code fix-plan manifests
+remain supported. Set `extras:false` explicitly for SDK numeric schedules that
+would otherwise launch opaque `codex-review`; a dormant extra is harmless.

@@ -1,0 +1,14 @@
+{
+  "synthetic": true,
+  "events": [
+    {"type": "tool_call", "agent_id": "synthetic-agent", "run_id": "synthetic-run", "call_id": "discovery-1", "name": "GetMcpTools", "status": "running", "args": {"providerIdentifier": "custom-user-tools"}},
+    {
+      "type": "tool_call", "agent_id": "synthetic-agent", "run_id": "synthetic-run", "call_id": "discovery-1", "name": "GetMcpTools", "status": "completed", "args": {"providerIdentifier": "custom-user-tools"},
+      "result": {"status": "success", "value": {"tools": [{
+        "name": "council_read",
+        "description": "Read one authorized artifact or bounded source range",
+        "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "offset": {"type": "integer", "minimum": 1}, "limit": {"type": "integer", "minimum": 1, "maximum": 240}}, "required": ["path"], "additionalProperties": false}
+      }]}}
+    }
+  ]
+}

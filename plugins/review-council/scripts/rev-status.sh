@@ -6,8 +6,10 @@
 set -u
 S=${1:?usage: rev-status.sh <session-dir>}
 [ -d "$S" ] || { echo "no session at $S"; exit 1; }
-python3 - "$S" <<'PY'
-import json, os, re, subprocess, sys, time
+HERE=$(cd "$(dirname "$0")" && pwd)
+python3 - "$S" "$HERE" <<'PY'
+import hashlib, importlib.util, json, os, re, subprocess, sys, time
+from pathlib import Path
 S = sys.argv[1]
 st = {}
 p = os.path.join(S, 'state.json')
@@ -21,6 +23,21 @@ seats = st.get('seats') or []
 if not isinstance(seats, list): seats = [seats]   # a bare name is one seat, not one per character
 dropped = set(st.get('dropped') or [])
 SHORT = {'codex-sol': 'sol', 'codex-terra': 'terra', 'codex-review': 'cx-rev'}
+sdk_seats = {}
+try:
+    with open(os.path.join(S, 'roster.json')) as source:
+        rows = json.load(source)['seats']
+    sdk_seats = {row['seat']: row for row in rows if row.get('adapter') == 'cursor-sdk'}
+except (OSError, ValueError, KeyError, TypeError, AttributeError):
+    pass
+profile = None
+if sdk_seats:
+    try:
+        spec = importlib.util.spec_from_file_location('sdk_status_profile', Path(sys.argv[2]) / 'rev-profile.py')
+        profile = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(profile)
+    except (ImportError, OSError, ValueError):
+        profile = None
 
 def mtime(path):
     try: return os.stat(path).st_mtime
@@ -71,12 +88,23 @@ for seat in seats:
     base = os.path.join(S, f"r{rnd}-{seat}")
     js, ex, lg, pr = base + '.json', base + '.exit', base + '.log', base + '.prompt.md'
     name = SHORT.get(seat, seat)
+    sdk_identity_valid = False
+    if seat in sdk_seats:
+        try:
+            identity = profile.cursor_sdk_identity(sdk_seats[seat])
+            frozen = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+            name += '[' + frozen[:8] + ']'
+            sdk_identity_valid = True
+        except (AttributeError, ValueError, TypeError, KeyError):
+            name += '[unbound]'
     started = mtime(pr)
     if seat in dropped:
         seats_out.append((f"{name}: dropped", '')); continue
     if os.path.exists(ex):
         code = open(ex).read().strip()
         if code == '0':
+            if seat in sdk_seats and (not sdk_identity_valid or not profile.is_completed_sdk_result(Path(js), seat)):
+                seats_out.append((f"{name}: invalid SDK proof", '')); continue
             dur = minutes(started, mtime(ex)) if started else 0
             seats_out.append((f"{name}: done {findings_count(js)}f {dur}m", ''))
         else:

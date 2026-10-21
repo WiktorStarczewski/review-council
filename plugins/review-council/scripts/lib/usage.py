@@ -8,6 +8,12 @@ from pathlib import Path
 
 
 TERMINAL_TYPES = {"result", "turn.completed", "end"}
+SDK_USAGE_FIELDS = {
+    "inputTokens": "input_tokens", "outputTokens": "output_tokens",
+    "totalTokens": "total_tokens", "cacheReadTokens": "cache_read_input_tokens",
+    "cacheWriteTokens": "cache_write_input_tokens", "reasoningTokens": "reasoning_output_tokens",
+    "costUsd": "cost_usd",
+}
 USAGE_FIELDS = (
     "input_tokens", "uncached_input_tokens", "output_tokens", "reasoning_output_tokens",
     "processed_tokens", "cached_input_tokens", "cache_write_input_tokens",
@@ -49,11 +55,18 @@ def record_usage(record, adapter=None):
         "assistant": "claude", "result": "claude", "turn.completed": "codex", "end": "grok",
     }.get(record.get("type")))
     provider = adapter or inferred or "unknown"
-    shape = adapter if adapter in {"claude", "codex", "grok", "gemini"} else inferred
+    shape = adapter if adapter in {"claude", "codex", "grok", "gemini", "cursor-sdk"} else inferred
     container = "stats" if shape == "gemini" else "usage"
     usage = record.get(container, {})
     if not isinstance(usage, dict):
         raise ValueError("invalid usage object")
+    if shape == "cursor-sdk":
+        usage = dict(usage)
+        for source, target in SDK_USAGE_FIELDS.items():
+            if source in usage:
+                if target in usage and usage[target] != usage[source]:
+                    raise ValueError("conflicting SDK usage metrics")
+                usage[target] = usage[source]
     for key in (
         "input_tokens", "output_tokens", "processed_tokens", "cached_input_tokens",
         "cache_write_input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens",
@@ -92,13 +105,16 @@ def record_usage(record, adapter=None):
         inputs = raw_input + write + read
         uncached = raw_input
     else:
-        inputs = (usage["total_tokens"] - output if shape not in {"codex", "gemini"}
-                  and "total_tokens" in usage else raw_input)
-        if shape not in {"codex", "gemini"} and "total_tokens" not in usage:
+        inputs = (usage["total_tokens"] - output if "total_tokens" in usage
+                  and (shape not in {"codex", "gemini", "cursor-sdk"}
+                       or shape == "cursor-sdk" and "input_tokens" not in usage) else raw_input)
+        if shape not in {"codex", "gemini", "cursor-sdk"} and "total_tokens" not in usage:
             inputs += read + write
         uncached = inputs - max(cached, read) - write
         if uncached < 0:
             raise ValueError("cached token count exceeds input token count")
+    if shape == "cursor-sdk" and "total_tokens" in usage and usage["total_tokens"] != inputs + output:
+        raise ValueError("inconsistent SDK total token count")
     costs = [record.get("total_cost_usd"), usage.get("cost_usd"), record.get("cost_usd")]
     for cost in costs:
         if cost is not None:
@@ -163,7 +179,10 @@ def read_stream(path, adapter=None):
     if terminal is not None:
         try:
             parsed = record_usage(terminal, adapter)
-            if parsed["processed_tokens"] or parsed["cost_usd_known_calls"]:
+            sdk_reported = (adapter == "cursor-sdk" and isinstance(terminal.get("usage"), dict)
+                            and any(key in terminal["usage"]
+                                    for key in (*SDK_USAGE_FIELDS, *SDK_USAGE_FIELDS.values())))
+            if parsed["processed_tokens"] or parsed["cost_usd_known_calls"] or sdk_reported:
                 item = parsed
         except (TypeError, ValueError) as error:
             invalid.append({"stream": path.name, "reason": str(error)})

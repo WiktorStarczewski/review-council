@@ -55,6 +55,9 @@ if [ -n "$PANEL" ]; then
   [ "${#SEATS[@]}" -gt 0 ] || die "panel assignments are empty: $PANEL"
   RENDER_OUT="$S/r${N}-render.json"
 fi
+for NAME in "$N" "${SEATS[@]}"; do
+  case "$NAME" in ''|[!A-Za-z0-9]*|*[!A-Za-z0-9_.-]*) die "invalid prompt label or seat: $NAME";; esac
+done
 for SEAT in "${SEATS[@]}"; do OUTS+=("$S/r${N}-${SEAT}.prompt.md"); done
 # A failed same-label rerender must not leave the prior prompt looking current.
 for OUT in "${OUTS[@]}" ${RENDER_OUT:+"$RENDER_OUT"}; do
@@ -74,9 +77,16 @@ while [ $# -gt 0 ]; do
   esac
 done
 case "$PHASE" in
-  ''|discovery|risk|verification|repair|plan) ;;
-  *) die "--phase must be discovery, risk, verification, repair, or plan: $PHASE";;
+  ''|discovery|risk|verification|repair|plan|numeric) ;;
+  *) die "--phase must be discovery, risk, verification, repair, plan, or numeric: $PHASE";;
 esac
+if [ "$PHASE" = numeric ]; then
+  [[ "$N" =~ ^[1-9][0-9]*x?$ ]] || die "invalid numeric prompt label: $N"
+  for PRIOR in "$S/r${N}-"*.prompt.md; do
+    rm -f -- "$PRIOR" || die "cannot invalidate prior numeric prompt: $PRIOR"
+  done
+  [ -n "$EVIDENCE" ] || die "numeric prompts require their bound evidence manifest"
+fi
 if [ -n "$RO" ] && [ -n "$EVIDENCE" ]; then
   die "--evidence applies to code and plan prompts, not --read-only document prompts"
 fi
@@ -154,6 +164,17 @@ if [ "$HAS_CONTEXT" = 1 ] && [ -s "$S/context.md" ]; then SHOW_CONTEXT=1; fi
 ADAPTERS=()
 if is_present "$S/roster.json"; then
   require_regular "$S/roster.json" "roster"
+  if [ -n "$RO" ]; then
+    python3 - "$S/roster.json" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding='utf-8') as stream:
+    roster = json.load(stream)
+if any(row.get('adapter') == 'cursor-sdk' for row in roster['seats']):
+    sys.stderr.write('cursor-sdk document mode is unsupported\n')
+    raise SystemExit(1)
+PY
+    [ "$?" = 0 ] || die "document roster is unsupported"
+  fi
   ROSTER_ADAPTERS=$(python3 - "$S/roster.json" "${SEATS[@]}" <<'PY' 2>/dev/null
 import json, sys
 with open(sys.argv[1], encoding='utf-8') as source:
@@ -174,7 +195,7 @@ else
   for SEAT in "${SEATS[@]}"; do ADAPTERS+=(agent); done
 fi
 NEEDS_SCHEMA=0
-for ADAPTER in "${ADAPTERS[@]}"; do case "$ADAPTER" in agent|gemini) NEEDS_SCHEMA=1;; esac; done
+for ADAPTER in "${ADAPTERS[@]}"; do case "$ADAPTER" in agent|gemini|cursor-sdk) NEEDS_SCHEMA=1;; esac; done
 if [ "$NEEDS_SCHEMA" = 1 ]; then require_regular "$SCHEMA" "findings schema"; fi
 check_read() { cat -- "$1" >/dev/null || die "cannot read $2: $1"; }
 render_evidence() {
@@ -254,16 +275,44 @@ PY
   BASELINE_FILE=$BASELINE_TMP
 fi
 if [ -n "$EVIDENCE" ] && [ -n "$PANEL" ]; then
+  if [ "$PHASE" = numeric ]; then
+    python3 - "$EVIDENCE" "$PANEL" <<'PY'
+import json
+from pathlib import Path
+import sys
+manifest = Path(sys.argv[1])
+data = json.loads(manifest.read_bytes())
+panel = Path(sys.argv[2])
+if (data.get('phase') != 'numeric' or panel.is_symlink()
+        or panel.resolve() != manifest.parent / data.get('numeric', {}).get('panel', '')):
+    raise SystemExit('numeric renderer needs its exact prepared panel')
+PY
+    [ "$?" = 0 ] || die "numeric panel does not match its evidence manifest"
+  fi
   FRAGMENTS=$(mktemp -d "$S/.rev-evidence-fragment.XXXXXX") || die "cannot create evidence fragments in $S"
   # The manifest phase is authoritative; render-panel rejects a conflicting --phase.
   PHASE=$(render_evidence_panel) || die "cannot render panel evidence from $EVIDENCE"
 elif [ -n "$EVIDENCE" ]; then
   SEAT=${SEATS[0]}
-  EVIDENCE_PHASE=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["phase"])' \
-    "$EVIDENCE") || die "cannot read evidence manifest phase: $EVIDENCE"
+  EVIDENCE_PHASE=$(python3 - "$EVIDENCE" "$PHASE" <<'PY'
+import json
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+manifest = json.loads(path.read_bytes())
+if manifest['phase'] == 'repair' and manifest.get('parent_assignment'):
+    name = manifest['parent_assignment']['manifest']
+    if Path(name).name != name:
+        raise SystemExit('invalid repair parent')
+    parent = json.loads((path.parent / name).read_bytes())
+    if (parent['phase'] == 'numeric') != (sys.argv[2] == 'numeric'):
+        raise SystemExit('numeric repair must retain its parent covered phase')
+print(manifest['phase'])
+PY
+  ) || die "cannot bind evidence manifest phase: $EVIDENCE"
   # A repair seat may name the phase of the panel it covers.
   case "$EVIDENCE_PHASE:$PHASE" in
-    *:|repair:discovery|repair:risk|repair:verification) ;;
+    *:|repair:discovery|repair:risk|repair:verification|repair:numeric) ;;
     *) [ "$PHASE" = "$EVIDENCE_PHASE" ] || die "evidence manifest phase is $EVIDENCE_PHASE, not $PHASE: $EVIDENCE";;
   esac
   PHASE=${PHASE:-$EVIDENCE_PHASE}
@@ -486,10 +535,15 @@ EOC
     case "$ADAPTER" in
       agent|claude)
         printf 'Every source Read call must set an explicit one-based `offset` and a `limit` of at most %s lines. Every Grep or search call must set a result limit of at most 80. ' "$READ_LINES";;
+      cursor-sdk)
+        printf 'Every source council_read call must set an explicit one-based `offset` and a `limit` of at most %s lines. ' "$READ_LINES";;
       codex) ;;
       *) printf 'Every source read_file call must select an explicit one-based start and at most %s lines. Every search call must set a result limit of at most 80. ' "$READ_LINES";;
     esac
     echo 'Only exact full-read artifacts and document inputs named in this prompt are exceptions.'
+    if [ "$ADAPTER" = cursor-sdk ]; then
+      echo '4. Use council_read for exact authorized paths. Omit offset and limit only for complete named artifacts and document inputs; read those in full. Use prepared sibling-search results and bounded source reads to locate related sites.'
+    else
     printf '4. Shell commands that print source, diffs, or logs must select at most %s inclusive lines, so `END - START + 1 <= %s`. ' "$READ_LINES" "$READ_LINES"
     printf 'Shell searches over multiple files need a global `| head -81` limiter; at most 80 result lines are accepted, '
     if [ -n "$EVIDENCE" ]; then
@@ -508,6 +562,7 @@ EOC
     cat <<'EOC'
 `head` limits lines, not bytes: keep searches off generated or minified files such as `dist/`, where one line can pass the output ceiling. Read original source from the working tree; `git show` of the base or any other revision is context only and never satisfies a required read or a citation.
 EOC
+    fi
     printf '5. Batch independent bounded tool calls into one turn with a 32 KiB combined output ceiling. '
     if [ -n "$EVIDENCE" ]; then
       printf 'Ordered '
@@ -517,7 +572,11 @@ EOC
       if [ "$HAS_PACKETS" = 1 ]; then printf 'Source-context packets and repository reads keep the ordinary 32 KiB turn ceiling, and '; fi
       printf 'repository expansion begins in a later turn. '
     fi
-    echo 'Keep each shell tool call to one producer pipeline. Never mix source reads and searches in one shell call.'
+    if [ "$ADAPTER" = cursor-sdk ]; then
+      echo 'Keep each council_read call to one path and obey the rendered read batch limits.'
+    else
+      echo 'Keep each shell tool call to one producer pipeline. Never mix source reads and searches in one shell call.'
+    fi
     printf '%s' "6. Expand to another bounded block, file, or pinned dependency only to answer a concrete question that could prove or refute a finding. Name the concrete symbol or invariant question in your reasoning, never as a comment inside the command, then make the tool call that bounded window."
     if [ -n "$DEPS_ROOT" ]; then printf ' Read pinned dependency source only under %s.' "$DEPS_ROOT"; fi
     echo
@@ -542,6 +601,12 @@ EOC
     echo "## Review assignment"
   else
     echo "You are one of several independent reviewers on a multi-model review panel. Others review the same documents on different models; your value is what you can substantiate yourself. Follow the scope and lens below, combine sibling issues under one root cause, and return no more than five distinct findings."
+    echo
+  fi
+  if [ "$ADAPTER" = cursor-sdk ]; then
+    echo 'Available evidence tool: council_read on custom-user-tools, with path and optional offset and limit. MCP metadata discovery is permitted only for that reader. Shell, search, execution, native file tools, web and delegation are unavailable. Resolve questions with prepared evidence and bounded reads; state unverified runtime claims explicitly.'
+    echo 'Read each listed patch chunk, source-context packet, required source segment and evidence index as a complete artifact using only the path argument, without offset or limit. The chunk byte spans and segment raw-byte counts below describe their complete prepared contents. A prepared artifact can end inside a source line, declaration or diff hunk; that boundary is its actual EOF, not a truncated delivery.'
+    echo 'A successful path-only council_read returns the whole artifact. Continue to the next assigned artifact instead of probing its tail or EOF, repeating a completed chunk, or trying to complete the declaration at its boundary. Explicit offset and limit apply to bounded original-source reads, not to these complete artifacts. If delivery reports an error or truncation, return INCOMPLETE PROOF rather than treating partial reads as completion.'
     echo
   fi
   if [ "$ADAPTER" = codex ] && [ -z "$RO" ]; then
@@ -574,6 +639,9 @@ EOC
             ;;
           agent|claude)
             echo "$FIRST_EVIDENCE: use Read to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most $READ_LINES lines, starting at line 1."
+            ;;
+          cursor-sdk)
+            echo "$FIRST_EVIDENCE: use council_read to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most $READ_LINES lines, starting at line 1."
             ;;
           *)
             echo "$FIRST_EVIDENCE: use read_file to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most $READ_LINES lines, starting at line 1."
@@ -676,7 +744,7 @@ for i in "${!SEATS[@]}"; do
   PATCH_MODE=${PATCH_MODES[$i]}; HAS_PACKETS=${PACKET_MODES[$i]}; HAS_SEGMENTS=${SEGMENT_MODES[$i]}
   CLEAN_ROOM=0; FIRST_EVIDENCE='First evidence action'
   case "+$LENS+" in *+clean-room+*) CLEAN_ROOM=1; FIRST_EVIDENCE+=' after required clean-room design';; esac
-  case "$ADAPTER" in agent|gemini) INLINE_SCHEMA=1;; *) INLINE_SCHEMA=0;; esac
+  case "$ADAPTER" in agent|gemini|cursor-sdk) INLINE_SCHEMA=1;; *) INLINE_SCHEMA=0;; esac
   [ "$PHASE" != verification ] || EMPH="${EMPH:+$EMPH }$SIBLING_SITE_CHECK"
   if [ -n "$FRAGMENTS" ]; then
     EVIDENCE_TMP="$FRAGMENTS/$SEAT"

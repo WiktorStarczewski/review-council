@@ -3510,6 +3510,7 @@ FATAL = {
     'missing-transcript', 'malformed-transcript', 'unsupported-transcript-shape',
     'missing-tool-call-id', 'missing-tool-output', 'duplicate-tool-call', 'duplicate-tool-output',
     'orphan-tool-output', 'invalid-tool-call-shape', 'invalid-hook-payload', 'no-recognized-review-tools',
+    'cursor-sdk-delivery-mismatch', 'cursor-sdk-reader-binding', 'cursor-sdk-transport-proof',
     # binding
     'missing-prompt', 'invalid-prompt-artifact-set', 'invalid-evidence-manifest-declaration',
     'invalid-assignment-prompt-binding', 'invalid-plan-prompt-binding', 'invalid-plan-evidence',

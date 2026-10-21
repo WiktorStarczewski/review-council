@@ -1,0 +1,70 @@
+name: cursor-package
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build and validate native Cursor package
+        run: python3 scripts/build-cursor-plugin.py
+      - name: Archive package with source identity and file modes
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import stat
+          import subprocess
+          import tarfile
+
+          package = Path('dist/cursor/review-council')
+          output = Path('dist/cursor-artifact')
+          output.mkdir()
+          archive = output / 'review-council-cursor.tar.gz'
+          inventory = []
+          paths = [package, *sorted(package.rglob('*'))]
+          with tarfile.open(archive, 'w:gz', dereference=False) as bundle:
+              for path in paths:
+                  info = path.lstat()
+                  if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+                      raise RuntimeError('package contains a nonregular entry: ' + str(path))
+                  regular = stat.S_ISREG(info.st_mode)
+                  raw = path.read_bytes() if regular else b''
+                  name = path.relative_to(package.parent).as_posix()
+                  inventory.append({
+                      'path': name, 'kind': 'file' if regular else 'directory',
+                      'sha256': hashlib.sha256(raw).hexdigest() if regular else None,
+                      'bytes': len(raw), 'mode': format(stat.S_IMODE(info.st_mode), '04o'),
+                  })
+                  bundle.add(path, arcname=name, recursive=False)
+          def git_identity(ref):
+              return subprocess.check_output(['git', 'rev-parse', ref], text=True).strip()
+          raw = archive.read_bytes()
+          metadata = {
+              'version': 1, 'source_commit': git_identity('HEAD'),
+              'source_tree': git_identity('HEAD^{tree}'),
+              'workflow_commit': os.environ['GITHUB_SHA'],
+              'run_id': os.environ['GITHUB_RUN_ID'],
+              'run_attempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'archive': {'path': archive.name, 'sha256': hashlib.sha256(raw).hexdigest(),
+                          'bytes': len(raw)},
+              'inventory': sorted(inventory, key=lambda row: row['path']),
+          }
+          (output / 'package-metadata.json').write_text(json.dumps(metadata, indent=2) + '\n')
+          PY
+      - name: Upload native Cursor package
+        uses: actions/upload-artifact@v4
+        with:
+          name: cursor-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/cursor-artifact/
+          if-no-files-found: error
+          retention-days: 7

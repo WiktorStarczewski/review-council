@@ -1,0 +1,28 @@
+{
+  "synthetic": true,
+  "version": 1,
+  "sdk_version": "1.0.38",
+  "runtime_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "models": [
+    {
+      "id": "grok-9.9",
+      "displayName": "Grok 9.9",
+      "parameters": [{"id": "reasoning", "displayName": "Reasoning", "values": [{"value": "high"}, {"value": "xhigh"}]}],
+      "variants": [
+        {"params": [{"id": "reasoning", "value": "high"}], "displayName": "High", "isDefault": true},
+        {"params": [{"id": "reasoning", "value": "xhigh"}], "displayName": "Extra High"}
+      ]
+    },
+    {
+      "id": "grok-9.10",
+      "displayName": "Grok 9.10",
+      "parameters": [{"id": "reasoning", "displayName": "Reasoning", "values": [{"value": "high"}, {"value": "xhigh"}]}],
+      "variants": [
+        {"params": [{"id": "reasoning", "value": "high"}], "displayName": "High", "isDefault": true},
+        {"params": [{"id": "reasoning", "value": "xhigh"}], "displayName": "Extra High", "isMaxMode": true}
+      ]
+    },
+    {"id": "gpt-99-sol", "displayName": "Other laboratory", "parameters": [], "variants": []},
+    {"id": "auto", "displayName": "Auto", "parameters": [], "variants": []}
+  ]
+}

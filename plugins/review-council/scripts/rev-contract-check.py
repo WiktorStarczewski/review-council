@@ -15,11 +15,18 @@ import tempfile
 import threading
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'lib'))
+
 
 BOUNDARIES = (
+    '.cursor-plugin/plugin.json',
     'agents/rev-reviewer.md',
     'agents/rev-reviewer-sonnet.md',
     'codex-skills/rev/SKILL.md',
+    'cursor-skills/rev/SKILL.md',
+    'cursor-skills/stack/SKILL.md',
+    'docs/cursor-review-workflow.md',
+    'docs/cursor-stack-workflow.md',
     'schema/findings.schema.json',
     'scripts/lib/review-read-audit.py',
     'scripts/lib/stream-summary.py',
@@ -32,7 +39,7 @@ BOUNDARIES = (
     'scripts/roster.sh',
     'skills/rev/SKILL.md',
 )
-CONTRACT_TREES = ('scripts/lib/', 'scripts/seats.d/', 'tests/')
+CONTRACT_TREES = ('scripts/lib/', 'scripts/seats.d/', 'scripts/cursor-sdk/', 'tests/')
 CONTRACT_FILES = (
     'tests/fixtures/codex-stream.ndjson',
     'tests/fixtures/grok-stream.ndjson',
@@ -78,9 +85,11 @@ def git(root, *args):
 
 def source_plugin(root):
     nested = root / 'plugins' / 'review-council'
-    if (nested / '.codex-plugin' / 'plugin.json').is_file():
+    manifests = ('.codex-plugin', '.cursor-plugin')
+    if any((nested / host / 'plugin.json').is_file() for host in manifests):
         return nested, 'plugins/review-council/'
-    if (root / '.codex-plugin' / 'plugin.json').is_file() and (root / 'scripts').is_dir():
+    if (any((root / host / 'plugin.json').is_file() for host in manifests)
+            and (root / 'scripts').is_dir()):
         return root, ''
     return None, None
 
@@ -195,8 +204,8 @@ def execution_policy():
 
 def contract_executor(subject_plugin, subject_alias):
     plugin = Path(__file__).resolve().parents[1]
-    manifest = plugin / '.codex-plugin' / 'plugin.json'
-    if not manifest.is_file() or not (plugin / 'scripts').is_dir():
+    manifests = [plugin / host / 'plugin.json' for host in ('.codex-plugin', '.cursor-plugin')]
+    if not any(manifest.is_file() for manifest in manifests) or not (plugin / 'scripts').is_dir():
         raise ValueError('checker-owned plugin root is unavailable')
     override = os.environ.get('REVIEW_COUNCIL_CONTRACT_RUNNER')
     if override:
@@ -417,7 +426,7 @@ def core_roster(path):
     for row in data['seats']:
         if not isinstance(row, dict):
             raise ValueError('invalid provider contract roster')
-        if row.get('adapter') not in ('codex', 'gemini', 'claude', 'agent'):
+        if row.get('adapter') not in ('codex', 'gemini', 'claude', 'agent', 'cursor-sdk'):
             raise ValueError('provider contract roster contains an unsupported or retired adapter')
         if row.get('extra'):
             continue
@@ -427,6 +436,9 @@ def core_roster(path):
                 or item['effort'] is not None
                 and (not isinstance(item['effort'], str) or not item['effort'])):
             raise ValueError('provider contract core roster lacks an exact identity')
+        if row['adapter'] == 'cursor-sdk':
+            from roster import cursor_sdk_identity
+            item.update(cursor_sdk_identity(row))
         result.append(item)
     if not result or len({row['seat'] for row in result}) != len(result):
         raise ValueError('invalid provider contract core roster')

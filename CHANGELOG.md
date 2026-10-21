@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.0
+
+- Add native Cursor rev and stack workflows with explicit host routing and
+  self-contained packaging.
+- Add opt-in Cursor-served Grok reviewers through the pinned local SDK, normal
+  browser sign-in, exact xhigh selection and enforced bounded-source evidence.
+  Existing default reviewers remain unchanged.
+- Preserve full cumulative evidence for numeric code reviews and stack legs using
+  SDK seats. SDK document reviews and incompatible opaque extras refuse before
+  reviewer calls.
+- Keep source and instruction-budget proof valid when verification paths are
+  restored to their baseline (#48).
+
 ## 0.6.2
 
 - Repository checks inherit existing CI routing, guarded local fallback and

@@ -32,6 +32,7 @@ from review_limits import (CLAUDE_MAX_TURNS, MANDATORY_REPOSITORY_READ_LIMIT,
                            REPOSITORY_EXPANSION_CALL_LIMIT,
                            REPOSITORY_REFUTATION_CALL_RESERVE)
 from session_inputs import session_input_lock, validate_standard_inputs
+from roster import cursor_sdk_identity, validate_cursor_sdk_qualification
 
 BUNDLES = ('correctness-boundaries', 'security-state-api',
            'concurrency-resources-performance', 'tests-observability-maintenance-regression')
@@ -75,6 +76,11 @@ def read_batch_limit(adapter):
     return 2 if adapter == 'claude' else 1
 
 
+def read_tool_name(adapter):
+    return ('Read' if adapter in ('agent', 'claude') else
+            'council_read' if adapter == 'cursor-sdk' else 'read_file')
+
+
 def plan_search_timeout(environment):
     value = environment.get('REV_PLAN_SEARCH_TIMEOUT', str(PLAN_SEARCH_TIMEOUT_DEFAULT))
     if not isinstance(value, str) or not re.fullmatch(r'[0-9]+', value):
@@ -113,7 +119,7 @@ def validate_live_roster_adapters(roster):
             or any(not isinstance(row, dict) for row in roster['seats'])):
         raise ValueError('invalid roster shape')
     unsupported = sorted({str(row.get('adapter')) for row in roster['seats']
-                          if row.get('adapter') not in ('codex', 'gemini', 'claude', 'agent')})
+                          if row.get('adapter') not in ('codex', 'gemini', 'claude', 'agent', 'cursor-sdk')})
     if unsupported:
         raise ValueError('unsupported or retired roster adapter: ' + ', '.join(unsupported))
 
@@ -1940,12 +1946,55 @@ def markdown(data, json_path):
     return packet
 
 
+def numeric_panel_binding(session, label, roster, number, minimum, panel):
+    if (type(number) is not int or number < 1 or str(number) != label
+            or type(minimum) is not int or minimum < 1):
+        raise ValueError('invalid numeric round or minimum')
+    rows = roster.get('seats') if isinstance(roster, dict) else None
+    if (not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows)
+            or any(not SAFE_NAME.fullmatch(str(row.get('seat', ''))) for row in rows)
+            or len({row['seat'] for row in rows}) != len(rows)):
+        raise ValueError('invalid numeric roster')
+    core = [row for row in rows if not row.get('extra')]
+    launched = [row for row in rows if not row.get('extra') or row.get('round') == number]
+    if not any(row.get('adapter') == 'cursor-sdk' for row in launched):
+        raise ValueError('numeric evidence requires cursor-sdk')
+    if len(core) < 3:
+        raise ValueError('numeric panel requires at least three core seats')
+    if any(row.get('mode') for row in launched):
+        raise ValueError('cursor-sdk numeric extra mode is unsupported')
+    panel = Path(panel)
+    if panel.parent.resolve() != session or panel.name != f'r{label}-panel.tsv':
+        raise ValueError('numeric panel must be its exact session artifact')
+    raw = attempt_module().private_bytes(panel)
+    text = raw.decode('utf-8')
+    if '\r' in text or '\0' in text:
+        raise ValueError('invalid numeric panel text')
+    assignments = []
+    for line in text.splitlines():
+        columns = line.split('\t')
+        if len(columns) != 3 or any(not value for value in columns):
+            raise ValueError('numeric panel needs seat, lens and emphasis')
+        assignments.append(tuple(columns))
+    if [row[0] for row in assignments] != [row['seat'] for row in launched]:
+        raise ValueError('numeric panel does not match its ordered launched seats')
+    return {'round': number, 'min_rounds': minimum, 'panel': panel.name,
+            'panel_sha256': digest(raw), 'launched_seats': [row[0] for row in assignments]}, assignments, raw
+
+
 def assignments(args, roster):
     if not isinstance(roster, dict) or not isinstance(roster.get('seats'), list) or any(not isinstance(s, dict) for s in roster['seats']):
         raise ValueError('invalid roster shape')
     seats = [s['seat'] for s in roster['seats'] if not s.get('extra')]
     if not seats or len(set(seats)) != len(seats) or any(not SAFE_NAME.fullmatch(s) for s in seats):
         raise ValueError('invalid core roster')
+    if args.phase == 'numeric':
+        if args.assignment or args.full_seat:
+            raise ValueError('numeric assignments come only from the bound panel')
+        _, rows, _ = numeric_panel_binding(
+            Path(args.session).resolve(), args.label, roster, args.numeric_round,
+            args.numeric_min_rounds, args.numeric_panel)
+        return {seat: lens for seat, lens, _ in rows}, seats[0]
     chosen = {}
     for assignment in args.assignment:
         seat, sep, bundle = assignment.partition('=')
@@ -2018,6 +2067,8 @@ def validate_assignment_topology(chosen, seats, phase):
                          + (panel + ' or ' if panel else '') + 'one <seat>=' + PLAN_BUNDLES[0])
     if len(seats) < 3:
         raise ValueError('review panel requires at least three core seats')
+    if phase == 'numeric':
+        return
     if phase == 'discovery':
         if chosen != {seat: 'simplicity' for seat in seats}:
             raise ValueError('invalid discovery seat topology')
@@ -3196,7 +3247,7 @@ def validate_components(session, manifest, evidence):
         raise ValueError('invalid dependency components')
     assigned = manifest['assignments']; owner = manifest['mechanical_owner']
     ordered = {row['seat']: assigned[row['seat']] for row in read_json(session / 'roster.json')['seats'] if row['seat'] in assigned}
-    adaptive = (not manifest['fallback_reason'] and manifest['phase'] != 'repair'
+    adaptive = (not manifest['fallback_reason'] and manifest['phase'] not in ('repair', 'numeric')
                 and len(assigned) > 1)
     if manifest['phase'] == 'plan':
         routed_plan = any('plan_clusters' in assignment for assignment in assigned.values())
@@ -3890,12 +3941,25 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         raise ValueError('invalid manifest tree identifier')
     if not SAFE_NAME.fullmatch(manifest['label']) or path.name != f"r{manifest['label']}-evidence.manifest.json":
         raise ValueError('invalid manifest label')
-    if manifest['phase'] not in ('discovery', 'risk', 'verification', 'repair', 'plan'):
+    if manifest['phase'] not in ('discovery', 'risk', 'verification', 'repair', 'plan', 'numeric'):
         raise ValueError('invalid manifest phase')
     if (manifest['phase'] == 'plan') != (manifest['schema_version'] in (3, 4)):
         raise ValueError('manifest phase/version mismatch')
     expected = {f"r{manifest['label']}-{suffix}" for suffix in
                 ('full.patch', 'semantic.patch', 'delta.patch', 'evidence.json', 'evidence.md', 'instructions.md')}
+    numeric = None
+    if manifest['phase'] == 'numeric':
+        value = manifest.get('numeric')
+        if not isinstance(value, dict):
+            raise ValueError('missing numeric panel binding')
+        numeric, numeric_rows, _ = numeric_panel_binding(
+            session, manifest['label'], read_json(session / 'roster.json'), value.get('round'),
+            value.get('min_rounds'), session / str(value.get('panel', '')))
+        if value != numeric:
+            raise ValueError('numeric panel binding changed')
+        expected.add(numeric['panel'])
+    elif 'numeric' in manifest:
+        raise ValueError('numeric binding belongs only to numeric evidence')
     if manifest['phase'] == 'plan':
         expected.update((f"r{manifest['label']}-plan.md", f"r{manifest['label']}-plan-closure.patch"))
         expected.update(cluster['search_proof']['artifact'] for cluster in manifest['plan']['clusters']
@@ -3947,13 +4011,20 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
     core = {s['seat'] for s in roster['seats'] if not s.get('extra')}
     core_order = [s['seat'] for s in roster['seats'] if not s.get('extra')]
     bundles_by_seat = {seat: assignment['bundle'] for seat, assignment in assigned.items()}
-    if not set(assigned) <= core or (
-            manifest['phase'] != 'repair' and set(assigned) != core
+    expected_seats = set(numeric['launched_seats']) if numeric is not None else core
+    if not set(assigned) <= expected_seats or (
+            manifest['phase'] != 'repair' and set(assigned) != expected_seats
             and not (manifest['phase'] == 'plan' and single_seat_plan(bundles_by_seat))):
         raise ValueError('assignment roster mismatch')
     adapters = {s['seat']: s.get('adapter', '') for s in roster['seats']}
     if any(a.get('adapter') != adapters[s] for s, a in assigned.items()):
         raise ValueError('assignment adapter mismatch')
+    for seat, assignment in assigned.items():
+        row = next(row for row in roster['seats'] if row['seat'] == seat)
+        if adapters[seat] == 'cursor-sdk' and ('cursor_sdk' in row or 'cursor_sdk' in assignment):
+            identity = cursor_sdk_identity(row)
+            if any(assignment.get(key) != value for key, value in identity.items()):
+                raise ValueError('cursor-sdk assignment identity mismatch')
     # unenforced_seats decides whose read audit is skipped, so it is DERIVED here and compared,
     # never taken on the manifest's word. Declared and untyped, a hand-edited list could name a
     # CLI seat, or be a bare string whose `in` test degrades to a substring match.
@@ -3973,6 +4044,12 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         raise ValueError('unenforced_seats does not match the roster')
     validate_assignment_topology({seat: assigned[seat]['bundle'] for seat in core_order if seat in assigned},
                                  [seat for seat in core_order if seat in assigned], manifest['phase'])
+    if numeric is not None:
+        if manifest['mechanical_owner'] != core_order[0]:
+            raise ValueError('numeric integration owner changed')
+        for seat, lens, emphasis in numeric_rows:
+            if assigned[seat]['bundle'] != lens or assigned[seat].get('emphasis') != emphasis:
+                raise ValueError('numeric lens or emphasis changed')
     for name, meta in manifest['artifacts'].items():
         if not isinstance(meta, dict):
             raise ValueError('invalid artifact metadata')
@@ -3992,6 +4069,8 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
                   'scope', 'paths', 'semantic_paths', 'delta_paths', 'instructions'):
         if field not in manifest or evidence.get(field) != manifest[field]:
             raise ValueError('evidence/manifest mismatch: ' + field)
+    if evidence.get('numeric') != numeric:
+        raise ValueError('evidence/manifest mismatch: numeric')
     binding = manifest.get('parent_assignment')
     if evidence.get('parent_assignment') != binding:
         raise ValueError('evidence/manifest mismatch: parent_assignment')
@@ -4032,6 +4111,7 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
                 or manifest['label'] != parent['label'] + 'x'
                 or child_assignment['scope'] != 'full'
                 or child_assignment['bundle'] != parent_assignment['bundle']
+                or child_assignment.get('emphasis') != parent_assignment.get('emphasis')
                 or manifest['snapshot_tree'] != parent['snapshot_tree']
                 or manifest['base_tree'] != parent['base_tree']
                 or manifest['source'] != parent['source']
@@ -4064,7 +4144,7 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         if any(a['scope'] != ('full' if seat == owner else specialist_scope)
                for seat, a in assigned.items()):
             raise ValueError('plan panel scope mismatch')
-    elif fallback or phase == 'repair':
+    elif fallback or phase in ('repair', 'numeric'):
         if any(a['scope'] != 'full' for a in assigned.values()):
             raise ValueError('fallback and repair require all-full scope')
     else:
@@ -4213,7 +4293,7 @@ def validate_panel_coverage(manifest):
     chosen = {s: a['bundle'] for s, a in manifest['assignments'].items()}
     if phase == 'plan' and not (bundle_coverage(chosen, PLAN_BUNDLES) or single_seat_plan(chosen)):
         raise ValueError('plan validation requires all four plan lenses or one plan-completeness seat')
-    if phase not in ('discovery', 'plan') and not bundle_coverage(chosen):
+    if phase not in ('discovery', 'plan', 'numeric') and not bundle_coverage(chosen):
         raise ValueError('coverage requires all four bundles')
 
 
@@ -4593,6 +4673,13 @@ def validate_results(session, manifest, manifest_hash, seats=None, verdicts=None
     validator = Path(__file__).parent / 'lib' / 'validate-findings.py'
     attempt = attempt_module()
     for seat in selected:
+        if manifest['assignments'][seat]['adapter'] == 'cursor-sdk':
+            roster = read_json(session / 'roster.json')
+            row = next(row for row in roster['seats'] if row.get('seat') == seat)
+            identity = cursor_sdk_identity(row)
+            if any(manifest['assignments'][seat].get(key) != value for key, value in identity.items()):
+                raise ValueError('cursor-sdk result identity mismatch')
+            validate_cursor_sdk_qualification(row)
         stem = session / f"r{manifest['label']}-{seat}"
         result = Path(str(stem) + '.json'); exit_path = Path(str(stem) + '.exit')
         prompt = Path(str(stem) + '.prompt.md')
@@ -4678,6 +4765,11 @@ def result_generation(session, manifest, manifest_hash, seat):
         'enforced': seat not in manifest.get('unenforced_seats', []),
         'exit_sha256': hashes[stem + '.exit'],
     }
+    if assignment['adapter'] == 'cursor-sdk':
+        identity = cursor_sdk_identity(roster_seat)
+        if any(assignment.get(key) != value for key, value in identity.items()):
+            raise ValueError('cursor-sdk receipt identity mismatch')
+        row.update(identity)
     # Only an unenforced seat carries one, so an all-CLI generation row is byte-identical to the
     # rows this receipt format already published.
     if seat in verdicts:
@@ -4718,6 +4810,8 @@ def prior_coverage(session, repo, base_tree, reference=None, seen=None):
         if not isinstance(receipt, dict) or not isinstance(receipt.get('manifest'), str) or Path(receipt['manifest']).name != receipt['manifest']:
             raise ValueError('invalid receipt manifest')
         manifest, mh = validated_manifest(session / receipt['manifest'], fresh=False, seen=seen)
+        if manifest['phase'] == 'numeric':
+            raise ValueError('numeric receipts are not adaptive predecessors')
         if receipt['manifest_sha256'] != mh or receipt['snapshot_tree'] != manifest['snapshot_tree'] or manifest['base_tree'] != base_tree:
             raise ValueError('receipt snapshot/base mismatch')
         if receipt.get('schema_version') == 2:
@@ -4834,6 +4928,16 @@ def _prepare_locked(args, session):
     repo = Repository(session)
     roster = read_json(session / 'roster.json')
     validate_live_roster_adapters(roster)
+    numeric_values = tuple(getattr(args, name, None) for name in
+                           ('numeric_round', 'numeric_min_rounds', 'numeric_panel'))
+    numeric = None; numeric_rows = []; numeric_raw = None
+    if args.phase == 'numeric':
+        if any(value is None for value in numeric_values):
+            raise ValueError('numeric phase requires round, minimum and panel')
+        numeric, numeric_rows, numeric_raw = numeric_panel_binding(
+            session, args.label, roster, *numeric_values)
+    elif any(value is not None for value in numeric_values):
+        raise ValueError('numeric arguments belong only to numeric evidence')
     parent_assignment = None
     parent_manifest = None
     parent_manifest_hash = None
@@ -5061,7 +5165,7 @@ def _prepare_locked(args, session):
                                 if delta_categories[path] == 'semantic'}
         else:
             plan_patch_basis = changed
-    if not basis and not fallback and args.phase != 'repair':
+    if not basis and not fallback and args.phase not in ('repair', 'numeric'):
         fallback = 'no semantic components'; use_delta = False
     if args.phase == 'plan':
         plan_assignments, plan_delta_assignments = split_plan_cluster_assignments(
@@ -5082,7 +5186,7 @@ def _prepare_locked(args, session):
         data['dependencies'], plan_patch_basis) if args.phase == 'plan' else {})
     adapters = {s['seat']: s.get('adapter', '') for s in roster['seats']}
     for seat, bundle in chosen.items():
-        mode = 'full' if seat == owner or args.phase == 'repair' else 'semantic'
+        mode = 'full' if seat == owner or args.phase in ('repair', 'numeric') else 'semantic'
         if args.phase == 'plan':
             mode = ('full' if seat == owner else
                     'delta' if plan_delta_mode == 'receipt-delta' else 'closure')
@@ -5108,6 +5212,13 @@ def _prepare_locked(args, session):
                         'full_state': mode == 'full', 'adapter': adapters[seat], 'components': component_ids,
                         'patch': str(session / name), 'patch_sha256': digest(patch_body),
                         'patch_bytes': len(patch_body), 'patch_lines': len(split_lf_lines(patch_body))}
+        roster_seat = next(row for row in roster['seats'] if row['seat'] == seat)
+        if adapters[seat] == 'cursor-sdk' and 'cursor_sdk' in roster_seat:
+            scopes[seat].update(cursor_sdk_identity(roster_seat))
+        if numeric is not None:
+            scopes[seat]['emphasis'] = next(row[2] for row in numeric_rows if row[0] == seat)
+        elif parent_manifest is not None and 'emphasis' in parent:
+            scopes[seat]['emphasis'] = parent['emphasis']
         if args.phase == 'plan':
             scopes[seat]['plan_clusters'] = plan_assignments[seat]
             scopes[seat]['delta_clusters'] = plan_delta_assignments[seat]
@@ -5136,6 +5247,8 @@ def _prepare_locked(args, session):
                 semantic_paths=sorted(p for p in categories if categories[p] == 'semantic'),
                 delta_paths=sorted(p for p in delta_categories if delta_categories[p] == 'semantic'),
                 components=components)
+    if numeric is not None:
+        data['numeric'] = numeric
     if parent_assignment is not None:
         if (snapshot != parent_manifest['snapshot_tree'] or base_tree != parent_manifest['base_tree']
                 or source != parent_manifest['source'] or inputs['roster.json'] != parent_assignment['roster_sha256']):
@@ -5192,6 +5305,8 @@ def _prepare_locked(args, session):
     if args.phase == 'plan':
         artifacts[prefix + '-plan.md'] = plan_raw
         artifacts[prefix + '-plan-closure.patch'] = closure_raw
+    if numeric is not None:
+        artifacts[numeric['panel']] = numeric_raw
     words = {'full': len(full.split()), 'semantic': len(semantic.split()), 'delta': len(delta.split()),
              'evidence': len(packet.split()) + len(instruction_packet.split())}
     words['source_context'] = sum(len(raw.split()) for raw in source_artifacts.values())
@@ -5219,6 +5334,8 @@ def _prepare_locked(args, session):
                 'artifacts': {name: {'sha256': digest(raw), 'words': len(raw.split())} for name, raw in artifacts.items()}}
     if args.phase == 'plan':
         manifest['plan'] = data['plan']
+    if numeric is not None:
+        manifest['numeric'] = numeric
     if deps_view is not None:
         manifest['dependency_view'] = deps_view
     # Recorded on EVERY manifest, so a consumer never has to infer enforcement from the roster.
@@ -5231,7 +5348,11 @@ def _prepare_locked(args, session):
     if receipt_path.exists() and (not manifest_path.exists() or manifest_path.read_bytes() != encoded(manifest)):
         raise ValueError('cannot replace an already receipted manifest')
     for name, raw in artifacts.items():
+        if numeric is not None and name == numeric['panel']:
+            continue
         publish(session / name, raw)
+    if numeric is not None and attempt_module().private_bytes(session / numeric['panel']) != numeric_raw:
+        raise ValueError('numeric panel changed during preparation')
     publish(manifest_path, encoded(manifest))
     print(manifest_path)
 
@@ -5255,6 +5376,8 @@ def render_panel(args):
         raise ValueError('duplicate panel seat')
     if args.phase is not None and args.phase != manifest['phase']:
         raise ValueError('evidence manifest phase is ' + str(manifest['phase']) + ', not ' + args.phase)
+    if manifest['phase'] == 'numeric' and args.seats != manifest['numeric']['launched_seats']:
+        raise ValueError('numeric render must include its exact ordered launched seats')
     for seat in args.seats:
         if not SAFE_NAME.fullmatch(seat):
             raise ValueError('invalid panel seat: ' + seat)
@@ -5304,7 +5427,7 @@ def render_seat(manifest, mh, seat, plan_source):
             else:
                 primary_action = 'run ' + shlex.join(['cat', '--', primary])
         else:
-            tool = 'Read' if assignment['adapter'] in ('agent', 'claude') else 'read_file'
+            tool = read_tool_name(assignment['adapter'])
             if assignment['patch_bytes'] and patch_mode != 'chunks':
                 primary_action = ('use ' + tool + ' with offset 1 and limit 240 on '
                                   + primary)
@@ -5363,7 +5486,7 @@ def render_seat(manifest, mh, seat, plan_source):
             first_action = ('run ' + shlex.join(['cat', '--', first])
                             + '; then read one listed chunk per command in exact order.')
         else:
-            tool = 'Read' if assignment['adapter'] in ('agent', 'claude') else 'read_file'
+            tool = read_tool_name(assignment['adapter'])
             first_action = ('use ' + tool + ' to read ' + str(batch_limit)
                             + ' consecutive listed chunk' + ('' if batch_limit == 1 else 's')
                             + ' in full; continue in exact order.')
@@ -5378,7 +5501,7 @@ def render_seat(manifest, mh, seat, plan_source):
                             + shlex.quote(assignment['patch'])
                             + '; continue with consecutive windows of at most 240 lines.')
         else:
-            tool = 'Read' if assignment['adapter'] in ('agent', 'claude') else 'read_file'
+            tool = read_tool_name(assignment['adapter'])
             first_action = ('use ' + tool + ' with offset 1 and limit 240 on '
                             + assignment['patch'] + '; continue with consecutive windows.')
     if first_action is not None:
@@ -5396,7 +5519,7 @@ def render_seat(manifest, mh, seat, plan_source):
             if assignment['adapter'] == 'codex':
                 packet_action = 'run ' + shlex.join(['cat', '--', first_packet])
             else:
-                tool = 'Read' if assignment['adapter'] in ('agent', 'claude') else 'read_file'
+                tool = read_tool_name(assignment['adapter'])
                 packet_action = 'use ' + tool + ' to read ' + first_packet + ' in full'
             print('First source-context action: ' + packet_action
                   + ' as the only source-context packet read in this turn; continue with one '
@@ -5414,7 +5537,7 @@ def render_seat(manifest, mh, seat, plan_source):
                 if assignment['adapter'] == 'codex':
                     action = 'run ' + shlex.join(['cat', '--', path])
                 else:
-                    tool = 'Read' if assignment['adapter'] in ('agent', 'claude') else 'read_file'
+                    tool = read_tool_name(assignment['adapter'])
                     action = 'use ' + tool + ' to read ' + path + ' in full'
                 print('Required source segment ' + str(segment['index']) + '/' + str(total)
                       + ': ' + action + ' raw bytes ' + str(segment['raw_bytes'])
@@ -5682,14 +5805,14 @@ def receipt(args):
         raise ValueError('plan panels never advance code coverage')
     data = coverage_receipt_data(session, manifest, mh, results, generations, replacements, verdicts)
     path = session / f'r{args.label}-coverage.receipt.json'; raw = encoded(data)
-    head = current_coverage_head(session)
+    head = current_coverage_head(session) if manifest['phase'] != 'numeric' else None
     created = not path.exists()
     if not created:
         if path.read_bytes() != raw:
             raise ValueError('coverage receipt is immutable')
     else:
         publish(path, raw)
-    if created or head is None:
+    if manifest['phase'] != 'numeric' and (created or head is None):
         publish(session / 'coverage-head.json', encoded({'receipt': path.name, 'sha256': digest(raw)}))
     print(path)
 
@@ -5745,11 +5868,13 @@ def main():
     commands = parser.add_subparsers(dest='command', required=True)
     prep = commands.add_parser('prepare')
     prep.add_argument('session'); prep.add_argument('label')
-    prep.add_argument('--phase', required=True, choices=('discovery', 'risk', 'verification', 'repair', 'plan'))
+    prep.add_argument('--phase', required=True, choices=('discovery', 'risk', 'verification', 'repair', 'plan', 'numeric'))
     prep.add_argument('--head'); prep.add_argument('--assignment', action='append', default=[])
     prep.add_argument('--full-seat')
     prep.add_argument('--plan'); prep.add_argument('--plan-sha256')
     prep.add_argument('--parent-assignment')
+    prep.add_argument('--numeric-round', type=int); prep.add_argument('--numeric-min-rounds', type=int)
+    prep.add_argument('--numeric-panel')
     rend = commands.add_parser('render'); rend.add_argument('manifest'); rend.add_argument('seat')
     rend.add_argument('--offline', action='store_true')
     rend.add_argument('--plan-source')

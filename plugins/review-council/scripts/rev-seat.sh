@@ -56,7 +56,7 @@ MODE=$(printf '%s\n' "$SEATDEF" | sed -n 4p)
 [ -n "$ADAPTER" ] && [ -n "$MODEL" ] || { echo "rev-seat: seat '$SEAT' has no adapter/model in $ROSTER - run preflight first" >&2; exit 1; }
 case "$ADAPTER" in
   agent) echo "rev-seat: seat '$SEAT' is the Agent tool seat - the skill launches it, rev-seat.sh cannot" >&2; exit 1;;
-  codex|gemini|claude) ;;
+  codex|gemini|claude|cursor-sdk) ;;
   *) echo "rev-seat: unsupported or retired adapter '$ADAPTER' (seat '$SEAT')" >&2; exit 1;;
 esac
 ADAPTER_SH="$HERE/seats.d/$ADAPTER.sh"
@@ -69,7 +69,7 @@ case "$ADAPTER" in
   *)     ENV_EFFORT="";;
 esac
 REQUESTED_EFFORT=${EFFORT:-$ENV_EFFORT}
-if [ "$ADAPTER" = codex ] || [ "$ADAPTER" = claude ]; then
+if [ "$ADAPTER" = codex ] || [ "$ADAPTER" = claude ] || [ "$ADAPTER" = cursor-sdk ]; then
   [ -n "$ROSTER_EFFORT" ] || { echo "rev-seat: seat '$SEAT' has no receipted effort" >&2; exit 1; }
 fi
 if [ -n "$REQUESTED_EFFORT" ] && [ "$REQUESTED_EFFORT" != "$ROSTER_EFFORT" ]; then
@@ -156,6 +156,27 @@ has_tool_call() {
 # one WITHOUT reading anything, even when the prompt says to run tools first (seen live: summary "I'll
 # inspect the diff…", zero findings, zero tool calls). An answer with no tool calls is not a review: retry
 # once at the same effort, then fail the seat so the orchestrator's retry/skip rule applies.
+if [ "$ADAPTER" = cursor-sdk ]; then
+  SDK_ENV=$(python3 - "$HERE/lib" "$ROSTER" "$SEAT" 2>>"$LOG" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from roster import cursor_sdk_environment
+try:
+    rows = [row for row in json.load(open(sys.argv[2]))['seats'] if row.get('seat') == sys.argv[3]]
+    if len(rows) != 1:
+        raise ValueError()
+    environment = cursor_sdk_environment(rows[0])
+    print(environment['REVIEW_COUNCIL_CURSOR_SDK_RUNTIME'])
+    print(environment['REVIEW_COUNCIL_CURSOR_SDK_QUALIFICATION'])
+except (OSError, ValueError, KeyError, TypeError):
+    print('cursor-sdk frozen identity unavailable or changed', file=sys.stderr)
+    raise SystemExit(2)
+PY
+  ) || finish 2
+  REVIEW_COUNCIL_CURSOR_SDK_RUNTIME=$(printf '%s\n' "$SDK_ENV" | sed -n 1p)
+  REVIEW_COUNCIL_CURSOR_SDK_QUALIFICATION=$(printf '%s\n' "$SDK_ENV" | sed -n 2p)
+  export REVIEW_COUNCIL_CURSOR_SDK_RUNTIME REVIEW_COUNCIL_CURSOR_SDK_QUALIFICATION
+fi
 check_error=$(python3 "$HERE/lib/rev-attempt.py" check "$SESSION" "$ROUND" "$SEAT" "$PROMPT" 2>&1)
 check_rc=$?
 if [ "$check_rc" -ne 0 ]; then
@@ -200,6 +221,60 @@ while :; do
   esac
   break
 done
+
+if [ "$ADAPTER" = cursor-sdk ] && [ "$rc" -ne 0 ]; then
+  [ ! -s "$OUT" ] || mv "$OUT" "$BASEN.transport-invalid.json"
+  case "$rc" in 1|2|3|4) finish "$rc";; *) finish 1;; esac
+fi
+
+if [ "$ADAPTER" = cursor-sdk ] && [ "$rc" -eq 0 ]; then
+  SDK_STRICT_DIR=$(mktemp -d "$BASEN.strict-result.XXXXXX") || {
+    [ ! -s "$OUT" ] || mv "$OUT" "$BASEN.transport-invalid.json"
+    finish 2
+  }
+  if python3 "$HERE/lib/stream-summary.py" cursor-sdk "$SDK_STRICT_DIR/result.json" < "$RAW" >>"$LOG" 2>&1 &&
+    python3 - "$SDK_STRICT_DIR/result.json" "$OUT" >>"$LOG" 2>&1 <<'PY'
+import json, sys
+
+def unique(rows):
+    value = {}
+    for key, item in rows:
+        if key in value:
+            raise ValueError('duplicate published result key')
+        value[key] = item
+    return value
+
+def finite(token):
+    raise ValueError('non-finite published result')
+
+def load(path):
+    with open(path) as source:
+        value = json.load(source, object_pairs_hook=unique, parse_constant=finite)
+    json.dumps(value, allow_nan=False)
+    return value
+
+def same(left, right):
+    if type(left) in (int, float) and type(right) in (int, float):
+        return left == right
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(same(left[key], right[key]) for key in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(same(a, b) for a, b in zip(left, right))
+    return left == right
+
+if not same(load(sys.argv[1]), load(sys.argv[2])):
+    raise ValueError('SDK terminal and published result disagree')
+PY
+  then
+    rm -rf "$SDK_STRICT_DIR"
+  else
+    rm -rf "$SDK_STRICT_DIR"
+    [ ! -s "$OUT" ] || mv "$OUT" "$BASEN.transport-invalid.json"
+    finish 2
+  fi
+fi
 
 if [ "$ADAPTER" = codex ] && [ "$MODE" = review ] && [ -s "$OUT" ] && ! python3 "$VALIDATE" "$OUT" >/dev/null 2>&1; then
   # `codex exec review` ignores --output-schema and answers in prose; keep the prose and convert it.

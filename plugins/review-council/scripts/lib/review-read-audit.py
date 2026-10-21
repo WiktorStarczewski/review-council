@@ -9,6 +9,7 @@ from pathlib import Path
 import posixpath
 import re
 import shlex
+import stat
 import sys
 import tempfile
 
@@ -143,13 +144,13 @@ def session_artifact(path, session):
         and path.parent == session
 
 
-def prompt_permissions(prompt, root, session):
+def prompt_permissions(prompt, root, session, *, text=None):
     """Return exact prompt-authorized paths and paths that may be read in full."""
-    prompt = Path(prompt).resolve()
+    prompt = Path(prompt).resolve() if text is None else Path(prompt)
     authorized = {prompt}
     complete = {prompt}
     try:
-        lines = prompt.read_text().splitlines()
+        lines = (prompt.read_text() if text is None else text).splitlines()
     except OSError:
         return authorized, complete
     try:
@@ -196,14 +197,14 @@ def prompt_permissions(prompt, root, session):
     return authorized, complete
 
 
-def validate_prompt_artifact_set(manifest, seat, prompt, root, session):
+def validate_prompt_artifact_set(manifest, seat, prompt, root, session, *, text=None):
     """Reject schema-4 plan prompts that authorize the wrong session artifacts."""
     if not isinstance(manifest, dict):
         return
     if manifest.get('schema_version') != 4 or manifest.get('phase') != 'plan':
         return
     session = Path(session).resolve()
-    prompt = Path(prompt).resolve()
+    prompt = Path(prompt).resolve() if text is None else Path(prompt)
     if Path(manifest.get('session', '')).resolve() != session:
         raise ValueError('prompt session does not match the evidence manifest')
     try:
@@ -215,7 +216,7 @@ def validate_prompt_artifact_set(manifest, seat, prompt, root, session):
             or len(names) != len(set(names))):
         raise ValueError('prompt artifact contract is invalid')
     expected = {session / name for name in names}
-    authorized, _ = prompt_permissions(prompt, root, session)
+    authorized, _ = prompt_permissions(prompt, root, session, text=text)
     actual = {path for path in authorized if path != prompt and path.parent == session}
     if actual != expected:
         missing = sorted(path.name for path in expected - actual)
@@ -267,18 +268,19 @@ def validate_prompt(args):
     return 0
 
 
-def validate_seat_prompt(manifest, manifest_hash, seat, prompt, root, session):
+def validate_seat_prompt(manifest, manifest_hash, seat, prompt, root, session, *, text=None):
     if seat not in manifest['assignments']:
         raise ValueError('prompt seat is absent from evidence manifest')
-    lines = prompt.read_text().splitlines()
+    text = prompt.read_text() if text is None else text
+    lines = text.splitlines()
     if lines.count('## Scope') != 1:
         raise ValueError('prompt must contain exactly one scope heading')
     evidence_scoped, declared_hash = evidence_manifest_declaration(lines)
     if not evidence_scoped or declared_hash != manifest_hash:
         raise ValueError('prompt does not bind the evidence manifest exactly once')
     validate_assignment_prompt_binding(manifest, seat, lines)
-    validate_plan_prompt_binding(manifest, seat, prompt, _load_evidence_module())
-    validate_prompt_artifact_set(manifest, seat, prompt, root, session)
+    validate_plan_prompt_binding(manifest, seat, prompt, _load_evidence_module(), text=text)
+    validate_prompt_artifact_set(manifest, seat, prompt, root, session, text=text)
 
 
 def session_path_allowed(path, session, authorized, dependency=None):
@@ -986,12 +988,12 @@ def shell_violations(command, roots, root, session, authorized=None, complete=No
 
 
 def validate_call(name, data, roots, root, session, authorized=None, complete=None, cache=None,
-                  dependency=None):
+                  dependency=None, *, target=None):
     normalized = name.lower()
     path = tool_path(data)
     if path is not None:
         try:
-            target = resolved(path, root)
+            target = resolved(path, root) if target is None else target
         except (OSError, ValueError):
             return [violation('unresolved-path-variable', name)]
         if not session_path_allowed(target, session, authorized, dependency):
@@ -1003,7 +1005,7 @@ def validate_call(name, data, roots, root, session, authorized=None, complete=No
         if path is None:
             return [violation('missing-read-path', name)]
         try:
-            may_read_complete = complete_path_allowed(resolved(path, root), session, complete)
+            may_read_complete = complete_path_allowed(target, session, complete)
         except OSError:
             return [violation('unresolved-path-variable', name)]
         if may_read_complete:
@@ -1048,7 +1050,202 @@ def extract_calls(adapter, event):
         for block in (event.get('message') or {}).get('content', []):
             if isinstance(block, dict) and block.get('type') == 'tool_use':
                 calls.append((block.get('id'), block.get('name', ''), block.get('input') or {}))
+    elif adapter == 'cursor-sdk' and event.get('type') == 'tool_call' \
+            and event.get('status') == 'running':
+        if cursor_reader_call(event):
+            calls.append((event.get('call_id'), 'read_file', event['args']['args']))
     return calls
+
+
+def cursor_reader_call(event):
+    args = event.get('args')
+    return (event.get('name') == 'mcp' and isinstance(args, dict)
+            and set(args) == {'providerIdentifier', 'toolName', 'args'}
+            and args['providerIdentifier'] == 'custom-user-tools'
+            and args['toolName'] == 'council_read' and isinstance(args['args'], dict))
+
+
+def cursor_reader_text(event):
+    result = event.get('result')
+    if (event.get('status') != 'completed' or not cursor_reader_call(event)
+            or not isinstance(result, dict) or set(result) != {'status', 'value'}
+            or result['status'] != 'success'):
+        raise ValueError('invalid reader completion')
+    value = result['value']
+    if (not isinstance(value, dict) or set(value) != {'content', 'isError'}
+            or value['isError'] is not False or not isinstance(value['content'], list)
+            or len(value['content']) != 1):
+        raise ValueError('invalid reader content')
+    block = value['content'][0]
+    if (not isinstance(block, dict) or set(block) != {'text'}
+            or not isinstance(block['text'], dict) or set(block['text']) != {'text'}
+            or not isinstance(block['text']['text'], str)):
+        raise ValueError('invalid reader text')
+    block['text']['text'].encode('utf-8')
+    return block['text']['text']
+
+
+def cursor_read_request(data):
+    if (not isinstance(data, dict) or set(data) - {'path', 'offset', 'limit'}
+            or not isinstance(data.get('path'), str) or not data['path']
+            or '\0' in data['path']):
+        raise ValueError('invalid reader request')
+    bounded = 'offset' in data or 'limit' in data
+    if bounded and (type(data.get('offset')) is not int or data['offset'] < 1
+                    or type(data.get('limit')) is not int or not 1 <= data['limit'] <= READ_LINES):
+        raise ValueError('invalid reader bounds')
+    if '..' in Path(data['path']).parts:
+        raise ValueError('noncanonical reader path')
+    return data
+
+
+def cursor_model_selection(value):
+    return (isinstance(value, dict) and not set(value) - {'id', 'params', 'maxMode'}
+            and isinstance(value.get('id'), str) and bool(value['id'])
+            and ('maxMode' not in value or type(value['maxMode']) is bool)
+            and ('params' not in value or (isinstance(value['params'], list) and all(
+                isinstance(row, dict) and set(row) == {'id', 'value'}
+                and isinstance(row['id'], str) and isinstance(row['value'], str)
+                for row in value['params']))))
+
+
+class CursorSDKTranscript:
+    """Bind controller delivery to raw SDK calls without inventing model turns."""
+
+    def __init__(self):
+        self.identity = None
+        self.model = None
+        self.running = {}
+        self.callbacks = {}
+        self.completed = set()
+        self.terminal = False
+
+    def observe(self, event):
+        if not isinstance(event, dict) or self.terminal:
+            raise ValueError('invalid SDK event order')
+        kind = event.get('type')
+        if kind == 'system':
+            if (self.identity is not None or event.get('subtype') != 'init'
+                    or not cursor_model_selection(event.get('model'))
+                    or not isinstance(event.get('tools'), list)
+                    or any(tool not in ('GetMcpTools', 'CallMcpTool') for tool in event['tools'])):
+                raise ValueError('invalid SDK initialization')
+            identity = event.get('agent_id'), event.get('run_id')
+            if not all(isinstance(item, str) and item for item in identity):
+                raise ValueError('missing SDK identity')
+            self.identity = identity
+            self.model = event['model']
+            return
+        if self.identity is None:
+            if kind != 'status' or event.get('status') not in ('CREATING', 'RUNNING'):
+                raise ValueError('missing SDK initialization')
+            identity = event.get('agent_id'), event.get('run_id')
+            if not all(isinstance(item, str) and item for item in identity):
+                raise ValueError('missing SDK identity')
+            self.identity = identity
+        call_id = event.get('call_id')
+        if kind == 'council_read_result':
+            if not isinstance(call_id, str) or not call_id:
+                raise ValueError('missing SDK callback identity')
+            running = self.running.get(call_id)
+            if (call_id in self.callbacks or call_id in self.completed
+                    or event.get('session_id') != self.identity[0]
+                    or (running is not None and (not cursor_reader_call(running)
+                        or event.get('input') != running['args']['args']))
+                    or not isinstance(event.get('text_sha256'), str)
+                    or re.fullmatch(r'[0-9a-f]{64}', event['text_sha256']) is None):
+                raise ValueError('unpaired SDK callback')
+            cursor_read_request(event.get('input'))
+            self.callbacks[call_id] = event
+            return
+        if (event.get('agent_id'), event.get('run_id')) != self.identity:
+            raise ValueError('changed SDK identity')
+        if kind == 'tool_call':
+            if not isinstance(call_id, str) or not call_id:
+                raise ValueError('missing SDK call identity')
+            truncated = event.get('truncated', {})
+            if (not isinstance(truncated, dict) or set(truncated) - {'args', 'result'}
+                    or any(value is not False for value in truncated.values())):
+                raise ValueError('truncated SDK tool call')
+            reader = cursor_reader_call(event)
+            discovery = (event.get('name') == 'GetMcpTools'
+                         and event.get('args') == {'providerIdentifier': 'custom-user-tools'})
+            if reader:
+                cursor_read_request(event['args']['args'])
+            elif not discovery:
+                raise ValueError('unexpected SDK tool')
+            if event.get('status') == 'running':
+                if call_id in self.running or 'result' in event:
+                    raise ValueError('duplicate SDK invocation')
+                callback = self.callbacks.get(call_id)
+                if callback is not None and (not reader or callback['input'] != event['args']['args']):
+                    raise ValueError('unpaired SDK callback')
+                self.running[call_id] = event
+                return
+            running = self.running.get(call_id)
+            if (event.get('status') != 'completed' or running is None
+                    or call_id in self.completed or running.get('name') != event.get('name')
+                    or running.get('args') != event.get('args')):
+                raise ValueError('unpaired SDK completion')
+            if reader:
+                text = cursor_reader_text(event)
+                callback = self.callbacks.get(call_id)
+                if callback is None or callback['text_sha256'] != hashlib.sha256(text.encode()).hexdigest():
+                    raise ValueError('SDK delivery mismatch')
+            else:
+                self.validate_discovery(event)
+            self.completed.add(call_id)
+            return
+        if kind == 'result':
+            if (event.get('status') != 'finished'
+                    or not cursor_model_selection(event.get('model'))
+                    or (self.model is not None and event.get('model') != self.model)
+                    or event.get('id') != self.identity[1]):
+                raise ValueError('invalid SDK terminal result')
+            self.model = event['model']
+            self.terminal = True
+            return
+        if kind in ('assistant', 'user'):
+            message = event.get('message')
+            if (not isinstance(message, dict) or not isinstance(message.get('content'), list)
+                    or any(not isinstance(block, dict) or block.get('type') != 'text'
+                           or not isinstance(block.get('text'), str) for block in message['content'])):
+                raise ValueError('unexpected SDK message content')
+        elif kind == 'status':
+            if event.get('status') not in ('CREATING', 'RUNNING', 'FINISHED'):
+                raise ValueError('failed SDK run')
+        elif kind not in ('thinking', 'usage'):
+            raise ValueError('unexpected SDK event')
+
+    @staticmethod
+    def validate_discovery(event):
+        result = event.get('result')
+        if (not isinstance(result, dict) or set(result) != {'status', 'value'}
+                or result['status'] != 'success' or not isinstance(result['value'], dict)
+                or set(result['value']) != {'tools'}):
+            raise ValueError('invalid SDK discovery result')
+        tools = result['value']['tools']
+        if not isinstance(tools, list) or len(tools) != 1:
+            raise ValueError('unexpected SDK discovery inventory')
+        tool = tools[0]
+        if (not isinstance(tool, dict) or set(tool) != {'name', 'description', 'inputSchema'}
+                or tool['name'] != 'council_read'
+                or tool['description'] != 'Read one authorized artifact or bounded source range'
+                or tool['inputSchema'] != cursor_reader_schema()):
+            raise ValueError('unexpected SDK discovery tool')
+
+    def finish(self):
+        readers = {call_id for call_id, event in self.running.items() if cursor_reader_call(event)}
+        if (not self.terminal or self.completed != set(self.running)
+                or set(self.callbacks) != readers):
+            raise ValueError('incomplete SDK transport proof')
+
+
+def cursor_reader_schema():
+    return {'type': 'object', 'properties': {
+        'path': {'type': 'string'}, 'offset': {'type': 'integer', 'minimum': 1},
+        'limit': {'type': 'integer', 'minimum': 1, 'maximum': READ_LINES}},
+        'required': ['path'], 'additionalProperties': False}
 
 
 def output_bytes(value):
@@ -1204,6 +1401,9 @@ def output_digest(value):
 
 def extract_outputs(adapter, event):
     adapter = 'claude' if adapter == 'agent' else adapter
+    if adapter == 'cursor-sdk' and event.get('type') == 'tool_call' \
+            and event.get('status') == 'completed' and cursor_reader_call(event):
+        return [(event.get('call_id'), True, cursor_reader_text(event), None)]
     if adapter == 'codex':
         item = event.get('item') or {}
         if event.get('type') == 'item.completed' and item.get('type') == 'command_execution':
@@ -1272,14 +1472,14 @@ def claude_nonexecuted_exploration(adapter, name, data, output):
     return True
 
 
-def byte_exempt(name, data, root, session, complete=None):
+def byte_exempt(name, data, root, session, complete=None, *, target=None):
     if name.lower() not in READ_TOOLS:
         return False
     path = tool_path(data)
     try:
         if path is None:
             return False
-        target = resolved(path, root)
+        target = resolved(path, root) if target is None else target
         if complete is not None:
             return target in complete and not SOURCE_PACKET_NAME.fullmatch(target.name)
         return full_artifact(target, session) and not SOURCE_PACKET_NAME.fullmatch(target.name)
@@ -1304,14 +1504,16 @@ def publish(path, data):
             pass
 
 
-def load_evidence_manifest(session, declared_hash, prompt, root):
+def load_evidence_manifest(session, declared_hash, prompt, root, *, fresh=False,
+                           replay_plan_searches=True):
     matches = [path for path in session.glob('r*-evidence.manifest.json')
                if path.is_file() and digest(path) == declared_hash]
     if len(matches) != 1:
         raise ValueError('evidence manifest hash does not resolve uniquely')
     path = matches[0]
     module = _load_evidence_module()
-    manifest, manifest_hash = module.validated_manifest(path, fresh=False)
+    manifest, manifest_hash = module.validated_manifest(
+        path, fresh=fresh, replay_plan_searches=replay_plan_searches)
     repository = module.Repository(session)
     if repository.root != root:
         raise ValueError('evidence repository root mismatch')
@@ -1325,12 +1527,12 @@ def load_evidence_manifest(session, declared_hash, prompt, root):
     return manifest, manifest_hash, seat, repository
 
 
-def validate_plan_prompt_binding(manifest, seat, prompt, module):
+def validate_plan_prompt_binding(manifest, seat, prompt, module, *, text=None):
     if manifest is None or manifest.get('phase') != 'plan':
         return
     session = Path(manifest['session'])
     plan = manifest['plan']
-    text = Path(prompt).read_text()
+    text = Path(prompt).read_text() if text is None else text
     plan_path = session / plan['artifact']
     lines = plan_path.read_text().splitlines()
     numbered = '\n'.join(f'{index:6d}\t{line}' for index, line in enumerate(lines, 1))
@@ -1415,6 +1617,10 @@ def validate_assignment_prompt_binding(manifest, seat, prompt_lines):
     )
     if any(prompt_lines.count(line) != 1 for line in required):
         raise ValueError('prompt omits or duplicates its assigned scope, bundle, or lens')
+    if 'emphasis' in assignment:
+        lines = [line for line in prompt_lines if line.startswith('Round emphasis:')]
+        if lines != ['Round emphasis: ' + assignment['emphasis']]:
+            raise ValueError('prompt omits, changes or duplicates its numeric emphasis')
 
 
 def paths_opened_by_call(name, data, root):
@@ -1514,6 +1720,8 @@ def delivered_matches_bytes(adapter, name, output, expected, start):
     text = output_text(output)
     if text is None:
         return False
+    if adapter == 'cursor-sdk':
+        return text.encode('utf-8') == expected
     if adapter in ('claude', 'agent') and name.lower() in READ_TOOLS \
             and expected == b'' and text == CLAUDE_EMPTY_READ:
         return True
@@ -1560,6 +1768,150 @@ def manifest_blob(repository, row, cache):
     raw = repository.git('cat-file', 'blob', oid)
     cache[key] = raw, split_lf_lines(raw)
     return cache[key]
+
+
+def regular_file_bytes(path, *, single_link=False):
+    """Open resolved components without following a late symlink or blocking on a FIFO."""
+    path = Path(path)
+    if not path.is_absolute():
+        raise ValueError('reader path must be absolute')
+    directory = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in path.parts[1:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=directory)
+            os.close(directory)
+            directory = child
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                             dir_fd=directory)
+        with os.fdopen(descriptor, 'rb') as stream:
+            metadata = os.fstat(stream.fileno())
+            if not stat.S_ISREG(metadata.st_mode) or (single_link and metadata.st_nlink != 1):
+                raise ValueError('reader target is not a regular file')
+            return stream.read()
+    finally:
+        os.close(directory)
+
+
+class CouncilReaderContext:
+    """One initialized controller boundary for callback reads and exact audit replay."""
+
+    def __init__(self, root, session, prompt, deps=None, manifest=None, manifest_sha256=None,
+                 seat=None, *, evidence=None, prompt_sha256=None):
+        self.root = Path(root).resolve()
+        self.session = Path(session).resolve()
+        self.prompt = Path(prompt).resolve()
+        self.prompt_raw = regular_file_bytes(self.prompt, single_link=True)
+        self.prompt_sha256 = hashlib.sha256(self.prompt_raw).hexdigest()
+        self.prompt_text = self.prompt_raw.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n')
+        if prompt_sha256 is not None and prompt_sha256 != self.prompt_sha256:
+            raise ValueError('reader prompt binding mismatch')
+        self.manifest_path = Path(manifest).resolve() if manifest else None
+        self.manifest = None
+        self.manifest_sha256 = None
+        self.seat = None
+        self.repository = None
+        declared, declared_hash = evidence_manifest_declaration(self.prompt_text.splitlines())
+        if declared:
+            if self.manifest_path is None or declared_hash != manifest_sha256:
+                raise ValueError('reader manifest binding mismatch')
+            raw_manifest = regular_file_bytes(self.manifest_path)
+            if hashlib.sha256(raw_manifest).hexdigest() != manifest_sha256:
+                raise ValueError('reader manifest changed')
+            # Replay the frozen online audit contract instead of resnapshotting mutable source.
+            loaded = evidence or load_evidence_manifest(
+                self.session, manifest_sha256, self.prompt, self.root,
+                replay_plan_searches=False)
+            self.manifest, self.manifest_sha256, self.seat, self.repository = loaded
+            if (self.manifest_sha256 != manifest_sha256 or self.seat != seat
+                    or self.manifest_path != self.session / (
+                        'r' + self.manifest['label'] + '-evidence.manifest.json')):
+                raise ValueError('reader assignment binding mismatch')
+            validate_seat_prompt(self.manifest, manifest_sha256, seat,
+                                 self.prompt, self.root, self.session, text=self.prompt_text)
+        elif any(value is not None for value in (manifest, manifest_sha256, seat)):
+            raise ValueError('reader has unexpected evidence binding')
+        if deps is None and self.manifest is not None:
+            deps = (self.manifest.get('dependency_view') or {}).get('path')
+        self.dependency = Path(deps).resolve() if deps else None
+        self.roots = allowed_roots(self.root, self.session, deps)
+        self.authorized, self.complete = prompt_permissions(
+            self.prompt, self.root, self.session, text=self.prompt_text)
+        self.single_link_paths = {self.prompt}
+        if self.manifest is not None:
+            self.single_link_paths.update(
+                path for path in self.authorized if path.parent == self.session and (
+                    PATCH_CHUNK_NAME.fullmatch(path.name) or SOURCE_SEGMENT_NAME.fullmatch(path.name)))
+            if self.manifest.get('phase') == 'plan':
+                self.single_link_paths.add(self.session / self.manifest['plan']['artifact'])
+        self.cache = {self.prompt: (self.prompt_raw, split_lf_lines(self.prompt_raw))}
+        self.entries = self.repository.entries(self.manifest['snapshot_tree']) \
+            if self.repository is not None else {}
+        for path in self.authorized:
+            if path.parent != self.session or path == self.prompt:
+                continue
+            raw = regular_file_bytes(path, single_link=path in self.single_link_paths)
+            expected = (self.manifest or {}).get('artifacts', {}).get(path.name)
+            if expected is not None and hashlib.sha256(raw).hexdigest() != expected['sha256']:
+                raise ValueError('reader artifact changed')
+            self.cache[path] = raw, split_lf_lines(raw)
+
+    def read(self, request):
+        request = cursor_read_request(request)
+        if hashlib.sha256(regular_file_bytes(
+                self.prompt, single_link=True)).hexdigest() != self.prompt_sha256:
+            raise ValueError('reader prompt changed')
+        if self.manifest_path is not None and hashlib.sha256(
+                regular_file_bytes(self.manifest_path)).hexdigest() != self.manifest_sha256:
+            raise ValueError('reader manifest changed')
+        target = resolved(request['path'], self.root)
+        canonical_request = dict(request, path=str(target))
+        failures = validate_call('read_file', canonical_request, self.roots, self.root, self.session,
+                                 self.authorized, self.complete, self.cache, self.dependency,
+                                 target=target)
+        if failures:
+            raise ValueError('reader authorization refused')
+        lexical = Path(os.path.expandvars(os.path.expanduser(request['path'])))
+        lexical = lexical if lexical.is_absolute() else self.root / lexical
+        dependency = self.dependency is not None and (
+            inside(lexical, [self.dependency]) or inside(target, [
+                path for path in self.roots if path != self.root and path != self.session]))
+        if lexical != target and not dependency and target not in self.authorized:
+            raise ValueError('reader mutable path alias')
+        source = 'dependency' if dependency else 'context'
+        entry = None
+        if target not in self.authorized and inside(target, [self.root]) and not dependency \
+                and not inside(target, [self.session]) and self.repository is not None:
+            entry = self.entries.get(target.relative_to(self.root).as_posix())
+            if entry is None or entry[0] not in ('100644', '100755'):
+                raise ValueError('reader target is not frozen source')
+            source = 'snapshot'
+            if target not in self.cache:
+                raw = self.repository.blob(entry)
+                self.cache[target] = raw, split_lf_lines(raw)
+        elif target in self.authorized:
+            source = 'artifact'
+        if source != 'snapshot':
+            raw = regular_file_bytes(target, single_link=target in self.single_link_paths)
+            if target in self.cache and raw != self.cache[target][0]:
+                raise ValueError('reader context changed')
+            self.cache[target] = raw, split_lf_lines(raw)
+        raw, lines = self.cache[target]
+        content = byte_range_lines(lines, request['offset'], request['offset'] + request['limit'] - 1) \
+            if 'offset' in request else raw
+        if len(content) > OUTPUT_BYTES and not byte_exempt(
+                'read_file', canonical_request, self.root, self.session, self.complete, target=target):
+            raise ValueError('reader output exceeds byte limit')
+        text = content.decode('utf-8')
+        metadata = {
+            'input': dict(request), 'path': str(target), 'source': source,
+            'text_sha256': hashlib.sha256(content).hexdigest(),
+            'prompt_sha256': self.prompt_sha256, 'manifest_sha256': self.manifest_sha256,
+            'seat': self.seat,
+        }
+        if entry is not None:
+            metadata.update(snapshot_tree=self.manifest['snapshot_tree'], blob_oid=entry[1])
+        return {'text': text, 'meta': metadata}
 
 
 def target_file_candidates(words, target, root):
@@ -1683,7 +2035,8 @@ def plan_specialist_first_call_contract(manifest, seat, session):
         else:
             action = 'run ' + shlex.join(['cat', '--', str(primary)])
     else:
-        tool = 'Read' if assignment['adapter'] in ('agent', 'claude') else 'read_file'
+        tool = ('Read' if assignment['adapter'] in ('agent', 'claude') else
+                'council_read' if assignment['adapter'] == 'cursor-sdk' else 'read_file')
         if mode == 'window':
             action = 'use ' + tool + ' with offset 1 and limit 240 on ' + str(primary)
         else:
@@ -2036,6 +2389,7 @@ def assess(args, blocked):
     turns = {}
     implicit_turn = 0
     implicit_output_seen = False
+    sdk_transcript = CursorSDKTranscript() if args.adapter == 'cursor-sdk' else None
     try:
         with open(args.raw, encoding='utf-8') as stream:
             for line_number, line in enumerate(stream, 1):
@@ -2046,10 +2400,16 @@ def assess(args, blocked):
                 except json.JSONDecodeError:
                     failures.append(violation('malformed-transcript', args.adapter))
                     continue
+                if sdk_transcript is not None:
+                    try:
+                        sdk_transcript.observe(event)
+                    except (AttributeError, KeyError, TypeError, ValueError, UnicodeError):
+                        failures.append(violation('cursor-sdk-transport-proof', args.adapter))
+                        continue
                 try:
                     event_calls = extract_calls(args.adapter, event)
                     event_outputs = extract_outputs(args.adapter, event)
-                except (AttributeError, TypeError):
+                except (AttributeError, TypeError, ValueError):
                     failures.append(violation('unsupported-transcript-shape', args.adapter))
                     continue
                 for call_id, name, data in event_calls:
@@ -2064,11 +2424,14 @@ def assess(args, blocked):
                             failures.append(violation('duplicate-tool-call', args.adapter))
                         continue
                     explicit_turn = event.get('turn_id') or event.get('turnId') or event.get('message_id')
+                    if sdk_transcript is not None:
+                        explicit_turn = (event.get('step_id') or event.get('stepId')
+                                         or event.get('turn_id') or event.get('turnId'))
                     if args.adapter in ('claude', 'agent') and not explicit_turn:
                         explicit_turn = (event.get('message') or {}).get('id')
                     if explicit_turn:
                         turn = str(explicit_turn)
-                    elif args.adapter in ('codex', 'grok', 'gemini'):
+                    elif args.adapter in ('codex', 'grok', 'gemini', 'cursor-sdk'):
                         if implicit_output_seen:
                             implicit_turn += 1
                             implicit_output_seen = False
@@ -2092,8 +2455,15 @@ def assess(args, blocked):
                                         'non_execution': non_execution}
                     if calls[call_id][2].startswith('implicit-'):
                         implicit_output_seen = True
+    except UnicodeError:
+        failures.append(violation('malformed-transcript', args.adapter))
     except OSError:
         failures.append(violation('missing-transcript', args.adapter))
+    if sdk_transcript is not None:
+        try:
+            sdk_transcript.finish()
+        except ValueError:
+            failures.append(violation('cursor-sdk-transport-proof', args.adapter))
     attempted_calls = dict(calls)
     skipped = {
         call_id for call_id, (name, data, _) in calls.items()
@@ -2108,51 +2478,6 @@ def assess(args, blocked):
         for turn, call_ids in turns.items()
         if any(call_id not in skipped for call_id in call_ids)
     }
-    full_scope = any(line == 'Assigned scope: full' for line in prompt_lines)
-    narrow = evidence_scoped and not full_scope
-    turn_sizes = {}
-    recognized_tool_calls = 0
-    tool_ranges = []
-    source_read_call_ids = set()
-    verified_call_ranges = {}
-    pending_source_ranges = []
-    for call_id, (name, data, turn) in calls.items():
-        call_failures = validate_call(
-            name, data, roots, root, session, authorized, complete_paths, source_cache,
-            dependency)
-        failures.extend(call_failures)
-        if call_failures:
-            blocked.add(call_id)
-        if name.lower() in RECOGNIZED_TOOLS:
-            recognized_tool_calls += 1
-        if call_id not in outputs:
-            failures.append(violation('missing-tool-output', name))
-            continue
-        output = outputs[call_id]
-        size = output['bytes']
-        turn_sizes[turn] = turn_sizes.get(turn, 0) + size
-        if size > OUTPUT_BYTES and not byte_exempt(name, data, root, session, complete_paths):
-            failures.append(violation('tool-output-too-large', name))
-            blocked.add(call_id)
-        if not output['success']:
-            continue
-        if too_many_results(name, data, output['value']):
-            failures.append(violation('discovery-output-too-large', name))
-        call_ranges = []
-        try:
-            direct = direct_source_range(name, data, root, source_cache, session)
-            if direct is not None:
-                call_ranges.append(direct)
-            if name.lower() in SHELL_TOOLS:
-                shell_ranges, unparseable = shell_source_ranges(
-                    data.get('command', ''), root, source_cache, session)
-                call_ranges.extend(shell_ranges)
-                if unparseable:
-                    failures.append(violation('unsupported-source-range', name))
-        except (OSError, TypeError, ValueError):
-            failures.append(violation('unsupported-source-range', name))
-        if call_ranges:
-            pending_source_ranges.append((call_id, name, output['value'], call_ranges))
     manifest = None
     manifest_hash = None
     seat = None
@@ -2182,15 +2507,6 @@ def assess(args, blocked):
                     manifest, seat, args.adapter, attempted_calls, root, session))
             except (KeyError, OSError, TypeError, ValueError):
                 failures.append(violation('invalid-plan-first-call', args.adapter))
-    zero_tool_plan = False
-    if manifest is not None and seat in manifest.get('assignments', {}):
-        assignment = manifest['assignments'][seat]
-        zero_tool_plan = (manifest.get('phase') == 'plan'
-                          and assignment.get('plan_clusters') == []
-                          and assignment.get('patch_bytes') == 0)
-    if recognized_tool_calls == 0 and not zero_tool_plan:
-        failures.append(violation('no-recognized-review-tools', args.adapter))
-
     frozen_entries = {}
     if evidence_repository is not None:
         try:
@@ -2200,6 +2516,94 @@ def assess(args, blocked):
             failures.append(violation('invalid-source-context', args.adapter))
             frozen_entries = {}
     snapshot_tree = manifest.get('snapshot_tree') if manifest is not None else None
+    sdk_reader = None
+    if sdk_transcript is not None:
+        try:
+            sdk_reader = CouncilReaderContext(
+                root, session, prompt, args.deps,
+                manifest=session / ('r' + manifest['label'] + '-evidence.manifest.json')
+                if manifest is not None else None,
+                manifest_sha256=manifest_hash, seat=seat,
+                evidence=(manifest, manifest_hash, seat, evidence_repository)
+                if manifest is not None else None)
+            source_cache = sdk_reader.cache
+            roots = sdk_reader.roots
+            dependency = sdk_reader.dependency
+            authorized, complete_paths = sdk_reader.authorized, sdk_reader.complete
+            if manifest is not None:
+                roster = json.loads(regular_file_bytes(session / 'roster.json'))
+                selected = [row for row in roster['seats'] if row.get('seat') == seat]
+                if (len(selected) != 1
+                        or selected[0].get('model_selection') != sdk_transcript.model):
+                    raise ValueError('SDK model does not match frozen assignment')
+        except (AttributeError, KeyError, OSError, TypeError, ValueError, UnicodeError):
+            failures.append(violation('cursor-sdk-reader-binding', args.adapter))
+    full_scope = any(line == 'Assigned scope: full' for line in prompt_lines)
+    narrow = evidence_scoped and not full_scope
+    turn_sizes = {}
+    recognized_tool_calls = 0
+    tool_ranges = []
+    source_read_call_ids = set()
+    verified_call_ranges = {}
+    pending_source_ranges = []
+    for call_id, (name, data, turn) in calls.items():
+        call_failures = validate_call(
+            name, data, roots, root, session, authorized, complete_paths, source_cache,
+            dependency)
+        failures.extend(call_failures)
+        if call_failures:
+            blocked.add(call_id)
+        if name.lower() in RECOGNIZED_TOOLS:
+            recognized_tool_calls += 1
+        if call_id not in outputs:
+            failures.append(violation('missing-tool-output', name))
+            continue
+        output = outputs[call_id]
+        size = output['bytes']
+        turn_sizes[turn] = turn_sizes.get(turn, 0) + size
+        if size > OUTPUT_BYTES and not byte_exempt(name, data, root, session, complete_paths):
+            failures.append(violation('tool-output-too-large', name))
+            blocked.add(call_id)
+        if not output['success']:
+            continue
+        if sdk_transcript is not None:
+            try:
+                if sdk_reader is None:
+                    raise ValueError('missing SDK reader context')
+                expected = sdk_reader.read(data)
+                if output['value'] != expected['text']:
+                    raise ValueError('SDK delivered different source bytes')
+            except (KeyError, OSError, TypeError, ValueError, UnicodeError):
+                failures.append(violation('cursor-sdk-delivery-mismatch', name))
+                blocked.add(call_id)
+                continue
+        if too_many_results(name, data, output['value']):
+            failures.append(violation('discovery-output-too-large', name))
+        call_ranges = []
+        try:
+            direct = direct_source_range(name, data, root, source_cache, session) \
+                if sdk_transcript is None or expected['meta']['source'] != 'dependency' else None
+            if direct is not None:
+                call_ranges.append(direct)
+            if name.lower() in SHELL_TOOLS:
+                shell_ranges, unparseable = shell_source_ranges(
+                    data.get('command', ''), root, source_cache, session)
+                call_ranges.extend(shell_ranges)
+                if unparseable:
+                    failures.append(violation('unsupported-source-range', name))
+        except (OSError, TypeError, ValueError):
+            failures.append(violation('unsupported-source-range', name))
+        if call_ranges:
+            pending_source_ranges.append((call_id, name, output['value'], call_ranges))
+    zero_tool_plan = False
+    if manifest is not None and seat in manifest.get('assignments', {}):
+        assignment = manifest['assignments'][seat]
+        zero_tool_plan = (manifest.get('phase') == 'plan'
+                          and assignment.get('plan_clusters') == []
+                          and assignment.get('patch_bytes') == 0)
+    if recognized_tool_calls == 0 and not zero_tool_plan:
+        failures.append(violation('no-recognized-review-tools', args.adapter))
+
     for call_id, name, value, call_ranges in pending_source_ranges:
         if call_id in blocked:
             continue
@@ -2254,6 +2658,8 @@ def assess(args, blocked):
             tool_ranges.extend(call_ranges)
         else:
             failures.append(violation('source-output-mismatch', name))
+            if sdk_transcript is not None:
+                failures.append(violation('cursor-sdk-delivery-mismatch', name))
 
     packet_ranges = []
     post_index_source_ranges = []
@@ -2808,7 +3214,8 @@ def main():
     prompts.add_argument('--seat', required=True, action='append')
     prompts.add_argument('--prompt', required=True, action='append')
     audits = commands.add_parser('audit')
-    audits.add_argument('--adapter', required=True, choices=('codex', 'grok', 'gemini', 'claude', 'agent'))
+    audits.add_argument('--adapter', required=True,
+                        choices=('codex', 'grok', 'gemini', 'claude', 'agent', 'cursor-sdk'))
     audits.add_argument('--result')
     audits.add_argument('--raw', required=True)
     audits.add_argument('--prompt', required=True)
