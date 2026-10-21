@@ -5,9 +5,26 @@ an optional reviewer transport. Installing the host package does not enable it o
 change the default roster. Application discovery and an actual Cursor-hosted Grok
 review are separate qualification gates; offline tests do not establish either.
 
+## Install
+
+No checkout required:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/WiktorStarczewski/review-council/main/install-cursor.sh | bash
+```
+
+That builds the native package and installs it at
+`~/.cursor/plugins/local/review-council`, replacing an existing Council bundle
+there. Start a new Cursor chat. `--ref <branch-or-tag>` or `REVIEW_COUNCIL_REF`
+selects the Git ref. `REVIEW_COUNCIL_SOURCE` installs from a local checkout
+instead of cloning. Cursor's CLI can index this repository as a marketplace, but
+it has no non-interactive plugin install, and the marketplace tree is not itself
+the native package. This command is the install.
+
 ## Build and load the native package
 
-From a checkout, build a real directory rather than a symlink:
+From a checkout, the same install is `REVIEW_COUNCIL_SOURCE="$PWD" install-cursor.sh`.
+To only build a directory, without installing it:
 
 ```bash
 python3 scripts/build-cursor-plugin.py --output dist/cursor/review-council
@@ -20,8 +37,9 @@ unrelated directory is refused. Claude hooks and other hosts' discovery manifest
 are absent. The builder does not install dependencies, authenticate or start a
 model call.
 
-For an isolated local installation, copy the generated directory to
-`~/.cursor/plugins/local/review-council`, reload the Cursor window, and inspect
+`install-cursor.sh` performs that build and installs the directory. Copying a
+built directory to `~/.cursor/plugins/local/review-council` is the same result
+when the installer is not used. Reload the Cursor window, and inspect
 Customize for both skills and the expected version. Local imports must be allowed
 by the account's administrator. A marketplace installation with the same name
 takes precedence; confirm which package is actually loaded before running a

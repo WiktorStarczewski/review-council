@@ -94,9 +94,10 @@ gh release create review-council--v0.6.1 --verify-tag \
   --title "review-council 0.6.1" --generate-notes
 ```
 
-Reinstall `review-council@review-council`. In fresh Claude and Codex sessions, require
-both hosts to discover `rev` and `stack` at version `0.6.1`, and compare installed file
-and mode identity with the released tag.
+Reinstall `review-council@review-council` for Claude and Codex, and run
+`install-cursor.sh` for Cursor. In fresh sessions on each host, require `rev` and
+`stack` at version `0.6.1`, and compare installed file and mode identity with the
+released tag.
 
 Finally remove the stable worktree while preserving external review and verifier
 artifacts:
