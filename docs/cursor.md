@@ -23,7 +23,7 @@ the native package. This command is the install.
 
 ## Build and load the native package
 
-From a checkout, the same install is `REVIEW_COUNCIL_SOURCE="$PWD" install-cursor.sh`.
+From a checkout, the same install is `REVIEW_COUNCIL_SOURCE="$PWD" ./install-cursor.sh`.
 To only build a directory, without installing it:
 
 ```bash
