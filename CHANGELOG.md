@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.1
+
+- Install the native Cursor package with one command. `install-cursor.sh`
+  builds the bundle and replaces `~/.cursor/plugins/local/review-council`.
+  A checkout is optional. Claude Code and Codex installs are unchanged.
+
 ## 0.7.0
 
 - Add native Cursor rev and stack workflows with explicit host routing and

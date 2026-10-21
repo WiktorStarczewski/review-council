@@ -65,12 +65,15 @@ development and host differences.
 
 **Cursor**
 
-Build the native package with
-`python3 scripts/build-cursor-plugin.py --output dist/cursor/review-council`, then
-follow [Cursor setup](docs/cursor.md) to load the real directory and verify both
-skills in the application. Cursor hosting keeps the existing default roster.
-Optional Grok reviewers require a separately installed pinned SDK runtime, an
-explicit SDK browser sign-in and live qualification; an environment key override
+```bash
+curl -fsSL https://raw.githubusercontent.com/WiktorStarczewski/review-council/main/install-cursor.sh | bash
+```
+
+Start a new Cursor chat. The command builds the native package and installs it at
+`~/.cursor/plugins/local/review-council`. [Cursor setup](docs/cursor.md) covers a
+checkout install and host differences. Cursor hosting keeps the existing default
+roster. Optional Grok reviewers require a separately installed pinned SDK runtime,
+an explicit SDK browser sign-in and live qualification; an environment key override
 is optional. Package tests do not qualify reviewers.
 
 > [!NOTE]
@@ -92,6 +95,9 @@ claude plugin update review-council
 # Codex: install in one line, or update; then start a new chat
 curl -fsSL https://raw.githubusercontent.com/WiktorStarczewski/review-council/main/install-codex.sh | bash
 codex plugin marketplace upgrade review-council && codex plugin add review-council@review-council
+
+# Cursor: install in one line, or update; then start a new chat
+curl -fsSL https://raw.githubusercontent.com/WiktorStarczewski/review-council/main/install-cursor.sh | bash
 ```
 
 The Claude Code one-liner also turns on auto-update for the marketplace (skip that with
@@ -99,7 +105,8 @@ The Claude Code one-liner also turns on auto-update for the marketplace (skip th
 install when rerun. It touches only Claude Code's marketplace configuration: the settings
 file is rewritten at 2-space indent with
 every other setting preserved, atomically and keeping its mode; an unparseable file is
-refused. The Codex one-liner takes `--ref <branch>` or `REVIEW_COUNCIL_REF`.
+refused. The Codex and Cursor one-liners take `--ref <branch-or-tag>` or `REVIEW_COUNCIL_REF`.
+Cursor can install from a local checkout with `REVIEW_COUNCIL_SOURCE` instead of cloning.
 
 **Requirements:** Bash, Git, Python 3 (standard library only), `gh` for PR scopes and
 publication, ripgrep for plan searches (Codex needs a real `rg`), and the provider CLIs your

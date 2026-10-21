@@ -75,6 +75,9 @@ Environment variables take precedence over the config file, which takes preceden
 | `XDG_CACHE_HOME` | `update-check.py` | The standard cache root, used when `REVIEW_COUNCIL_CACHE_DIR` is unset. |
 | `REVIEW_COUNCIL_SETTINGS` | `install.sh` | The `settings.json` whose `autoUpdate` flag the installer sets, instead of `~/.claude/settings.json`. |
 | `REVIEW_COUNCIL_NO_AUTO_UPDATE` | `install.sh` | `1` is the env form of `--no-auto-update`: the installer leaves `settings.json` alone. |
+| `REVIEW_COUNCIL_REF` | `install-codex.sh`, `install-cursor.sh` | Git branch or tag to install instead of `main`. `--ref` is the flag form. |
+| `REVIEW_COUNCIL_SOURCE` | `install-cursor.sh` | Install from this local checkout instead of cloning. |
+| `REVIEW_COUNCIL_CURSOR_DEST` | `install-cursor.sh` | Absolute install directory named `review-council`, instead of `~/.cursor/plugins/local/review-council`. |
 | `CLAUDE_PLUGIN_ROOT` | set by Claude Code | The installed plugin's own directory; every skill, hook and agent path in this plugin is written relative to it. Not something you configure - set by the harness at plugin load. |
 
 ## Graceful degradation
