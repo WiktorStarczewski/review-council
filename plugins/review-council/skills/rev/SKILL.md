@@ -64,6 +64,16 @@ An unassociated local render may remain inside, but it cannot publish.
 
 ## Setup (once)
 
+Before running repository checks, read its instructions, CI workflows and request
+helper. Follow its configured runner routing and guarded local fallback policy.
+Keep existing runner assignments and local guards when checks queue. This applies
+to baseline, fix, mutation and final verification commands.
+Run the required gates within the user's authorized scope; keep optional full
+suites and E2E opt-in. For manual-only CI, use the documented helper or explicit
+dispatch with the selected checks and exact source revision. A push alone is not
+a CI request. Record the run URL, tested revision and result; a queued, skipped or
+absent check is not a pass. Preserve required merge gates and report blockers.
+
 Configuration lives at `~/.config/review-council/config.json` or the path in
 `REVIEW_COUNCIL_CONFIG`. The optional `quota_fallback` boolean and `plan_seats` value
 are shared with the Codex host. `claude_adapter` (`cli`, `agent`, or `auto`, default
@@ -817,8 +827,8 @@ never fix what is not broken to satisfy a reviewer.
 `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh $S phase=verify`. Re-run the gates from
 setup. Compare with `baseline.md`: pre-existing failures are not regressions;
 anything newly failing is yours to repair or revert **before** the next round.
-Never advance on an unverified material tree. Run the repository's full gate list,
-not the subset the diff suggests, and record the result in the ledger. Then run
+Never advance on an unverified material tree. Run the repository's required gate list
+within the user's authorized scope, and record the result in the ledger. Then run
 rev-mutate.sh over the changed hunks before committing: revert each hunk alone and
 confirm a test notices, and compare what failed against the cluster's Prediction:
 `${CLAUDE_PLUGIN_ROOT}/scripts/rev-mutate.sh $S "<the test command>"`. For
@@ -965,8 +975,9 @@ evidence.
 
 Not in stack-leg mode:
 
-1. Push once (`git push`, `-u origin HEAD` if no upstream), so CI runs on what
-   reviewers will see. Push the fix commits as committed; the finding-to-commit
+1. Push once (`git push`, `-u origin HEAD` if no upstream), when authorized. Follow
+   the repository's CI request policy and verify results for the pushed revision.
+   Push the fix commits as committed; the finding-to-commit
    mapping is the audit trail, and the PR's own squash-merge collapses them on the
    target branch.
 2. Follow **PR review publication** below. Publication succeeds or cleanly skips

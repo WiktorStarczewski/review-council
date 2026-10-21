@@ -734,7 +734,7 @@ skill_adapter_and_plan_gate_contract() {
 # deliberately left alone: the pins elsewhere that share its weakness are a separate task.
 test_skill_requires_the_full_gate_list_on_a_fix_commit() {
   ( local tick='`'
-    local want="Run the repository's full gate list, not the subset the diff suggests, and record the result in the ledger. Then run rev-mutate.sh over the changed hunks"
+    local want="Run the repository's required gate list within the user's authorized scope, and record the result in the ledger. Then run rev-mutate.sh over the changed hunks"
     local mut="run rev-mutate.sh over the changed hunks before committing: revert each hunk alone and confirm a test notices, and compare what failed against the cluster's Prediction: $tick"
     assert_flat_fixed "rev skill requires the full gate list" \
       "$SK/skills/rev/SKILL.md" "$want"

@@ -13,6 +13,13 @@
 - Keep source and instruction-budget proof valid when verification paths are
   restored to their baseline (#48).
 
+## 0.6.2
+
+- Repository checks inherit existing CI routing, guarded local fallback and
+  opt-in gates on both hosts and across stack legs. Manual-only workflows use
+  explicit requests and record the tested revision instead of assuming a push
+  starts CI.
+
 ## 0.6.1
 
 - Discovery-seat replacements render with the correct phase and retain their
