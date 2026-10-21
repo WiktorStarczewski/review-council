@@ -17,6 +17,16 @@ Do not start a council automatically after unrelated implementation work.
 
 ## Locate and set up
 
+Before running repository checks, read its instructions, CI workflows and request
+helper. Follow its configured runner routing and guarded local fallback policy.
+Keep existing runner assignments and local guards when checks queue. This applies
+to baseline, fix, mutation and final verification commands.
+Run the required gates within the user's authorized scope; keep optional full
+suites and E2E opt-in. For manual-only CI, use the documented helper or explicit
+dispatch with the selected checks and exact source revision. A push alone is not
+a CI request. Record the run URL, tested revision and result; a queued, skipped or
+absent check is not a pass. Preserve required merge gates and report blockers.
+
 Resolve `PLUGIN` to the directory two levels above **this loaded SKILL.md**. Never
 assume the shell cwd is the plugin or use `CLAUDE_PLUGIN_ROOT`. All script paths below
 are relative to that absolute `PLUGIN`; quote paths and use arrays for arguments.
@@ -626,8 +636,8 @@ unrelated reason proves nothing about the defect. Apply confirmed fixes in coher
 clusters (one cluster per eventual commit, made only later when the round is
 actually committed, not here). Preserve user changes. Run the relevant gates and
 bring them to baseline or better. Add meaningful regressions when warranted, not
-tests that merely mirror implementation. Run the repository's full gate list, not
-the subset the diff suggests, and record the result in the ledger. Then run
+tests that merely mirror implementation. Run the repository's required gate list
+within the user's authorized scope, and record the result in the ledger. Then run
 rev-mutate.sh over the changed hunks before committing: revert each hunk alone and
 confirm a test notices, and compare what failed against the cluster's Prediction:
 `$PLUGIN/scripts/rev-mutate.sh "$S" "<the test command>"`. Commit only when within

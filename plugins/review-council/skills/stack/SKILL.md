@@ -37,6 +37,11 @@ function it rerouted. Nothing in pass 1 could have seen it.
 
 ## Preflight
 
+Apply `rev`'s repository-check policy independently to every leg: inherit that
+repository's runner routing, request helper, guarded fallback and opt-in checks.
+After an authorized push, explicitly request manual-only CI where needed and
+verify the tested revision; stack completion or publication is not a CI pass.
+
 Everything `/review-council:rev`'s preflight checks per leg (working branch, non-empty
 scope, a roster of at least three signed-in seats), plus:
 

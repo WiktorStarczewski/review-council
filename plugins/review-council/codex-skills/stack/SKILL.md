@@ -10,6 +10,11 @@ Resolve `PLUGIN` two directories above this loaded skill. Read the sibling
 legs, waits for receipts, tracks activity and process-tree CPU before declaring a
 stall, and resumes from the same session root and ledger.
 
+Apply `rev`'s repository-check policy independently to every leg: inherit that
+repository's runner routing, request helper, guarded fallback and opt-in checks.
+After an authorized push, explicitly request manual-only CI where needed and
+verify the tested revision; stack completion or publication is not a CI pass.
+
 1. Resolve the repositories, branches, dependency order, rounds/passes, and premises
    from the user and current context. Prepare isolated worktrees if needed. Inspect
    the relevant instructions and existing changes. Do not switch dirty checkouts.
