@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Choose and launch the cheap workhorse for fix plans, plan review, and implementation.
 
-The session model orchestrates. The default writer on every host is
-`grok-4.7-xhigh` through the Cursor agent CLI. Plan, plan review, and
-implementation all use that slug. If it is missing, not signed in, or out of
+The session model orchestrates. It writes and implements a local cluster
+(one file, at most 3 sites, no new mechanism, realm, or public contract).
+The default writer for every other cluster is `grok-4.7-xhigh` through the
+Cursor agent CLI, on every host. If it is missing, not signed in, or out of
 credits, the writer falls through OpenAI Luna, then Anthropic Sonnet, then
 OpenAI Sol, then Anthropic Opus. Frontier review seats stay on the roster.
 """

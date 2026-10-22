@@ -38,9 +38,9 @@ the diff yourself instead.
 
 ## Workhorse
 
-The session model orchestrates. It does not draft the fix plan, review that plan, or implement it while a workhorse is available. Frontier seats still review the code.
+The session model orchestrates. A cluster is local when its Sites list names one file and at most 3 sites, and the change does not add a mechanism, cross a realm, or change a public contract. Two anchors in one file are two sites. Excluded paths are not sites. You write the plan and implement every cluster when every cluster is local. When any cluster is not local, the workhorse writes the plan, you implement each local cluster, and you launch the workhorse for each other cluster. You still run the red test, the gates, and the commit. Frontier seats still review the code.
 
-The default writer is `grok-4.7-xhigh` through the Cursor agent CLI on every host, including Codex and Claude Code. Plan, plan review, and implementation all use that slug. If it is missing, not signed in, or out of credits, the writer falls through OpenAI Luna, then Anthropic Sonnet, then OpenAI Sol, then Anthropic Opus. Review seats stay on the roster. After the roster exists, resolve once and reuse a valid file. Do not edit it.
+The default writer is `grok-4.7-xhigh` through the Cursor agent CLI on every host, including Codex and Claude Code. A launched writer uses that slug. If it is missing, not signed in, or out of credits, the writer falls through OpenAI Luna, then Anthropic Sonnet, then OpenAI Sol, then Anthropic Opus. Review seats stay on the roster. After the roster exists, resolve once and reuse a valid file. Do not edit it.
 
 ```bash
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-workhorse.py resolve --write "$S/workhorse.json"
@@ -48,9 +48,9 @@ python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-workhorse.py resolve --write "$S/workh
 
 `family` null means none of that chain is available: do these three jobs in this session, report `Workhorse: unavailable` with the file's `reason`, and use the plan-seat fallback below. Otherwise launch only the recorded `family`, `model`, `effort`, and `adapter`. Effort is `high` when that model offers it. Do not substitute the session model, a frontier reviewer, or a higher effort.
 
-- **Fix plan.** `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-workhorse.py launch --dry-run --session "$S" --task plan`. When the JSON `kind` is `agent`, launch that agent on the prompt path (`review-council:rev-workhorse`) with its workspace set to `REV_ROOT`. When `kind` is `exec`, run the same command without `--dry-run`; it writes `$S/fix-plan.md` and starts in `REV_ROOT`. You do not draft the plan. Exit 4 means the Cursor writer is missing, not signed in, or out of credits: run advance immediately and do not retry that family. Any other non-zero exit, or a plan preparation rejection, gets one identical retry. A second failure runs `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-workhorse.py advance --session "$S"`. A printed record is the next family on the chain: retry that task once with it. A non-zero advance means the chain is exhausted and the run stops incomplete before any edit. The implementation launch uses the same advance rule.
+- **Fix plan.** `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-workhorse.py launch --dry-run --session "$S" --task plan`. When the JSON `kind` is `agent`, launch that agent on the prompt path (`review-council:rev-workhorse`) with its workspace set to `REV_ROOT`. When `kind` is `exec`, run the same command without `--dry-run`; it writes `$S/fix-plan.md` and starts in `REV_ROOT`. Launch this plan task only when a cluster is not local. When every cluster is local, write the plan yourself and do not launch. Exit 4 means the Cursor writer is missing, not signed in, or out of credits: run advance immediately and do not retry that family. Any other non-zero exit, or a plan preparation rejection, gets one identical retry. A second failure runs `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-workhorse.py advance --session "$S"`. A printed record is the next family on the chain: retry that task once with it. A non-zero advance means the chain is exhausted and the run stops incomplete before any edit. The implementation launch uses the same advance rule.
 - **Fix plan review.** When `$S/panel-request.json` exists, skip this workhorse seat and review the plan with the frozen caller roster. Otherwise the default plan seat is `seat` from the file. Adapters `codex` and `claude` launch through `rev-seat.sh`. Adapter `agent` launches `review-council:rev-workhorse-review` on the rendered prompt and is recorded like any other Agent seat. Adapter `cursor-agent` runs `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-workhorse.py launch --session "$S" --task review --prompt <rendered prompt> --out "$S/r<N>p-workhorse.json"`. That review launch follows the fix-plan exit 4 rule. `"plan_seats": "all"` still reviews with the core roster.
-- **Implementation.** After the red run, once per cluster: `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-workhorse.py launch --dry-run --session "$S" --task implement --cluster <id>`, then the exec form when `kind` is `exec` (it starts in `REV_ROOT`), or `review-council:rev-workhorse` when `kind` is `agent`, with that workspace set to `REV_ROOT`. You do not edit the cluster. Then you run the gates, `rev-mutate.sh`, and commit.
+- **Implementation.** After the red run, implement a local cluster yourself. For every other cluster: `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-workhorse.py launch --dry-run --session "$S" --task implement --cluster <id>`, then the exec form when `kind` is `exec` (it starts in `REV_ROOT`), or `review-council:rev-workhorse` when `kind` is `agent`, with that workspace set to `REV_ROOT`. Then you run the gates, `rev-mutate.sh`, and commit.
 
 Report the family, model, and effort, or the unavailable reason.
 
@@ -713,7 +713,7 @@ site a reviewer named while its siblings waited for the next round. The gate mak
 rule explicit and lets the panel attack it before it becomes code. Evidence:
 `docs/churn-analysis-2026-09-06.md` in the plugin repository.
 
-1. When `family` is set, the workhorse writes `$S/fix-plan.md` and you do not draft it. When `family` is null, write `$S/fix-plan.md` yourself. One section per cluster:
+1. When every cluster is local, or `family` is null, write `$S/fix-plan.md` yourself. When any cluster is not local and `family` is set, the workhorse writes `$S/fix-plan.md` and you do not draft it. One section per cluster:
 
    ```markdown
    ## C-03 · re-check hold ownership after every parking await
@@ -835,7 +835,7 @@ Prediction before the fix exists and watch it fail, once per cluster's Predictio
 not once for the round. Record the observed failure line in fix-plan.md beside the
 Prediction it belongs to: a failure whose message does not match the Prediction is a
 STOP, not a note, because a test that fails for an unrelated reason proves nothing
-about the defect. Implement `fix-plan.md` by launching the resolved workhorse, **one cluster per commit** (the commit
+about the defect. Implement each local cluster in `fix-plan.md` yourself. Launch the resolved workhorse for every other cluster, **one cluster per commit** (the commit
 itself happens later, in the Commit phase below, not here in Fix), P0 clusters
 first: every enumerated site, arm, realm and copy in the same commit. A fix that
 covers the cited instance and leaves a listed sibling is not done - it is next
