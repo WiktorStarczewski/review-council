@@ -122,9 +122,12 @@ test_prompt_cost_shared_limits_and_copy() {
     prompt_cost_fixture "$R" "$S"
     mkdir -p "$COPY/scripts/lib" "$COPY/schema"
     cp "$SCRIPTS/rev-prompt.sh" "$SCRIPTS/rev-evidence.py" "$COPY/scripts/"
-    cp -R "$SCRIPTS/lib/" "$COPY/scripts/lib/"
+    # `lib/.` copies the directory contents on both GNU and BSD cp. Copying `lib/`
+    # into an existing directory nests a second lib on GNU cp, so the copied
+    # prompt cannot import workhorse.
+    cp -R "$SCRIPTS/lib/." "$COPY/scripts/lib/"
+    chmod -R u+w "$COPY/scripts/lib"
     cp "$SCRIPTS/../schema/findings.schema.json" "$COPY/schema/"
-    chmod u+w "$COPY/scripts/lib/review_limits.py"
     printf 'READ_LINES = 120\nREPOSITORY_EXPANSION_CALL_LIMIT = 9\nMANDATORY_REPOSITORY_READ_LIMIT = 6\n' > "$COPY/scripts/lib/review_limits.py"
     printf 'frozen patch\n' > "$S/rlimits-full.patch"
     local p; p=$("$COPY/scripts/rev-prompt.sh" "$S" limits sol correctness focused) || return
