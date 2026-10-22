@@ -54,23 +54,135 @@ class WorkhorseTests(unittest.TestCase):
         self.assertEqual(only_later['family'], 'sol')
         self.assertEqual(only_later['available'], ['sol', 'opus'])
 
-    def test_other_hosts_start_the_normal_chain_at_luna(self):
+    def test_every_host_prefers_cursor_grok_then_falls_back_to_luna(self):
         grok = ('cursor-grok-4.6-high', 'high')
-        for host in ('claude', 'codex'):
+        for host in ('claude', 'codex', 'cursor'):
             sonnet = self.workhorse.sonnet_candidate(host, None)
             opus = self.workhorse.opus_candidate(host, None)
             chosen = self.workhorse.resolve_available(
                 host, luna=('gpt-5.6-luna', 'high'), sol=('gpt-5.6-sol', 'high'),
                 sonnet=sonnet, opus=opus, cursor_grok=grok)
-            self.assertEqual(chosen['family'], 'luna', host)
-            self.assertEqual(chosen['adapter'], 'codex', host)
-            self.assertEqual(chosen['available'], ['luna', 'sonnet', 'sol', 'opus'], host)
-            without_luna = self.workhorse.resolve_available(
-                host, sonnet=sonnet, cursor_grok=grok, opus=opus)
-            self.assertEqual(without_luna['family'], 'sonnet', host)
+            self.assertEqual(chosen['family'], 'cursor-grok', host)
+            self.assertEqual(chosen['adapter'], 'cursor-agent', host)
+            self.assertEqual(chosen['model'], 'cursor-grok-4.6-high', host)
+            self.assertEqual(chosen['available'],
+                             ['cursor-grok', 'luna', 'sonnet', 'sol', 'opus'], host)
+            without_grok = self.workhorse.resolve_available(
+                host, luna=('gpt-5.6-luna', 'high'), sonnet=sonnet, opus=opus)
+            self.assertEqual(without_grok['family'], 'luna', host)
+            self.assertEqual(without_grok['adapter'], 'codex', host)
+            self.assertNotIn('cursor-grok', without_grok['available'], host)
             only_grok = self.workhorse.resolve_available(host, cursor_grok=grok)
-            self.assertIsNone(only_grok['family'], host)
-            self.assertEqual(only_grok['available'], [], host)
+            self.assertEqual(only_grok['family'], 'cursor-grok', host)
+            self.assertEqual(only_grok['available'], ['cursor-grok'], host)
+
+    def test_review_escalation_never_seats_the_cursor_writer(self):
+        rows = [{'seat': 'codex-luna', 'adapter': 'codex', 'model': 'gpt-5.6-luna',
+                 'effort': 'high', 'extra': False}]
+        candidates = {
+            'cursor-grok': {'adapter': 'cursor-agent', 'model': 'cursor-grok-4.6-high',
+                            'effort': 'high', 'lab': 'cursor'},
+            'luna': {'adapter': 'codex', 'model': 'gpt-5.6-luna', 'effort': 'high',
+                     'lab': 'openai'},
+            'sonnet': {'adapter': 'claude', 'model': 'sonnet', 'effort': 'high',
+                       'lab': 'anthropic'},
+            'sol': None,
+            'opus': None,
+        }
+        for host in ('claude', 'codex', 'cursor'):
+            chosen, existing = self.workhorse.choose_escalation(host, 'luna', rows, candidates)
+            self.assertFalse(existing, host)
+            self.assertEqual(chosen['adapter'], 'claude', host)
+            self.assertEqual(chosen['model'], 'sonnet', host)
+
+    def test_escalate_does_not_probe_the_cursor_writer(self):
+        session = Path(self.temp.name) / 'escalate'
+        session.mkdir()
+        record = self.workhorse.resolve_available('codex', luna=('gpt-5.6-luna', 'high'))
+        self.workhorse.write_record(session / 'workhorse.json', record)
+        (session / 'roster.json').write_text(json.dumps({'seats': [
+            {'seat': 'codex-luna', 'adapter': 'codex', 'model': 'gpt-5.6-luna',
+             'effort': 'high', 'extra': False}]}))
+        seen = []
+        original = self.workhorse._candidates
+
+        def spy(host, include_cursor=True):
+            seen.append((host, include_cursor))
+            return {}, {
+                'cursor-grok': {'adapter': 'cursor-agent', 'model': 'cursor-grok-4.6-high',
+                                'effort': 'high', 'lab': 'cursor'},
+                'luna': None,
+                'sonnet': {'adapter': 'claude', 'model': 'sonnet', 'effort': 'high',
+                           'lab': 'anthropic'},
+                'sol': None,
+                'opus': None,
+            }
+
+        self.workhorse._candidates = spy
+        try:
+            chosen = self.workhorse.escalate(session, 'codex-luna')
+        finally:
+            self.workhorse._candidates = original
+        self.assertEqual(seen, [('codex', False)])
+        self.assertEqual(chosen['family'], 'sonnet')
+        self.assertTrue(chosen['existing'] is False)
+
+    def test_credit_or_auth_failure_blocks_a_failed_cursor_run_only(self):
+        blocked = self.workhorse.cursor_writer_blocked
+        self.assertTrue(blocked(1, '', 'You are out of credits'))
+        self.assertTrue(blocked(1, 'hit your limit', ''))
+        self.assertTrue(blocked(1, '', 'please log in'))
+        self.assertTrue(blocked(1, 'payment required', ''))
+        self.assertFalse(blocked(0, 'out of credits stays in the plan\n## C-01\n', ''))
+        self.assertFalse(blocked(1, 'the cluster heading was missing', ''))
+        quoted = 'rate_limit\n' * 200
+        self.assertFalse(blocked(1, quoted, ''))
+        self.assertTrue(blocked(1, quoted, 'out of credits'))
+        self.assertFalse(blocked(1, '## C-01\nout of credits\n', ''))
+
+    def test_stray_cursor_exit_4_stays_an_ordinary_failure(self):
+        status = self.workhorse.cursor_launch_status
+        self.assertEqual(status(4, '', 'out of credits'), 4)
+        self.assertEqual(status(4, 'model failed to start', ''), 1)
+        self.assertIsNone(status(0, 'out of credits', ''))
+        self.assertIsNone(status(2, 'model failed to start', ''))
+
+    def test_advance_past_cursor_grok_uses_luna_and_does_not_return(self):
+        original = self.workhorse._candidates
+        try:
+            for host in ('claude', 'codex', 'cursor'):
+                session = Path(self.temp.name) / host
+                session.mkdir()
+                current = self.workhorse.resolve_available(
+                    host, luna=('gpt-5.6-luna', 'high'),
+                    sonnet=self.workhorse.sonnet_candidate(host, None),
+                    cursor_grok=('cursor-grok-4.6-high', 'high'))
+                self.workhorse.write_record(session / 'workhorse.json', current)
+
+                def fake(_host, bound=host):
+                    self.assertEqual(_host, bound)
+                    return {}, {
+                        'cursor-grok': {'adapter': 'cursor-agent',
+                                        'model': 'cursor-grok-4.6-high',
+                                        'effort': 'high', 'lab': 'cursor'},
+                        'luna': {'adapter': 'codex', 'model': 'gpt-5.6-luna',
+                                 'effort': 'high', 'lab': 'openai'},
+                        'sonnet': {'adapter': 'claude', 'model': 'sonnet',
+                                   'effort': 'high', 'lab': 'anthropic'},
+                        'sol': None,
+                        'opus': None,
+                    }
+
+                self.workhorse._candidates = fake
+                nxt = self.workhorse.advance(session)
+                self.assertEqual((nxt['host'], nxt['family'], nxt['adapter']),
+                                 (host, 'luna', 'codex'))
+                self.assertNotIn('cursor-grok', nxt['available'])
+                again = self.workhorse.advance(session)
+                self.assertEqual(again['family'], 'sonnet', host)
+                self.assertNotIn('cursor-grok', again['available'])
+        finally:
+            self.workhorse._candidates = original
 
     def test_escalation_walks_past_a_family_that_cannot_launch(self):
         rows = [{'seat': 'grok-1', 'adapter': 'cursor-sdk', 'model': 'grok-4.6',
