@@ -134,6 +134,7 @@ class WorkhorseTests(unittest.TestCase):
         self.assertNotIn('read-only', plan['argv'])
         self.assertIn('gpt-5.6-luna', plan['argv'])
         self.assertIn('model_reasoning_effort=high', plan['argv'])
+        self.assertEqual(plan['cwd'], '/repo')
         self.assertNotIn('--force', plan['argv'])
         grok = self.workhorse.resolve_available(
             'cursor', cursor_grok=('cursor-grok-4.6-high', 'high'))

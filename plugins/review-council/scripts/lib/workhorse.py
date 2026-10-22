@@ -403,7 +403,7 @@ def launch_spec(record, task, root, session, prompt_path, cluster=None, out=None
         destination = destination or str(Path(session) / 'fix-plan.md')
     elif task == 'implement':
         destination = destination or str(Path(session) / ('workhorse-implement-%s.log' % cluster))
-    return {'kind': 'exec', 'argv': argv, 'stdin': stdin, 'out': destination,
+    return {'kind': 'exec', 'argv': argv, 'stdin': stdin, 'cwd': root, 'out': destination,
             'task': task, 'adapter': adapter, 'model': record['model'], 'effort': record['effort'],
             'prompt': prompt_path}
 
@@ -509,7 +509,7 @@ def _run_exec(spec):
         stream = open(spec['stdin'], encoding='utf-8') if spec['stdin'] else subprocess.DEVNULL
         try:
             return subprocess.run(argv, stdin=stream, stdout=subprocess.PIPE,
-                                  stderr=subprocess.PIPE, env=env, check=False)
+                                  stderr=subprocess.PIPE, env=env, cwd=spec['cwd'], check=False)
         finally:
             if spec['stdin']:
                 stream.close()
