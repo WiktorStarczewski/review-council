@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.6
+
+- The injected rev skill is a short core. Discovery, triage, plan, fix, verification, and publish load from phase files only when that phase runs. Seat coverage, audits, and receipts are unchanged.
+- A loop starts from `$S/state.json` via `rev-brief.py`, not from the parent conversation. Render, publish, CI watch, and close-out are one `rev-mechanical.sh` call. `host_mechanical_model` names a cheaper model for those phases.
+- The 10-minute status wake is off unless `status_tick` is true. The host wakes on a phase change, a seat failure, or a terminal result.
+
 ## 0.7.5
 
 - The default writer on every host is `grok-4.7-xhigh` through the Cursor agent CLI, including reviews started from Codex or Claude Code. The workhorse writes every fix plan. The orchestrator implements a local cluster: one file, at most 3 sites, and no new mechanism, realm, or public contract. The writer implements every other cluster. If `grok-4.7-xhigh` is missing, not signed in, or out of credits, the writer falls through Luna, Sonnet, Sol, then Opus. Exit 4 advances immediately. A raw Cursor exit 4 that is not a credit or auth failure stays an ordinary retry. Review seats are unchanged.

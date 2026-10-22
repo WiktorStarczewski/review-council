@@ -51,6 +51,10 @@ class CursorInstallTests(unittest.TestCase):
             (REPO / 'plugins/review-council/.cursor-plugin/plugin.json').read_text())['version']
         self.assertEqual(manifest['version'], source_version)
         self.assertTrue((dest / 'docs/cursor-review-workflow.md').is_file())
+        self.assertTrue((dest / 'cursor-skills/rev/phases/20-discovery.md').is_file())
+        workflow = (dest / 'docs/cursor-review-workflow.md').read_text()
+        self.assertIn('$PLUGIN/cursor-skills/rev/', workflow)
+        self.assertLess(len(workflow.encode()), 16000)
         self.assertTrue((dest / 'docs/cursor-stack-workflow.md').is_file())
         self.assertIn('REVIEW_COUNCIL_HOST=cursor', (dest / 'scripts/roster.sh').read_text())
         for absent in ('.claude-plugin', '.codex-plugin', 'hooks', 'skills', 'codex-skills'):

@@ -969,9 +969,12 @@ class CodexTests(unittest.TestCase):
         seats = (REPO / 'docs/seats.md').read_text()
         self.assertIn('`4` provider quota, capacity, or rate limit', seats)
         self.assertIn('`7` persistent local attempt exhaustion', seats)
-        for relative in ('plugins/review-council/skills/rev/SKILL.md',
-                         'plugins/review-council/codex-skills/rev/SKILL.md'):
-            contract = (REPO / relative).read_text()
+        for relative in ('plugins/review-council/skills/rev',
+                         'plugins/review-council/codex-skills/rev'):
+            root = REPO / relative
+            parts = [(root / 'SKILL.md').read_text()]
+            parts.extend(path.read_text() for path in sorted((root / 'phases').glob('*.md')))
+            contract = '\n'.join(parts)
             self.assertIn('Exit 7 is local attempt exhaustion, not provider quota', contract)
             self.assertIn('Exit 3 never enters quota fallback', contract)
 

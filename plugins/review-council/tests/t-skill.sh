@@ -6,11 +6,31 @@
 #
 # The forbidden-string patterns below are written with bracket escapes ('~/[.]claude') on purpose:
 # the recursive grep scans this file too, and a literal would match itself.
+rev_bundle() {
+  local src=$1 dest=$2 file
+  mkdir -p "$(dirname "$dest")"
+  cat "$src/SKILL.md" > "$dest"
+  if [ -d "$src/phases" ]; then
+    for file in "$src"/phases/*.md; do
+      [ -f "$file" ] || continue
+      printf '\n' >> "$dest"
+      cat "$file" >> "$dest"
+    done
+  fi
+}
+
 test_skill_contract() {
-  local K="$SK/skills/rev/SKILL.md" ST="$SK/skills/stack/SKILL.md" POL="$SK/skills/rev/POLICY.md" AG="$SK/agents/rev-reviewer.md" SG="$SK/agents/rev-reviewer-sonnet.md"
-  local CK="$SK/codex-skills/rev/SKILL.md" CST="$SK/codex-skills/stack/SKILL.md"
-  if [ ! -f "$K" ]; then fail "rev SKILL.md exists" "$K missing"; return; fi
+  if [ ! -f "$SK/skills/rev/SKILL.md" ]; then fail "rev SKILL.md exists" "$SK/skills/rev/SKILL.md missing"; return; fi
   ok "rev SKILL.md exists"
+  local bytes
+  bytes=$(wc -c < "$SK/skills/rev/SKILL.md")
+  [ "$bytes" -lt 16000 ] && ok "injected rev skill stays under 16KB" || fail "injected rev skill stays under 16KB" "$bytes bytes"
+  bytes=$(wc -c < "$SK/codex-skills/rev/SKILL.md")
+  [ "$bytes" -lt 12000 ] && ok "injected codex rev skill stays under 12KB" || fail "injected codex rev skill stays under 12KB" "$bytes bytes"
+  rev_bundle "$SK/skills/rev" "$T/skills/rev/SKILL.md"
+  rev_bundle "$SK/codex-skills/rev" "$T/codex-skills/rev/SKILL.md"
+  local K="$T/skills/rev/SKILL.md" ST="$SK/skills/stack/SKILL.md" POL="$SK/skills/rev/POLICY.md" AG="$SK/agents/rev-reviewer.md" SG="$SK/agents/rev-reviewer-sonnet.md"
+  local CK="$T/codex-skills/rev/SKILL.md" CST="$SK/codex-skills/stack/SKILL.md"
   if [ ! -f "$ST" ]; then fail "stack SKILL.md exists" "$ST missing"; return; fi
   ok "stack SKILL.md exists"
   if [ ! -f "$CK" ]; then fail "Codex rev SKILL.md exists" "$CK missing"; return; fi
@@ -737,39 +757,45 @@ skill_adapter_and_plan_gate_contract() {
 # invocation, or between the red-run sentence and the Implement/Apply directive. The helper is
 # deliberately left alone: the pins elsewhere that share its weakness are a separate task.
 test_skill_requires_the_full_gate_list_on_a_fix_commit() {
+  rev_bundle "$SK/skills/rev" "$T/skills/rev/SKILL.md"
+  rev_bundle "$SK/codex-skills/rev" "$T/codex-skills/rev/SKILL.md"
   ( local tick='`'
     local want="Run the repository's required gate list within the user's authorized scope, and record the result in the ledger. Then run rev-mutate.sh over the changed hunks"
     local mut="run rev-mutate.sh over the changed hunks before committing: revert each hunk alone and confirm a test notices, and compare what failed against the cluster's Prediction: $tick"
     assert_flat_fixed "rev skill requires the full gate list" \
-      "$SK/skills/rev/SKILL.md" "$want"
+      "$T/skills/rev/SKILL.md" "$want"
     assert_flat_fixed "codex skill requires the full gate list" \
-      "$SK/codex-skills/rev/SKILL.md" "$want"
+      "$T/codex-skills/rev/SKILL.md" "$want"
     assert_flat_fixed "rev skill invokes the mutation check" \
-      "$SK/skills/rev/SKILL.md" "$mut"
+      "$T/skills/rev/SKILL.md" "$mut"
     assert_flat_fixed "codex skill invokes the mutation check" \
-      "$SK/codex-skills/rev/SKILL.md" "$mut" )
+      "$T/codex-skills/rev/SKILL.md" "$mut" )
 }
 
 test_skill_requires_a_proven_red_before_the_fix() {
+  rev_bundle "$SK/skills/rev" "$T/skills/rev/SKILL.md"
+  rev_bundle "$SK/codex-skills/rev" "$T/codex-skills/rev/SKILL.md"
   ( local tick='`'
     local red="Run the test named in Prediction before the fix exists and watch it fail, once per cluster's Prediction, not once for the round. Record the observed failure line in fix-plan.md beside the Prediction it belongs to: a failure whose message"
     local stop='a failure whose message does not match the Prediction is a STOP, not a note, because a test that fails for an unrelated reason proves nothing about the defect.'
-    assert_flat_fixed "rev skill requires a proven red" "$SK/skills/rev/SKILL.md" "$red"
-    assert_flat_fixed "codex skill requires a proven red" "$SK/codex-skills/rev/SKILL.md" "$red"
+    assert_flat_fixed "rev skill requires a proven red" "$T/skills/rev/SKILL.md" "$red"
+    assert_flat_fixed "codex skill requires a proven red" "$T/codex-skills/rev/SKILL.md" "$red"
     # The sentence after the STOP is the one place the two hosts word this differently.
     assert_flat_fixed "rev skill treats a mismatched failure as a stop" \
-      "$SK/skills/rev/SKILL.md" "$stop Implement each local cluster in ${tick}fix-plan.md${tick} yourself."
+      "$T/skills/rev/SKILL.md" "$stop Implement each local cluster in ${tick}fix-plan.md${tick} yourself."
     assert_flat_fixed "codex skill treats a mismatched failure as a stop" \
-      "$SK/codex-skills/rev/SKILL.md" "$stop Apply each local cluster yourself." )
+      "$T/codex-skills/rev/SKILL.md" "$stop Apply each local cluster yourself." )
 }
 
 # rev-mutate.sh reports a verdict and the failing line; it never reads fix-plan.md, so it cannot
 # check anything against a Prediction. The contract said it did, which is the shape of claim that
 # survives precisely because no test can fail on it. Both hosts carry one definition, word for word.
 test_skill_states_what_a_prediction_is_read_against() {
+  rev_bundle "$SK/skills/rev" "$T/skills/rev/SKILL.md"
+  rev_bundle "$SK/codex-skills/rev" "$T/codex-skills/rev/SKILL.md"
   ( local K
     local want='`Prediction` states which test fails, on which arm, at which assertion or message, and why - a concrete symptom, not a restatement of `Rule`. It is read twice, not filed and forgotten: Fix compares it against the observed pre-fix red run, and Verify compares it against the failure line `rev-mutate.sh` prints beside each pinned hunk. Both comparisons are yours - the tool surfaces what failed and never reads a prediction.'
-    for K in "$SK/skills/rev/SKILL.md" "$SK/codex-skills/rev/SKILL.md"; do
+    for K in "$T/skills/rev/SKILL.md" "$T/codex-skills/rev/SKILL.md"; do
       assert_flat_fixed "$(basename "$(dirname "$(dirname "$K")")") names both readers of a Prediction" "$K" "$want"
       assert_flat_absent "$(basename "$(dirname "$(dirname "$K")")") claims no automatic check" "$K" \
         'checked twice|checked against what a mutation'
@@ -790,27 +816,33 @@ assert_flat_order() {
 }
 
 test_skill_rev_mutate_invocation_is_runnable() {
+  rev_bundle "$SK/skills/rev" "$T/skills/rev/SKILL.md"
+  rev_bundle "$SK/codex-skills/rev" "$T/codex-skills/rev/SKILL.md"
   ( assert_flat_fixed "rev skill's mutation check has a runnable invocation" \
-      "$SK/skills/rev/SKILL.md" 'scripts/rev-mutate.sh $S "<the test command>"'
+      "$T/skills/rev/SKILL.md" 'scripts/rev-mutate.sh $S "<the test command>"'
     assert_flat_fixed "codex skill's mutation check has a runnable invocation" \
-      "$SK/codex-skills/rev/SKILL.md" 'scripts/rev-mutate.sh "$S" "<the test command>"' )
+      "$T/codex-skills/rev/SKILL.md" 'scripts/rev-mutate.sh "$S" "<the test command>"' )
 }
 
 test_skill_rev_mutate_precedes_commit() {
+  rev_bundle "$SK/skills/rev" "$T/skills/rev/SKILL.md"
+  rev_bundle "$SK/codex-skills/rev" "$T/codex-skills/rev/SKILL.md"
   ( assert_flat_order "rev skill runs the mutation check before Commit" \
-      "$SK/skills/rev/SKILL.md" 'rev-mutate.*### Commit'
+      "$T/skills/rev/SKILL.md" 'rev-mutate.*### Commit'
     # Anchored on "the test command", not "rev-mutate": that word also appears in
     # the prose sentence describing the check, so a directive inserted between the
     # prose and the concrete invocation would still read as "after rev-mutate" and
     # pass. "the test command" occurs exactly once, inside the invocation itself.
     assert_flat_order "codex skill runs the mutation check before Commit only when" \
-      "$SK/codex-skills/rev/SKILL.md" 'the test command.*Commit only when' )
+      "$T/codex-skills/rev/SKILL.md" 'the test command.*Commit only when' )
 }
 
 # One replacement rule replaces every hard-audit stop and every coverage-repair clause, found by
 # search in both host skills, and the review-origin breaker is stated where phase=fix is.
 test_skill_replacement_and_breaker_contract() {
-  python3 - "$SK/skills/rev/SKILL.md" "$SK/codex-skills/rev/SKILL.md" <<'PY'
+  rev_bundle "$SK/skills/rev" "$T/skills/rev/SKILL.md"
+  rev_bundle "$SK/codex-skills/rev" "$T/codex-skills/rev/SKILL.md"
+  python3 - "$T/skills/rev/SKILL.md" "$T/codex-skills/rev/SKILL.md" <<'PY'
 import re, sys
 RULE = ('An assignment without a valid result gets at most one replacement on another eligible seat: '
         'after its exact retry for an execution failure, immediately for a hard audit failure '
@@ -871,22 +903,24 @@ PY
 }
 
 test_skill_keeps_one_commit_per_fix() {
+  rev_bundle "$SK/skills/rev" "$T/skills/rev/SKILL.md"
+  rev_bundle "$SK/codex-skills/rev" "$T/codex-skills/rev/SKILL.md"
   ( local rule="Review commits are never squashed: each fix is its own commit, and its subject names the finding IDs it closes, never the round."
-    assert_flat_fixed "rev skill keeps one commit per fix" "$SK/skills/rev/SKILL.md" "$rule"
-    assert_flat_fixed "codex skill keeps one commit per fix" "$SK/codex-skills/rev/SKILL.md" "$rule"
-    assert_nogrep "rev skill no longer squashes after the loop" "$SK/skills/rev/SKILL.md" 'rev-squash\.sh --apply'
-    assert_nogrep "codex skill no longer squashes when authorized" "$SK/codex-skills/rev/SKILL.md" 'rev-squash\.sh` dry-run'
-    assert_nogrep "rev commit example carries no round" "$SK/skills/rev/SKILL.md" 'fix\(rev\): round'
-    assert_grep "rev commit example names finding IDs" "$SK/skills/rev/SKILL.md" '^fix\(rev\): F-012, F-019 '
+    assert_flat_fixed "rev skill keeps one commit per fix" "$T/skills/rev/SKILL.md" "$rule"
+    assert_flat_fixed "codex skill keeps one commit per fix" "$T/codex-skills/rev/SKILL.md" "$rule"
+    assert_nogrep "rev skill no longer squashes after the loop" "$T/skills/rev/SKILL.md" 'rev-squash\.sh --apply'
+    assert_nogrep "codex skill no longer squashes when authorized" "$T/codex-skills/rev/SKILL.md" 'rev-squash\.sh` dry-run'
+    assert_nogrep "rev commit example carries no round" "$T/skills/rev/SKILL.md" 'fix\(rev\): round'
+    assert_grep "rev commit example names finding IDs" "$T/skills/rev/SKILL.md" '^fix\(rev\): F-012, F-019 '
     assert_nogrep "stack skill no longer squashes per repo" "$SK/skills/stack/SKILL.md" 'one squash \+ one push per repo'
-    assert_nogrep "no rev skill invokes rev-squash" "$SK/skills/rev/SKILL.md" 'rev-squash'
-    assert_nogrep "no codex rev skill invokes rev-squash" "$SK/codex-skills/rev/SKILL.md" 'rev-squash'
+    assert_nogrep "no rev skill invokes rev-squash" "$T/skills/rev/SKILL.md" 'rev-squash'
+    assert_nogrep "no codex rev skill invokes rev-squash" "$T/codex-skills/rev/SKILL.md" 'rev-squash'
     assert_nogrep "stack skills and runner promise no squashed commit" "$SK/skills/stack/SKILL.md" 'squashed review commit|squash \+ push' -i
     assert_nogrep "stack runner banner promises no squash" "$SK/scripts/stack.sh" 'squash \+ push per repo|post-squash' -i
     assert_grep "stack runner defaults to keeping review commits on every host" "$SK/scripts/stack.sh" '^NO_SQUASH=\$\{NO_SQUASH:-1\}$'
-    assert_flat_fixed "rev skill commits each cluster on its own" "$SK/skills/rev/SKILL.md" "Commit each cluster on its own: stage exactly that cluster's changes"
-    assert_flat_fixed "rev skill keeps finding IDs unique" "$SK/skills/rev/SKILL.md" "Finding IDs are unique within the session and never reused"
-    assert_flat_fixed "codex skill keeps finding IDs unique" "$SK/codex-skills/rev/SKILL.md" "Finding IDs are unique within the session and never reused"
+    assert_flat_fixed "rev skill commits each cluster on its own" "$T/skills/rev/SKILL.md" "Commit each cluster on its own: stage exactly that cluster's changes"
+    assert_flat_fixed "rev skill keeps finding IDs unique" "$T/skills/rev/SKILL.md" "Finding IDs are unique within the session and never reused"
+    assert_flat_fixed "codex skill keeps finding IDs unique" "$T/codex-skills/rev/SKILL.md" "Finding IDs are unique within the session and never reused"
     assert_flat_fixed "codex stack skill states the unsquashed default" "$SK/codex-skills/stack/SKILL.md" "keeps changes local and review commits one per fix"
     assert_flat_fixed "README states the unsquashed default on both hosts" "$SK/../../README.md" "so review commits stay one per fix on both hosts"
     assert_grep "codex doc table states the unsquashed default" "$SK/../../docs/codex.md" 'Push, keep one commit per fix' )
