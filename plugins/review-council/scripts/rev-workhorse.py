@@ -24,8 +24,19 @@ def main(argv=None):
     launch.add_argument('--prompt')
     launch.add_argument('--out')
     launch.add_argument('--dry-run', action='store_true')
+    advance = commands.add_parser('advance')
+    advance.add_argument('--session', required=True)
+    escalate = commands.add_parser('escalate')
+    escalate.add_argument('--session', required=True)
+    escalate.add_argument('--seat', required=True)
     args = parser.parse_args(argv)
     try:
+        if args.command == 'advance':
+            print(json.dumps(workhorse.advance(args.session), sort_keys=True))
+            return 0
+        if args.command == 'escalate':
+            print(json.dumps(workhorse.escalate(args.session, args.seat), sort_keys=True))
+            return 0
         if args.command == 'resolve':
             written = workhorse.write_record(args.write, workhorse.probe(), refresh=args.refresh)
             print(json.dumps(written, sort_keys=True))

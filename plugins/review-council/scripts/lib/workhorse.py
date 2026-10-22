@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Choose and launch the cheap workhorse for fix plans, plan review, and implementation.
 
-The session model orchestrates. OpenAI Luna, then Anthropic Sonnet, then Cursor
-Grok (`cursor-grok-*`, not the frontier Grok reviewer) do the writing, in that
-order on every host. Frontier review seats stay on the roster.
+The session model orchestrates. The normal chain is OpenAI Luna, then Anthropic
+Sonnet, then OpenAI Sol, then Anthropic Opus. On Cursor, Cursor Grok
+(`cursor-grok-*`, not the frontier Grok reviewer) is tried before that chain.
+Off Cursor the chain starts at Luna. Frontier review seats stay on the roster.
 """
 import json
 import os
@@ -21,15 +22,19 @@ from roster import (CLAUDE_SESSION_ENV, claude_cli_reason, codex_catalog, codex_
                     codex_suffix, reasoning_efforts)
 
 HOSTS = ('claude', 'codex', 'cursor')
-ORDER = ('luna', 'sonnet', 'cursor-grok')
+CHAIN = ('luna', 'sonnet', 'sol', 'opus')
+ORDER = ('cursor-grok',) + CHAIN
 FAMILIES = ORDER
 SEAT = 'workhorse'
-LABS = {'cursor-grok': 'cursor', 'luna': 'openai', 'sonnet': 'anthropic'}
-ADAPTERS = {'cursor-grok': ('cursor-agent',), 'luna': ('codex',), 'sonnet': ('claude', 'agent')}
+LABS = {'cursor-grok': 'cursor', 'luna': 'openai', 'sol': 'openai',
+        'sonnet': 'anthropic', 'opus': 'anthropic'}
+ADAPTERS = {'cursor-grok': ('cursor-agent',), 'luna': ('codex',), 'sol': ('codex',),
+            'sonnet': ('claude', 'agent'), 'opus': ('claude', 'agent')}
 LUNA_EFFORTS = ('high', 'xhigh', 'max')
 CURSOR_EFFORTS = ('high', 'medium', 'low', 'xhigh', 'max')
 SONNET_MODEL = 'sonnet'
 SONNET_EFFORT = 'high'
+ENFORCED_ADAPTERS = ('codex', 'claude')
 CURSOR_GROK_SLUG = re.compile(r'^cursor-grok-(\d+)(?:\.(\d+))?-(low|medium|high|xhigh|max)$')
 CLUSTER_ID = re.compile(r'^C-[A-Za-z0-9][A-Za-z0-9-]*$')
 ABSENT_KEYS = {'version', 'host', 'family', 'available', 'reason'}
@@ -49,18 +54,45 @@ def host_name(value=None):
     return host
 
 
-def select_luna(listed):
-    """Newest visible Luna at high, else xhigh, else max. `listed` is codex_catalog's list."""
-    lunas = [(gen, model, slug) for gen, model, slug in listed if codex_suffix(slug) == 'luna']
-    if not lunas:
+def order_for(host):
+    """Cursor tries Grok first. Every host then follows Luna, Sonnet, Sol, Opus."""
+    host = host_name(host)
+    if host == 'cursor':
+        return ORDER
+    return CHAIN
+
+
+def families_after(host, family):
+    order = order_for(host)
+    key = 'cursor-grok' if family in ('grok', 'cursor-grok') else family
+    if key == 'cursor-grok' and key not in order:
+        return order
+    if key not in order:
+        raise ValueError('unknown chain family: ' + str(family))
+    return order[order.index(key) + 1:]
+
+
+def select_codex_family(listed, family):
+    """Newest visible model of one Codex family at high, else xhigh, else max."""
+    matches = [(gen, model, slug) for gen, model, slug in listed if codex_suffix(slug) == family]
+    if not matches:
         return None
-    newest = max(gen for gen, _, _ in lunas)
-    model, slug = next((model, slug) for gen, model, slug in lunas if gen == newest)
+    newest = max(gen for gen, _, _ in matches)
+    model, slug = next((model, slug) for gen, model, slug in matches if gen == newest)
     levels = reasoning_efforts(model.get('supported_reasoning_levels'))
     effort = next((name for name in LUNA_EFFORTS if name in levels), None)
     if effort is None:
         return None
     return slug, effort
+
+
+def select_luna(listed):
+    """Newest visible Luna at high, else xhigh, else max. `listed` is codex_catalog's list."""
+    return select_codex_family(listed, 'luna')
+
+
+def select_sol(listed):
+    return select_codex_family(listed, 'sol')
 
 
 def select_cursor_grok(text):
@@ -87,14 +119,22 @@ def select_cursor_grok(text):
     return slug, effort
 
 
-def sonnet_candidate(host, cli_reason):
-    """Sonnet can run on Claude without the CLI. Other hosts need the CLI. Luna is still first."""
+def claude_candidate(host, cli_reason, model):
+    """Claude can run Opus or Sonnet without the CLI. Other hosts need the CLI."""
     if host == 'claude':
         return {'adapter': 'claude' if cli_reason is None else 'agent',
-                'model': SONNET_MODEL, 'effort': SONNET_EFFORT}
+                'model': model, 'effort': SONNET_EFFORT}
     if cli_reason is None:
-        return {'adapter': 'claude', 'model': SONNET_MODEL, 'effort': SONNET_EFFORT}
+        return {'adapter': 'claude', 'model': model, 'effort': SONNET_EFFORT}
     return None
+
+
+def sonnet_candidate(host, cli_reason):
+    return claude_candidate(host, cli_reason, SONNET_MODEL)
+
+
+def opus_candidate(host, cli_reason):
+    return claude_candidate(host, cli_reason, 'opus')
 
 
 def _record(host, family, available, **fields):
@@ -102,7 +142,7 @@ def _record(host, family, available, **fields):
         'version': 1,
         'host': host,
         'family': family,
-        'available': [name for name in ORDER if name in available],
+        'available': [name for name in order_for(host) if name in available],
         'reason': ('host %s; no workhorse available' % host if family is None
                    else 'host %s; selected %s' % (host, family)),
     }
@@ -113,22 +153,27 @@ def _record(host, family, available, **fields):
     return document
 
 
-def resolve_available(host, luna=None, sonnet=None, cursor_grok=None):
-    """Pick Luna, then Sonnet, then Cursor Grok. The host does not change the order.
+def resolve_available(host, luna=None, sonnet=None, cursor_grok=None, sol=None, opus=None):
+    """Pick the first family on this host's chain that was supplied.
 
-    `luna` and `cursor_grok` are `(model, effort)` or None. `sonnet` is a candidate
-    dict from `sonnet_candidate` or None.
+    Cursor starts at Cursor Grok. Every host then tries Luna, Sonnet, Sol, and
+    Opus. `luna`, `sol`, and `cursor_grok` are `(model, effort)` or None.
+    `sonnet` and `opus` are candidate dicts or None. Grok is ignored off Cursor.
     """
     host = host_name(host)
     present = {}
     if luna is not None:
         present['luna'] = {'adapter': 'codex', 'model': luna[0], 'effort': luna[1]}
+    if sol is not None:
+        present['sol'] = {'adapter': 'codex', 'model': sol[0], 'effort': sol[1]}
     if sonnet is not None:
         present['sonnet'] = dict(sonnet)
-    if cursor_grok is not None:
+    if opus is not None:
+        present['opus'] = dict(opus)
+    if cursor_grok is not None and host == 'cursor':
         present['cursor-grok'] = {'adapter': 'cursor-agent', 'model': cursor_grok[0],
                                    'effort': cursor_grok[1]}
-    for family in ORDER:
+    for family in order_for(host):
         if family in present:
             return _record(host, family, present, **present[family])
     return _record(host, None, present)
@@ -161,12 +206,12 @@ def validate_record(document):
     if (not isinstance(model, str) or not model.strip() or model != model.strip()
             or len(model) > 120 or not isinstance(effort, str)):
         raise ValueError('invalid workhorse model')
-    if family == 'luna':
-        if codex_suffix(model) != 'luna' or effort not in LUNA_EFFORTS:
-            raise ValueError('invalid luna workhorse')
-    elif family == 'sonnet':
-        if model != SONNET_MODEL or effort != SONNET_EFFORT:
-            raise ValueError('invalid sonnet workhorse')
+    if family in ('luna', 'sol'):
+        if codex_suffix(model) != family or effort not in LUNA_EFFORTS:
+            raise ValueError('invalid %s workhorse' % family)
+    elif family in ('sonnet', 'opus'):
+        if model != family or effort != SONNET_EFFORT:
+            raise ValueError('invalid %s workhorse' % family)
     elif effort not in CURSOR_EFFORTS or CURSOR_GROK_SLUG.match(model) is None:
         raise ValueError('invalid cursor-grok workhorse')
     return document
@@ -199,15 +244,179 @@ def seat_row(document):
             'model': document['model'], 'effort': document['effort'], 'extra': False}
 
 
-def lookup_launch(roster_path, seat):
-    """Roster row, or the workhorse row when that seat is not on the review roster."""
-    path = Path(roster_path)
+def roster_family(row):
+    """Chain family of a roster or escalation seat, or None when it is not on the chain."""
+    if not isinstance(row, dict):
+        return None
+    adapter = row.get('adapter')
+    model = row.get('model')
+    if adapter == 'cursor-sdk' or (
+            adapter == 'cursor-agent' and isinstance(model, str) and CURSOR_GROK_SLUG.match(model)):
+        return 'cursor-grok'
+    if adapter == 'codex' and isinstance(model, str) and codex_suffix(model) in ('luna', 'sol'):
+        return codex_suffix(model)
+    if adapter in ('claude', 'agent') and model in ('sonnet', 'opus'):
+        return model
+    return None
+
+
+def choose_escalation(host, family, roster_rows, candidates):
+    """Next enforced family on this host's chain, preferring a seat already on the roster.
+
+    `candidates` maps a family to a launch spec or None. Agent-only specs are
+    skipped: a repair executor has to be an enforced seat. Returns `(row, existing)`.
+    """
+    rows = roster_rows if isinstance(roster_rows, list) else []
+    specs = candidates if isinstance(candidates, dict) else {}
+    for nxt in families_after(host, family):
+        for row in rows:
+            if not isinstance(row, dict) or row.get('extra'):
+                continue
+            if roster_family(row) != nxt or row.get('adapter') not in ENFORCED_ADAPTERS:
+                continue
+            return dict(row), True
+        spec = specs.get(nxt)
+        if not isinstance(spec, dict) or spec.get('adapter') not in ENFORCED_ADAPTERS:
+            continue
+        return {
+            'version': 1,
+            'seat': 'escalate-' + nxt,
+            'family': nxt,
+            'lab': spec['lab'],
+            'adapter': spec['adapter'],
+            'model': spec['model'],
+            'effort': spec['effort'],
+            'extra': False,
+        }, False
+    return None
+
+
+def read_escalation(path):
+    path = Path(path)
+    if not path.is_file():
+        return None
     try:
         document = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError('unreadable escalation record') from error
+    if not isinstance(document, dict):
+        raise ValueError('unreadable escalation record')
+    family = document.get('family')
+    if (document.get('version') != 1 or family not in CHAIN
+            or document.get('seat') != 'escalate-' + family
+            or document.get('lab') != LABS[family]
+            or document.get('adapter') not in ENFORCED_ADAPTERS
+            or document.get('adapter') not in ADAPTERS[family]
+            or document.get('extra') is not False):
+        raise ValueError('invalid escalation record')
+    model, effort = document.get('model'), document.get('effort')
+    if family in ('luna', 'sol'):
+        if not isinstance(model, str) or codex_suffix(model) != family or effort not in LUNA_EFFORTS:
+            raise ValueError('invalid escalation record')
+    elif model != family or effort != SONNET_EFFORT:
+        raise ValueError('invalid escalation record')
+    return document
+
+
+def escalation_row(session):
+    document = read_escalation(Path(session) / 'escalation.json')
+    if document is None:
+        return None
+    return {'seat': document['seat'], 'lab': document['lab'], 'adapter': document['adapter'],
+            'model': document['model'], 'effort': document['effort'], 'extra': False}
+
+
+def _roster_document(path):
+    try:
+        document = json.loads(Path(path).read_text(encoding='utf-8'))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
         raise ValueError('unreadable roster') from error
     if not isinstance(document, dict):
         raise ValueError('unreadable roster')
+    return document
+
+
+def _clear_escalation(session):
+    path = Path(session) / 'escalation.json'
+    if path.exists():
+        path.unlink()
+
+
+def escalate(session, seat):
+    """Write the next enforced chain seat for a review seat that failed twice.
+
+    An existing core seat of that family is reused and any stale escalation file
+    is removed. A family that cannot launch is skipped. The chain ends at Opus.
+    """
+    session = Path(session)
+    document = _roster_document(session / 'roster.json')
+    rows = [row for row in document.get('seats') or [] if isinstance(row, dict)]
+    matched = next((row for row in rows if row.get('seat') == seat), None)
+    if matched is None:
+        prior = read_escalation(session / 'escalation.json')
+        if prior is not None and prior.get('seat') == seat:
+            matched = prior
+    if matched is None:
+        raise ValueError('no seat %s' % seat)
+    family = roster_family(matched)
+    if family is None:
+        raise ValueError('seat has no chain family: ' + seat)
+    host = host_name()
+    record_path = session / 'workhorse.json'
+    if record_path.is_file():
+        host = read_record(record_path)['host']
+    _chosen, candidates = _candidates(host)
+    chosen = choose_escalation(host, family, rows, candidates)
+    if chosen is None:
+        _clear_escalation(session)
+        raise ValueError('normal chain is exhausted')
+    spec, existing = chosen
+    if existing:
+        _clear_escalation(session)
+        return {'seat': spec['seat'], 'family': roster_family(spec), 'existing': True}
+    spec = dict(spec)
+    spec['substitutes_for'] = seat
+    path = session / 'escalation.json'
+    temporary = path.with_name(path.name + '.tmp')
+    temporary.write_text(json.dumps(spec, indent=2, sort_keys=True) + '\n', encoding='utf-8')
+    os.replace(temporary, path)
+    return {'seat': spec['seat'], 'family': spec['family'], 'existing': False, 'wrote': str(path)}
+
+
+def advance(session):
+    """Move the workhorse to the next family on this host's chain that can launch."""
+    session = Path(session)
+    current = read_record(session / 'workhorse.json')
+    if current is None or current.get('family') is None:
+        raise ValueError('no workhorse to advance')
+    host = current['host']
+    _chosen, candidates = _candidates(host)
+    later = set(families_after(host, current['family']))
+    picked = {}
+    for family in order_for(host):
+        if family not in later:
+            continue
+        spec = candidates.get(family)
+        if not isinstance(spec, dict):
+            continue
+        if family in ('luna', 'sol', 'cursor-grok'):
+            picked[family] = (spec['model'], spec['effort'])
+        else:
+            picked[family] = {'adapter': spec['adapter'], 'model': spec['model'],
+                              'effort': spec['effort']}
+    record = resolve_available(
+        host, luna=picked.get('luna'), sol=picked.get('sol'),
+        cursor_grok=picked.get('cursor-grok'), sonnet=picked.get('sonnet'),
+        opus=picked.get('opus'))
+    if record.get('family') is None:
+        raise ValueError('normal chain is exhausted')
+    return write_record(session / 'workhorse.json', record, refresh=True)
+
+
+def lookup_launch(roster_path, seat):
+    """Roster row, or the workhorse or chain-escalation row when that seat is not on it."""
+    path = Path(roster_path)
+    document = _roster_document(path)
     matched = None
     for row in document.get('seats') or []:
         if isinstance(row, dict) and row.get('seat') == seat:
@@ -225,6 +434,9 @@ def lookup_launch(roster_path, seat):
         return matched
     if record is not None and record.get('seat') == seat:
         return seat_row(record)
+    escalation = read_escalation(path.parent / 'escalation.json')
+    if escalation is not None and escalation.get('seat') == seat:
+        return escalation_row(path.parent)
     raise ValueError('no seat %s' % seat)
 
 
@@ -422,12 +634,41 @@ def cursor_models_text():
     return result.stdout
 
 
-def probe(host=None):
+def _candidates(host):
     host = host_name(host)
     listed, _error = codex_catalog(codex_catalog_path())
-    return resolve_available(host, luna=select_luna(listed),
-                             sonnet=sonnet_candidate(host, claude_cli_reason()),
-                             cursor_grok=select_cursor_grok(cursor_models_text()))
+    cli_reason = claude_cli_reason()
+    grok = select_cursor_grok(cursor_models_text()) if host == 'cursor' else None
+    return resolve_available(host, luna=select_luna(listed), sol=select_sol(listed),
+                             sonnet=sonnet_candidate(host, cli_reason),
+                             opus=opus_candidate(host, cli_reason),
+                             cursor_grok=grok), {
+        'cursor-grok': None if grok is None else {'adapter': 'cursor-agent', 'model': grok[0],
+                                                   'effort': grok[1], 'lab': 'cursor'},
+        'luna': _codex_spec(select_luna(listed)),
+        'sol': _codex_spec(select_sol(listed)),
+        'sonnet': _claude_spec(sonnet_candidate(host, cli_reason)),
+        'opus': _claude_spec(opus_candidate(host, cli_reason)),
+    }
+
+
+def _codex_spec(found):
+    if found is None:
+        return None
+    return {'adapter': 'codex', 'model': found[0], 'effort': found[1], 'lab': 'openai'}
+
+
+def _claude_spec(found):
+    if found is None:
+        return None
+    spec = dict(found)
+    spec['lab'] = 'anthropic'
+    return spec
+
+
+def probe(host=None):
+    chosen, _candidates_by_family = _candidates(host)
+    return chosen
 
 
 def write_record(path, document, refresh=False):

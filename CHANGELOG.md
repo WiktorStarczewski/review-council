@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.4
+
+- Normal mode is the default. On Cursor its panel is four Grok seats when the SDK
+  can seat them, and four Luna seats otherwise. Off Cursor it is four Luna seats.
+  `high effort` selects one Opus, one Sol, one Sonnet, and one Luna. Opus and Sol
+  stand in for each other when one is unavailable, and Sonnet and Luna do the same.
+  An explicit `4*luna` or `4*grok` overrides the preset. The session script writes
+  that roster; later panels keep it, and the workhorse does not replace those seats.
+- The normal workhorse chain is Luna, then Sonnet, then Sol, then Opus. On Cursor,
+  Cursor Grok is tried before that chain. A workhorse that fails twice advances to
+  the next family on the same chain. A review seat that fails twice is replaced by
+  the next enforced family on that chain.
+
 ## 0.7.3
 
 - Workhorse selection is Luna, then Sonnet, then Cursor Grok, on every host.
