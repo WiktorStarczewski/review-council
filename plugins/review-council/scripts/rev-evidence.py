@@ -78,7 +78,7 @@ def read_batch_limit(adapter):
 
 
 def read_tool_name(adapter):
-    return ('Read' if adapter in ('agent', 'claude') else
+    return ('Read' if adapter in ('agent', 'claude', 'cursor-agent') else
             'council_read' if adapter == 'cursor-sdk' else 'read_file')
 
 
