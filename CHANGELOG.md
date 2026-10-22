@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.5
+
+- The default writer on every host is Cursor Grok (`cursor-grok-*` through the Cursor agent CLI), including reviews started from Codex or Claude Code. If that CLI is missing, not signed in, or out of credits, the writer falls through Luna, Sonnet, Sol, then Opus. Exit 4 advances immediately. A raw Cursor exit 4 that is not a credit or auth failure stays an ordinary retry. Review seats are unchanged.
+
 ## 0.7.4
 
 - Normal mode is the default. On Cursor its panel is four Grok seats when the SDK

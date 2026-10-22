@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Choose and launch the cheap workhorse for fix plans, plan review, and implementation.
 
-The session model orchestrates. The normal chain is OpenAI Luna, then Anthropic
-Sonnet, then OpenAI Sol, then Anthropic Opus. On Cursor, Cursor Grok
-(`cursor-grok-*`, not the frontier Grok reviewer) is tried before that chain.
-Off Cursor the chain starts at Luna. Frontier review seats stay on the roster.
+The session model orchestrates. The default writer on every host is Cursor Grok
+(`cursor-grok-*`, the Cursor agent CLI, not the frontier Grok reviewer). If that
+CLI is missing, not signed in, or out of credits, the writer falls through OpenAI
+Luna, then Anthropic Sonnet, then OpenAI Sol, then Anthropic Opus. Frontier review
+seats stay on the roster.
 """
 import json
 import os
@@ -18,8 +19,8 @@ LIB = Path(__file__).resolve().parent
 if str(LIB) not in sys.path:
     sys.path.insert(0, str(LIB))
 
-from roster import (CLAUDE_SESSION_ENV, claude_cli_reason, codex_catalog, codex_catalog_path,
-                    codex_suffix, reasoning_efforts)
+from roster import (AUTH_FAILURE, CLAUDE_SESSION_ENV, QUOTA_FAILURE, claude_cli_reason,
+                    codex_catalog, codex_catalog_path, codex_suffix, reasoning_efforts)
 
 HOSTS = ('claude', 'codex', 'cursor')
 CHAIN = ('luna', 'sonnet', 'sol', 'opus')
@@ -36,6 +37,9 @@ SONNET_MODEL = 'sonnet'
 SONNET_EFFORT = 'high'
 ENFORCED_ADAPTERS = ('codex', 'claude')
 CURSOR_GROK_SLUG = re.compile(r'^cursor-grok-(\d+)(?:\.(\d+))?-(low|medium|high|xhigh|max)$')
+CURSOR_BLOCK = re.compile(
+    r'payment required|spend limit|rate_limit|usage_limit|hit_hard_limit',
+    re.IGNORECASE)
 CLUSTER_ID = re.compile(r'^C-[A-Za-z0-9][A-Za-z0-9-]*$')
 ABSENT_KEYS = {'version', 'host', 'family', 'available', 'reason'}
 SELECTED_KEYS = ABSENT_KEYS | {'lab', 'seat', 'adapter', 'model', 'effort'}
@@ -55,11 +59,13 @@ def host_name(value=None):
 
 
 def order_for(host):
-    """Cursor tries Grok first. Every host then follows Luna, Sonnet, Sol, Opus."""
-    host = host_name(host)
-    if host == 'cursor':
-        return ORDER
-    return CHAIN
+    """Every host tries Cursor Grok, then Luna, Sonnet, Sol, and Opus.
+
+    Review replacement still walks this order and skips Cursor Grok, because a
+    repair executor has to be an enforced seat.
+    """
+    host_name(host)
+    return ORDER
 
 
 def families_after(host, family):
@@ -154,11 +160,13 @@ def _record(host, family, available, **fields):
 
 
 def resolve_available(host, luna=None, sonnet=None, cursor_grok=None, sol=None, opus=None):
-    """Pick the first family on this host's chain that was supplied.
+    """Pick the first family on the writer chain that was supplied.
 
-    Cursor starts at Cursor Grok. Every host then tries Luna, Sonnet, Sol, and
-    Opus. `luna`, `sol`, and `cursor_grok` are `(model, effort)` or None.
-    `sonnet` and `opus` are candidate dicts or None. Grok is ignored off Cursor.
+    Every host starts at Cursor Grok, then Luna, Sonnet, Sol, and Opus.
+    `luna`, `sol`, and `cursor_grok` are `(model, effort)` or None.
+    `sonnet` and `opus` are candidate dicts or None. A missing Cursor Grok
+    candidate is the not-installed and not-signed-in case; credit exhaustion
+    is a launch failure and advances past the current family.
     """
     host = host_name(host)
     present = {}
@@ -170,7 +178,7 @@ def resolve_available(host, luna=None, sonnet=None, cursor_grok=None, sol=None, 
         present['sonnet'] = dict(sonnet)
     if opus is not None:
         present['opus'] = dict(opus)
-    if cursor_grok is not None and host == 'cursor':
+    if cursor_grok is not None:
         present['cursor-grok'] = {'adapter': 'cursor-agent', 'model': cursor_grok[0],
                                    'effort': cursor_grok[1]}
     for family in order_for(host):
@@ -347,6 +355,7 @@ def escalate(session, seat):
 
     An existing core seat of that family is reused and any stale escalation file
     is removed. A family that cannot launch is skipped. The chain ends at Opus.
+    Cursor Grok is not a review replacement and this path does not probe it.
     """
     session = Path(session)
     document = _roster_document(session / 'roster.json')
@@ -365,7 +374,7 @@ def escalate(session, seat):
     record_path = session / 'workhorse.json'
     if record_path.is_file():
         host = read_record(record_path)['host']
-    _chosen, candidates = _candidates(host)
+    _chosen, candidates = _candidates(host, include_cursor=False)
     chosen = choose_escalation(host, family, rows, candidates)
     if chosen is None:
         _clear_escalation(session)
@@ -620,6 +629,44 @@ def _cursor_binary():
     return shutil.which('agent') or shutil.which('cursor-agent')
 
 
+def _blocked_text(text):
+    return bool(text and (AUTH_FAILURE.search(text) or QUOTA_FAILURE.search(text)
+                          or CURSOR_BLOCK.search(text)))
+
+
+def cursor_writer_blocked(returncode, stdout, stderr):
+    """A failed Cursor agent run that is unsigned-in or out of credits.
+
+    A zero exit is a finished writer result. A long stdout is the writer's
+    own text, so a quoted limit in it does not retire the family. Stderr and
+    a short stdout banner still do.
+    """
+    if returncode == 0:
+        return False
+    if _blocked_text(stderr):
+        return True
+    banner = (stdout or '').strip()
+    if len(banner) > 4000 or banner.startswith('## ') or banner.startswith('{'):
+        return False
+    return _blocked_text(banner)
+
+
+def cursor_launch_status(returncode, stdout, stderr):
+    """Map a Cursor agent exit onto the writer contract.
+
+    4 retires the writer. A raw exit 4 that is not a credit or auth failure
+    becomes 1, so the skill retries it instead of advancing. None keeps the
+    raw exit.
+    """
+    if returncode == 0:
+        return None
+    if cursor_writer_blocked(returncode, stdout, stderr):
+        return 4
+    if returncode == 4:
+        return 1
+    return None
+
+
 def cursor_models_text():
     binary = _cursor_binary()
     if binary is None:
@@ -634,11 +681,16 @@ def cursor_models_text():
     return result.stdout
 
 
-def _candidates(host):
+def _candidates(host, include_cursor=True):
+    """Writer resolution probes Cursor Grok. Review replacement does not.
+
+    `include_cursor` stays false for `escalate` so a failed review seat never
+    gains a Cursor writer and never calls the Cursor agent CLI.
+    """
     host = host_name(host)
     listed, _error = codex_catalog(codex_catalog_path())
     cli_reason = claude_cli_reason()
-    grok = select_cursor_grok(cursor_models_text()) if host == 'cursor' else None
+    grok = select_cursor_grok(cursor_models_text()) if include_cursor else None
     return resolve_available(host, luna=select_luna(listed), sol=select_sol(listed),
                              sonnet=sonnet_candidate(host, cli_reason),
                              opus=opus_candidate(host, cli_reason),
@@ -736,7 +788,7 @@ def _run_exec(spec):
         binary = _cursor_binary()
         if binary is None:
             print('workhorse: cursor agent CLI is not installed', file=sys.stderr)
-            return 1
+            return 4
         argv[0] = binary
     if spec['adapter'] == 'claude':
         for name in CLAUDE_SESSION_ENV:
@@ -762,6 +814,14 @@ def _run_exec(spec):
     stdout = result.stdout.decode('utf-8', errors='replace')
     stderr = result.stderr.decode('utf-8', errors='replace')
     _note(out_path, stderr)
+    status = result.returncode
+    if spec['adapter'] == 'cursor-agent':
+        mapped = cursor_launch_status(status, stdout, stderr)
+        if mapped == 4:
+            print('workhorse: Cursor writer is unavailable or out of credits', file=sys.stderr)
+            return 4
+        if mapped is not None:
+            status = mapped
     if spec['task'] == 'plan':
         try:
             body = plan_markdown(stdout)
@@ -770,7 +830,7 @@ def _run_exec(spec):
             print('workhorse: ' + str(error), file=sys.stderr)
             return 1
         out_path.write_text(body, encoding='utf-8')
-        return result.returncode
+        return status
     if spec['task'] == 'review':
         try:
             body = findings_json(stdout)
@@ -780,14 +840,13 @@ def _run_exec(spec):
             status = 1
         else:
             out_path.write_text(body, encoding='utf-8')
-            status = result.returncode
         name = out_path.name
         exit_path = (out_path.with_name(name[:-5] + '.exit') if name.endswith('.json')
                      else Path(str(out_path) + '.exit'))
         exit_path.write_text(str(status) + '\n', encoding='utf-8')
         return status
     out_path.write_text(stdout, encoding='utf-8')
-    return result.returncode
+    return status
 
 
 def execute_launch(session, task, cluster=None, prompt=None, out=None, dry_run=False):
