@@ -17,7 +17,7 @@ Respect user stops and resource limits; report incomplete coverage honestly. Rea
 panels stop at the requested panel count and report findings without requiring fixes.
 
 After every panel, run `rev-profile.py "$S"` and report completed calls, processed
-tokens, prompt words, and provider cost when available. Current-session completion
+tokens, prompt words, provider cost, and each `seat_yield` line with its failure codes by model. Current-session completion
 and finding yield require a schema-valid result with a successful exit receipt. Only
 exact hashed receiptless results recorded in a versioned legacy roster policy may omit
 one. Usage-bearing failed attempts remain metered. Report the profiler's core-roster signature with every measurement. Treat a mixed-roster marker as a comparison boundary

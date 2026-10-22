@@ -188,6 +188,103 @@ def empty_scope_projection(with_names=True):
     }
 
 
+def seat_models(directory):
+    path = directory / "roster.json"
+    models = {}
+    try:
+        document = json.loads(path.read_text(errors="replace"))
+    except (OSError, ValueError):
+        return models
+    seats = document.get("seats") if isinstance(document, dict) else None
+    if not isinstance(seats, list):
+        return models
+    for item in seats:
+        if not isinstance(item, dict) or not isinstance(item.get("seat"), str):
+            continue
+        model = item.get("model")
+        models[item["seat"]] = model if isinstance(model, str) and model else "unknown"
+    return models
+
+
+def result_summary(path):
+    try:
+        document = json.loads(path.read_text(errors="replace"))
+    except (OSError, ValueError):
+        return None
+    summary = document.get("summary") if isinstance(document, dict) else None
+    return summary if isinstance(summary, str) else None
+
+
+def seat_yield(directory):
+    """Usable, invalid, and incomplete seat runs, with failure codes by model."""
+    models = seat_models(directory)
+    rows = {}
+    for path in sorted(directory.glob("r*-*.exit")):
+        stem = path.name[:-len(".exit")]
+        body = stem[1:] if stem.startswith("r") else ""
+        seat = next((name for name in sorted(models, key=len, reverse=True)
+                     if body.endswith("-" + name)), None)
+        if seat is None:
+            continue
+        model = models[seat]
+        try:
+            exit_code = int(path.read_text().strip().split()[0])
+        except (OSError, ValueError, IndexError):
+            exit_code = None
+        result_path = directory / (stem + ".json")
+        invalid_path = directory / (stem + ".audit-invalid.json")
+        audit_path = directory / (stem + ".read-audit.json")
+        summary = result_summary(result_path) or result_summary(invalid_path)
+        incomplete = isinstance(summary, str) and summary.startswith("INCOMPLETE PROOF")
+        audit = None
+        if audit_path.is_file():
+            try:
+                loaded = json.loads(audit_path.read_text(errors="replace"))
+            except (OSError, ValueError):
+                loaded = None
+            if isinstance(loaded, dict):
+                audit = loaded
+        salvaged = bool(audit and audit.get("citation_reaudit") is True and exit_code == 0
+                        and result_path.is_file() and not incomplete)
+        if incomplete:
+            kind = "incomplete_proof"
+        elif salvaged:
+            kind = "salvaged"
+        elif invalid_path.is_file() or (audit and audit.get("status") == "invalid"):
+            kind = "audit_invalid"
+        elif exit_code == 0 and result_path.is_file():
+            kind = "usable"
+        else:
+            kind = "no_result"
+        row = rows.setdefault(model, {
+            "runs": 0, "usable": 0, "audit_invalid": 0, "incomplete_proof": 0,
+            "salvaged": 0, "no_result": 0, "codes": {},
+        })
+        row["runs"] += 1
+        row[kind] += 1
+        if audit and kind in ("audit_invalid", "salvaged"):
+            recorded = audit.get("violations") if kind == "audit_invalid" else audit.get("advisories")
+            if isinstance(recorded, list):
+                for item in recorded:
+                    code = item.get("code") if isinstance(item, dict) else None
+                    if isinstance(code, str) and code:
+                        row["codes"][code] = row["codes"].get(code, 0) + 1
+    return rows
+
+
+def format_seat_yield(rows):
+    lines = []
+    for model in sorted(rows):
+        row = rows[model]
+        codes = ",".join("%s:%d" % item for item in sorted(row["codes"].items())) or "-"
+        lines.append(
+            "seat_yield model=%s runs=%d usable=%d audit_invalid=%d incomplete_proof=%d salvaged=%d no_result=%d codes=%s"
+            % (model, row["runs"], row["usable"], row["audit_invalid"], row["incomplete_proof"],
+               row["salvaged"], row["no_result"], codes)
+        )
+    return lines
+
+
 def empty_read_activity(with_names=True):
     return {
         "audits": 0,
@@ -679,6 +776,7 @@ def profile_session(directory, stream_usage=None):
         "providers": providers,
         "invalid_usage": invalid_usage,
         "read_activity": read_activity(directory, adapters),
+        "seat_yield": seat_yield(directory),
         "scope_projection": profile_evidence(directory),
         "render_timing": render_timing(directory),
     }
@@ -742,6 +840,18 @@ def main():
             scope_totals[key] += projection[key]
     totals["scope_projection"] = scope_totals
     totals["read_activity"] = read_totals
+    yield_totals = {}
+    for session in sessions:
+        for model, row in session["seat_yield"].items():
+            total = yield_totals.setdefault(model, {
+                "runs": 0, "usable": 0, "audit_invalid": 0, "incomplete_proof": 0,
+                "salvaged": 0, "no_result": 0, "codes": {},
+            })
+            for key in ("runs", "usable", "audit_invalid", "incomplete_proof", "salvaged", "no_result"):
+                total[key] += row[key]
+            for code, count in row["codes"].items():
+                total["codes"][code] = total["codes"].get(code, 0) + count
+    totals["seat_yield"] = yield_totals
     totals["render_timing"] = render_totals
     roster_groups = []
     roster_group_indexes = {}
@@ -821,6 +931,8 @@ def main():
         )
         for invalid in activity["invalid_audits"]:
             print("  read_audit_invalid_detail=%s: %s" % (invalid["audit"], invalid["reason"]))
+        for line in format_seat_yield(session["seat_yield"]):
+            print("  " + line)
         timing = session["render_timing"]
         print("  render_timing=%s" % (";".join(
             "%s:total_ms:%d,%s" % (panel["label"], panel["total_ms"], ",".join(
@@ -850,6 +962,8 @@ def main():
         )
     )
     print("TOTAL_USAGE_DETAIL " + usage_detail(totals))
+    for line in format_seat_yield(totals["seat_yield"]):
+        print("TOTAL_" + line)
     if "usage_identity_limit" in document:
         print("USAGE_IDENTITY_LIMIT " + document["usage_identity_limit"])
     print(

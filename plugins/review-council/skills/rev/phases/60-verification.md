@@ -138,7 +138,7 @@ Never append the cumulative findings ledger to reviewer prompts. For a resumed r
 write `$S/context.md` as a concise one-line digest of settled decisions; the prompt
 renderer includes it automatically. Do not copy `findings.md`. After every panel, run
 `${CLAUDE_PLUGIN_ROOT}/scripts/rev-profile.py $S` and relay completed calls, processed
-tokens, prompt words, and provider cost when available. Current-session completion
+tokens, prompt words, provider cost, and each `seat_yield` line with its failure codes by model. Current-session completion
 and finding yield require a schema-valid result with a successful exit receipt. Only
 exact hashed receiptless results recorded in a versioned legacy roster policy may omit
 one. Usage-bearing failed attempts remain metered. Report the profiler's core-roster signature with every measurement. Treat a mixed-roster marker as a comparison boundary
