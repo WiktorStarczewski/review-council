@@ -36,35 +36,33 @@ class WorkhorseTests(unittest.TestCase):
         return {'slug': slug, 'visibility': visibility,
                 'supported_reasoning_levels': [{'effort': effort} for effort in efforts]}
 
-    def test_cursor_prefers_cursor_grok_over_luna_and_sonnet(self):
-        chosen = self.workhorse.resolve_available(
-            'cursor', luna=('gpt-5.6-luna', 'high'),
-            sonnet=self.workhorse.sonnet_candidate('cursor', None),
-            cursor_grok=('cursor-grok-4.6-high', 'high'))
-        self.assertEqual(chosen['family'], 'cursor-grok')
-        self.assertEqual(chosen['model'], 'cursor-grok-4.6-high')
-        self.assertEqual(chosen['effort'], 'high')
-        self.assertEqual(chosen['adapter'], 'cursor-agent')
-        self.assertEqual(chosen['available'], ['cursor-grok', 'luna', 'sonnet'])
+    def test_every_host_tries_luna_then_sonnet_then_cursor_grok(self):
+        grok = ('cursor-grok-4.6-high', 'high')
+        for host in ('claude', 'codex', 'cursor'):
+            chosen = self.workhorse.resolve_available(
+                host, luna=('gpt-5.6-luna', 'high'),
+                sonnet=self.workhorse.sonnet_candidate(host, None),
+                cursor_grok=grok)
+            self.assertEqual(chosen['family'], 'luna', host)
+            self.assertEqual(chosen['adapter'], 'codex', host)
+            self.assertEqual(chosen['available'], ['luna', 'sonnet', 'cursor-grok'])
+            without_luna = self.workhorse.resolve_available(
+                host, sonnet=self.workhorse.sonnet_candidate(host, None), cursor_grok=grok)
+            self.assertEqual(without_luna['family'], 'sonnet', host)
+            only_grok = self.workhorse.resolve_available(host, cursor_grok=grok)
+            self.assertEqual(only_grok['family'], 'cursor-grok', host)
+            self.assertEqual(only_grok['model'], 'cursor-grok-4.6-high')
 
-    def test_cursor_grok_is_not_a_workhorse_off_cursor(self):
+    def test_claude_uses_luna_before_its_own_sonnet_agent(self):
         chosen = self.workhorse.resolve_available(
-            'codex', luna=('gpt-5.6-luna', 'high'),
-            sonnet=self.workhorse.sonnet_candidate('codex', None),
-            cursor_grok=('cursor-grok-4.6-high', 'high'))
-        self.assertEqual(chosen['family'], 'luna')
-        self.assertEqual(chosen['available'], ['luna', 'sonnet'])
-
-    def test_claude_uses_sonnet_agent_without_the_cli_and_luna_when_sonnet_is_absent(self):
-        agent = self.workhorse.resolve_available(
             'claude', luna=('gpt-5.6-luna', 'high'),
             sonnet=self.workhorse.sonnet_candidate('claude', 'not installed'))
-        self.assertEqual((agent['family'], agent['adapter'], agent['model'], agent['effort']),
-                         ('sonnet', 'agent', 'sonnet', 'high'))
-        luna = self.workhorse.resolve_available(
-            'codex', luna=('gpt-5.6-luna', 'high'),
-            sonnet=self.workhorse.sonnet_candidate('codex', 'not installed'))
-        self.assertEqual(luna['family'], 'luna')
+        self.assertEqual((chosen['family'], chosen['adapter'], chosen['model']),
+                         ('luna', 'codex', 'gpt-5.6-luna'))
+        fallback = self.workhorse.resolve_available(
+            'claude', sonnet=self.workhorse.sonnet_candidate('claude', 'not installed'))
+        self.assertEqual((fallback['family'], fallback['adapter'], fallback['effort']),
+                         ('sonnet', 'agent', 'high'))
         none = self.workhorse.resolve_available(
             'codex', sonnet=self.workhorse.sonnet_candidate('codex', 'not signed in'))
         self.assertIsNone(none['family'])
