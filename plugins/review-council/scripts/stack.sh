@@ -275,6 +275,7 @@ NOTE: an earlier pass of this review exists. Read $S/findings.md FIRST and do no
     say "=== START $label pass${PASS} (attempt $attempt/$MAX_ATTEMPTS) rounds=$rounds"
     local t0; t0=$(date +%s)
     local prompt="/review-council:rev branch $rounds - use $S as the session dir.
+The host model orchestrates. The resolved workhorse drafts the fix plan, reviews that plan, and implements it.
 
 ${extra}
 
@@ -284,6 +285,7 @@ ${VACUITY}${resume}"
       [ -f "$skill" ] || { say "!!! missing Codex rev skill: $skill"; note_failure "$label" "$repo"; return 1; }
       prompt="Read and follow the Codex review-council skill at $skill.
 Review branch $rounds rounds; use $S as the session dir. This is a stack leg: do not squash or push.
+The host model orchestrates. The resolved workhorse drafts the fix plan, reviews that plan, and implements it.
 
 ${extra}
 
@@ -297,6 +299,7 @@ ${VACUITY}${resume}"
       }
       prompt="Read and follow the Cursor review-council skill at $skill using REVIEW_COUNCIL_HOST=cursor and the runtime at $HERE.
 Review branch $rounds rounds; use $S as the session dir. This is a stack leg: do not squash or push.
+The host model orchestrates. The resolved workhorse drafts the fix plan, reviews that plan, and implements it.
 
 ${extra}
 

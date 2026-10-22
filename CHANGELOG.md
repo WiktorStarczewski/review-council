@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.2
+
+- The session model orchestrates. OpenAI Luna, Anthropic Sonnet, and Cursor Grok
+  (`cursor-grok-*`, only on the Cursor host) are the cheap workhorses. Whichever
+  is available drafts the fix plan, reviews that plan, and implements it. Frontier
+  seats still review the code. `plan_seats: "all"` stays on the core roster.
+
 ## 0.7.1
 
 - Install the native Cursor package with one command. `install-cursor.sh`

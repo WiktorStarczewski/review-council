@@ -93,14 +93,14 @@ def cursor_workflow(kind):
              'CPU before declaring a stall, and resumes from the same session root and ledger.'),
             ('under the Codex host', 'under the Cursor host'),
             ('Codex legs use `workspace-write`, network access for reviewer provider calls, and\n'
-             'write access to the session root. They inherit the configured Codex model. They do\n'
+             'write access to the session root. They inherit the configured Codex model as orchestrator; the resolved workhorse drafts the fix plan, reviews that plan, and implements it. They do\n'
              'not bypass the sandbox. If a gate or nested CLI needs unavailable permissions,\n'
              'report the concrete failure; do not change to unrestricted execution implicitly.',
-             'Cursor legs use the installed `cursor-agent` or `agent` CLI and its configured\n'
-             'host model. The leg is an orchestrator that may fix the reviewed scope; its\n'
-             'reviewer seats keep their own enforced transport boundaries. If a gate or nested\n'
-             'transport needs unavailable permissions, report the concrete failure. Never\n'
-             'change host permissions or use another host implicitly.'),
+             'Cursor legs use the installed `cursor-agent` or `agent` CLI. The configured host\n'
+             'model orchestrates; the resolved workhorse drafts the fix plan, reviews that plan,\n'
+             'and implements it. Reviewer seats keep their own enforced transport boundaries.\n'
+             'If a gate or nested transport needs unavailable permissions, report the concrete\n'
+             'failure. Never change host permissions or use another host implicitly.'),
         )
         for before, after in replacements:
             text = _replace_once(text, before, after)

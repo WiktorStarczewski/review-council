@@ -125,7 +125,7 @@ still restore full scope for the whole panel. Numeric and document reviews keep 
 
 Adaptive plan panels hash-bind every parsed fix-plan cluster and run after triage,
 before any edit. The plan-completeness seat keeps the full cumulative patch and every
-cluster; by default it is the whole panel. With `plan_seats: "all"`, each cluster also
+cluster; by default that seat is the resolved workhorse and it is the whole panel. With `plan_seats: "all"`, each cluster also
 goes to one specialist with its named sites, tests, regression paths, and changed
 local-import boundaries. Every seat still reads the complete plan and navigation index. Preparation
 runs each cluster's bounded repository-root sibling search once against the frozen

@@ -175,27 +175,25 @@ if any(row.get('adapter') == 'cursor-sdk' for row in roster['seats']):
 PY
     [ "$?" = 0 ] || die "document roster is unsupported"
   fi
-  ROSTER_ADAPTERS=$(python3 - "$S/roster.json" "${SEATS[@]}" <<'PY' 2>/dev/null
-import json, sys
-with open(sys.argv[1], encoding='utf-8') as source:
-    doc = json.load(source)
-if not isinstance(doc, dict) or not isinstance(doc.get('seats'), list):
-    raise SystemExit(1)
+  LOOKUP_ERR=$(mktemp "${TMPDIR:-/tmp}/review-council-roster.XXXXXX")
+  ROSTER_ADAPTERS=$(PYTHONPATH="$HERE/lib${PYTHONPATH:+:$PYTHONPATH}" python3 - "$S/roster.json" "${SEATS[@]}" <<'PY' 2>"$LOOKUP_ERR"
+import sys
+from workhorse import lookup_adapter
 for seat in sys.argv[2:]:
-    matches = [item for item in doc['seats']
-               if isinstance(item, dict) and item.get('seat') == seat
-               and isinstance(item.get('adapter'), str) and item['adapter']]
-    if not matches:
+    try:
+        print(lookup_adapter(sys.argv[1], seat))
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
         raise SystemExit(1)
-    print(matches[0]['adapter'])
 PY
-) || die "roster is invalid or does not contain every selected seat (${SEATS[*]}): $S/roster.json"
+) || { detail=$(tr '\n' ' ' < "$LOOKUP_ERR"); rm -f "$LOOKUP_ERR"; die "roster is invalid or does not contain every selected seat (${SEATS[*]}): $S/roster.json${detail:+: $detail}"; }
+  rm -f "$LOOKUP_ERR"
   while IFS= read -r ADAPTER; do ADAPTERS+=("$ADAPTER"); done <<< "$ROSTER_ADAPTERS"
 else
   for SEAT in "${SEATS[@]}"; do ADAPTERS+=(agent); done
 fi
 NEEDS_SCHEMA=0
-for ADAPTER in "${ADAPTERS[@]}"; do case "$ADAPTER" in agent|gemini|cursor-sdk) NEEDS_SCHEMA=1;; esac; done
+for ADAPTER in "${ADAPTERS[@]}"; do case "$ADAPTER" in agent|cursor-agent|gemini|cursor-sdk) NEEDS_SCHEMA=1;; esac; done
 if [ "$NEEDS_SCHEMA" = 1 ]; then require_regular "$SCHEMA" "findings schema"; fi
 check_read() { cat -- "$1" >/dev/null || die "cannot read $2: $1"; }
 render_evidence() {
@@ -533,7 +531,7 @@ EOC
     echo
     printf '3. Read the smallest useful line window around each match. '
     case "$ADAPTER" in
-      agent|claude)
+      agent|claude|cursor-agent)
         printf 'Every source Read call must set an explicit one-based `offset` and a `limit` of at most %s lines. Every Grep or search call must set a result limit of at most 80. ' "$READ_LINES";;
       cursor-sdk)
         printf 'Every source council_read call must set an explicit one-based `offset` and a `limit` of at most %s lines. ' "$READ_LINES";;
@@ -637,7 +635,7 @@ EOC
           codex)
             echo "$FIRST_EVIDENCE: run portable bounded sed windows over $PATCH_ARTIFACT, starting at line 1."
             ;;
-          agent|claude)
+          agent|claude|cursor-agent)
             echo "$FIRST_EVIDENCE: use Read to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most $READ_LINES lines, starting at line 1."
             ;;
           cursor-sdk)
@@ -744,7 +742,7 @@ for i in "${!SEATS[@]}"; do
   PATCH_MODE=${PATCH_MODES[$i]}; HAS_PACKETS=${PACKET_MODES[$i]}; HAS_SEGMENTS=${SEGMENT_MODES[$i]}
   CLEAN_ROOM=0; FIRST_EVIDENCE='First evidence action'
   case "+$LENS+" in *+clean-room+*) CLEAN_ROOM=1; FIRST_EVIDENCE+=' after required clean-room design';; esac
-  case "$ADAPTER" in agent|gemini|cursor-sdk) INLINE_SCHEMA=1;; *) INLINE_SCHEMA=0;; esac
+  case "$ADAPTER" in agent|cursor-agent|gemini|cursor-sdk) INLINE_SCHEMA=1;; *) INLINE_SCHEMA=0;; esac
   [ "$PHASE" != verification ] || EMPH="${EMPH:+$EMPH }$SIBLING_SITE_CHECK"
   if [ -n "$FRAGMENTS" ]; then
     EVIDENCE_TMP="$FRAGMENTS/$SEAT"

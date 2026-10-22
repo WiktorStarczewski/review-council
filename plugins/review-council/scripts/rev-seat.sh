@@ -32,21 +32,18 @@ done
 # --- the roster decides the seat ------------------------------------------------------------------
 ROSTER="$SESSION/roster.json"
 [ -f "$ROSTER" ] || { echo "rev-seat: no roster at $ROSTER - run preflight first" >&2; exit 1; }
-SEATDEF=$(REV_ROSTER_FILE="$ROSTER" REV_SEAT="$SEAT" python3 - <<'PY'
-import json, os, sys
+SEATDEF=$(REV_LIB="$HERE/lib" REV_ROSTER_FILE="$ROSTER" REV_SEAT="$SEAT" python3 - <<'PY'
+import os, sys
+sys.path.insert(0, os.environ['REV_LIB'])
 try:
-    with open(os.environ['REV_ROSTER_FILE']) as f:
-        doc = json.load(f)
+    from workhorse import lookup_launch
+    row = lookup_launch(os.environ['REV_ROSTER_FILE'], os.environ['REV_SEAT'])
 except Exception as e:  # noqa: BLE001 - an unreadable roster is "no seat", the caller re-runs preflight
     print(f"unreadable roster: {e}", file=sys.stderr)
     sys.exit(1)
-for s in (doc.get('seats') or []) if isinstance(doc, dict) else []:
-    if isinstance(s, dict) and s.get('seat') == os.environ['REV_SEAT']:
-        for k in ('adapter', 'model', 'effort', 'mode'):
-            v = s.get(k)
-            print('' if v is None else str(v))
-        sys.exit(0)
-sys.exit(1)
+for k in ('adapter', 'model', 'effort', 'mode'):
+    v = row.get(k)
+    print('' if v is None else str(v))
 PY
 ) || { echo "rev-seat: no seat '$SEAT' in $ROSTER - run preflight first" >&2; exit 1; }
 ADAPTER=$(printf '%s\n' "$SEATDEF" | sed -n 1p)
@@ -56,6 +53,7 @@ MODE=$(printf '%s\n' "$SEATDEF" | sed -n 4p)
 [ -n "$ADAPTER" ] && [ -n "$MODEL" ] || { echo "rev-seat: seat '$SEAT' has no adapter/model in $ROSTER - run preflight first" >&2; exit 1; }
 case "$ADAPTER" in
   agent) echo "rev-seat: seat '$SEAT' is the Agent tool seat - the skill launches it, rev-seat.sh cannot" >&2; exit 1;;
+  cursor-agent) echo "rev-seat: seat '$SEAT' is the Cursor workhorse - the skill launches it, rev-seat.sh cannot" >&2; exit 1;;
   codex|gemini|claude|cursor-sdk) ;;
   *) echo "rev-seat: unsupported or retired adapter '$ADAPTER' (seat '$SEAT')" >&2; exit 1;;
 esac

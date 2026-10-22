@@ -624,7 +624,7 @@ skill_adapter_and_plan_gate_contract() {
   # was an Agent row. Claude rows resolve to `agent` wherever the Claude CLI is not seated, so that
   # sentence meant evidence mode never ran on a code panel at all.
   local blanket_skip='skip evidence preparation'
-  local plan_default='By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order, preferring one whose adapter is not `agent` when the roster has one (an Agent seat runs the panel unenforced), `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.'
+  local plan_default='By default the plan panel is one `plan-completeness` seat on the resolved workhorse: set `PLAN_COMPLETENESS_SEAT` to the `seat` in `$S/workhorse.json` when `family` is set, `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.'
   local plan_all='When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat'
   local minimum='An `<N>x` replacement and the default one-seat plan panel are the only exceptions.'
   local verify_one='`verify-panel` certifies the one-seat plan panel once that seat returns'

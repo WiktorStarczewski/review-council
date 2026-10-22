@@ -10,7 +10,7 @@ This skill is an executable workflow contract. Follow every applicable step in i
 
 You are the orchestrator. The reviewers are other labs' frontier models plus configured
 Claude seats; **they never edit**. You fan out, verify their claims against the source,
-fix, verify the gates, commit, and report. The point is decorrelation: a reviewer
+dispatch the workhorse, verify the gates, commit, and report. The point is decorrelation: a reviewer
 that shares your weights shares your blind spots, so a review you run on your own
 work alone is proofreading. Disagreement between labs is the signal worth having.
 
@@ -35,6 +35,24 @@ they are dealt lenses like any other, so three Claude seats read the diff throug
 different lenses. What is lost is decorrelation, not coverage - and losing it is
 something you say out loud (see **Report**), never a reason to skip the loop or to read
 the diff yourself instead.
+
+## Workhorse
+
+The session model orchestrates. It does not draft the fix plan, review that plan, or implement it while a workhorse is available. Frontier seats still review the code.
+
+Cheap workhorses are OpenAI Luna, Anthropic Sonnet, and, only on the Cursor host, Cursor Grok (`cursor-grok-*`, not the frontier Grok reviewer). After the roster exists, resolve once and reuse a valid file. Do not edit it.
+
+```bash
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-workhorse.py resolve --write "$S/workhorse.json"
+```
+
+`family` null means none of the three is available: do these three jobs in this session, report `Workhorse: unavailable` with the file's `reason`, and use the plan-seat fallback below. Otherwise launch only the recorded `family`, `model`, `effort`, and `adapter`. Effort is `high` when that model offers it. Do not substitute the session model, a frontier reviewer, or a higher effort.
+
+- **Fix plan.** `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-workhorse.py launch --dry-run --session "$S" --task plan`. When the JSON `kind` is `agent`, launch that agent on the prompt path (`review-council:rev-workhorse`). When `kind` is `exec`, run the same command without `--dry-run`; it writes `$S/fix-plan.md`. You do not draft the plan. A non-zero exit, or a plan preparation rejection, gets one identical retry. A second failure stops the run incomplete before any edit.
+- **Fix plan review.** The default plan seat is `seat` from the file. Adapters `codex` and `claude` launch through `rev-seat.sh`. Adapter `agent` launches `review-council:rev-workhorse-review` on the rendered prompt and is recorded like any other Agent seat. Adapter `cursor-agent` runs `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-workhorse.py launch --session "$S" --task review --prompt <rendered prompt> --out "$S/r<N>p-workhorse.json"`. `"plan_seats": "all"` still reviews with the core roster.
+- **Implementation.** After the red run, once per cluster: `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-workhorse.py launch --dry-run --session "$S" --task implement --cluster <id>`, then the exec form when `kind` is `exec`, or `review-council:rev-workhorse` when `kind` is `agent`. You do not edit the cluster. Then you run the gates, `rev-mutate.sh`, and commit.
+
+Report the family, model, and effort, or the unavailable reason.
 
 ## Parse
 
@@ -690,7 +708,7 @@ site a reviewer named while its siblings waited for the next round. The gate mak
 rule explicit and lets the panel attack it before it becomes code. Evidence:
 `docs/churn-analysis-2026-09-06.md` in the plugin repository.
 
-1. Write `$S/fix-plan.md`, one section per cluster:
+1. When `family` is set, the workhorse writes `$S/fix-plan.md` and you do not draft it. When `family` is null, write `$S/fix-plan.md` yourself. One section per cluster:
 
    ```markdown
    ## C-03 · re-check hold ownership after every parking await
@@ -722,7 +740,7 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    forgotten: Fix compares it against the observed pre-fix red run, and Verify compares it
    against the failure line `rev-mutate.sh` prints beside each pinned hunk. Both
    comparisons are yours - the tool surfaces what failed and never reads a prediction.
-2. Choose the plan seats from the roster. By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order, preferring one whose adapter is not `agent` when the roster has one (an Agent seat runs the panel unenforced), `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.
+2. Choose the plan seats from the roster. By default the plan panel is one `plan-completeness` seat on the resolved workhorse: set `PLAN_COMPLETENESS_SEAT` to the `seat` in `$S/workhorse.json` when `family` is set, `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`. When `family` is null, set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order, preferring one whose adapter is not `agent` when the roster has one (an Agent seat runs the panel unenforced), `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.
    When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat, even when the preceding code
    panel included an extra or a one-seat repair, and deal the plan lenses by the same
    rule (`lenses = [plan-completeness,
@@ -812,7 +830,7 @@ Prediction before the fix exists and watch it fail, once per cluster's Predictio
 not once for the round. Record the observed failure line in fix-plan.md beside the
 Prediction it belongs to: a failure whose message does not match the Prediction is a
 STOP, not a note, because a test that fails for an unrelated reason proves nothing
-about the defect. Implement `fix-plan.md` **one cluster per commit** (the commit
+about the defect. Implement `fix-plan.md` by launching the resolved workhorse, **one cluster per commit** (the commit
 itself happens later, in the Commit phase below, not here in Fix), P0 clusters
 first: every enumerated site, arm, realm and copy in the same commit. A fix that
 covers the cited instance and leaves a listed sibling is not done - it is next
@@ -1117,7 +1135,7 @@ skip every external GitHub call.
 2. **Findings table**: ID, severity, location, claim, resolution - sorted by severity.
 3. **Rejected** findings with reasons, so the user can overrule a judgment call.
 4. **Coverage**: rounds, seats and efforts, lenses, final gate status, any seat that
-   dropped and why. On a degraded panel, state the roster's `degradation` sentence
+   dropped and why. Name the workhorse family, model, and effort, or `Workhorse: unavailable` and the reason. On a degraded panel, state the roster's `degradation` sentence
    verbatim and name every seat carrying `"padded": true`.
 5. **Commits**: one line per fix commit (finding IDs and SHA); the push.
 6. **Residual risk**: deferred, untestable, worth a human look.
@@ -1130,7 +1148,7 @@ shallow review is the one failure this skill exists to prevent.
 ```
 scope.env  files.txt  untracked.txt  roster.json  00-baseline.patch  baseline.md  findings.md  rejected.md  state.json  pr-review.json  pr-review.md  pr-review-target.json  stack-report.md  report.md
 r<N>-panel.tsv   r<N>-<seat>.prompt.md   r<N>-<seat>.json   r<N>-<seat>.log   r<N>-<seat>.stream.ndjson   r<N>-<seat>.exit
-fix-plan.md   context.md   r<N>p-panel.tsv   r<N>p-<seat>.prompt.md   r<N>p-<seat>.json   r<N>p-<seat>.exit
+fix-plan.md   workhorse.json   context.md   r<N>p-panel.tsv   r<N>p-<seat>.prompt.md   r<N>p-<seat>.json   r<N>p-<seat>.exit
 ```
 
 ## Tool notes (why the wrappers look the way they do)
