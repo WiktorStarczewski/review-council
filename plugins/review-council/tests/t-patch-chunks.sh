@@ -209,7 +209,7 @@ complete = [{'path': f'src/complete-{index}.py', 'line_start': 1, 'line_end': 1}
 large_target = {'path': 'src/large-target.py', 'line_start': 1, 'line_end': 2881,
                 'priority': 0, 'blob_tree': 'snapshot', 'reasons': ['context:changed']}
 try:
-    promote(assignment, [{'id': 'C-02', 'paths': complete}], complete,
+    promote(assignment, [{'id': 'C-01', 'paths': complete}], complete,
             [large_target], segment_cost, target_for)
 except ValueError as error:
     assert str(error) == 'mandatory plan source reads exceed repository capacity'
