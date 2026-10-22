@@ -145,8 +145,8 @@ def validate_record(document):
     if host not in HOSTS or not isinstance(document.get('reason'), str) or not document['reason']:
         raise ValueError('invalid workhorse host')
     available = document.get('available')
-    if (not isinstance(available, list) or any(name not in ORDER for name in available)
-            or available != [name for name in ORDER if name in available]):
+    if (not isinstance(available, list) or len(available) != len(set(available))
+            or any(name not in ORDER for name in available)):
         raise ValueError('invalid workhorse availability')
     if family is None:
         if available:

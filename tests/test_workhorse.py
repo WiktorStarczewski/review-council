@@ -69,6 +69,19 @@ class WorkhorseTests(unittest.TestCase):
         self.assertEqual(none['available'], [])
         self.assertNotIn('seat', none)
 
+    def test_a_prior_host_ordered_record_still_loads(self):
+        session = Path(self.temp.name)
+        document = {
+            'version': 1, 'host': 'claude', 'family': 'sonnet', 'lab': 'anthropic',
+            'seat': 'workhorse', 'adapter': 'agent', 'model': 'sonnet', 'effort': 'high',
+            'available': ['sonnet', 'luna'],
+            'reason': 'host claude; selected sonnet',
+        }
+        (session / 'workhorse.json').write_text(json.dumps(document))
+        loaded = self.workhorse.read_record(session / 'workhorse.json')
+        self.assertEqual(loaded['family'], 'sonnet')
+        self.assertEqual(self.workhorse.plan_seat(session)['adapter'], 'agent')
+
     def test_newest_cursor_grok_at_high_ignores_fast_and_frontier_grok(self):
         text = '\n'.join([
             'grok-4.7-high - Grok 4.7 High',
