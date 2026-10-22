@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.7
+
+- The usage report prints `seat_yield` after each panel: runs, usable results, audit-invalid results, incomplete proofs, and failure codes by model.
+- An evidence prompt lists the required patch, packet, and source reads, in order, before the rules. Searches stay at 80 lines; a longer result is narrowed and read as the next page.
+- When every finding in an audit-invalid result cites a source range the seat actually read, that result is kept. The audit records `citation_reaudit` and the missed protocol checks stay visible as advisories.
+
 ## 0.7.6
 
 - The injected rev skill is a short core. Discovery, triage, plan, fix, verification, and publish load from phase files only when that phase runs. Seat coverage, audits, and receipts are unchanged.

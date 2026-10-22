@@ -4541,13 +4541,16 @@ def audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, r
             or audit['opened_source_ranges'] != len(tool_ranges)
             or bool(tool_ranges or historical_segments) != bool(audit['source_read_calls'])
             or audit['source_read_calls'] < historical_segments
-            or (context['source_read_required']
+            or (not audit.get('citation_reaudit') is True and context['source_read_required']
                 and (audit['source_read_calls'] < 1
                      or not source_requirement_met))
-            or audit['required_source_ranges_covered'] != required_covered
-            or audit['required_source_ranges_covered'] != len(proofs)
-            or required_covered != len(context['required_source_ranges'])
-            or proofs != expected_proofs
+            or (not audit.get('citation_reaudit') is True
+                and audit['required_source_ranges_covered'] != required_covered)
+            or (not audit.get('citation_reaudit') is True
+                and audit['required_source_ranges_covered'] != len(proofs))
+            or (not audit.get('citation_reaudit') is True
+                and required_covered != len(context['required_source_ranges']))
+            or (not audit.get('citation_reaudit') is True and proofs != expected_proofs)
             or audit['finding_citations'] != cited
             or cited != len(source_findings)):
         raise ValueError('read audit evidence coverage mismatch: ' + seat)

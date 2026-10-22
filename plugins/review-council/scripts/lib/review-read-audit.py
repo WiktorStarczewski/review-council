@@ -2266,6 +2266,15 @@ def result_for_audit(args):
     return result, document
 
 
+def should_salvage_citations(findings, source_ranges, violations):
+    """Keep a result whose every finding cites a source range the seat read."""
+    codes = {item.get('code') for item in violations}
+    return bool(
+        isinstance(findings, list) and findings and codes
+        and codes <= (ADVISORY_CODES | {'missing-required-source-read'})
+        and all(intersects(item, source_ranges) for item in findings))
+
+
 def intersects(finding, ranges):
     path = finding.get('file')
     start = finding.get('line_start')
@@ -3151,6 +3160,13 @@ def assess(args, blocked):
         if not fatal:
             advisories = unique
             unique = []
+    citation_reaudit = False
+    reviewed = result if isinstance(result, dict) else None
+    findings = reviewed.get('findings') if reviewed is not None else None
+    if should_salvage_citations(findings, source_ranges, unique):
+        advisories = list(unique)
+        unique = []
+        citation_reaudit = True
     result = {
         'schema_version': 2,
         'status': 'invalid' if unique else 'valid',
@@ -3197,6 +3213,8 @@ def assess(args, blocked):
         'finding_citations': finding_citations,
         'source_ranges': source_ranges,
     }
+    if citation_reaudit:
+        result['citation_reaudit'] = True
     return result, unique, blocked & credited
 
 

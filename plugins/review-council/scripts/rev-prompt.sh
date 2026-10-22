@@ -499,8 +499,30 @@ render_prompt() (
   set -e
   set -o pipefail
   if [ -z "$RO" ]; then
+    echo '# Reviewer contract'
+    if [ -n "${EVIDENCE_TMP:-}" ] && [ -s "$EVIDENCE_TMP" ]; then
+      echo '## Required reads, in this order'
+      echo 'Finish each step before the next. Do not search or open another file early.'
+      python3 - "$EVIDENCE_TMP" <<'PY'
+import sys
+lines = open(sys.argv[1], encoding='utf-8').read().splitlines()
+prefixes = (
+    'First assigned-patch action: ',
+    'First source-context action: ',
+    'Required source range: ',
+    'Required post-index original-source target: ',
+    'Optional post-index original-source target: ',
+)
+step = 1
+for line in lines:
+    if line.startswith(prefixes):
+        print('%d. %s' % (step, line))
+        step += 1
+print('%d. Searches return at most 80 lines. If more matches exist, narrow the pattern or the path and read the next page. Do not read an unbounded search result.' % step)
+PY
+      echo
+    fi
     cat <<'EOC'
-# Reviewer contract
 You are one independent reviewer on a read-only multi-model code review panel. Substantiate every claim yourself, finish every assigned check, combine sibling sites under one root cause, and return no more than five distinct findings.
 
 - Read only inside the repository, exact review-session artifacts named in this prompt, document inputs listed in this prompt, and explicitly named pinned dependency roots. Do not read any other review-session artifact, user or global rules, memories, skills, caches, other checkouts, or unrelated files.
