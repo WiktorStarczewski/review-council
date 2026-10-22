@@ -627,13 +627,14 @@ skill_adapter_and_plan_gate_contract() {
   # sentence meant evidence mode never ran on a code panel at all.
   local blanket_skip='skip evidence preparation'
   local plan_default='When `$S/panel-request.json` is absent, the plan panel is one `plan-completeness` seat on the resolved workhorse: set `PLAN_COMPLETENESS_SEAT` to the `seat` in `$S/workhorse.json` when `family` is set, `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.'
+  local local_cluster='A cluster is local when its Sites list names one file and at most 3 sites, and the change does not add a mechanism, cross a realm, or change a public contract. Two anchors in one file are two sites. Excluded paths are not sites. The workhorse writes the fix plan whenever it is available. You implement each local cluster. You launch the workhorse for every other cluster. When a panel or assignment is incomplete, fix a local cause you can see and retry it once on the next higher enforced seat: Luna, then Sonnet, then Sol, then Opus. If that seat fails too, diagnose the edge case and finish the assignment yourself in the spirit of its lens and this contract.'
   local plan_all='When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat'
   local minimum='An `<N>x` replacement and the default one-seat plan panel are the only exceptions.'
   local verify_one='`verify-panel` certifies the one-seat plan panel once that seat returns'
   local before_code='The plan panel runs after triage and before any edit of the working tree.'
   local skip_line='When the plan panel is skipped, append a line beginning `Plan panel r<N>p - SKIPPED: <reason>` to `$S/findings.md` before `phase=fix`.'
   local gate='`rev-state.sh` refuses `phase=fix` for code round `<N>` while `open.P0 + open.P1 + open.P2` is above zero, unless that skip line exists or every seat recorded by `phase=plan round=<N>p`, or by its `<N>px` replacement panel, has `r<label>-<seat>.json` and a `0` exit.'
-  local incomplete='An incomplete plan panel is not a skip: stop the run incomplete before any edit.'
+  local incomplete='An incomplete plan panel is not a skip: retry it once on the next higher enforced seat after fixing a local cause, and if that fails review the plan yourself against the plan contract before any edit.'
   local fresh_counts='Write all three counts in one call after the round'"'"'s seats have exited: `rev-state.sh` refuses `phase=fix` while `open.P0`, `open.P1` and `open.P2` predate the newest `r<N>-<seat>.exit`, and only all three in one call refresh that stamp. A plan panel'"'"'s `r<N>p-<seat>.exit` is not a seat exit for this purpose, so triage stays valid across the plan gate.'
   local sibling='Sibling-site completeness: for each fix commit since the base, name the rule it applies and search the repository for sites, arms, realms, callers and copies (tests, JSDoc, docs) the rule reaches but the commit missed.'
   # Host-tied evidence wording that must never return: an evidence or plan decision keyed on the
@@ -662,6 +663,7 @@ skill_adapter_and_plan_gate_contract() {
     assert_nogrep "$host never skips a whole code panel over an Agent row" "$H" "$blanket_skip"
     assert_nogrep "$host has no host-tied evidence rule" "$H" "$host_tied"
     assert_flat_fixed "$host defaults to one plan-completeness seat" "$H" "$plan_default"
+    assert_flat_fixed "$host keeps a local cluster with the orchestrator" "$H" "$local_cluster"
     assert_grep "$host restores every core seat with plan_seats all" "$H" "$(printf '%s' "$plan_all" | sed 's/[][\.*^$|+?(){}]/\\&/g')"
     assert_flat_fixed "$host exempts the one-seat plan from the three-seat minimum" "$H" "$minimum"
     assert_flat_fixed "$host certifies a one-seat plan panel" "$H" "$verify_one"
@@ -756,9 +758,9 @@ test_skill_requires_a_proven_red_before_the_fix() {
     assert_flat_fixed "codex skill requires a proven red" "$SK/codex-skills/rev/SKILL.md" "$red"
     # The sentence after the STOP is the one place the two hosts word this differently.
     assert_flat_fixed "rev skill treats a mismatched failure as a stop" \
-      "$SK/skills/rev/SKILL.md" "$stop Implement ${tick}fix-plan.md${tick}"
+      "$SK/skills/rev/SKILL.md" "$stop Implement each local cluster in ${tick}fix-plan.md${tick} yourself."
     assert_flat_fixed "codex skill treats a mismatched failure as a stop" \
-      "$SK/codex-skills/rev/SKILL.md" "$stop Apply confirmed fixes in coherent clusters" )
+      "$SK/codex-skills/rev/SKILL.md" "$stop Apply each local cluster yourself." )
 }
 
 # rev-mutate.sh reports a verdict and the failing line; it never reads fix-plan.md, so it cannot
@@ -855,7 +857,7 @@ for path in sys.argv[1:]:
         elif name != 'plan replacement' and not all(RULE in item for item in found):
             problems.append(f'{host}: the rule is missing at the {name} location')
     for phrase in ('"$S" review_origin_ack=<N>', 'inherit-breaker "$PARENT_S"',
-                   'Ask the user before anything else', 'revert the cited review changes',
+                   'Apply the standing decision yourself', 'revert the cited review changes',
                    'defer the originating findings', 'An exit-4 quota substitution never uses a replacement child',
                    'Receiptless legacy numeric rounds are not counted.',
                    'SDK numeric receipts also support this review-origin accounting;',

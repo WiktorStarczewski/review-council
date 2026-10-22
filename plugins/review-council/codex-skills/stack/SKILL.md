@@ -50,7 +50,7 @@ verify the tested revision; stack completion or publication is not a CI pass.
    `REV_ACTIVE` or `REV_STACK_LEG`. A retry uses the same root and logs.
 
 Codex legs use `workspace-write`, network access for reviewer provider calls, and
-write access to the session root. They inherit the configured Codex model as orchestrator; the resolved workhorse drafts the fix plan, reviews that plan, and implements it. They do
+write access to the session root. They inherit the configured Codex model as orchestrator; the resolved workhorse writes the fix plan, the host implements a local cluster (one file, at most 3 sites), and the workhorse implements every other cluster. They do
 not bypass the sandbox. If a gate or nested CLI needs unavailable permissions,
 report the concrete failure; do not change to unrestricted execution implicitly.
 Legs may fix within the requested review scope; they never squash or push themselves.
