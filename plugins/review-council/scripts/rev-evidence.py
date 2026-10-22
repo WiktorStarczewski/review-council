@@ -33,7 +33,7 @@ from review_limits import (CLAUDE_MAX_TURNS, MANDATORY_REPOSITORY_READ_LIMIT,
                            REPOSITORY_REFUTATION_CALL_RESERVE)
 from session_inputs import session_input_lock, validate_standard_inputs
 from roster import cursor_sdk_identity, validate_cursor_sdk_qualification
-from workhorse import overlay_roster, plan_seat
+from workhorse import SEAT, escalation_row, overlay_roster, plan_seat
 
 BUNDLES = ('correctness-boundaries', 'security-state-api',
            'concurrency-resources-performance', 'tests-observability-maintenance-regression')
@@ -120,8 +120,17 @@ def unenforced_adapter(adapter):
 
 
 def with_workhorse(session, roster, seats_in_play):
-    """Plan panels may seat the workhorse without adding it to the frozen review roster."""
-    return overlay_roster(roster, plan_seat(session), seats_in_play)
+    """Plan panels may seat the workhorse, and a repair may seat the chain substitute.
+
+    Neither row is added to the frozen review roster. A name is overlaid only when
+    this panel's assignments actually use it.
+    """
+    names = set(seats_in_play or [])
+    if SEAT in names:
+        roster = overlay_roster(roster, plan_seat(session), names)
+    if any(isinstance(name, str) and name.startswith('escalate-') for name in names):
+        roster = overlay_roster(roster, escalation_row(session), names)
+    return roster
 
 
 def validate_live_roster_adapters(roster):
@@ -3185,8 +3194,7 @@ def validate_source_context_snapshot(repo, session, manifest, canonical_changes=
         canonical_facts = source_context_evidence(
             repo, manifest['snapshot_tree'], canonical_facts, entries_by_tree)
         roster = read_json(session / 'roster.json')
-        if manifest.get('phase') == 'plan':
-            roster = with_workhorse(session, roster, set(manifest['assignments']))
+        roster = with_workhorse(session, roster, set(manifest['assignments']))
         ordered_assignments = {
             row['seat']: manifest['assignments'][row['seat']]
             for row in roster['seats']
@@ -3260,8 +3268,7 @@ def validate_components(session, manifest, evidence):
         raise ValueError('invalid dependency components')
     assigned = manifest['assignments']; owner = manifest['mechanical_owner']
     roster = read_json(session / 'roster.json')
-    if manifest.get('phase') == 'plan':
-        roster = with_workhorse(session, roster, set(assigned))
+    roster = with_workhorse(session, roster, set(assigned))
     ordered = {row['seat']: assigned[row['seat']] for row in roster['seats'] if row['seat'] in assigned}
     adaptive = (not manifest['fallback_reason'] and manifest['phase'] not in ('repair', 'numeric')
                 and len(assigned) > 1)
@@ -4024,8 +4031,7 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
     roster = read_json(session / 'roster.json')
     if not isinstance(roster, dict) or not isinstance(roster.get('seats'), list) or any(not isinstance(s, dict) for s in roster['seats']):
         raise ValueError('invalid roster shape')
-    if manifest.get('phase') == 'plan':
-        roster = with_workhorse(session, roster, set(manifest.get('assignments') or {}))
+    roster = with_workhorse(session, roster, set(manifest.get('assignments') or {}))
     if fresh and not offline and provider_contract_input(session) != contract_binding:
         raise ValueError('provider contract input changed after prepare')
     core = {s['seat'] for s in roster['seats'] if not s.get('extra')}
@@ -4764,8 +4770,7 @@ def result_generation(session, manifest, manifest_hash, seat):
     hashes = validate_results(session, manifest, manifest_hash, [seat], verdicts)
     stem = f"r{manifest['label']}-{seat}"
     roster = read_json(session / 'roster.json')
-    if manifest.get('phase') == 'plan':
-        roster = with_workhorse(session, roster, [seat])
+    roster = with_workhorse(session, roster, [seat])
     roster_seat = next(row for row in roster['seats'] if row.get('seat') == seat)
     assignment = manifest['assignments'][seat]
     row = {
@@ -4950,13 +4955,12 @@ def _prepare_locked(args, session):
     repo = Repository(session)
     roster = read_json(session / 'roster.json')
     validate_live_roster_adapters(roster)
-    if args.phase == 'plan':
-        named = []
-        for assignment in args.assignment or []:
-            seat, separator, _bundle = assignment.partition('=')
-            if separator:
-                named.append(seat)
-        roster = with_workhorse(session, roster, named)
+    named = []
+    for assignment in args.assignment or []:
+        seat, separator, _bundle = assignment.partition('=')
+        if separator:
+            named.append(seat)
+    roster = with_workhorse(session, roster, named)
     numeric_values = tuple(getattr(args, name, None) for name in
                            ('numeric_round', 'numeric_min_rounds', 'numeric_panel'))
     numeric = None; numeric_rows = []; numeric_raw = None

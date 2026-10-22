@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write a session roster config when the caller named a panel such as 4*luna."""
+"""Write the session roster config for normal or high mode before preflight."""
 import argparse
 from pathlib import Path
 import sys

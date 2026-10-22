@@ -1691,6 +1691,87 @@ def result_receipt_policy(roster_path):
     return {'version': 1, 'legacy_no_exit_sha256': legacy}
 
 
+def _seat_family(seat):
+    if not isinstance(seat, dict) or seat.get('extra'):
+        return None
+    adapter = seat.get('adapter')
+    model = seat.get('model')
+    if adapter == 'codex' and isinstance(model, str):
+        suffix = codex_suffix(model)
+        if suffix in ('sol', 'luna'):
+            return suffix
+    if adapter in ('claude', 'agent') and model in ('opus', 'sonnet'):
+        return model
+    return None
+
+
+def _fresh_seat_name(base, seats, clones):
+    used = {seat.get('seat') for seat in seats} | {seat.get('seat') for seat in clones}
+    name, number = base, 2
+    while name in used:
+        name = '%s-%d' % (base, number)
+        number += 1
+    return name
+
+
+def _high_required_names(cfg):
+    """Family to the seat name enforce_exact_seats will require for a high panel."""
+    names = {}
+    allowed, error = codex_models_setting(cfg)
+    if allowed and not error:
+        for slug, seat_name in zip(allowed, codex_seat_names([(slug, None) for slug in allowed])):
+            family = codex_suffix(slug)
+            if family in ('sol', 'luna') and family not in names:
+                names[family] = seat_name
+    claude, error = claude_models_setting(cfg)
+    if claude and not error:
+        for model, seat_name in zip(claude, claude_model_seat_names(claude)):
+            if model not in names:
+                names[model] = seat_name
+    return names
+
+
+def substitute_high_pairs(kept, excluded, cfg):
+    """Opus and Sol cover each other, and Sonnet and Luna cover each other.
+
+    A missing side is a core seat cloned from the survivor, with substitutes_for
+    set to the required name. If both sides are down, nothing is invented.
+    """
+    if cfg.get('panel_mode') != 'high':
+        return
+    expected = _high_required_names(cfg)
+    pairs = (('opus', 'sol'), ('sol', 'opus'), ('sonnet', 'luna'), ('luna', 'sonnet'))
+    dropped = excluded_names(cfg)
+    present = {}
+    for seat in kept:
+        family = _seat_family(seat)
+        if family in expected and family not in present:
+            present[family] = seat
+    clones = []
+    for family, partner in pairs:
+        if family in present or partner not in present or family not in expected:
+            continue
+        name = expected[family]
+        if name in dropped or family in dropped:
+            continue
+        if any(seat.get('substitutes_for') == name for seat in kept):
+            continue
+        if any(entry.get('cli') in (name, family) and entry.get('reason') == 'excluded by config'
+               for entry in excluded):
+            continue
+        source = present[partner]
+        seat_name = _fresh_seat_name(source['seat'] + '-for-' + family, kept, clones)
+        clone = dict(source)
+        clone.pop('padded', None)
+        clone['extra'] = False
+        clone['seat'] = seat_name
+        clone['substitutes_for'] = name
+        clones.append(clone)
+        present[family] = clone
+        append_exclusion(excluded, name, 'unavailable; %s substitutes' % seat_name)
+    kept.extend(clones)
+
+
 def pad(seats, excluded, cfg, probe_results):
     """Top the panel up to PANEL non-extra seats with Claude seats. → the number added.
 
@@ -1794,6 +1875,12 @@ def build(do_probe, quota_failed_seats=(), *, review_mode='code'):
         cfg_error = (error if cause == 'config' else 'cursor-sdk document mode is unsupported')
     if not cfg_error and 'cursor_sdk_models' in cfg:
         cfg, cfg_error, resolution_class = prepare_cursor_sdk_config(cfg)
+        if (cfg_error and resolution_class == 'availability'
+                and cfg.get('panel_fallback') == 'luna' and cfg.get('panel_family') == 'grok'):
+            import panel_request
+            cfg = panel_request.luna_config(cfg, fallback=True)
+            cfg_error = None
+            resolution_class = 'config'
     if not cfg_error and codex_config_needs_resolution(cfg):
         _RESOLVED['codex_catalog'] = load_codex_catalog()
         cfg, cfg_error, resolution_class = _resolve_codex_config(cfg, _RESOLVED['codex_catalog'])
@@ -1812,6 +1899,8 @@ def build(do_probe, quota_failed_seats=(), *, review_mode='code'):
         }
         return roster, {}, resolution_class
     excluded = []
+    if cfg.get('panel_grok_fallback'):
+        excluded.append({'cli': 'grok', 'reason': 'cursor-sdk unavailable; normal panel fell back to luna'})
     dropped = excluded_names(cfg)
     seats, adapter_of = [], {}
 
@@ -1915,6 +2004,7 @@ def build(do_probe, quota_failed_seats=(), *, review_mode='code'):
     kept = [s for s in kept if not s['extra'] or any(
         b['adapter'] == s['adapter'] and b['model'] == s['model'] and not b['extra']
         for b in kept)]
+    substitute_high_pairs(kept, excluded, cfg)
 
     policy_class = None
     policy_reason = None
