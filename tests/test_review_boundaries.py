@@ -35,6 +35,9 @@ class ReviewBoundaryTests(unittest.TestCase):
             call('Read', {'file_path': str(patch), 'offset': 2, 'limit': 4}, patch, root, 12),
             [(2, 5)])
         self.assertEqual(call('Read', {'file_path': str(patch), 'offset': 0}, patch, root, 12), [])
+        self.assertEqual(
+            call('Read', {'file_path': str(patch), 'offset': 999999, 'limit': 240}, patch, root, 12),
+            [(999999, 12)])
         self.assertEqual(call('Read', {'path': 'other.txt'}, patch, root, 12), [])
 
     def test_context_read_outside_a_path_scope_is_audited(self):

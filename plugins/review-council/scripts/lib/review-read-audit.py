@@ -1989,9 +1989,8 @@ def assigned_patch_ranges_for_call(name, data, patch, root, total_lines):
                 return []
             if not total_lines:
                 return [(1, 0)]
+            # An offset past the file stays inverted so the caller can reject it.
             end = total_lines if limit is None else min(total_lines, start + int(limit) - 1)
-            if end < start:
-                return []
             return [(start, end)]
         except (OSError, TypeError, ValueError):
             return []
