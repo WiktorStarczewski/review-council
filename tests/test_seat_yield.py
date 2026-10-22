@@ -78,3 +78,5 @@ class SeatYieldTests(unittest.TestCase):
             [dict(finding, file='src/other.py')], ranges, violations))
         self.assertFalse(self.audit.should_salvage_citations(
             [finding], ranges, violations + [{'code': 'invalid-review-result', 'tool': 'codex'}]))
+        self.assertFalse(self.audit.should_salvage_citations(
+            [finding], ranges, violations + [{'code': 'source-output-mismatch', 'tool': 'codex'}]))

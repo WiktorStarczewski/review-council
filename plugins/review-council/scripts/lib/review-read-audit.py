@@ -2266,12 +2266,23 @@ def result_for_audit(args):
     return result, document
 
 
+CITATION_SALVAGE_CODES = {
+    'missing-required-source-read',
+    'evidence-read-order',
+    'discovery-output-too-large',
+}
+
+
 def should_salvage_citations(findings, source_ranges, violations):
-    """Keep a result whose every finding cites a source range the seat read."""
+    """Keep a result whose every finding cites a source range the seat read.
+
+    Only a missed required read, a disordered evidence pass, or an oversized
+    search can be set aside. A byte mismatch or an unbounded read still fails.
+    """
     codes = {item.get('code') for item in violations}
     return bool(
         isinstance(findings, list) and findings and codes
-        and codes <= (ADVISORY_CODES | {'missing-required-source-read'})
+        and codes <= CITATION_SALVAGE_CODES
         and all(intersects(item, source_ranges) for item in findings))
 
 
