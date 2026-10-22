@@ -40,7 +40,7 @@ the diff yourself instead.
 
 The session model orchestrates. It does not draft the fix plan, review that plan, or implement it while a workhorse is available. Frontier seats still review the code.
 
-The default writer is Cursor Grok (`cursor-grok-*`, the Cursor agent CLI, not the frontier Grok reviewer) on every host, including Codex and Claude Code. If that CLI is missing, not signed in, or out of credits, the writer falls through OpenAI Luna, then Anthropic Sonnet, then OpenAI Sol, then Anthropic Opus. Review seats stay on the roster. After the roster exists, resolve once and reuse a valid file. Do not edit it.
+The default writer is `grok-4.7-xhigh` through the Cursor agent CLI on every host, including Codex and Claude Code. Plan, plan review, and implementation all use that slug. If it is missing, not signed in, or out of credits, the writer falls through OpenAI Luna, then Anthropic Sonnet, then OpenAI Sol, then Anthropic Opus. Review seats stay on the roster. After the roster exists, resolve once and reuse a valid file. Do not edit it.
 
 ```bash
 python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-workhorse.py resolve --write "$S/workhorse.json"

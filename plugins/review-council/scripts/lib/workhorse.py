@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Choose and launch the cheap workhorse for fix plans, plan review, and implementation.
 
-The session model orchestrates. The default writer on every host is Cursor Grok
-(`cursor-grok-*`, the Cursor agent CLI, not the frontier Grok reviewer). If that
-CLI is missing, not signed in, or out of credits, the writer falls through OpenAI
-Luna, then Anthropic Sonnet, then OpenAI Sol, then Anthropic Opus. Frontier review
-seats stay on the roster.
+The session model orchestrates. The default writer on every host is
+`grok-4.7-xhigh` through the Cursor agent CLI. Plan, plan review, and
+implementation all use that slug. If it is missing, not signed in, or out of
+credits, the writer falls through OpenAI Luna, then Anthropic Sonnet, then
+OpenAI Sol, then Anthropic Opus. Frontier review seats stay on the roster.
 """
 import json
 import os
@@ -32,11 +32,11 @@ LABS = {'cursor-grok': 'cursor', 'luna': 'openai', 'sol': 'openai',
 ADAPTERS = {'cursor-grok': ('cursor-agent',), 'luna': ('codex',), 'sol': ('codex',),
             'sonnet': ('claude', 'agent'), 'opus': ('claude', 'agent')}
 LUNA_EFFORTS = ('high', 'xhigh', 'max')
-CURSOR_EFFORTS = ('high', 'medium', 'low', 'xhigh', 'max')
 SONNET_MODEL = 'sonnet'
 SONNET_EFFORT = 'high'
 ENFORCED_ADAPTERS = ('codex', 'claude')
-CURSOR_GROK_SLUG = re.compile(r'^cursor-grok-(\d+)(?:\.(\d+))?-(low|medium|high|xhigh|max)$')
+WRITER_GROK_MODEL = 'grok-4.7-xhigh'
+WRITER_GROK_EFFORT = 'xhigh'
 CURSOR_BLOCK = re.compile(
     r'payment required|spend limit|rate_limit|usage_limit|hit_hard_limit',
     re.IGNORECASE)
@@ -102,27 +102,14 @@ def select_sol(listed):
 
 
 def select_cursor_grok(text):
-    """Newest cursor-grok generation, preferring high and ignoring fast and frontier Grok slugs."""
+    """Writer Grok is exactly grok-4.7-xhigh. Other Grok slugs do not qualify."""
     if not isinstance(text, str) or not text.strip():
         return None
-    parsed = []
     for line in text.splitlines():
         slug = line.split(' - ', 1)[0].strip()
-        if not slug or slug.endswith('-fast'):
-            continue
-        match = CURSOR_GROK_SLUG.match(slug)
-        if match is None:
-            continue
-        generation = (int(match.group(1)), int(match.group(2) or 0))
-        parsed.append((generation, match.group(3), slug))
-    if not parsed:
-        return None
-    newest = max(item[0] for item in parsed)
-    current = [item for item in parsed if item[0] == newest]
-    rank = {name: index for index, name in enumerate(CURSOR_EFFORTS)}
-    current.sort(key=lambda item: rank.get(item[1], len(rank)))
-    _generation, effort, slug = current[0]
-    return slug, effort
+        if slug == WRITER_GROK_MODEL:
+            return WRITER_GROK_MODEL, WRITER_GROK_EFFORT
+    return None
 
 
 def claude_candidate(host, cli_reason, model):
@@ -220,7 +207,7 @@ def validate_record(document):
     elif family in ('sonnet', 'opus'):
         if model != family or effort != SONNET_EFFORT:
             raise ValueError('invalid %s workhorse' % family)
-    elif effort not in CURSOR_EFFORTS or CURSOR_GROK_SLUG.match(model) is None:
+    elif model != WRITER_GROK_MODEL or effort != WRITER_GROK_EFFORT:
         raise ValueError('invalid cursor-grok workhorse')
     return document
 
@@ -259,7 +246,7 @@ def roster_family(row):
     adapter = row.get('adapter')
     model = row.get('model')
     if adapter == 'cursor-sdk' or (
-            adapter == 'cursor-agent' and isinstance(model, str) and CURSOR_GROK_SLUG.match(model)):
+            adapter == 'cursor-agent' and model == WRITER_GROK_MODEL):
         return 'cursor-grok'
     if adapter == 'codex' and isinstance(model, str) and codex_suffix(model) in ('luna', 'sol'):
         return codex_suffix(model)

@@ -37,7 +37,7 @@ class WorkhorseTests(unittest.TestCase):
                 'supported_reasoning_levels': [{'effort': effort} for effort in efforts]}
 
     def test_cursor_tries_grok_then_the_normal_chain(self):
-        grok = ('cursor-grok-4.6-high', 'high')
+        grok = ('grok-4.7-xhigh', 'xhigh')
         sonnet = self.workhorse.sonnet_candidate('cursor', None)
         opus = self.workhorse.opus_candidate('cursor', None)
         chosen = self.workhorse.resolve_available(
@@ -55,7 +55,7 @@ class WorkhorseTests(unittest.TestCase):
         self.assertEqual(only_later['available'], ['sol', 'opus'])
 
     def test_every_host_prefers_cursor_grok_then_falls_back_to_luna(self):
-        grok = ('cursor-grok-4.6-high', 'high')
+        grok = ('grok-4.7-xhigh', 'xhigh')
         for host in ('claude', 'codex', 'cursor'):
             sonnet = self.workhorse.sonnet_candidate(host, None)
             opus = self.workhorse.opus_candidate(host, None)
@@ -64,7 +64,7 @@ class WorkhorseTests(unittest.TestCase):
                 sonnet=sonnet, opus=opus, cursor_grok=grok)
             self.assertEqual(chosen['family'], 'cursor-grok', host)
             self.assertEqual(chosen['adapter'], 'cursor-agent', host)
-            self.assertEqual(chosen['model'], 'cursor-grok-4.6-high', host)
+            self.assertEqual(chosen['model'], 'grok-4.7-xhigh', host)
             self.assertEqual(chosen['available'],
                              ['cursor-grok', 'luna', 'sonnet', 'sol', 'opus'], host)
             without_grok = self.workhorse.resolve_available(
@@ -80,8 +80,8 @@ class WorkhorseTests(unittest.TestCase):
         rows = [{'seat': 'codex-luna', 'adapter': 'codex', 'model': 'gpt-5.6-luna',
                  'effort': 'high', 'extra': False}]
         candidates = {
-            'cursor-grok': {'adapter': 'cursor-agent', 'model': 'cursor-grok-4.6-high',
-                            'effort': 'high', 'lab': 'cursor'},
+            'cursor-grok': {'adapter': 'cursor-agent', 'model': 'grok-4.7-xhigh',
+                            'effort': 'xhigh', 'lab': 'cursor'},
             'luna': {'adapter': 'codex', 'model': 'gpt-5.6-luna', 'effort': 'high',
                      'lab': 'openai'},
             'sonnet': {'adapter': 'claude', 'model': 'sonnet', 'effort': 'high',
@@ -109,8 +109,8 @@ class WorkhorseTests(unittest.TestCase):
         def spy(host, include_cursor=True):
             seen.append((host, include_cursor))
             return {}, {
-                'cursor-grok': {'adapter': 'cursor-agent', 'model': 'cursor-grok-4.6-high',
-                                'effort': 'high', 'lab': 'cursor'},
+                'cursor-grok': {'adapter': 'cursor-agent', 'model': 'grok-4.7-xhigh',
+                                'effort': 'xhigh', 'lab': 'cursor'},
                 'luna': None,
                 'sonnet': {'adapter': 'claude', 'model': 'sonnet', 'effort': 'high',
                            'lab': 'anthropic'},
@@ -135,7 +135,7 @@ class WorkhorseTests(unittest.TestCase):
         self.assertTrue(blocked(1, 'payment required', ''))
         self.assertFalse(blocked(0, 'out of credits stays in the plan\n## C-01\n', ''))
         self.assertFalse(blocked(1, 'the cluster heading was missing', ''))
-        quoted = 'rate_limit\n' * 200
+        quoted = 'rate_limit\n' * 500
         self.assertFalse(blocked(1, quoted, ''))
         self.assertTrue(blocked(1, quoted, 'out of credits'))
         self.assertFalse(blocked(1, '## C-01\nout of credits\n', ''))
@@ -156,15 +156,15 @@ class WorkhorseTests(unittest.TestCase):
                 current = self.workhorse.resolve_available(
                     host, luna=('gpt-5.6-luna', 'high'),
                     sonnet=self.workhorse.sonnet_candidate(host, None),
-                    cursor_grok=('cursor-grok-4.6-high', 'high'))
+                    cursor_grok=('grok-4.7-xhigh', 'xhigh'))
                 self.workhorse.write_record(session / 'workhorse.json', current)
 
                 def fake(_host, bound=host):
                     self.assertEqual(_host, bound)
                     return {}, {
                         'cursor-grok': {'adapter': 'cursor-agent',
-                                        'model': 'cursor-grok-4.6-high',
-                                        'effort': 'high', 'lab': 'cursor'},
+                                        'model': 'grok-4.7-xhigh',
+                                        'effort': 'xhigh', 'lab': 'cursor'},
                         'luna': {'adapter': 'codex', 'model': 'gpt-5.6-luna',
                                  'effort': 'high', 'lab': 'openai'},
                         'sonnet': {'adapter': 'claude', 'model': 'sonnet',
@@ -236,19 +236,18 @@ class WorkhorseTests(unittest.TestCase):
         self.assertEqual(loaded['family'], 'sonnet')
         self.assertEqual(self.workhorse.plan_seat(session)['adapter'], 'agent')
 
-    def test_newest_cursor_grok_at_high_ignores_fast_and_frontier_grok(self):
+    def test_writer_grok_is_grok_4_7_xhigh_only(self):
         text = '\n'.join([
             'grok-4.7-high - Grok 4.7 High',
-            'cursor-grok-4.5-high - Grok 4.5',
-            'cursor-grok-4.6-xhigh - Grok 4.6 Extra High',
-            'cursor-grok-4.6-high-fast - Grok 4.6 Fast',
+            'grok-4.7-xhigh-fast - Grok 4.7 Extra High Fast',
             'cursor-grok-4.6-high - Grok 4.6',
+            'cursor-grok-4.6-xhigh - Grok 4.6 Extra High',
+            'grok-4.7-xhigh - Grok 4.7 Extra High',
             'auto - Auto',
         ])
-        self.assertEqual(self.workhorse.select_cursor_grok(text), ('cursor-grok-4.6-high', 'high'))
-        only_xhigh = 'cursor-grok-4.6-xhigh - Grok 4.6 Extra High\n'
-        self.assertEqual(self.workhorse.select_cursor_grok(only_xhigh),
-                         ('cursor-grok-4.6-xhigh', 'xhigh'))
+        self.assertEqual(self.workhorse.select_cursor_grok(text), ('grok-4.7-xhigh', 'xhigh'))
+        without = 'grok-4.7-high - Grok 4.7 High\ncursor-grok-4.6-xhigh - Grok 4.6 Extra High\n'
+        self.assertIsNone(self.workhorse.select_cursor_grok(without))
 
     def test_newest_luna_prefers_high_and_skips_hidden_models(self):
         listed = self.listed([
@@ -302,16 +301,18 @@ class WorkhorseTests(unittest.TestCase):
         self.assertEqual(plan['cwd'], '/repo')
         self.assertNotIn('--force', plan['argv'])
         grok = self.workhorse.resolve_available(
-            'cursor', cursor_grok=('cursor-grok-4.6-high', 'high'))
+            'cursor', cursor_grok=('grok-4.7-xhigh', 'xhigh'))
         review = self.workhorse.launch_spec(
             grok, 'review', '/repo', '/session', '/session/prompt.md', out='/session/out.json')
         self.assertEqual(review['argv'][0], 'agent')
+        self.assertIn('grok-4.7-xhigh', review['argv'])
         self.assertIn('--mode', review['argv'])
         self.assertIn('ask', review['argv'])
         self.assertNotIn('--force', review['argv'])
         self.assertNotIn('disabled', review['argv'])
         implement = self.workhorse.launch_spec(
             grok, 'implement', '/repo', '/session', '/session/prompt.md', cluster='C-03')
+        self.assertIn('grok-4.7-xhigh', implement['argv'])
         self.assertIn('disabled', implement['argv'])
         self.assertNotIn('--force', implement['argv'])
         self.assertNotIn('--yolo', implement['argv'])
