@@ -1,0 +1,20 @@
+name: v0.7.4 plan capacity proof
+on:
+  push:
+    branches:
+      - ci/rev-evidence-capacity-0.7.4
+permissions:
+  contents: read
+jobs:
+  focused-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: plugins/review-council
+    steps:
+      - uses: actions/checkout@v4
+      - name: Existing focused plan capacity test
+        run: tests/run-tests.sh patch_chunk_partition_contract
+      - name: Regression test for repository target capacity
+        run: tests/run-tests.sh plan_promotions_reserve_repository_target_capacity

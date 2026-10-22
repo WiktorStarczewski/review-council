@@ -2432,12 +2432,24 @@ def published_mandatory_windows(assignment, plan_clusters, delivered):
 
 
 def grouped_plan_source_promotions(assignment, plan_clusters, delivered, omitted,
-                                   segment_cost):
+                                   segment_cost, repository_target=None):
     selected = set()
+
+    def direct_windows(promoted, selected_indices):
+        windows = mandatory_repository_windows(assignment, plan_clusters, promoted)
+        if repository_target is not None:
+            remaining = [row for index, row in enumerate(omitted)
+                         if index not in selected_indices]
+            target = repository_target(selected_indices, remaining)
+            if target is not None:
+                windows = merge_repository_windows([
+                    *windows, (target['path'], target['line_start'], target['line_end'])])
+        return windows
+
     while True:
         promoted = delivered + [omitted[index] for index in sorted(selected)]
         missing = uncovered_plan_ranges(assignment, plan_clusters, promoted)
-        direct = merge_repository_windows(missing)
+        direct = direct_windows(promoted, selected)
         if len(direct) <= MANDATORY_REPOSITORY_READ_LIMIT:
             return sorted(selected)
         choices = []
@@ -2478,7 +2490,8 @@ def grouped_plan_source_promotions(assignment, plan_clusters, delivered, omitted
             if not group:
                 continue
             trial_delivered = promoted + [omitted[index] for index in sorted(group)]
-            trial = mandatory_repository_windows(assignment, plan_clusters, trial_delivered)
+            trial_selected = selected | group
+            trial = direct_windows(trial_delivered, trial_selected)
             reduction = len(direct) - len(trial)
             if reduction <= 0:
                 continue
@@ -2931,10 +2944,21 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
             promotion_cache[index] = required
             return required
 
+        def promotion_repository_target(selected_indices, omitted_rows):
+            delivered_rows = list(delivered) + [
+                promotion(index, omitted_source_ranges[index])
+                for index in sorted(selected_indices)
+            ]
+            return repository_source_target({
+                'shards': [], 'required_source_ranges': delivered_rows,
+                'omitted_source_ranges': omitted_rows,
+            }, snapshot)
+
         try:
             promoted_indices = set(grouped_plan_source_promotions(
                 assignment, plan_clusters, delivered, omitted_source_ranges,
-                lambda index, row: len(promotion(index, row)['segments'])))
+                lambda index, row: len(promotion(index, row)['segments']),
+                promotion_repository_target))
         except ValueError:
             raise ValueError(
                 'mandatory plan source reads exceed repository capacity: ' + seat) from None

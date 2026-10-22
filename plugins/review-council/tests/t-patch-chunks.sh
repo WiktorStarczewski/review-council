@@ -146,6 +146,74 @@ PY
   assert_eq "patch chunks partition and reconstruct exact UTF-8 bytes" "$?" 0
 }
 
+test_plan_promotions_reserve_repository_target_capacity() {
+  python3 - "$SCRIPTS/rev-evidence.py" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location('evidence', sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+assignment = {'adapter': 'codex', 'patch_set': 'p01', 'patch_lines': 0,
+              'plan_clusters': ['C-01']}
+cluster = {'id': 'C-01', 'paths': [
+    {'path': f'src/single-{index}.py', 'line_start': 1, 'line_end': 1}
+    for index in range(11)] + [
+    {'path': 'src/plan-a.py', 'line_start': 1, 'line_end': 20},
+    {'path': 'src/plan-b.py', 'line_start': 1, 'line_end': 20},
+]}
+omitted = [
+    {'path': 'src/plan-a.py', 'line_start': 1, 'line_end': 20,
+     'priority': 0, 'blob_tree': 'snapshot', 'reasons': ['context:changed']},
+    {'path': 'src/single-0.py', 'line_start': 1, 'line_end': 500,
+     'priority': 1, 'blob_tree': 'snapshot', 'reasons': ['context:changed']},
+    {'path': 'src/plan-b.py', 'line_start': 1, 'line_end': 20,
+     'priority': 2, 'blob_tree': 'snapshot', 'reasons': ['context:changed']},
+]
+
+def target_for(delivered, remaining):
+    packet = {'shards': [], 'required_source_ranges': delivered,
+              'omitted_source_ranges': remaining}
+    return module.repository_source_target(packet, 'snapshot')
+
+selected = module.grouped_plan_source_promotions(
+    assignment, [cluster], [], omitted, lambda _index, _row: 1, target_for)
+assert selected == [2], selected
+shifted_target = target_for(selected, [row for index, row in enumerate(omitted)
+                                       if index not in selected])
+assert (shifted_target['path'], shifted_target['line_start'], shifted_target['line_end']) == (
+    'src/plan-a.py', 1, 20)
+long_target = target_for({0}, [omitted[1], omitted[2]])
+assert (long_target['path'], long_target['line_start'], long_target['line_end']) == (
+    'src/single-0.py', 1, 500)
+promoted = [omitted[index] for index in selected]
+context = {'snapshot_tree': 'snapshot', 'seats': {'sol': {
+    'shards': [], 'required_source_ranges': promoted,
+    'omitted_source_ranges': [omitted[0], omitted[1]], 'source_read_required': True,
+}}}
+bad_context = {'snapshot_tree': 'snapshot', 'seats': {'sol': {
+    'shards': [], 'required_source_ranges': [omitted[0]],
+    'omitted_source_ranges': [omitted[1], omitted[2]], 'source_read_required': True,
+}}}
+patch_sets = {'p01': {'read_mode': 'windows', 'chunks': []}}
+bad_capacity = module.compile_task_capacity(
+    {'sol': assignment}, patch_sets, bad_context, [cluster])
+assert bad_capacity['seats']['sol']['mandatory_repository_reads'] == 14
+assert module.task_capacity_errors(bad_capacity) == [
+    'mandatory source reads exceed repository capacity: sol']
+capacity = module.compile_task_capacity(
+    {'sol': assignment}, patch_sets, context, [cluster])
+row = capacity['seats']['sol']
+assert row['mandatory_repository_reads'] == 12, row
+assert capacity['mandatory_repository_read_limit'] == 12
+assert capacity['repository_expansion_call_limit'] == 16
+assert capacity['repository_refutation_call_reserve'] == 4
+assert module.task_capacity_errors(capacity) == []
+assert module.READ_LINES == 240
+print('plan promotion capacity passes')
+PY
+  assert_eq "plan promotions reserve the executable repository target within the read limit" "$?" 0
+}
+
 test_wide_singleton_source_segment_manifest() {
   ( local R="$T/wide-source-segment-root" S="$T/wide-source-segment-session"
     mkrepo "$R"; mkdir -p "$R/src" "$S"
