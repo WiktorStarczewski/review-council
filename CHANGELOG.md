@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.4
+
+- A caller panel roster such as `4*luna` is written into the session config before
+  preflight and then left frozen. Later code panels and the plan panel keep those
+  seats. The workhorse does not replace them.
+
 ## 0.7.3
 
 - Workhorse selection is Luna, then Sonnet, then Cursor Grok, on every host.

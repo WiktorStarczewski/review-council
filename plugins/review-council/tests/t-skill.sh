@@ -180,6 +180,8 @@ test_skill_contract() {
       '[Rr]eceipt fails.*stop before another reviewer launch'
     assert_grep "host preserves the exact configured roster" "$H" \
       '[Ss]cope optimization never changes.*roster'
+    assert_grep "host keeps a caller panel roster frozen" "$H" \
+      'panel-request\.json` exists, set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in that frozen roster'
     assert_grep "host preserves all four bundles" "$H" \
       '[Aa]ll four risk bundles at least once'
     assert_grep "host assigns bundles in stable roster order" "$H" \
