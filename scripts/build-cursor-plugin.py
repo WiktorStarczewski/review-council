@@ -199,6 +199,7 @@ def build(output):
         if phases.is_dir():
             copied = stage / 'cursor-skills' / 'rev' / 'phases'
             shutil.copytree(phases, copied)
+            _make_staging_writable(copied)
             for path in copied.glob('*.md'):
                 path.write_text(cursor_phase_text(path.read_text()))
         for name in ('roster.sh', 'stack.sh'):
