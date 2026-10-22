@@ -758,9 +758,9 @@ test_skill_requires_a_proven_red_before_the_fix() {
     assert_flat_fixed "codex skill requires a proven red" "$SK/codex-skills/rev/SKILL.md" "$red"
     # The sentence after the STOP is the one place the two hosts word this differently.
     assert_flat_fixed "rev skill treats a mismatched failure as a stop" \
-      "$SK/skills/rev/SKILL.md" "$stop Implement ${tick}fix-plan.md${tick}"
+      "$SK/skills/rev/SKILL.md" "$stop Implement each local cluster in ${tick}fix-plan.md${tick} yourself."
     assert_flat_fixed "codex skill treats a mismatched failure as a stop" \
-      "$SK/codex-skills/rev/SKILL.md" "$stop Apply confirmed fixes in coherent clusters" )
+      "$SK/codex-skills/rev/SKILL.md" "$stop Apply each local cluster yourself." )
 }
 
 # rev-mutate.sh reports a verdict and the failing line; it never reads fix-plan.md, so it cannot
