@@ -14,6 +14,24 @@ jobs:
         working-directory: plugins/review-council
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Confirm the regression fails on pinned v0.7.4 source
+        run: |
+          source=plugins/review-council/scripts/rev-evidence.py
+          cp "$source" "$RUNNER_TEMP/rev-evidence-fixed.py"
+          trap 'cp "$RUNNER_TEMP/rev-evidence-fixed.py" "$source"' EXIT
+          git show e6ce159c2cd09d23cee3560035950652c2a8e225:plugins/review-council/scripts/rev-evidence.py > "$RUNNER_TEMP/rev-evidence-v0.7.4.py"
+          cp "$RUNNER_TEMP/rev-evidence-v0.7.4.py" "$source"
+          set +e
+          tests/run-tests.sh plan_promotions_reserve_repository_target_capacity > "$RUNNER_TEMP/v0.7.4-regression.log" 2>&1
+          status=$?
+          set -e
+          cp "$RUNNER_TEMP/rev-evidence-fixed.py" "$source"
+          trap - EXIT
+          cat "$RUNNER_TEMP/v0.7.4-regression.log"
+          test "$status" -ne 0
+          grep -F 'AssertionError: [0]' "$RUNNER_TEMP/v0.7.4-regression.log"
       - name: Existing focused plan capacity test
         run: tests/run-tests.sh patch_chunk_partition_contract
       - name: Regression test for repository target capacity

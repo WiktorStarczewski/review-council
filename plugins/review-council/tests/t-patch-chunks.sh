@@ -149,6 +149,7 @@ PY
 test_plan_promotions_reserve_repository_target_capacity() {
   python3 - "$SCRIPTS/rev-evidence.py" <<'PY'
 import importlib.util
+import inspect
 import sys
 
 spec = importlib.util.spec_from_file_location('evidence', sys.argv[1])
@@ -170,13 +171,26 @@ omitted = [
      'priority': 2, 'blob_tree': 'snapshot', 'reasons': ['context:changed']},
 ]
 
-def target_for(delivered, remaining):
-    packet = {'shards': [], 'required_source_ranges': delivered,
+def target_for(selected_indices, remaining):
+    promoted = []
+    for index in sorted(selected_indices):
+        row = omitted[index]
+        segments = module.partition_source_segments(
+            [b'x\n'] * row['line_end'], row['line_start'], row['line_end'])
+        promoted.append(dict(row, segments=segments))
+    packet = {'shards': [], 'required_source_ranges': promoted,
               'omitted_source_ranges': remaining}
     return module.repository_source_target(packet, 'snapshot')
 
-selected = module.grouped_plan_source_promotions(
-    assignment, [cluster], [], omitted, lambda _index, _row: 1, target_for)
+def segment_cost(_index, row):
+    return len(module.partition_source_segments(
+        [b'x\n'] * row['line_end'], row['line_start'], row['line_end']))
+
+promote = module.grouped_plan_source_promotions
+if 'repository_target' in inspect.signature(promote).parameters:
+    selected = promote(assignment, [cluster], [], omitted, segment_cost, target_for)
+else:
+    selected = promote(assignment, [cluster], [], omitted, segment_cost)
 assert selected == [2], selected
 shifted_target = target_for(selected, [row for index, row in enumerate(omitted)
                                        if index not in selected])
@@ -185,6 +199,22 @@ assert (shifted_target['path'], shifted_target['line_start'], shifted_target['li
 long_target = target_for({0}, [omitted[1], omitted[2]])
 assert (long_target['path'], long_target['line_start'], long_target['line_end']) == (
     'src/single-0.py', 1, 500)
+all_promoted_target = target_for({0, 1, 2}, [])
+assert (all_promoted_target['path'], all_promoted_target['line_start'],
+        all_promoted_target['line_end']) == ('src/plan-a.py', 1, 20)
+
+complete = [{'path': f'src/complete-{index}.py', 'line_start': 1, 'line_end': 1}
+            for index in range(12)]
+large_target = {'path': 'src/large-target.py', 'line_start': 1, 'line_end': 2881,
+                'priority': 0, 'blob_tree': 'snapshot', 'reasons': ['context:changed']}
+try:
+    promote(assignment, [{'id': 'C-02', 'paths': complete}], complete,
+            [large_target], segment_cost, target_for)
+except ValueError as error:
+    assert str(error) == 'mandatory plan source reads exceed repository capacity'
+else:
+    raise AssertionError('an uncompressible repository target bypassed the read limit')
+
 promoted = [omitted[index] for index in selected]
 context = {'snapshot_tree': 'snapshot', 'seats': {'sol': {
     'shards': [], 'required_source_ranges': promoted,

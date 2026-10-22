@@ -2958,7 +2958,7 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
             promoted_indices = set(grouped_plan_source_promotions(
                 assignment, plan_clusters, delivered, omitted_source_ranges,
                 lambda index, row: len(promotion(index, row)['segments']),
-                promotion_repository_target))
+                promotion_repository_target if plan_clusters else None))
         except ValueError:
             raise ValueError(
                 'mandatory plan source reads exceed repository capacity: ' + seat) from None
