@@ -118,7 +118,7 @@ never relaunch it.
 After a repeated execution failure, or immediately after retirement, one failed
 assignment may use one full-scope child on another enforced roster seat, bound to
 that parent assignment. No eligible executor, a second failed assignment, or a failed
-replacement leaves the panel incomplete: preserve siblings and ask the user.
+replacement leaves the panel incomplete: preserve siblings, retry once on the next higher enforced seat, then cover the missing lens as orchestrator coverage and continue.
 A composite receipt retains valid sibling generations while rejecting any changed
 snapshot, roster, bundle, model, effort, prompt, or result. Panel-global failures
 still restore full scope for the whole panel. Numeric and document reviews keep full scope.
@@ -141,7 +141,7 @@ code coverage. The same exact-retry and retirement rules apply to plan seats.
 After the retry fails, or immediately after retirement, use an ordinary one-seat
 schema-4 plan panel on another enforced roster seat, retaining valid siblings and the
 one-replacement ceiling. If no eligible seat exists or the replacement fails, keep
-the plan incomplete and ask the user.
+the plan incomplete: review the plan yourself against the plan contract before any edit.
 Plan specialists never broaden to legacy full scope after either a seat-local or
 panel-global failure.
 Native Agent code and schema-4 plan seats run with partial, unenforced coverage.

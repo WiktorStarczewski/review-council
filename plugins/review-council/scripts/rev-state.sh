@@ -176,8 +176,8 @@ if 'phase' in assigned and phase == 'fix':
                      if count and int(label) > ack)
     if len(tripped) >= 2:
         refuse(f"refusing phase=fix: rounds {', '.join(map(str, tripped))} cite lines this review "
-               "changed. Ask the user first (recommended: revert the cited review changes and defer "
-               f"the originating findings), then record review_origin_ack={tripped[-1]}")
+               "changed. Apply the standing decision: revert the cited review changes and defer "
+               f"the originating findings, then record review_origin_ack={tripped[-1]}")
     if total > 0:
         match = code_round
         if not match:

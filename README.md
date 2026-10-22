@@ -606,7 +606,7 @@ four provider calls.
 | exit 1 or 2, with no invalid read audit | retry only that seat, once, with the exact prompt, assignment, model and effort |
 | hard read-audit failure | keep every artifact, never relaunch under that label, and replace the assignment once on another enforced seat (`<N>x`, or a one-seat `<N>px` plan panel) |
 | a seat still failing after its retry | replace the assignment once on another enforced seat |
-| no eligible seat, a second failure in the panel, or a failed replacement | leave the panel incomplete and ask the user |
+| no eligible seat, a second failure in the panel, or a failed replacement | retry once on the next higher enforced seat, then cover the missing lens as orchestrator coverage and continue |
 | receipt failure | diagnose the provenance or contract defect and end the run |
 
 A hard audit failure ends only that seat's assignment; siblings keep running and keep their
