@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Choose and launch the cheap workhorse for fix plans, plan review, and implementation.
 
-The session model orchestrates. It writes and implements a local cluster
-(one file, at most 3 sites, no new mechanism, realm, or public contract).
-The default writer for every other cluster is `grok-4.7-xhigh` through the
-Cursor agent CLI, on every host. If it is missing, not signed in, or out of
-credits, the writer falls through OpenAI Luna, then Anthropic Sonnet, then
-OpenAI Sol, then Anthropic Opus. Frontier review seats stay on the roster.
+The session model orchestrates. The workhorse writes every fix plan. The
+session implements a local cluster (one file, at most 3 sites, no new
+mechanism, realm, or public contract). The default writer for every other
+cluster is `grok-4.7-xhigh` through the Cursor agent CLI, on every host. If
+it is missing, not signed in, or out of credits, the writer falls through
+OpenAI Luna, then Anthropic Sonnet, then OpenAI Sol, then Anthropic Opus.
+Frontier review seats stay on the roster.
 """
 import json
 import os

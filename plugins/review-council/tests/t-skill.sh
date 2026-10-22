@@ -627,7 +627,7 @@ skill_adapter_and_plan_gate_contract() {
   # sentence meant evidence mode never ran on a code panel at all.
   local blanket_skip='skip evidence preparation'
   local plan_default='When `$S/panel-request.json` is absent, the plan panel is one `plan-completeness` seat on the resolved workhorse: set `PLAN_COMPLETENESS_SEAT` to the `seat` in `$S/workhorse.json` when `family` is set, `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.'
-  local local_cluster='A cluster is local when its Sites list names one file and at most 3 sites, and the change does not add a mechanism, cross a realm, or change a public contract. Two anchors in one file are two sites. Excluded paths are not sites. You write the plan and implement every cluster when every cluster is local. When any cluster is not local, the workhorse writes the plan, you implement each local cluster, and you launch the workhorse for each other cluster.'
+  local local_cluster='A cluster is local when its Sites list names one file and at most 3 sites, and the change does not add a mechanism, cross a realm, or change a public contract. Two anchors in one file are two sites. Excluded paths are not sites. The workhorse writes the fix plan whenever it is available. You implement each local cluster. You launch the workhorse for every other cluster.'
   local plan_all='When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat'
   local minimum='An `<N>x` replacement and the default one-seat plan panel are the only exceptions.'
   local verify_one='`verify-panel` certifies the one-seat plan panel once that seat returns'
