@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.3
+
+- Workhorse selection is Luna, then Sonnet, then Cursor Grok, on every host.
+  A Claude session uses Luna when Luna is available.
+
 ## 0.7.2
 
 - The session model orchestrates. OpenAI Luna, Anthropic Sonnet, and Cursor Grok

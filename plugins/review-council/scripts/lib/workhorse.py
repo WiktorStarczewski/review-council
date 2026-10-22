@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Choose and launch the cheap workhorse for fix plans, plan review, and implementation.
 
-The session model orchestrates. OpenAI Luna, Anthropic Sonnet, and Cursor Grok
-(`cursor-grok-*`, only on the Cursor host) do the writing. Frontier review seats
-stay on the roster.
+The session model orchestrates. OpenAI Luna, then Anthropic Sonnet, then Cursor
+Grok (`cursor-grok-*`, not the frontier Grok reviewer) do the writing, in that
+order on every host. Frontier review seats stay on the roster.
 """
 import json
 import os
@@ -21,12 +21,8 @@ from roster import (CLAUDE_SESSION_ENV, claude_cli_reason, codex_catalog, codex_
                     codex_suffix, reasoning_efforts)
 
 HOSTS = ('claude', 'codex', 'cursor')
-PREFERENCE = {
-    'cursor': ('cursor-grok', 'luna', 'sonnet'),
-    'codex': ('luna', 'sonnet'),
-    'claude': ('sonnet', 'luna'),
-}
-FAMILIES = ('cursor-grok', 'luna', 'sonnet')
+ORDER = ('luna', 'sonnet', 'cursor-grok')
+FAMILIES = ORDER
 SEAT = 'workhorse'
 LABS = {'cursor-grok': 'cursor', 'luna': 'openai', 'sonnet': 'anthropic'}
 ADAPTERS = {'cursor-grok': ('cursor-agent',), 'luna': ('codex',), 'sonnet': ('claude', 'agent')}
@@ -92,7 +88,7 @@ def select_cursor_grok(text):
 
 
 def sonnet_candidate(host, cli_reason):
-    """Sonnet is the Claude-host workhorse even without the CLI. Other hosts need the CLI."""
+    """Sonnet can run on Claude without the CLI. Other hosts need the CLI. Luna is still first."""
     if host == 'claude':
         return {'adapter': 'claude' if cli_reason is None else 'agent',
                 'model': SONNET_MODEL, 'effort': SONNET_EFFORT}
@@ -106,7 +102,7 @@ def _record(host, family, available, **fields):
         'version': 1,
         'host': host,
         'family': family,
-        'available': [name for name in PREFERENCE[host] if name in available],
+        'available': [name for name in ORDER if name in available],
         'reason': ('host %s; no workhorse available' % host if family is None
                    else 'host %s; selected %s' % (host, family)),
     }
@@ -118,10 +114,10 @@ def _record(host, family, available, **fields):
 
 
 def resolve_available(host, luna=None, sonnet=None, cursor_grok=None):
-    """Pick the host-native workhorse, then the other available families.
+    """Pick Luna, then Sonnet, then Cursor Grok. The host does not change the order.
 
     `luna` and `cursor_grok` are `(model, effort)` or None. `sonnet` is a candidate
-    dict from `sonnet_candidate` or None. Cursor Grok is ignored off the Cursor host.
+    dict from `sonnet_candidate` or None.
     """
     host = host_name(host)
     present = {}
@@ -129,10 +125,10 @@ def resolve_available(host, luna=None, sonnet=None, cursor_grok=None):
         present['luna'] = {'adapter': 'codex', 'model': luna[0], 'effort': luna[1]}
     if sonnet is not None:
         present['sonnet'] = dict(sonnet)
-    if host == 'cursor' and cursor_grok is not None:
+    if cursor_grok is not None:
         present['cursor-grok'] = {'adapter': 'cursor-agent', 'model': cursor_grok[0],
                                    'effort': cursor_grok[1]}
-    for family in PREFERENCE[host]:
+    for family in ORDER:
         if family in present:
             return _record(host, family, present, **present[family])
     return _record(host, None, present)
@@ -149,15 +145,15 @@ def validate_record(document):
     if host not in HOSTS or not isinstance(document.get('reason'), str) or not document['reason']:
         raise ValueError('invalid workhorse host')
     available = document.get('available')
-    if (not isinstance(available, list) or any(name not in PREFERENCE[host] for name in available)
-            or available != [name for name in PREFERENCE[host] if name in available]):
+    if (not isinstance(available, list) or len(available) != len(set(available))
+            or any(name not in ORDER for name in available)):
         raise ValueError('invalid workhorse availability')
     if family is None:
         if available:
             raise ValueError('an unavailable workhorse listed a family')
         return document
-    if family not in PREFERENCE[host] or family not in available:
-        raise ValueError('selected workhorse is not available on this host')
+    if family not in ORDER or family not in available:
+        raise ValueError('selected workhorse is not available')
     if (document.get('lab') != LABS[family] or document.get('seat') != SEAT
             or document.get('adapter') not in ADAPTERS[family]):
         raise ValueError('workhorse identity does not match its family')
@@ -431,8 +427,7 @@ def probe(host=None):
     listed, _error = codex_catalog(codex_catalog_path())
     return resolve_available(host, luna=select_luna(listed),
                              sonnet=sonnet_candidate(host, claude_cli_reason()),
-                             cursor_grok=select_cursor_grok(cursor_models_text())
-                             if host == 'cursor' else None)
+                             cursor_grok=select_cursor_grok(cursor_models_text()))
 
 
 def write_record(path, document, refresh=False):

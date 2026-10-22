@@ -19,7 +19,7 @@ Do not start a council automatically after unrelated implementation work.
 
 The session model orchestrates. It does not draft the fix plan, review that plan, or implement it while a workhorse is available. Frontier seats still review the code.
 
-Cheap workhorses are OpenAI Luna, Anthropic Sonnet, and, only on the Cursor host, Cursor Grok (`cursor-grok-*`, not the frontier Grok reviewer). After the roster exists, resolve once and reuse a valid file. Do not edit it.
+Cheap workhorses are tried in one order on every host: OpenAI Luna, then Anthropic Sonnet, then Cursor Grok (`cursor-grok-*`, not the frontier Grok reviewer). A Claude session uses Luna when Luna is available. After the roster exists, resolve once and reuse a valid file. Do not edit it.
 
 ```bash
 REVIEW_COUNCIL_HOST=codex python3 "$PLUGIN/scripts/rev-workhorse.py" resolve --write "$S/workhorse.json"
