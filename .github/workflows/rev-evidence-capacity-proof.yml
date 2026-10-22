@@ -18,7 +18,7 @@ jobs:
           fetch-depth: 0
       - name: Confirm the regression fails on pinned v0.7.4 source
         run: |
-          source=plugins/review-council/scripts/rev-evidence.py
+          source=scripts/rev-evidence.py
           cp "$source" "$RUNNER_TEMP/rev-evidence-fixed.py"
           trap 'cp "$RUNNER_TEMP/rev-evidence-fixed.py" "$source"' EXIT
           git show e6ce159c2cd09d23cee3560035950652c2a8e225:plugins/review-council/scripts/rev-evidence.py > "$RUNNER_TEMP/rev-evidence-v0.7.4.py"
