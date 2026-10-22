@@ -129,7 +129,7 @@ preflight choice.
    ```bash
    python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-panel-request.py --text "<the user request>" --session "$S" --base "${REVIEW_COUNCIL_CONFIG:-$HOME/.config/review-council/config.json}"
    ```
-   A printed path is `$S/roster-config.json`. Pass it as `REVIEW_COUNCIL_CONFIG` for this preflight only. Do not edit the user's config. Then:
+   A printed path is `$S/roster-config.json`. Pass it as `REVIEW_COUNCIL_CONFIG` for this preflight only. Do not edit the user's config. A non-zero exit is fatal: relay it and do not preflight. Then:
    ```bash
    ${CLAUDE_PLUGIN_ROOT}/scripts/rev-preflight.sh --scope <branch|uncommitted|path> --write $S
    ```
@@ -745,7 +745,7 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    forgotten: Fix compares it against the observed pre-fix red run, and Verify compares it
    against the failure line `rev-mutate.sh` prints beside each pinned hunk. Both
    comparisons are yours - the tool surfaces what failed and never reads a prediction.
-2. Choose the plan seats from the roster. When `$S/panel-request.json` exists, set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in that frozen roster, preferring one whose adapter is not `agent`. By default the plan panel is one `plan-completeness` seat on the resolved workhorse: set `PLAN_COMPLETENESS_SEAT` to the `seat` in `$S/workhorse.json` when `family` is set, `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`. When `family` is null, set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order, preferring one whose adapter is not `agent` when the roster has one (an Agent seat runs the panel unenforced), `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.
+2. Choose the plan seats from the roster. When `$S/panel-request.json` exists, set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in that frozen roster, preferring one whose adapter is not `agent`, and do not read the workhorse for this seat. When `$S/panel-request.json` is absent, the plan panel is one `plan-completeness` seat on the resolved workhorse: set `PLAN_COMPLETENESS_SEAT` to the `seat` in `$S/workhorse.json` when `family` is set, `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`. When `family` is null, set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order, preferring one whose adapter is not `agent` when the roster has one (an Agent seat runs the panel unenforced), `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.
    When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat, even when the preceding code
    panel included an extra or a one-seat repair, and deal the plan lenses by the same
    rule (`lenses = [plan-completeness,

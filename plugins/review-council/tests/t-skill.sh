@@ -181,7 +181,7 @@ test_skill_contract() {
     assert_grep "host preserves the exact configured roster" "$H" \
       '[Ss]cope optimization never changes.*roster'
     assert_grep "host keeps a caller panel roster frozen" "$H" \
-      'panel-request\.json` exists, set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in that frozen roster'
+      'panel-request\.json` exists, set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in that frozen roster, preferring one whose adapter is not `agent`, and do not read the workhorse for this seat'
     assert_grep "host preserves all four bundles" "$H" \
       '[Aa]ll four risk bundles at least once'
     assert_grep "host assigns bundles in stable roster order" "$H" \
@@ -626,7 +626,7 @@ skill_adapter_and_plan_gate_contract() {
   # was an Agent row. Claude rows resolve to `agent` wherever the Claude CLI is not seated, so that
   # sentence meant evidence mode never ran on a code panel at all.
   local blanket_skip='skip evidence preparation'
-  local plan_default='By default the plan panel is one `plan-completeness` seat on the resolved workhorse: set `PLAN_COMPLETENESS_SEAT` to the `seat` in `$S/workhorse.json` when `family` is set, `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.'
+  local plan_default='When `$S/panel-request.json` is absent, the plan panel is one `plan-completeness` seat on the resolved workhorse: set `PLAN_COMPLETENESS_SEAT` to the `seat` in `$S/workhorse.json` when `family` is set, `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.'
   local plan_all='When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat'
   local minimum='An `<N>x` replacement and the default one-seat plan panel are the only exceptions.'
   local verify_one='`verify-panel` certifies the one-seat plan panel once that seat returns'
