@@ -2046,7 +2046,12 @@ def complete_declaration_context():
 
     with fixture() as (root, session, git, write, call, prepare, finish):
         (root / 'unrepresentable.py').write_bytes(b'\0binary source')
-        call('prepare', session, 'binary', '--phase', 'discovery', good=False)
+        prepare('binary')
+        binary_patch = (session / 'rbinary-full.patch').read_bytes()
+        assert b'GIT binary patch' not in binary_patch
+        assert b'Binary-File-Pointer' in binary_patch
+        assert b'unrepresentable.py' in binary_patch
+        assert b'\0' not in binary_patch
 
 def budget_omissions_are_segmented_or_retained():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -3529,8 +3534,34 @@ def current_coverage_replacements_and_refs():
         write('AGENTS.md', 'New current instruction outside the pinned ref.\n')
         assert check()['eligible'] is False
 
+def binary_files_are_hash_pointers():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        git('add', '-A'); git('commit', '-qm', 'pointer base')
+        base = git('rev-parse', 'HEAD')
+        scope = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope.splitlines()) + '\n')
+        write('src/pointer_app.py', 'def value():\n    return 2\n')
+        raw = b'\x89PNG\r\n\x1a\n' + b'\0' * 65536
+        (root / 'docs').mkdir(parents=True, exist_ok=True)
+        (root / 'docs' / 'shot.png').write_bytes(raw)
+        manifest = prepare('png')
+        patch = (session / 'rpng-full.patch').read_bytes()
+        assert b'GIT binary patch' not in patch
+        assert b'\0' not in patch
+        assert b'docs/shot.png' in patch
+        assert b'Binary-File-Pointer' in patch
+        assert f'after size {len(raw)}'.encode() in patch
+        assert f'after sha256 {hashlib.sha256(raw).hexdigest()}'.encode() in patch
+        assert b'before absent' in patch
+        assert len(patch) < 8000
+        for patch_set in manifest['patch_sets'].values():
+            assert len(patch_set['chunks']) <= 1
+
 cases = (
     storage_redirects, quoted_paths, changed_symbols, empty_patch_needs_no_fake_read,
+    binary_files_are_hash_pointers,
     conservative_mechanical_classification, bounded_navigation_markdown, opaque_transitions,
     opaque_mode_transition, invalid_manifests, phase_and_predecessor_integrity,
     cumulative_verification_routing, verification_delta_retains_restored_path_source_context,
@@ -3564,6 +3595,7 @@ groups = {
     'structure': (
         storage_redirects, quoted_paths, changed_symbols, empty_patch_needs_no_fake_read,
         conservative_mechanical_classification, bounded_navigation_markdown,
+        binary_files_are_hash_pointers,
         opaque_transitions, opaque_mode_transition, invalid_manifests,
         phase_and_predecessor_integrity,
     ),

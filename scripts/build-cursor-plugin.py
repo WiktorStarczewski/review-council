@@ -51,6 +51,33 @@ def _replace_once(text, before, after):
     return text.replace(before, after, 1)
 
 
+def cursor_phase_text(text):
+    """Host wording that used to live in the injected skill now lives in a phase file."""
+    text = text.replace('REVIEW_COUNCIL_HOST=codex', 'REVIEW_COUNCIL_HOST=cursor')
+    replacements = (
+        ('Resolve `PLUGIN` to the directory two levels above **this loaded SKILL.md**. Never\n'
+         'assume the shell cwd is the plugin or use `CLAUDE_PLUGIN_ROOT`. All script paths below\n'
+         'are relative to that absolute `PLUGIN`; quote paths and use arrays for arguments.',
+         'Keep `PLUGIN` bound to the native Cursor skill entry\'s plugin directory. All\n'
+         'script paths below are relative to that absolute `PLUGIN`; quote paths and use\n'
+         'arrays for arguments. Do not derive it from this workflow document or the cwd.'),
+        ('All seats in the\n  Codex roster are actual external CLI processes, including Anthropic Claude seats.',
+         'All seats in the\n  Cursor roster use explicit external transports, including the Claude CLI and an\n'
+         'optional, qualified `cursor-sdk` Grok seat. Never use native Claude Agent seats.'),
+        ('Rows on adapters `codex`, `gemini`, and `claude` launch through `rev-seat.sh`',
+         'Rows on adapters `codex`, `gemini`, `claude`, and `cursor-sdk` launch through `rev-seat.sh`'),
+        ('a Codex host always seats them on `claude`.',
+         'a Codex or Cursor host always seats them on `claude`.'),
+        ('Use the actual tools available in this Codex\nsession;',
+         'Use the actual tools available in this Cursor\nsession;'),
+    )
+    for before, after in replacements:
+        if before not in text:
+            continue
+        text = _replace_once(text, before, after)
+    return text
+
+
 def cursor_workflow(kind):
     text = (REPO / 'plugins/review-council/codex-skills' / kind / 'SKILL.md').read_text()
     header = text.split('---', 2)
@@ -62,21 +89,8 @@ def cursor_workflow(kind):
     if kind == 'rev':
         replacements = (
             ('# Review Council for Codex', '# Review Council for Cursor'),
-            ('Resolve `PLUGIN` to the directory two levels above **this loaded SKILL.md**. Never\n'
-             'assume the shell cwd is the plugin or use `CLAUDE_PLUGIN_ROOT`. All script paths below\n'
-             'are relative to that absolute `PLUGIN`; quote paths and use arrays for arguments.',
-             'Keep `PLUGIN` bound to the native Cursor skill entry\'s plugin directory. All\n'
-             'script paths below are relative to that absolute `PLUGIN`; quote paths and use\n'
-             'arrays for arguments. Do not derive it from this workflow document or the cwd.'),
-            ('All seats in the\n  Codex roster are actual external CLI processes, including Anthropic Claude seats.',
-             'All seats in the\n  Cursor roster use explicit external transports, including the Claude CLI and an\n'
-             'optional, qualified `cursor-sdk` Grok seat. Never use native Claude Agent seats.'),
-            ('Rows on adapters `codex`, `gemini`, and `claude` launch through `rev-seat.sh`',
-             'Rows on adapters `codex`, `gemini`, `claude`, and `cursor-sdk` launch through `rev-seat.sh`'),
-            ('a Codex host always seats them on `claude`.',
-             'a Codex or Cursor host always seats them on `claude`.'),
-            ('Use the actual tools available in this Codex\nsession;',
-             'Use the actual tools available in this Cursor\nsession;'),
+            ('Before a phase, Read exactly that phase file from the `phases` directory next to this skill and follow it.',
+             'Before a phase, Read exactly that phase file from `$PLUGIN/cursor-skills/rev/` (the table path is relative to that directory) and follow it.'),
         )
         for before, after in replacements:
             text = _replace_once(text, before, after)
@@ -181,6 +195,13 @@ def build(output):
         _make_staging_writable(stage)
         for kind, name in (('rev', 'cursor-review-workflow.md'), ('stack', 'cursor-stack-workflow.md')):
             (stage / 'docs' / name).write_text(cursor_workflow(kind))
+        phases = shared / 'codex-skills' / 'rev' / 'phases'
+        if phases.is_dir():
+            copied = stage / 'cursor-skills' / 'rev' / 'phases'
+            shutil.copytree(phases, copied)
+            _make_staging_writable(copied)
+            for path in copied.glob('*.md'):
+                path.write_text(cursor_phase_text(path.read_text()))
         for name in ('roster.sh', 'stack.sh'):
             path = stage / 'scripts' / name
             content = _replace_once(path.read_text(), '#!/bin/bash\n',

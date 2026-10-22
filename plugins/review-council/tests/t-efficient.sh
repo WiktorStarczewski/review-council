@@ -15,6 +15,18 @@ assert_flat_absent() {
 }
 
 test_adaptive_schedule_contract() {
+  local K src dest file
+  for src in "$SK/skills/rev" "$SK/codex-skills/rev"; do
+    dest="$T/$(basename "$(dirname "$src")")-rev.md"
+    cat "$src/SKILL.md" > "$dest"
+    if [ -d "$src/phases" ]; then
+      for file in "$src"/phases/*.md; do
+        [ -f "$file" ] || continue
+        printf '\n' >> "$dest"
+        cat "$file" >> "$dest"
+      done
+    fi
+  done
   local K
   local timing='One four-bundle verification panel reviews the latest material state: the current combined panel when no fix follows, a separate panel after simplicity-only discovery, or a fresh panel after fixes.'
   local plan_trigger='Run the plan panel when accepted findings require a nontrivial change; skip it when there is no accepted fix or every accepted fix is a P3 or one-line P2.'
@@ -23,7 +35,7 @@ test_adaptive_schedule_contract() {
   local numeric_continue="Only numeric mode continues past its requested minimum while any of these hold: the last numbered code panel produced a new P0/P1; the last numbered panel's fixes were nontrivial; any P0/P1 remains open; or a lens or major changed file remains unreviewed."
   local numeric_stop='Numeric mode stops only after the requested minimum numbered code panels ran, two consecutive numbered code panels produced no new P0/P1, no P0/P1 remains open, and gates are at or better than baseline. Plan panels do not count as numbered code panels.'
   local receipt='Current-session completion and finding yield require a schema-valid result with a successful exit receipt. Only exact hashed receiptless results recorded in a versioned legacy roster policy may omit one. Usage-bearing failed attempts remain metered.'
-  for K in "$SK/skills/rev/SKILL.md" "$SK/codex-skills/rev/SKILL.md"; do
+  for K in "$T/skills-rev.md" "$T/codex-skills-rev.md"; do
     assert_nogrep "$(basename "$(dirname "$(dirname "$K")")") has no eight-round floor" "$K" 'minimum[^[:alnum:]]{0,12}(8|eight)|8 rounds|eight rounds' -i
     assert_flat_fixed "ordinary schedule retains eight code seats and one conditional plan" "$K" 'normal review uses eight code-seat launches plus one conditional plan.'
     assert_flat_fixed "combined schedule retains four separate verification seats after a fix" "$K" 'If any fix follows the combined panel, run four separate verification launches; a one-seat plan then gives totals of 17 or 13 respectively.'
@@ -62,13 +74,13 @@ test_adaptive_schedule_contract() {
   done
 
   assert_flat_fixed "Claude simplicity contract uses the exact adaptive row" \
-    "$SK/skills/rev/SKILL.md" '| Simplicity discovery | always | simplicity for every seat |'
+    "$T/skills-rev.md" '| Simplicity discovery | always | simplicity for every seat |'
   assert_flat_fixed "Codex simplicity contract uses the exact adaptive sentence" \
-    "$SK/codex-skills/rev/SKILL.md" '1. **Simplicity discovery:** every core seat gets `simplicity`. Keep all four seats;'
+    "$T/codex-skills-rev.md" '1. **Simplicity discovery:** every core seat gets `simplicity`. Keep all four seats;'
 
-  assert_flat_fixed "Claude numeric schedule keeps its round 5 lenses" "$SK/skills/rev/SKILL.md" '| 5 | API & contract, compatibility | api-contract, data-state, readability | - |'
-  assert_flat_fixed "Codex numeric schedule keeps its round 5 lenses" "$SK/codex-skills/rev/SKILL.md" '| 5 | Contracts and compatibility | api-contract, readability, maintainability | - |'
-  for K in "$SK/skills/rev/SKILL.md" "$SK/codex-skills/rev/SKILL.md"; do
+  assert_flat_fixed "Claude numeric schedule keeps its round 5 lenses" "$T/skills-rev.md" '| 5 | API & contract, compatibility | api-contract, data-state, readability | - |'
+  assert_flat_fixed "Codex numeric schedule keeps its round 5 lenses" "$T/codex-skills-rev.md" '| 5 | Contracts and compatibility | api-contract, readability, maintainability | - |'
+  for K in "$T/skills-rev.md" "$T/codex-skills-rev.md"; do
     assert_grep "numeric schedule restores Emphasis column" "$K" '^\| Round \| Emphasis \| Lenses(, in order)? \| Extra( seat)? \|$'
     assert_grep "numeric round 3 restores its extra" "$K" '^\| 3 \|.*\| security, data-state \| `?codex-review`?.*\|$'
     assert_grep "numeric round 4 has no retired provider extra" "$K" '^\| 4 \|.*\| concurrency, resources, performance \| - \|$'

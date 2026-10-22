@@ -394,6 +394,14 @@ def within(path, selected):
                 and (selected == '.' or path == selected or path.startswith(selected + '/')))
 
 
+def source_range_path_allowed(row, scope):
+    """A path scope bounds findings and assigned evidence, not a context read."""
+    path = row.get('path') if isinstance(row, dict) else None
+    if isinstance(row, dict) and row.get('origin') == 'tool':
+        return within(path, '.')
+    return within(path, scope)
+
+
 STANDARD_INPUTS = ('scope.env', 'roster.json', 'files.txt', 'untracked.txt')
 
 
@@ -468,6 +476,37 @@ def contract_binding_from_inputs(session, inputs):
             or receipt.get('key') != match.group(1)):
         raise ValueError('invalid provider contract input binding')
     return name, value
+
+
+def blob_is_binary(blob):
+    if blob is None or blob is OVERSIZED_BLOB:
+        return False
+    if b'\0' in blob:
+        return True
+    try:
+        blob.decode('utf-8')
+    except UnicodeDecodeError:
+        return True
+    return False
+
+
+def git_binary_patch(patch):
+    text = b'\n' + patch
+    return b'\nGIT binary patch\n' in text or b'\nBinary files ' in text
+
+
+def binary_file_pointer(header, path, before, after):
+    """Replace a binary diff with the path, size, and sha256 of each side."""
+    rows = [header.rstrip(b'\n'), b'Binary-File-Pointer', b'path ' + os.fsencode(path)]
+    for label, blob in (('before', before), ('after', after)):
+        if blob is None:
+            rows.append(f'{label} absent'.encode())
+        elif blob is OVERSIZED_BLOB:
+            rows.append(f'{label} oversized'.encode())
+        else:
+            rows.append(f'{label} size {len(blob)}'.encode())
+            rows.append(f'{label} sha256 {digest(blob)}'.encode())
+    return b'\n'.join(rows) + b'\n'
 
 
 def diff_quote(path):
@@ -798,6 +837,12 @@ class Repository:
             if left == right:
                 continue
             patch = by_path[path]
+            left_blob = self.blob(left) if left else None
+            right_blob = self.blob(right) if right else None
+            if (blob_is_binary(left_blob) or blob_is_binary(right_blob)
+                    or git_binary_patch(patch)):
+                patch = binary_file_pointer(
+                    patch.split(b'\n', 1)[0], path, left_blob, right_blob)
             body = self.blob(right or left)
             mode = (right or left)[0]
             sides = [classify(path, self.blob(entry), entry[0]) for entry in (left, right) if entry]
@@ -2636,19 +2681,25 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
             source_choice_cache[cache_key] = ('nontext', None)
             return source_choice_cache[cache_key]
         readable = []
+        saw_binary = False
         for entry, blob_tree in choices:
             raw = blobs[entry]
-            if raw is OVERSIZED_BLOB or b'\0' in raw:
+            if raw is OVERSIZED_BLOB:
+                continue
+            if b'\0' in raw:
+                saw_binary = True
                 continue
             try:
                 raw.decode('utf-8')
             except UnicodeDecodeError:
+                saw_binary = True
                 continue
             if entry not in source_lines_cache:
                 source_lines_cache[entry] = split_lf_lines(raw)
             readable.append((entry, source_lines_cache[entry], blob_tree))
         choice = next((value for value in readable if value[1]), readable[0] if readable else None)
-        source_choice_cache[cache_key] = ('source' if choice else 'unrepresentable', choice)
+        kind = 'source' if choice else 'nontext' if saw_binary else 'unrepresentable'
+        source_choice_cache[cache_key] = (kind, choice)
         return source_choice_cache[cache_key]
 
     for seat, assignment in assigned.items():
@@ -4407,7 +4458,7 @@ def audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, r
             raise ValueError('assigned patch audit is incomplete: ' + seat)
     ranges = audit.get('source_ranges')
     if (not isinstance(ranges, list) or any(not isinstance(row, dict) or set(row) != {
-            'path', 'line_start', 'line_end', 'origin'} or not within(row.get('path'), manifest['scope'])
+            'path', 'line_start', 'line_end', 'origin'} or not source_range_path_allowed(row, manifest['scope'])
             or type(row.get('line_start')) is not int or type(row.get('line_end')) is not int
             or row['line_start'] < 1 or row['line_end'] < row['line_start']
             or (row.get('origin') == 'tool' and row['line_end'] - row['line_start'] + 1 > 240)

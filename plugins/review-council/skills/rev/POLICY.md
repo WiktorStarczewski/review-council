@@ -7,6 +7,6 @@
 - Reviewers never edit. The resolved workhorse writes the fix plan and implements every cluster that is not local. You implement a local cluster: one file, at most 3 sites, and no new mechanism, realm, or public contract. You verify and commit.
 - After any review, apply the fixes for every actionable finding without waiting to be asked. A design decision is the smallest change that serves the named consumer. Record it in the ledger and continue. Never stop to ask the user.
 - Verify every finding against the source before acting on it. Rejecting a wrong finding is a valid outcome; record it with its reason.
-- While a review runs, relay each 10-minute status line to the user as-is, plus at most one sentence of context.
+- While a review runs, relay each status line to the user as-is, plus at most one sentence of context. Arm the 10-minute wake only when `status_tick` is true.
 - Preserve full discovery and verification panels at the configured effort. Bound cost with adaptive stopping, compact decision digests, and a usage report after every panel.
 - Treat `/review-council:rev` as an executable workflow contract: follow every applicable step in order, name why any step is inapplicable, and never claim council review without its required receipt.

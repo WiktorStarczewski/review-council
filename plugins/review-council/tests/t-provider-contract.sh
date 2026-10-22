@@ -1012,6 +1012,7 @@ elif [ "${CONTRACT_MODE:-}" = success-child ] && [ "$1" = provider_envelope_repl
   printf '%s\n' "$!" > "$CONTRACT_CHILD_PID"
   printf 'ok:%s\n' "$1"
 elif [ "${CONTRACT_MODE:-}" = flood ] && [ "$1" = provider_envelope_replay ]; then
+  sleep 0.5
   python3 -c "import sys; sys.stdout.write('x' * 200000)"
 elif [ "${CONTRACT_MODE:-}" = flood ] && [ "$1" = plan_evidence ]; then
   sleep 30 &
