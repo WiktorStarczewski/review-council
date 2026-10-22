@@ -171,13 +171,14 @@ omitted = [
      'priority': 2, 'blob_tree': 'snapshot', 'reasons': ['context:changed']},
 ]
 
+def promoted_row(index):
+    row = omitted[index]
+    segments = module.partition_source_segments(
+        [b'x\n'] * row['line_end'], row['line_start'], row['line_end'])
+    return dict(row, segments=segments)
+
 def target_for(selected_indices, remaining):
-    promoted = []
-    for index in sorted(selected_indices):
-        row = omitted[index]
-        segments = module.partition_source_segments(
-            [b'x\n'] * row['line_end'], row['line_start'], row['line_end'])
-        promoted.append(dict(row, segments=segments))
+    promoted = [promoted_row(index) for index in sorted(selected_indices)]
     packet = {'shards': [], 'required_source_ranges': promoted,
               'omitted_source_ranges': remaining}
     return module.repository_source_target(packet, 'snapshot')
@@ -215,13 +216,13 @@ except ValueError as error:
 else:
     raise AssertionError('an uncompressible repository target bypassed the read limit')
 
-promoted = [omitted[index] for index in selected]
+promoted = [promoted_row(index) for index in selected]
 context = {'snapshot_tree': 'snapshot', 'seats': {'sol': {
     'shards': [], 'required_source_ranges': promoted,
     'omitted_source_ranges': [omitted[0], omitted[1]], 'source_read_required': True,
 }}}
 bad_context = {'snapshot_tree': 'snapshot', 'seats': {'sol': {
-    'shards': [], 'required_source_ranges': [omitted[0]],
+    'shards': [], 'required_source_ranges': [promoted_row(0)],
     'omitted_source_ranges': [omitted[1], omitted[2]], 'source_read_required': True,
 }}}
 patch_sets = {'p01': {'read_mode': 'windows', 'chunks': []}}
