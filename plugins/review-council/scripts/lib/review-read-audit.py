@@ -1982,11 +1982,18 @@ def assigned_patch_ranges_for_call(name, data, patch, root, total_lines):
         try:
             if resolved(raw_path, root) != patch:
                 return []
-            offset = next(data[key] for key in ('offset', 'start_line', 'line_start') if key in data)
-            limit = next(data[key] for key in ('limit', 'line_limit', 'max_lines') if key in data)
-            start = int(offset)
-            return [(start, min(total_lines, start + int(limit) - 1))] if total_lines else [(1, 0)]
-        except (KeyError, OSError, TypeError, ValueError):
+            offset = next((data[key] for key in ('offset', 'start_line', 'line_start') if key in data), None)
+            limit = next((data[key] for key in ('limit', 'line_limit', 'max_lines') if key in data), None)
+            start = 1 if offset is None else int(offset)
+            if start < 1:
+                return []
+            if not total_lines:
+                return [(1, 0)]
+            end = total_lines if limit is None else min(total_lines, start + int(limit) - 1)
+            if end < start:
+                return []
+            return [(start, end)]
+        except (OSError, TypeError, ValueError):
             return []
     if normalized in SHELL_TOOLS:
         command = data.get('command')

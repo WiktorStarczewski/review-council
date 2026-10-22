@@ -5,6 +5,9 @@
 - The injected rev skill is a short core. Discovery, triage, plan, fix, verification, and publish load from phase files only when that phase runs. Seat coverage, audits, and receipts are unchanged.
 - A loop starts from `$S/state.json` via `rev-brief.py`, not from the parent conversation. Render, publish, CI watch, and close-out are one `rev-mechanical.sh` call. `host_mechanical_model` names a cheaper model for those phases.
 - The 10-minute status wake is off unless `status_tick` is true. The host wakes on a phase change, a seat failure, or a terminal result.
+- A whole-file `Read` with no offset is audited from line 1. The read auditor no longer raises `StopIteration` and drops a finished seat.
+- Binary diffs are a path, size, and sha256 pointer in the seat patch. The binary body is not carried into patch chunks. A seat that needs the bytes reads the path.
+- A path scope still refuses findings outside it. A seat may read other repository files for context, and those reads stay in the audit.
 
 ## 0.7.5
 
