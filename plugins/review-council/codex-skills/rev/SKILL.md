@@ -8,12 +8,30 @@ description: Convene the Review Council for independent multi-model review, adve
 This skill is an executable workflow contract. Follow every applicable step in its stated order. Do not cherry-pick, replace, or improvise around steps. Before omitting a step, record the exact reason it is inapplicable. A run missing any audit, receipt, or final report required by its selected mode is incomplete and must not be described as a Review Council review.
 
 You are the orchestrator. Independent CLI reviewers inspect the scope; you verify
-claims against evidence, fix actionable defects within the user's scope, and repeat.
+claims against evidence, dispatch the workhorse to fix actionable defects within the user's scope, and repeat.
 Agreement is a signal, never proof. Preserve the user's requested scope and prior
 authorization. A request for report-only review remains report-only. This skill does
 not authorize pushing, rewriting history, or changing unrelated files. The completion
 contract authorizes only the canonical `COMMENTED` PR review for an associated open PR.
 Do not start a council automatically after unrelated implementation work.
+
+## Workhorse
+
+The session model orchestrates. It does not draft the fix plan, review that plan, or implement it while a workhorse is available. Frontier seats still review the code.
+
+Cheap workhorses are OpenAI Luna, Anthropic Sonnet, and, only on the Cursor host, Cursor Grok (`cursor-grok-*`, not the frontier Grok reviewer). After the roster exists, resolve once and reuse a valid file. Do not edit it.
+
+```bash
+REVIEW_COUNCIL_HOST=codex python3 "$PLUGIN/scripts/rev-workhorse.py" resolve --write "$S/workhorse.json"
+```
+
+`family` null means none of the three is available: do these three jobs in this session, report `Workhorse: unavailable` with the file's `reason`, and use the plan-seat fallback below. Otherwise launch only the recorded `family`, `model`, `effort`, and `adapter`. Effort is `high` when that model offers it. Do not substitute the session model, a frontier reviewer, or a higher effort.
+
+- **Fix plan.** `python3 "$PLUGIN/scripts/rev-workhorse.py" launch --dry-run --session "$S" --task plan`. When the JSON `kind` is `agent`, launch that agent on the prompt path (`review-council:rev-workhorse`) with its workspace set to `REV_ROOT`. When `kind` is `exec`, run the same command without `--dry-run`; it writes `$S/fix-plan.md` and starts in `REV_ROOT`. You do not draft the plan. A non-zero exit, or a plan preparation rejection, gets one identical retry. A second failure stops the run incomplete before any edit.
+- **Fix plan review.** The default plan seat is `seat` from the file. Adapters `codex` and `claude` launch through `rev-seat.sh`. Adapter `agent` launches `review-council:rev-workhorse-review` on the rendered prompt and is recorded like any other Agent seat. Adapter `cursor-agent` runs `python3 "$PLUGIN/scripts/rev-workhorse.py" launch --session "$S" --task review --prompt <rendered prompt> --out "$S/r<N>p-workhorse.json"`. `"plan_seats": "all"` still reviews with the core roster.
+- **Implementation.** After the red run, once per cluster: `python3 "$PLUGIN/scripts/rev-workhorse.py" launch --dry-run --session "$S" --task implement --cluster <id>`, then the exec form when `kind` is `exec` (it starts in `REV_ROOT`), or `review-council:rev-workhorse` when `kind` is `agent`, with that workspace set to `REV_ROOT`. You do not edit the cluster. Then you run the gates, `rev-mutate.sh`, and commit.
+
+Report the family, model, and effort, or the unavailable reason.
 
 ## Locate and set up
 
@@ -579,8 +597,8 @@ and commit if any. Do not re-raise resolved findings without new evidence.
 Write all three counts in one call after the round's seats have exited: `rev-state.sh` refuses `phase=fix` while `open.P0`, `open.P1` and `open.P2` predate the newest `r<N>-<seat>.exit`, and only all three in one call refresh that stamp. A plan panel's `r<N>p-<seat>.exit` is not a seat exit for this purpose, so triage stays valid across the plan gate.
 
 Run the plan panel when accepted findings require a nontrivial change; skip it when
-there is no accepted fix or every accepted fix is a P3 or one-line P2. Write
-`S/fix-plan.md`: accepted findings, proposed changes, existing components to reuse,
+there is no accepted fix or every accepted fix is a P3 or one-line P2. When `family` is set, the workhorse writes
+`S/fix-plan.md` and you do not draft it. When `family` is null, write it yourself: accepted findings, proposed changes, existing components to reuse,
 risks, and falsifiable tests. Repeat the gate only for a new P0/P1 root cause or
 another nontrivial cluster.
 The plan panel runs after triage and before any edit of the working tree.
@@ -588,7 +606,7 @@ When the plan panel is skipped, append a line beginning `Plan panel r<N>p - SKIP
 `rev-state.sh` refuses `phase=fix` for code round `<N>` while `open.P0 + open.P1 + open.P2` is above zero, unless that skip line exists or every seat recorded by `phase=plan round=<N>p`, or by its `<N>px` replacement panel, has `r<label>-<seat>.json` and a `0` exit.
 An incomplete plan panel is not a skip: stop the run incomplete before any edit.
 
-By default the plan panel is one `plan-completeness` seat: set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order, preferring one whose adapter is not `agent` when the roster has one (an Agent seat runs the panel unenforced), `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.
+By default the plan panel is one `plan-completeness` seat on the resolved workhorse: set `PLAN_COMPLETENESS_SEAT` to the `seat` in `$S/workhorse.json` when `family` is set, `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`. When `family` is null, set `PLAN_COMPLETENESS_SEAT` to the first surviving non-extra seat in roster order, preferring one whose adapter is not `agent` when the roster has one (an Agent seat runs the panel unenforced), `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.
 When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat, including after an extra or a
 one-seat repair, and deal `plan-completeness`, `plan-soundness`, `plan-simplicity`, and
 `plan-tests` in stable roster order. Build one `--assignment` per seat and use the
@@ -678,7 +696,7 @@ cluster's Prediction, not once for the round. Record the observed failure line i
 fix-plan.md beside the Prediction it belongs to: a failure whose message does not
 match the Prediction is a STOP, not a note, because a test that fails for an
 unrelated reason proves nothing about the defect. Apply confirmed fixes in coherent
-clusters (one cluster per eventual commit, made only later when the round is
+clusters by launching the resolved workhorse (one cluster per eventual commit, made only later when the round is
 actually committed, not here). Preserve user changes. Run the relevant gates and
 bring them to baseline or better. Add meaningful regressions when warranted, not
 tests that merely mirror implementation. Run the repository's required gate list
@@ -758,7 +776,7 @@ When `NO_PUSH=1`, render and inspect the body but let the publisher's no-push ga
 skip every external GitHub call.
 
 After publication succeeds or cleanly skips, set `phase=done` and write `S/report.md`
-with scope/base, actual roster and degradation, rounds/lenses,
+with scope/base, actual roster and degradation, the workhorse family, model, and effort or `Workhorse: unavailable` and the reason, rounds/lenses,
 accepted/rejected/deferred findings and evidence, changes/commits, baseline/final
 gates, and remaining limitations. Outside stack-leg mode, write `report.md` only for
 a completed review. In stack-leg mode, put the same content in `stack-report.md` and

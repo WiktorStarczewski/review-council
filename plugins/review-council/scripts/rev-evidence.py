@@ -33,6 +33,7 @@ from review_limits import (CLAUDE_MAX_TURNS, MANDATORY_REPOSITORY_READ_LIMIT,
                            REPOSITORY_REFUTATION_CALL_RESERVE)
 from session_inputs import session_input_lock, validate_standard_inputs
 from roster import cursor_sdk_identity, validate_cursor_sdk_qualification
+from workhorse import overlay_roster, plan_seat
 
 BUNDLES = ('correctness-boundaries', 'security-state-api',
            'concurrency-resources-performance', 'tests-observability-maintenance-regression')
@@ -77,7 +78,7 @@ def read_batch_limit(adapter):
 
 
 def read_tool_name(adapter):
-    return ('Read' if adapter in ('agent', 'claude') else
+    return ('Read' if adapter in ('agent', 'claude', 'cursor-agent') else
             'council_read' if adapter == 'cursor-sdk' else 'read_file')
 
 
@@ -112,6 +113,15 @@ def evidence_modes(environment, parent=None):
     if source_explicit and (source_mode == '1') is not parent_source_enabled:
         raise ValueError('repair source context setting conflicts with parent assignment')
     return parent_chunk_mode, parent_source_enabled
+
+
+def unenforced_adapter(adapter):
+    return adapter in ('agent', 'cursor-agent')
+
+
+def with_workhorse(session, roster, seats_in_play):
+    """Plan panels may seat the workhorse without adding it to the frozen review roster."""
+    return overlay_roster(roster, plan_seat(session), seats_in_play)
 
 
 def validate_live_roster_adapters(roster):
@@ -3174,9 +3184,12 @@ def validate_source_context_snapshot(repo, session, manifest, canonical_changes=
             canonical_facts['source_context_hunks'] = expected
         canonical_facts = source_context_evidence(
             repo, manifest['snapshot_tree'], canonical_facts, entries_by_tree)
+        roster = read_json(session / 'roster.json')
+        if manifest.get('phase') == 'plan':
+            roster = with_workhorse(session, roster, set(manifest['assignments']))
         ordered_assignments = {
             row['seat']: manifest['assignments'][row['seat']]
-            for row in read_json(session / 'roster.json')['seats']
+            for row in roster['seats']
             if row.get('seat') in manifest['assignments']}
         clusters = manifest.get('plan', {}).get('clusters')
         inputs = source_context_inputs(
@@ -3246,7 +3259,10 @@ def validate_components(session, manifest, evidence):
     if not isinstance(components, list) or any(not isinstance(c, dict) for c in components):
         raise ValueError('invalid dependency components')
     assigned = manifest['assignments']; owner = manifest['mechanical_owner']
-    ordered = {row['seat']: assigned[row['seat']] for row in read_json(session / 'roster.json')['seats'] if row['seat'] in assigned}
+    roster = read_json(session / 'roster.json')
+    if manifest.get('phase') == 'plan':
+        roster = with_workhorse(session, roster, set(assigned))
+    ordered = {row['seat']: assigned[row['seat']] for row in roster['seats'] if row['seat'] in assigned}
     adaptive = (not manifest['fallback_reason'] and manifest['phase'] not in ('repair', 'numeric')
                 and len(assigned) > 1)
     if manifest['phase'] == 'plan':
@@ -3809,7 +3825,9 @@ def validate_plan(session, manifest, evidence, check_source, replay_searches=Tru
             and not all('search_proof' in cluster for cluster in clusters):
         raise ValueError('mixed prepared and legacy plan searches')
     assignments = manifest['assignments']
-    roster_order = [row['seat'] for row in read_json(session / 'roster.json')['seats']
+    roster = read_json(session / 'roster.json')
+    roster = with_workhorse(session, roster, set(assignments))
+    roster_order = [row['seat'] for row in roster['seats']
                     if row.get('seat') in assignments]
     ordered_assignments = {seat: assignments[seat] for seat in roster_order}
     if any('plan_clusters' in assignment for assignment in assignments.values()):
@@ -4006,6 +4024,8 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
     roster = read_json(session / 'roster.json')
     if not isinstance(roster, dict) or not isinstance(roster.get('seats'), list) or any(not isinstance(s, dict) for s in roster['seats']):
         raise ValueError('invalid roster shape')
+    if manifest.get('phase') == 'plan':
+        roster = with_workhorse(session, roster, set(manifest.get('assignments') or {}))
     if fresh and not offline and provider_contract_input(session) != contract_binding:
         raise ValueError('provider contract input changed after prepare')
     core = {s['seat'] for s in roster['seats'] if not s.get('extra')}
@@ -4036,7 +4056,7 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
                    for crate in view['crates'])
             or view['crates'] != sorted(set(view['crates']))):
         raise ValueError('invalid dependency view')
-    expected_unenforced = sorted(seat for seat in assigned if adapters[seat] == 'agent')
+    expected_unenforced = sorted(seat for seat in assigned if unenforced_adapter(adapters[seat]))
     declared_unenforced = manifest.get('unenforced_seats', [])
     if (not isinstance(declared_unenforced, list)
             or any(not isinstance(x, str) for x in declared_unenforced)
@@ -4107,7 +4127,7 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         }
         executor, child_assignment = next(iter(assigned.items()))
         if (binding != expected_binding or len(assigned) != 1 or executor == seat
-                or child_assignment['adapter'] == 'agent'
+                or unenforced_adapter(child_assignment['adapter'])
                 or manifest['label'] != parent['label'] + 'x'
                 or child_assignment['scope'] != 'full'
                 or child_assignment['bundle'] != parent_assignment['bundle']
@@ -4708,7 +4728,7 @@ def validate_results(session, manifest, manifest_hash, seats=None, verdicts=None
         # prompt-hash binding are still checked above; only the audit is skipped, and the manifest
         # records the seat as unenforced so no caller can read this panel as certified.
         if seat in manifest.get('unenforced_seats', []):
-            if assignment['adapter'] != 'agent':
+            if not unenforced_adapter(assignment['adapter']):
                 raise ValueError('unenforced seat is not an agent adapter: ' + seat)
             # Everything that DOES exist is HASHED into the receipt. That is not a binding: of
             # these four, only the prompt is tied to this manifest, by the manifest-hash line
@@ -4744,6 +4764,8 @@ def result_generation(session, manifest, manifest_hash, seat):
     hashes = validate_results(session, manifest, manifest_hash, [seat], verdicts)
     stem = f"r{manifest['label']}-{seat}"
     roster = read_json(session / 'roster.json')
+    if manifest.get('phase') == 'plan':
+        roster = with_workhorse(session, roster, [seat])
     roster_seat = next(row for row in roster['seats'] if row.get('seat') == seat)
     assignment = manifest['assignments'][seat]
     row = {
@@ -4928,6 +4950,13 @@ def _prepare_locked(args, session):
     repo = Repository(session)
     roster = read_json(session / 'roster.json')
     validate_live_roster_adapters(roster)
+    if args.phase == 'plan':
+        named = []
+        for assignment in args.assignment or []:
+            seat, separator, _bundle = assignment.partition('=')
+            if separator:
+                named.append(seat)
+        roster = with_workhorse(session, roster, named)
     numeric_values = tuple(getattr(args, name, None) for name in
                            ('numeric_round', 'numeric_min_rounds', 'numeric_panel'))
     numeric = None; numeric_rows = []; numeric_raw = None
@@ -4997,7 +5026,7 @@ def _prepare_locked(args, session):
     # seat's audit is not gated on, because the agent pass rate is unmeasured and gating on an
     # unmeasured pass rate would trade one blanket refusal for another.
     unenforced_seats = sorted(row['seat'] for row in roster['seats']
-                              if row.get('adapter') == 'agent' and row.get('seat') in chosen)
+                              if unenforced_adapter(row.get('adapter')) and row.get('seat') in chosen)
     if parent_manifest is not None:
         parent = parent_manifest['assignments'][parent_seat]
         executor = next(iter(chosen)) if len(chosen) == 1 else None
@@ -5006,7 +5035,7 @@ def _prepare_locked(args, session):
         if executor is None or chosen[executor] != parent['bundle']:
             raise ValueError('repair assignment does not match its parent')
         executor_row = next((row for row in roster['seats'] if row.get('seat') == executor), None)
-        if executor_row is None or executor_row.get('adapter') == 'agent':
+        if executor_row is None or unenforced_adapter(executor_row.get('adapter')):
             # An Agent result cannot be bound against copying, so it cannot stand in for another seat.
             raise ValueError('replacement executor must be an enforced seat')
         if not attempt_module().terminal_failure(session, parent_label, parent_seat,

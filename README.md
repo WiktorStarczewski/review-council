@@ -213,7 +213,7 @@ the run would end at 17 launches. Codex pushes at the end only when you authoriz
 | simplicity discovery | always | every core seat asks whether the change can be smaller through reuse or deletion |
 | risk discovery | more than 25 files, more than 1,500 lines, or a high-risk boundary | the four risk bundles across the panel |
 | full red team | once, for a large, high-risk, user-marked-important or explicitly adversarial review | four adversarial compositions over the risk bundles, with sibling-site completeness, before planning |
-| plan | after triage and before any edit, when an accepted fix is nontrivial | one plan-completeness seat; `plan_seats: "all"` adds soundness, simplicity and falsifiable-test seats |
+| plan | after triage and before any edit, when an accepted fix is nontrivial | one plan-completeness seat on the resolved workhorse; `plan_seats: "all"` adds soundness, simplicity and falsifiable-test seats on the core roster |
 | fix and gates | after the plan passes, or a recorded plan skip | root-cause clusters, red-first regression tests, project gates at baseline or better |
 | verification | after discovery when no fix follows, otherwise after the latest fixes | all four risk bundles over the latest material state, plus a sibling-site check of every fix commit |
 
@@ -326,8 +326,8 @@ replayed once on the frozen tree and must return 1-80 records, each a named site
 test-field path, or an `Excluded: <path> - <reason>` entry. Patterns are capped at 1024 bytes
 and output at 32 KiB; anything else fails closed.
 
-One plan-completeness seat (the first core seat not on the Agent adapter, when there is one)
-reviews the full patch and every cluster. `plan_seats: "all"` adds a specialist per cluster,
+One plan-completeness seat, the resolved workhorse, reviews the full patch and every cluster.
+When no workhorse is available, that seat is the first core seat not on the Agent adapter, when there is one. `plan_seats: "all"` adds a specialist per cluster,
 whose first read must be its one assigned artifact; any listing or search before it
 invalidates the attempt. A failed plan seat gets one `<N>px` replacement; if that fails too,
 the plan stays incomplete.
@@ -752,7 +752,7 @@ rev skill and default to `NO_PUSH=1 NO_SQUASH=1`. A missing Cursor host is a blo
 | `claude_seats` | `1` | number of Opus seats; mutually exclusive with `claude_models` |
 | `claude_seat` | `true` | `false` disables detected Claude seats |
 | `claude_adapter` | `auto` | Claude Code runs Anthropic seats on the CLI (`cli`), as Agent subagents (`agent`), or on the CLI when signed in (`auto`) |
-| `plan_seats` | `completeness` | one plan-completeness seat per plan panel, or `all` for the four-lens plan panel |
+| `plan_seats` | `completeness` | one workhorse plan-completeness seat per plan panel, or `all` for the four-lens core panel |
 | `extras` | `true` | expose `codex-review` to explicit numeric schedules; SDK numeric panels refuse it when scheduled |
 | `min_labs` | `1` | minimum detected provider labs before padding |
 | `quota_fallback` | `false` | allow temporary cross-provider quota substitution |

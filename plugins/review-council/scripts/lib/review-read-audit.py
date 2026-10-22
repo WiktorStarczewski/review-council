@@ -2035,7 +2035,7 @@ def plan_specialist_first_call_contract(manifest, seat, session):
         else:
             action = 'run ' + shlex.join(['cat', '--', str(primary)])
     else:
-        tool = ('Read' if assignment['adapter'] in ('agent', 'claude') else
+        tool = ('Read' if assignment['adapter'] in ('agent', 'claude', 'cursor-agent') else
                 'council_read' if assignment['adapter'] == 'cursor-sdk' else 'read_file')
         if mode == 'window':
             action = 'use ' + tool + ' with offset 1 and limit 240 on ' + str(primary)
@@ -2070,7 +2070,7 @@ def exact_native_first_read(adapter, name, data, primary, mode, window_end, root
     if adapter == 'codex':
         return normalized in SHELL_TOOLS \
             and exact_single_shell_read(data, primary, mode, window_end, root)
-    expected_tool = 'read' if adapter in ('claude', 'agent') else 'read_file'
+    expected_tool = 'read' if adapter in ('claude', 'agent', 'cursor-agent') else 'read_file'
     if normalized != expected_tool:
         return False
     raw_path = tool_path(data)

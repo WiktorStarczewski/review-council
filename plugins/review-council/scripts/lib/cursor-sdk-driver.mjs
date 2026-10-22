@@ -159,7 +159,7 @@ function command(executable, args, options = {}) {
       else stdout += chunk;
     });
     child.stderr.on('data',() => {});
-    child.stdin.on('error',() => { failed = true; });
+    child.stdin.on('error', error => { if (error?.code !== 'EPIPE') failed = true; });
     child.on('error',() => { failed = true; });
     child.on('close',code => {
       clearTimeout(timer);
