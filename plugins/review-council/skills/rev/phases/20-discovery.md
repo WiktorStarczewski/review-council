@@ -220,6 +220,8 @@ if [ -z "$MANIFEST" ] && { [ "$PANEL_PHASE" = numeric ] || [ "${COVERED_PHASE:-}
 fi
 ```
 
+A code proof-budget refusal, proof reads exceed repository capacity, is not a legacy rerender and not a provider-seat replacement: stop before rendering, read `prepare-diagnostic-<label>.json`, and review each partitions entry as its own path scope.
+
 `REV_PATCH_CHUNKS=auto` selects chunks when they save proof reads or are required to
 fit the compiled provider capacity. `REV_PATCH_CHUNKS=1` forces chunks when the patch
 is representable, while `REV_PATCH_CHUNKS=0` requests window mode and fails preparation
@@ -265,7 +267,7 @@ space-delimited field from its output, require exactly 64 lowercase hexadecimal
 characters, then inspect every already-rendered prompt. Every evidence prompt must
 contain exactly one matching `Evidence manifest SHA-256: <hash>` line. A failed
 verify, malformed hash, missing line, duplicate line, or mismatch discards the whole
-narrowed attempt. Code panels use the all-legacy rerender path above; schema-4 plan
+narrowed attempt. Code panels use the all-legacy rerender path above, except a proof reads exceed repository capacity refusal, which stops before that rerender; schema-4 plan
 panels fix the evidence or task compiler and prepare a fresh schema-4 label. A capacity refusal or a prepare timeout is not repeated unchanged and follows the plan-phase recovery. This is the one
 repository-wide plan-search replay for the panel; prompt rendering and every
 postlaunch check perform no search replay.

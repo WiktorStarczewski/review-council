@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.9
+
+- Code-review preparation counts edited-test assertions, changed consumers, and sibling tests that are not already in a source packet against the frozen post-index read budget, including when source packets are off. A scope whose proof reads exceed that budget is refused before launch, so a seat is not sent into an incomplete proof. The non-certifying diagnostic names path-scope partitions that each fit. The read limit is unchanged. That refusal is not a legacy rerender and not a provider-seat retry.
+- A source line that cannot fit in one bounded segment is left out of the code-review source packet. Preparation no longer aborts that panel, and the seat is not required to open the line. Plan preparation still refuses an unsplittable plan site.
+
 ## 0.7.8
 
 - Plan preparation names the read limit, the calculated count, the mandatory windows, and the selected target when repository capacity is exceeded, and keeps that breakdown in a non-certifying `prepare-diagnostic-<label>.json`. Stderr stage lines identify snapshot, plan-search, prior-coverage, source-context, and capacity. `REV_PREPARE_TIMEOUT` (default 1200 seconds) ends a stuck prepare with that diagnostic. Promotion counts the current-source target in the same budget as the final capacity check. The read limit and coverage requirements are unchanged. A capacity refusal or a prepare timeout is not retried as a provider-seat failure.

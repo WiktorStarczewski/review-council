@@ -364,3 +364,6 @@ t-seat.sh::test_seat_incomplete_proof_refuses_a_changed_prompt_relaunch	1	normal
 t-seat.sh::test_seat_symlinked_incomplete_proof_refuses_a_relaunch	1	normal
 t-seat.sh::test_seat_unrecorded_failed_incomplete_proof_keeps_its_exact_retry	1	normal
 t-seat.sh::test_seat_zero_tool_retry_completed_incomplete_proof_is_terminal	1	normal
+t-proof-budget.sh::test_code_proof_budget_refuses_before_launch	8	normal
+t-proof-budget.sh::test_edited_tests_exceeding_proof_budget_are_refused	8	normal
+t-proof-budget.sh::test_unsplittable_source_line_stays_launchable	8	normal

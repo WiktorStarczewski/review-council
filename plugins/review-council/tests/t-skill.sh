@@ -196,6 +196,10 @@ test_skill_contract() {
       '[Rr]epair.*full cumulative patch'
     assert_grep "host rerenders every prompt on evidence failure" "$H" \
       '[Rr]ender every seat again without `--evidence`'
+    assert_grep "code proof budget refusal is not a legacy rerender" "$H" \
+      'proof reads exceed repository capacity, is not a legacy rerender'
+    assert_grep "code proof budget refusal stops before the legacy rerender" "$H" \
+      'proof reads exceed repository capacity refusal, which stops before that rerender'
     assert_grep "receipt failure stops before another reviewer" "$H" \
       '[Rr]eceipt fails.*stop before another reviewer launch'
     assert_grep "host preserves the exact configured roster" "$H" \
