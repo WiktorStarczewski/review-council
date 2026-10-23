@@ -852,17 +852,20 @@ test_skill_rev_mutate_precedes_commit() {
       "$T/codex-skills/rev/SKILL.md" 'the test command.*Commit only when' )
 }
 
-# One replacement rule replaces every hard-audit stop and every coverage-repair clause, found by
+# The replacement-chain rule replaces every hard-audit stop and every coverage-repair clause, found by
 # search in both host skills, and the review-origin breaker is stated where phase=fix is.
 test_skill_replacement_and_breaker_contract() {
   rev_bundle "$SK/skills/rev" "$T/skills/rev/SKILL.md"
   rev_bundle "$SK/codex-skills/rev" "$T/codex-skills/rev/SKILL.md"
   python3 - "$T/skills/rev/SKILL.md" "$T/codex-skills/rev/SKILL.md" <<'PY'
 import re, sys
-RULE = ('Each failed assignment gets at most one replacement on another eligible seat: '
-        'after its exact retry for an execution failure, immediately for a hard audit failure '
-        'or an exit-0 `INCOMPLETE PROOF` result.')
+RULE = ('A failed assignment may continue through distinct higher enforced model families '
+        'until it succeeds or the chain is exhausted at Opus.')
 REMOVED = [
+    'Each failed assignment gets at most one replacement',
+    'If a replacement fails, finish that assignment yourself',
+    'a second failure occurs on the same assignment',
+    'second replacement for the same assignment',
     'stop the current panel without another paid retry',
     'widen an evidence-audit failure into a full-state repair',
     'If a hard audit failure occurs in the fallback panel, stop',
@@ -906,8 +909,8 @@ for path in sys.argv[1:]:
             problems.append(f'{host}: no {name} location')
         elif name == 'replacement procedure' and not all(
                 'parent without a terminal failure' in item
-                and 'second replacement for the same assignment' in item
-                and 'duplicate child label' in item for item in found):
+                and 'continue from the failed replacement generation' in item
+                and 'unique child label' in item for item in found):
             problems.append(f'{host}: replacement procedure omits its binding safeguards')
         elif name != 'plan replacement' and name != 'replacement procedure' and not all(RULE in item for item in found):
             problems.append(f'{host}: the rule is missing at the {name} location')

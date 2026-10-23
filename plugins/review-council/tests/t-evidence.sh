@@ -2692,6 +2692,73 @@ def replacement_runs_on_another_seat():
         assert child['assignments'][executor]['full_state'] is True
         assert child['assignments'][executor]['bundle'] == bundle
 
+def replacement_chain_reaches_opus():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        root_seats = ['codex-luna', 'codex-luna-2', 'codex-luna-3', 'codex-luna-4']
+        roster = {'seats': [
+            {'seat': seat, 'extra': False, 'adapter': 'codex',
+             'model': 'gpt-5.6-luna', 'effort': 'high'} for seat in root_seats]}
+        (session / 'roster.json').write_text(json.dumps(roster))
+        root_assignments = [
+            '--assignment', root_seats[0] + '=' + bundles[3],
+            '--assignment', root_seats[1] + '=' + bundles[0],
+            '--assignment', root_seats[2] + '=' + bundles[1],
+            '--assignment', root_seats[3] + '=' + bundles[2],
+            '--full-seat', root_seats[0],
+        ]
+        parent = prepare('chain', 'risk', *root_assignments)
+        root_path = session / 'rchain-evidence.manifest.json'
+        for seat in parent['assignments']:
+            (session / f'rchain-{seat}.prompt.md').write_text(call('render', root_path, seat))
+            (session / f'rchain-{seat}.json').write_text('{"summary":"root","findings":[]}')
+            (session / f'rchain-{seat}.exit').write_text('0\n')
+            if seat != root_seats[0]:
+                write_agent_audit(session, 'chain', seat)
+        (session / f'rchain-{root_seats[0]}.exit').write_text('2\n')
+        (session / f'rchain-{root_seats[0]}.audit-invalid.json').write_text(
+            '{"summary":"terminal failure","findings":[]}\n')
+
+        replacements = [
+            ('chainx', 'chain', root_seats[0], 'escalate-sonnet', 'sonnet',
+             'claude', 'sonnet', 'high'),
+            ('chainx2', 'chainx', 'escalate-sonnet', 'escalate-sol', 'sol',
+             'codex', 'gpt-5.6-sol', 'high'),
+            ('chainx3', 'chainx2', 'escalate-sol', 'escalate-opus', 'opus',
+             'claude', 'opus', 'high'),
+        ]
+        for index, (label, parent_label, parent_seat, executor, family,
+                    adapter, model, effort) in enumerate(replacements):
+            (session / 'escalation.json').write_text(json.dumps({
+                'version': 1, 'seat': executor, 'family': family,
+                'lab': 'openai' if family == 'sol' else 'anthropic',
+                'adapter': adapter, 'model': model, 'effort': effort,
+                'extra': False,
+            }))
+            child = prepare(label, 'repair', '--assignment', executor + '=' + bundles[3],
+                            '--parent-assignment', parent_label + ':' + parent_seat)
+            assert child['replacement_executor']['family'] == family
+            child_path = session / f'r{label}-evidence.manifest.json'
+            (session / f'r{label}-{executor}.prompt.md').write_text(
+                call('render', child_path, executor))
+            (session / f'r{label}-{executor}.json').write_text(
+                '{"summary":"replacement","findings":[]}')
+            if index < len(replacements) - 1:
+                (session / f'r{label}-{executor}.exit').write_text('2\n')
+                (session / f'r{label}-{executor}.audit-invalid.json').write_text(
+                    '{"summary":"terminal failure","findings":[]}\n')
+            else:
+                (session / f'r{label}-{executor}.exit').write_text('0\n')
+                write_agent_audit(session, label, executor)
+
+        verified = json.loads(call('verify-panel', session, 'chain', '--replacement',
+                                   root_seats[0] + '=chainx3'))
+        assert verified['replacements'] == {root_seats[0]: 'chainx3'}
+        selected = verified['selected_generations']
+        assert (selected[root_seats[0]]['label'], selected[root_seats[0]]['seat']) == (
+            'chainx3', 'escalate-opus')
+        assert all(selected[seat]['label'] == 'chain' for seat in root_seats[1:])
+        call('receipt', session, 'chain', '--replacement', root_seats[0] + '=chainx3')
+
 def incomplete_proof_panel(session, call, prepare, summary='INCOMPLETE PROOF: assigned source remains unread'):
     """A risk panel whose sol seat exits 0 with `summary` and a valid read audit."""
     roster = {'seats': [{'seat': seat, 'extra': False, 'adapter': 'claude', 'model': 'model-' + seat,
@@ -3604,6 +3671,7 @@ cases = (
     full_seat_requires_proven_reads, unenforced_agent_seat_binds_only_its_prompt,
     unenforced_audit_is_opt_in, unenforced_audit_cache_is_keyed_on_every_input,
     nested_walks_reuse_cached_audits, replacement_runs_on_another_seat,
+    replacement_chain_reaches_opus,
     incomplete_proof_is_never_a_valid_result, incomplete_proof_is_replaced_at_once,
     hardlinked_incomplete_proof_cannot_verify, hardlinked_incomplete_proof_cannot_seal,
     symlinked_incomplete_proof_cannot_verify, symlinked_incomplete_proof_cannot_seal,
@@ -3652,7 +3720,8 @@ groups = {
         nested_walks_reuse_cached_audits,
     ),
     'replacement': (
-        replacement_runs_on_another_seat, incomplete_proof_is_never_a_valid_result,
+        replacement_runs_on_another_seat, replacement_chain_reaches_opus,
+        incomplete_proof_is_never_a_valid_result,
         incomplete_proof_is_replaced_at_once, incomplete_proof_latches_only_its_label_and_seat,
         hardlinked_incomplete_proof_cannot_verify, hardlinked_incomplete_proof_cannot_seal,
         symlinked_incomplete_proof_cannot_verify, symlinked_incomplete_proof_cannot_seal,
