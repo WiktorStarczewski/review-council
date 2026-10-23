@@ -262,3 +262,5 @@
 - For Cursor automation, verify the supported public interface before treating a rejected internal option as a general prohibition. Keep CLI compatibility, ambient configuration controls and delivered source proof as separate claims.
 - Preserve existing complete-packet and context exceptions when adding a transport; applying a blanket cap or symlink ban can invalidate faithful reviews without improving the canonical proof.
 - A verification assertion and a later mutation must be sequential tool operations or a fail-fast script. A failing assertion must never fall through to a commit, seat launch or publication.
+- A PR review must bind the live GitHub head and base before provider discovery. A branch name or inferred merge base can point at an older checkout and produce plausible but irrelevant capacity diagnostics. Preserve the exact PR identity in session inputs and refuse drift before evidence preparation.
+

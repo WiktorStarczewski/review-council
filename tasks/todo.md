@@ -1,3 +1,16 @@
+# Release 0.7.11
+
+- [ ] Bind PR-number preflight to the live head and base before provider probes.
+- [ ] Preserve the exact PR identity in session inputs and reject a checkout change before evidence preparation.
+- [ ] Update both host setup phases, matching manifests, changelog, release procedure, plan, and lessons.
+- [ ] Run focused tests, frozen release verification, and the signed stable 0.7.10 review.
+- [ ] Push the PR and wait for current-head macOS and Ubuntu CI.
+- [ ] Squash-merge, publish the signed 0.7.11 tag and release, and verify installation.
+
+## Release review
+
+Pending.
+
 # Release 0.5.10
 
 - [x] Let `codex_models` repeat an entry, one numbered seat per entry, up to four.
