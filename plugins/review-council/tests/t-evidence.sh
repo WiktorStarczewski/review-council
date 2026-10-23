@@ -2704,7 +2704,7 @@ def replacement_chain_reaches_opus():
             '--assignment', root_seats[1] + '=' + bundles[1],
             '--assignment', root_seats[2] + '=' + bundles[2],
             '--assignment', root_seats[3] + '=' + bundles[3],
-            '--full-seat', root_seats[0],
+            '--full-seat', root_seats[3],
         ]
         parent = prepare('chain', 'risk', *root_assignments)
         root_path = session / 'rchain-evidence.manifest.json'
