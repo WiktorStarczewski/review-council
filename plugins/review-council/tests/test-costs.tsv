@@ -116,6 +116,7 @@ t-pr-review.sh::test_pr_review_publish	1	normal
 t-pr-review.sh::test_pr_review_publish_failure	1	normal
 t-pr-review.sh::test_pr_review_rejects_invalid_review_pages	1	normal
 t-pr-review.sh::test_pr_review_rejects_untrusted_links	1	normal
+t-pr-review.sh::test_pr_review_rejects_stray_pinned_base_ref	1	normal
 t-pr-review.sh::test_pr_review_render	1	normal
 t-pr-review.sh::test_pr_review_preserves_preflight_pr_identity	1	normal
 t-pr-review.sh::test_pr_review_repository_and_base_identity	1	normal
