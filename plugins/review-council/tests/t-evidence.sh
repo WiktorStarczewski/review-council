@@ -2627,8 +2627,6 @@ def replacement_runs_on_another_seat():
         call('prepare', session, '4x', '--phase', 'repair', '--assignment', 'opus=' + bundles[0],
              '--parent-assignment', '4:sol', good=False,
              error='replacement label is already bound to another parent assignment')
-        (session / 'r4-opus.exit').write_text('0\n'); (session / 'r4-opus.audit-invalid.json').unlink()
-
         child_path = session / 'r4x-evidence.manifest.json'
         (session / 'r4x-terra.prompt.md').write_text(call('render', child_path, 'terra'))
         (session / 'r4x-terra.json').write_text(json.dumps({'summary': 'child', 'findings': [

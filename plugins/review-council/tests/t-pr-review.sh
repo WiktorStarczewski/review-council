@@ -530,7 +530,7 @@ JSON
 
 test_pr_review_required_lists() {
   local field session
-  for field in panel orchestrator verified_sound coverage; do
+  for field in panel verified_sound coverage; do
     session="$T/pr-required-$field"
     mkdir -p "$session"
     pr_review_input > "$session/pr-review.json"
@@ -550,6 +550,25 @@ PY
     assert_grep "$field validation names the empty list" "$T/pr-required-$field.err" \
       "$field must not be empty"
   done
+
+  session="$T/pr-required-orchestrator"
+  mkdir -p "$session"
+  pr_review_input > "$session/pr-review.json"
+  python3 - "$session/pr-review.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data['orchestrator'] = ''
+path.write_text(json.dumps(data))
+PY
+  python3 "$SCRIPTS/rev-pr-review.py" render "$session" \
+    > "$T/pr-required-orchestrator.out" 2> "$T/pr-required-orchestrator.err"
+  assert_eq "orchestrator is required to be nonempty" "$?" 1
+  assert_grep "orchestrator validation names the empty value" "$T/pr-required-orchestrator.err" \
+    'orchestrator must be a nonempty string'
 }
 
 test_pr_review_rejects_untrusted_links() {

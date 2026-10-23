@@ -146,7 +146,8 @@ test_skill_contract() {
     assert_grep "host refuses certification without required artifacts" "$H" \
       'missing any audit, receipt, or final report required by its selected mode is incomplete'
     assert_grep "host writes exact code-panel state" "$H" 'phase=fan-out round=<N> "seats=\$LAUNCHED_SEATS"'
-    assert_grep "host writes exact replacement state" "$H" 'phase=repair round=<N>x "seats=\[\\"\$EXECUTOR\\"\]"'
+    assert_grep "host writes child replacement state for its selected executor" "$H" \
+      'phase=repair .*round=\$CHILD_LABEL.*seats=\[.*\$EXECUTOR.*\]'
     assert_grep "host writes exact plan state" "$H" 'phase=plan round=<N>p "seats=\$PLAN_SEATS"'
     assert_grep "host counts only numbered code panels" "$H" 'Plan panels do not count as numbered code panels'
     assert_grep "host preserves numeric continuation" "$H" 'Only numeric mode continues past its requested minimum'
@@ -389,7 +390,7 @@ test_skill_contract() {
     assert_grep "seat-local recovery preserves receipted effort" "$H" \
       '[Nn]ever lower effort|same receipted effort'
     assert_grep "triage may overlap stragglers without early edits" "$H" \
-      '[Tt]riage completed valid results as they arrive'
+      '[Tt]riage valid results as they arrive'
     assert_grep "one quota fallback panel is the retry ceiling" "$H" \
       '[Qq]uota fallback panel.*only permitted full-panel restart'
     assert_grep "a hard audit inside the fallback panel follows the replacement rule" "$H" \
@@ -885,10 +886,13 @@ for path in sys.argv[1:]:
             problems.append(f'{host}: removed clause survives: {phrase}')
     paragraphs = [' '.join(block.split()) for block in re.split(r'\n\s*\n', text)]
     rows = [line for line in text.splitlines() if line.startswith('|')]
+    replacement_commands = [i for i, p in enumerate(paragraphs)
+                            if '--parent-assignment "<N>:$FAILED_SEAT"' in p]
     locations = {
         'hard-audit': [p for p in paragraphs if "hard evidence-audit failure ends only that seat's assignment" in p],
         'coverage-repair': [p for p in paragraphs if 'Do not certify an adaptive panel until every assignment has a valid result' in p],
-        'replacement procedure': [p for p in paragraphs if '--parent-assignment "<N>:$FAILED_SEAT"' in p],
+        'replacement procedure': [paragraphs[i] + ' ' + paragraphs[i + 1]
+                                  for i in replacement_commands if i + 1 < len(paragraphs)],
         'plan replacement': [p for p in paragraphs if 'round=<N>px' in p and 'plan-completeness' in p],
     }
     if host == 'claude':
@@ -900,7 +904,12 @@ for path in sys.argv[1:]:
     for name, found in locations.items():
         if not found:
             problems.append(f'{host}: no {name} location')
-        elif name != 'plan replacement' and not all(RULE in item for item in found):
+        elif name == 'replacement procedure' and not all(
+                'parent without a terminal failure' in item
+                and 'second replacement for the same assignment' in item
+                and 'duplicate child label' in item for item in found):
+            problems.append(f'{host}: replacement procedure omits its binding safeguards')
+        elif name != 'plan replacement' and name != 'replacement procedure' and not all(RULE in item for item in found):
             problems.append(f'{host}: the rule is missing at the {name} location')
     for phrase in ('"$S" review_origin_ack=<N>', 'inherit-breaker "$PARENT_S"',
                    'Apply the standing decision yourself', 'revert the cited review changes',
