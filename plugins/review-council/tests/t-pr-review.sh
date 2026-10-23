@@ -1304,6 +1304,23 @@ EOF
     "$T/pr-pinned-identity.calls" '^pr view feat '
 }
 
+test_pr_review_rejects_stray_pinned_base_ref() {
+  local session="$T/pr-stray-base-ref" root="$T/pr-stray-base-ref-repo" bin="$T/pr-stray-base-ref-bin"
+  pr_review_session "$session" "$root"
+  pr_review_gh_shim "$bin"
+  printf "%s\n" "REV_PR_BASE_REF='refs/heads/main'" >> "$session/scope.env"
+  : > "$T/pr-stray-base-ref.calls"
+  PATH="$bin:$PATH" GH_REPO=evil/other GH_BRANCH_PR_NUMBER=12 \
+    GH_CALLS="$T/pr-stray-base-ref.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 \
+    > "$T/pr-stray-base-ref.out" 2> "$T/pr-stray-base-ref.err"
+  assert_eq "renderer rejects a stray pinned PR base ref" "$?" 1
+  assert_grep "stray base ref reports incomplete pinned identity" \
+    "$T/pr-stray-base-ref.err" 'incomplete pinned PR identity'
+  assert_nogrep "partial pinned identity never falls back to branch discovery" \
+    "$T/pr-stray-base-ref.calls" '^pr view '
+}
+
 test_pr_review_finalization_integrity() {
   local bin="$T/pr-integrity-bin" head
   pr_review_gh_shim "$bin"
