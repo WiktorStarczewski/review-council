@@ -242,7 +242,7 @@ PY
 }
 
 test_pr_scope_refuses_pinned_head_or_base_drift() {
-  ( local R="$T/pr-head-drift-root" S="$T/pr-head-drift-session" base pinned
+  ( local R="$T/pr-head-drift-root" S="$T/pr-head-drift-session" base pinned other
     mkrepo "$R"; mkdir -p "$S"; git -C "$R" checkout -qb feat
     printf 'reviewed change\n' > "$R/change.txt"
     git -C "$R" add change.txt && git -C "$R" commit -qm "reviewed head"
@@ -251,6 +251,20 @@ test_pr_scope_refuses_pinned_head_or_base_drift() {
       "$base" "$R" "$pinned" "$base" > "$S/scope.env"
     printf '%s\n' 'change.txt' > "$S/files.txt"; : > "$S/untracked.txt"
     printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+    git -C "$R" checkout -qb unrelated
+    printf 'unrelated source\n' > "$R/unrelated.txt"
+    git -C "$R" add unrelated.txt && git -C "$R" commit -qm 'unrelated source'
+    other=$(git -C "$R" rev-parse HEAD)
+    git -C "$R" checkout -q feat
+    env -u REV_DEPS_DIR python3 "$SCRIPTS/rev-evidence.py" prepare "$S" wrong-source \
+      --phase discovery --head "$other" \
+      > "$T/pr-wrong-source.out" 2> "$T/pr-wrong-source.err"
+    assert_eq "evidence preparation refuses a source selector outside the pinned PR head" "$?" 1
+    assert_grep "source selector refusal identifies the pinned PR" "$T/pr-wrong-source.err" \
+      'explicit source selector conflicts with pinned PR #71 head'
+    assert_exit "source selector refusal publishes no evidence" 0 \
+      test ! -e "$S/rwrong-source-evidence.manifest.json"
+
     git -C "$R" checkout -q main
     printf 'base moved\n' > "$R/base-only.txt"
     git -C "$R" add base-only.txt && git -C "$R" commit -qm 'advance base'
