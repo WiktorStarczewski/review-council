@@ -376,11 +376,12 @@ test_preflight_pr_identity() {
 #!/bin/bash
 printf '%s\n' "$@" >> "$GH_ARGS"
 [ "$1" = pr ] && [ "$2" = view ] || exit 2
-printf '{"number":71,"state":"%s","headRefName":"%s","headRefOid":"%s","baseRefName":"main","baseRefOid":"%s"}\n' \
-  "$PR_STATE" "$PR_BRANCH" "$PR_HEAD" "$PR_BASE"
+payload="{\"number\":71,\"state\":\"$PR_STATE\",\"headRefName\":\"$PR_BRANCH\",\"headRefOid\":\"$PR_HEAD\",\"baseRefName\":\"main\",\"baseRefOid\":\"$PR_BASE\"}"
+printf '%s\n' "$payload" > "$GH_JSON"
+cat "$GH_JSON"
 SH
     chmod +x "$B/bin/gh"
-    export PATH="$B/bin:$PATH" GH_ARGS="$B/gh.args" RSTUB_ARGS="$B/roster.args"
+    export PATH="$B/bin:$PATH" GH_ARGS="$B/gh.args" GH_JSON="$B/gh.json" RSTUB_ARGS="$B/roster.args"
     unset REV_BASE_REF
     mkrepo "$R"; git -C "$R" checkout -qb feat
     printf 'change\n' > "$R/change.txt"; git -C "$R" add change.txt; git -C "$R" commit -qm change
@@ -388,7 +389,7 @@ SH
     export PR_STATE=OPEN PR_BRANCH=feat PR_HEAD="$head" PR_BASE="$base"
     (cd "$R" && "$PF" --pr 71 --write "$S") > "$B/out" 2> "$B/err"
     local preflight_rc=$?
-    if [ "$preflight_rc" -ne 0 ]; then cat "$B/err" >&2; fi
+    if [ "$preflight_rc" -ne 0 ]; then cat "$B/err" "$B/gh.json" >&2; fi
     assert_eq "exact PR checkout passes preflight" "$preflight_rc" 0
     assert_grep "preflight pins PR number" "$S/scope.env" "^REV_PR_NUMBER='71'$"
     assert_grep "preflight pins exact PR head" "$S/scope.env" "^REV_PR_HEAD='$head'$"
