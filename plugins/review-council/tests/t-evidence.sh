@@ -1831,7 +1831,10 @@ def local_names_do_not_expand_cross_file_proof():
               '  const page = row + 1;\n'
               '  return page;\n'
               '};\n')
-        write('tsconfig.json', '{"compilerOptions":{"baseUrl":"src"}}\n')
+        write('tsconfig.json', '{"compilerOptions":{"baseUrl":"src"},"include":["src","tests"]}\n')
+        write('tsconfig-utility.json',
+              '{"compilerOptions":{"baseUrl":"utility"},"include":["utility"]}\n')
+        write('utility/history.ts', 'export const readHistory = () => 999;\n')
         write('src/consumer.ts',
               'import { readHistory } from "history";\n'
               'export const consumeHistory = () => readHistory(1);\n')
@@ -1863,6 +1866,8 @@ def local_names_do_not_expand_cross_file_proof():
         assert any(row['name'] == 'page' and row['cross_file'] is False for row in facts['symbols'])
         assert any(row['path'] == 'src/consumer.ts' and row['name'] == 'readHistory'
                    for row in facts['call_sites'])
+        assert not any(row['source'] == 'src/consumer.ts' and row['target'] == 'utility/history.ts'
+                       for row in facts['dependencies']), facts['dependencies']
         assert any(row['path'] == 'tests/history.test.ts' for row in facts['related_tests'])
         assert not any(row['path'] in {'src/unrelated.ts', 'tests/unrelated.test.ts', 'docs/notes.md'}
                        for row in facts['call_sites'] + facts['related_tests'])
@@ -1873,6 +1878,69 @@ def local_names_do_not_expand_cross_file_proof():
                            for required in packet['required_source_ranges'])
         assert 'src/consumer.ts' in proof_paths and 'tests/history.test.ts' in proof_paths, proof_paths
         assert not proof_paths & {'src/unrelated.ts', 'tests/unrelated.test.ts', 'docs/notes.md'}, proof_paths
+
+def rust_use_imports_keep_cross_file_callers():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('Cargo.toml', '[package]\nname = "fixture_wallet"\nversion = "0.1.0"\n')
+        write('src/lib.rs', 'pub mod consumer;\npub mod history;\n')
+        write('src/history.rs', 'pub fn read_history() -> usize { 1 }\n')
+        write('src/consumer.rs',
+              'use crate::history::read_history;\n'
+              'pub fn consume_history() -> usize { read_history() }\n')
+        git('add', '.'); git('commit', '-qm', 'rust import base'); base = git('rev-parse', 'HEAD')
+        scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('src/history.rs', 'pub fn read_history() -> usize { 2 }\n')
+
+        manifest = prepare()
+        facts = json.loads((session / 'r1-evidence.json').read_text())
+        assert any(row['path'] == 'src/consumer.rs' and row['name'] == 'read_history'
+                   for row in facts['call_sites']), facts['call_sites']
+        assert any(row['source'] == 'src/consumer.rs' and row['target'] == 'src/history.rs'
+                   and row['kind'] == 'local-import' for row in facts['dependencies']), facts['dependencies']
+        proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
+                       for shard in packet['shards'] for row in shard['ranges']}
+        proof_paths.update(required['path']
+                           for packet in manifest['source_context']['seats'].values()
+                           for required in packet['required_source_ranges'])
+        assert 'src/consumer.rs' in proof_paths, proof_paths
+
+def ambiguous_ts_configs_are_explicit_search_obligations():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('tsconfig.json',
+              '{"compilerOptions":{"baseUrl":"src"},"include":["src"]}\n')
+        write('tsconfig-alt.json',
+              '{"compilerOptions":{"baseUrl":"lib"},"include":["src"]}\n')
+        write('src/history.ts', 'export const readHistory = () => 1;\n')
+        write('lib/history.ts', 'export const readHistory = () => 2;\n')
+        write('src/consumer.ts',
+              'import { readHistory } from "history";\n'
+              'export const consumeHistory = () => readHistory();\n')
+        git('add', '.'); git('commit', '-qm', 'ambiguous config base'); base = git('rev-parse', 'HEAD')
+        scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('src/history.ts', 'export const readHistory = () => 3;\n')
+
+        manifest = prepare()
+        facts = json.loads((session / 'r1-evidence.json').read_text())
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'src/consumer.ts')
+        assert set(obligation['candidate_targets']) == {
+            'src/history.ts', 'lib/history.ts'}, obligation
+        assert any(row['source'] == 'src/consumer.ts' and row['target'] == 'src/history.ts'
+                   and row['kind'] == 'ambiguous-import' for row in facts['dependencies']), facts['dependencies']
+        assert any(row['source'] == 'src/consumer.ts' and row['target'] == 'lib/history.ts'
+                   and row['kind'] == 'ambiguous-import' for row in facts['dependencies']), facts['dependencies']
+        assert any(row['path'] == 'src/consumer.ts' and row['name'] == 'readHistory'
+                   for row in facts['call_sites']), facts['call_sites']
+        closure = module.plan_closure_paths(
+            [{'id': 'history', 'paths': [{'path': 'src/consumer.ts'}]}],
+            facts['dependencies'], ['src/history.ts'])
+        assert 'src/history.ts' in closure, closure
 
 def complete_declaration_context():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -3647,6 +3715,8 @@ cases = (
     same_stat_and_index_flags, cstyle_enclosing_bodies, wallet_scale,
     literal_scope_and_inventories, sparse_gitlink_and_special, roster_bundle_coverage,
     source_context_packets, local_names_do_not_expand_cross_file_proof,
+    rust_use_imports_keep_cross_file_callers,
+    ambiguous_ts_configs_are_explicit_search_obligations,
     provider_visible_source_packet_limit,
     source_context_prefers_named_production_and_maps_gates, complete_declaration_context,
     budget_omissions_are_segmented_or_retained, innermost_declarations_and_bounded_anchors,
@@ -3690,6 +3760,8 @@ groups = {
     'context': (
         cstyle_enclosing_bodies, source_context_packets,
         local_names_do_not_expand_cross_file_proof,
+        rust_use_imports_keep_cross_file_callers,
+        ambiguous_ts_configs_are_explicit_search_obligations,
         provider_visible_source_packet_limit,
         source_context_prefers_named_production_and_maps_gates,
         complete_declaration_context, budget_omissions_are_segmented_or_retained,

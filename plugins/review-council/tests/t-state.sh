@@ -1,4 +1,23 @@
 # tests for Task 2 - sourced by run-tests.sh
+write_plan_manifest() {
+  local S=$1 label=$2 assignments=$3
+  [ -f "$S/fix-plan.md" ] || printf '# Test plan\n' > "$S/fix-plan.md"
+  python3 - "$S" "$label" "$assignments" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+session = Path(sys.argv[1])
+label = sys.argv[2]
+assignments = json.loads(sys.argv[3])
+plan = hashlib.sha256((session / 'fix-plan.md').read_bytes()).hexdigest()
+manifest = {'label': label, 'phase': 'plan', 'plan': {'sha256': plan},
+            'assignments': assignments}
+(session / f'r{label}-evidence.manifest.json').write_text(json.dumps(manifest))
+PY
+}
+
 test_state() {
   local S="$T/state-sess" ST="$SCRIPTS/rev-state.sh"
   "$ST" "$S" round=1 phase=fan-out min_rounds=7 >/dev/null
@@ -62,6 +81,7 @@ test_state_fix_gate() {
   assert_eq "a refused plan launch leaves state unchanged" "$(cksum < "$S/state.json")" "$before"
   assert_grep "the plan launch refusal names the JSON array form" "$T/plan-seats.err" 'seats must be a JSON array of seat names'
   "$ST" "$S" phase=plan round=4p 'seats=["codex-sol"]' >/dev/null
+  write_plan_manifest "$S" 4p '{"codex-sol":{}}'
   assert_eq "plan launch persists its seats" \
     "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plans"]["4p"])' "$S/state.json")" "['codex-sol']"
   state_gate_refuses "plan launched but not returned" "$S" 4 phase=fix
@@ -76,6 +96,7 @@ test_state_fix_gate() {
   S="$T/gate-plan-seat-failed"
   "$ST" "$S" round=6 phase=triage open.P1=1 >/dev/null
   "$ST" "$S" phase=plan round=6p 'seats=["codex-sol","opus"]' >/dev/null
+  write_plan_manifest "$S" 6p '{"codex-sol":{},"opus":{}}'
   printf '{"findings":[]}\n' > "$S/r6p-codex-sol.json"; echo 0 > "$S/r6p-codex-sol.exit"
   printf '{"findings":[]}\n' > "$S/r6p-opus.json"; echo 2 > "$S/r6p-opus.exit"
   state_gate_refuses "a plan seat with a nonzero exit" "$S" 6 phase=fix
@@ -146,6 +167,7 @@ test_state_fix_gate_allows_fix_after_the_plan_panel() {
     printf '0\n' > "$S/r2-codex-sol.exit"
     "$SCRIPTS/rev-state.sh" "$S" round=2 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
     "$SCRIPTS/rev-state.sh" "$S" phase=plan round=2p 'seats=["codex-sol"]' >/dev/null
+    write_plan_manifest "$S" 2p '{"codex-sol":{}}'
     # The plan panel answers after triage because the contract puts it there. Its exit is
     # newer than the counts and must not read as staleness.
     printf '{"findings":[]}\n' > "$S/r2p-codex-sol.json"; printf '0\n' > "$S/r2p-codex-sol.exit"
@@ -207,9 +229,20 @@ test_state_fix_gate_accepts_a_px_plan_replacement() {
   ( local ST="$SCRIPTS/rev-state.sh" S="$T/gate-px"
     "$ST" "$S" round=5 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
     "$ST" "$S" phase=plan round=5p 'seats=["codex-terra"]' >/dev/null
+    write_plan_manifest "$S" 5p '{"codex-terra":{}}'
+    printf 'plan review\n' > "$S/r5p-codex-terra.prompt.md"
     echo 2 > "$S/r5p-codex-terra.exit"; printf '{"summary":"x","findings":[]}\n' > "$S/r5p-codex-terra.audit-invalid.json"
     state_gate_refuses "a hard-failed plan seat" "$S" 5 phase=fix
-    "$ST" "$S" phase=plan round=5px 'seats=["codex-sol"]' >/dev/null
+    local before
+    before=$(cksum < "$S/state.json")
+    assert_exit "an unbound plan replacement is refused" 2 \
+      "$ST" "$S" phase=plan round=5px 'seats=["codex-sol"]'
+    assert_eq "an unbound plan replacement leaves state unchanged" \
+      "$(cksum < "$S/state.json")" "$before"
+    "$ST" "$S" phase=plan round=5px 'seats=["codex-sol"]' \
+      plan_replacement_for=5p:codex-terra >/dev/null
+    write_plan_manifest "$S" 5px \
+      '{"codex-sol":{"bundle":"plan-completeness","scope":"full"}}'
     assert_eq "the <N>px plan launch records its seats" \
       "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plans"].get("5px"))' "$S/state.json")" "['codex-sol']"
     state_gate_refuses "a <N>px plan panel that has not returned" "$S" 5 phase=fix
