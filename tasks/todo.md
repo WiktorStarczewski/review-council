@@ -878,3 +878,12 @@ Review results: pending. SDK credentials absent; no live SDK qualification or pr
 - [x] Run one independent normal code review, fix actionable P0-P2 findings, and re-verify.
 - [ ] Publish the signed 0.7.12 tag and GitHub release. CI checks are explicitly waived for this release.
 - [ ] Resume #1752 on the new runtime and report its exact review state.
+
+## Luna proof-capacity follow-up
+
+- [x] Reproduce the #1752 preflight refusal in a copy of the review session.
+- [x] Add regressions for wildcard re-export proof and numeric-only no-SDK legacy wording.
+- [ ] Resolve imported symbols through TypeScript re-exports while retaining exact source proof.
+- [ ] Run focused evidence tests and repeat the #1752 capacity preflight for every seat.
+- [ ] Get one independent normal review of the Council diff.
+- [ ] Record the test, CI, PR, and release state before closing this item.
