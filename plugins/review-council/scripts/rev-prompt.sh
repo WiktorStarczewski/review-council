@@ -595,7 +595,7 @@ EOC
     if [ "$ADAPTER" = cursor-sdk ]; then
       echo 'Keep each council_read call to one path and obey the rendered read batch limits.'
     else
-      echo 'Keep each shell tool call to one producer pipeline. Never mix source reads and searches in one shell call.'
+      echo 'Keep each shell tool call to one producer pipeline. Never mix source reads and searches in one shell call. For Codex, two bounded reads are still two calls: `sed -n 1102,1102p repo.test.ts && sed -n 193,193p repo.migration.test.ts` is invalid. Issue separate shell calls; batching means separate calls in one turn, never `&&` or `;` in one shell command.'
     fi
     printf '%s' "6. Expand to another bounded block, file, or pinned dependency only to answer a concrete question that could prove or refute a finding. Name the concrete symbol or invariant question in your reasoning, never as a comment inside the command, then make the tool call that bounded window."
     if [ -n "$DEPS_ROOT" ]; then printf ' Read pinned dependency source only under %s.' "$DEPS_ROOT"; fi
