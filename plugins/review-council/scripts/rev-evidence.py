@@ -2586,6 +2586,133 @@ def format_capacity_refusal(seat, limit, count, target, windows):
             'target=%s windows=%s' % (seat, limit, count, target_text, window_text))
 
 
+def format_proof_refusal(seat, limit, count, target, windows, partitions):
+    text = format_capacity_refusal(seat, limit, count, target, windows).replace(
+        'mandatory source reads exceed repository capacity',
+        'proof reads exceed repository capacity', 1)
+    rendered = ';'.join(','.join(partition['paths']) + ':' + str(partition['reads'])
+                        for partition in partitions)
+    return text + ' partitions=' + (rendered or 'none')
+
+
+def seat_assigned_files(assignment, components):
+    if assignment.get('full_state'):
+        return {path for component in components for path in component['files']}
+    ids = set(assignment.get('components') or [])
+    return {path for component in components if component['id'] in ids
+            for path in component['files']}
+
+
+def code_proof_obligations(assignment, components, evidence, packet):
+    """Post-index reads for edited assertions, consumers, and sibling tests.
+
+    Delivered source packets already satisfy a range. What remains is what the
+    seat must still open after the evidence index, inside the frozen budget.
+    """
+    files = seat_assigned_files(assignment, components)
+    delivered = [row for shard in packet.get('shards') or [] for row in shard.get('ranges') or []]
+    delivered += list(packet.get('required_source_ranges') or [])
+    symbols = {}
+    for symbol in evidence.get('symbols') or []:
+        name = symbol.get('name')
+        path = symbol.get('path')
+        if name and path:
+            symbols.setdefault(name, set()).add(path)
+    component_by_id = {component['id']: component for component in components}
+    ranges = []
+    owners = {}
+
+    def add(path, start, end, owner_paths):
+        if type(start) is not int or type(end) is not int or start < 1 or end < start:
+            return
+        if source_target_covered(
+                {'path': path, 'line_start': start, 'line_end': end}, delivered):
+            return
+        ranges.append((path, start, end))
+        owners.setdefault(path, set()).update(owner for owner in owner_paths if owner)
+
+    for hunk in evidence.get('hunks') or []:
+        path = hunk.get('path')
+        if path not in files or not is_test_path(path):
+            continue
+        pending = sorted({line for line in hunk.get('changed_lines') or []
+                          if type(line) is int and line >= 1})
+        cursor = 0
+        while cursor < len(pending):
+            start = pending[cursor]
+            last = start
+            while cursor < len(pending) and pending[cursor] <= start + READ_LINES - 1:
+                last = pending[cursor]
+                cursor += 1
+            add(path, start, last, {path})
+    for row in packet.get('omitted_source_ranges') or []:
+        reasons = row.get('reasons') or []
+        caller_names = [reason.split(':', 1)[1] for reason in reasons
+                        if reason.startswith(('production-caller:', 'extra-caller:'))]
+        test_ids = [reason.split(':', 1)[1] for reason in reasons
+                    if reason.startswith(('related-test:', 'extra-test:'))]
+        if not caller_names and not test_ids:
+            continue
+        owner_paths = set()
+        for name in caller_names:
+            owner_paths.update(path for path in symbols.get(name, ()) if path in files)
+        for component_id in test_ids:
+            component = component_by_id.get(component_id)
+            if component is not None:
+                owner_paths.update(path for path in component['files'] if path in files)
+        if not owner_paths:
+            owner_paths.add(row['path'])
+        add(row['path'], row['line_start'], row['line_end'], owner_paths)
+    return ranges, owners
+
+
+def partition_proof_windows(windows, owners, limit=MANDATORY_REPOSITORY_READ_LIMIT):
+    """Group proof windows into path scopes that each fit the discovery budget."""
+    grouped = {}
+    order = []
+    for path, start, end in windows:
+        owner = tuple(sorted(owners.get(path) or (path,)))
+        if owner not in grouped:
+            grouped[owner] = []
+            order.append(owner)
+        grouped[owner].append((path, start, end))
+    pieces = []
+    for owner in order:
+        rows = grouped[owner]
+        if len(rows) <= limit:
+            pieces.append((owner, rows))
+            continue
+        for offset in range(0, len(rows), limit):
+            pieces.append((owner, rows[offset:offset + limit]))
+    built = []
+    current_rows = []
+    current_owners = []
+    current_count = 0
+
+    def flush():
+        nonlocal current_rows, current_owners, current_count
+        if not current_rows:
+            return
+        paths = sorted(set(current_owners) | {path for path, _start, _end in current_rows})
+        built.append({
+            'paths': paths,
+            'reads': len(current_rows),
+            'windows': repository_window_rows(current_rows),
+        })
+        current_rows = []
+        current_owners = []
+        current_count = 0
+
+    for owner, rows in pieces:
+        if current_count + len(rows) > limit:
+            flush()
+        current_rows.extend(rows)
+        current_owners.extend(owner)
+        current_count += len(rows)
+    flush()
+    return built
+
+
 def plan_capacity_windows(assignment, plan_clusters, delivered, target):
     windows = mandatory_repository_windows(assignment, plan_clusters, delivered)
     if target is None:
@@ -3114,9 +3241,18 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
                 required['required_payload_bytes'] = single_payload_bytes
                 required['required_payload_predicted_visible_bytes'] = single_payload_visible_bytes
                 _, source_lines, _ = source_choice(row['path'], row['blob_tree'])[1]
-                required['segments'] = partition_source_segments(
-                    source_lines, row['line_start'], row['line_end'])
-                required_ranges.append(required)
+                try:
+                    required['segments'] = partition_source_segments(
+                        source_lines, row['line_start'], row['line_end'])
+                except ValueError as error:
+                    # A minified or generated line cannot become a bounded segment.
+                    # Dropping that range keeps the rest of the code panel launchable.
+                    # Plan sites stay a hard refusal: their windows are still mandatory.
+                    if (plan_clusters is not None
+                            or str(error) != 'required source line exceeds visible segment limit'):
+                        raise
+                else:
+                    required_ranges.append(required)
             else:
                 omitted_source_ranges.append({
                     key: value for key, value in row.items() if key != 'content'})
@@ -3239,7 +3375,8 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
     return context, artifacts
 
 
-def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None):
+def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
+                          evidence=None, components=None):
     seats = {}
     for seat, assignment in assignments.items():
         patch_set = patch_sets[assignment['patch_set']]
@@ -3275,6 +3412,23 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None):
             target_value = repository_target_brief(target)
         else:
             direct_calls = 0
+        proof_partitions = None
+        if plan_clusters is None and evidence is not None and components is not None:
+            obligations, owners = code_proof_obligations(
+                assignment, components, evidence, packet)
+            obligation_windows = merge_repository_windows(obligations)
+            if obligation_windows:
+                merged = merge_repository_windows([
+                    *obligation_windows,
+                    *((row['path'], row['line_start'], row['line_end'])
+                      for row in window_row_list),
+                ])
+                direct_calls = len(merged)
+                window_row_list = repository_window_rows(merged)
+                proof_partitions = (partition_proof_windows(merged, owners)
+                                    if direct_calls > MANDATORY_REPOSITORY_READ_LIMIT else [])
+            else:
+                proof_partitions = []
         patch_turns = (patch_calls + batch - 1) // batch
         segment_turns = (segment_calls + batch - 1) // batch
         direct_turns = (direct_calls + batch - 1) // batch
@@ -3298,6 +3452,8 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None):
             'projected_turns': projected,
             'provider_turn_limit': CLAUDE_MAX_TURNS if assignment['adapter'] == 'claude' else None,
         }
+        if proof_partitions is not None:
+            seats[seat]['proof_partitions'] = proof_partitions
     return {
         'schema_version': 1,
         'repository_expansion_call_limit': REPOSITORY_EXPANSION_CALL_LIMIT,
@@ -3313,11 +3469,14 @@ def capacity_refusal_rows(capacity):
     rows = []
     for seat, row in capacity['seats'].items():
         if row['mandatory_repository_reads'] > limit:
-            rows.append({
+            item = {
                 'seat': seat, 'limit': limit, 'count': row['mandatory_repository_reads'],
                 'target': row.get('repository_source_target'),
                 'windows': row.get('mandatory_window_rows') or [],
-            })
+            }
+            if row.get('proof_partitions'):
+                item['partitions'] = row['proof_partitions']
+            rows.append(item)
     return rows
 
 
@@ -3326,9 +3485,15 @@ def task_capacity_errors(capacity):
     limit = capacity['mandatory_repository_read_limit']
     for seat, row in capacity['seats'].items():
         if row['mandatory_repository_reads'] > limit:
-            errors.append(format_capacity_refusal(
-                seat, limit, row['mandatory_repository_reads'],
-                row.get('repository_source_target'), row.get('mandatory_window_rows') or []))
+            windows = row.get('mandatory_window_rows') or []
+            target = row.get('repository_source_target')
+            count = row['mandatory_repository_reads']
+            partitions = row.get('proof_partitions') or []
+            if partitions:
+                errors.append(format_proof_refusal(
+                    seat, limit, count, target, windows, partitions))
+            else:
+                errors.append(format_capacity_refusal(seat, limit, count, target, windows))
         turn_limit = row['provider_turn_limit']
         if turn_limit is not None and row['projected_turns'] > turn_limit:
             errors.append('task exceeds provider turn capacity: ' + seat)
@@ -4522,7 +4687,9 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         validate_plan(session, manifest, evidence, fresh and not offline, replay_plan_searches)
     expected_capacity = compile_task_capacity(
         assigned, manifest['patch_sets'], manifest['source_context'],
-        manifest['plan']['clusters'] if phase == 'plan' else None)
+        manifest['plan']['clusters'] if phase == 'plan' else None,
+        None if phase == 'plan' else evidence,
+        None if phase == 'plan' else manifest['components'])
     if manifest.get('task_capacity') != expected_capacity:
         raise ValueError('invalid task capacity contract')
     capacity_failures = task_capacity_errors(expected_capacity)
@@ -5611,8 +5778,11 @@ def _prepare_locked(args, session):
         plan_clusters)
     patch_chunks_effective_mode = chunk_mode
     prepare_stage('capacity')
+    budget_evidence = None if plan_clusters is not None else data
+    budget_components = None if plan_clusters is not None else components
     task_capacity = compile_task_capacity(
-        scopes, patch_sets, data['source_context'], plan_clusters)
+        scopes, patch_sets, data['source_context'], plan_clusters,
+        budget_evidence, budget_components)
     capacity_failures = task_capacity_errors(task_capacity)
     if chunk_mode == 'auto' and any(
             failure.startswith('task exceeds provider turn capacity: ')
@@ -5620,7 +5790,8 @@ def _prepare_locked(args, session):
         forced_sets, forced_artifacts = patch_sets_for(
             scopes, patch_bodies, prefix, '1')
         forced_capacity = compile_task_capacity(
-            scopes, forced_sets, data['source_context'], plan_clusters)
+            scopes, forced_sets, data['source_context'], plan_clusters,
+            budget_evidence, budget_components)
         if not task_capacity_errors(forced_capacity):
             patch_sets = forced_sets
             patch_chunk_artifacts = forced_artifacts
