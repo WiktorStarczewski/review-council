@@ -376,7 +376,7 @@ test_preflight_pr_identity() {
 #!/bin/bash
 printf '%s\n' "$@" >> "$GH_ARGS"
 [ "$1" = pr ] && [ "$2" = view ] || exit 2
-payload="{\"number\":71,\"state\":\"$PR_STATE\",\"headRefName\":\"$PR_BRANCH\",\"headRefOid\":\"$PR_HEAD\",\"baseRefName\":\"main\",\"baseRefOid\":\"$PR_BASE\"}"
+payload="{\"number\":71,\"url\":\"https://github.com/acme/repo/pull/71\",\"state\":\"$PR_STATE\",\"headRefName\":\"$PR_BRANCH\",\"headRefOid\":\"$PR_HEAD\",\"baseRefName\":\"main\",\"baseRefOid\":\"$PR_BASE\"}"
 printf '%s\n' "$payload" > "$GH_JSON"
 cat "$GH_JSON"
 SH
@@ -392,6 +392,7 @@ SH
     if [ "$preflight_rc" -ne 0 ]; then cat "$B/err" "$B/gh.json" >&2; fi
     assert_eq "exact PR checkout passes preflight" "$preflight_rc" 0
     assert_grep "preflight pins PR number" "$S/scope.env" "^REV_PR_NUMBER='71'$"
+    assert_grep "preflight pins PR repository" "$S/scope.env" "^REV_PR_REPO='acme/repo'$"
     assert_grep "preflight pins exact PR head" "$S/scope.env" "^REV_PR_HEAD='$head'$"
     assert_grep "preflight pins exact PR base head" "$S/scope.env" "^REV_PR_BASE_HEAD='$base'$"
     assert_grep "preflight pins PR base branch" "$S/scope.env" "^REV_BASE_BRANCH='main'$"
@@ -412,7 +413,7 @@ SH
     assert_eq "stale PR checkout is refused" "$?" 1
     assert_grep "stale PR refusal identifies the head mismatch" "$B/stale.err" 'checked out HEAD does not match PR #71 head'
     assert_exit "stale PR refusal happens before a provider probe" 1 test -e "$RSTUB_ARGS"
-    assert_grep "preflight asks GitHub for exact head and base identities" "$GH_ARGS" '^number,state,headRefName,headRefOid,baseRefName,baseRefOid$'
+    assert_grep "preflight asks GitHub for repository, head and base identities" "$GH_ARGS" '^number,url,state,headRefName,headRefOid,baseRefName,baseRefOid$'
   )
 }
 
