@@ -15,6 +15,17 @@ import tempfile
 script = sys.argv[1]
 spec = importlib.util.spec_from_file_location('evidence', script)
 module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+unknown_parent = {'seat': 'custom', 'adapter': 'codex', 'model': 'custom-model'}
+unknown_child = {'seat': 'custom-next', 'adapter': 'claude', 'model': 'custom-model', 'extra': False}
+try:
+    module.validate_replacement_edge(unknown_parent, unknown_child)
+except ValueError as error:
+    assert str(error) == 'replacement executor must be on the default model chain', error
+else:
+    raise AssertionError('unknown root replacement executor was accepted')
+module.validate_replacement_edge(
+    unknown_parent,
+    {'seat': 'opus', 'adapter': 'claude', 'model': 'opus', 'extra': False})
 with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
     root = Path(tmp) / 'repo'; root.mkdir()
     session = Path(tmp) / 'session'; session.mkdir()

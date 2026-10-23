@@ -347,6 +347,12 @@ test_skill_contract() {
       '`quota_fallback`.*`true`'
     assert_grep "host reruns preflight after a quota failure" "$H" \
       '[Rr]un preflight again.*fresh sibling session'
+    assert_grep "quota fallback reloads sealed parent scope in a fresh shell" "$H" \
+      '\. "\$PARENT_S/scope\.env"'
+    assert_grep "quota fallback preserves a pinned PR number" "$H" \
+      '--pr "\$REV_PR_NUMBER"'
+    assert_grep "quota fallback preserves the pinned PR repository" "$H" \
+      '--pr-repo "\$REV_PR_REPO"'
     assert_grep "host binds a mid-panel quota seat into preflight" "$H" \
       '--quota-failed-seat "\$SEAT"'
     assert_grep "quota fallback keeps the original session immutable" "$H" \
