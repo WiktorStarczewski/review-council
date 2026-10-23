@@ -20,6 +20,7 @@
 - The first internal fixture follow-up caught an idempotent duplicate-label assertion. Reparenting to Opus exposed a bundle mismatch, so the retry now carries Opus's assigned bundle and reaches the rebinding check; requested another focused re-review.
 - The focused normal internal re-review confirmed the fixture now reaches the intended rebinding refusal and found no open issues.
 - Normal one-seat internal review completed with no open P0-P2 findings and verified closure of the three follow-up gaps above. Review Council was not used to review its own repository.
+- Current-head CI run `40034257541` exposed three stale test fixtures: a Codex executor expected Claude in its receipt, a review-origin replacement used identities outside the enforced chain, and the preflight stub reused `PR_HEAD`, which the script clears internally. Corrected those fixtures and passed normal internal review.
 - Baseline verifier `40025636171` failed on both platforms at `39724b5`: a shell quoting error in preflight broke its embedded Python, and plan-gate fixtures did not provide 0.7.11's required manifests. Both root causes are fixed in local commit `e54e369`; macOS's 476 Python tests passed. Package CI `40025636204` passed.
 
 ## Internal review follow-up: exact PR identity and live evidence scope

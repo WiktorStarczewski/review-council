@@ -377,7 +377,7 @@ test_preflight_pr_identity() {
 printf '%s\n' "$@" >> "$GH_ARGS"
 printf '%s\n' "${GH_REPO-unset}" >> "$GH_REPO_OBS"
 [ "$1" = pr ] && [ "$2" = view ] || exit 2
-payload="{\"number\":71,\"url\":\"https://github.com/acme/repo/pull/71\",\"state\":\"$PR_STATE\",\"headRefName\":\"$PR_BRANCH\",\"headRefOid\":\"$PR_HEAD\",\"baseRefName\":\"main\",\"baseRefOid\":\"$PR_BASE\"}"
+payload="{\"number\":71,\"url\":\"https://github.com/acme/repo/pull/71\",\"state\":\"$PR_STATE\",\"headRefName\":\"$PR_BRANCH\",\"headRefOid\":\"$STUB_PR_HEAD\",\"baseRefName\":\"main\",\"baseRefOid\":\"$PR_BASE\"}"
 printf '%s\n' "$payload" > "$GH_JSON"
 cat "$GH_JSON"
 SH
@@ -388,7 +388,7 @@ SH
     mkrepo "$R"; git -C "$R" checkout -qb feat
     printf 'change\n' > "$R/change.txt"; git -C "$R" add change.txt; git -C "$R" commit -qm change
     base=$(git -C "$R" rev-parse main); head=$(git -C "$R" rev-parse HEAD)
-    export PR_STATE=OPEN PR_BRANCH=feat PR_HEAD="$head" PR_BASE="$base"
+    export PR_STATE=OPEN PR_BRANCH=feat STUB_PR_HEAD="$head" PR_BASE="$base"
     (cd "$R" && "$PF" --pr 71 --write "$S") > "$B/out" 2> "$B/err"
     local preflight_rc=$?
     if [ "$preflight_rc" -ne 0 ]; then cat "$B/err" "$B/gh.json" >&2; fi

@@ -2681,7 +2681,7 @@ def replacement_runs_on_another_seat():
         receipt = json.loads((session / 'r4-coverage.receipt.json').read_text())
         rows = receipt['selected_generations']
         assert (rows['sol']['label'], rows['sol']['seat'], rows['sol']['adapter'],
-                rows['sol']['enforced']) == ('4x', 'terra', 'claude', True), rows['sol']
+                rows['sol']['enforced']) == ('4x', 'terra', 'codex', True), rows['sol']
         assert rows['sol']['result_sha256'] == module.digest((session / 'r4x-terra.json').read_bytes())
         assert (rows['opus']['label'], rows['opus']['seat']) == ('4x2', 'sol'), rows['opus']
         assert receipt['selected_generations']['terra']['label'] == '4'
@@ -2975,8 +2975,16 @@ def incomplete_proof_is_only_a_summary_prefix():
 def review_origin_counts_the_reviews_own_lines():
     state_script = script.parent / 'rev-state.sh'
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
-        roster = {'seats': [{'seat': seat, 'extra': False, 'adapter': 'claude', 'model': 'model-' + seat,
-                             'effort': 'max'} for seat in seats]}
+        chain_identities = {
+            'sol': ('codex', 'gpt-5.6-luna', 'high'),
+            'terra': ('codex', 'gpt-5.6-sol', 'high'),
+            'opus': ('claude', 'sonnet', 'high'),
+            'sonnet': ('claude', 'opus', 'high'),
+        }
+        roster = {'seats': [
+            {'seat': seat, 'extra': False, 'adapter': chain_identities[seat][0],
+             'model': chain_identities[seat][1], 'effort': chain_identities[seat][2]}
+            for seat in seats]}
         (session / 'roster.json').write_text(json.dumps(roster))
         for name, text in (('head.py', 'a = 1\nb = 2\nc = 3\n'), ('tail.py', 'a = 1\nb = 2\nc = 3\n'),
                            ('empty.py', 'x = 1\n'), ('gone.py', 'y = 1\n')):
