@@ -364,9 +364,10 @@ class CursorNumericTests(CursorSDKCase):
             original = sibling.read_bytes()
             sibling.write_text('{"summary":"INCOMPLETE PROOF: second failure","findings":[]}\n')
             try:
+                second_parent = fixture.manifest['assignments']['luna']
                 result = self.command(
                     'prepare', fixture.session, '2x2', '--phase', 'repair',
-                    '--assignment', 'sol=' + parent['bundle'], '--parent-assignment', '2:luna',
+                    '--assignment', 'sol=' + second_parent['bundle'], '--parent-assignment', '2:luna',
                     environment=fixture.env)
                 self.assertEqual(result.returncode, 0,
                                  'a second failed seat gets its own bound repair: ' + result.stderr)
@@ -376,7 +377,7 @@ class CursorNumericTests(CursorSDKCase):
                 second.manifest_path = fixture.session / 'r2x2-evidence.manifest.json'
                 second.manifest = json.loads(second.manifest_path.read_text())
                 prompt = [str(SCRIPTS / 'rev-prompt.sh'), str(fixture.session), '2x2',
-                          'sol', parent['bundle'], parent['emphasis'], '--evidence',
+                          'sol', second_parent['bundle'], second_parent['emphasis'], '--evidence',
                           str(second.manifest_path), '--phase', 'numeric']
                 result = subprocess.run(prompt, env=fixture.env, capture_output=True,
                                         text=True, timeout=40)

@@ -60,7 +60,8 @@ test_adaptive_schedule_contract() {
     assert_nogrep "bundle repair is not limited by roster size" "$K" 'only three core seats|a four-seat panel loses|three-seat panel or failed bundle owner' -i
     assert_nogrep "legacy plan trigger is absent" "$K" 'Before fixing after round 1'
     assert_grep "code launch records exact seats" "$K" 'phase=fan-out round=<N> "seats=\$LAUNCHED_SEATS"'
-    assert_grep "replacement launch records its exact seat" "$K" 'phase=repair round=<N>x "seats=\[\\"\$EXECUTOR\\"\]"'
+    assert_grep "replacement launch records its selected child label and seat" "$K" \
+      'phase=repair .*round=\$CHILD_LABEL.*seats=\[.*\$EXECUTOR.*\]'
     assert_grep "plan launch records exact seats" "$K" 'phase=plan round=<N>p "seats=\$PLAN_SEATS"'
     assert_grep "all-lens plan panel restores every surviving core seat" "$K" '"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat'
     assert_grep "default plan panel uses the resolved workhorse" "$K" 'plan-completeness` seat on the resolved workhorse'

@@ -2627,6 +2627,8 @@ def replacement_runs_on_another_seat():
         call('prepare', session, '4x', '--phase', 'repair', '--assignment', 'opus=' + bundles[0],
              '--parent-assignment', '4:sol', good=False,
              error='replacement label is already bound to another parent assignment')
+        (session / 'r4-opus.exit').write_text('0\n')
+        (session / 'r4-opus.audit-invalid.json').unlink()
         child_path = session / 'r4x-evidence.manifest.json'
         (session / 'r4x-terra.prompt.md').write_text(call('render', child_path, 'terra'))
         (session / 'r4x-terra.json').write_text(json.dumps({'summary': 'child', 'findings': [
@@ -2639,6 +2641,8 @@ def replacement_runs_on_another_seat():
         (session / 'r4x-terra.exit').write_text('0\n')
         call('verify-panel', session, '4', '--replacement', 'sol=4x', '--replacement', 'opus=4x',
              good=False, error='replacement child labels must be unique')
+        (session / 'r4-opus.exit').write_text('2\n')
+        (session / 'r4-opus.audit-invalid.json').write_text('{"summary":"kept","findings":[]}\n')
         second_child = prepare('4x2', 'repair', '--assignment', 'sol=' + bundles[2],
                                '--parent-assignment', '4:opus')
         second_path = session / 'r4x2-evidence.manifest.json'
