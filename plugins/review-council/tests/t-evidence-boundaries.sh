@@ -240,3 +240,25 @@ PY
     assert_eq "generated declarations, changed output and explicit pinned dependencies stay reviewable" "$?" 0
   )
 }
+
+test_pr_scope_refuses_head_drift() {
+  ( local R="$T/pr-head-drift-root" S="$T/pr-head-drift-session" base pinned
+    mkrepo "$R"; mkdir -p "$S"; git -C "$R" checkout -qb feat
+    printf 'reviewed change\n' > "$R/change.txt"
+    git -C "$R" add change.txt && git -C "$R" commit -qm "reviewed head"
+    base=$(git -C "$R" rev-parse main); pinned=$(git -C "$R" rev-parse HEAD)
+    printf 'stale checkout change\n' >> "$R/change.txt"
+    git -C "$R" add change.txt && git -C "$R" commit -qm "later local head"
+    printf "REV_BASE='%s'\nREV_ROOT='%s'\nREV_SCOPE='branch'\nREV_PR_NUMBER='71'\nREV_PR_HEAD='%s'\nREV_PR_BASE_HEAD='%s'\n" \
+      "$base" "$R" "$pinned" "$base" > "$S/scope.env"
+    printf '%s\n' 'change.txt' > "$S/files.txt"; : > "$S/untracked.txt"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+    env -u REV_DEPS_DIR python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 1 --phase discovery \
+      > "$T/pr-head-drift.out" 2> "$T/pr-head-drift.err"
+    assert_eq "evidence preparation refuses a changed PR checkout" "$?" 1
+    assert_grep "head drift refusal identifies the pinned PR" "$T/pr-head-drift.err" \
+      'checked out HEAD does not match pinned PR #71 head'
+    assert_exit "head drift refusal happens before publishing evidence" 0 \
+      test ! -e "$S/r1-evidence.manifest.json"
+  )
+}
