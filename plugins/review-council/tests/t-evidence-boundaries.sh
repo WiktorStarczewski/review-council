@@ -241,18 +241,30 @@ PY
   )
 }
 
-test_pr_scope_refuses_head_drift() {
+test_pr_scope_refuses_pinned_head_or_base_drift() {
   ( local R="$T/pr-head-drift-root" S="$T/pr-head-drift-session" base pinned
     mkrepo "$R"; mkdir -p "$S"; git -C "$R" checkout -qb feat
     printf 'reviewed change\n' > "$R/change.txt"
     git -C "$R" add change.txt && git -C "$R" commit -qm "reviewed head"
     base=$(git -C "$R" rev-parse main); pinned=$(git -C "$R" rev-parse HEAD)
-    printf 'stale checkout change\n' >> "$R/change.txt"
-    git -C "$R" add change.txt && git -C "$R" commit -qm "later local head"
-    printf "REV_BASE='%s'\nREV_ROOT='%s'\nREV_SCOPE='branch'\nREV_PR_NUMBER='71'\nREV_PR_HEAD='%s'\nREV_PR_BASE_HEAD='%s'\n" \
+    printf "REV_BASE='%s'\nREV_BRANCH='feat'\nREV_BASE_BRANCH='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\nREV_PR_NUMBER='71'\nREV_PR_HEAD='%s'\nREV_PR_BASE_HEAD='%s'\nREV_PR_BASE_REF='refs/heads/main'\n" \
       "$base" "$R" "$pinned" "$base" > "$S/scope.env"
     printf '%s\n' 'change.txt' > "$S/files.txt"; : > "$S/untracked.txt"
     printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+    git -C "$R" checkout -q main
+    printf 'base moved\n' > "$R/base-only.txt"
+    git -C "$R" add base-only.txt && git -C "$R" commit -qm 'advance base'
+    git -C "$R" checkout -q feat
+    env -u REV_DEPS_DIR python3 "$SCRIPTS/rev-evidence.py" prepare "$S" base-drift --phase discovery \
+      > "$T/pr-base-drift.out" 2> "$T/pr-base-drift.err"
+    assert_eq "evidence preparation refuses a changed PR base" "$?" 1
+    assert_grep "base drift refusal identifies the pinned PR" "$T/pr-base-drift.err" \
+      'local base for pinned PR #71 no longer matches its recorded base head'
+    assert_exit "base drift refusal publishes no evidence" 0 \
+      test ! -e "$S/rbase-drift-evidence.manifest.json"
+    git -C "$R" branch -f main "$base"
+    printf 'stale checkout change\n' >> "$R/change.txt"
+    git -C "$R" add change.txt && git -C "$R" commit -qm "later local head"
     env -u REV_DEPS_DIR python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 1 --phase discovery \
       > "$T/pr-head-drift.out" 2> "$T/pr-head-drift.err"
     assert_eq "evidence preparation refuses a changed PR checkout" "$?" 1
@@ -260,5 +272,31 @@ test_pr_scope_refuses_head_drift() {
       'checked out HEAD does not match pinned PR #71 head'
     assert_exit "head drift refusal happens before publishing evidence" 0 \
       test ! -e "$S/r1-evidence.manifest.json"
+
+    git -C "$R" reset --hard -q "$pinned"
+    printf 'uncommitted post-preflight edit\n' >> "$R/change.txt"
+    env -u REV_DEPS_DIR python3 "$SCRIPTS/rev-evidence.py" prepare "$S" dirty --phase discovery \
+      > "$T/pr-dirty.out" 2> "$T/pr-dirty.err"
+    assert_eq "evidence preparation refuses a dirty PR checkout" "$?" 1
+    assert_grep "dirty checkout refusal identifies the pinned PR" "$T/pr-dirty.err" \
+      'pinned PR #71 checkout has uncommitted changes'
+    assert_exit "dirty checkout refusal publishes no evidence" 0 \
+      test ! -e "$S/rdirty-evidence.manifest.json"
+
+    python3 - "$SCRIPTS/rev-evidence.py" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location('rev_evidence', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+try:
+    module.validate_pinned_pr_checkout({'REV_PR_BASE_REF': 'refs/heads/main'})
+except ValueError as error:
+    assert str(error) == 'invalid pinned PR identity', error
+else:
+    raise AssertionError('partial PR identity was accepted')
+PY
+    assert_eq "partial pinned PR metadata is rejected" "$?" 0
   )
 }

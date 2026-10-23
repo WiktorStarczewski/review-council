@@ -14,7 +14,7 @@ t-eval.sh::test_eval_truth_retry	1	normal
 t-evidence-boundaries.sh::test_deleted_symbol_caller_evidence	1	normal
 t-evidence-boundaries.sh::test_generated_declarations_and_changed_outputs_remain_reviewable	1	normal
 t-evidence-boundaries.sh::test_generated_lexical_callers_do_not_become_source_obligations	1	normal
-t-evidence-boundaries.sh::test_pr_scope_refuses_head_drift	1	normal
+t-evidence-boundaries.sh::test_pr_scope_refuses_pinned_head_or_base_drift	1	normal
 t-evidence.sh::test_evidence_contract	18	normal
 t-evidence.sh::test_evidence_hardening_context	30	normal
 t-evidence.sh::test_evidence_hardening_routing	25	normal
