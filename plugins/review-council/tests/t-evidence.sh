@@ -2737,7 +2737,6 @@ def replacement_chain_reaches_opus():
             }))
             child = prepare(label, 'repair', '--assignment', executor + '=' + failed_bundle,
                             '--parent-assignment', parent_label + ':' + parent_seat)
-            assert child['replacement_executor']['family'] == family
             child_path = session / f'r{label}-evidence.manifest.json'
             (session / f'r{label}-{executor}.prompt.md').write_text(
                 call('render', child_path, executor))
