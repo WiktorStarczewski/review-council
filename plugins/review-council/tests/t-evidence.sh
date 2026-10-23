@@ -1831,8 +1831,9 @@ def local_names_do_not_expand_cross_file_proof():
               '  const page = row + 1;\n'
               '  return page;\n'
               '};\n')
+        write('tsconfig.json', '{"compilerOptions":{"baseUrl":"src"}}\n')
         write('src/consumer.ts',
-              'import { readHistory } from "./history";\n'
+              'import { readHistory } from "history";\n'
               'export const consumeHistory = () => readHistory(1);\n')
         write('src/unrelated.ts',
               'export const unrelated = () => {\n'
@@ -1841,7 +1842,7 @@ def local_names_do_not_expand_cross_file_proof():
               '  return page;\n'
               '};\n')
         write('tests/history.test.ts',
-              'import { readHistory } from "../src/history";\n'
+              'import { readHistory } from "history";\n'
               'test("reads history", () => expect(readHistory(1)).toBe(3));\n')
         write('tests/unrelated.test.ts',
               'const page = 1;\n'
@@ -1852,7 +1853,8 @@ def local_names_do_not_expand_cross_file_proof():
         (session / 'scope.env').write_text('\n'.join(
             'REV_BASE=' + base if row.startswith('REV_BASE=') else row
             for row in scope_text.splitlines()) + '\n')
-        write('src/history.ts', (root / 'src/history.ts').read_text().replace('return page;', 'return page + 1;'))
+        write('src/history.ts', (root / 'src/history.ts').read_text().replace(
+            'const page = row + 1;', 'const page = row + 2;'))
 
         manifest = prepare()
         facts = json.loads((session / 'r1-evidence.json').read_text())
@@ -1864,8 +1866,11 @@ def local_names_do_not_expand_cross_file_proof():
         assert any(row['path'] == 'tests/history.test.ts' for row in facts['related_tests'])
         assert not any(row['path'] in {'src/unrelated.ts', 'tests/unrelated.test.ts', 'docs/notes.md'}
                        for row in facts['call_sites'] + facts['related_tests'])
-        proof_paths = {required['path'] for packet in manifest['source_context']['seats'].values()
-                       for required in packet['required_source_ranges']}
+        proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
+                       for shard in packet['shards'] for row in shard['ranges']}
+        proof_paths.update(required['path']
+                           for packet in manifest['source_context']['seats'].values()
+                           for required in packet['required_source_ranges'])
         assert 'src/consumer.ts' in proof_paths and 'tests/history.test.ts' in proof_paths, proof_paths
         assert not proof_paths & {'src/unrelated.ts', 'tests/unrelated.test.ts', 'docs/notes.md'}, proof_paths
 

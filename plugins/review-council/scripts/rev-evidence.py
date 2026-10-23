@@ -1152,6 +1152,15 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
     symbols = []; seen = set()
     declaration = re.compile(r'^\s*(?:(?:export|pub|public|private|static|async)\s+)*(?:def|fn|function|class|struct|enum|interface|type|const|let|func)\s+([A-Za-z_$][\w$]*)')
     declarations = {}
+    cross_file_cache = {}
+
+    def is_cross_file(path, blob_tree, row):
+        key = (path, blob_tree)
+        if key not in cross_file_cache:
+            cross_file_cache[key] = cross_file_symbols(
+                path, texts.get(key, []), declarations.get(key, []))
+        return (row[0], row[2]) in cross_file_cache[key]
+
     current_seeds = {}; base_seeds = {}
     hunks_by_path = {}
     for hunk in hunks:
@@ -1191,6 +1200,9 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                 (start, name), end = max(active.items(), key=lambda item: (
                     item[0][0], -item[1], item[0][1]))
                 selected.add((start, end, name))
+                selected.update(row for row in candidates
+                                if row[2] and row[0] <= line <= row[1]
+                                and is_cross_file(path, blob_tree, row))
             else:
                 outside.add(line)
         for changed in hunk_lines:
@@ -1218,6 +1230,8 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                 seen.add(key)
                 symbols.append({'path': path, 'line': origin, 'line_end': end,
                                 'name': name,
+                                'cross_file': bool(name and is_cross_file(
+                                    path, blob_tree, (origin, end, name))),
                                 'kind': ('lexical declaration' if name else 'changed-line anchor')
                                 if blob_tree == tree else
                                 ('deleted lexical declaration' if name else
@@ -1300,7 +1314,10 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
             key = (path, origin, end, name, base_tree)
             if key not in seen:
                 seen.add(key); symbols.append({'path': path, 'line': origin, 'line_end': end,
-                                               'name': name, 'kind': 'deleted lexical declaration'
+                                               'name': name,
+                                               'cross_file': bool(name and is_cross_file(
+                                                   path, base_tree, (origin, end, name))),
+                                               'kind': 'deleted lexical declaration'
                                                if name else 'deleted changed-line anchor',
                                                'blob_tree': base_tree})
     calls = []; tests = []; gates = []; dependencies = set()
@@ -1308,10 +1325,11 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
     definitions = {}
     for symbol in symbols:
         if symbol['name']:
-            definitions.setdefault(symbol['name'], set()).add(symbol['path'])
+            definitions.setdefault(symbol['name'], []).append(symbol)
     changed_stems = {Path(p).stem for p in categories}
     tokens = re.compile(r'\b[A-Za-z_$][\w$]*\b')
     call_tokens = re.compile(r'\b([A-Za-z_$][\w$]*)\s*\(')
+    base_urls = source_base_urls(repo, entries)
     for path, raw in repo.iter_blobs(entries):
         if entries[path][0] not in ('100644', '100755') or raw is OVERSIZED_BLOB or b'\0' in raw:
             continue
@@ -1321,20 +1339,29 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
             continue
         is_test = is_test_path(path)
         related = Path(path).stem.replace('test_', '').replace('_test', '') in changed_stems
-        for i, line in enumerate(lines, 1):
-            matches = set(tokens.findall(line)) & names
-            for name in matches:
-                dependencies.update((path, target, 'lexical-reference') for target in definitions[name] if target != path)
-            for name in sorted(set(call_tokens.findall(line)) & names):
-                calls.append({'path': path, 'line': i, 'name': name, 'kind': 'lexical name( match, not resolved dispatch'})
-            if is_test and not related:
-                related = bool(matches)
-            imports = re.findall(r'(?:from\s+|require\s*\(\s*|import\s*(?:\(\s*)?)["\']([^"\']+)["\']', line)
-            imports += re.findall(r'\b(?:from|import)\s+([\w.]+)', line) if Path(path).suffix == '.py' else []
-            for imported in imports:
-                target = resolve_import(path, imported, entries)
+        code_file = is_source_file(path)
+        imported_targets = set()
+        if code_file:
+            for imported in import_references(path, lines):
+                target = resolve_import(path, imported, entries, base_urls)
                 if target and target != path:
-                    dependencies.add((path, target, 'local-import'))
+                    imported_targets.add(target)
+        dependencies.update((path, target, 'local-import') for target in imported_targets)
+        for i, line in enumerate(lines, 1):
+            matches = set(tokens.findall(line)) & names if code_file else set()
+            for name in matches:
+                targets = {symbol['path'] for symbol in definitions[name]
+                           if symbol.get('cross_file') and symbol['path'] in imported_targets
+                           and symbol['path'] != path}
+                dependencies.update((path, target, 'lexical-reference') for target in targets)
+                if is_test and targets:
+                    related = True
+            for name in sorted(set(call_tokens.findall(line)) & names if code_file else set()):
+                if any(symbol['path'] == path
+                       or (symbol.get('cross_file') and symbol['path'] in imported_targets)
+                       for symbol in definitions[name]):
+                    calls.append({'path': path, 'line': i, 'name': name,
+                                  'kind': 'lexical name( match, not resolved dispatch'})
         if is_test and related:
             tests.append({'path': path, 'basis': 'test path with lexical reference or same stem'})
             stem = Path(path).stem.replace('test_', '').replace('_test', '')
@@ -1350,6 +1377,7 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
             'dependencies': [{'source': a, 'target': b, 'kind': kind} for a, b, kind in sorted(dependencies)],
             'limitations': ['Lexical navigation only; open source to prove findings.',
                             'Dynamic dispatch and unsupported declarations require file-scope search.',
+                            'Cross-file symbol context requires a recognized export and resolved import.',
                             'Binary and files over 2000000 bytes have no lexical index.']}
 
 
@@ -1357,17 +1385,115 @@ def is_test_path(path):
     return bool(re.search(r'(^|/)(__tests__|tests?|specs?)(/|_)|(?:test|spec)[._]|[._](?:test|spec)\.', path, re.I))
 
 
-def resolve_import(path, reference, entries):
+def resolve_import(path, reference, entries, base_urls=()):
     if reference.startswith('.'):
         base = posixpath.normpath(posixpath.join(posixpath.dirname(path), reference))
     else:
         base = reference.replace('.', '/') if Path(path).suffix == '.py' else reference
-    candidates = [base]
+    bases = [base]
+    if not reference.startswith('.') and Path(path).suffix != '.py':
+        bases.extend(posixpath.normpath(posixpath.join(root, reference)) for root in base_urls)
+    candidates = []
     for suffix in ('.ts', '.tsx', '.js', '.jsx', '.py', '.rs', '.go', '.java', '.c', '.h', '.cpp'):
-        candidates.extend((base + suffix, base + '/index' + suffix))
-    candidates.append(base + '/__init__.py')
-    matches = [candidate for candidate in candidates if candidate in entries]
-    return matches[0] if len(matches) == 1 else None
+        for base in bases:
+            candidates.extend((base + suffix, base + '/index' + suffix))
+    candidates.extend(base + '/__init__.py' for base in bases)
+    matches = {candidate for candidate in candidates if candidate in entries}
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def import_references(path, lines):
+    source = '\n'.join(lines)
+    references = re.findall(
+        r"""(?:from\s+|require\s*\(\s*|import\s*(?:\(\s*)?)["']([^"']+)["']""",
+        source)
+    if Path(path).suffix == '.py':
+        references += re.findall(r'\b(?:from|import)\s+([\w.]+)', source)
+    return references
+
+
+def source_base_urls(repo, entries):
+    roots = set()
+    for path, entry in entries.items():
+        basename = Path(path).name
+        if not re.fullmatch(r'(?:tsconfig|jsconfig)(?:[-.][\w.-]+)?\.json', basename):
+            continue
+        raw = repo.blob(entry)
+        if raw is OVERSIZED_BLOB or b'\0' in raw:
+            continue
+        try:
+            source = raw.decode('utf-8')
+        except UnicodeDecodeError:
+            continue
+        for value in re.findall(r'"baseUrl"\s*:\s*"([^"]+)"', source):
+            roots.add(posixpath.normpath(posixpath.join(posixpath.dirname(path), value)))
+    return tuple(sorted(roots))
+
+
+def is_source_file(path):
+    return Path(path).suffix.lower() in {
+        '.py', '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.rs', '.go',
+        '.java', '.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx'}
+
+
+def cross_file_symbols(path, lines, rows):
+    if is_test_path(path) or not is_source_file(path):
+        return set()
+    suffix = Path(path).suffix.lower()
+    if suffix == '.py':
+        try:
+            tree = ast.parse('\n'.join(lines))
+        except SyntaxError:
+            return set()
+        return {(node.lineno, node.name) for node in tree.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                and not node.name.startswith('_')}
+    if suffix in ('.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'):
+        code = brace_code('\n'.join(lines), suffix)
+        if code is None:
+            return set()
+        depths = []
+        depth = 0
+        for line in code.splitlines(keepends=True):
+            depths.append(depth)
+            depth += line.count('{') - line.count('}')
+        exported_names = {name for body in re.findall(
+            r'\bexport\s*\{([^}]*)\}', '\n'.join(lines), re.S)
+                          for name in re.findall(r'[A-Za-z_$][\w$]*', body)}
+        result = set()
+        for start, _, name in rows:
+            if not name:
+                continue
+            declaration = lines[start - 1] if start <= len(lines) else ''
+            if (start <= len(depths) and depths[start - 1] == 0 and (name in exported_names
+                    or re.search(r'\bexport\b[^;\n]*\b' + re.escape(name) + r'\b', declaration))):
+                result.add((start, name))
+        return result
+    result = set()
+    brace_source = None
+    brace_depths = []
+    if suffix in ('.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx'):
+        brace_source = brace_code('\n'.join(lines), suffix)
+        if brace_source is not None:
+            depth = 0
+            for line in brace_source.splitlines(keepends=True):
+                brace_depths.append(depth)
+                depth += line.count('{') - line.count('}')
+    for start, _, name in rows:
+        if not name:
+            continue
+        declaration = '\n'.join(lines[max(0, start - 4):start + 3])
+        if suffix == '.rs' and re.search(r'\bpub(?:\s*\([^)]*\))?', declaration):
+            result.add((start, name))
+        elif suffix == '.go' and name[:1].isupper() and re.search(r'\bfunc\b', declaration):
+            result.add((start, name))
+        elif suffix == '.java' and re.search(r'\b(?:public|protected)\b', declaration):
+            result.add((start, name))
+        elif suffix in ('.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx'):
+            if (start <= len(brace_depths) and brace_depths[start - 1] == 0
+                    and not re.search(r'\bstatic\b', declaration)):
+                result.add((start, name))
+    return result
 
 
 def strict_search_words(words):

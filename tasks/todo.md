@@ -853,8 +853,8 @@ Review results: pending. SDK credentials absent; no live SDK qualification or pr
 ## 0.7.12 proof-capacity recovery for #1752
 
 - [x] Trace the exact source of the 2,000+ mandatory reads and confirm the failed recovery contract.
-- [ ] Implement a scope-safe change that keeps the full changed patch reviewable while bounding valid proof work.
-- [ ] Add a regression case for the observed failure and run the focused Council verification.
+- [x] Implement a scope-safe change that keeps the full changed patch reviewable while bounding valid proof work.
+- [ ] Add a regression case for the observed failure and verify its expected red result, then run the focused Council verification.
 - [ ] Run one independent normal code review, fix actionable P0-P2 findings, and re-verify.
 - [ ] Complete Council release gates and publish a new release.
 - [ ] Resume #1752 on the new runtime and report its exact review state.
