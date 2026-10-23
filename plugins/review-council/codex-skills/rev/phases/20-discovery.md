@@ -319,7 +319,7 @@ characters, then inspect every already-rendered prompt. Every evidence prompt mu
 contain exactly one matching `Evidence manifest SHA-256: <hash>` line. A failed
 verify, malformed hash, missing line, duplicate line, or mismatch discards the whole
 narrowed attempt. Code panels use the all-legacy rerender path above; schema-4 plan
-panels fix the evidence or task compiler and prepare a fresh schema-4 label. This is the one
+panels fix the evidence or task compiler and prepare a fresh schema-4 label. A capacity refusal or a prepare timeout is not repeated unchanged and follows the plan-phase recovery. This is the one
 repository-wide plan-search replay for the panel; prompt rendering and every
 postlaunch check perform no search replay.
 

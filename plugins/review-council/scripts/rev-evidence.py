@@ -92,6 +92,50 @@ def plan_search_timeout(environment):
     return timeout
 
 
+PREPARE_TIMEOUT_DEFAULT = 1200
+PREPARE_PROGRESS = {
+    'active': False,
+    'stage': 'start',
+    'deadline': None,
+    'timed_out': False,
+    'refusals': None,
+}
+
+
+class PrepareTimeout(ValueError):
+    pass
+
+
+class CapacityRefusal(Exception):
+    def __init__(self, limit, count, target, windows):
+        self.limit = limit
+        self.count = count
+        self.target = target
+        self.windows = windows
+        super().__init__('capacity refusal')
+
+
+def prepare_timeout(environment):
+    value = environment.get('REV_PREPARE_TIMEOUT', str(PREPARE_TIMEOUT_DEFAULT))
+    if not isinstance(value, str) or not re.fullmatch(r'[0-9]+', value):
+        raise ValueError('REV_PREPARE_TIMEOUT must be an integer from 1 to 3600')
+    timeout = int(value)
+    if not 1 <= timeout <= 3600:
+        raise ValueError('REV_PREPARE_TIMEOUT must be an integer from 1 to 3600')
+    return timeout
+
+
+def prepare_stage(stage):
+    if not PREPARE_PROGRESS.get('active'):
+        return
+    PREPARE_PROGRESS['stage'] = stage
+    print('evidence: stage ' + stage, file=sys.stderr, flush=True)
+    deadline = PREPARE_PROGRESS.get('deadline')
+    if deadline is not None and time.monotonic() > deadline:
+        PREPARE_PROGRESS['timed_out'] = True
+        raise PrepareTimeout('preparation timed out during ' + stage)
+
+
 def evidence_modes(environment, parent=None):
     chunk_explicit = 'REV_PATCH_CHUNKS' in environment
     source_explicit = 'REV_SOURCE_CONTEXT' in environment
@@ -1449,6 +1493,27 @@ def ripgrep_executable(environment):
     raise ValueError('ripgrep binary not found on PATH; set REV_RG to a ripgrep executable')
 
 
+def plan_declares_ripgrep(raw):
+    """True when a plan's found-by clause already parses as ripgrep.
+
+    A missing binary has to fail before stage lines, because a refused prepare's
+    stderr is the evidence error alone. An unparseable clause returns false so
+    the plan parser reports that clause instead.
+    """
+    try:
+        text = raw.decode('utf-8')
+    except UnicodeError:
+        return False
+    for match in re.finditer(r'\(\s*found\s+by:\s*(.+?)\)', text, re.I | re.S):
+        try:
+            contract = plan_search_contract('Sites: . (found by: ' + match.group(1).strip() + ')')
+        except ValueError:
+            continue
+        if contract['engine'] == 'rg':
+            return True
+    return False
+
+
 def plan_search_paths(raw):
     try:
         text = raw.decode('utf-8')
@@ -1520,6 +1585,26 @@ def plan_search_signal_handlers():
     finally:
         for signum, handler in previous.items():
             signal.signal(signum, handler)
+
+
+@contextmanager
+def prepare_deadline(seconds):
+    previous = signal.getsignal(signal.SIGALRM)
+
+    def handle(_signum, _frame):
+        PREPARE_PROGRESS['timed_out'] = True
+        for process in tuple(ACTIVE_PLAN_SEARCHES):
+            terminate_plan_search(process)
+        raise PrepareTimeout(
+            'preparation timed out during ' + str(PREPARE_PROGRESS.get('stage') or 'start'))
+
+    signal.signal(signal.SIGALRM, handle)
+    signal.alarm(seconds)
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
 
 
 def run_plan_search(command, directory, environment, deadline, executable=None):
@@ -2476,15 +2561,77 @@ def published_mandatory_windows(assignment, plan_clusters, delivered):
                 assignment, plan_clusters, delivered)]
 
 
+def repository_window_rows(windows):
+    return [{'path': path, 'line_start': start, 'line_end': end} for path, start, end in windows]
+
+
+def repository_target_brief(target):
+    if target is None:
+        return None
+    return {'path': target['path'], 'line_start': target['line_start'],
+            'line_end': target['line_end']}
+
+
+def format_capacity_refusal(seat, limit, count, target, windows):
+    if target is None:
+        target_text = 'none'
+    else:
+        target_text = '%s:%d-%d' % (target['path'], target['line_start'], target['line_end'])
+    if windows:
+        window_text = ';'.join('%s:%d-%d' % (row['path'], row['line_start'], row['line_end'])
+                               for row in windows)
+    else:
+        window_text = 'none'
+    return ('mandatory source reads exceed repository capacity: %s limit=%d count=%d '
+            'target=%s windows=%s' % (seat, limit, count, target_text, window_text))
+
+
+def plan_capacity_windows(assignment, plan_clusters, delivered, target):
+    windows = mandatory_repository_windows(assignment, plan_clusters, delivered)
+    if target is None:
+        return windows
+    return merge_repository_windows([
+        *windows, (target['path'], target['line_start'], target['line_end'])])
+
+
 def grouped_plan_source_promotions(assignment, plan_clusters, delivered, omitted,
-                                   segment_cost):
+                                   segment_cost, snapshot=None, count_target=False,
+                                   promote_row=None):
+    """Promote omitted ranges until repository reads fit the published limit.
+
+    compile_task_capacity merges one current-source target into the plan windows.
+    Stopping when the plan windows alone fit leaves that target as an extra read.
+    """
     selected = set()
+
+    def view(chosen):
+        promoted_rows = []
+        for index in sorted(chosen):
+            row = omitted[index]
+            if promote_row is not None:
+                row = promote_row(index, row)
+            promoted_rows.append(row)
+        covered = list(delivered) + promoted_rows
+        remaining = [omitted[index] for index in range(len(omitted)) if index not in chosen]
+        source_target = None
+        if count_target and snapshot is not None and plan_clusters is not None:
+            plain = [row for row in covered if not row.get('segments')]
+            required = [row for row in covered if row.get('segments')]
+            packet = {
+                'omitted_source_ranges': remaining,
+                'shards': [{'ranges': plain}] if plain else [],
+                'required_source_ranges': required,
+            }
+            source_target = repository_source_target(packet, snapshot)
+        windows = plan_capacity_windows(assignment, plan_clusters, covered, source_target)
+        return windows, source_target, covered
+
     while True:
-        promoted = delivered + [omitted[index] for index in sorted(selected)]
-        missing = uncovered_plan_ranges(assignment, plan_clusters, promoted)
-        direct = merge_repository_windows(missing)
-        if len(direct) <= MANDATORY_REPOSITORY_READ_LIMIT:
+        windows, source_target, covered = view(selected)
+        if len(windows) <= MANDATORY_REPOSITORY_READ_LIMIT:
             return sorted(selected)
+        missing = uncovered_plan_ranges(assignment, plan_clusters, covered)
+        direct = merge_repository_windows(missing)
         choices = []
         for path, window_start, window_end in direct:
             intervals = sorted([
@@ -2522,17 +2669,31 @@ def grouped_plan_source_promotions(assignment, plan_clusters, delivered, omitted
                     cursor = targets[target_index][0]
             if not group:
                 continue
-            trial_delivered = promoted + [omitted[index] for index in sorted(group)]
-            trial = mandatory_repository_windows(assignment, plan_clusters, trial_delivered)
-            reduction = len(direct) - len(trial)
+            trial_windows, _, _ = view(selected | group)
+            reduction = len(windows) - len(trial_windows)
             if reduction <= 0:
                 continue
             cost = sum(segment_cost(index, omitted[index]) for index in group)
             priorities = tuple(sorted(omitted[index].get('priority', index) for index in group))
             choices.append((-reduction, cost, priorities, path, window_start, window_end,
                             tuple(sorted(group))))
+        if source_target is not None:
+            indexes = [index for index, row in enumerate(omitted)
+                       if row is source_target and index not in selected]
+            if len(indexes) == 1:
+                index = indexes[0]
+                group = {index}
+                trial_windows, _, _ = view(selected | group)
+                reduction = len(windows) - len(trial_windows)
+                if reduction > 0:
+                    priorities = (omitted[index].get('priority', index),)
+                    choices.append((-reduction, segment_cost(index, omitted[index]), priorities,
+                                    source_target['path'], source_target['line_start'],
+                                    source_target['line_end'], tuple(sorted(group))))
         if not choices:
-            raise ValueError('mandatory plan source reads exceed repository capacity')
+            raise CapacityRefusal(
+                MANDATORY_REPOSITORY_READ_LIMIT, len(windows),
+                repository_target_brief(source_target), repository_window_rows(windows))
         selected.update(min(choices)[-1])
 
 
@@ -2703,6 +2864,7 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
         return source_choice_cache[cache_key]
 
     for seat, assignment in assigned.items():
+        prepare_stage('source-context ' + seat)
         component_ids = set(assignment['components'])
         relevant = [component for component in components if component['id'] in component_ids]
         hunk_ids = sorted({value for component in relevant for path in component['files']
@@ -2982,13 +3144,22 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
             promotion_cache[index] = required
             return required
 
+        needs_target = plan_clusters is not None and (
+            bool(assignment.get('plan_clusters')) or any(omitted.values()) or any(
+                'declaration:changed-line-anchor' in row.get('reasons', [])
+                for row in delivered + omitted_source_ranges))
         try:
             promoted_indices = set(grouped_plan_source_promotions(
                 assignment, plan_clusters, delivered, omitted_source_ranges,
-                lambda index, row: len(promotion(index, row)['segments'])))
-        except ValueError:
-            raise ValueError(
-                'mandatory plan source reads exceed repository capacity: ' + seat) from None
+                lambda index, row: len(promotion(index, row)['segments']),
+                snapshot=snapshot, count_target=needs_target, promote_row=promotion))
+        except CapacityRefusal as refusal:
+            PREPARE_PROGRESS['refusals'] = [{
+                'seat': seat, 'limit': refusal.limit, 'count': refusal.count,
+                'target': refusal.target, 'windows': refusal.windows,
+            }]
+            raise ValueError(format_capacity_refusal(
+                seat, refusal.limit, refusal.count, refusal.target, refusal.windows)) from None
         retained = []
         for index, row in enumerate(omitted_source_ranges):
             if index in promoted_indices:
@@ -3080,19 +3251,28 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None):
         segment_calls = sum(len(row['segments']) for row in packet['required_source_ranges'])
         delivered = [row for shard in packet['shards'] for row in shard['ranges']]
         delivered += packet['required_source_ranges']
+        window_row_list = []
+        target_value = None
         if plan_clusters is not None:
-            direct_windows = mandatory_repository_windows(assignment, plan_clusters, delivered)
             target = (repository_source_target(packet, context['snapshot_tree'])
                       if packet.get('source_read_required') and context.get('snapshot_tree') else None)
-            if target is not None:
-                direct_windows = merge_repository_windows([
-                    *direct_windows, (target['path'], target['line_start'], target['line_end'])])
+            direct_windows = plan_capacity_windows(assignment, plan_clusters, delivered, target)
             direct_calls = len(direct_windows)
+            window_row_list = repository_window_rows(direct_windows)
+            target_value = repository_target_brief(target)
         elif packet.get('source_read_required'):
             target = (repository_source_target(packet, context['snapshot_tree'])
                       if context.get('snapshot_tree') else None)
             direct_calls = ((target['line_end'] - target['line_start'] + READ_LINES) // READ_LINES
                             if target is not None else 1)
+            if target is not None:
+                start = target['line_start']
+                while start <= target['line_end']:
+                    end = min(target['line_end'], start + READ_LINES - 1)
+                    window_row_list.append({
+                        'path': target['path'], 'line_start': start, 'line_end': end})
+                    start = end + 1
+            target_value = repository_target_brief(target)
         else:
             direct_calls = 0
         patch_turns = (patch_calls + batch - 1) // batch
@@ -3110,6 +3290,8 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None):
             'source_segment_turns': segment_turns,
             'mandatory_repository_reads': direct_calls,
             'mandatory_repository_read_turns': direct_turns,
+            'mandatory_window_rows': window_row_list,
+            'repository_source_target': target_value,
             'evidence_index_turns': 1,
             'repository_refutation_turns': REPOSITORY_REFUTATION_CALL_RESERVE,
             'final_result_turns': 1,
@@ -3126,13 +3308,29 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None):
     }
 
 
+def capacity_refusal_rows(capacity):
+    limit = capacity['mandatory_repository_read_limit']
+    rows = []
+    for seat, row in capacity['seats'].items():
+        if row['mandatory_repository_reads'] > limit:
+            rows.append({
+                'seat': seat, 'limit': limit, 'count': row['mandatory_repository_reads'],
+                'target': row.get('repository_source_target'),
+                'windows': row.get('mandatory_window_rows') or [],
+            })
+    return rows
+
+
 def task_capacity_errors(capacity):
     errors = []
+    limit = capacity['mandatory_repository_read_limit']
     for seat, row in capacity['seats'].items():
-        if row['mandatory_repository_reads'] > MANDATORY_REPOSITORY_READ_LIMIT:
-            errors.append('mandatory source reads exceed repository capacity: ' + seat)
-        limit = row['provider_turn_limit']
-        if limit is not None and row['projected_turns'] > limit:
+        if row['mandatory_repository_reads'] > limit:
+            errors.append(format_capacity_refusal(
+                seat, limit, row['mandatory_repository_reads'],
+                row.get('repository_source_target'), row.get('mandatory_window_rows') or []))
+        turn_limit = row['provider_turn_limit']
+        if turn_limit is not None and row['projected_turns'] > turn_limit:
             errors.append('task exceeds provider turn capacity: ' + seat)
     return errors
 
@@ -4998,11 +5196,61 @@ def attempt_module():
     return module
 
 
+def discard_prepare_diagnostic(session, label):
+    path = Path(session) / ('prepare-diagnostic-' + label + '.json')
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        return
+    path.unlink()
+
+
+def write_prepare_diagnostic(args, error):
+    label = getattr(args, 'label', None)
+    session = getattr(args, 'session', None)
+    if not isinstance(label, str) or SAFE_NAME.fullmatch(label) is None or not session:
+        return
+    try:
+        root = Path(session).resolve()
+    except OSError:
+        return
+    if not root.is_dir():
+        return
+    payload = {
+        'schema_version': 1,
+        'kind': 'prepare-diagnostic',
+        'certifying': False,
+        'label': label,
+        'phase': getattr(args, 'phase', None),
+        'stage': PREPARE_PROGRESS.get('stage') or 'start',
+        'timed_out': bool(PREPARE_PROGRESS.get('timed_out')) or isinstance(error, PrepareTimeout),
+        'error': str(error),
+        'refusals': PREPARE_PROGRESS.get('refusals') or [],
+    }
+    try:
+        publish(root / ('prepare-diagnostic-' + label + '.json'), encoded(payload))
+    except OSError:
+        return
+
+
 def prepare(args):
-    session = Path(args.session).resolve()
-    with session_input_lock(session):
-        validate_standard_inputs(session, require_all=True)
-        return _prepare_locked(args, session)
+    PREPARE_PROGRESS['active'] = True
+    PREPARE_PROGRESS['stage'] = 'start'
+    PREPARE_PROGRESS['timed_out'] = False
+    PREPARE_PROGRESS['refusals'] = None
+    PREPARE_PROGRESS['deadline'] = None
+    try:
+        timeout = prepare_timeout(os.environ)
+        PREPARE_PROGRESS['deadline'] = time.monotonic() + timeout
+        session = Path(args.session).resolve()
+        with prepare_deadline(timeout):
+            with session_input_lock(session):
+                validate_standard_inputs(session, require_all=True)
+                return _prepare_locked(args, session)
+    finally:
+        PREPARE_PROGRESS['active'] = False
 
 
 def _prepare_locked(args, session):
@@ -5068,6 +5316,8 @@ def _prepare_locked(args, session):
         plan_raw = plan_source.read_bytes()
         if digest(plan_raw) != args.plan_sha256:
             raise ValueError('stale plan hash')
+        if plan_declares_ripgrep(plan_raw):
+            ripgrep_executable(os.environ)
     else:
         if getattr(args, 'plan', None) or getattr(args, 'plan_sha256', None):
             raise ValueError('--plan belongs only to the plan phase')
@@ -5132,6 +5382,7 @@ def _prepare_locked(args, session):
     base_tree = repo.tree(repo.scope['REV_BASE'])
     source = {'mode': 'ref', 'ref': source_head} if source_head else {'mode': 'worktree'}
     unknown_ref = False
+    prepare_stage('snapshot')
     try:
         snapshot, snapshot_unsafe = repo.snapshot(source_head)
     except ValueError:
@@ -5140,7 +5391,9 @@ def _prepare_locked(args, session):
         snapshot, snapshot_unsafe = repo.snapshot()
         source = {'mode': 'worktree'}
         unknown_ref = True
+    prepare_stage('changes')
     patches, hunks, categories, opaque = repo.changes(base_tree, snapshot)
+    prepare_stage('facts')
     data = facts(repo, snapshot, hunks, categories, base_tree)
     deps_view = dependency_view(repo, session, snapshot)
     plan_clusters = None
@@ -5148,6 +5401,7 @@ def _prepare_locked(args, session):
         snapshot_entries = repo.entries(snapshot); base_entries = repo.entries(base_tree)
         plan_entry_map = dict(base_entries); plan_entry_map.update(snapshot_entries)
         reject_plan_artifact_collision(plan_entry_map, args.label)
+        prepare_stage('plan-parse')
         plan_clusters = parse_plan(plan_raw, set(plan_entry_map))
         for cluster in plan_clusters:
             for row in cluster['paths']:
@@ -5167,11 +5421,13 @@ def _prepare_locked(args, session):
     prefix = f'r{args.label}'
     plan_search_artifacts = {}
     if args.phase == 'plan':
+        prepare_stage('plan-search')
         plan_clusters, plan_search_artifacts = prepare_plan_searches(
             repo, snapshot, plan_clusters, prefix, base_tree)
     full = b''.join(patch for _, patch in patches)
     semantic = b''.join(patch for path, patch in patches if categories[path] == 'semantic')
     packet = markdown(data, session / (prefix + '-evidence.json'))
+    prepare_stage('prior-coverage')
     prior = (prior_coverage(session, repo, base_tree) if args.phase in ('verification', 'plan')
              else {'status': 'absent', 'coverage': None, 'reason': None})
     previous = prior['coverage']
@@ -5349,10 +5605,12 @@ def _prepare_locked(args, session):
                         'routing_version': 1, 'delta_mode': plan_delta_mode,
                         'delta_reason': plan_delta_reason,
                         'common_artifacts': [prefix + '-evidence.md']}
+    prepare_stage('source-context')
     data['source_context'], source_artifacts = source_context(
         repo, snapshot, base_tree, data, components, scopes, owner, prefix, source_context_enabled,
         plan_clusters)
     patch_chunks_effective_mode = chunk_mode
+    prepare_stage('capacity')
     task_capacity = compile_task_capacity(
         scopes, patch_sets, data['source_context'], plan_clusters)
     capacity_failures = task_capacity_errors(task_capacity)
@@ -5370,6 +5628,7 @@ def _prepare_locked(args, session):
             capacity_failures = []
             patch_chunks_effective_mode = '1'
     if capacity_failures:
+        PREPARE_PROGRESS['refusals'] = capacity_refusal_rows(task_capacity)
         raise ValueError(capacity_failures[0])
     if args.phase == 'plan':
         clusters_by_id = {cluster['id']: cluster for cluster in plan_clusters}
@@ -5434,6 +5693,7 @@ def _prepare_locked(args, session):
     receipt_path = session / (prefix + '-coverage.receipt.json')
     if receipt_path.exists() and (not manifest_path.exists() or manifest_path.read_bytes() != encoded(manifest)):
         raise ValueError('cannot replace an already receipted manifest')
+    prepare_stage('publish')
     for name, raw in artifacts.items():
         if numeric is not None and name == numeric['panel']:
             continue
@@ -5441,6 +5701,7 @@ def _prepare_locked(args, session):
     if numeric is not None and attempt_module().private_bytes(session / numeric['panel']) != numeric_raw:
         raise ValueError('numeric panel changed during preparation')
     publish(manifest_path, encoded(manifest))
+    discard_prepare_diagnostic(session, args.label)
     print(manifest_path)
 
 
@@ -5989,6 +6250,8 @@ def main():
              'verify-panel': verify_panel, 'receipt': receipt, 'current-coverage': current_coverage,
              'review-origin': review_origin}[args.command](args)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError, RecursionError) as error:
+        if getattr(args, 'command', None) == 'prepare':
+            write_prepare_diagnostic(args, error)
         print('evidence: ' + str(error), file=sys.stderr)
         return 2
     return 0

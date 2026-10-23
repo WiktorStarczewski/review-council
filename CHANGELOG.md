@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.8
+
+- Plan preparation names the read limit, the calculated count, the mandatory windows, and the selected target when repository capacity is exceeded, and keeps that breakdown in a non-certifying `prepare-diagnostic-<label>.json`. Stderr stage lines identify snapshot, plan-search, prior-coverage, source-context, and capacity. `REV_PREPARE_TIMEOUT` (default 1200 seconds) ends a stuck prepare with that diagnostic. Promotion counts the current-source target in the same budget as the final capacity check. The read limit and coverage requirements are unchanged. A capacity refusal or a prepare timeout is not retried as a provider-seat failure.
+
 ## 0.7.7
 
 - The usage report prints `seat_yield` after each panel: runs, usable results, audit-invalid results, incomplete proofs, and failure codes by model.

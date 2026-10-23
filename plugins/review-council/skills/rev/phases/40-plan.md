@@ -106,6 +106,18 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    Assigned seats may run additional searches when the prepared result raises a
    question. If preparation or any render fails, fix the evidence or task compiler and
    prepare a fresh schema-4 label before launch. Never mix attempts.
+   Preparation prints `evidence: stage <name>` on stderr as it moves through snapshot,
+   plan-search, prior-coverage, source-context, and capacity. `REV_PREPARE_TIMEOUT` bounds
+   that run (default 1200 seconds, an integer from 1 to 3600). Exit 2 leaves
+   `prepare-diagnostic-<label>.json` in the session. That file is not a manifest, not a
+   receipt, and never certifies a panel. A refusal of `mandatory source reads exceed
+   repository capacity` records each seat's limit, calculated count, mandatory windows, and
+   selected target in that diagnostic. A timeout records `timed_out` and the stage. Read
+   limits and coverage requirements stay unchanged. Do not launch plan seats after either
+   refusal, do not repeat that prepare unchanged, and do not use the provider-seat
+   replacement. One fresh schema-4 label is allowed only after the plan's site list or the
+   evidence compiler changes. If the same refusal remains, leave the plan panel incomplete
+   and review the plan yourself against the plan contract before any edit.
 
    Use the matching round label `<N>p` (the plan panel is extra, not a numbered code
    panel); write its outputs as `r<N>p-<seat>.json`. Collect as usual. Before triage,
