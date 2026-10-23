@@ -2013,7 +2013,13 @@ def complete_declaration_context():
             'REV_BASE=' + base if row.startswith('REV_BASE=') else row
             for row in scope_text.splitlines()) + '\n')
         write('wide.py', body.replace('return value', 'return value + "changed"'))
-        call('prepare', session, 'wide-line', '--phase', 'discovery', good=False)
+        manifest = prepare('wide-line')
+        owner = manifest['mechanical_owner']
+        packet = manifest['source_context']['seats'][owner]
+        assert packet['required_source_ranges'] == []
+        assert packet['omitted_source_ranges'] == []
+        assert packet['source_read_required'] is False
+        assert packet['omitted']['declaration'] >= 1
 
     with fixture() as (root, session, git, write, call, prepare, finish):
         body = 'value = "' + 'x' * 2_000_010 + '"\n'
