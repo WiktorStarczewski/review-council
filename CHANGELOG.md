@@ -1,9 +1,15 @@
 # Changelog
 
+## 0.8.0
+
+- PR-bound reviews bind the exact pull request head and base to preflight and evidence preparation, refusing a checkout that no longer matches the selected PR.
+- Failed review assignments can continue through the configured replacement chain with each child bound to its failed parent, preserving sibling results and selecting only the terminal valid result.
+
 ## 0.7.11
 
-- PR-bound reviews pin the open PR number, branch, head SHA, and base SHA before provider discovery, then recheck the head before evidence preparation.
-- A failed adaptive code assignment can continue through separately bound replacement generations on higher available model families until success or exhaustion at Opus. Each generation retains its executor identity, and receipts select only the terminal valid result while preserving valid siblings.
+- Plan replacement retries can continue through the configured model chain while remaining bound to the original failed assignment. Fix-plan edits require fresh prepared evidence, and every original plan seat must have a valid current-hash result before code changes begin.
+- Prepared plan prompts show the estimated workload and any provider hard limit. Codex source-proof instructions now make clear that each shell call may contain only one source-producing pipeline.
+- Council repository changes use one independent normal reviewer. Review Council does not review its own repository, plugin, skills, scripts, or release artifacts.
 
 ## 0.7.10
 

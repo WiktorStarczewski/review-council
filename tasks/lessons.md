@@ -277,3 +277,15 @@ assignment locally.
 When changing the Review Council repository, do not use Review Council to review
 itself. Use the normal internal review workflow with one reviewer.
 
+# Start Council releases from the latest signed release
+
+Before changing a Council release candidate, fetch and verify the latest signed tag,
+check whether upstream main has advanced past it, and merge the latest released source
+before editing the next version's manifests, changelog, plan, or release procedure.
+
+# Start Council releases from the latest signed release
+
+Before changing a Council release candidate, fetch and verify the latest signed tag,
+check whether upstream main has advanced past it, and merge the latest released source
+before editing the next version's manifests, changelog, plan, or release procedure.
+

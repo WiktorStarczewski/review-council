@@ -58,7 +58,8 @@ try:
  fields=(value["number"],value["state"],value["headRefName"],value["headRefOid"],value["baseRefName"],value["baseRefOid"])
  if not isinstance(fields[0],int) or not all(isinstance(x,str) and x and chr(9) not in x and chr(10) not in x for x in fields[1:]): raise ValueError()
  print(chr(9).join(map(str,fields)))
-except Exception:
+except Exception as error:
+ print(f'preflight: invalid PR metadata: {type(error).__name__}: {error}',file=sys.stderr)
  raise SystemExit(1)') || die "GitHub returned invalid PR #$PR_NUMBER metadata"
   IFS=$'\t' read -r LIVE_PR_NUMBER PR_STATE PR_BRANCH PR_HEAD PR_BASE_BRANCH PR_BASE_HEAD <<< "$PR_FIELDS"
   [ "$LIVE_PR_NUMBER" = "$PR_NUMBER" ] || die "GitHub returned a different PR number for #$PR_NUMBER"

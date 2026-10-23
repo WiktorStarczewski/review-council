@@ -6104,6 +6104,23 @@ def render_seat(manifest, mh, seat, plan_source):
     print('Evidence manifest SHA-256: ' + mh)
     print('Assigned scope: ' + assignment['scope'])
     print('Assigned risk bundle: ' + assignment['bundle'])
+    capacity = (manifest.get('task_capacity', {}).get('seats', {}).get(seat)
+                if isinstance(manifest.get('task_capacity'), dict) else None)
+    if isinstance(capacity, dict):
+        limit = capacity.get('provider_turn_limit')
+        limit_text = (str(limit) if isinstance(limit, int)
+                      else 'none registered; estimate is advisory')
+        print('Prepared workload estimate: ' + str(capacity['projected_turns'])
+              + ' turns; patch proof ' + str(capacity['patch_proof_calls']) + ' reads/'
+              + str(capacity['patch_proof_turns']) + ' turns; source packets '
+              + str(capacity['source_packet_calls']) + ' reads; required source segments '
+              + str(capacity['source_segment_calls']) + ' reads/'
+              + str(capacity['source_segment_turns']) + ' turns; mandatory repository reads '
+              + str(capacity['mandatory_repository_reads']) + ' reads/'
+              + str(capacity['mandatory_repository_read_turns']) + ' turns; evidence index '
+              + str(capacity['evidence_index_turns']) + ' turn; refutation reserve '
+              + str(capacity['repository_refutation_turns']) + ' turns; final result '
+              + str(capacity['final_result_turns']) + ' turn; provider hard limit ' + limit_text)
     patch_mode = assignment['patch_read_mode']
     context = manifest['source_context']['seats'][seat]
     if (manifest['schema_version'] == 4 and manifest['phase'] == 'plan'
@@ -6392,9 +6409,8 @@ def verify_panel_selection(session, label, replacement_values=None, fresh=True, 
                 result_generation(session, manifest, mh, seat)
             except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError,
                     RecursionError, UnicodeError):
-                if not attempt_module().terminal_failure(
-                        session, label, seat, session / f'r{label}-{seat}.prompt.md'):
-                    raise ValueError('replacement parent assignment has no recorded terminal failure')
+                # Validate the requested child binding before checking this root seat's failure.
+                pass
             else:
                 raise ValueError('replacement parent assignment is already valid: ' + seat)
             child, child_hash, executor, lineage = replacement_chain_to_root(

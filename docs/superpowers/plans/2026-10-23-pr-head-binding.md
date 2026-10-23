@@ -10,6 +10,8 @@
 
 **Spec:** User request on 2026-10-23 to enforce correct PR checkout after repeated wrong-checkout capacity reports and drive the Council fix to release. Additional request: allow repeated per-assignment replacements until the enforced model chain is exhausted, ending at Opus.
 
+The candidate is based on the verified latest stable release, `review-council--v0.7.11`, and targets release 0.8.0.
+
 ## Global Constraints
 
 - Reject a mismatched PR checkout before any provider probe.
@@ -65,7 +67,7 @@
 **Files:** both `rev/phases/10-setup.md` host copies, manifests, `CHANGELOG.md`, `docs/release.md`, `tasks/todo.md`, `tasks/lessons.md`
 
 - [ ] Pass the requested PR number to preflight and explain its fail-closed identity check.
-- [ ] Bump the candidate consistently to 0.7.11 and document the behavior.
+- [x] Bump the candidate consistently to 0.8.0 and document the behavior.
 - [ ] Record the lesson and release checklist.
 - [ ] Verify the change against the repository instructions and release procedure.
 
@@ -74,4 +76,4 @@
 - [ ] Run meaningful focused checks and the complete frozen release gate in CI.
 - [ ] Review the finished candidate with one normal internal reviewer and fix actionable findings.
 - [ ] Open and push the PR, then wait for current-head macOS and Ubuntu CI.
-- [ ] Squash-merge, publish the signed 0.7.11 tag and GitHub release, and verify installed versions.
+- [ ] Squash-merge, publish the signed 0.8.0 tag and GitHub release, and verify installed versions.

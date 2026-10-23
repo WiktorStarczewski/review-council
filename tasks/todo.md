@@ -1,18 +1,22 @@
-# Release 0.7.11
+# Release 0.8.0
 
+- [x] Verify and merge the latest signed release, `review-council--v0.7.11`, into the candidate.
 - [x] Bind PR-number preflight to the live head and base before provider probes.
 - [x] Preserve the exact PR identity in session inputs and reject a checkout change before evidence preparation.
-- [x] Update both host setup phases, matching manifests, changelog, release procedure, plan, and lessons.
-- [ ] Run focused tests and frozen release verification on the exact candidate.
-- [x] Complete one normal internal review of the finished code; close the verified source-selector mismatch with no remaining P0-P2 findings.
-- [ ] Push the PR and wait for current-head macOS and Ubuntu CI.
-- [ ] Squash-merge, publish the signed 0.7.11 tag and release, and verify installation.
+- [x] Continue failed review assignments through multiple replacements until success or chain exhaustion.
+- [x] Set all three host manifests and the release procedure to 0.8.0.
+- [ ] Restore regressions for exact PR identity across remotes and live PR drift during evidence preparation.
+- [ ] Fix the current candidate gate failures and pass the complete verifier on macOS and Ubuntu.
+- [ ] Complete one normal internal review of the finished code and fix actionable findings.
+- [ ] Push the PR and pass current-head macOS, Ubuntu, and Cursor package CI.
+- [ ] Squash-merge, publish the signed 0.8.0 tag and release, and verify installation.
 
 ## Release review
 
 - Expected-red run `40010322339` confirmed on Ubuntu and macOS: `prepare --head <other>` succeeded, omitted the pinned-PR refusal, and published a manifest before the fix.
-- Normal one-seat re-review confirmed the source-selector P1 is closed and found no remaining P0-P2 findings.
-- Current-head release verification is pending after the implementation commit is pushed.
+- The latest stable source is the signed `review-council--v0.7.11` tag, now merged into this candidate.
+- The normal one-seat internal review found a P1 exact-PR identity gap and a P2 live-PR drift gap. Both need regressions and fixes before release.
+- Baseline CI `40021852016` failed the same 3 tasks on Ubuntu and macOS at the pre-merge candidate. The package job passed. Re-run after the fixes and merge of 0.7.11.
 
 ## Internal review follow-up: exact PR identity and live evidence scope
 

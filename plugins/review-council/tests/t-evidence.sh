@@ -2516,7 +2516,7 @@ def seat_local_recovery():
         (session / 'rparent-terra.exit').write_text('0\n')
         (session / 'rparent-opus.exit').write_text('1\n')
         call('verify-panel', session, 'parent', '--replacement', 'opus=parentx',
-             good=False, error='replacement child is bound to another parent seat')
+             good=False, error='replacement child is bound to another parent assignment')
         (session / 'rparent-terra.exit').write_text('1\n')
         (session / 'rparent-opus.exit').write_text('0\n')
 
