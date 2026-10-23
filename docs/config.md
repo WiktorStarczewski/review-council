@@ -84,6 +84,8 @@ Environment variables take precedence over the config file, which takes preceden
 
 ## Graceful degradation
 
+PR-bound quota fallbacks reload the sealed PR number and repository in the fresh sibling session, then revalidate that same live PR.
+
 A panel is three seats. When detection finds fewer, `roster.sh` appends Claude seats (`claude-1`, `claude-2`, … - on the adapter `claude_adapter` selects, `opus@xhigh`, `"padded": true`) until there are three, and the roster gains three top-level keys: `labs` (the distinct labs among the non-extra seats, in seat order), `padded` (how many seats were added), and `degraded` - true when anything was padded or only one lab is left - plus a one-sentence `degradation` when it is. Padded seats are dealt lenses like any other seat, so three Claude seats review through three different lenses.
 
 Exact positive model and seat counts are checked against unpadded survivors before padding. Padding then runs last - after `exclude`, after `pin`, and after the `--probe` round trip - so it replaces seats only for non-strict degraded panels. It cannot satisfy an exact count or `min_labs`. Padded seats are not addressable by `exclude` or `pin`.

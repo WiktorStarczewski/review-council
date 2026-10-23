@@ -275,7 +275,8 @@ assignment locally.
 # Review Council changes use an independent internal review
 
 When changing the Review Council repository, do not use Review Council to review
-itself. Use the normal internal review workflow with one reviewer.
+itself, including release candidates. Use the normal internal review workflow with
+one reviewer even when the general code-review workflow defaults to a Council panel.
 
 # Start Council releases from the latest signed release
 

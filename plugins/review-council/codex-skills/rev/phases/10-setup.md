@@ -78,7 +78,9 @@ REVIEW_COUNCIL_HOST=codex "$PLUGIN/scripts/rev-preflight.sh" \
 
 Substitute the resolved scope, append `--pr <number>` for a PR, or append
 `--base <ref>` for a non-PR review with an explicit base. Do not combine `--pr`
-and `--base`. Fresh preflight writes
+and `--base`. After preflight, source `$S/scope.env` for `REV_BASE`, `REV_ROOT`,
+`REV_SCOPE`, and `REV_PR_NUMBER` plus `REV_PR_REPO` when present. Preserve the
+optional PR identity for any quota fallback preflight. Fresh preflight writes
 `scope.env`, `files.txt`, `untracked.txt`, and the **probed** `roster.json`. Preflight
 refuses empty scopes or shared branches; use a worktree if a code review needs one.
 For documents, write absolute paths to `S/docs.txt`, set `REV_REPO` to their root,

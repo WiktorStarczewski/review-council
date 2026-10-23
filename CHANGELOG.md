@@ -2,7 +2,7 @@
 
 ## 0.8.0
 
-- PR-bound reviews bind the exact pull request head and base to preflight and evidence preparation, refusing a checkout that no longer matches the selected PR.
+- PR-scoped reviews pin the GitHub repository, number, head, and base at preflight. Rendering and evidence preparation reject live identity drift before creating a target or evidence snapshot.
 - Failed review assignments can continue through the configured replacement chain with each child bound to its failed parent, preserving sibling results and selecting only the terminal valid result.
 
 ## 0.7.11

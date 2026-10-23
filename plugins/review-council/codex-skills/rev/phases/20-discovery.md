@@ -348,9 +348,14 @@ Never run quota fallback preflight against the original session. Pass the failed
 ```bash
 PARENT_S=$S
 PARENT_MANIFEST=$MANIFEST
+. "$PARENT_S/scope.env"
 FALLBACK_S=$(mktemp -d "$(dirname "$S")/$(basename "$S").quota.XXXXXX")
+PR_ARGS=()
+if [ -n "${REV_PR_NUMBER:-}" ]; then
+  PR_ARGS=(--pr "$REV_PR_NUMBER" --pr-repo "$REV_PR_REPO")
+fi
 REVIEW_COUNCIL_HOST=codex "$PLUGIN/scripts/rev-preflight.sh" --scope "$REV_SCOPE" \
-  --write "$FALLBACK_S" --quota-failed-seat "$SEAT"
+  --write "$FALLBACK_S" "${PR_ARGS[@]}" --quota-failed-seat "$SEAT"
 ```
 
 Before switching the active session to `FALLBACK_S`, run `"$PLUGIN/scripts/rev-state.sh" "$FALLBACK_S" inherit-breaker "$PARENT_S"` so the review-origin window carries over, then require its `scope.env`, `files.txt`, and `untracked.txt` to byte-match the files in `PARENT_S`. Require a nonempty parent evidence manifest and require the generated roster to identify every temporary

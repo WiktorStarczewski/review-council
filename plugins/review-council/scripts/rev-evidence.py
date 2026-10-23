@@ -268,10 +268,10 @@ def replacement_root_manifest(session, manifest, fresh=False, seen=None, offline
 def validate_replacement_edge(parent_row, child_row, parent_is_repair=False):
     parent_family = roster_family(parent_row) if parent_row else None
     child_family = roster_family(child_row) if child_row else None
-    if child_family is None:
+    if child_family not in WORKHORSE_CHAIN:
         if parent_is_repair:
             raise ValueError('nested replacement executor must remain on the default model chain')
-        return
+        raise ValueError('replacement executor must be on the default model chain')
     if parent_family is None:
         if parent_is_repair:
             raise ValueError('nested replacement parent is not on the default model chain')
@@ -513,12 +513,14 @@ def scope(session):
 
 def validate_pinned_pr_checkout(values):
     pr_number = values.get('REV_PR_NUMBER')
+    pr_repo = values.get('REV_PR_REPO')
     pinned_head = values.get('REV_PR_HEAD')
     pinned_base = values.get('REV_PR_BASE_HEAD')
     pinned_base_ref = values.get('REV_PR_BASE_REF')
-    if not any((pr_number, pinned_head, pinned_base, pinned_base_ref)):
+    if not any((pr_number, pr_repo, pinned_head, pinned_base, pinned_base_ref)):
         return
     if (not pr_number or not re.fullmatch(r'[1-9][0-9]*', pr_number)
+            or not pr_repo or not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', pr_repo)
             or not pinned_head or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', pinned_head)
             or not pinned_base or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', pinned_base)
             or not pinned_base_ref):
@@ -553,6 +555,40 @@ def validate_pinned_pr_checkout(values):
     current_base = git('rev-parse', '--verify', '--end-of-options', pinned_base_ref + '^{commit}')
     if current_base != pinned_base:
         raise ValueError(f'local base for pinned PR #{pr_number} no longer matches its recorded base head')
+    gh_env = dict(env)
+    gh_env.pop('GH_REPO', None)
+    gh_env['GH_HOST'] = 'github.com'
+    gh_env['GH_PROMPT_DISABLED'] = '1'
+    try:
+        result = subprocess.run(
+            ['gh', 'pr', 'view', pr_number, '--repo', pr_repo, '--json',
+             'number,url,state,headRefName,headRefOid,baseRefName,baseRefOid'],
+            env=gh_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError(f'cannot revalidate pinned PR #{pr_number}: {error}') from error
+    if result.returncode != 0:
+        detail = result.stderr.strip() or 'gh exited with status ' + str(result.returncode)
+        raise ValueError(f'cannot revalidate pinned PR #{pr_number}: {detail}')
+    try:
+        live = json.loads(result.stdout)
+        live_number = live['number']
+        live_url = live['url']
+        match = re.fullmatch(
+            r'https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)/?',
+            live_url, re.IGNORECASE)
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        raise ValueError(f'cannot revalidate pinned PR #{pr_number}: invalid GitHub metadata') from error
+    live_repo = match.group(1) + '/' + match.group(2) if match is not None else None
+    if (isinstance(live_number, bool) or not isinstance(live_number, int)
+            or match is None or int(match.group(3)) != live_number
+            or live_number != int(pr_number)
+            or live_repo.lower() != pr_repo.lower()
+            or live.get('state') != 'OPEN'
+            or live.get('headRefName') != values.get('REV_BRANCH')
+            or live.get('headRefOid') != pinned_head
+            or live.get('baseRefName') != base_branch
+            or live.get('baseRefOid') != pinned_base):
+        raise ValueError(f'live PR #{pr_number} identity no longer matches preflight scope')
 
 
 def git_quote(path):

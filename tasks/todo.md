@@ -5,26 +5,26 @@
 - [x] Preserve the exact PR identity in session inputs and reject a checkout change before evidence preparation.
 - [x] Continue failed review assignments through multiple replacements until success or chain exhaustion.
 - [x] Set all three host manifests and the release procedure to 0.8.0.
-- [ ] Restore regressions for exact PR identity across remotes and live PR drift during evidence preparation.
-- [ ] Fix the current candidate gate failures and pass the complete verifier on macOS and Ubuntu.
-- [ ] Complete one normal internal review of the finished code and fix actionable findings.
-- [ ] Push the PR and pass current-head macOS, Ubuntu, and Cursor package CI.
+- [x] Push tests-only regressions and confirm expected failures for PR pinning, quota fallback, repository binding, and replacement-chain certification.
+- [x] Finish and re-review the exact-PR renderer/evidence checks and all internal-review fixes.
+- [ ] Push implementation and pass current-head macOS, Ubuntu, and Cursor package CI.
 - [ ] Squash-merge, publish the signed 0.8.0 tag and release, and verify installation.
 
 ## Release review
 
 - Expected-red run `40010322339` confirmed on Ubuntu and macOS: `prepare --head <other>` succeeded, omitted the pinned-PR refusal, and published a manifest before the fix.
 - The latest stable source is the signed `review-council--v0.7.11` tag, now merged into this candidate.
-- The normal one-seat internal review found a P1 exact-PR identity gap and a P2 live-PR drift gap. Both need regressions and fixes before release.
-- Baseline CI `40021852016` failed the same 3 tasks on Ubuntu and macOS at the pre-merge candidate. The package job passed. Re-run after the fixes and merge of 0.7.11.
+- The normal one-seat internal review found a P1 exact-PR identity gap and a P2 live-PR drift gap. The follow-up review found three more P2 gaps: quota fallback dropped the PR number, evidence could certify an unknown replacement family, and ambient `GH_REPO` could select the wrong repository. Regressions and fixes are now prepared locally.
+- Expected-red run `40028556658` confirmed the new PR pinning, live metadata drift, quota fallback, repository binding, and replacement-family regressions on both Ubuntu and macOS. Package CI `40028556537` passed on the same test-only commit.
+- Normal one-seat internal review completed with no open P0-P2 findings and verified closure of the three follow-up gaps above. Review Council was not used to review its own repository.
+- Baseline verifier `40025636171` failed on both platforms at `39724b5`: a shell quoting error in preflight broke its embedded Python, and plan-gate fixtures did not provide 0.7.11's required manifests. Both root causes are fixed in local commit `e54e369`; macOS's 476 Python tests passed. Package CI `40025636204` passed.
 
 ## Internal review follow-up: exact PR identity and live evidence scope
 
-- [ ] Add regressions proving the renderer keeps the exact `--pr` identity across remotes and evidence preparation refuses a PR whose live head, base, or state moved.
-- [ ] Capture the PR repository in `scope.env`, resolve the pinned PR number directly, and reject identity drift before target creation or publication.
-- [ ] Re-query GitHub during pinned evidence preparation and compare open state, branch, head SHA, base branch, and base SHA with the frozen scope.
-- [ ] Run focused regressions and the candidate verification gate; update both host copies and release docs if needed.
-- [ ] Obtain a fresh normal internal review, push the reviewed commits, and wait for current-head CI before release work.
+- [x] Add regressions for renderer PR pinning, evidence checkout/live metadata drift, quota fallback identity, ambient repository overrides, and enforced replacement families.
+- [x] Pin exact PR number and repository, recheck live PR identity during evidence preparation, and keep quota fallback bound to the same PR in both hosts.
+- [x] Run the expected-red gates and send the complete implementation diff for normal internal re-review.
+- [ ] Push the reviewed implementation and wait for current-head macOS, Ubuntu, and Cursor package CI before release work.
 
 # Release 0.5.10
 

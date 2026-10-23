@@ -69,8 +69,10 @@ preflight choice.
    carry that sentence into the report. After fresh initialization, or immediately for a
    validated initialized session, `$S/scope.env`, `$S/files.txt`, `$S/untracked.txt` and
    `$S/roster.json` exist. Source `scope.env` for
-   `REV_BASE`, `REV_ROOT`, `REV_SCOPE` - every value in it is single-quoted, so a
-   branch name or path with shell metacharacters is inert data.
+   `REV_BASE`, `REV_ROOT`, `REV_SCOPE`, and `REV_PR_NUMBER` plus `REV_PR_REPO` when
+   present - every
+   value in it is single-quoted, so a branch name or path with shell metacharacters
+   is inert data. Preserve the optional PR number for any quota fallback preflight.
    Arm the recursion guard once preflight has passed (it refuses when `REV_ACTIVE` is
    already set, so arming it earlier would block your own run): from here on every seat
    runs with `REV_ACTIVE=1` in its environment - `rev-seat.sh` exports it itself, and

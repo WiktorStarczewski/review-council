@@ -278,8 +278,23 @@ def parse_scope(path):
     base_branch = values.get("REV_BASE_BRANCH")
     require(branch and base_branch and base and OID.fullmatch(base) is not None,
             f"scope has no usable reviewed base or branch identity: {path}")
+    pr_keys = ("REV_PR_NUMBER", "REV_PR_REPO", "REV_PR_HEAD", "REV_PR_BASE_HEAD")
+    pr_values = [values.get(key) for key in pr_keys]
+    pr_number = pr_values[0]
+    pr_repo = pr_values[1]
+    pr_head = pr_values[2]
+    pr_base_head = pr_values[3]
+    if any(pr_values):
+        require(all(pr_values), f"scope has an incomplete pinned PR identity: {path}")
+        require(re.fullmatch(r"[1-9][0-9]*", pr_number) is not None,
+                "scope has an invalid pinned PR number")
+        require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", pr_repo) is not None,
+                "scope has an invalid pinned PR repository")
+        require(OID.fullmatch(pr_head) is not None and OID.fullmatch(pr_base_head) is not None,
+                "scope has an invalid pinned PR head or base")
     return {"root": Path(root), "branch": branch, "base": base,
-            "base_branch": base_branch}
+            "base_branch": base_branch, "pr_number": pr_number,
+            "pr_repo": pr_repo, "pr_head": pr_head, "pr_base_head": pr_base_head}
 
 
 def run_gh(arguments, root, input_data=None):
@@ -384,6 +399,32 @@ def parse_pr(metadata, branch):
 def resolve_pr(scope, repositories=None):
     root = scope["root"]
     repositories = github_repositories(root) if repositories is None else repositories
+    if scope.get("pr_number"):
+        require(shutil.which("gh") is not None, "gh is required to publish a PR review")
+        result = run_gh([
+            "pr", "view", scope["pr_number"], "--repo", scope["pr_repo"],
+            "--json", "number,url,state,headRefName,headRefOid,baseRefName,baseRefOid",
+        ], root)
+        if result.returncode != 0:
+            raise ReviewError("cannot resolve the pinned PR: " + result.stderr.strip())
+        try:
+            metadata = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise ReviewError("gh pr view returned invalid JSON") from error
+        target = parse_pr(metadata, scope["branch"])
+        require(target["repo"].lower() == scope["pr_repo"].lower()
+                and target["number"] == int(scope["pr_number"]),
+                "gh returned a different PR than preflight pinned")
+        require(target["state"] == "OPEN", "the preflight-pinned PR is no longer open")
+        require(target["head"] == scope["pr_head"]
+                and target["base_branch"] == scope["base_branch"]
+                and target["base_head"] == scope["pr_base_head"],
+                "the live PR identity no longer matches preflight scope")
+        merge_base = remote_merge_base(
+            target["repo"], target["base_head"], target["head"], root)
+        require(merge_base == scope["base"],
+                "the open PR merge base does not match the reviewed base")
+        return target
     if not repositories:
         return None
     require(shutil.which("gh") is not None, "gh is required to publish a PR review")
