@@ -381,12 +381,15 @@ printf '{"number":71,"state":"%s","headRefName":"%s","headRefOid":"%s","baseRefN
 SH
     chmod +x "$B/bin/gh"
     export PATH="$B/bin:$PATH" GH_ARGS="$B/gh.args" RSTUB_ARGS="$B/roster.args"
+    unset REV_BASE_REF
     mkrepo "$R"; git -C "$R" checkout -qb feat
     printf 'change\n' > "$R/change.txt"; git -C "$R" add change.txt; git -C "$R" commit -qm change
     base=$(git -C "$R" rev-parse main); head=$(git -C "$R" rev-parse HEAD)
     export PR_STATE=OPEN PR_BRANCH=feat PR_HEAD="$head" PR_BASE="$base"
     (cd "$R" && "$PF" --pr 71 --write "$S") > "$B/out" 2> "$B/err"
-    assert_eq "exact PR checkout passes preflight" "$?" 0
+    local preflight_rc=$?
+    if [ "$preflight_rc" -ne 0 ]; then cat "$B/err" >&2; fi
+    assert_eq "exact PR checkout passes preflight" "$preflight_rc" 0
     assert_grep "preflight pins PR number" "$S/scope.env" "^REV_PR_NUMBER='71'$"
     assert_grep "preflight pins exact PR head" "$S/scope.env" "^REV_PR_HEAD='$head'$"
     assert_grep "preflight pins exact PR base head" "$S/scope.env" "^REV_PR_BASE_HEAD='$base'$"

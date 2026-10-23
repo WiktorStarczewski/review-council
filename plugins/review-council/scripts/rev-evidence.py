@@ -199,22 +199,28 @@ def replacement_executor_row(manifest):
         raise ValueError('invalid replacement executor')
     seat = next(iter(assignments))
     assignment = assignments[seat]
+    family = row.get('family')
+    model = row.get('model')
+    effort = row.get('effort')
     if (row.get('seat') != seat
-            or row.get('family') is not None and row.get('family') not in WORKHORSE_CHAIN
+            or family is not None and family not in WORKHORSE_CHAIN
             or not isinstance(row.get('adapter'), str)
-            or not isinstance(row.get('model'), str) or not isinstance(row.get('effort'), str)
+            or (model is not None and (not isinstance(model, str) or not model))
+            or (effort is not None and (not isinstance(effort, str) or not effort))
+            or (family is not None and (model is None or effort is None))
             or row.get('extra') is not False or not isinstance(assignment, dict)
             or assignment.get('adapter') != row.get('adapter')
             or row.get('adapter') not in ('codex', 'claude')
-            or roster_family(row) != row.get('family')):
+            or roster_family(row) != family):
         raise ValueError('replacement executor does not match its assignment')
     return dict(row)
 
 
 def replacement_executor_metadata(row):
+    if not isinstance(row, dict):
+        raise ValueError('replacement executor must be an enforced chain seat')
     family = roster_family(row)
-    if (not isinstance(row, dict)
-            or row.get('adapter') not in ('codex', 'claude')
+    if (row.get('adapter') not in ('codex', 'claude')
             or row.get('extra') is not False):
         raise ValueError('replacement executor must be an enforced chain seat')
     value = {key: row.get(key) for key in ('seat', 'adapter', 'model', 'effort', 'extra')}
@@ -510,7 +516,7 @@ def validate_pinned_pr_checkout(values):
     pinned_head = values.get('REV_PR_HEAD')
     pinned_base = values.get('REV_PR_BASE_HEAD')
     pinned_base_ref = values.get('REV_PR_BASE_REF')
-    if not any((pr_number, pinned_head, pinned_base)):
+    if not any((pr_number, pinned_head, pinned_base, pinned_base_ref)):
         return
     if (not pr_number or not re.fullmatch(r'[1-9][0-9]*', pr_number)
             or not pinned_head or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', pinned_head)
@@ -4711,8 +4717,8 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
                 or manifest['patch_chunks_mode'] != parent['patch_chunks_mode']
                 or manifest['source_context']['enabled'] is not parent['source_context']['enabled']):
             raise ValueError('repair child does not match its parent assignment')
-    elif manifest['phase'] == 'repair' or 'parent_assignment' in manifest:
-        raise ValueError('repair evidence requires a parent assignment')
+    elif manifest['phase'] != 'repair' and 'parent_assignment' in manifest:
+        raise ValueError('parent assignment belongs only to repair evidence')
     phase = manifest['phase']; owner = manifest['mechanical_owner']; fallback = manifest['fallback_reason']
     bundles = [a['bundle'] for a in assigned.values()]
     regression = [s for s in adapters if s in assigned and BUNDLES[-1] in assigned[s]['bundles']]
@@ -6318,6 +6324,7 @@ def replacement_chain_to_root(session, root_manifest, root_hash, root_seat, fina
     current_path = session / f'r{final_label}-evidence.manifest.json'
     current, current_hash = validated_manifest(
         current_path, fresh=fresh, seen=seen, replay_plan_searches=False)
+    final_manifest, final_hash = current, current_hash
     chain = []
     visited = set()
     while True:
@@ -6332,17 +6339,22 @@ def replacement_chain_to_root(session, root_manifest, root_hash, root_seat, fina
         parent, parent_hash = validated_manifest(
             parent_path, fresh=fresh, seen=seen, replay_plan_searches=False)
         parent_seat = binding['seat']
+        if parent['label'] == root_manifest['label']:
+            if parent_hash != root_hash or parent_seat != root_seat:
+                raise ValueError('replacement child is bound to another parent assignment')
+            if not attempt_module().terminal_failure(
+                    session, parent['label'], parent_seat,
+                    session / f"r{parent['label']}-{parent_seat}.prompt.md"):
+                raise ValueError('replacement parent assignment has no recorded terminal failure')
+            chain.append((current_path, current, current_hash))
+            return final_manifest, final_hash, next(iter(final_manifest['assignments'])), chain
+        if parent['phase'] != 'repair':
+            raise ValueError('replacement chain does not lead to the selected root panel')
         if not attempt_module().terminal_failure(
                 session, parent['label'], parent_seat,
                 session / f"r{parent['label']}-{parent_seat}.prompt.md"):
             raise ValueError('replacement parent assignment has no recorded terminal failure')
         chain.append((current_path, current, current_hash))
-        if parent['label'] == root_manifest['label']:
-            if parent_hash != root_hash or parent_seat != root_seat:
-                raise ValueError('replacement child is bound to another parent assignment')
-            return current, current_hash, next(iter(current['assignments'])), chain
-        if parent['phase'] != 'repair':
-            raise ValueError('replacement chain does not lead to the selected root panel')
         current_path, current, current_hash = parent_path, parent, parent_hash
 
 

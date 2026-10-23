@@ -259,7 +259,7 @@ test_pr_scope_refuses_pinned_head_or_base_drift() {
     env -u REV_DEPS_DIR python3 "$SCRIPTS/rev-evidence.py" prepare "$S" wrong-source \
       --phase discovery --head "$other" \
       > "$T/pr-wrong-source.out" 2> "$T/pr-wrong-source.err"
-    assert_eq "evidence preparation refuses a source selector outside the pinned PR head" "$?" 1
+    assert_eq "evidence preparation refuses a source selector outside the pinned PR head" "$?" 2
     assert_grep "source selector refusal identifies the pinned PR" "$T/pr-wrong-source.err" \
       'explicit source selector conflicts with pinned PR #71 head'
     assert_exit "source selector refusal publishes no evidence" 0 \
@@ -271,7 +271,7 @@ test_pr_scope_refuses_pinned_head_or_base_drift() {
     git -C "$R" checkout -q feat
     env -u REV_DEPS_DIR python3 "$SCRIPTS/rev-evidence.py" prepare "$S" base-drift --phase discovery \
       > "$T/pr-base-drift.out" 2> "$T/pr-base-drift.err"
-    assert_eq "evidence preparation refuses a changed PR base" "$?" 1
+    assert_eq "evidence preparation refuses a changed PR base" "$?" 2
     assert_grep "base drift refusal identifies the pinned PR" "$T/pr-base-drift.err" \
       'local base for pinned PR #71 no longer matches its recorded base head'
     assert_exit "base drift refusal publishes no evidence" 0 \
@@ -281,7 +281,7 @@ test_pr_scope_refuses_pinned_head_or_base_drift() {
     git -C "$R" add change.txt && git -C "$R" commit -qm "later local head"
     env -u REV_DEPS_DIR python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 1 --phase discovery \
       > "$T/pr-head-drift.out" 2> "$T/pr-head-drift.err"
-    assert_eq "evidence preparation refuses a changed PR checkout" "$?" 1
+    assert_eq "evidence preparation refuses a changed PR checkout" "$?" 2
     assert_grep "head drift refusal identifies the pinned PR" "$T/pr-head-drift.err" \
       'checked out HEAD does not match pinned PR #71 head'
     assert_exit "head drift refusal happens before publishing evidence" 0 \
@@ -291,7 +291,7 @@ test_pr_scope_refuses_pinned_head_or_base_drift() {
     printf 'uncommitted post-preflight edit\n' >> "$R/change.txt"
     env -u REV_DEPS_DIR python3 "$SCRIPTS/rev-evidence.py" prepare "$S" dirty --phase discovery \
       > "$T/pr-dirty.out" 2> "$T/pr-dirty.err"
-    assert_eq "evidence preparation refuses a dirty PR checkout" "$?" 1
+    assert_eq "evidence preparation refuses a dirty PR checkout" "$?" 2
     assert_grep "dirty checkout refusal identifies the pinned PR" "$T/pr-dirty.err" \
       'pinned PR #71 checkout has uncommitted changes'
     assert_exit "dirty checkout refusal publishes no evidence" 0 \

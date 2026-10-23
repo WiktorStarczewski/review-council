@@ -14,6 +14,14 @@
 - Normal one-seat re-review confirmed the source-selector P1 is closed and found no remaining P0-P2 findings.
 - Current-head release verification is pending after the implementation commit is pushed.
 
+## Internal review follow-up: exact PR identity and live evidence scope
+
+- [ ] Add regressions proving the renderer keeps the exact `--pr` identity across remotes and evidence preparation refuses a PR whose live head, base, or state moved.
+- [ ] Capture the PR repository in `scope.env`, resolve the pinned PR number directly, and reject identity drift before target creation or publication.
+- [ ] Re-query GitHub during pinned evidence preparation and compare open state, branch, head SHA, base branch, and base SHA with the frozen scope.
+- [ ] Run focused regressions and the candidate verification gate; update both host copies and release docs if needed.
+- [ ] Obtain a fresh normal internal review, push the reviewed commits, and wait for current-head CI before release work.
+
 # Release 0.5.10
 
 - [x] Let `codex_models` repeat an entry, one numbered seat per entry, up to four.
@@ -852,6 +860,19 @@ Review results: pending. SDK credentials absent; no live SDK qualification or pr
 - [x] Verify latest published and installed Council is 0.7.10; use it for candidate review.
 - [x] Confirm the checkout-binding test-only CI red on both macOS and Ubuntu before implementation.
 - [x] Confirm test-only checkout-binding and repeated replacement-chain regressions fail on both Ubuntu and macOS before implementation. CI run `40001522036` failed `replacement_chain_reaches_opus` with `assignment roster mismatch` after escalation advances; the same test-only head also has the expected checkout-binding failures.
-- [ ] Implement checkout binding and auditable replacement lineage through Luna, Sonnet, Sol, and Opus.
-- [ ] Update both host skill trees, release metadata, and tests; preserve all existing retry, sibling, and exhaustion rules.
-- [ ] Complete the frozen CI gate, get one normal internal review of the finished code, fix actionable findings, and release/install 0.7.11.
+- [ ] Fix the candidate CI failures: exact PR preflight fixture and refusal exits, partial pinned identity detection, replacement-chain terminal failure versus result validation, legacy replacement executor compatibility, and prompt rendering.
+- [ ] Align both host skill trees and assertions with the local-cluster and Opus-exhaustion rules; preserve unique child-label and parent-binding requirements.
+- [ ] Re-run the frozen test-only failures and candidate CI, then obtain one normal internal review of the finished code and fix actionable findings.
+- [ ] Release and install 0.7.11 after the final current-head gate and review pass.
+
+### Candidate CI repair notes
+
+- [ ] Capture the exact `rev-preflight.sh --pr` refusal from the fixture before changing its behavior; verify the successful and stale-base paths against local refs.
+- [ ] Keep `rev-evidence.py`'s documented CLI refusal status consistent while asserting nonzero PR binding refusals.
+- [ ] Permit `REV_PR_BASE_REF` alone to trigger partial-identity validation and require its presence in a complete identity.
+- [ ] Keep failed ancestors in a replacement chain as terminal-failure evidence; validate only the selected final generation as a successful result.
+- [ ] Preserve the pre-existing unchained replacement coverage path without weakening chained executor metadata or assignment binding.
+- [ ] Ensure all verification prompt entry points append the sibling-site check, while risk and unphased prompts remain unchanged.
+- [ ] Update both bundled skill copies and exact text assertions for the local-cluster fallback and unique replacement labels.
+
+Review results: pending final CI and normal internal one-seat review.
