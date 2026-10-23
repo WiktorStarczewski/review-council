@@ -6,16 +6,34 @@
 - [x] Allow failed assignments to continue through the configured replacement chain with unique children bound to the original parent.
 - [x] Bind every plan replacement to one failed or stale original assignment; require current-hash proof for every original seat.
 - [x] Run an independent normal review of the Council changes and fix its actionable findings.
-- [x] Align all plugin manifests, changelog, and release procedure for 0.7.11.
-- [ ] Complete an independent normal review of the full release candidate.
-- [ ] Push the candidate branch, open the PR, and pass current-head macOS, Ubuntu, and Cursor package CI.
-- [ ] Squash-merge, publish the signed 0.7.11 tag and GitHub release, then verify each installed host.
+- [x] Align all plugin manifests, changelog, and release procedure for 0.7.12.
+- [x] Diagnose recent Luna seat failures and align Codex patch and plan-first-read limits with the audit ceiling.
+- [x] Close independent-review findings for TypeScript default imports, comment-aware Rust use trees, and the plan-search sentinel exception.
+- [x] Complete an independent normal review of the full release candidate; no actionable P0-P2 findings remain.
+- [ ] Push the candidate branch and update PR #69. The user explicitly waived CI as a release gate; report current-head check results accurately.
+- [ ] Squash-merge, publish the signed 0.7.12 tag and GitHub release, then verify each installed host.
 
 ### Review
 
 Root cause evidence and implementation decisions are recorded in
 `docs/superpowers/plans/2026-10-23-plan-review-recovery.md`. The independent normal
 review found three P1 gate gaps; all three were fixed and re-reviewed. No tests were run.
+
+The rolling 180-minute sample ending 2026-10-23 23:25 UTC contained 74 Luna audit
+artifacts under `/private/tmp`: 11 were invalid (14.9%). They are attempts, not
+independent seats. Eight invalid artifacts exceeded both the tool-output and whole-turn
+limits; four also exceeded the discovery-output limit, and codes overlap. Other observed
+causes included unbounded shell output, unsupported source batching, invalid source
+context, search expansion, and unsupported ranges. In #1752, repeated 240-line Codex
+reads returned 44-45 KiB against a 32 KiB hard cap, while a `head -81` example exceeded
+the 80-result audit rule. A Luna plan assignment passed with four bounded patch chunks
+and a 24,562-byte maximum output. This points to prompt and audit-contract mismatches,
+not finding quality. Codex patch and repository source windows now use 40 lines across
+prompt, audit, and capacity estimates; the prompt targets 24 KiB with a 32 KiB hard cap.
+Compiler-rendered searches are quoted, manually composed searches reject shell expansion,
+and result searches remain capped at 80. Fresh independent review found no remaining
+actionable P0-P2 issues. `git diff --check` and `bash -n` preflights pass; the full tests
+were not run. CI is waived for this release by explicit user instruction.
 
 # Release 0.5.10
 
@@ -854,7 +872,9 @@ Review results: pending. SDK credentials absent; no live SDK qualification or pr
 
 - [x] Trace the exact source of the 2,000+ mandatory reads and confirm the failed recovery contract.
 - [x] Implement a scope-safe change that keeps the full changed patch reviewable while bounding valid proof work.
-- [ ] Add a regression case for the observed failure and verify its expected red result, then run the focused Council verification.
-- [ ] Run one independent normal code review, fix actionable P0-P2 findings, and re-verify.
-- [ ] Complete Council release gates and publish a new release.
+- [x] Preserve every unresolved TypeScript import and Rust use-tree caller as a capacity-counted, fail-closed proof obligation.
+- [x] Clarify Codex tool-call batching and add bounded, copyable source-read and search examples without relaxing read-audit enforcement.
+- [x] Add regression coverage for the observed failure modes. The full test suite was not run.
+- [x] Run one independent normal code review, fix actionable P0-P2 findings, and re-verify.
+- [ ] Publish the signed 0.7.12 tag and GitHub release. CI checks are explicitly waived for this release.
 - [ ] Resume #1752 on the new runtime and report its exact review state.

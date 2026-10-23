@@ -27,6 +27,40 @@ PY
 test_plan_evidence_closure() {
   ( local R="$T/plan-evidence-root" S="$T/plan-evidence-session"
     mkrepo "$R"; mkdir -p "$R/src" "$R/tests" "$S"
+    python3 - "$SCRIPTS/lib/review-read-audit.py" "$R" <<'PY'
+import importlib.util
+from pathlib import Path
+import shlex
+import sys
+
+spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
+audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
+root = Path(sys.argv[2]); patch = root / 'plan.patch'
+patch.write_text(''.join(f'line {index}\n' for index in range(1, 101)))
+manifest = {
+    'schema_version': 4, 'phase': 'plan', 'mechanical_owner': 'sol',
+    'assignments': {
+        'luna': {'adapter': 'codex', 'patch': str(patch), 'patch_bytes': 1000,
+                 'patch_lines': 100, 'patch_read_mode': 'windows'},
+        'sonnet': {'adapter': 'claude', 'patch': str(patch), 'patch_bytes': 1000,
+                   'patch_lines': 300, 'patch_read_mode': 'windows'},
+    },
+}
+assert audit.plan_specialist_primary(manifest, 'luna', root)[2] == 40
+assert audit.plan_specialist_first_call_contract(manifest, 'luna', root).endswith(
+    "run sed -n '1,40p' " + shlex.quote(str(patch))
+    + ' as exactly one native primary-artifact read. Do not run a directory command, '
+    + 'search, or compound shell command before or with this read.')
+assert audit.plan_specialist_primary(manifest, 'sonnet', root)[2] == 240
+valid = {'call': ('command_execution',
+                  {'command': "sed -n '1,40p' " + shlex.quote(str(patch))}, 0)}
+invalid = {'call': ('command_execution',
+                    {'command': "sed -n '1,240p' " + shlex.quote(str(patch))}, 0)}
+assert audit.validate_plan_first_call(manifest, 'luna', 'codex', valid, root, root) == []
+assert audit.validate_plan_first_call(manifest, 'luna', 'codex', invalid, root, root)[0]['code'] \
+    == 'invalid-plan-first-call'
+PY
+    assert_eq "Codex plan first read uses 40 lines and Claude remains at 240" "$?" 0
     cat > "$R/src/helper.ts" <<'EOF'
 export function helper() { return 1; }
 EOF
@@ -251,6 +285,7 @@ m = json.load(open(sys.argv[1])); seat = sys.argv[2]; out = pathlib.Path(sys.arg
 session = pathlib.Path(sys.argv[1]).parent; root = pathlib.Path(m['session']).parent / 'plan-evidence-root'
 events = []
 assignment = m['assignments'][seat]; patch = pathlib.Path(assignment['patch'])
+read_lines = 40 if assignment['adapter'] == 'codex' else 240
 def call(identity, command, output, path, offset=None, limit=None):
     if assignment['adapter'] == 'codex':
         events.extend([
@@ -273,10 +308,11 @@ if assignment['patch_read_mode'] == 'chunks':
         path = session / row['artifact']; call('patch-' + str(row['index']), 'cat -- ' + str(path), path.read_text(), path)
 else:
     lines = patch.read_text().splitlines(keepends=True)
-    for start in range(1, len(lines) + 1, 240):
-        end = min(len(lines), start + 239)
+    for start in range(1, len(lines) + 1, read_lines):
+        end = min(len(lines), start + read_lines - 1)
         call('patch-' + str(start), "sed -n '%d,%dp' %s" % (start, end, patch),
-             ''.join(lines[start - 1:end]), patch, start, 240)
+             ''.join(lines[start - 1:end]), patch, start,
+             end - start + 1 if assignment['adapter'] == 'codex' else 240)
 context = m['source_context']['seats'][seat]
 for index, shard in enumerate(context['shards'], 1):
     path = session / shard['artifact']; call('packet-' + str(index), 'cat -- ' + str(path), path.read_text(), path)
@@ -301,8 +337,8 @@ if context['source_read_required']:
     assert tree == m['snapshot_tree'] and entry[1] == oid
     lines = evidence.split_lf_lines(repository.blob(entry))
     assert hashlib.sha256(b''.join(lines[start - 1:end])).hexdigest() == content_hash
-    for first in range(start, end + 1, 240):
-        last = min(first + 239, end)
+    for first in range(start, end + 1, read_lines):
+        last = min(first + read_lines - 1, end)
         call('source-' + str(first), shlex.join(['git', 'show', tree + ':' + relative])
              + ' | ' + shlex.join(['sed', '-n', f'{first},{last}p']),
              b''.join(lines[first - 1:last]).decode(), root / relative, first, last - first + 1)
@@ -461,16 +497,17 @@ manifest = json.load(open(sys.argv[1]))
 plan = manifest['plan']
 for seat, assignment in manifest['assignments'].items():
     packet = manifest['source_context']['seats'][seat]
+    line_limit = module.read_line_limit(assignment['adapter'])
     published = [(row['path'], row['line_start'], row['line_end'])
                  for row in packet['mandatory_source_windows']]
     delivered = packet['required_source_ranges'] + [
         dict(row) for shard in packet['shards'] for row in shard['ranges']]
     expected = list(module.merge_repository_windows(
-        module.uncovered_plan_ranges(assignment, plan['clusters'], delivered)))
+        module.uncovered_plan_ranges(assignment, plan['clusters'], delivered), line_limit))
     assert published == expected, (seat, published, expected)
     assert len(published) <= module.MANDATORY_REPOSITORY_READ_LIMIT, (seat, len(published))
     for _, start, end in published:
-        assert end - start + 1 <= module.READ_LINES, (seat, start, end)
+        assert end - start + 1 <= line_limit, (seat, start, end)
 WINDOWS_PUBLISHED
 
     for seat in sol terra opus sonnet; do
@@ -740,6 +777,9 @@ PY
       --plan "$S/r1p-plan.md" --evidence "$S/r1p-evidence.manifest.json" >/dev/null || return
     assert_grep "live plan search reads one overflow sentinel" "$S/r1p-sol.prompt.md" \
       'Required cluster sibling search: C-01 .* \| head -81 .*an 81st line invalidates proof'
+    assert_grep "plan prompt permits only its exact compiler-rendered overflow search" \
+      "$S/r1p-sol.prompt.md" \
+      'Never compose a `head -81` search yourself.*run that exact command unchanged.*sole plan-audit exception'
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
       --raw "$S/r1p-sol.stream.ndjson" --prompt "$S/r1p-sol.prompt.md" \
       --root "$R" --session "$S" --out "$S/r1p-sol.read-audit.json" >/dev/null || return
@@ -1310,6 +1350,38 @@ assert audit.search_pattern(shlex.split("rg --hidden --no-ignore --glob '!.git/*
 assert audit.repository_search_pattern(
     'Bash', {'command':"rg --hidden --no-ignore --glob '!.git/**' --null -n -- -legacy . | head -81"}, pathlib.Path('/repo')) == {
         'engine':'rg', 'domain':'rg-complete-worktree', 'pattern':'-legacy'}
+assert audit.repository_search_pattern(
+    'Bash', {'command':'rg --hidden --no-ignore --glob !.git/** --null -n -- foo.* . | head -81'},
+    pathlib.Path('/repo')) is None
+assert audit.repository_search_pattern(
+    'Bash', {'command':"rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'foo.*' . | head -81"},
+    pathlib.Path('/repo')) == {
+        'engine':'rg', 'domain':'rg-complete-worktree', 'pattern':'foo.*'}
+assert audit.repository_search_pattern(
+    'Bash', {'command':'rg --hidden --no-ignore --glob !.git/** --null -n -- "foo.$HOME" . | head -81'},
+    pathlib.Path('/repo')) is None
+assert audit.repository_search_pattern(
+    'Bash', {'command':"rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'foo.$HOME' . | head -81"},
+    pathlib.Path('/repo')) == {
+        'engine':'rg', 'domain':'rg-complete-worktree', 'pattern':'foo.$HOME'}
+assert audit.repository_search_pattern(
+    'Bash', {'command':'rg --hidden --no-ignore --glob !.git/** --null -n -- foo(.) . | head -81'},
+    pathlib.Path('/repo')) is None
+assert audit.repository_search_pattern(
+    'Bash', {'command':"rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'foo(.)' . | head -81"},
+    pathlib.Path('/repo')) == {
+        'engine':'rg', 'domain':'rg-complete-worktree', 'pattern':'foo(.)'}
+equals_contract = {'engine':'rg', 'pattern':'=rg'}
+assert module.plan_search_shell_command(equals_contract).endswith("-- '=rg' .")
+assert module.plan_search_shell_command({'engine':'grep-bre', 'pattern':'helper'}) == (
+    "grep --exclude-dir=.git --null -r -n -- 'helper' .")
+assert audit.repository_search_pattern(
+    'Bash', {'command':'rg --hidden --no-ignore --glob !.git/** --null -n -- =rg . | head -81'},
+    pathlib.Path('/repo')) is None
+assert audit.repository_search_pattern(
+    'Bash', {'command':"rg --hidden --no-ignore --glob '!.git/**' --null -n -- '=rg' . | head -81"},
+    pathlib.Path('/repo')) == {
+        'engine':'rg', 'domain':'rg-complete-worktree', 'pattern':'=rg'}
 assert module.plan_search_pattern("x (found by: grep --exclude-dir=.git --null -r -n -- value .)") == 'value'
 assert audit.repository_search_pattern(
     'Bash', {'command':'grep --exclude-dir=.git --null -r -n -- value . | head -81'}, pathlib.Path('/repo')) == {
@@ -1990,8 +2062,12 @@ PY
       --plan "$S/fix-plan.md" --plan-sha256 "$hash" --full-seat sol \
       --assignment sol=plan-completeness --assignment terra=plan-soundness \
       --assignment opus=plan-simplicity --assignment sonnet=plan-tests) || return
-    python3 - "$manifest" <<'PY'
-import json, sys
+    python3 - "$manifest" "$SCRIPTS/rev-evidence.py" <<'PY'
+import importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('reve', sys.argv[2])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
 
 manifest = json.load(open(sys.argv[1]))
 capacity = manifest['task_capacity']
@@ -2032,9 +2108,13 @@ for seat, assignment in manifest['assignments'].items():
                 merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
             else:
                 merged.append((start, end))
-        count += sum((end - start + 240) // 240 for start, end in merged)
+        line_limit = module.read_line_limit(assignment['adapter'])
+        count += sum((end - start + line_limit) // line_limit for start, end in merged)
     assert count <= 12, (seat, count)
     assert capacity['seats'][seat]['mandatory_repository_reads'] == count
+    line_limit = module.read_line_limit(assignment['adapter'])
+    assert all(end - start + 1 <= line_limit for row in context['mandatory_source_windows']
+               for start, end in [(row['line_start'], row['line_end'])]), seat
     if assignment['adapter'] == 'claude':
         assert capacity['seats'][seat]['projected_turns'] <= 160
 required = [row for packet in manifest['source_context']['seats'].values()
@@ -2042,6 +2122,22 @@ required = [row for packet in manifest['source_context']['seats'].values()
 assert required
 assert all(segment['predicted_visible_bytes'] <= manifest['source_context']['max_shard_bytes']
            for row in required for segment in row['segments'])
+
+patch_sets = {'p': {'read_mode':'windows', 'chunks':[]}}
+context = {'seats': {
+    'luna': {'shards':[], 'required_source_ranges':[], 'source_read_required':False},
+    'claude': {'shards':[], 'required_source_ranges':[], 'source_read_required':False},
+}}
+assignments = {
+    'luna': {'adapter':'codex', 'patch_set':'p', 'patch_lines':121},
+    'claude': {'adapter':'claude', 'patch_set':'p', 'patch_lines':121},
+}
+compiled = module.compile_task_capacity(assignments, patch_sets, context)
+assert compiled['seats']['luna']['patch_proof_calls'] == 4
+assert compiled['seats']['claude']['patch_proof_calls'] == 1
+assert module.merge_repository_windows([('src/a.rs', 1, 121)], 40) == [
+    ('src/a.rs', 1, 40), ('src/a.rs', 41, 80),
+    ('src/a.rs', 81, 120), ('src/a.rs', 121, 121)]
 PY
     assert_eq "mandatory plan reads compile under the reserved repository-call budget" "$?" 0
     assert_eq "successful prepare removes a stale capacity diagnostic" \

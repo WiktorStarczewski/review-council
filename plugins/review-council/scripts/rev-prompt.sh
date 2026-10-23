@@ -331,7 +331,8 @@ import runpy
 import sys
 
 limits = runpy.run_path(sys.argv[1])
-print('limits', limits['READ_LINES'], limits['REPOSITORY_EXPANSION_CALL_LIMIT'],
+print('limits', limits['READ_LINES'], limits['CODEX_READ_LINES'],
+      limits['REPOSITORY_EXPANSION_CALL_LIMIT'],
       limits['MANDATORY_REPOSITORY_READ_LIMIT'])
 manifest = None
 if sys.argv[2]:
@@ -348,9 +349,9 @@ for seat in sys.argv[3:]:
 PY
 ) || die "cannot compile prompt limits and evidence modes"
 PATCH_MODES=(); PACKET_MODES=(); SEGMENT_MODES=()
-while read -r kind first second third; do
+while read -r kind first second third fourth; do
   if [ "$kind" = limits ]; then
-    READ_LINES=$first; CALL_LIMIT=$second; REFUTATION_START=$third
+    READ_LINES=$first; CODEX_READ_LINES=$second; CALL_LIMIT=$third; REFUTATION_START=$fourth
   else
     PATCH_MODES+=("$first"); PACKET_MODES+=("$second"); SEGMENT_MODES+=("$third")
   fi
@@ -542,7 +543,10 @@ EOC
     if [ "$PATCH_MODE" = chunks ]; then
       printf 'In chunk mode, obey the rendered patch chunk batch limit, reading only consecutive chunks in exact order and in full. A skipped, partial, or out-of-order chunk read fails your whole review. Do not repeat completed chunk reads.'
     else
-      printf 'In window mode, use consecutive windows of at most %s lines until coverage is complete.' "$READ_LINES"
+      printf 'In window mode, use consecutive windows of at most %s lines until coverage is complete.' "$PROMPT_READ_LINES"
+      if [ "$ADAPTER" = codex ]; then
+        printf ' For Codex, keep each assigned-patch window to at most %s lines, then continue at the next line. This is a ceiling, not a target: split further when needed to keep each response below the byte ceiling.' "$PROMPT_READ_LINES"
+      fi
     fi
     if [ "$HAS_PACKETS" = 1 ]; then
       printf ' Then read every listed source-context packet in full before source expansion. Treat each packet entry as exact original source at its recorded path and one-based lines.'
@@ -554,22 +558,23 @@ EOC
     printf '3. Read the smallest useful line window around each match. '
     case "$ADAPTER" in
       agent|claude|cursor-agent)
-        printf 'Every source Read call must set an explicit one-based `offset` and a `limit` of at most %s lines. Every Grep or search call must set a result limit of at most 80. ' "$READ_LINES";;
+        printf 'Every source Read call must set an explicit one-based `offset` and a `limit` of at most %s lines. Every Grep or search call must set a result limit of at most 80. ' "$PROMPT_READ_LINES";;
       cursor-sdk)
-        printf 'Every source council_read call must set an explicit one-based `offset` and a `limit` of at most %s lines. ' "$READ_LINES";;
+        printf 'Every source council_read call must set an explicit one-based `offset` and a `limit` of at most %s lines. ' "$PROMPT_READ_LINES";;
       codex) ;;
-      *) printf 'Every source read_file call must select an explicit one-based start and at most %s lines. Every search call must set a result limit of at most 80. ' "$READ_LINES";;
+      *) printf 'Every source read_file call must select an explicit one-based start and at most %s lines. Every search call must set a result limit of at most 80. ' "$PROMPT_READ_LINES";;
     esac
     echo 'Only exact full-read artifacts and document inputs named in this prompt are exceptions.'
     if [ "$ADAPTER" = cursor-sdk ]; then
       echo '4. Use council_read for exact authorized paths. Omit offset and limit only for complete named artifacts and document inputs; read those in full. Use prepared sibling-search results and bounded source reads to locate related sites.'
     else
-    printf '4. Shell commands that print source, diffs, or logs must select at most %s inclusive lines, so `END - START + 1 <= %s`. ' "$READ_LINES" "$READ_LINES"
-    printf 'Shell searches over multiple files need a global `| head -81` limiter; at most 80 result lines are accepted, '
+    printf '4. Shell commands that print source, diffs, or logs must select at most %s inclusive lines, so `END - START + 1 <= %s`. ' "$PROMPT_READ_LINES" "$PROMPT_READ_LINES"
+    printf 'Shell searches across one or more files need a global `| head -80` limiter; at most 80 result lines are accepted. If it fills, narrow the path or pattern and continue with another bounded search. '
+    printf 'Never compose a `head -81` search yourself. If a `Required cluster sibling search` below contains it, run that exact command unchanged; it is the sole plan-audit exception, and an 81st result invalidates that proof. Use `head -80` for every other search, then narrow and continue if more results are needed. '
     if [ -n "$EVIDENCE" ]; then
-      printf 'and an 81st line is an advisory with no proof credit for that call when every hard proof obligation is satisfied. Narrow and repeat the search within the 80-result bound if its evidence is needed. '
+      printf 'An accidental 81st line gets no proof credit for that call and remains advisory only after every hard proof obligation is satisfied. '
     else
-      printf 'and an 81st line invalidates the audit. '
+      printf 'An 81st line invalidates the audit. '
     fi
     cat <<'EOC'
 `rg --max-count` alone is per file. Use portable byte-preserving `sed -n 'START,ENDp' 'FILE'` for source windows. Never put backticks or command substitutions in shell search patterns.
@@ -583,7 +588,11 @@ EOC
 `head` limits lines, not bytes: keep searches off generated or minified files such as `dist/`, where one line can pass the output ceiling. Read original source from the working tree; `git show` of the base or any other revision is context only and never satisfies a required read or a citation.
 EOC
     fi
-    printf '5. Batch independent bounded tool calls into one turn with a 32 KiB combined output ceiling. '
+    if [ "$ADAPTER" = codex ]; then
+      printf '5. Codex source batching is disabled; do not use a source-batch payload. Each source read is a separate tool call. Use at most %s lines for every patch or repository source window, split further into consecutive windows as needed. Aim for under 24 KiB per response and per ordinary turn; if a planned response or turn may exceed 24 KiB, narrow it before reading. Hard ceilings are 32 KiB per response and for an ordinary turn. Ordered proof phases may use their rendered 60 KiB turn budget, with each response below 32 KiB; source packets stay within their ordinary 32 KiB turn cap. Line limits do not limit bytes. ' "$PROMPT_READ_LINES"
+    else
+      printf '5. Batch independent bounded tool calls into one turn with a 32 KiB combined output ceiling. '
+    fi
     if [ -n "$EVIDENCE" ]; then
       printf 'Ordered '
       [ "$PATCH_MODE" != chunks ] || printf 'patch-chunk, '
@@ -596,6 +605,11 @@ EOC
       echo 'Keep each council_read call to one path and obey the rendered read batch limits.'
     else
       echo 'Keep each shell tool call to one producer pipeline. Never mix source reads and searches in one shell call. For Codex, two bounded reads are still two calls: `sed -n 1102,1102p repo.test.ts && sed -n 193,193p repo.migration.test.ts` is invalid. Issue separate shell calls; batching means separate calls in one turn, never `&&` or `;` in one shell command.'
+      if [ "$ADAPTER" = codex ]; then
+        cat <<'EOC'
+For Codex source reads, use one path and one contiguous range per call; use a separate call for every other path or range. Safe examples: `sed -n '40,75p' 'src/file.ts'` and `rg -n -F 'symbolName' 'src/path' | head -80`. Do not combine source files or ranges with `&&` or `;`.
+EOC
+      fi
     fi
     printf '%s' "6. Expand to another bounded block, file, or pinned dependency only to answer a concrete question that could prove or refute a finding. Name the concrete symbol or invariant question in your reasoning, never as a comment inside the command, then make the tool call that bounded window."
     if [ -n "$DEPS_ROOT" ]; then printf ' Read pinned dependency source only under %s.' "$DEPS_ROOT"; fi
@@ -658,13 +672,13 @@ EOC
             echo "$FIRST_EVIDENCE: run portable bounded sed windows over $PATCH_ARTIFACT, starting at line 1."
             ;;
           agent|claude|cursor-agent)
-            echo "$FIRST_EVIDENCE: use Read to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most $READ_LINES lines, starting at line 1."
+            echo "$FIRST_EVIDENCE: use Read to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most $PROMPT_READ_LINES lines, starting at line 1."
             ;;
           cursor-sdk)
-            echo "$FIRST_EVIDENCE: use council_read to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most $READ_LINES lines, starting at line 1."
+            echo "$FIRST_EVIDENCE: use council_read to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most $PROMPT_READ_LINES lines, starting at line 1."
             ;;
           *)
-            echo "$FIRST_EVIDENCE: use read_file to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most $READ_LINES lines, starting at line 1."
+            echo "$FIRST_EVIDENCE: use read_file to read the exact frozen assigned patch $PATCH_ARTIFACT in consecutive windows of at most $PROMPT_READ_LINES lines, starting at line 1."
             ;;
         esac
         echo "Do not generate a live diff from the current worktree."
@@ -761,6 +775,8 @@ SEAT_MS=(); VALIDATE_ARGS=()
 for i in "${!SEATS[@]}"; do
   [ -z "$PANEL" ] || SEAT_STARTED=$(now_ms) || die "cannot read the clock"
   SEAT=${SEATS[$i]}; LENS=${LENSES[$i]}; EMPH=${EMPHASES[$i]}; ADAPTER=${ADAPTERS[$i]}; OUT=${OUTS[$i]}
+  PROMPT_READ_LINES=$READ_LINES
+  [ "$ADAPTER" != codex ] || PROMPT_READ_LINES=$CODEX_READ_LINES
   PATCH_MODE=${PATCH_MODES[$i]}; HAS_PACKETS=${PACKET_MODES[$i]}; HAS_SEGMENTS=${SEGMENT_MODES[$i]}
   CLEAN_ROOM=0; FIRST_EVIDENCE='First evidence action'
   case "+$LENS+" in *+clean-room+*) CLEAN_ROOM=1; FIRST_EVIDENCE+=' after required clean-room design';; esac
