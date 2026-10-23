@@ -115,10 +115,12 @@ assignment, model, and effort, even if it left an `INCOMPLETE PROOF` result, unl
 prelaunch refuses an already retired assignment. A hard audit failure or exit-0 result
 whose summary begins `INCOMPLETE PROOF` retires that label and seat immediately;
 never relaunch it.
-After a repeated execution failure, or immediately after retirement, one failed
+After a repeated execution failure, or immediately after retirement, each failed
 assignment may use one full-scope child on another enforced roster seat, bound to
-that parent assignment. No eligible executor, a second failed assignment, or a failed
-replacement leaves the panel incomplete: preserve siblings, retry once on the next higher enforced seat, then cover the missing lens as orchestrator coverage and continue.
+that parent assignment. Distinct failed assignments in the same panel may each be
+replaced with unique child labels; there is no panel-wide replacement cap. If a
+replacement has no eligible executor or fails, preserve valid siblings and cover
+the missing lens as orchestrator coverage without certifying that seat.
 A composite receipt retains valid sibling generations while rejecting any changed
 snapshot, roster, bundle, model, effort, prompt, or result. Panel-global failures
 still restore full scope for the whole panel. Numeric and document reviews keep full scope.

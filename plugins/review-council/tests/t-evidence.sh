@@ -2622,9 +2622,11 @@ def replacement_runs_on_another_seat():
         (session / 'r4-opus.exit').write_text('2\n')
         (session / 'r4-opus.audit-invalid.json').write_text('{"summary":"kept","findings":[]}\n')
         call('prepare', session, '4x', '--phase', 'repair', '--assignment', 'sol=' + bundles[2],
-             '--parent-assignment', '4:opus', good=False, error='panel already has a replacement')
+             '--parent-assignment', '4:opus', good=False,
+             error='replacement label is already bound to another parent assignment')
         call('prepare', session, '4x', '--phase', 'repair', '--assignment', 'opus=' + bundles[0],
-             '--parent-assignment', '4:sol', good=False, error='panel already has a replacement')
+             '--parent-assignment', '4:sol', good=False,
+             error='replacement label is already bound to another parent assignment')
         (session / 'r4-opus.exit').write_text('0\n'); (session / 'r4-opus.audit-invalid.json').unlink()
 
         child_path = session / 'r4x-evidence.manifest.json'
@@ -2638,14 +2640,30 @@ def replacement_runs_on_another_seat():
         assert not (session / 'r4-coverage.receipt.json').exists(), 'a failed replacement seals nothing'
         (session / 'r4x-terra.exit').write_text('0\n')
         call('verify-panel', session, '4', '--replacement', 'sol=4x', '--replacement', 'opus=4x',
-             good=False, error='at most one replacement per panel')
-        call('receipt', session, '4', '--replacement', 'sol=4x')
+             good=False, error='replacement child labels must be unique')
+        second_child = prepare('4x2', 'repair', '--assignment', 'sol=' + bundles[2],
+                               '--parent-assignment', '4:opus')
+        second_path = session / 'r4x2-evidence.manifest.json'
+        (session / 'r4x2-sol.prompt.md').write_text(call('render', second_path, 'sol'))
+        (session / 'r4x2-sol.json').write_text(json.dumps({'summary': 'second child', 'findings': [
+            {'severity': 'P2', 'file': 'main.py', 'line_start': 2, 'line_end': 2,
+             'claim': 'second child claim', 'evidence': 'e', 'suggested_fix': 'f', 'confidence': 0.9}]}))
+        (session / 'r4x2-sol.exit').write_text('0\n')
+        write_agent_audit(session, '4x2', 'sol')
+        assert second_child['parent_assignment']['seat'] == 'opus'
+        verified = json.loads(call('verify-panel', session, '4', '--replacement', 'sol=4x',
+                                   '--replacement', 'opus=4x2'))
+        assert verified['replacements'] == {'sol': '4x', 'opus': '4x2'}
+        call('receipt', session, '4', '--replacement', 'sol=4x', '--replacement', 'opus=4x2')
         receipt = json.loads((session / 'r4-coverage.receipt.json').read_text())
-        row = receipt['selected_generations']['sol']
-        assert (row['label'], row['seat'], row['adapter'], row['enforced']) == ('4x', 'terra', 'claude', True), row
-        assert row['result_sha256'] == module.digest((session / 'r4x-terra.json').read_bytes())
+        rows = receipt['selected_generations']
+        assert (rows['sol']['label'], rows['sol']['seat'], rows['sol']['adapter'],
+                rows['sol']['enforced']) == ('4x', 'terra', 'claude', True), rows['sol']
+        assert rows['sol']['result_sha256'] == module.digest((session / 'r4x-terra.json').read_bytes())
+        assert (rows['opus']['label'], rows['opus']['seat']) == ('4x2', 'sol'), rows['opus']
         assert receipt['selected_generations']['terra']['label'] == '4'
-        assert [(f['claim'], f['owners']) for f in receipt['findings']] == [('child claim', ['sol'])], receipt['findings']
+        assert [(f['claim'], f['owners']) for f in receipt['findings']] == [
+            ('child claim', ['sol']), ('second child claim', ['opus'])], receipt['findings']
 
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
         roster = {'seats': [{'seat': seat, 'extra': False, 'adapter': 'claude', 'model': 'model-' + seat,

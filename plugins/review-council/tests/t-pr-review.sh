@@ -13,6 +13,7 @@ pr_review_input() {
   },
   "gates": "3/3 green, 42 tests",
   "panel": ["GPT-5.6 Sol", "Claude Sonnet 5"],
+  "orchestrator": "GPT-6.1 Sol",
   "decisions": [
     {
       "title": "Keep compatibility mode?",
@@ -71,6 +72,7 @@ pr_review_expected() {
 
 2 panels · 3 findings: 1 fixed in [acme/repo#9](https://github.com/acme/repo/pull/9), 1 for you, 1 rejected · gates 3/3 green, 42 tests
 Panel: GPT-5.6 Sol · Claude Sonnet 5, each at maximum effort
+Orchestrator: GPT-6.1 Sol
 
 ### Decisions for you
 
@@ -507,6 +509,7 @@ test_pr_review_empty_sections() {
   "rejected": 0,
   "gates": "2/2 green, 8 tests",
   "panel": ["GPT-5.6 Sol"],
+  "orchestrator": "GPT-6.1 Sol",
   "decisions": [],
   "fixes": [],
   "verified_sound": ["The boundary remains fail-closed"],
@@ -527,7 +530,7 @@ JSON
 
 test_pr_review_required_lists() {
   local field session
-  for field in panel verified_sound coverage; do
+  for field in panel orchestrator verified_sound coverage; do
     session="$T/pr-required-$field"
     mkdir -p "$session"
     pr_review_input > "$session/pr-review.json"

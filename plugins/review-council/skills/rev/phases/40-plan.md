@@ -6,7 +6,7 @@ when verification accepts a new P0/P1 root cause or another nontrivial cluster.
 The plan panel runs after triage and before any edit of the working tree.
 When the plan panel is skipped, append a line beginning `Plan panel r<N>p - SKIPPED: <reason>` to `$S/findings.md` before `phase=fix`.
 `rev-state.sh` refuses `phase=fix` for code round `<N>` while `open.P0 + open.P1 + open.P2` is above zero, unless that skip line exists or every seat recorded by `phase=plan round=<N>p`, or by its `<N>px` replacement panel, has `r<label>-<seat>.json` and a `0` exit.
-An incomplete plan panel is not a skip: retry it once on the next higher enforced seat after fixing a local cause, and if that fails review the plan yourself against the plan contract before any edit.
+An incomplete plan panel is not a skip: after fixing a local cause, retry it through `rev-workhorse.py escalate`, which honors a matching per-review override and otherwise uses the next higher enforced seat. If that fails, review the plan yourself against the plan contract before any edit.
 
 Why: over 11 past runs, 56% of all findings (68% from round 5 on) were fixes of an
 earlier round's fix, and 55% of those were *incomplete* fixes - a rule applied to the one

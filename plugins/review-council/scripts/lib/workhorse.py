@@ -257,7 +257,7 @@ def roster_family(row):
     return None
 
 
-def choose_escalation(host, family, roster_rows, candidates):
+def choose_escalation(host, family, roster_rows, candidates, target_family=None):
     """Next enforced family on this host's chain, preferring a seat already on the roster.
 
     `candidates` maps a family to a launch spec or None. Agent-only specs are
@@ -265,7 +265,12 @@ def choose_escalation(host, family, roster_rows, candidates):
     """
     rows = roster_rows if isinstance(roster_rows, list) else []
     specs = candidates if isinstance(candidates, dict) else {}
-    for nxt in families_after(host, family):
+    remaining = families_after(host, family)
+    if target_family is not None:
+        if target_family not in remaining:
+            raise ValueError('requested escalation family is not higher than ' + family)
+        remaining = [target_family]
+    for nxt in remaining:
         for row in rows:
             if not isinstance(row, dict) or row.get('extra'):
                 continue
@@ -285,6 +290,8 @@ def choose_escalation(host, family, roster_rows, candidates):
             'effort': spec['effort'],
             'extra': False,
         }, False
+    if target_family is not None:
+        raise ValueError('requested escalation family is unavailable: ' + target_family)
     return None
 
 
@@ -339,6 +346,26 @@ def _clear_escalation(session):
         path.unlink()
 
 
+def escalation_override(session, family):
+    """Return the per-review target family for a failed family, if configured."""
+    path = Path(session) / 'state.json'
+    if not path.is_file():
+        return None
+    try:
+        state = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError('unreadable review state') from error
+    overrides = state.get('escalation_overrides', {}) if isinstance(state, dict) else None
+    if not isinstance(overrides, dict):
+        raise ValueError('invalid escalation_overrides in review state')
+    if any(not isinstance(source, str) or source not in CHAIN
+           or not isinstance(target, str) or target not in CHAIN
+           for source, target in overrides.items()):
+        raise ValueError('invalid escalation_overrides in review state')
+    target = overrides.get(family)
+    return target
+
+
 def escalate(session, seat):
     """Write the next enforced chain seat for a review seat that failed twice.
 
@@ -364,7 +391,8 @@ def escalate(session, seat):
     if record_path.is_file():
         host = read_record(record_path)['host']
     _chosen, candidates = _candidates(host, include_cursor=False)
-    chosen = choose_escalation(host, family, rows, candidates)
+    target_family = escalation_override(session, family)
+    chosen = choose_escalation(host, family, rows, candidates, target_family)
     if chosen is None:
         _clear_escalation(session)
         raise ValueError('normal chain is exhausted')

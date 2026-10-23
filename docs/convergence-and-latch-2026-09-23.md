@@ -41,9 +41,9 @@ On 2026-09-23 the wallet C1 review ran 23 rounds and 20 sessions and made 42 rev
 
   With no eligible executor, the panel is incomplete and the orchestrator asks the user. Exits 3, 4
   and 7 keep today's handling.
-- **At most one replacement per panel,** labelled `<N>x`. A second failure in the panel, or a
-  failure of the replacement, makes the panel incomplete. The orchestrator then asks the user. No
-  new session.
+- **Historical rule, superseded 2026-10-23: at most one replacement per panel,** labelled `<N>x`. A second failure in the panel, or a
+  failure of the replacement, made the panel incomplete. The current rule permits one
+  separately bound replacement per failed assignment, with no panel-wide replacement cap.
 - **This one rule replaces coverage repair.** "An assignment without a valid result gets at most one
   replacement on another eligible seat: after its exact retry for an execution failure, immediately
   for a hard audit failure." That sentence replaces the coverage-repair text (skills/rev/SKILL.md

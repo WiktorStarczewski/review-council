@@ -83,7 +83,7 @@ def receipt_file(name):
 
 
 def newest_seat_exit():
-    # Newest r<N>[x]-<seat>.exit mtime, the moment this round's findings stopped arriving.
+    # Newest r<N>x<optional-index>-<seat>.exit mtime, when this round's findings stopped arriving.
     # rev-seat.sh deletes the receipt before every relaunch, so the mtime is this launch's.
     # Plan rounds (r<N>p-) are excluded on purpose: the plan panel runs after triage by
     # design, so counting its exits would refuse every sanctioned triage-plan-fix path.
@@ -93,7 +93,7 @@ def newest_seat_exit():
     except OSError:
         return newest
     for name in names:
-        if not re.fullmatch(rf'r[0-9]+x?-{SEAT_NAME}\.exit', name):
+        if not re.fullmatch(rf'r[0-9]+(?:x[0-9]*)?-{SEAT_NAME}\.exit', name):
             continue
         try:
             newest = max(newest, os.lstat(os.path.join(session, name)).st_mtime)

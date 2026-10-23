@@ -69,6 +69,15 @@ OVERSIZED_BLOB = object()
 ACTIVE_PLAN_SEARCHES = set()
 
 
+def is_replacement_label(parent_label, child_label):
+    if child_label == parent_label + 'x':
+        return True
+    prefix = parent_label + 'x'
+    suffix = child_label[len(prefix):] if child_label.startswith(prefix) else ''
+    return (bool(suffix) and suffix.isdecimal() and int(suffix) >= 2
+            and SAFE_NAME.fullmatch(child_label) is not None)
+
+
 def phase_bundles(phase):
     return PLAN_BUNDLES if phase == 'plan' else BUNDLES
 
@@ -4548,7 +4557,7 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         executor, child_assignment = next(iter(assigned.items()))
         if (binding != expected_binding or len(assigned) != 1 or executor == seat
                 or unenforced_adapter(child_assignment['adapter'])
-                or manifest['label'] != parent['label'] + 'x'
+                or not is_replacement_label(parent['label'], manifest['label'])
                 or child_assignment['scope'] != 'full'
                 or child_assignment['bundle'] != parent_assignment['bundle']
                 or child_assignment.get('emphasis') != parent_assignment.get('emphasis')
@@ -5456,8 +5465,8 @@ def _prepare_locked(args, session):
             raise ValueError('plan parent assignments require whole-panel recovery')
         if parent_manifest['phase'] == 'repair' or parent_seat not in parent_manifest['assignments']:
             raise ValueError('invalid parent assignment')
-        if args.label != parent_label + 'x':
-            raise ValueError('replacement label must be ' + parent_label + 'x')
+        if not is_replacement_label(parent_label, args.label):
+            raise ValueError('replacement label must be ' + parent_label + 'x or a unique numeric suffix')
     chunk_mode, source_context_enabled = evidence_modes(os.environ, parent_manifest)
     source_head = args.head
     if parent_manifest is not None:
@@ -5521,7 +5530,7 @@ def _prepare_locked(args, session):
             prior = read_json(existing)
             if ((prior.get('parent_assignment') or {}).get('seat') != parent_seat
                     or list(prior.get('assignments') or {}) != [executor]):
-                raise ValueError('panel already has a replacement')
+                raise ValueError('replacement label is already bound to another parent assignment')
         roster_seat = next((row for row in roster['seats'] if row.get('seat') == parent_seat), None)
         if roster_seat is None:
             raise ValueError('parent assignment seat is absent from roster')
@@ -6148,12 +6157,13 @@ def verify_panel_selection(session, label, replacement_values=None, fresh=True, 
             raise ValueError('panel manifest changed during verification')
         return manifest, mh, results, None, replacements
     validate_panel_coverage(manifest)
-    if len(replacements) > 1:
-        raise ValueError('at most one replacement per panel')
     if not set(replacements) <= set(manifest['assignments']):
         raise ValueError('replacement seat is absent from parent panel')
-    if any(child_label != label + 'x' for child_label in replacements.values()):
-        raise ValueError('replacement label must be ' + label + 'x')
+    if len(set(replacements.values())) != len(replacements):
+        raise ValueError('replacement child labels must be unique')
+    if any(not is_replacement_label(label, child_label)
+           for child_label in replacements.values()):
+        raise ValueError('replacement labels must be ' + label + 'x or use unique numeric suffixes')
     results = {}
     generations = {}
     children = {}

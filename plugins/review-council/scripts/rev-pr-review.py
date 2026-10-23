@@ -140,6 +140,7 @@ def render(data, date):
     rejected = count(data.get("rejected"), "rejected")
     gates = prose(data.get("gates"), "gates")
     panel = prose_list(data.get("panel"), "panel")
+    orchestrator = prose(data.get("orchestrator"), "orchestrator")
     decisions = data.get("decisions")
     fixes = data.get("fixes")
     require(isinstance(decisions, list), "decisions must be a list")
@@ -207,6 +208,7 @@ def render(data, date):
         "",
         f"{panels} panels · {total} findings: {fixed_phrase}, {decisions_count} for you, {rejected} rejected · gates {gates}",
         "Panel: " + " · ".join(panel) + ", each at maximum effort",
+        "Orchestrator: " + orchestrator,
         "",
         "### Decisions for you",
         "",
