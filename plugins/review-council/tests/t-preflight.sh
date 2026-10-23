@@ -368,6 +368,39 @@ SH
   cd "$old_pwd" 2>/dev/null || cd "$T" || return 1
   PATH=$old_path; export PATH; unset RSTUB_ARGS
 }
+test_preflight_pr_identity() {
+  ( local B="$T/pf-pr"; seat_env; local PF; PF="$(pf_bin)/rev-preflight.sh"
+    local R="$B/repo" S="$B/session" STALE="$B/stale-session" base head
+    mkdir -p "$B/bin"
+    cat > "$B/bin/gh" <<'SH'
+#!/bin/bash
+printf '%s\n' "$@" >> "$GH_ARGS"
+[ "$1" = pr ] && [ "$2" = view ] || exit 2
+printf '{"number":71,"state":"OPEN","headRefName":"feat","headRefOid":"%s","baseRefName":"main","baseRefOid":"%s"}\n' "$PR_HEAD" "$PR_BASE"
+SH
+    chmod +x "$B/bin/gh"
+    export PATH="$B/bin:$PATH" GH_ARGS="$B/gh.args" RSTUB_ARGS="$B/roster.args"
+    mkrepo "$R"; git -C "$R" checkout -qb feat
+    printf 'change\n' > "$R/change.txt"; git -C "$R" add change.txt; git -C "$R" commit -qm change
+    base=$(git -C "$R" rev-parse main); head=$(git -C "$R" rev-parse HEAD)
+    export PR_HEAD="$head" PR_BASE="$base"
+    (cd "$R" && "$PF" --pr 71 --write "$S") > "$B/out" 2> "$B/err"
+    assert_eq "exact PR checkout passes preflight" "$?" 0
+    assert_grep "preflight pins PR number" "$S/scope.env" "^REV_PR_NUMBER='71'$"
+    assert_grep "preflight pins exact PR head" "$S/scope.env" "^REV_PR_HEAD='$head'$"
+    assert_grep "preflight pins exact PR base head" "$S/scope.env" "^REV_PR_BASE_HEAD='$base'$"
+    assert_grep "preflight measures the PR against its exact base" "$B/out" "^base=$base base_branch=main \\(open PR #71\\) branch=feat"
+    printf 'new local commit\n' >> "$R/change.txt"
+    git -C "$R" add change.txt; git -C "$R" commit -qm stale
+    rm -f "$RSTUB_ARGS"
+    (cd "$R" && "$PF" --pr 71 --write "$STALE") > "$B/stale.out" 2> "$B/stale.err"
+    assert_eq "stale PR checkout is refused" "$?" 1
+    assert_grep "stale PR refusal identifies the head mismatch" "$B/stale.err" 'checked out HEAD does not match PR #71 head'
+    assert_exit "stale PR refusal happens before a provider probe" 1 test -e "$RSTUB_ARGS"
+    assert_grep "preflight asks GitHub for exact head and base identities" "$GH_ARGS" '^number,state,headRefName,headRefOid,baseRefName,baseRefOid$'
+  )
+}
+
 test_prompt() {
   local S="$T/pr-sess"; mkdir -p "$S"
   printf 'REV_BASE=abc123\nREV_BRANCH=feat\nREV_DEFAULT=main\nREV_ROOT=/repo\nREV_SCOPE=branch\n' > "$S/scope.env"
