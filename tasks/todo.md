@@ -1,3 +1,22 @@
+# Plan review workload and recovery (#1752)
+
+- [x] Add the Council self-review restriction to repository `AGENTS.md`.
+- [x] Make the prepared assignment workload and hard-limit status visible before seat launch.
+- [x] Clarify Codex's one-producer-per-shell-call proof rule with the exact failed pattern.
+- [x] Allow failed assignments to continue through the configured replacement chain with unique children bound to the original parent.
+- [x] Bind every plan replacement to one failed or stale original assignment; require current-hash proof for every original seat.
+- [x] Run an independent normal review of the Council changes and fix its actionable findings.
+- [x] Align all plugin manifests, changelog, and release procedure for 0.7.11.
+- [ ] Complete an independent normal review of the full release candidate.
+- [ ] Push the candidate branch, open the PR, and pass current-head macOS, Ubuntu, and Cursor package CI.
+- [ ] Squash-merge, publish the signed 0.7.11 tag and GitHub release, then verify each installed host.
+
+### Review
+
+Root cause evidence and implementation decisions are recorded in
+`docs/superpowers/plans/2026-10-23-plan-review-recovery.md`. The independent normal
+review found three P1 gate gaps; all three were fixed and re-reviewed. No tests were run.
+
 # Release 0.5.10
 
 - [x] Let `codex_models` repeat an entry, one numbered seat per entry, up to four.

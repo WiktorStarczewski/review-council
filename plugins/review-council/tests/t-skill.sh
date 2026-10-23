@@ -668,8 +668,8 @@ skill_adapter_and_plan_gate_contract() {
   local verify_one='`verify-panel` certifies the one-seat plan panel once that seat returns'
   local before_code='The plan panel runs after triage and before any edit of the working tree.'
   local skip_line='When the plan panel is skipped, append a line beginning `Plan panel r<N>p - SKIPPED: <reason>` to `$S/findings.md` before `phase=fix`.'
-  local gate='`rev-state.sh` refuses `phase=fix` for code round `<N>` while `open.P0 + open.P1 + open.P2` is above zero, unless that skip line exists or every seat recorded by `phase=plan round=<N>p`, or by its `<N>px` replacement panel, has `r<label>-<seat>.json` and a `0` exit.'
-  local incomplete='An incomplete plan panel is not a skip: after fixing a local cause, retry it through `rev-workhorse.py escalate`, which honors a matching per-review override and otherwise uses the next higher enforced seat.'
+  local gate='`rev-state.sh` refuses `phase=fix` for code round `<N>` while `open.P0 + open.P1 + open.P2` is above zero, unless that skip line exists or every original plan assignment has either its own valid result or a successful one-seat child explicitly bound to that assignment, with a manifest whose plan hash still matches `fix-plan.md`.'
+  local incomplete='An incomplete plan panel is not a skip: after fixing a local cause, continue through `rev-workhorse.py escalate`, which honors a matching per-review override and otherwise uses the next higher enforced seat, until a valid plan result exists or the eligible chain is exhausted.'
   local fresh_counts='Write all three counts in one call after the round'"'"'s seats have exited: `rev-state.sh` refuses `phase=fix` while `open.P0`, `open.P1` and `open.P2` predate the newest `r<N>-<seat>.exit`, and only all three in one call refresh that stamp. A plan panel'"'"'s `r<N>p-<seat>.exit` is not a seat exit for this purpose, so triage stays valid across the plan gate.'
   local sibling='Sibling-site completeness: for each fix commit since the base, name the rule it applies and search the repository for sites, arms, realms, callers and copies (tests, JSDoc, docs) the rule reaches but the commit missed.'
   # Host-tied evidence wording that must never return: an evidence or plan decision keyed on the
@@ -859,9 +859,8 @@ test_skill_replacement_and_breaker_contract() {
   rev_bundle "$SK/codex-skills/rev" "$T/codex-skills/rev/SKILL.md"
   python3 - "$T/skills/rev/SKILL.md" "$T/codex-skills/rev/SKILL.md" <<'PY'
 import re, sys
-RULE = ('Each failed assignment gets at most one replacement on another eligible seat: '
-        'after its exact retry for an execution failure, immediately for a hard audit failure '
-        'or an exit-0 `INCOMPLETE PROOF` result.')
+RULE = ('continue that assignment through the configured eligible replacement chain until '
+        'valid proof exists or no eligible seat remains.')
 REMOVED = [
     'stop the current panel without another paid retry',
     'widen an evidence-audit failure into a full-state repair',
@@ -906,10 +905,10 @@ for path in sys.argv[1:]:
             problems.append(f'{host}: no {name} location')
         elif name == 'replacement procedure' and not all(
                 'parent without a terminal failure' in item
-                and 'second replacement for the same assignment' in item
+                and 'permits multiple attempts for the same original failed assignment' in item
                 and 'duplicate child label' in item for item in found):
             problems.append(f'{host}: replacement procedure omits its binding safeguards')
-        elif name != 'plan replacement' and name != 'replacement procedure' and not all(RULE in item for item in found):
+        elif name not in ('plan replacement', 'replacement procedure') and not all(RULE in item for item in found):
             problems.append(f'{host}: the rule is missing at the {name} location')
     for phrase in ('"$S" review_origin_ack=<N>', 'inherit-breaker "$PARENT_S"',
                    'Apply the standing decision yourself', 'revert the cited review changes',
@@ -922,7 +921,7 @@ for path in sys.argv[1:]:
 print('\n'.join(problems))
 raise SystemExit(1 if problems else 0)
 PY
-  assert_eq "both skills state one replacement rule and the review-origin breaker" "$?" 0
+  assert_eq "both skills state the replacement chain and review-origin breaker" "$?" 0
 }
 
 test_skill_keeps_one_commit_per_fix() {

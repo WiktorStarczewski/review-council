@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.11
+
+- Plan replacement retries can continue through the configured model chain while remaining bound to the original failed assignment. Fix-plan edits require fresh prepared evidence, and every original plan seat must have a valid current-hash result before code changes begin.
+- Prepared plan prompts show the estimated workload and any provider hard limit. Codex source-proof instructions now make clear that each shell call may contain only one source-producing pipeline.
+- Council repository changes use one independent normal reviewer. Review Council does not review its own repository, plugin, skills, scripts, or release artifacts.
+
 ## 0.7.10
 
 - Each failed panel assignment can receive one separately bound replacement, with unique child labels for additional failures. A panel no longer has a replacement-wide cap, and valid sibling results stay selected.
