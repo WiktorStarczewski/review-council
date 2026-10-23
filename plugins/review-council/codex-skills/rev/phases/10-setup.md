@@ -22,6 +22,11 @@ are relative to that absolute `PLUGIN`; quote paths and use arrays for arguments
   URL, or document paths. Resolve PR metadata and base read-only with `gh`; review a
   different branch in an isolated worktree instead of changing a dirty checkout.
   Respect an explicit `--base`. Do not fabricate a base when it cannot be resolved.
+- For an open PR review, use `--pr <number>` in preflight. It binds the scope to
+  the live PR number, branch, head SHA and base head SHA, and refuses a closed PR,
+  mismatched or dirty checkout, or a local base ref that does not match GitHub.
+  Fetch the exact base and head refs in a clean worktree before preflight. Do not
+  replace a refused PR-bound preflight with an unbound branch review.
 - The default code fix loop is adaptive. With the configured four-seat panel, a
   normal review uses eight code-seat launches plus one conditional plan. A large
   or high-risk review uses twelve code-seat launches before fixes: four simplicity,
@@ -68,10 +73,12 @@ before retrying. Only a `fresh` code session runs this from the repository root.
 
 ```bash
 REVIEW_COUNCIL_HOST=codex "$PLUGIN/scripts/rev-preflight.sh" \
-  --scope branch --write "$S"
+  --scope branch --write "$S" [--pr <number>]
 ```
 
-Substitute the resolved scope and append `--base <ref>` when specified. Fresh preflight writes
+Substitute the resolved scope, append `--pr <number>` for a PR, or append
+`--base <ref>` for a non-PR review with an explicit base. Do not combine `--pr`
+and `--base`. Fresh preflight writes
 `scope.env`, `files.txt`, `untracked.txt`, and the **probed** `roster.json`. Preflight
 refuses empty scopes or shared branches; use a worktree if a code review needs one.
 For documents, write absolute paths to `S/docs.txt`, set `REV_REPO` to their root,

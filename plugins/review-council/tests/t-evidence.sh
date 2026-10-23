@@ -2608,7 +2608,7 @@ def replacement_runs_on_another_seat():
              '--parent-assignment', '4:sol', good=False,
              error='replacement executor must be an enforced seat')
         call('prepare', session, '4y', '--phase', 'repair', *child_args, good=False,
-             error='replacement label must be 4x')
+             error='replacement label must be in the root assignment namespace')
         call('prepare', session, '4x', '--phase', 'repair', '--assignment', 'terra=' + bundles[1],
              '--parent-assignment', '4:sol', good=False,
              error='repair assignment does not match its parent')
@@ -2737,6 +2737,10 @@ def replacement_chain_reaches_opus():
             }))
             child = prepare(label, 'repair', '--assignment', executor + '=' + failed_bundle,
                             '--parent-assignment', parent_label + ':' + parent_seat)
+            assert child['replacement_executor'] == {
+                'seat': executor, 'family': family, 'adapter': adapter,
+                'model': model, 'effort': effort, 'extra': False,
+            }, child['replacement_executor']
             child_path = session / f'r{label}-evidence.manifest.json'
             (session / f'r{label}-{executor}.prompt.md').write_text(
                 call('render', child_path, executor))
@@ -2749,6 +2753,20 @@ def replacement_chain_reaches_opus():
             else:
                 (session / f'r{label}-{executor}.exit').write_text('0\n')
                 write_agent_audit(session, label, executor)
+
+        (session / 'rchainx3-escalate-opus.exit').write_text('2\n')
+        (session / 'rchainx3-escalate-opus.audit-invalid.json').write_text(
+            '{"summary":"terminal failure","findings":[]}\n')
+        (session / 'escalation.json').write_text(json.dumps({
+            'version': 1, 'seat': 'escalate-sol', 'family': 'sol', 'lab': 'openai',
+            'adapter': 'codex', 'model': 'gpt-5.6-sol', 'effort': 'high', 'extra': False,
+        }))
+        call('prepare', session, 'chainx4', '--phase', 'repair', '--assignment',
+             'escalate-sol=' + failed_bundle, '--parent-assignment',
+             'chainx3:escalate-opus', good=False,
+             error='replacement executor must advance the default model chain')
+        (session / 'rchainx3-escalate-opus.exit').write_text('0\n')
+        (session / 'rchainx3-escalate-opus.audit-invalid.json').unlink()
 
         verified = json.loads(call('verify-panel', session, 'chain', '--replacement',
                                    root_seats[0] + '=chainx3'))

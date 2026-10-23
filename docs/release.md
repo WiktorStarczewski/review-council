@@ -87,16 +87,16 @@ squash-merge the pull request.
 From a clean checkout of the merged commit, publish the signed release:
 
 ```bash
-git tag -s review-council--v0.7.10 -m "review-council 0.7.10" "$MERGE_COMMIT"
-git push origin review-council--v0.7.10
-git verify-tag review-council--v0.7.10
-gh release create review-council--v0.7.10 --verify-tag \
-  --title "review-council 0.7.10" --generate-notes
+git tag -s review-council--v0.7.11 -m "review-council 0.7.11" "$MERGE_COMMIT"
+git push origin review-council--v0.7.11
+git verify-tag review-council--v0.7.11
+gh release create review-council--v0.7.11 --verify-tag \
+  --title "review-council 0.7.11" --generate-notes
 ```
 
 Reinstall `review-council@review-council` for Claude and Codex, and run
 `install-cursor.sh` for Cursor. In fresh sessions on each host, require `rev` and
-`stack` at version `0.7.10`, and compare installed file and mode identity with the
+`stack` at version `0.7.11`, and compare installed file and mode identity with the
 released tag.
 
 Finally remove the stable worktree while preserving external review and verifier

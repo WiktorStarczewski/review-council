@@ -33,7 +33,8 @@ from review_limits import (CLAUDE_MAX_TURNS, MANDATORY_REPOSITORY_READ_LIMIT,
                            REPOSITORY_REFUTATION_CALL_RESERVE)
 from session_inputs import session_input_lock, validate_standard_inputs
 from roster import cursor_sdk_identity, validate_cursor_sdk_qualification
-from workhorse import SEAT, escalation_row, overlay_roster, plan_seat
+from workhorse import (CHAIN as WORKHORSE_CHAIN, ORDER as WORKHORSE_ORDER, SEAT,
+                       escalation_row, overlay_roster, plan_seat, roster_family)
 
 BUNDLES = ('correctness-boundaries', 'security-state-api',
            'concurrency-resources-performance', 'tests-observability-maintenance-regression')
@@ -184,6 +185,94 @@ def with_workhorse(session, roster, seats_in_play):
     if any(isinstance(name, str) and name.startswith('escalate-') for name in names):
         roster = overlay_roster(roster, escalation_row(session), names)
     return roster
+
+
+def replacement_executor_row(manifest):
+    row = manifest.get('replacement_executor')
+    if row is None:
+        return None
+    required = {'seat', 'family', 'adapter', 'model', 'effort', 'extra'}
+    assignments = manifest.get('assignments')
+    if (manifest.get('phase') != 'repair' or not isinstance(row, dict)
+            or set(row) != required or not isinstance(assignments, dict)
+            or len(assignments) != 1):
+        raise ValueError('invalid replacement executor')
+    seat = next(iter(assignments))
+    assignment = assignments[seat]
+    if (row.get('seat') != seat
+            or row.get('family') is not None and row.get('family') not in WORKHORSE_CHAIN
+            or not isinstance(row.get('adapter'), str)
+            or not isinstance(row.get('model'), str) or not isinstance(row.get('effort'), str)
+            or row.get('extra') is not False or not isinstance(assignment, dict)
+            or assignment.get('adapter') != row.get('adapter')
+            or row.get('adapter') not in ('codex', 'claude')
+            or roster_family(row) != row.get('family')):
+        raise ValueError('replacement executor does not match its assignment')
+    return dict(row)
+
+
+def replacement_executor_metadata(row):
+    family = roster_family(row)
+    if (not isinstance(row, dict)
+            or row.get('adapter') not in ('codex', 'claude')
+            or row.get('extra') is not False):
+        raise ValueError('replacement executor must be an enforced chain seat')
+    value = {key: row.get(key) for key in ('seat', 'adapter', 'model', 'effort', 'extra')}
+    value['family'] = family
+    return value
+
+
+def with_manifest_workhorse(session, roster, manifest):
+    seats = set(manifest.get('assignments') or {})
+    row = replacement_executor_row(manifest)
+    if row is None:
+        return with_workhorse(session, roster, seats)
+    roster = overlay_roster(roster, row, seats)
+    return with_workhorse(session, roster, seats - {row['seat']})
+
+
+def executor_row_for_manifest(session, manifest, seat):
+    row = replacement_executor_row(manifest)
+    if row is not None:
+        if row['seat'] != seat:
+            raise ValueError('replacement parent assignment does not match its executor')
+        return row
+    roster = read_json(session / 'roster.json')
+    roster = with_workhorse(session, roster, {seat})
+    return next((candidate for candidate in roster['seats']
+                 if candidate.get('seat') == seat), None)
+
+
+def replacement_root_manifest(session, manifest, fresh=False, seen=None, offline=False):
+    current = manifest
+    visited = set()
+    while current.get('phase') == 'repair':
+        if current.get('label') in visited:
+            raise ValueError('cyclic replacement lineage')
+        visited.add(current.get('label'))
+        binding = current.get('parent_assignment')
+        if not isinstance(binding, dict) or not isinstance(binding.get('manifest'), str):
+            raise ValueError('repair manifest has no parent assignment')
+        current, _ = validated_manifest(
+            session / binding['manifest'], fresh=fresh, seen=seen, offline=offline,
+            replay_plan_searches=False)
+    return current
+
+
+def validate_replacement_edge(parent_row, child_row, parent_is_repair=False):
+    parent_family = roster_family(parent_row) if parent_row else None
+    child_family = roster_family(child_row) if child_row else None
+    if child_family is None:
+        if parent_is_repair:
+            raise ValueError('nested replacement executor must remain on the default model chain')
+        return
+    if parent_family is None:
+        if parent_is_repair:
+            raise ValueError('nested replacement parent is not on the default model chain')
+        return
+    if (parent_family not in WORKHORSE_ORDER or child_family not in WORKHORSE_CHAIN
+            or WORKHORSE_ORDER.index(child_family) <= WORKHORSE_ORDER.index(parent_family)):
+        raise ValueError('replacement executor must advance the default model chain')
 
 
 def validate_live_roster_adapters(roster):
@@ -414,6 +503,50 @@ def scope(session):
     if not all(values.get(k) for k in ('REV_ROOT', 'REV_BASE', 'REV_SCOPE')):
         raise ValueError('scope requires root, base and scope')
     return values
+
+
+def validate_pinned_pr_checkout(values):
+    pr_number = values.get('REV_PR_NUMBER')
+    pinned_head = values.get('REV_PR_HEAD')
+    pinned_base = values.get('REV_PR_BASE_HEAD')
+    pinned_base_ref = values.get('REV_PR_BASE_REF')
+    if not any((pr_number, pinned_head, pinned_base)):
+        return
+    if (not pr_number or not re.fullmatch(r'[1-9][0-9]*', pr_number)
+            or not pinned_head or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', pinned_head)
+            or not pinned_base or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', pinned_base)
+            or not pinned_base_ref):
+        raise ValueError('invalid pinned PR identity')
+    root = str(Path(values['REV_ROOT']).resolve())
+    env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+
+    def git(*args):
+        result = subprocess.run(['git', '-C', root, *args], env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip()
+
+    current_head = git('rev-parse', '--verify', 'HEAD')
+    if current_head != pinned_head:
+        raise ValueError(f'checked out HEAD does not match pinned PR #{pr_number} head')
+    current_branch = git('symbolic-ref', '--quiet', '--short', 'HEAD')
+    if current_branch != values.get('REV_BRANCH'):
+        raise ValueError(f'checked out branch does not match pinned PR #{pr_number}')
+    status = git('status', '--porcelain')
+    if status is None:
+        raise ValueError(f'cannot verify pinned PR #{pr_number} checkout status')
+    if status:
+        raise ValueError(f'pinned PR #{pr_number} checkout has uncommitted changes')
+    base_branch = values.get('REV_BASE_BRANCH')
+    if not base_branch:
+        raise ValueError('pinned PR identity has no base branch')
+    if pinned_base_ref not in ('refs/remotes/origin/' + base_branch,
+                               'refs/heads/' + base_branch):
+        raise ValueError('pinned PR identity has an invalid local base ref')
+    current_base = git('rev-parse', '--verify', '--end-of-options', pinned_base_ref + '^{commit}')
+    if current_base != pinned_base:
+        raise ValueError(f'local base for pinned PR #{pr_number} no longer matches its recorded base head')
 
 
 def git_quote(path):
@@ -3617,7 +3750,7 @@ def validate_source_context_snapshot(repo, session, manifest, canonical_changes=
         canonical_facts = source_context_evidence(
             repo, manifest['snapshot_tree'], canonical_facts, entries_by_tree)
         roster = read_json(session / 'roster.json')
-        roster = with_workhorse(session, roster, set(manifest['assignments']))
+        roster = with_manifest_workhorse(session, roster, manifest)
         ordered_assignments = {
             row['seat']: manifest['assignments'][row['seat']]
             for row in roster['seats']
@@ -3691,7 +3824,7 @@ def validate_components(session, manifest, evidence):
         raise ValueError('invalid dependency components')
     assigned = manifest['assignments']; owner = manifest['mechanical_owner']
     roster = read_json(session / 'roster.json')
-    roster = with_workhorse(session, roster, set(assigned))
+    roster = with_manifest_workhorse(session, roster, manifest)
     ordered = {row['seat']: assigned[row['seat']] for row in roster['seats'] if row['seat'] in assigned}
     adaptive = (not manifest['fallback_reason'] and manifest['phase'] not in ('repair', 'numeric')
                 and len(assigned) > 1)
@@ -4256,7 +4389,7 @@ def validate_plan(session, manifest, evidence, check_source, replay_searches=Tru
         raise ValueError('mixed prepared and legacy plan searches')
     assignments = manifest['assignments']
     roster = read_json(session / 'roster.json')
-    roster = with_workhorse(session, roster, set(assignments))
+    roster = with_manifest_workhorse(session, roster, manifest)
     roster_order = [row['seat'] for row in roster['seats']
                     if row.get('seat') in assignments]
     ordered_assignments = {seat: assignments[seat] for seat in roster_order}
@@ -4454,7 +4587,7 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
     roster = read_json(session / 'roster.json')
     if not isinstance(roster, dict) or not isinstance(roster.get('seats'), list) or any(not isinstance(s, dict) for s in roster['seats']):
         raise ValueError('invalid roster shape')
-    roster = with_workhorse(session, roster, set(manifest.get('assignments') or {}))
+    roster = with_manifest_workhorse(session, roster, manifest)
     if fresh and not offline and provider_contract_input(session) != contract_binding:
         raise ValueError('provider contract input changed after prepare')
     core = {s['seat'] for s in roster['seats'] if not s.get('extra')}
@@ -4520,6 +4653,8 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
             raise ValueError('evidence/manifest mismatch: ' + field)
     if evidence.get('numeric') != numeric:
         raise ValueError('evidence/manifest mismatch: numeric')
+    if evidence.get('replacement_executor') != manifest.get('replacement_executor'):
+        raise ValueError('evidence/manifest mismatch: replacement_executor')
     binding = manifest.get('parent_assignment')
     if evidence.get('parent_assignment') != binding:
         raise ValueError('evidence/manifest mismatch: parent_assignment')
@@ -4536,10 +4671,10 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
             session / binding['manifest'], fresh=fresh, seen=seen, offline=offline,
             replay_plan_searches=False)
         seat = binding['seat']
-        if parent['phase'] == 'repair' or seat not in parent['assignments']:
+        if seat not in parent['assignments']:
             raise ValueError('invalid parent assignment binding')
         parent_assignment = parent['assignments'][seat]
-        roster_seat = next((row for row in roster['seats'] if row.get('seat') == seat), None)
+        roster_seat = executor_row_for_manifest(session, parent, seat)
         expected_binding = {
             'manifest': f"r{parent['label']}-evidence.manifest.json",
             'manifest_sha256': parent_hash,
@@ -4555,9 +4690,17 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
             'source_context_enabled': parent['source_context']['enabled'],
         }
         executor, child_assignment = next(iter(assigned.items()))
+        child_executor = replacement_executor_row(manifest)
+        root = replacement_root_manifest(session, parent, fresh=fresh, seen=seen, offline=offline)
+        if root['phase'] == 'plan' or not is_replacement_label(root['label'], manifest['label']):
+            raise ValueError('replacement label must be in the root assignment namespace')
+        if parent['phase'] == 'repair' and child_executor is None:
+            raise ValueError('nested replacement requires immutable executor metadata')
+        if child_executor is not None:
+            validate_replacement_edge(
+                roster_seat, child_executor, parent_is_repair=parent['phase'] == 'repair')
         if (binding != expected_binding or len(assigned) != 1 or executor == seat
                 or unenforced_adapter(child_assignment['adapter'])
-                or not is_replacement_label(parent['label'], manifest['label'])
                 or child_assignment['scope'] != 'full'
                 or child_assignment['bundle'] != parent_assignment['bundle']
                 or child_assignment.get('emphasis') != parent_assignment.get('emphasis')
@@ -4568,8 +4711,8 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
                 or manifest['patch_chunks_mode'] != parent['patch_chunks_mode']
                 or manifest['source_context']['enabled'] is not parent['source_context']['enabled']):
             raise ValueError('repair child does not match its parent assignment')
-    elif manifest['phase'] != 'repair' and 'parent_assignment' in manifest:
-        raise ValueError('parent assignment belongs only to repair evidence')
+    elif manifest['phase'] == 'repair' or 'parent_assignment' in manifest:
+        raise ValueError('repair evidence requires a parent assignment')
     phase = manifest['phase']; owner = manifest['mechanical_owner']; fallback = manifest['fallback_reason']
     bundles = [a['bundle'] for a in assigned.values()]
     regression = [s for s in adapters if s in assigned and BUNDLES[-1] in assigned[s]['bundles']]
@@ -5198,7 +5341,7 @@ def result_generation(session, manifest, manifest_hash, seat):
     hashes = validate_results(session, manifest, manifest_hash, [seat], verdicts)
     stem = f"r{manifest['label']}-{seat}"
     roster = read_json(session / 'roster.json')
-    roster = with_workhorse(session, roster, [seat])
+    roster = with_manifest_workhorse(session, roster, manifest)
     roster_seat = next(row for row in roster['seats'] if row.get('seat') == seat)
     assignment = manifest['assignments'][seat]
     row = {
@@ -5430,6 +5573,7 @@ def prepare(args):
 
 
 def _prepare_locked(args, session):
+    validate_pinned_pr_checkout(scope(session))
     repo = Repository(session)
     roster = read_json(session / 'roster.json')
     validate_live_roster_adapters(roster)
@@ -5452,6 +5596,7 @@ def _prepare_locked(args, session):
     parent_assignment = None
     parent_manifest = None
     parent_manifest_hash = None
+    replacement_executor = None
     parent_value = getattr(args, 'parent_assignment', None)
     if parent_value is not None:
         parent_label, separator, parent_seat = parent_value.partition(':')
@@ -5463,18 +5608,31 @@ def _prepare_locked(args, session):
             session / f'r{parent_label}-evidence.manifest.json')
         if parent_manifest['phase'] == 'plan':
             raise ValueError('plan parent assignments require whole-panel recovery')
-        if parent_manifest['phase'] == 'repair' or parent_seat not in parent_manifest['assignments']:
+        if parent_seat not in parent_manifest['assignments']:
             raise ValueError('invalid parent assignment')
-        if not is_replacement_label(parent_label, args.label):
-            raise ValueError('replacement label must be ' + parent_label + 'x or a unique numeric suffix')
+        root_manifest = replacement_root_manifest(session, parent_manifest, fresh=True)
+        if root_manifest['phase'] == 'plan':
+            raise ValueError('plan parent assignments require whole-panel recovery')
+        if not is_replacement_label(root_manifest['label'], args.label):
+            raise ValueError('replacement label must be in the root assignment namespace')
     chunk_mode, source_context_enabled = evidence_modes(os.environ, parent_manifest)
     source_head = args.head
+    pinned_pr_number = repo.scope.get('REV_PR_NUMBER')
+    pinned_pr_head = repo.scope.get('REV_PR_HEAD')
+    if (pinned_pr_number and args.head is not None
+            and args.head != pinned_pr_head):
+        raise ValueError(
+            f'explicit source selector conflicts with pinned PR #{pinned_pr_number} head')
     if parent_manifest is not None:
         parent_source = parent_manifest['source']
         parent_head = parent_source.get('ref') if parent_source['mode'] == 'ref' else None
         if args.head is not None and args.head != parent_head:
             raise ValueError('explicit source selector conflicts with parent assignment')
         source_head = parent_head
+    if (pinned_pr_number and source_head is not None
+            and source_head != pinned_pr_head):
+        raise ValueError(
+            f'parent source conflicts with pinned PR #{pinned_pr_number} head')
     if args.phase == 'plan':
         if not getattr(args, 'plan', None) or not getattr(args, 'plan_sha256', None):
             raise ValueError('plan phase requires --plan and --plan-sha256')
@@ -5522,16 +5680,24 @@ def _prepare_locked(args, session):
         if executor_row is None or unenforced_adapter(executor_row.get('adapter')):
             # An Agent result cannot be bound against copying, so it cannot stand in for another seat.
             raise ValueError('replacement executor must be an enforced seat')
+        parent_executor = executor_row_for_manifest(session, parent_manifest, parent_seat)
+        replacement_executor = replacement_executor_metadata(executor_row)
+        validate_replacement_edge(
+            parent_executor, replacement_executor, parent_is_repair=parent_manifest['phase'] == 'repair')
         if not attempt_module().terminal_failure(session, parent_label, parent_seat,
                                                  session / f'r{parent_label}-{parent_seat}.prompt.md'):
             raise ValueError('parent assignment has no recorded terminal failure')
         existing = session / f'r{args.label}-evidence.manifest.json'
         if existing.exists():
             prior = read_json(existing)
-            if ((prior.get('parent_assignment') or {}).get('seat') != parent_seat
+            prior_binding = prior.get('parent_assignment') or {}
+            if (prior_binding.get('manifest') != f'r{parent_label}-evidence.manifest.json'
+                    or prior_binding.get('manifest_sha256') != parent_manifest_hash
+                    or prior_binding.get('seat') != parent_seat
+                    or prior.get('replacement_executor') != replacement_executor
                     or list(prior.get('assignments') or {}) != [executor]):
                 raise ValueError('replacement label is already bound to another parent assignment')
-        roster_seat = next((row for row in roster['seats'] if row.get('seat') == parent_seat), None)
+        roster_seat = parent_executor
         if roster_seat is None:
             raise ValueError('parent assignment seat is absent from roster')
         parent_assignment = {
@@ -5773,6 +5939,7 @@ def _prepare_locked(args, session):
                 or source != parent_manifest['source'] or inputs['roster.json'] != parent_assignment['roster_sha256']):
             raise ValueError('repair child does not match its parent panel boundary')
         data['parent_assignment'] = parent_assignment
+        data['replacement_executor'] = replacement_executor
     if args.phase == 'plan':
         plan_name = prefix + '-plan.md'
         data['plan'] = {'source': str(plan_source), 'source_sha256': args.plan_sha256,
@@ -5869,6 +6036,7 @@ def _prepare_locked(args, session):
     manifest['unenforced_seats'] = unenforced_seats
     if parent_assignment is not None:
         manifest['parent_assignment'] = parent_assignment
+        manifest['replacement_executor'] = replacement_executor
     manifest_path = session / (prefix + '-evidence.manifest.json')
     receipt_path = session / (prefix + '-coverage.receipt.json')
     if receipt_path.exists() and (not manifest_path.exists() or manifest_path.read_bytes() != encoded(manifest)):
@@ -6143,6 +6311,41 @@ def parse_replacements(values):
     return replacements
 
 
+def replacement_chain_to_root(session, root_manifest, root_hash, root_seat, final_label,
+                              fresh=True, seen=None):
+    if not is_replacement_label(root_manifest['label'], final_label):
+        raise ValueError('replacement label is outside the root assignment namespace')
+    current_path = session / f'r{final_label}-evidence.manifest.json'
+    current, current_hash = validated_manifest(
+        current_path, fresh=fresh, seen=seen, replay_plan_searches=False)
+    chain = []
+    visited = set()
+    while True:
+        if (current['label'] in visited or current['phase'] != 'repair'
+                or not is_replacement_label(root_manifest['label'], current['label'])):
+            raise ValueError('invalid replacement chain')
+        visited.add(current['label'])
+        binding = current.get('parent_assignment')
+        if not isinstance(binding, dict):
+            raise ValueError('replacement chain is missing its parent assignment')
+        parent_path = session / binding['manifest']
+        parent, parent_hash = validated_manifest(
+            parent_path, fresh=fresh, seen=seen, replay_plan_searches=False)
+        parent_seat = binding['seat']
+        if not attempt_module().terminal_failure(
+                session, parent['label'], parent_seat,
+                session / f"r{parent['label']}-{parent_seat}.prompt.md"):
+            raise ValueError('replacement parent assignment has no recorded terminal failure')
+        chain.append((current_path, current, current_hash))
+        if parent['label'] == root_manifest['label']:
+            if parent_hash != root_hash or parent_seat != root_seat:
+                raise ValueError('replacement child is bound to another parent assignment')
+            return current, current_hash, next(iter(current['assignments'])), chain
+        if parent['phase'] != 'repair':
+            raise ValueError('replacement chain does not lead to the selected root panel')
+        current_path, current, current_hash = parent_path, parent, parent_hash
+
+
 def verify_panel_selection(session, label, replacement_values=None, fresh=True, seen=None,
                            verdicts=None):
     manifest_path = session / f'r{label}-evidence.manifest.json'
@@ -6167,6 +6370,7 @@ def verify_panel_selection(session, label, replacement_values=None, fresh=True, 
     results = {}
     generations = {}
     children = {}
+    used_chain_labels = set()
     for seat in manifest['assignments']:
         child_label = replacements.get(seat)
         if child_label is None:
@@ -6176,18 +6380,20 @@ def verify_panel_selection(session, label, replacement_values=None, fresh=True, 
                 result_generation(session, manifest, mh, seat)
             except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError,
                     RecursionError, UnicodeError):
-                pass
+                if not attempt_module().terminal_failure(
+                        session, label, seat, session / f'r{label}-{seat}.prompt.md'):
+                    raise ValueError('replacement parent assignment has no recorded terminal failure')
             else:
                 raise ValueError('replacement parent assignment is already valid: ' + seat)
-            child_path = session / f'r{child_label}-evidence.manifest.json'
-            child, child_hash = validated_manifest(child_path, fresh=fresh, seen=seen)
-            binding = child.get('parent_assignment')
-            if (not isinstance(binding, dict) or binding.get('manifest') != manifest_path.name
-                    or binding.get('manifest_sha256') != mh or binding.get('seat') != seat):
-                raise ValueError('replacement child is bound to another parent seat: ' + seat)
+            child, child_hash, executor, lineage = replacement_chain_to_root(
+                session, manifest, mh, seat, child_label, fresh=fresh, seen=seen)
+            chain_labels = {item[1]['label'] for item in lineage}
+            if len(chain_labels) != len(lineage) or used_chain_labels & chain_labels:
+                raise ValueError('replacement child labels must be unique across assignment chains')
+            used_chain_labels.update(chain_labels)
             hashes, generation = result_generation(session, child, child_hash,
-                                                   next(iter(child['assignments'])))
-            children[seat] = (child_path, child, child_hash)
+                                                   executor)
+            children[seat] = lineage
         overlap = set(results) & set(hashes)
         if overlap:
             raise ValueError('mixed result generations: ' + ', '.join(sorted(overlap)))
@@ -6199,11 +6405,12 @@ def verify_panel_selection(session, label, replacement_values=None, fresh=True, 
         manifest_path, fresh=fresh, seen=seen, replay_plan_searches=False)
     if final_hash != mh or final_manifest != manifest:
         raise ValueError('panel manifest changed during verification')
-    for seat, (child_path, child, child_hash) in children.items():
-        final_child, final_child_hash = validated_manifest(
-            child_path, fresh=fresh, seen=seen, replay_plan_searches=False)
-        if final_child_hash != child_hash or final_child != child:
-            raise ValueError('replacement manifest changed during verification: ' + seat)
+    for seat, lineage in children.items():
+        for child_path, child, child_hash in lineage:
+            final_child, final_child_hash = validated_manifest(
+                child_path, fresh=fresh, seen=seen, replay_plan_searches=False)
+            if final_child_hash != child_hash or final_child != child:
+                raise ValueError('replacement manifest changed during verification: ' + seat)
     return manifest, mh, results, generations, replacements
 
 

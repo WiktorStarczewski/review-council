@@ -264,3 +264,16 @@
 - A verification assertion and a later mutation must be sequential tool operations or a fail-fast script. A failing assertion must never fall through to a commit, seat launch or publication.
 - A PR review must bind the live GitHub head and base before provider discovery. A branch name or inferred merge base can point at an older checkout and produce plausible but irrelevant capacity diagnostics. Preserve the exact PR identity in session inputs and refuse drift before evidence preparation.
 
+# Failed assignments need a full replacement chain
+
+A panel-wide cap is different from a per-assignment cap. Council already preserved
+independent sibling replacements, but it stopped a failed assignment after one
+replacement. Keep the lineage auditable and advance that assignment through each
+available enforced family in order, ending at Opus; only then finish the remaining
+assignment locally.
+
+# Review Council changes use an independent internal review
+
+When changing the Review Council repository, do not use Review Council to review
+itself. Use the normal internal review workflow with one reviewer.
+

@@ -116,11 +116,13 @@ prelaunch refuses an already retired assignment. A hard audit failure or exit-0 
 whose summary begins `INCOMPLETE PROOF` retires that label and seat immediately;
 never relaunch it.
 After a repeated execution failure, or immediately after retirement, each failed
-assignment may use one full-scope child on another enforced roster seat, bound to
-that parent assignment. Distinct failed assignments in the same panel may each be
-replaced with unique child labels; there is no panel-wide replacement cap. If a
-replacement has no eligible executor or fails, preserve valid siblings and cover
-the missing lens as orchestrator coverage without certifying that seat.
+assignment advances through distinct higher enforced model families. Bind every
+full-scope child to its immediate failed parent, and continue from a failed child
+until the assignment succeeds or the chain is exhausted at Opus. Distinct failed
+assignments in the same panel keep independent chains with unique child labels;
+there is no panel-wide replacement cap. If no eligible family remains, preserve
+valid siblings and cover the missing lens as orchestrator coverage without
+certifying that seat.
 A composite receipt retains valid sibling generations while rejecting any changed
 snapshot, roster, bundle, model, effort, prompt, or result. Panel-global failures
 still restore full scope for the whole panel. Numeric and document reviews keep full scope.

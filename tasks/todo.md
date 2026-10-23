@@ -1,15 +1,18 @@
 # Release 0.7.11
 
-- [ ] Bind PR-number preflight to the live head and base before provider probes.
-- [ ] Preserve the exact PR identity in session inputs and reject a checkout change before evidence preparation.
-- [ ] Update both host setup phases, matching manifests, changelog, release procedure, plan, and lessons.
-- [ ] Run focused tests, frozen release verification, and the signed stable 0.7.10 review.
+- [x] Bind PR-number preflight to the live head and base before provider probes.
+- [x] Preserve the exact PR identity in session inputs and reject a checkout change before evidence preparation.
+- [x] Update both host setup phases, matching manifests, changelog, release procedure, plan, and lessons.
+- [ ] Run focused tests and frozen release verification on the exact candidate.
+- [x] Complete one normal internal review of the finished code; close the verified source-selector mismatch with no remaining P0-P2 findings.
 - [ ] Push the PR and wait for current-head macOS and Ubuntu CI.
 - [ ] Squash-merge, publish the signed 0.7.11 tag and release, and verify installation.
 
 ## Release review
 
-Pending.
+- Expected-red run `40010322339` confirmed on Ubuntu and macOS: `prepare --head <other>` succeeded, omitted the pinned-PR refusal, and published a manifest before the fix.
+- Normal one-seat re-review confirmed the source-selector P1 is closed and found no remaining P0-P2 findings.
+- Current-head release verification is pending after the implementation commit is pushed.
 
 # Release 0.5.10
 
@@ -843,3 +846,12 @@ wave 19 records and prose; functional code remains identical to that verified he
 - [ ] Task6 live qualification, normal cumulative reviews, full both-OS CI and signed release.
 
 Review results: pending. SDK credentials absent; no live SDK qualification or product code exists yet. Existing wallet runtimes remain frozen.
+
+## PR #67: Exact PR Binding and Exhaustible Model Replacement
+
+- [x] Verify latest published and installed Council is 0.7.10; use it for candidate review.
+- [x] Confirm the checkout-binding test-only CI red on both macOS and Ubuntu before implementation.
+- [x] Confirm test-only checkout-binding and repeated replacement-chain regressions fail on both Ubuntu and macOS before implementation. CI run `40001522036` failed `replacement_chain_reaches_opus` with `assignment roster mismatch` after escalation advances; the same test-only head also has the expected checkout-binding failures.
+- [ ] Implement checkout binding and auditable replacement lineage through Luna, Sonnet, Sol, and Opus.
+- [ ] Update both host skill trees, release metadata, and tests; preserve all existing retry, sibling, and exhaustion rules.
+- [ ] Complete the frozen CI gate, get one normal internal review of the finished code, fix actionable findings, and release/install 0.7.11.

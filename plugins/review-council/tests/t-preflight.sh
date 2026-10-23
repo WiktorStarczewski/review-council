@@ -376,20 +376,31 @@ test_preflight_pr_identity() {
 #!/bin/bash
 printf '%s\n' "$@" >> "$GH_ARGS"
 [ "$1" = pr ] && [ "$2" = view ] || exit 2
-printf '{"number":71,"state":"OPEN","headRefName":"feat","headRefOid":"%s","baseRefName":"main","baseRefOid":"%s"}\n' "$PR_HEAD" "$PR_BASE"
+printf '{"number":71,"state":"%s","headRefName":"%s","headRefOid":"%s","baseRefName":"main","baseRefOid":"%s"}\n' \
+  "$PR_STATE" "$PR_BRANCH" "$PR_HEAD" "$PR_BASE"
 SH
     chmod +x "$B/bin/gh"
     export PATH="$B/bin:$PATH" GH_ARGS="$B/gh.args" RSTUB_ARGS="$B/roster.args"
     mkrepo "$R"; git -C "$R" checkout -qb feat
     printf 'change\n' > "$R/change.txt"; git -C "$R" add change.txt; git -C "$R" commit -qm change
     base=$(git -C "$R" rev-parse main); head=$(git -C "$R" rev-parse HEAD)
-    export PR_HEAD="$head" PR_BASE="$base"
+    export PR_STATE=OPEN PR_BRANCH=feat PR_HEAD="$head" PR_BASE="$base"
     (cd "$R" && "$PF" --pr 71 --write "$S") > "$B/out" 2> "$B/err"
     assert_eq "exact PR checkout passes preflight" "$?" 0
     assert_grep "preflight pins PR number" "$S/scope.env" "^REV_PR_NUMBER='71'$"
     assert_grep "preflight pins exact PR head" "$S/scope.env" "^REV_PR_HEAD='$head'$"
     assert_grep "preflight pins exact PR base head" "$S/scope.env" "^REV_PR_BASE_HEAD='$base'$"
+    assert_grep "preflight pins PR base branch" "$S/scope.env" "^REV_BASE_BRANCH='main'$"
+    assert_grep "preflight pins the exact local base ref" "$S/scope.env" "^REV_PR_BASE_REF='refs/heads/main'$"
     assert_grep "preflight measures the PR against its exact base" "$B/out" "^base=$base base_branch=main \\(open PR #71\\) branch=feat"
+    export PR_BASE="$head"
+    rm -f "$RSTUB_ARGS"
+    (cd "$R" && "$PF" --pr 71 --write "$B/base-drift") > "$B/base-drift.out" 2> "$B/base-drift.err"
+    assert_eq "PR preflight refuses a stale local base" "$?" 1
+    assert_grep "stale base refusal identifies the PR binding" "$B/base-drift.err" \
+      'no local ref for PR #71 base branch matches its base head'
+    assert_exit "stale base refusal happens before a provider probe" 0 test ! -e "$RSTUB_ARGS"
+    export PR_BASE="$base"
     printf 'new local commit\n' >> "$R/change.txt"
     git -C "$R" add change.txt; git -C "$R" commit -qm stale
     rm -f "$RSTUB_ARGS"
@@ -413,6 +424,10 @@ test_prompt() {
   assert_grep "diff command" "$p" 'git diff abc123'
   assert_grep "files listed" "$p" '^- src/x.test.ts$'
   assert_grep "lens text" "$p" 'off-by-one'
+  printf "REV_BASE='abc123'\nREV_BRANCH='feat'\nREV_DEFAULT='main'\nREV_BASE_BRANCH='main'\nREV_ROOT='/repo'\nREV_SCOPE='branch'\nREV_PR_NUMBER='71'\nREV_PR_HEAD='0123456789012345678901234567890123456789'\nREV_PR_BASE_HEAD='abcdefabcdefabcdefabcdefabcdefabcdefabcd'\n" > "$S/scope.env"
+  p=$("$SCRIPTS/rev-prompt.sh" "$S" 2 codex-terra correctness "Correctness, edge cases, error handling")
+  assert_grep "PR-bound prompt names the exact head and base" "$p" \
+    'Bound pull request: #71 \(head 0123456789012345678901234567890123456789, base branch `main` at abcdefabcdefabcdefabcdefabcdefabcdefabcd\)'
   assert_grep "emphasis" "$p" '^Round emphasis: Correctness, edge cases, error handling$'
   assert_grep "baseline included" "$p" 'pre-existing failures'
   assert_grep "rejected none" "$p" '\(none yet\)'

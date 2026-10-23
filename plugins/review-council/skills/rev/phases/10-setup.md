@@ -49,8 +49,14 @@ preflight choice.
    ```
    A printed path is `$S/roster-config.json`. Pass it as `REVIEW_COUNCIL_CONFIG` for this preflight only. Do not edit the user's config. A non-zero exit is fatal: relay it and do not preflight. Then:
    ```bash
-   ${CLAUDE_PLUGIN_ROOT}/scripts/rev-preflight.sh --scope <branch|uncommitted|path> --write $S
+   ${CLAUDE_PLUGIN_ROOT}/scripts/rev-preflight.sh --scope <branch|uncommitted|path> --write $S [--pr <number>]
    ```
+   For an open PR review, pass `--pr <number>`. This binds the scope to the live PR
+   number, branch, head SHA and base head SHA. It refuses a closed PR, mismatched or
+   dirty checkout, or a local base ref that does not match GitHub. Fetch the exact
+   refs into a clean worktree before preflight, then retry only with a fresh session.
+   Do not replace a refused PR-bound preflight with an unbound branch review. Do not
+   combine `--pr` with an explicit `--base`.
    The default mode is normal: four Luna seats, or four Cursor Grok seats when this host is Cursor and the SDK can seat them. `high effort` selects high: one Opus, one Sol, one Sonnet, and one Luna. An explicit `4*luna` or `4*grok` overrides that preset. `$S/panel-request.json` records the mode and the chain. Every later code panel and the plan panel uses that frozen roster. Do not rebuild it, and do not put the workhorse in those panels.
    For a fresh session, non-zero → relay the one-line reason verbatim. Exit 5 is retryable. Preserve the
    session and retry after the temporary provider availability problem clears. Exit 6 is permanent.

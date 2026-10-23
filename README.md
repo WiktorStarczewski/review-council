@@ -603,11 +603,11 @@ four provider calls.
 
 | Failure | Recovery |
 | --- | --- |
-| exit 1 or 2, with no invalid read audit | retry only that seat, once, with the exact prompt, assignment, model and effort |
-| hard read-audit failure | keep every artifact, never relaunch under that label, and replace the assignment once on another enforced seat |
-| a seat still failing after its retry | replace that assignment once on another enforced seat |
-| multiple failed assignments in one panel | replace each failed assignment independently with a unique child label (`<N>x`, then `<N>x2` and upward) |
-| no eligible replacement seat or a failed replacement | cover the missing lens as orchestrator coverage and continue without certifying that seat |
+| exit 1 or 2, with no invalid read audit | retry only that seat, once, with the exact prompt, assignment, model and effort; if it still fails, advance through its replacement chain |
+| hard read-audit failure or incomplete proof | keep every artifact, never relaunch under that label, and advance immediately to the next available enforced family |
+| failed replacement | bind the next child to that failed generation and continue through distinct higher enforced families until success or exhaustion at Opus |
+| multiple failed assignments in one panel | run independent replacement chains with unique child labels (`<N>x`, then `<N>x2`, `<N>x3` and upward) |
+| no eligible family remains | cover the missing lens as orchestrator coverage and continue without certifying that seat |
 | receipt failure | diagnose the provenance or contract defect and end the run |
 
 A hard audit failure ends only that seat's assignment; siblings keep running and keep their

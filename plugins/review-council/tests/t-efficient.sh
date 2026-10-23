@@ -31,7 +31,7 @@ test_adaptive_schedule_contract() {
   local timing='One four-bundle verification panel reviews the latest material state: the current combined panel when no fix follows, a separate panel after simplicity-only discovery, or a fresh panel after fixes.'
   local plan_trigger='Run the plan panel when accepted findings require a nontrivial change; skip it when there is no accepted fix or every accepted fix is a P3 or one-line P2.'
   local extras='Adaptive default panels use core seats and omit extras. Explicit numeric round plans may include extras in their configured rounds.'
-  local repair="Do not certify an adaptive panel until every assignment has a valid result, either its own result or its one replacement's result."
+  local repair="Do not certify an adaptive panel until every assignment has a valid result, either its own result or the terminal result from its replacement chain."
   local numeric_continue="Only numeric mode continues past its requested minimum while any of these hold: the last numbered code panel produced a new P0/P1; the last numbered panel's fixes were nontrivial; any P0/P1 remains open; or a lens or major changed file remains unreviewed."
   local numeric_stop='Numeric mode stops only after the requested minimum numbered code panels ran, two consecutive numbered code panels produced no new P0/P1, no P0/P1 remains open, and gates are at or better than baseline. Plan panels do not count as numbered code panels.'
   local receipt='Current-session completion and finding yield require a schema-valid result with a successful exit receipt. Only exact hashed receiptless results recorded in a versioned legacy roster policy may omit one. Usage-bearing failed attempts remain metered.'

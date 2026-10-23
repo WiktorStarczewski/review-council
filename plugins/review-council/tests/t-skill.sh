@@ -863,7 +863,7 @@ RULE = ('A failed assignment may continue through distinct higher enforced model
         'until it succeeds or the chain is exhausted at Opus.')
 REMOVED = [
     'Each failed assignment gets at most one replacement',
-    'If a replacement fails, finish that assignment yourself',
+    'If no eligible family remains, finish that assignment yourself',
     'a second failure occurs on the same assignment',
     'second replacement for the same assignment',
     'stop the current panel without another paid retry',
@@ -925,7 +925,7 @@ for path in sys.argv[1:]:
 print('\n'.join(problems))
 raise SystemExit(1 if problems else 0)
 PY
-  assert_eq "both skills state one replacement rule and the review-origin breaker" "$?" 0
+  assert_eq "both skills state the replacement-chain rule and the review-origin breaker" "$?" 0
 }
 
 test_skill_keeps_one_commit_per_fix() {

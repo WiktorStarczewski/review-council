@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.11
+
+- PR-bound reviews pin the open PR number, branch, head SHA, and base SHA before provider discovery, then recheck the head before evidence preparation.
+- A failed adaptive code assignment can continue through separately bound replacement generations on higher available model families until success or exhaustion at Opus. Each generation retains its executor identity, and receipts select only the terminal valid result while preserving valid siblings.
+
 ## 0.7.10
 
 - Each failed panel assignment can receive one separately bound replacement, with unique child labels for additional failures. A panel no longer has a replacement-wide cap, and valid sibling results stay selected.
