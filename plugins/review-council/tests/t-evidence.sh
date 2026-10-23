@@ -1823,6 +1823,52 @@ def source_context_prefers_named_production_and_maps_gates():
         assert mapped['component_ids'] == ['main'], mapped
         assert global_gate['component_ids'] == ['main', 'other'], global_gate
 
+def local_names_do_not_expand_cross_file_proof():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('src/history.ts',
+              'export const readHistory = (input: number) => {\n'
+              '  const row = input + 1;\n'
+              '  const page = row + 1;\n'
+              '  return page;\n'
+              '};\n')
+        write('src/consumer.ts',
+              'import { readHistory } from "./history";\n'
+              'export const consumeHistory = () => readHistory(1);\n')
+        write('src/unrelated.ts',
+              'export const unrelated = () => {\n'
+              '  const row = 1;\n'
+              '  const page = row + 1;\n'
+              '  return page;\n'
+              '};\n')
+        write('tests/history.test.ts',
+              'import { readHistory } from "../src/history";\n'
+              'test("reads history", () => expect(readHistory(1)).toBe(3));\n')
+        write('tests/unrelated.test.ts',
+              'const page = 1;\n'
+              'test("uses a local page", () => expect(page).toBe(1));\n')
+        write('docs/notes.md', 'row page value are common words in this design note.\n')
+        git('add', '.'); git('commit', '-qm', 'proof scope base'); base = git('rev-parse', 'HEAD')
+        scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('src/history.ts', (root / 'src/history.ts').read_text().replace('return page;', 'return page + 1;'))
+
+        manifest = prepare()
+        facts = json.loads((session / 'r1-evidence.json').read_text())
+        public = next(row for row in facts['symbols'] if row['name'] == 'readHistory')
+        assert public['cross_file'] is True, public
+        assert any(row['name'] == 'page' and row['cross_file'] is False for row in facts['symbols'])
+        assert any(row['path'] == 'src/consumer.ts' and row['name'] == 'readHistory'
+                   for row in facts['call_sites'])
+        assert any(row['path'] == 'tests/history.test.ts' for row in facts['related_tests'])
+        assert not any(row['path'] in {'src/unrelated.ts', 'tests/unrelated.test.ts', 'docs/notes.md'}
+                       for row in facts['call_sites'] + facts['related_tests'])
+        proof_paths = {required['path'] for packet in manifest['source_context']['seats'].values()
+                       for required in packet['required_source_ranges']}
+        assert 'src/consumer.ts' in proof_paths and 'tests/history.test.ts' in proof_paths, proof_paths
+        assert not proof_paths & {'src/unrelated.ts', 'tests/unrelated.test.ts', 'docs/notes.md'}, proof_paths
+
 def complete_declaration_context():
     with fixture() as (root, session, git, write, call, prepare, finish):
         body = ('def long_function():\n'
@@ -3595,7 +3641,8 @@ cases = (
     verification_nested_restoration_refuses_unusable_instruction_budget, coverage_head_publication_is_monotonic,
     same_stat_and_index_flags, cstyle_enclosing_bodies, wallet_scale,
     literal_scope_and_inventories, sparse_gitlink_and_special, roster_bundle_coverage,
-    source_context_packets, provider_visible_source_packet_limit,
+    source_context_packets, local_names_do_not_expand_cross_file_proof,
+    provider_visible_source_packet_limit,
     source_context_prefers_named_production_and_maps_gates, complete_declaration_context,
     budget_omissions_are_segmented_or_retained, innermost_declarations_and_bounded_anchors,
     high_confidence_component_union, components_ownership_and_instructions,
@@ -3637,6 +3684,7 @@ groups = {
     ),
     'context': (
         cstyle_enclosing_bodies, source_context_packets,
+        local_names_do_not_expand_cross_file_proof,
         provider_visible_source_packet_limit,
         source_context_prefers_named_production_and_maps_gates,
         complete_declaration_context, budget_omissions_are_segmented_or_retained,
