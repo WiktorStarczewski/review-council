@@ -2463,8 +2463,11 @@ def receipt_read_audits():
 def seat_local_recovery():
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
         roster = {'seats': [
-            {'seat': seat, 'extra': False, 'adapter': 'claude',
-             'model': 'model-' + seat, 'effort': 'max'} for seat in seats]}
+            {'seat': seat, 'extra': False,
+             'adapter': 'codex' if seat == 'terra' else 'claude',
+             'model': ('gpt-5.6-luna' if seat == 'terra' else
+                       'sonnet' if seat == 'sol' else 'model-' + seat),
+             'effort': 'high' if seat in ('terra', 'sol') else 'max'} for seat in seats]}
         (session / 'roster.json').write_text(json.dumps(roster))
         parent = prepare('parent', 'risk', *assign)
         parent_path = session / 'rparent-evidence.manifest.json'
@@ -2486,8 +2489,8 @@ def seat_local_recovery():
             'seat': 'terra', 'snapshot_tree': parent['snapshot_tree'],
             'roster_sha256': parent['inputs']['roster.json'],
             'assignment_sha256': module.digest(module.encoded(parent['assignments']['terra'])),
-            'bundle': bundles[1], 'adapter': 'claude',
-            'model': 'model-terra', 'effort': 'max',
+            'bundle': bundles[1], 'adapter': 'codex',
+            'model': 'gpt-5.6-luna', 'effort': 'high',
             'patch_chunks_mode': 'auto', 'source_context_enabled': True}
         assert child['assignments']['sol']['scope'] == 'full'
         assert child['patch_chunks_mode'] == parent['patch_chunks_mode'] == 'auto'
@@ -2595,9 +2598,16 @@ def seat_local_recovery():
 def replacement_runs_on_another_seat():
     attempt = script.parent / 'lib' / 'rev-attempt.py'
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        chain_identities = {
+            'sol': ('claude', 'sonnet', 'high'),
+            'terra': ('codex', 'gpt-5.6-sol', 'high'),
+            'opus': ('codex', 'gpt-5.6-luna', 'high'),
+            'sonnet': ('agent', 'sonnet', 'high'),
+        }
         roster = {'seats': [
-            {'seat': seat, 'extra': False, 'adapter': 'agent' if seat == 'sonnet' else 'claude',
-             'model': 'model-' + seat, 'effort': 'max'} for seat in seats]}
+            {'seat': seat, 'extra': False,
+             'adapter': chain_identities[seat][0], 'model': chain_identities[seat][1],
+             'effort': chain_identities[seat][2]} for seat in seats]}
         (session / 'roster.json').write_text(json.dumps(roster))
         parent = prepare('4', 'risk', *assign, '--full-seat', 'sonnet')
         path = session / 'r4-evidence.manifest.json'
@@ -2635,8 +2645,8 @@ def replacement_runs_on_another_seat():
         call('prepare', session, '4x', '--phase', 'repair', '--assignment', 'sol=' + bundles[2],
              '--parent-assignment', '4:opus', good=False,
              error='replacement label is already bound to another parent assignment')
-        call('prepare', session, '4x', '--phase', 'repair', '--assignment', 'opus=' + bundles[0],
-             '--parent-assignment', '4:sol', good=False,
+        call('prepare', session, '4x', '--phase', 'repair', '--assignment', 'terra=' + bundles[2],
+             '--parent-assignment', '4:opus', good=False,
              error='replacement label is already bound to another parent assignment')
         (session / 'r4-opus.exit').write_text('0\n')
         (session / 'r4-opus.audit-invalid.json').unlink()
@@ -2790,8 +2800,12 @@ def replacement_chain_reaches_opus():
 
 def incomplete_proof_panel(session, call, prepare, summary='INCOMPLETE PROOF: assigned source remains unread'):
     """A risk panel whose sol seat exits 0 with `summary` and a valid read audit."""
-    roster = {'seats': [{'seat': seat, 'extra': False, 'adapter': 'claude', 'model': 'model-' + seat,
-                         'effort': 'max'} for seat in seats]}
+    roster = {'seats': [{'seat': seat, 'extra': False,
+                         'adapter': 'codex' if seat == 'sol' else 'claude',
+                         'model': 'gpt-5.6-luna' if seat == 'sol' else
+                         'sonnet' if seat == 'terra' else 'model-' + seat,
+                         'effort': 'high' if seat in ('sol', 'terra') else 'max'}
+                        for seat in seats]}
     (session / 'roster.json').write_text(json.dumps(roster))
     path = session / 'r6-evidence.manifest.json'
     for seat in prepare('6', 'risk', *assign)['assignments']:
@@ -3617,6 +3631,12 @@ def current_coverage_receipts():
 
 def current_coverage_replacements_and_refs():
     with fixture(adapter='codex') as (root, session, git, write, call, prepare, finish):
+        roster = json.loads((session / 'roster.json').read_text())
+        next(row for row in roster['seats'] if row['seat'] == 'terra').update(
+            model='gpt-5.6-luna', effort='high')
+        next(row for row in roster['seats'] if row['seat'] == 'sol').update(
+            model='gpt-5.6-sol', effort='high')
+        (session / 'roster.json').write_text(json.dumps(roster))
         parent = prepare('parent', 'verification', *assign)
         for seat in parent['assignments']:
             (session / f'rparent-{seat}.prompt.md').write_text(
