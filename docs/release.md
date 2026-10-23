@@ -10,10 +10,10 @@ Verify the stable tag before using any stable code:
 
 ```bash
 git status --short
-git verify-tag review-council--v0.6.0
+git verify-tag review-council--v0.7.9
 STABLE_PARENT=$(mktemp -d /tmp/review-council-stable.XXXXXX)
-STABLE_TREE="$STABLE_PARENT/review-council-0.6.0"
-git worktree add --detach "$STABLE_TREE" review-council--v0.6.0
+STABLE_TREE="$STABLE_PARENT/review-council-0.7.9"
+git worktree add --detach "$STABLE_TREE" review-council--v0.7.9
 STABLE_PLUGIN="$STABLE_TREE/plugins/review-council"
 ```
 
@@ -87,16 +87,16 @@ squash-merge the pull request.
 From a clean checkout of the merged commit, publish the signed release:
 
 ```bash
-git tag -s review-council--v0.6.1 -m "review-council 0.6.1" "$MERGE_COMMIT"
-git push origin review-council--v0.6.1
-git verify-tag review-council--v0.6.1
-gh release create review-council--v0.6.1 --verify-tag \
-  --title "review-council 0.6.1" --generate-notes
+git tag -s review-council--v0.7.10 -m "review-council 0.7.10" "$MERGE_COMMIT"
+git push origin review-council--v0.7.10
+git verify-tag review-council--v0.7.10
+gh release create review-council--v0.7.10 --verify-tag \
+  --title "review-council 0.7.10" --generate-notes
 ```
 
 Reinstall `review-council@review-council` for Claude and Codex, and run
 `install-cursor.sh` for Cursor. In fresh sessions on each host, require `rev` and
-`stack` at version `0.6.1`, and compare installed file and mode identity with the
+`stack` at version `0.7.10`, and compare installed file and mode identity with the
 released tag.
 
 Finally remove the stable worktree while preserving external review and verifier

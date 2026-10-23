@@ -81,7 +81,7 @@ case "$PHASE" in
   *) die "--phase must be discovery, risk, verification, repair, plan, or numeric: $PHASE";;
 esac
 if [ "$PHASE" = numeric ]; then
-  [[ "$N" =~ ^[1-9][0-9]*x?$ ]] || die "invalid numeric prompt label: $N"
+  [[ "$N" =~ ^[1-9][0-9]*(x|x0*([2-9]|[1-9][0-9]+))?$ ]] || die "invalid numeric prompt label: $N"
   for PRIOR in "$S/r${N}-"*.prompt.md; do
     rm -f -- "$PRIOR" || die "cannot invalidate prior numeric prompt: $PRIOR"
   done

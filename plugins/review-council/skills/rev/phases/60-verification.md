@@ -76,7 +76,7 @@ rules and the same receipted effort in every bundle.
 
 One four-bundle verification panel reviews the latest material state: the current
 combined panel when no fix follows, a separate panel after simplicity-only discovery,
-or a fresh panel after fixes. Do not certify an adaptive panel until every assignment has a valid result, its own or its one replacement's. A certified risk or verification panel therefore has all four bundles. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure or an exit-0 `INCOMPLETE PROOF` result. A replacement is one seat, so the three-reviewer minimum does not apply.
+or a fresh panel after fixes. Do not certify an adaptive panel until every assignment has a valid result, either its own result or its one replacement's result. A certified risk or verification panel therefore has all four bundles. Each failed assignment gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure or an exit-0 `INCOMPLETE PROOF` result. There is no panel-wide replacement cap: distinct failed assignments in one panel may each receive a replacement with a unique child label and a binding to that parent assignment. A replacement is one seat, so the three-reviewer minimum does not apply.
 
 An explicit numeric override exclusively uses the legacy numbered code-panel schedule below.
 Conditional plan panels are extra and do not count toward the requested total.

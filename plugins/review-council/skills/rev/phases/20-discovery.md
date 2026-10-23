@@ -247,7 +247,7 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/rev-prompt.sh "$S" "$PANEL_LABEL" --panel "$S/r$PA
 ```
 
 `--panel` loads the evidence manifest once, writes every `r<label>-<seat>.prompt.md`,
-prints their paths in order, and publishes none when any seat fails. Render a single `<N>x` replacement seat with the per-seat form
+prints their paths in order, and publishes none when any seat fails. Render each replacement seat with a unique child label, using the per-seat form
 `${CLAUDE_PLUGIN_ROOT}/scripts/rev-prompt.sh "$S" "$PANEL_LABEL" "$SEAT" "$LENS" "$EMPHASIS" --phase "$COVERED_PHASE" "${EVIDENCE_PROMPT_ARGS[@]}"`,
 where `COVERED_PHASE` is the phase of the panel it replaces into (`discovery`, `risk`, `verification`, or `numeric` for a bound numeric parent).
 An exact seat retry reuses its already-rendered prompt.
@@ -285,10 +285,10 @@ in exact order before packet and source reads. Missing, reordered, truncated, re
 unassigned, or redirected chunks invalidate the attempt.
 A seat's evidence read audit with status `invalid` is a hard evidence-audit failure. A valid audit may carry advisories: these never discard the review, stay visible in the receipt, and never earn credit. A call that raises a call-local violation, and every proof call in a turn that overflows the turn ceiling, proves no range, no patch chunk, packet or segment, and no citation. Pacing counts and whole-transcript counts revoke nothing.
 
-Retain one launch handle for every pending seat and inspect each terminal result as it arrives. Store every Bash task ID and Agent task ID under its seat name. A provider execution exit 1 or 2 with no invalid read audit is seat-local and may retry only the failed seat once with its exact prompt, assignment, model, and effort while other seats continue, even if it left an `INCOMPLETE PROOF` result. A hard evidence-audit failure ends only that seat's assignment: never relaunch that seat under that label (`rev-attempt.py` refuses it), keep every sibling running, and preserve every valid sibling and partial stream. A launch that exits 0 with a result whose `summary` begins `INCOMPLETE PROOF` ends its assignment the same way: it is never a valid result, and an exact retry with the same prompt and budget would repeat the same exhaustion. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure or an exit-0 `INCOMPLETE PROOF` result.
+Retain one launch handle for every pending seat and inspect each terminal result as it arrives. Store every Bash task ID and Agent task ID under its seat name. A provider execution exit 1 or 2 with no invalid read audit is seat-local and may retry only the failed seat once with its exact prompt, assignment, model, and effort while other seats continue, even if it left an `INCOMPLETE PROOF` result. A hard evidence-audit failure ends only that seat's assignment: never relaunch that seat under that label (`rev-attempt.py` refuses it), keep every sibling running, and preserve every valid sibling and partial stream. A launch that exits 0 with a result whose `summary` begins `INCOMPLETE PROOF` ends its assignment the same way: it is never a valid result, and an exact retry with the same prompt and budget would repeat the same exhaustion. Each failed assignment gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure or an exit-0 `INCOMPLETE PROOF` result. There is no panel-wide replacement cap: distinct failed assignments in one panel may each receive a replacement, each with a unique child label and a binding to its own failed parent assignment.
 
 Exit 3 or 4 must cancel that provider's pending siblings. Exit 3 never enters quota fallback:
-retry the assignment on the next higher enforced seat, and if that fails finish the lens yourself. On exit 4,
+retry through `rev-workhorse.py escalate`, which honors a matching per-review override and otherwise selects the next higher enforced seat; if that fails, finish the lens yourself. On exit 4,
 when the configuration sets `quota_fallback` to `true`, preserve
 the prior roster, streams, prompt identities, and scope identity, then run preflight again against a fresh sibling session.
 For an Agent seat, accept quota classification only from platform terminal metadata, never reviewer prose.
@@ -321,7 +321,7 @@ Run this comparison before rendering prompts, writing fan-out state, or launchin
 discard every result from the quota-failed label even when it was valid. Never use a repair child for quota fallback.
 The quota fallback panel is the only permitted full-panel restart for this panel generation. An exit-4 quota substitution never uses a replacement child; a later hard audit inside the fallback panel follows the replacement rule.
 If the new roster cannot replace the quota-failed lab,
-if a fallback seat itself reports quota, or if any source identity changed, retry the assignment on the next higher enforced seat, and if that fails finish the lens yourself. The
+if a fallback seat itself reports quota, or if any source identity changed, retry through `rev-workhorse.py escalate`, which honors a matching per-review override and otherwise selects the next higher enforced seat; if that fails, finish the lens yourself. The
 next review run probes the preferred providers again because fallback never mutates
 configuration. Call TaskStop only for pending task identifiers. Never cancel a completed valid sibling
 before its terminal state is preserved, and preserve every
@@ -329,11 +329,18 @@ partial stream and log for diagnosis.
 
 Exit 7 is local attempt exhaustion, not provider quota. Preserve valid siblings and finish the missing assignment yourself without another repair child.
 
-Retain each completed valid result; a result whose `summary` begins `INCOMPLETE PROOF` is never one. Triage completed valid results as they arrive, but do not edit until the receipt seals. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure or an exit-0 `INCOMPLETE PROOF` result. The replacement executor is the `seat` printed by `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-workhorse.py escalate --session "$S" --seat "$FAILED_SEAT"`. That is the next enforced family on the normal chain (Cursor Grok only when this host is Cursor, then Luna, Sonnet, Sol, Opus). A non-zero exit means the chain is exhausted: finish that assignment yourself in the spirit of its lens. When the JSON says `"existing": false`, repair preparation reads `$S/escalation.json`. The failed assignment needs a recorded terminal failure: its archived `r<N>-<seat>.audit-invalid.json`, its exit-0 `INCOMPLETE PROOF` result, or an exact retry that also exited 1 or 2. Prepare the child with `${CLAUDE_PLUGIN_ROOT}/scripts/rev-evidence.py prepare "$S" "<N>x" --phase repair --assignment "$EXECUTOR=$PARENT_BUNDLE" --parent-assignment "<N>:$FAILED_SEAT"`, which refuses an ineligible executor, a parent with no recorded terminal failure, and a second replacement in the panel. Render it with the per-seat form above, record `${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh "$S" phase=repair round=<N>x "seats=[\"$EXECUTOR\"]"`, launch it, and seal with `REPLACEMENT_ARGS=(--replacement "$FAILED_SEAT=<N>x")`. Discovery uses the same rule, and the child has full scope. With no eligible seat, a second failed assignment in the panel, or a failed replacement, the panel is still incomplete: finish the missing assignment yourself in the spirit of its lens, in this same session.
+Retain each completed valid result; a result whose `summary` begins `INCOMPLETE PROOF` is never one. Triage valid results as they arrive, but do not edit until the receipt seals. Each failed assignment may receive at most one replacement on another eligible seat. There is no panel-wide replacement cap: distinct failed assignments in one panel may each receive a replacement, with a unique child label bound to its own failed parent assignment.
+
+Use `rev-workhorse.py escalate` to select the replacement executor. It applies a matching per-review override, or uses the next family on the host's normal enforced chain. A nonzero exit means the chain is exhausted: finish that assignment yourself in the spirit of its lens. When the JSON says `"existing": false`, repair preparation reads `$S/escalation.json`. The parent must have a recorded terminal failure: its archived `r<N>-<seat>.audit-invalid.json`, exit-0 `INCOMPLETE PROOF` result, or an exact retry that also exited 1 or 2.
+
+Choose `<N>x` for the first child and distinct suffixes such as `<N>x2` for additional failed assignments. Prepare each child with:
+
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/rev-evidence.py" prepare "$S" "$CHILD_LABEL" --phase repair --assignment "$EXECUTOR=$PARENT_BUNDLE" --parent-assignment "<N>:$FAILED_SEAT"`
+
+Preparation rejects an ineligible executor, a parent without a terminal failure, a second replacement for the same assignment, or a duplicate child label. Render the child with the per-seat form above and record `"${CLAUDE_PLUGIN_ROOT}/scripts/rev-state.sh" "$S" phase=repair "round=$CHILD_LABEL" "seats=[\"$EXECUTOR\"]"` before launch. Add `REPLACEMENT_ARGS+=(--replacement "$FAILED_SEAT=$CHILD_LABEL")` once for each repaired parent assignment before sealing. Discovery follows the same rule, and every child has full scope. If no eligible seat exists, a replacement fails, or a second failure occurs on the same assignment, finish that missing assignment yourself in this session.
 
 After every assigned seat has a valid result, seal an SDK numeric panel only after
-its exact complete launched set has valid full-scope generations, including its
-one replacement when applicable. Its receipt stays numeric and preserves any
+its exact complete launched set has valid full-scope generations, including one separately bound replacement for each failed assignment when applicable. Its receipt stays numeric and preserves any
 existing adaptive coverage head. Certify discovery after its complete simplicity panel.
 For risk and verification, certify only after the complete four-bundle panel is
 collected:
@@ -461,13 +468,13 @@ edit the working tree while seats run.
 |---|---|
 | `0` | done, unless the result's `summary` begins `INCOMPLETE PROOF` |
 | `1` or `2` with no invalid read audit | retry that seat once immediately at the same receipted effort while siblings continue, even if it left an `INCOMPLETE PROOF` result, unless `rev-attempt.py` refused the launch for one; still failing gets the one replacement below |
-| hard evidence-audit failure | keep siblings running; never relaunch that seat under that label. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure or an exit-0 `INCOMPLETE PROOF` result. |
+| hard evidence-audit failure | keep siblings running; never relaunch that seat under that label. Each failed assignment gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure or an exit-0 `INCOMPLETE PROOF` result. There is no panel-wide replacement cap: distinct failed assignments in one panel may each receive a replacement, each with a unique child label and a binding to its own failed parent assignment. |
 | `0` with an `INCOMPLETE PROOF` result, or a relaunch `rev-attempt.py` refused for one | replace now, as for a hard evidence-audit failure: it is never a valid result; keep siblings running; never relaunch that seat under that label |
-| `3` | cancel that provider's pending siblings, retry the assignment on the next higher enforced seat, and if that fails finish the lens yourself |
-| `4` | cancel that provider's pending siblings, retry the assignment on the next higher enforced seat, and if that fails finish the lens yourself |
+| `3` | cancel that provider's pending siblings, retry through `rev-workhorse.py escalate` (matching per-review override first, then the default chain), and if that fails finish the lens yourself |
+| `4` | cancel that provider's pending siblings, retry through `rev-workhorse.py escalate` (matching per-review override first, then the default chain), and if that fails finish the lens yourself |
 
-A round needs **three or more** seats' output. With fewer, retry each missing assignment on the next higher enforced seat, then cover any seat that is still missing yourself and record that coverage in the ledger.
-An `<N>x` replacement and the default one-seat plan panel are the only exceptions. Do not call orchestrator coverage a certified seat.
+A round needs **three or more** seats' output. With fewer, retry each missing assignment through `rev-workhorse.py escalate` (matching per-review override first, then the default chain), then cover any seat that is still missing yourself and record that coverage in the ledger.
+Repair children use `<N>x`, then distinct suffixed labels such as `<N>x2`; the default one-seat plan panel remains a separate exception. Do not call orchestrator coverage a certified seat.
 Padding guarantees three
 seats were *launched*, so this rule is now about seats that failed, not seats that were
 never there.

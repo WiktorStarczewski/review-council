@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.10
+
+- Each failed panel assignment can receive one separately bound replacement, with unique child labels for additional failures. A panel no longer has a replacement-wide cap, and valid sibling results stay selected.
+- Per-review escalation overrides can send a failed family directly to a selected higher family, such as Luna to Sol. An unavailable override fails explicitly instead of silently selecting another family.
+- Canonical PR review reports now list the orchestrator model immediately after the panel models.
+
 ## 0.7.9
 
 - Code-review preparation counts edited-test assertions, changed consumers, and sibling tests that are not already in a source packet against the frozen post-index read budget, including when source packets are off. A scope whose proof reads exceed that budget is refused before launch, so a seat is not sent into an incomplete proof. The non-certifying diagnostic names path-scope partitions that each fit. The read limit is unchanged. That refusal is not a legacy rerender and not a provider-seat retry.

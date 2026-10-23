@@ -146,7 +146,8 @@ test_skill_contract() {
     assert_grep "host refuses certification without required artifacts" "$H" \
       'missing any audit, receipt, or final report required by its selected mode is incomplete'
     assert_grep "host writes exact code-panel state" "$H" 'phase=fan-out round=<N> "seats=\$LAUNCHED_SEATS"'
-    assert_grep "host writes exact replacement state" "$H" 'phase=repair round=<N>x "seats=\[\\"\$EXECUTOR\\"\]"'
+    assert_grep "host writes child replacement state for its selected executor" "$H" \
+      'phase=repair .*round=\$CHILD_LABEL.*seats=\[.*\$EXECUTOR.*\]'
     assert_grep "host writes exact plan state" "$H" 'phase=plan round=<N>p "seats=\$PLAN_SEATS"'
     assert_grep "host counts only numbered code panels" "$H" 'Plan panels do not count as numbered code panels'
     assert_grep "host preserves numeric continuation" "$H" 'Only numeric mode continues past its requested minimum'
@@ -389,7 +390,7 @@ test_skill_contract() {
     assert_grep "seat-local recovery preserves receipted effort" "$H" \
       '[Nn]ever lower effort|same receipted effort'
     assert_grep "triage may overlap stragglers without early edits" "$H" \
-      '[Tt]riage completed valid results as they arrive'
+      '[Tt]riage valid results as they arrive'
     assert_grep "one quota fallback panel is the retry ceiling" "$H" \
       '[Qq]uota fallback panel.*only permitted full-panel restart'
     assert_grep "a hard audit inside the fallback panel follows the replacement rule" "$H" \
@@ -661,14 +662,14 @@ skill_adapter_and_plan_gate_contract() {
   # sentence meant evidence mode never ran on a code panel at all.
   local blanket_skip='skip evidence preparation'
   local plan_default='When `$S/panel-request.json` is absent, the plan panel is one `plan-completeness` seat on the resolved workhorse: set `PLAN_COMPLETENESS_SEAT` to the `seat` in `$S/workhorse.json` when `family` is set, `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.'
-  local local_cluster='A cluster is local when its Sites list names one file and at most 3 sites, and the change does not add a mechanism, cross a realm, or change a public contract. Two anchors in one file are two sites. Excluded paths are not sites. The workhorse writes the fix plan whenever it is available. You implement each local cluster. You launch the workhorse for every other cluster. When a panel or assignment is incomplete, fix a local cause you can see and retry it once on the next higher enforced seat: Luna, then Sonnet, then Sol, then Opus. If that seat fails too, diagnose the edge case and finish the assignment yourself in the spirit of its lens and this contract.'
+  local local_cluster='A cluster is local when its Sites list names one file and at most 3 sites, and the change does not add a mechanism, cross a realm, or change a public contract. Two anchors in one file are two sites. Excluded paths are not sites. The workhorse writes the fix plan whenever it is available. You implement each local cluster. You launch the workhorse for every other cluster. When a panel or assignment is incomplete, fix a local cause you can see. By default, retry on the next higher enforced seat: Luna, then Sonnet, then Sol, then Opus.'
   local plan_all='When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat'
-  local minimum='An `<N>x` replacement and the default one-seat plan panel are the only exceptions.'
+  local minimum='Repair children use `<N>x`, then distinct suffixed labels such as `<N>x2`; the default one-seat plan panel remains a separate exception.'
   local verify_one='`verify-panel` certifies the one-seat plan panel once that seat returns'
   local before_code='The plan panel runs after triage and before any edit of the working tree.'
   local skip_line='When the plan panel is skipped, append a line beginning `Plan panel r<N>p - SKIPPED: <reason>` to `$S/findings.md` before `phase=fix`.'
   local gate='`rev-state.sh` refuses `phase=fix` for code round `<N>` while `open.P0 + open.P1 + open.P2` is above zero, unless that skip line exists or every seat recorded by `phase=plan round=<N>p`, or by its `<N>px` replacement panel, has `r<label>-<seat>.json` and a `0` exit.'
-  local incomplete='An incomplete plan panel is not a skip: retry it once on the next higher enforced seat after fixing a local cause, and if that fails review the plan yourself against the plan contract before any edit.'
+  local incomplete='An incomplete plan panel is not a skip: after fixing a local cause, retry it through `rev-workhorse.py escalate`, which honors a matching per-review override and otherwise uses the next higher enforced seat.'
   local fresh_counts='Write all three counts in one call after the round'"'"'s seats have exited: `rev-state.sh` refuses `phase=fix` while `open.P0`, `open.P1` and `open.P2` predate the newest `r<N>-<seat>.exit`, and only all three in one call refresh that stamp. A plan panel'"'"'s `r<N>p-<seat>.exit` is not a seat exit for this purpose, so triage stays valid across the plan gate.'
   local sibling='Sibling-site completeness: for each fix commit since the base, name the rule it applies and search the repository for sites, arms, realms, callers and copies (tests, JSDoc, docs) the rule reaches but the commit missed.'
   # Host-tied evidence wording that must never return: an evidence or plan decision keyed on the
@@ -858,7 +859,7 @@ test_skill_replacement_and_breaker_contract() {
   rev_bundle "$SK/codex-skills/rev" "$T/codex-skills/rev/SKILL.md"
   python3 - "$T/skills/rev/SKILL.md" "$T/codex-skills/rev/SKILL.md" <<'PY'
 import re, sys
-RULE = ('An assignment without a valid result gets at most one replacement on another eligible seat: '
+RULE = ('Each failed assignment gets at most one replacement on another eligible seat: '
         'after its exact retry for an execution failure, immediately for a hard audit failure '
         'or an exit-0 `INCOMPLETE PROOF` result.')
 REMOVED = [
@@ -885,10 +886,13 @@ for path in sys.argv[1:]:
             problems.append(f'{host}: removed clause survives: {phrase}')
     paragraphs = [' '.join(block.split()) for block in re.split(r'\n\s*\n', text)]
     rows = [line for line in text.splitlines() if line.startswith('|')]
+    replacement_commands = [i for i, p in enumerate(paragraphs)
+                            if '--parent-assignment "<N>:$FAILED_SEAT"' in p]
     locations = {
         'hard-audit': [p for p in paragraphs if "hard evidence-audit failure ends only that seat's assignment" in p],
         'coverage-repair': [p for p in paragraphs if 'Do not certify an adaptive panel until every assignment has a valid result' in p],
-        'replacement procedure': [p for p in paragraphs if '--parent-assignment "<N>:$FAILED_SEAT"' in p],
+        'replacement procedure': [paragraphs[i] + ' ' + paragraphs[i + 1]
+                                  for i in replacement_commands if i + 1 < len(paragraphs)],
         'plan replacement': [p for p in paragraphs if 'round=<N>px' in p and 'plan-completeness' in p],
     }
     if host == 'claude':
@@ -900,7 +904,12 @@ for path in sys.argv[1:]:
     for name, found in locations.items():
         if not found:
             problems.append(f'{host}: no {name} location')
-        elif name != 'plan replacement' and not all(RULE in item for item in found):
+        elif name == 'replacement procedure' and not all(
+                'parent without a terminal failure' in item
+                and 'second replacement for the same assignment' in item
+                and 'duplicate child label' in item for item in found):
+            problems.append(f'{host}: replacement procedure omits its binding safeguards')
+        elif name != 'plan replacement' and name != 'replacement procedure' and not all(RULE in item for item in found):
             problems.append(f'{host}: the rule is missing at the {name} location')
     for phrase in ('"$S" review_origin_ack=<N>', 'inherit-breaker "$PARENT_S"',
                    'Apply the standing decision yourself', 'revert the cited review changes',

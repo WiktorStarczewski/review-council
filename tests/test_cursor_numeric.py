@@ -364,24 +364,38 @@ class CursorNumericTests(CursorSDKCase):
             original = sibling.read_bytes()
             sibling.write_text('{"summary":"INCOMPLETE PROOF: second failure","findings":[]}\n')
             try:
+                second_parent = fixture.manifest['assignments']['luna']
                 result = self.command(
-                    'prepare', fixture.session, '2x', '--phase', 'repair',
-                    '--assignment', 'sol=' + parent['bundle'], '--parent-assignment', '2:luna',
+                    'prepare', fixture.session, '2x2', '--phase', 'repair',
+                    '--assignment', 'sol=' + second_parent['bundle'], '--parent-assignment', '2:luna',
                     environment=fixture.env)
-                self.assertNotEqual(result.returncode, 0, 'a numeric panel permits only one replacement')
-                self.assertIn('panel already has a replacement', result.stderr)
-                with self.assertRaisesRegex(ValueError, 'at most one replacement'):
+                self.assertEqual(result.returncode, 0,
+                                 'a second failed seat gets its own bound repair: ' + result.stderr)
+                second = copy.copy(fixture)
+                second.label = '2x2'
+                second.phase = 'repair'
+                second.manifest_path = fixture.session / 'r2x2-evidence.manifest.json'
+                second.manifest = json.loads(second.manifest_path.read_text())
+                prompt = [str(SCRIPTS / 'rev-prompt.sh'), str(fixture.session), '2x2',
+                          'sol', second_parent['bundle'], second_parent['emphasis'], '--evidence',
+                          str(second.manifest_path), '--phase', 'numeric']
+                result = subprocess.run(prompt, env=fixture.env, capture_output=True,
+                                        text=True, timeout=40)
+                self.assertEqual(result.returncode, 0, 'second repair must render: ' + result.stderr)
+                self.proofs(second)
+                with self.assertRaisesRegex(ValueError, 'unique'):
                     evidence.verify_panel_selection(fixture.session, '2', ['sdk=2x', 'luna=2x'])
+                evidence.verify_panel_selection(fixture.session, '2', ['sdk=2x', 'luna=2x2'])
+                with redirect_stdout(io.StringIO()):
+                    evidence.receipt(SimpleNamespace(session=str(fixture.session), label='2',
+                                                     replacement=['sdk=2x', 'luna=2x2']))
             finally:
                 sibling.write_bytes(original)
-            with redirect_stdout(io.StringIO()):
-                evidence.receipt(SimpleNamespace(session=str(fixture.session), label='2',
-                                                 replacement=['sdk=2x']))
         receipt = json.loads((fixture.session / 'r2-coverage.receipt.json').read_text())
         self.assertEqual(receipt['phase'], 'numeric')
         selected = receipt['selected_generations']
         self.assertEqual((selected['sdk']['label'], selected['sdk']['seat']), ('2x', 'sol'))
-        self.assertEqual((selected['sol']['label'], selected['luna']['label']), ('2', '2'))
+        self.assertEqual((selected['sol']['label'], selected['luna']['label']), ('2', '2x2'))
         self.assertEqual(fixture.manifest_path.read_bytes(), parent_bytes)
         for path, original in siblings.items():
             self.assertEqual(path.read_bytes(), original, 'replacement must retain valid siblings')

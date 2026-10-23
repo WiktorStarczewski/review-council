@@ -86,7 +86,8 @@ class WorkhorseTests(unittest.TestCase):
                      'lab': 'openai'},
             'sonnet': {'adapter': 'claude', 'model': 'sonnet', 'effort': 'high',
                        'lab': 'anthropic'},
-            'sol': None,
+            'sol': {'adapter': 'codex', 'model': 'gpt-5.6-sol', 'effort': 'high',
+                    'lab': 'openai'},
             'opus': None,
         }
         for host in ('claude', 'codex', 'cursor'):
@@ -94,6 +95,10 @@ class WorkhorseTests(unittest.TestCase):
             self.assertFalse(existing, host)
             self.assertEqual(chosen['adapter'], 'claude', host)
             self.assertEqual(chosen['model'], 'sonnet', host)
+            direct, existing = self.workhorse.choose_escalation(
+                host, 'luna', rows, candidates, target_family='sol')
+            self.assertFalse(existing, host)
+            self.assertEqual((direct['family'], direct['model']), ('sol', 'gpt-5.6-sol'), host)
 
     def test_escalate_does_not_probe_the_cursor_writer(self):
         session = Path(self.temp.name) / 'escalate'
@@ -114,18 +119,24 @@ class WorkhorseTests(unittest.TestCase):
                 'luna': None,
                 'sonnet': {'adapter': 'claude', 'model': 'sonnet', 'effort': 'high',
                            'lab': 'anthropic'},
-                'sol': None,
+                'sol': {'adapter': 'codex', 'model': 'gpt-5.6-sol', 'effort': 'high',
+                        'lab': 'openai'},
                 'opus': None,
             }
 
         self.workhorse._candidates = spy
         try:
             chosen = self.workhorse.escalate(session, 'codex-luna')
+            (session / 'state.json').write_text(
+                json.dumps({'escalation_overrides': {'luna': 'sol'}}))
+            overridden = self.workhorse.escalate(session, 'codex-luna')
         finally:
             self.workhorse._candidates = original
-        self.assertEqual(seen, [('codex', False)])
+        self.assertEqual(seen, [('codex', False), ('codex', False)])
         self.assertEqual(chosen['family'], 'sonnet')
         self.assertTrue(chosen['existing'] is False)
+        self.assertEqual(overridden['family'], 'sol')
+        self.assertFalse(overridden['existing'])
 
     def test_credit_or_auth_failure_blocks_a_failed_cursor_run_only(self):
         blocked = self.workhorse.cursor_writer_blocked

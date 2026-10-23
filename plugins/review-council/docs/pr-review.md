@@ -32,6 +32,7 @@ Write `$S/pr-review.json` with this exact shape:
   },
   "gates": "7/7 green, 240 tests",
   "panel": ["GPT-5.6 Sol", "GPT-5.6 Terra", "Claude Opus 5", "Claude Sonnet 5"],
+  "orchestrator": "GPT-6.1 Sol",
   "decisions": [
     {
       "title": "Short question or decision claim",
@@ -75,6 +76,10 @@ Rules:
 - `panel` names the actual core models from `roster.json` in roster order. Include
   only models that produced valid results. The fixed suffix says every listed model
   ran at maximum effort, so do not list a lower-effort seat.
+- `orchestrator` names the model that orchestrated this review. Use the exact model
+  identity from the active session; do not infer it from the panel roster.
+- The rendered report places `Orchestrator: <model>` immediately below the panel model
+  list. Keep both identities current when preparing the input.
 - Omit `fixed_in` when the fixes are on the reviewed PR. Include it only when they
   landed in a separate PR, as in the canonical review.
 - Use immutable pushed commit links and source links pinned to the reviewed head SHA.

@@ -99,12 +99,12 @@ and leaves certification to the receipt checks.
 
 | Failure | Action |
 |---|---|
-| seat exit 1 or 2 with no invalid read audit | retry that seat once immediately at the same receipted effort, even if it left an `INCOMPLETE PROOF` result, unless `rev-attempt.py` refused the launch for one; still failing gets the one replacement |
-| hard evidence-audit failure | keep siblings running; never relaunch that seat under that label. An assignment without a valid result gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure or an exit-0 `INCOMPLETE PROOF` result. |
+| seat exit 1 or 2 with no invalid read audit | retry that seat once immediately at the same receipted effort, even if it left an `INCOMPLETE PROOF` result, unless `rev-attempt.py` refused the launch for one; still failing gets its one replacement |
+| hard evidence-audit failure | keep siblings running; never relaunch that seat under that label. Each failed assignment gets at most one replacement on another eligible seat: after its exact retry for an execution failure, immediately for a hard audit failure or an exit-0 `INCOMPLETE PROOF` result. There is no panel-wide replacement cap: distinct failed assignments in one panel may each receive a replacement, each with a unique child label and a binding to its own failed parent assignment. |
 | seat exit 0 with an `INCOMPLETE PROOF` result, or a relaunch `rev-attempt.py` refused for one | replace now, as for a hard evidence-audit failure: it is never a valid result; keep siblings running; never relaunch that seat under that label |
-| seat exit 3 | cancel that provider's pending siblings; retry on the next higher enforced seat; if that fails, finish the lens yourself |
-| seat exit 4 | cancel that provider's pending siblings; retry on the next higher enforced seat; if that fails, finish the lens yourself |
-| fewer than 3 seats in a code round | retry the missing assignments on the next higher enforced seat, then cover any that remain yourself and record orchestrator coverage |
+| seat exit 3 | cancel that provider's pending siblings; retry through `rev-workhorse.py escalate`, honoring a matching per-review override before the normal chain; if that fails, finish the lens yourself |
+| seat exit 4 | cancel that provider's pending siblings; retry through `rev-workhorse.py escalate`, honoring a matching per-review override before the normal chain; if that fails, finish the lens yourself |
+| fewer than 3 seats in a code round | retry each missing assignment through `rev-workhorse.py escalate`, honoring matching per-review overrides before the normal chain, then cover any that remain yourself and record orchestrator coverage |
 | a fix breaks a gate | repair or revert before the next round |
 | an `agent` row returns non-JSON twice | treat it as exit 2 for the round |
 
@@ -127,7 +127,7 @@ in one of them; never drop one silently. Round blocks append after the entries.
 
 For every completed code review, read
 `${CLAUDE_PLUGIN_ROOT}/docs/pr-review.md` and follow it exactly. Write the structured
-`$S/pr-review.json`, render the canonical `$S/pr-review.md`, inspect its facts, and
+`$S/pr-review.json`, including the exact orchestrator model, render the canonical `$S/pr-review.md`, inspect its facts, and
 publish it as a `COMMENTED` GitHub PR review. This applies to normal and read-only
 code reviews. A branch with no associated open PR skips cleanly. Document reviews do
 not post. In stack-leg mode, prepare and render the body but leave guarded
