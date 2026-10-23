@@ -114,8 +114,8 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    repository capacity` records each seat's limit, calculated count, mandatory windows, and
    selected target in that diagnostic. A timeout records `timed_out` and the stage. Read
    limits and coverage requirements stay unchanged. Do not launch plan seats after either
-   refusal, do not repeat that prepare unchanged, and do not use the provider-seat
-   replacement. One fresh schema-4 label is allowed only after the plan's site list or the
+   refusal, do not repeat that prepare unchanged, and do not use the provider-seat replacement.
+   One fresh schema-4 label is allowed only after the plan's site list or the
    evidence compiler changes. If the same refusal remains, leave the plan panel incomplete
    and review the plan yourself against the plan contract before any edit.
 

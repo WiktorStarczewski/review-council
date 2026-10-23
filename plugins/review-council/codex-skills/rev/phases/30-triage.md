@@ -106,8 +106,8 @@ receipt, and never certifies a panel. A refusal of `mandatory source reads excee
 repository capacity` records each seat's limit, calculated count, mandatory windows, and
 selected target in that diagnostic. A timeout records `timed_out` and the stage. Read
 limits and coverage requirements stay unchanged. Do not launch plan seats after either
-refusal, do not repeat that prepare unchanged, and do not use the provider-seat
-replacement. One fresh schema-4 label is allowed only after the plan's site list or the
+refusal, do not repeat that prepare unchanged, and do not use the provider-seat replacement.
+One fresh schema-4 label is allowed only after the plan's site list or the
 evidence compiler changes. If the same refusal remains, leave the plan panel incomplete
 and review the plan yourself against the plan contract before any edit.
 An individual provider execution failure with no invalid read audit retains valid sibling results and may retry only that seat once with the exact prompt, assignment, model, and effort, even if it left an `INCOMPLETE PROOF` result. A failed plan seat, after its exact retry for an execution failure or immediately for a hard plan read-audit failure or an exit-0 `INCOMPLETE PROOF` result, is replaced by an ordinary one-seat plan panel on another eligible seat: `"$PLUGIN/scripts/rev-state.sh" "$S" phase=plan round=<N>px "seats=[\"$OTHER\"]"`, then `"$PLUGIN/scripts/rev-evidence.py" prepare "$S" "<N>px" --phase plan --plan "$S/fix-plan.md" --plan-sha256 "$PLAN_SHA256" --assignment "$OTHER=plan-completeness" --full-seat "$OTHER"`. It keeps the schema-4 plan contract, and under `plan_seats: all` it covers every cluster with the completeness lens; preserve every completed sibling and partial stream. If the `<N>px` panel fails too, leave the configured plan panel incomplete and review the plan yourself against the plan contract before any edit. Do not broaden a specialist to full scope or replace
