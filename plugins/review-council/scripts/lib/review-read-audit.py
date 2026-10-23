@@ -16,7 +16,7 @@ import tempfile
 LIB_DIR = Path(__file__).resolve().parent
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
-from review_limits import READ_LINES, REPOSITORY_EXPANSION_CALL_LIMIT
+from review_limits import CODEX_READ_LINES, READ_LINES, REPOSITORY_EXPANSION_CALL_LIMIT
 SEARCH_RESULTS = 80
 SEARCH_RESULT_SENTINEL = SEARCH_RESULTS + 1
 OUTPUT_BYTES = 32 * 1024
@@ -458,6 +458,44 @@ def contains_unquoted(text, needle):
     return False
 
 
+def contains_shell_expansion(text):
+    quote = None
+    escaped = False
+    word_start = True
+    for char in text:
+        if escaped:
+            escaped = False
+            word_start = False
+            continue
+        if char == '\\' and quote != "'":
+            escaped = True
+            continue
+        if quote == "'":
+            if char == "'":
+                quote = None
+            word_start = False
+            continue
+        if quote == '"':
+            if char == '"':
+                quote = None
+            elif char in '$`':
+                return True
+            word_start = False
+            continue
+        if char in ("'", '"'):
+            quote = char
+            word_start = False
+        elif char.isspace():
+            word_start = True
+        elif char == '=' and word_start:
+            return True
+        elif char in '*?[]{}$`~()^#':
+            return True
+        else:
+            word_start = False
+    return False
+
+
 def command_words(segment):
     words = shlex.split(segment)
     while words:
@@ -525,6 +563,19 @@ def search_pattern_indexes(words):
             patterns.add(index); positional = True
         index += 1
     return patterns
+
+
+def shell_line_limit(words, root, session, default):
+    if session is None:
+        return default
+    for candidate in path_candidates(words, root):
+        try:
+            target = resolved(candidate, root)
+        except (OSError, ValueError):
+            continue
+        if target.parent == session and FULL_ARTIFACT.fullmatch(target.name):
+            return READ_LINES
+    return default
 
 
 def line_limiter(words, maximum=READ_LINES):
@@ -659,7 +710,7 @@ def canonical_range(path, start, end, root, origin='tool', cache=None):
     return {'path': relative, 'line_start': start, 'line_end': end, 'origin': origin}
 
 
-def pinned_object_read(pipeline):
+def pinned_object_read(pipeline, line_limit=READ_LINES):
     """Parse `git show <full oid>:<path> | sed -n 'A,Bp'` (or `| head -n N`) into its oid and range.
 
     The limiter must read only the pipe: a file operand would make it print another file."""
@@ -678,13 +729,13 @@ def pinned_object_read(pipeline):
             or len(options) != sum(1 for word in options if word.startswith('-')
                                    or re.fullmatch(r'\d+(?:,\d+p)?', word)):
         return None
-    selected = limiter_range(limiter)
+    selected = limiter_range(limiter, maximum=line_limit)
     if selected is None:
         return None
     return match.group(1), match.group(2), selected[0], selected[1]
 
 
-def shell_source_ranges(command, root, cache=None, session=None):
+def shell_source_ranges(command, root, cache=None, session=None, line_limit=READ_LINES):
     """Return exact current-source ranges and whether a source read was unparseable.
 
     A pinned-object read carries its oid as `tree`; the audit verifies it against that frozen
@@ -708,7 +759,7 @@ def shell_source_ranges(command, root, cache=None, session=None):
     direct_source = {'cat', 'less', 'more', 'awk', 'nl', 'bat', 'strings', 'xxd', 'od', 'sed', 'head', 'tail'}
     transparent = {'cat'}
     for pipeline in pipelines:
-        pinned = pinned_object_read(pipeline)
+        pinned = pinned_object_read(pipeline, line_limit)
         if pinned is not None:
             ranges.append({'path': pinned[1], 'line_start': pinned[2], 'line_end': pinned[3],
                            'origin': 'tool', 'tree': pinned[0]})
@@ -724,9 +775,9 @@ def shell_source_ranges(command, root, cache=None, session=None):
                 continue
             name = Path(words[0]).name
             total_lines = file_line_count(files[0], cache)
-            selected = limiter_range(words, total_lines) if len(pipeline) == 1 else None
+            selected = limiter_range(words, total_lines, line_limit) if len(pipeline) == 1 else None
             if selected is None and name in transparent and position == 0 and len(pipeline) == 2:
-                selected = limiter_range(pipeline[1], total_lines)
+                selected = limiter_range(pipeline[1], total_lines, line_limit)
             if selected is None:
                 unparseable = True
                 continue
@@ -758,7 +809,7 @@ def direct_source_range(name, data, root, cache=None, session=None):
         return None
 
 
-def git_source(words):
+def git_source(words, line_limit=READ_LINES):
     index = 1
     while index < len(words) and words[index].startswith('-'):
         if words[index] in ('-C', '-c'):
@@ -787,12 +838,12 @@ def git_source(words):
                     count = int(word.split('=', 1)[-1] if '=' in word else word[2:])
                 except ValueError:
                     pass
-        return patch or count is None or count > READ_LINES
+        return patch or count is None or count > line_limit
     if subcommand == 'blame':
         for position, word in enumerate(rest):
             value = rest[position + 1] if word == '-L' and position + 1 < len(rest) else word[2:] if word.startswith('-L') else ''
             match = re.fullmatch(r'(\d+),(\d+)', value)
-            if match and 0 <= int(match.group(2)) - int(match.group(1)) < READ_LINES:
+            if match and 0 <= int(match.group(2)) - int(match.group(1)) < line_limit:
                 return False
         return True
     return subcommand in ('grep', 'ls-files', 'ls-tree', 'cat-file', 'status', 'shortlog', 'branch', 'tag', 'remote')
@@ -895,6 +946,8 @@ def repository_search_pattern(name, data, root):
         if (len(parts) != 2 or parts[0][1] != '|' or parts[1][1]
                 or command_words(parts[1][0]) != ['head', '-' + str(SEARCH_RESULT_SENTINEL)]):
             return None
+        if contains_shell_expansion(parts[0][0]):
+            return None
         contract, paths = strict_search_words(command_words(parts[0][0]))
         if paths == ['.']:
             return contract
@@ -904,7 +957,7 @@ def repository_search_pattern(name, data, root):
 
 
 def shell_violations(command, roots, root, session, authorized=None, complete=None, cache=None,
-                     dependency=None):
+                     dependency=None, read_limit=READ_LINES):
     tool = 'Bash'
     command = unwrap_shell(command)
     # A refused program must never hide behind a shape code, several of which are advisories.
@@ -961,9 +1014,11 @@ def shell_violations(command, roots, root, session, authorized=None, complete=No
             name = Path(words[0]).name
             if name in UNSUPPORTED_FILE_COMMANDS and path_candidates(words, root):
                 return [violation('unsupported-source-range', tool)]
-            is_source = name in SOURCE_COMMANDS or (name == 'git' and git_source(words))
+            is_source = name in SOURCE_COMMANDS or (
+                name == 'git' and git_source(words, read_limit))
+            source_limit = shell_line_limit(words, root, session, read_limit)
             if name in ('head', 'tail', 'sed'):
-                is_source = not line_limiter(words)
+                is_source = not line_limiter(words, source_limit)
             if name == 'cat':
                 try:
                     operands = [resolved(value, root) for value in path_candidates(words, root)]
@@ -973,7 +1028,7 @@ def shell_violations(command, roots, root, session, authorized=None, complete=No
                                     for path in operands):
                     is_source = False
             result_producer = shell_search_producer(words) or shell_discovery_producer(words)
-            maximum = SEARCH_RESULTS if result_producer else READ_LINES
+            maximum = SEARCH_RESULTS if result_producer else source_limit
             bounded_here = result_producer and line_limiter(words, maximum)
             downstream_maximum = (SEARCH_RESULT_SENTINEL
                                   if shell_search_producer(words) else maximum)
@@ -981,14 +1036,14 @@ def shell_violations(command, roots, root, session, authorized=None, complete=No
                     and not any(line_limiter(later, downstream_maximum)
                                 for later in pipeline[position + 1:]):
                 return [violation('unbounded-shell-output', tool)]
-    _, unparseable = shell_source_ranges(command, root, cache, session)
+    _, unparseable = shell_source_ranges(command, root, cache, session, read_limit)
     if unparseable:
         return [violation('unsupported-source-range', tool)]
     return []
 
 
 def validate_call(name, data, roots, root, session, authorized=None, complete=None, cache=None,
-                  dependency=None, *, target=None):
+                  dependency=None, *, target=None, read_limit=READ_LINES):
     normalized = name.lower()
     path = tool_path(data)
     if path is not None:
@@ -1010,7 +1065,8 @@ def validate_call(name, data, roots, root, session, authorized=None, complete=No
             return [violation('unresolved-path-variable', name)]
         if may_read_complete:
             return []
-        if not explicit_offset(data) or not positive_bound(data, ('limit', 'line_limit', 'max_lines'), READ_LINES):
+        if not explicit_offset(data) or not positive_bound(
+                data, ('limit', 'line_limit', 'max_lines'), read_limit):
             return [violation('unbounded-read', name)]
         return []
     elif normalized in SEARCH_TOOLS:
@@ -1024,7 +1080,7 @@ def validate_call(name, data, roots, root, session, authorized=None, complete=No
         if not isinstance(command, str) or not command.strip():
             return [violation('missing-shell-command', name)]
         return shell_violations(
-            command, roots, root, session, authorized, complete, cache, dependency)
+            command, roots, root, session, authorized, complete, cache, dependency, read_limit)
     elif normalized in TERMINAL_TOOLS:
         return []
     return [violation('unrecognized-review-tool', name)]
@@ -1559,7 +1615,7 @@ def validate_plan_prompt_binding(manifest, seat, prompt, module, *, text=None):
             continue
         proof = cluster.get('search_proof')
         if proof is None:
-            command = (shlex.join(module.plan_search_argv(cluster['search_contract']))
+            command = (module.plan_search_shell_command(cluster['search_contract'])
                        + ' | head -' + str(SEARCH_RESULT_SENTINEL))
             required_once.append(
                 'Required cluster sibling search: ' + cluster_id + ' run ' + command
@@ -2021,7 +2077,8 @@ def plan_specialist_primary(manifest, seat, session):
             if not chunks:
                 raise ValueError('chunked plan patch has no primary chunk')
             return session / chunks[0]['artifact'], 'full', None
-        return Path(assignment['patch']), 'window', min(READ_LINES, assignment['patch_lines'])
+        limit = CODEX_READ_LINES if assignment['adapter'] == 'codex' else READ_LINES
+        return Path(assignment['patch']), 'window', min(limit, assignment['patch_lines'])
     patch_name = Path(assignment['patch']).name
     candidates = [name for name in assignment['required_artifacts'] if name != patch_name]
     artifact = candidates[0] if candidates else manifest['plan']['common_artifacts'][0]
@@ -2044,7 +2101,8 @@ def plan_specialist_first_call_contract(manifest, seat, session):
         tool = ('Read' if assignment['adapter'] in ('agent', 'claude', 'cursor-agent') else
                 'council_read' if assignment['adapter'] == 'cursor-sdk' else 'read_file')
         if mode == 'window':
-            action = 'use ' + tool + ' with offset 1 and limit 240 on ' + str(primary)
+            action = ('use ' + tool + ' with offset 1 and limit ' + str(READ_LINES)
+                      + ' on ' + str(primary))
         else:
             action = 'use ' + tool + ' to read ' + str(primary) + ' in full'
     return ('Plan specialist first-call contract: ' + action
@@ -2572,10 +2630,11 @@ def assess(args, blocked):
     source_read_call_ids = set()
     verified_call_ranges = {}
     pending_source_ranges = []
+    read_limit = CODEX_READ_LINES if args.adapter == 'codex' else READ_LINES
     for call_id, (name, data, turn) in calls.items():
         call_failures = validate_call(
             name, data, roots, root, session, authorized, complete_paths, source_cache,
-            dependency)
+            dependency, read_limit=read_limit)
         failures.extend(call_failures)
         if call_failures:
             blocked.add(call_id)
@@ -2613,7 +2672,7 @@ def assess(args, blocked):
                 call_ranges.append(direct)
             if name.lower() in SHELL_TOOLS:
                 shell_ranges, unparseable = shell_source_ranges(
-                    data.get('command', ''), root, source_cache, session)
+                    data.get('command', ''), root, source_cache, session, read_limit)
                 call_ranges.extend(shell_ranges)
                 if unparseable:
                     failures.append(violation('unsupported-source-range', name))

@@ -105,8 +105,11 @@ base, or legacy prompt keeps the next panel on full scope.
 
 Discovery and risk panels give the full-state seat the cumulative patch. Other seats
 receive deterministic semantic component patches. Components are connected sets of
-changed semantic files joined by lexical references, resolved local imports, related
-tests, or direct changed-symbol call sites. Components are assigned by descending
+changed semantic files joined by resolved local imports, related tests, or direct
+changed-symbol call sites. Cross-file lexical context is limited to recognized
+file-level public or exported declarations and files that resolve an import to their
+module. Local declarations, test helpers, prose, and coincidental name matches do not
+create cross-file edges. Components are assigned by descending
 patch weight to the least-loaded specialist in stable seat order. Every semantic file
 appears in at least one specialist patch and in the full-state patch. If there are
 fewer components than specialists, the smallest deterministic component is repeated
@@ -268,10 +271,12 @@ summary. A reviewer may cite a packet line as the corresponding original file li
 `REV_SOURCE_CONTEXT=1` enables the held-out adoption candidate; the default remains `0`
 until certification.
 
-Selection gives every changed symbol a declaration seed before adding one production
-caller per symbol, one related test per component, every detected gate, and then stable
-extra caller and test windows. A specialist receives at most one 32 KiB shard. The
-full-state integration seat receives at most three 32 KiB shards. Any omitted or
+Selection gives every changed symbol a declaration seed and retains enclosing public
+or exported declarations when a changed hunk is nested inside them. It then adds one
+production caller per cross-file symbol, one related test per component, every detected
+gate, and stable extra caller and test windows. Import resolution honors configured
+TypeScript and JavaScript `baseUrl` roots. A specialist receives at most one 32 KiB
+shard. The full-state integration seat receives at most three 32 KiB shards. Any omitted or
 ambiguous match is recorded as `source read required`; dynamic dispatch, long symbols,
 binary or special files, and control flow outside an excerpt always require a bounded
 source expansion when relevant.

@@ -99,24 +99,30 @@ test_prompt_evidence_contract() {
       assert_grep "$seat prompt names its exact risk bundle" "$prompt" "^Assigned risk bundle: $expected_bundle$"
       assert_grep "$seat embeds manifest-bound repository instructions" "$prompt" '^Root rule marker\.$'
       assert_grep "$seat prompt has bounded evidence steps" "$prompt" '^## Bounded evidence protocol$'
-      assert_grep "$seat prompt reads its complete assigned patch" "$prompt" \
-        'read every byte of the assigned patch.*window mode.*at most 240 lines'
       case "$seat" in
         sol)
+          assert_grep "$seat prompt bounds Codex patch windows to 40 lines" "$prompt" \
+            'read every byte of the assigned patch.*window mode.*at most 40 lines'
           assert_grep "$seat prompt uses a portable shell window recipe" "$prompt" \
             "^First assigned-patch action: run .*sed -n '[0-9][0-9]*,[0-9][0-9]*p' .*r1-.*\\.patch"
           assert_nogrep "$seat prompt never asks Codex for a native read tool" "$prompt" \
             'First assigned-patch action:.*Read|First assigned-patch action:.*read_file'
           ;;
         terra)
+          assert_grep "$seat prompt bounds Codex patch windows to 40 lines" "$prompt" \
+            'read every byte of the assigned patch.*window mode.*at most 40 lines'
           assert_grep "$seat prompt uses a portable shell window recipe" "$prompt" \
             "^First assigned-patch action: run .*sed -n '[0-9][0-9]*,[0-9][0-9]*p' .*r1-.*\\.patch"
           ;;
         opus)
+          assert_grep "$seat prompt keeps Claude patch windows at 240 lines" "$prompt" \
+            'read every byte of the assigned patch.*window mode.*at most 240 lines'
           assert_grep "$seat prompt uses Claude Read" "$prompt" \
             '^First assigned-patch action: use Read with offset 1 and limit 240 '
           ;;
         sonnet)
+          assert_grep "$seat prompt keeps Claude patch windows at 240 lines" "$prompt" \
+            'read every byte of the assigned patch.*window mode.*at most 240 lines'
           assert_grep "$seat prompt uses Claude Read" "$prompt" \
             '^First assigned-patch action: use Read with offset 1 and limit 240 '
           ;;
@@ -345,7 +351,7 @@ SH
     assert_grep "paired baseline requires direct source reads" "$disabled_prompt" \
       '^Source read required: true$'
     assert_grep "paired baseline keeps component-scoped assigned patch" "$disabled_prompt" \
-      '^Read the entire assigned patch in bounded windows of at most 240 lines: '
+      '^Read the entire assigned patch in bounded windows of at most 40 lines: '
 
     local default_manifest
     default_manifest=$(python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 13 \
@@ -483,14 +489,16 @@ PY
         codex) recovery_prefix="$sol_prefix";;
         claude) recovery_prefix="$claude_prefix";;
       esac
-      assert_grep "$recovery_adapter prefix keeps the shell overflow sentinel and 80-result bound" \
-        "$recovery_prefix" '\| head -81.*at most 80 result lines'
+      assert_grep "$recovery_adapter prefix caps every shell search at 80 result lines" \
+        "$recovery_prefix" '\| head -80.*at most 80 result lines'
+      assert_grep "$recovery_adapter prefix scopes the overflow probe to required plan searches" \
+        "$recovery_prefix" 'Never compose a `head -81` search yourself.*sole plan-audit exception.*Use `head -80`'
       assert_grep "$recovery_adapter prefix identifies search overflow as an advisory" \
         "$recovery_prefix" '81st line.*advisory'
       assert_grep "$recovery_adapter prefix gives overflowing search no proof credit" \
         "$recovery_prefix" '81st line.*no proof credit'
-      assert_grep "$recovery_adapter prefix narrows and repeats an overflowing search" \
-        "$recovery_prefix" '[Nn]arrow.*repeat.*search'
+      assert_grep "$recovery_adapter prefix narrows a full search result and continues" \
+        "$recovery_prefix" '[Nn]arrow.*continue.*bounded search'
       assert_grep "$recovery_adapter prefix gives transformed source no proof credit" \
         "$recovery_prefix" 'added prefixes.*no proof credit'
       assert_grep "$recovery_adapter prefix recovers needed source with byte-preserving bounded reads" \
@@ -503,10 +511,28 @@ PY
         "$recovery_prefix" '[Mm]issing.*required.*proof.*invalid'
       assert_grep "$recovery_adapter prefix keeps unsupported citations invalid" \
         "$recovery_prefix" '[Uu]nsubstantiated.*citation.*invalid'
-      assert_grep "$recovery_adapter prefix keeps inclusive 240-line source windows" \
-        "$recovery_prefix" 'END - START \+ 1 <= 240'
-      assert_grep "$recovery_adapter prefix carries per-turn byte bound" \
-        "$recovery_prefix" '32 KiB combined output ceiling'
+      case "$recovery_adapter" in
+        codex)
+          assert_grep "$recovery_adapter prefix keeps inclusive 40-line source windows" \
+            "$recovery_prefix" 'END - START \+ 1 <= 40'
+          assert_grep "$recovery_adapter prefix sets a safe per-turn byte target" \
+            "$recovery_prefix" 'under 24 KiB per response and per ordinary turn'
+          assert_grep "$recovery_adapter prefix preserves larger ordered proof turns" \
+            "$recovery_prefix" 'Ordered proof phases may use their rendered 60 KiB turn budget'
+          assert_grep "$recovery_adapter prefix names the hard byte ceiling" \
+            "$recovery_prefix" 'Hard ceilings are 32 KiB per response and for an ordinary turn'
+          assert_grep "$recovery_adapter prefix caps Codex patch windows at 40 lines" \
+            "$recovery_prefix" 'at most 40 lines.*Forty lines is a ceiling'
+          assert_grep "$recovery_adapter prefix applies 40-line windows to repository reads" \
+            "$recovery_prefix" 'at most 40 lines for every patch or repository source window'
+          assert_grep "$recovery_adapter prefix splits over-target outputs before reading" \
+            "$recovery_prefix" 'if a planned response or turn may exceed 24 KiB, narrow it before reading';;
+        claude)
+          assert_grep "$recovery_adapter prefix keeps inclusive 240-line source windows" \
+            "$recovery_prefix" 'END - START \+ 1 <= 240'
+          assert_grep "$recovery_adapter prefix carries per-turn byte bound" \
+            "$recovery_prefix" '32 KiB combined output ceiling';;
+      esac
       assert_grep "$recovery_adapter prefix carries ordered proof turn bound" \
         "$recovery_prefix" 'at most the rendered proof read limit.*60 KiB combined output ceiling'
       assert_grep "$recovery_adapter prefix keeps source packets on the ordinary cap" \
@@ -519,8 +545,14 @@ PY
         "$recovery_prefix" 'Such a result is never review-complete'
     done
     assert_grep "legacy prefix keeps receiptless search overflow fatal" "$legacy" \
-      '\| head -81.*81st line invalidates the audit'
-    assert_grep "stable prefix asks for batched independent tool calls" "$sol_prefix" 'Batch independent bounded tool calls into one turn'
+      '\| head -80.*81st line invalidates the audit'
+    assert_nogrep "Codex prefix avoids ambiguous generic batching language" "$sol_prefix" 'Batch independent bounded tool calls into one turn'
+    assert_grep "Codex prefix distinguishes separate calls from source batching" "$sol_prefix" 'Codex source batching is disabled.*Each source read is a separate tool call'
+    assert_grep "Codex prefix uses short patch windows to avoid byte overflow" "$sol_prefix" 'at most 40 lines, then continue at the next line'
+    assert_grep "Codex prefix budgets each response below the audit ceiling" "$sol_prefix" 'under 24 KiB per response.*Line limits do not limit bytes'
+    assert_grep "Codex prefix gives a safe bounded source-read command" "$sol_prefix" "sed -n '40,75p' 'src/file.ts'"
+    assert_grep "Codex prefix gives a bounded literal-search command" "$sol_prefix" "rg -n -F 'symbolName' 'src/path' \\| head -80"
+    assert_grep "Codex prefix forbids combining ranges in a shell command" "$sol_prefix" 'Do not combine source files or ranges with.*&&.*;'
     assert_grep "stable prefix rejects per-file search caps as global bounds" "$sol_prefix" \
       'rg --max-count.*per file'
     assert_grep "stable prefix keeps one-producer behavior as the default" "$sol_prefix" \

@@ -1597,7 +1597,7 @@ def source_context_packets():
         assert any(reason.startswith('gate:') for reason in reasons)
         prompt = call('render', session / 'r1-evidence.manifest.json', owner)
         assert 'Source context enabled: true' in prompt and 'Source context packet:' in prompt and 'Source read required:' in prompt
-        assert 'Read the entire assigned patch in bounded windows of at most 240 lines:' in prompt
+        assert 'Read the entire assigned patch in bounded windows of at most 40 lines:' in prompt
         old = module.Repository
         try:
             module.Repository = lambda *_: (_ for _ in ()).throw(AssertionError('offline source-context validation used Git'))
@@ -1822,6 +1822,435 @@ def source_context_prefers_named_production_and_maps_gates():
                            if 'gate:global.cfg:1' in entry['reasons'])
         assert mapped['component_ids'] == ['main'], mapped
         assert global_gate['component_ids'] == ['main', 'other'], global_gate
+
+def local_names_do_not_expand_cross_file_proof():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('src/history.ts',
+              'export const readHistory = (input: number) => {\n'
+              '  const row = input + 1;\n'
+              '  const page = row + 1;\n'
+              '  return page;\n'
+              '};\n')
+        write('tsconfig.json', '{"compilerOptions":{"baseUrl":"src"},"include":["src","tests"]}\n')
+        write('tsconfig-utility.json',
+              '{"compilerOptions":{"baseUrl":"utility"},"include":["utility"]}\n')
+        write('utility/history.ts', 'export const readHistory = () => 999;\n')
+        write('src/consumer.ts',
+              'import { readHistory } from "history";\n'
+              'export const consumeHistory = () => readHistory(1);\n')
+        write('src/unrelated.ts',
+              'export const unrelated = () => {\n'
+              '  const row = 1;\n'
+              '  const page = row + 1;\n'
+              '  return page;\n'
+              '};\n')
+        write('tests/history.test.ts',
+              'import { readHistory } from "history";\n'
+              'test("reads history", () => expect(readHistory(1)).toBe(3));\n')
+        write('tests/unrelated.test.ts',
+              'const page = 1;\n'
+              'test("uses a local page", () => expect(page).toBe(1));\n')
+        write('docs/notes.md', 'row page value are common words in this design note.\n')
+        git('add', '.'); git('commit', '-qm', 'proof scope base'); base = git('rev-parse', 'HEAD')
+        scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('src/history.ts', (root / 'src/history.ts').read_text().replace(
+            'const page = row + 1;', 'const page = row + 2;'))
+
+        manifest = prepare()
+        facts = json.loads((session / 'r1-evidence.json').read_text())
+        public = next(row for row in facts['symbols'] if row['name'] == 'readHistory')
+        assert public['cross_file'] is True, public
+        assert any(row['name'] == 'page' and row['cross_file'] is False for row in facts['symbols'])
+        assert any(row['path'] == 'src/consumer.ts' and row['name'] == 'readHistory'
+                   for row in facts['call_sites'])
+        assert not any(row['source'] == 'src/consumer.ts' and row['target'] == 'utility/history.ts'
+                       for row in facts['dependencies']), facts['dependencies']
+        assert any(row['path'] == 'tests/history.test.ts' for row in facts['related_tests'])
+        assert not any(row['path'] in {'src/unrelated.ts', 'tests/unrelated.test.ts', 'docs/notes.md'}
+                       for row in facts['call_sites'] + facts['related_tests'])
+        proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
+                       for shard in packet['shards'] for row in shard['ranges']}
+        proof_paths.update(required['path']
+                           for packet in manifest['source_context']['seats'].values()
+                           for required in packet['required_source_ranges'])
+        assert 'src/consumer.ts' in proof_paths and 'tests/history.test.ts' in proof_paths, proof_paths
+        assert not proof_paths & {'src/unrelated.ts', 'tests/unrelated.test.ts', 'docs/notes.md'}, proof_paths
+
+def rust_use_imports_keep_cross_file_callers():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('Cargo.toml', '[package]\nname = "fixture_wallet"\nversion = "0.1.0"\n')
+        write('src/lib.rs', 'pub mod consumer;\npub mod history;\n')
+        write('src/history.rs', 'pub fn read_history() -> usize { 1 }\n')
+        write('src/consumer.rs',
+              'use crate::history::read_history;\n'
+              'pub fn consume_history() -> usize { read_history() }\n')
+        git('add', '.'); git('commit', '-qm', 'rust import base'); base = git('rev-parse', 'HEAD')
+        scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('src/history.rs', 'pub fn read_history() -> usize { 2 }\n')
+
+        manifest = prepare()
+        facts = json.loads((session / 'r1-evidence.json').read_text())
+        assert any(row['path'] == 'src/consumer.rs' and row['name'] == 'read_history'
+                   for row in facts['call_sites']), facts['call_sites']
+        assert any(row['source'] == 'src/consumer.rs' and row['target'] == 'src/history.rs'
+                   and row['kind'] == 'local-import' for row in facts['dependencies']), facts['dependencies']
+        proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
+                       for shard in packet['shards'] for row in shard['ranges']}
+        proof_paths.update(required['path']
+                           for packet in manifest['source_context']['seats'].values()
+                           for required in packet['required_source_ranges'])
+        assert 'src/consumer.rs' in proof_paths, proof_paths
+
+def rust_grouped_use_alias_is_a_capacity_counted_obligation():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('Cargo.toml', '[package]\nname = "fixture_wallet"\nversion = "0.1.0"\n')
+        write('src/lib.rs', 'pub mod consumer;\npub mod history;\n')
+        write('src/history.rs', 'pub fn read_history() -> usize { 1 }\n')
+        write('src/consumer.rs',
+              'use crate::{history::read_history /* , } note */ as load_history};\n'
+              'pub fn consume_history() -> usize { load_history() }\n')
+        git('add', '.'); git('commit', '-qm', 'grouped rust import base'); base = git('rev-parse', 'HEAD')
+        scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('src/history.rs', 'pub fn read_history() -> usize { 2 }\n')
+
+        manifest = prepare()
+        facts = json.loads((session / 'r1-evidence.json').read_text())
+        call_site = next(row for row in facts['call_sites']
+                         if row['path'] == 'src/consumer.rs' and row['name'] == 'read_history')
+        assert call_site['local_name'] == 'load_history', call_site
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'src/consumer.rs')
+        assert obligation['imported_name'] == 'read_history', obligation
+        assert obligation['local_name'] == 'load_history', obligation
+        assert obligation['line_start'] == 1 and obligation['line_end'] == 1, obligation
+        assert any(row['path'] == 'src/history.rs' and row['name'] == 'read_history'
+                   for row in obligation['candidate_symbols']), obligation
+        proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
+                       for shard in packet['shards'] for row in shard['ranges']}
+        proof_paths.update(required['path']
+                           for packet in manifest['source_context']['seats'].values()
+                           for required in packet['required_source_ranges'])
+        proof_paths.update(row['path']
+                           for capacity in manifest['task_capacity']['seats'].values()
+                           for row in capacity['mandatory_window_rows'])
+        assert {'src/consumer.rs', 'src/history.rs'} <= proof_paths, proof_paths
+
+def ts_default_import_alias_is_a_capacity_counted_obligation():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('src/history.ts',
+              'export default function readHistory() { return 1; }\n')
+        write('src/consumer.ts',
+              'import loadHistory from "./history";\n'
+              'export function consumeHistory() { return loadHistory(); }\n')
+        git('add', '.'); git('commit', '-qm', 'default import base'); base = git('rev-parse', 'HEAD')
+        scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('src/history.ts',
+              'export default function readHistory() { return 2; }\n')
+
+        manifest = prepare('default-import')
+        facts = json.loads((session / 'rdefault-import-evidence.json').read_text())
+        call_site = next(row for row in facts['call_sites']
+                         if row['path'] == 'src/consumer.ts' and row['name'] == 'readHistory')
+        assert call_site['local_name'] == 'loadHistory', call_site
+        assert call_site['import_line_start'] == 1, call_site
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'src/consumer.ts')
+        assert obligation['imported_name'] == 'default', obligation
+        assert obligation['local_name'] == 'loadHistory', obligation
+        assert any(row['path'] == 'src/history.ts' and row['name'] == 'readHistory'
+                   for row in obligation['candidate_symbols']), obligation
+        proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
+                       for shard in packet['shards'] for row in shard['ranges']}
+        proof_paths.update(required['path']
+                           for packet in manifest['source_context']['seats'].values()
+                           for required in packet['required_source_ranges'])
+        proof_paths.update(row['path']
+                           for capacity in manifest['task_capacity']['seats'].values()
+                           for row in capacity['mandatory_window_rows'])
+        assert {'src/consumer.ts', 'src/history.ts'} <= proof_paths, proof_paths
+
+def rust_module_alias_and_self_import_keep_qualified_callers():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('Cargo.toml', '[package]\nname = "fixture_wallet"\nversion = "0.1.0"\n')
+        write('src/lib.rs', 'pub mod alias_consumer;\npub mod self_consumer;\npub mod history;\n')
+        write('src/history.rs', 'pub fn read_history() -> usize { 1 }\n')
+        write('src/alias_consumer.rs',
+              'use crate::history as h;\n'
+              'pub fn consume_history() -> usize { h::read_history() }\n')
+        write('src/self_consumer.rs',
+              'use crate::history::{self};\n'
+              'pub fn consume_history() -> usize { history::read_history() }\n')
+        git('add', '.'); git('commit', '-qm', 'rust module import base'); base = git('rev-parse', 'HEAD')
+        scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('src/history.rs', 'pub fn read_history() -> usize { 2 }\n')
+
+        manifest = prepare()
+        facts = json.loads((session / 'r1-evidence.json').read_text())
+        for path, alias in [('src/alias_consumer.rs', 'h::read_history'),
+                            ('src/self_consumer.rs', 'history::read_history')]:
+            assert any(row['path'] == path and row['name'] == 'read_history'
+                       and row.get('local_name') == alias for row in facts['call_sites']), facts['call_sites']
+            assert any(row['source'] == path and row['target'] == 'src/history.rs'
+                       for row in facts['dependencies']), facts['dependencies']
+        proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
+                       for shard in packet['shards'] for row in shard['ranges']}
+        proof_paths.update(required['path']
+                           for packet in manifest['source_context']['seats'].values()
+                           for required in packet['required_source_ranges'])
+        assert {'src/alias_consumer.rs', 'src/self_consumer.rs'} <= proof_paths, proof_paths
+
+def rust_grouped_root_reexport_is_a_capacity_counted_obligation():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('Cargo.toml', '[package]\nname = "fixture_wallet"\nversion = "0.1.0"\n')
+        write('src/lib.rs', 'pub mod history;\npub use history::read_history;\n')
+        write('src/history.rs', 'pub fn read_history() -> usize { 1 }\n')
+        write('src/consumer.rs',
+              'use crate::{read_history as load_history};\n'
+              'pub fn consume_history() -> usize { load_history() }\n')
+        git('add', '.'); git('commit', '-qm', 'rust grouped root import base'); base = git('rev-parse', 'HEAD')
+        scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('src/history.rs', 'pub fn read_history() -> usize { 2 }\n')
+
+        manifest = prepare()
+        facts = json.loads((session / 'r1-evidence.json').read_text())
+        call_site = next(row for row in facts['call_sites']
+                         if row['path'] == 'src/consumer.rs' and row['name'] == 'read_history')
+        assert call_site['local_name'] == 'load_history', call_site
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'src/consumer.rs')
+        assert obligation['imported_name'] == 'read_history', obligation
+        assert 'src/lib.rs' in {row['path'] for row in obligation['candidate_search_ranges']}, obligation
+        proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
+                       for shard in packet['shards'] for row in shard['ranges']}
+        proof_paths.update(required['path']
+                           for packet in manifest['source_context']['seats'].values()
+                           for required in packet['required_source_ranges'])
+        proof_paths.update(row['path']
+                           for capacity in manifest['task_capacity']['seats'].values()
+                           for row in capacity['mandatory_window_rows'])
+        assert {'src/consumer.rs', 'src/lib.rs', 'src/history.rs'} <= proof_paths, proof_paths
+
+def ts_namespace_alias_missing_target_is_a_capacity_counted_obligation():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('tsconfig.json',
+              '{\n  "compilerOptions": {\n    "baseUrl": ".",\n'
+              '    "paths": { "@history": ["missing/history"] }\n  }\n}\n')
+        write('src/history.ts', 'export const readHistory = () => 1;\n')
+        write('src/consumer.ts',
+              'import * as history from "@history";\n'
+              'export const consumeHistory = () => history.readHistory();\n')
+        git('add', '.'); git('commit', '-qm', 'namespace path import base'); base = git('rev-parse', 'HEAD')
+        scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('src/history.ts', 'export const readHistory = () => 2;\n')
+
+        manifest = prepare()
+        facts = json.loads((session / 'r1-evidence.json').read_text())
+        call_site = next(row for row in facts['call_sites']
+                         if row['path'] == 'src/consumer.ts' and row['name'] == 'readHistory')
+        assert call_site['local_name'] == 'history.readHistory', call_site
+        assert call_site['resolution'] == 'unresolved import search required', call_site
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'src/consumer.ts')
+        assert obligation['reference'] == '@history', obligation
+        assert any(row['path'] == 'src/history.ts' and row['name'] == 'readHistory'
+                   for row in obligation['candidate_symbols']), obligation
+        proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
+                       for shard in packet['shards'] for row in shard['ranges']}
+        proof_paths.update(required['path']
+                           for packet in manifest['source_context']['seats'].values()
+                           for required in packet['required_source_ranges'])
+        proof_paths.update(row['path']
+                           for capacity in manifest['task_capacity']['seats'].values()
+                           for row in capacity['mandatory_window_rows'])
+        assert {'src/consumer.ts', 'src/history.ts', 'tsconfig.json'} <= proof_paths, proof_paths
+
+def coexisting_ts_projects_are_explicitly_ambiguous_with_matching_base_url():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('tsconfig.json',
+              '{\n  "compilerOptions": {\n    "baseUrl": ".",\n'
+              '    "paths": { "@history": ["src/history"] }\n  }\n}\n')
+        write('src/tsconfig.json',
+              '{\n  "compilerOptions": {\n    "baseUrl": "../",\n'
+              '    "paths": { "@history": ["missing/history"] }\n  },\n'
+              '  "include": ["only-another-root.ts"]\n}\n')
+        write('src/history.ts', 'export const readHistory = () => 1;\n')
+        write('src/consumer.ts',
+              'import { readHistory } from "@history";\n'
+              'export const consumeHistory = () => readHistory();\n')
+        git('add', '.'); git('commit', '-qm', 'coexisting ts projects base'); base = git('rev-parse', 'HEAD')
+        scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('src/history.ts', 'export const readHistory = () => 2;\n')
+
+        manifest = prepare()
+        facts = json.loads((session / 'r1-evidence.json').read_text())
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'src/consumer.ts')
+        assert obligation['candidate_targets'] == ['src/history.ts'], obligation
+        assert {row['path'] for row in obligation['config_ranges']} == {
+            'tsconfig.json', 'src/tsconfig.json'}, obligation
+        assert any(row['kind'] == 'ambiguous-import' and row['source'] == 'src/consumer.ts'
+                   and row['target'] == 'src/history.ts' for row in facts['dependencies']), facts['dependencies']
+        proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
+                       for shard in packet['shards'] for row in shard['ranges']}
+        proof_paths.update(required['path']
+                           for packet in manifest['source_context']['seats'].values()
+                           for required in packet['required_source_ranges'])
+        assert {'src/consumer.ts', 'src/history.ts', 'tsconfig.json', 'src/tsconfig.json'} <= proof_paths, proof_paths
+
+def ambiguous_ts_configs_are_explicit_search_obligations():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('tsconfig.json',
+              '{"compilerOptions":{"baseUrl":"src"},"include":["src"]}\n')
+        write('src/tsconfig-alt.json',
+              '{"compilerOptions":{"baseUrl":"../lib"},"include":["*.ts"]}\n')
+        write('src/history.ts', 'export const readHistory = () => 1;\n')
+        write('lib/history.ts', 'export const readHistory = () => 2;\n')
+        write('src/consumer.ts',
+              'import { readHistory } from "history";\n'
+              'export const consumeHistory = () => readHistory();\n')
+        git('add', '.'); git('commit', '-qm', 'ambiguous config base'); base = git('rev-parse', 'HEAD')
+        scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('src/history.ts', 'export const readHistory = () => 3;\n')
+
+        manifest = prepare()
+        facts = json.loads((session / 'r1-evidence.json').read_text())
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'src/consumer.ts')
+        assert set(obligation['candidate_targets']) == {
+            'src/history.ts', 'lib/history.ts'}, obligation
+        assert any(row['source'] == 'src/consumer.ts' and row['target'] == 'src/history.ts'
+                   and row['kind'] == 'ambiguous-import' for row in facts['dependencies']), facts['dependencies']
+        assert any(row['source'] == 'src/consumer.ts' and row['target'] == 'lib/history.ts'
+                   and row['kind'] == 'ambiguous-import' for row in facts['dependencies']), facts['dependencies']
+        assert any(row['path'] == 'src/consumer.ts' and row['name'] == 'readHistory'
+                   for row in facts['call_sites']), facts['call_sites']
+        assert any(row['path'] == 'src/consumer.ts' and row.get('resolution') ==
+                   'unresolved import search required' for row in facts['call_sites']), facts['call_sites']
+        assert {row['path'] for row in obligation['config_ranges']} == {
+            'tsconfig.json', 'src/tsconfig-alt.json'}, obligation
+        proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
+                       for shard in packet['shards'] for row in shard['ranges']}
+        proof_paths.update(required['path']
+                           for packet in manifest['source_context']['seats'].values()
+                           for required in packet['required_source_ranges'])
+        proof_paths.update(row['path']
+                           for capacity in manifest['task_capacity']['seats'].values()
+                           for row in capacity['mandatory_window_rows'])
+        assert {'src/consumer.ts', 'src/history.ts', 'lib/history.ts',
+                'tsconfig.json', 'src/tsconfig-alt.json'} <= proof_paths, proof_paths
+        closure = module.plan_closure_paths(
+            [{'id': 'history', 'paths': [{'path': 'src/consumer.ts'}]}],
+            facts['dependencies'], ['src/history.ts'])
+        assert 'src/history.ts' in closure, closure
+
+def ts_paths_alias_and_missing_targets_are_capacity_counted():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('tsconfig.json',
+              '{\n  "extends": "./configs/tsconfig.base.json",\n'
+              '  "include": ["src"]\n}\n')
+        write('configs/tsconfig.base.json',
+              '{\n  "compilerOptions": {\n    "baseUrl": "../",\n'
+              '    "paths": { "@history": ["src/history"] }\n  }\n}\n')
+        write('src/history.ts', 'export const readHistory = () => 1;\n')
+        write('src/consumer.ts',
+              'import { readHistory as loadHistory } from "@history";\n'
+              'export const consumeHistory = () => loadHistory();\n')
+        git('add', '.'); git('commit', '-qm', 'aliased paths import base'); base = git('rev-parse', 'HEAD')
+        scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('src/history.ts', 'export const readHistory = () => 2;\n')
+
+        manifest = prepare()
+        facts = json.loads((session / 'r1-evidence.json').read_text())
+        call_site = next(row for row in facts['call_sites']
+                         if row['path'] == 'src/consumer.ts' and row['name'] == 'readHistory')
+        assert call_site['local_name'] == 'loadHistory', call_site
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'src/consumer.ts')
+        assert obligation['imported_name'] == 'readHistory', obligation
+        assert obligation['local_name'] == 'loadHistory', obligation
+        assert obligation['candidate_targets'] == ['src/history.ts'], obligation
+        assert {row['path'] for row in obligation['config_ranges']} == {
+            'tsconfig.json', 'configs/tsconfig.base.json'}, obligation
+        assert any(row['path'] == 'src/history.ts' and row['name'] == 'readHistory'
+                   for row in obligation['candidate_symbols']), obligation
+        proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
+                       for shard in packet['shards'] for row in shard['ranges']}
+        proof_paths.update(required['path']
+                           for packet in manifest['source_context']['seats'].values()
+                           for required in packet['required_source_ranges'])
+        proof_paths.update(row['path']
+                           for capacity in manifest['task_capacity']['seats'].values()
+                           for row in capacity['mandatory_window_rows'])
+        assert {'src/consumer.ts', 'src/history.ts', 'tsconfig.json',
+                'configs/tsconfig.base.json'} <= proof_paths, proof_paths
+
+def ts_transitive_excluded_file_uses_project_path_aliases():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('tsconfig.json',
+              '{\n  "extends": "./configs/tsconfig.base.json",\n'
+              '  "include": ["src/main.ts"],\n'
+              '  "exclude": ["src/transitive.ts"]\n}\n')
+        write('configs/tsconfig.base.json',
+              '{\n  "compilerOptions": {\n    "baseUrl": "../",\n'
+              '    "paths": { "@history": ["src/history"] }\n  }\n}\n')
+        write('src/history.ts', 'export const readHistory = () => 1;\n')
+        write('src/main.ts', 'import "./transitive";\n')
+        write('src/transitive.ts',
+              'import { readHistory } from "@history";\n'
+              'export const consumeHistory = () => readHistory();\n')
+        git('add', '.'); git('commit', '-qm', 'transitive ts path import base'); base = git('rev-parse', 'HEAD')
+        scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('src/history.ts', 'export const readHistory = () => 2;\n')
+
+        manifest = prepare()
+        facts = json.loads((session / 'r1-evidence.json').read_text())
+        assert any(row['path'] == 'src/transitive.ts' and row['name'] == 'readHistory'
+                   for row in facts['call_sites']), facts['call_sites']
+        assert any(row['source'] == 'src/transitive.ts' and row['target'] == 'src/history.ts'
+                   for row in facts['dependencies']), facts['dependencies']
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'src/transitive.ts')
+        assert obligation['candidate_targets'] == ['src/history.ts'], obligation
+        proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
+                       for shard in packet['shards'] for row in shard['ranges']}
+        proof_paths.update(required['path']
+                           for packet in manifest['source_context']['seats'].values()
+                           for required in packet['required_source_ranges'])
+        assert {'src/transitive.ts', 'src/history.ts', 'tsconfig.json',
+                'configs/tsconfig.base.json'} <= proof_paths, proof_paths
 
 def complete_declaration_context():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -3595,7 +4024,18 @@ cases = (
     verification_nested_restoration_refuses_unusable_instruction_budget, coverage_head_publication_is_monotonic,
     same_stat_and_index_flags, cstyle_enclosing_bodies, wallet_scale,
     literal_scope_and_inventories, sparse_gitlink_and_special, roster_bundle_coverage,
-    source_context_packets, provider_visible_source_packet_limit,
+    source_context_packets, local_names_do_not_expand_cross_file_proof,
+    rust_use_imports_keep_cross_file_callers,
+    rust_grouped_use_alias_is_a_capacity_counted_obligation,
+    ts_default_import_alias_is_a_capacity_counted_obligation,
+    rust_module_alias_and_self_import_keep_qualified_callers,
+    rust_grouped_root_reexport_is_a_capacity_counted_obligation,
+    ts_namespace_alias_missing_target_is_a_capacity_counted_obligation,
+    coexisting_ts_projects_are_explicitly_ambiguous_with_matching_base_url,
+    ambiguous_ts_configs_are_explicit_search_obligations,
+    ts_paths_alias_and_missing_targets_are_capacity_counted,
+    ts_transitive_excluded_file_uses_project_path_aliases,
+    provider_visible_source_packet_limit,
     source_context_prefers_named_production_and_maps_gates, complete_declaration_context,
     budget_omissions_are_segmented_or_retained, innermost_declarations_and_bounded_anchors,
     high_confidence_component_union, components_ownership_and_instructions,
@@ -3637,6 +4077,17 @@ groups = {
     ),
     'context': (
         cstyle_enclosing_bodies, source_context_packets,
+        local_names_do_not_expand_cross_file_proof,
+        rust_use_imports_keep_cross_file_callers,
+        rust_grouped_use_alias_is_a_capacity_counted_obligation,
+        ts_default_import_alias_is_a_capacity_counted_obligation,
+        rust_module_alias_and_self_import_keep_qualified_callers,
+        rust_grouped_root_reexport_is_a_capacity_counted_obligation,
+        ts_namespace_alias_missing_target_is_a_capacity_counted_obligation,
+        coexisting_ts_projects_are_explicitly_ambiguous_with_matching_base_url,
+        ambiguous_ts_configs_are_explicit_search_obligations,
+        ts_paths_alias_and_missing_targets_are_capacity_counted,
+        ts_transitive_excluded_file_uses_project_path_aliases,
         provider_visible_source_packet_limit,
         source_context_prefers_named_production_and_maps_gates,
         complete_declaration_context, budget_omissions_are_segmented_or_retained,
