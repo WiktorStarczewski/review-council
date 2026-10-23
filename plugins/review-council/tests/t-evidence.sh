@@ -2700,10 +2700,10 @@ def replacement_chain_reaches_opus():
              'model': 'gpt-5.6-luna', 'effort': 'high'} for seat in root_seats]}
         (session / 'roster.json').write_text(json.dumps(roster))
         root_assignments = [
-            '--assignment', root_seats[0] + '=' + bundles[3],
-            '--assignment', root_seats[1] + '=' + bundles[0],
-            '--assignment', root_seats[2] + '=' + bundles[1],
-            '--assignment', root_seats[3] + '=' + bundles[2],
+            '--assignment', root_seats[0] + '=' + bundles[0],
+            '--assignment', root_seats[1] + '=' + bundles[1],
+            '--assignment', root_seats[2] + '=' + bundles[2],
+            '--assignment', root_seats[3] + '=' + bundles[3],
             '--full-seat', root_seats[0],
         ]
         parent = prepare('chain', 'risk', *root_assignments)
