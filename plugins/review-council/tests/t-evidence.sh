@@ -2717,6 +2717,7 @@ def replacement_chain_reaches_opus():
         (session / f'rchain-{root_seats[0]}.exit').write_text('2\n')
         (session / f'rchain-{root_seats[0]}.audit-invalid.json').write_text(
             '{"summary":"terminal failure","findings":[]}\n')
+        failed_bundle = parent['assignments'][root_seats[0]]['bundle']
 
         replacements = [
             ('chainx', 'chain', root_seats[0], 'escalate-sonnet', 'sonnet',
@@ -2734,7 +2735,7 @@ def replacement_chain_reaches_opus():
                 'adapter': adapter, 'model': model, 'effort': effort,
                 'extra': False,
             }))
-            child = prepare(label, 'repair', '--assignment', executor + '=' + bundles[3],
+            child = prepare(label, 'repair', '--assignment', executor + '=' + failed_bundle,
                             '--parent-assignment', parent_label + ':' + parent_seat)
             assert child['replacement_executor']['family'] == family
             child_path = session / f'r{label}-evidence.manifest.json'
