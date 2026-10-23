@@ -45,23 +45,27 @@ fi
 [ -n "$DEFAULT" ] || die "cannot determine the default branch (no origin/HEAD, no local main or master)"
 # ref_for <name> → the ref to measure against: the remote-tracking branch when it exists, else the local one.
 ref_for() { git show-ref --verify -q "refs/remotes/origin/$1" && { echo "origin/$1"; return; }; git show-ref --verify -q "refs/heads/$1" && { echo "$1"; return; }; return 1; }
-BASE_BRANCH=""; BASE_HOW=""; PR_HEAD=""; PR_BASE_HEAD=""; PR_BASE_REF=""
+BASE_BRANCH=""; BASE_HOW=""; PR_REPO=""; PR_HEAD=""; PR_BASE_HEAD=""; PR_BASE_REF=""
 if [ -n "$PR_NUMBER" ]; then
   [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || die "--pr must be a positive PR number"
   [ -z "$BASEREF" ] || die "--pr cannot be combined with --base or REV_BASE_REF"
   [ "$SCOPE" != uncommitted ] || die "--pr cannot review an uncommitted scope"
-  PR_JSON=$(GH_PROMPT_DISABLED=1 gh pr view "$PR_NUMBER" --json number,state,headRefName,headRefOid,baseRefName,baseRefOid 2>/dev/null) \
+  PR_JSON=$(GH_PROMPT_DISABLED=1 gh pr view "$PR_NUMBER" --json number,url,state,headRefName,headRefOid,baseRefName,baseRefOid 2>/dev/null) \
     || die "cannot read GitHub PR #$PR_NUMBER metadata"
-  PR_FIELDS=$(printf '%s' "$PR_JSON" | python3 -c 'import json,sys
+  PR_FIELDS=$(printf '%s' "$PR_JSON" | python3 -c 'import json,re,sys
 try:
  value=json.load(sys.stdin)
- fields=(value["number"],value["state"],value["headRefName"],value["headRefOid"],value["baseRefName"],value["baseRefOid"])
- if not isinstance(fields[0],int) or not all(isinstance(x,str) and x and chr(9) not in x and chr(10) not in x for x in fields[1:]): raise ValueError()
+ number=value["number"]
+ match=re.fullmatch(r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)/?",value["url"],re.IGNORECASE)
+ if not isinstance(number,int) or isinstance(number,bool) or match is None or int(match.group(3)) != number: raise ValueError("unsupported PR identity")
+ repository=match.group(1)+"/"+match.group(2)
+ fields=(number,repository,value["state"],value["headRefName"],value["headRefOid"],value["baseRefName"],value["baseRefOid"])
+ if not all(isinstance(x,str) and x and chr(9) not in x and chr(10) not in x for x in fields[1:]): raise ValueError()
  print(chr(9).join(map(str,fields)))
 except Exception as error:
- print(f'preflight: invalid PR metadata: {type(error).__name__}: {error}',file=sys.stderr)
+ print(f"preflight: invalid PR metadata: {type(error).__name__}: {error}",file=sys.stderr)
  raise SystemExit(1)') || die "GitHub returned invalid PR #$PR_NUMBER metadata"
-  IFS=$'\t' read -r LIVE_PR_NUMBER PR_STATE PR_BRANCH PR_HEAD PR_BASE_BRANCH PR_BASE_HEAD <<< "$PR_FIELDS"
+  IFS=$'\t' read -r LIVE_PR_NUMBER PR_REPO PR_STATE PR_BRANCH PR_HEAD PR_BASE_BRANCH PR_BASE_HEAD <<< "$PR_FIELDS"
   [ "$LIVE_PR_NUMBER" = "$PR_NUMBER" ] || die "GitHub returned a different PR number for #$PR_NUMBER"
   [ "$PR_STATE" = OPEN ] || die "PR #$PR_NUMBER is not open"
   [ "$PR_BRANCH" = "$BRANCH" ] || die "checked out branch '$BRANCH' does not match PR #$PR_NUMBER branch '$PR_BRANCH'"
@@ -158,6 +162,7 @@ if [ -n "$WRITE" ]; then
     printf 'REV_SCOPE=%s\n'   "$(q "$SCOPE")"
     if [ -n "$PR_NUMBER" ]; then
       printf 'REV_PR_NUMBER=%s\n' "$(q "$PR_NUMBER")"
+      printf 'REV_PR_REPO=%s\n' "$(q "$PR_REPO")"
       printf 'REV_PR_HEAD=%s\n' "$(q "$PR_HEAD")"
       printf 'REV_PR_BASE_HEAD=%s\n' "$(q "$PR_BASE_HEAD")"
       printf 'REV_PR_BASE_REF=%s\n' "$(q "$PR_BASE_REF")"
