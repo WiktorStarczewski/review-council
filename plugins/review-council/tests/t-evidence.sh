@@ -2621,6 +2621,11 @@ def replacement_runs_on_another_seat():
         child_args = ('--assignment', 'terra=' + bundles[0], '--parent-assignment', '4:sol')
         call('prepare', session, '4x', '--phase', 'repair', *child_args, good=False,
              error='parent assignment has no recorded terminal failure')
+        prompt = session / 'r4-sol.prompt.md'
+        for code in ('1', '2'):
+            assert reserve_launch(session, '4', 'sol', prompt).returncode == 0
+            assert record_launch(session, '4', 'sol', prompt, code).returncode == 0
+            (session / 'r4-sol.exit').write_text(code + '\n')
         (session / 'r4-sol.audit-invalid.json').write_text('{"summary":"kept","findings":[]}\n')
         call('prepare', session, '4x', '--phase', 'repair', '--assignment', 'sol=' + bundles[0],
              '--parent-assignment', '4:sol', good=False,

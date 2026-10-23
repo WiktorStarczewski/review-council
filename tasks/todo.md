@@ -865,13 +865,19 @@ Review results: pending. SDK credentials absent; no live SDK qualification or pr
 
 ## PR #67: Exact PR Binding and Exhaustible Model Replacement
 
-- [x] Verify latest published and installed Council is 0.7.10; use it for candidate review.
+- [x] Verify latest published and installed Council is 0.7.11; Council changes use one normal internal reviewer, never Review Council.
 - [x] Confirm the checkout-binding test-only CI red on both macOS and Ubuntu before implementation.
 - [x] Confirm test-only checkout-binding and repeated replacement-chain regressions fail on both Ubuntu and macOS before implementation. CI run `40001522036` failed `replacement_chain_reaches_opus` with `assignment roster mismatch` after escalation advances; the same test-only head also has the expected checkout-binding failures.
 - [ ] Fix the candidate CI failures: exact PR preflight fixture and refusal exits, partial pinned identity detection, replacement-chain terminal failure versus result validation, legacy replacement executor compatibility, and prompt rendering.
 - [ ] Align both host skill trees and assertions with the local-cluster and Opus-exhaustion rules; preserve unique child-label and parent-binding requirements.
 - [ ] Re-run the frozen test-only failures and candidate CI, then obtain one normal internal review of the finished code and fix actionable findings.
-- [ ] Release and install 0.7.11 after the final current-head gate and review pass.
+- [ ] Release and install 0.8.0 after the final current-head gate and review pass.
+
+### Current-head verifier repair
+
+- [x] Run `40035902345` completed with the same `replacement_runs_on_another_seat` fixture failure on Ubuntu and macOS: it wrote a terminal exit without recording the launch attempts required by `rev-attempt.py`.
+- [x] Correct the fixture so refusal is checked before two recorded terminal failures; syntax, diff check, and normal internal review pass.
+- [ ] Commit and push the reviewed correction, then rerun exact-head test and package checks.
 
 ### Candidate CI repair notes
 
