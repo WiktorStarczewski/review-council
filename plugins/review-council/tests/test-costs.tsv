@@ -81,7 +81,9 @@ t-patch-chunks.sh::test_patch_chunk_decline_and_switch	6	normal
 t-patch-chunks.sh::test_patch_chunk_manifest_contract	6	normal
 t-patch-chunks.sh::test_patch_chunk_native_prefix_normalization	6	normal
 t-patch-chunks.sh::test_patch_chunk_partition_contract	6	normal
+t-patch-chunks.sh::test_plan_read_budget_counts_the_current_source_target	4	normal
 t-patch-chunks.sh::test_wide_singleton_source_segment_manifest	2	normal
+t-plan-evidence.sh::test_plan_capacity_refusal_keeps_a_diagnostic	8	normal
 t-plan-evidence.sh::test_plan_evidence_closure	8	normal
 t-plan-evidence.sh::test_plan_evidence_fail_closed	8	normal
 t-plan-evidence.sh::test_plan_generated_name_collision	8	normal

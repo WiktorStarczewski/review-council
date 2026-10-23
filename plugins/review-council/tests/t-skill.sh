@@ -438,6 +438,16 @@ test_skill_contract() {
       'never writes a receipt or advances `coverage-head\.json`'
     assert_grep "plan global evidence failure regenerates schema 4" "$H" \
       'prepare a fresh schema-4 label'
+    assert_grep "capacity refusal is not an identical prepare retry" "$H" \
+      'mandatory source reads exceed repository capacity` or `preparation timed out` is not that retry'
+    assert_grep "prepare failure keeps a non-certifying diagnostic" "$H" \
+      'prepare-diagnostic-<label>\.json'
+    assert_grep "a prepare diagnostic never certifies" "$H" \
+      'never certifies a panel'
+    assert_grep "capacity refusal is not a provider-seat retry" "$H" \
+      'do not use the provider-seat replacement'
+    assert_grep "prepare names the stage it is in" "$H" \
+      'evidence: stage <name>'
     assert_grep "plan seat failure retains valid siblings" "$H" \
       'retains valid sibling results'
     assert_grep "exhausted plan retry leaves the panel incomplete" "$H" \

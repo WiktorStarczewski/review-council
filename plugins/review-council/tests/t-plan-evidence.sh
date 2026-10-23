@@ -1984,6 +1984,7 @@ Path(sys.argv[1]).write_text(''.join(clusters))
 PY
     local hash manifest
     hash=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/fix-plan.md")
+    printf '%s\n' '{"certifying":false}' > "$S/prepare-diagnostic-capacity.json"
     manifest=$(REV_PATCH_CHUNKS=1 REV_SOURCE_CONTEXT=1 \
       python3 "$SCRIPTS/rev-evidence.py" prepare "$S" capacity --phase plan \
       --plan "$S/fix-plan.md" --plan-sha256 "$hash" --full-seat sol \
@@ -2043,8 +2044,83 @@ assert all(segment['predicted_visible_bytes'] <= manifest['source_context']['max
            for row in required for segment in row['segments'])
 PY
     assert_eq "mandatory plan reads compile under the reserved repository-call budget" "$?" 0
+    assert_eq "successful prepare removes a stale capacity diagnostic" \
+      "$(find "$S" -maxdepth 1 -name 'prepare-diagnostic-capacity.json' | wc -l | tr -d ' ')" 0
     assert_exit "capacity-compiled plan evidence validates before launch" 0 \
       python3 "$SCRIPTS/rev-evidence.py" verify "$manifest"
+  )
+}
+
+test_plan_capacity_refusal_keeps_a_diagnostic() {
+  ( local R="$T/plan-capacity-refusal-root" S="$T/plan-capacity-refusal-session"
+    mkrepo "$R"; mkdir -p "$R/src" "$S"
+    python3 - "$R" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+for index in range(13):
+    (root / 'src' / f'site{index:02d}.py').write_text(f'capacity_marker_{index:02d} = 1\n')
+PY
+    git -C "$R" add . && git -C "$R" commit -qm "capacity refusal base"
+    local base; base=$(git -C "$R" rev-parse HEAD)
+    python3 - "$R" <<'PY'
+from pathlib import Path
+import sys
+for path in (Path(sys.argv[1]) / 'src').glob('site*.py'):
+    path.write_text(path.read_text().replace(' = 1\n', ' = 2\n', 1))
+PY
+    printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+      "$base" "$R" > "$S/scope.env"
+    printf '%s\n' "$R"/src/site*.py | sed "s#^$R/##" > "$S/files.txt"; : > "$S/untracked.txt"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+    python3 - "$S/fix-plan.md" <<'PY'
+from pathlib import Path
+import sys
+sites = ', '.join(f'src/site{index:02d}.py:1' for index in range(13))
+Path(sys.argv[1]).write_text(
+    '## C-01 - thirteen mandatory reads\n'
+    'Findings: F-001\n'
+    'Rule: Keep every capacity marker visible.\n'
+    f"Sites: {sites} (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'capacity_marker_' .)\n"
+    'Test: src/site00.py:1\n'
+    'Prediction: reverting the guard fails src/site00.py at its capacity-marker assertion, because the marker reads the mutated value.\n')
+PY
+    local hash
+    hash=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/fix-plan.md")
+    REV_SOURCE_CONTEXT=0 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" overflow --phase plan \
+      --plan "$S/fix-plan.md" --plan-sha256 "$hash" --full-seat sol \
+      --assignment sol=plan-completeness --assignment terra=plan-soundness \
+      --assignment opus=plan-simplicity --assignment sonnet=plan-tests \
+      > "$T/plan-capacity-refusal.out" 2> "$T/plan-capacity-refusal.err"
+    assert_eq "thirteen uncovered plan reads are refused" "$?" 2
+    assert_grep "the refusal names the limit, count, and absent target" \
+      "$T/plan-capacity-refusal.err" 'limit=12 count=13 target=none'
+    assert_grep "preparation names the capacity stage" \
+      "$T/plan-capacity-refusal.err" 'evidence: stage capacity'
+    assert_eq "a refused prepare publishes no manifest" \
+      "$(find "$S" -maxdepth 1 -name 'roverflow-evidence.manifest.json' | wc -l | tr -d ' ')" 0
+    python3 - "$S" <<'PY'
+import json, sys
+from pathlib import Path
+diagnostic = json.loads((Path(sys.argv[1]) / 'prepare-diagnostic-overflow.json').read_text())
+assert diagnostic['schema_version'] == 1
+assert diagnostic['kind'] == 'prepare-diagnostic'
+assert diagnostic['certifying'] is False
+assert diagnostic['label'] == 'overflow' and diagnostic['phase'] == 'plan'
+assert diagnostic['timed_out'] is False
+assert diagnostic['stage']
+assert 'limit=12' in diagnostic['error'] and 'count=13' in diagnostic['error']
+assert 'target=none' in diagnostic['error']
+assert diagnostic['refusals']
+row = diagnostic['refusals'][0]
+assert row['limit'] == 12 and row['count'] == 13 and row['target'] is None
+assert len(row['windows']) == 13
+assert {window['path'] for window in row['windows']} == {f'src/site{index:02d}.py' for index in range(13)}
+PY
+    assert_eq "the refusal diagnostic keeps the windows and is not certifying" "$?" 0
+    python3 "$SCRIPTS/rev-evidence.py" verify "$S/prepare-diagnostic-overflow.json" \
+      > "$T/plan-capacity-refusal-verify.out" 2> "$T/plan-capacity-refusal-verify.err"
+    assert_eq "verify does not certify a prepare diagnostic" "$?" 2
   )
 }
 

@@ -119,8 +119,10 @@ cluster = {'id':'C-01', 'paths':[
     for index in range(13)]}
 capacity = module.compile_task_capacity(assignment, window_sets, context, [cluster])
 assert capacity['seats']['sol']['mandatory_repository_reads'] == 13
+names = sorted(f'src/{index}.py' for index in range(13))
 assert module.task_capacity_errors(capacity) == [
-    'mandatory source reads exceed repository capacity: sol']
+    'mandatory source reads exceed repository capacity: sol limit=12 count=13 '
+    'target=none windows=' + ';'.join(f'{name}:1-1' for name in names)]
 
 pair = [
     {'path':'src/pair.py', 'line_start':37, 'line_end':63,
@@ -144,6 +146,80 @@ assert len(module.mandatory_repository_windows(
 print('partition contract passes')
 PY
   assert_eq "patch chunks partition and reconstruct exact UTF-8 bytes" "$?" 0
+}
+
+test_plan_read_budget_counts_the_current_source_target() {
+  python3 - "$SCRIPTS/rev-evidence.py" <<'PY'
+import importlib.util
+import sys
+import time
+
+spec = importlib.util.spec_from_file_location('evidence', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+snapshot = 'snap'
+paths = [{'path': f'src/{index}.py', 'line_start': 1, 'line_end': 1} for index in range(12)]
+cluster = {'id': 'C-01', 'paths': paths}
+omitted = [{
+    'path': row['path'], 'line_start': 1, 'line_end': 1, 'priority': index + 1,
+    'blob_tree': snapshot, 'reasons': ['declaration:plan-site:C-01'],
+} for index, row in enumerate(paths)]
+omitted.append({
+    'path': 'src/extra.py', 'line_start': 1, 'line_end': 1, 'priority': 0,
+    'blob_tree': snapshot, 'reasons': ['declaration:kept'],
+})
+assignment = {'plan_clusters': ['C-01']}
+bare = module.mandatory_repository_windows(assignment, [cluster], [])
+assert len(bare) == 12, len(bare)
+target = module.repository_source_target({
+    'omitted_source_ranges': omitted, 'shards': [], 'required_source_ranges': [],
+}, snapshot)
+assert target['path'] == 'src/extra.py', target
+merged = module.merge_repository_windows([
+    *bare, (target['path'], target['line_start'], target['line_end'])])
+assert len(merged) == 13, len(merged)
+selected = module.grouped_plan_source_promotions(
+    assignment, [cluster], [], omitted, lambda _index, _row: 1,
+    snapshot=snapshot, count_target=True)
+assert selected, selected
+delivered = [omitted[index] for index in selected]
+remaining = [row for index, row in enumerate(omitted) if index not in selected]
+chosen = module.repository_source_target({
+    'omitted_source_ranges': remaining,
+    'shards': [{'ranges': delivered}] if delivered else [],
+    'required_source_ranges': [],
+}, snapshot)
+windows = module.mandatory_repository_windows(assignment, [cluster], delivered)
+if chosen is not None:
+    windows = module.merge_repository_windows([
+        *windows, (chosen['path'], chosen['line_start'], chosen['line_end'])])
+assert len(windows) <= module.MANDATORY_REPOSITORY_READ_LIMIT, len(windows)
+
+module.PREPARE_PROGRESS['active'] = True
+module.PREPARE_PROGRESS['deadline'] = time.monotonic() - 1
+try:
+    module.prepare_stage('source-context')
+    raise AssertionError('stale prepare deadline was ignored')
+except module.PrepareTimeout as error:
+    assert str(error) == 'preparation timed out during source-context', error
+finally:
+    module.PREPARE_PROGRESS['active'] = False
+    module.PREPARE_PROGRESS['deadline'] = None
+    module.PREPARE_PROGRESS['timed_out'] = False
+
+started = time.monotonic()
+try:
+    with module.prepare_deadline(1):
+        module.PREPARE_PROGRESS['stage'] = 'capacity'
+        while time.monotonic() - started < 10:
+            time.sleep(0.05)
+    raise AssertionError('prepare deadline did not fire')
+except module.PrepareTimeout as error:
+    assert str(error) == 'preparation timed out during capacity', error
+    assert time.monotonic() - started < 10
+PY
+  assert_eq "plan read budget counts the current-source target" "$?" 0
 }
 
 test_wide_singleton_source_segment_manifest() {
