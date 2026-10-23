@@ -5,6 +5,12 @@
 - PR-scoped reviews pin the GitHub repository, number, head, and base at preflight. Rendering and evidence preparation reject live identity drift before creating a target or evidence snapshot.
 - Failed review assignments can continue through the configured replacement chain with each child bound to its failed parent, preserving sibling results and selecting only the terminal valid result.
 
+## 0.7.12
+
+- Bound Codex patch and repository reads to 40 lines, keep responses under a 24 KiB target, and align capacity estimates and audits with those limits.
+- Expand cross-file proof through TypeScript default imports and comment-aware Rust grouped imports, with unresolved import paths counted as proof obligations.
+- Quote compiler-rendered plan searches and reject shell expansion before granting their overflow-sentinel proof; limit reviewer-composed searches to 80 results.
+
 ## 0.7.11
 
 - Plan replacement retries can continue through the configured model chain while remaining bound to the original failed assignment. Fix-plan edits require fresh prepared evidence, and every original plan seat must have a valid current-hash result before code changes begin.

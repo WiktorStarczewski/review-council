@@ -278,15 +278,8 @@ When changing the Review Council repository, do not use Review Council to review
 itself, including release candidates. Use the normal internal review workflow with
 one reviewer even when the general code-review workflow defaults to a Council panel.
 
-# Start Council releases from the latest signed release
-
-Before changing a Council release candidate, fetch and verify the latest signed tag,
-check whether upstream main has advanced past it, and merge the latest released source
-before editing the next version's manifests, changelog, plan, or release procedure.
-
-# Start Council releases from the latest signed release
-
-Before changing a Council release candidate, fetch and verify the latest signed tag,
-check whether upstream main has advanced past it, and merge the latest released source
-before editing the next version's manifests, changelog, plan, or release procedure.
-
+- Before releasing Council, fetch and verify the latest signed tag and merge any newer main commit before editing the next version's manifests, changelog, plan, or release procedure.
+- Adapter review prompts must distinguish multiple calls in one turn from batching multiple source reads into one payload. Show commands that the active adapter and its read audit both accept.
+- Review prompts must keep bounded line counts below the byte ceiling too. A 240-line patch window returned 44 KiB, and the prescribed `head -81` search exceeded an 80-line audit limit. Cap Codex patch and source windows at 40 lines, split further before a response risks 24 KiB, and cap searches at 80 results with a narrow path or pattern.
+- A plan's compiler-rendered `head -81` query is an overflow-sentinel proof contract. Tell the reviewer to run only that exact command unchanged; every search it composes must use `head -80` and narrower follow-ups.
+- A plan-search audit must account for the shell that executes the command. Quote the frozen pattern in the prompt, reject shell expansion in manually composed commands, and use the same renderer when validating the prompt.

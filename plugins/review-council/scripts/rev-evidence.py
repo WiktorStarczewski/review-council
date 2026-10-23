@@ -28,7 +28,7 @@ LIB_DIR = Path(__file__).resolve().parent / 'lib'
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
 from review_limits import (CLAUDE_MAX_TURNS, MANDATORY_REPOSITORY_READ_LIMIT,
-                           PROVIDER_TURN_RESERVE, READ_LINES,
+                           CODEX_READ_LINES, PROVIDER_TURN_RESERVE, READ_LINES,
                            REPOSITORY_EXPANSION_CALL_LIMIT,
                            REPOSITORY_REFUTATION_CALL_RESERVE)
 from session_inputs import session_input_lock, validate_standard_inputs
@@ -85,6 +85,10 @@ def phase_bundles(phase):
 
 def read_batch_limit(adapter):
     return 2 if adapter == 'claude' else 1
+
+
+def read_line_limit(adapter):
+    return CODEX_READ_LINES if adapter == 'codex' else READ_LINES
 
 
 def read_tool_name(adapter):
@@ -1327,6 +1331,15 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
     symbols = []; seen = set()
     declaration = re.compile(r'^\s*(?:(?:export|pub|public|private|static|async)\s+)*(?:def|fn|function|class|struct|enum|interface|type|const|let|func)\s+([A-Za-z_$][\w$]*)')
     declarations = {}
+    cross_file_cache = {}
+
+    def is_cross_file(path, blob_tree, row):
+        key = (path, blob_tree)
+        if key not in cross_file_cache:
+            cross_file_cache[key] = cross_file_symbols(
+                path, texts.get(key, []), declarations.get(key, []))
+        return (row[0], row[2]) in cross_file_cache[key]
+
     current_seeds = {}; base_seeds = {}
     hunks_by_path = {}
     for hunk in hunks:
@@ -1366,6 +1379,9 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                 (start, name), end = max(active.items(), key=lambda item: (
                     item[0][0], -item[1], item[0][1]))
                 selected.add((start, end, name))
+                selected.update(row for row in candidates
+                                if row[2] and row[0] <= line <= row[1]
+                                and is_cross_file(path, blob_tree, row))
             else:
                 outside.add(line)
         for changed in hunk_lines:
@@ -1393,6 +1409,8 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                 seen.add(key)
                 symbols.append({'path': path, 'line': origin, 'line_end': end,
                                 'name': name,
+                                'cross_file': bool(name and is_cross_file(
+                                    path, blob_tree, (origin, end, name))),
                                 'kind': ('lexical declaration' if name else 'changed-line anchor')
                                 if blob_tree == tree else
                                 ('deleted lexical declaration' if name else
@@ -1475,18 +1493,23 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
             key = (path, origin, end, name, base_tree)
             if key not in seen:
                 seen.add(key); symbols.append({'path': path, 'line': origin, 'line_end': end,
-                                               'name': name, 'kind': 'deleted lexical declaration'
+                                               'name': name,
+                                               'cross_file': bool(name and is_cross_file(
+                                                   path, base_tree, (origin, end, name))),
+                                               'kind': 'deleted lexical declaration'
                                                if name else 'deleted changed-line anchor',
                                                'blob_tree': base_tree})
-    calls = []; tests = []; gates = []; dependencies = set()
+    calls = []; tests = []; gates = []; dependencies = set(); unresolved_imports = {}
     names = {s['name'] for s in symbols if s['name']}
     definitions = {}
     for symbol in symbols:
         if symbol['name']:
-            definitions.setdefault(symbol['name'], set()).add(symbol['path'])
+            definitions.setdefault(symbol['name'], []).append(symbol)
     changed_stems = {Path(p).stem for p in categories}
     tokens = re.compile(r'\b[A-Za-z_$][\w$]*\b')
     call_tokens = re.compile(r'\b([A-Za-z_$][\w$]*)\s*\(')
+    base_url_configs = source_base_urls(repo, entries)
+    candidate_file_cache = {}
     for path, raw in repo.iter_blobs(entries):
         if entries[path][0] not in ('100644', '100755') or raw is OVERSIZED_BLOB or b'\0' in raw:
             continue
@@ -1496,20 +1519,252 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
             continue
         is_test = is_test_path(path)
         related = Path(path).stem.replace('test_', '').replace('_test', '') in changed_stems
+        code_file = is_source_file(path)
+        imported_targets = set()
+        bindings = []
+        config_ranges = []
+        if code_file:
+            if Path(path).suffix.lower() == '.rs':
+                bindings = rust_import_bindings(path, lines, entries, repo)
+                for binding in bindings:
+                    imported_targets.update(binding['candidate_targets'])
+                    dependencies.update((path, target, 'local-import')
+                                        for target in binding['candidate_targets'] if target != path)
+            else:
+                typed_imports = is_ts_js_path(path)
+                applicable_configs, ambiguous_config = (
+                    source_configs_for_path(path, base_url_configs) if typed_imports else ([], False))
+                config_ranges = [source_range for config in applicable_configs
+                                 for source_range in config['source_ranges']]
+                imported_refs = import_references(path, lines)
+                reference_targets = {}
+                for imported in imported_refs:
+                    targets = resolve_import_candidates(path, imported, entries, applicable_configs)
+                    reference_targets[imported] = targets
+                    imported_targets.update(targets)
+                    ambiguous = len(targets) > 1 or (ambiguous_config and not imported.startswith('.'))
+                    dependencies.update((path, target,
+                                         'ambiguous-import' if ambiguous else 'local-import')
+                                        for target in targets if target != path)
+                if typed_imports:
+                    bindings = ts_import_bindings(lines)
+                    for binding in bindings:
+                        binding['candidate_targets'] = reference_targets.get(
+                            binding['reference'], resolve_import_candidates(
+                                path, binding['reference'], entries, applicable_configs))
+                        binding['config_ranges'] = config_ranges
+
+            bindings_by_local = {}
+            for binding in bindings:
+                imported_name = binding['imported_name']
+                resolved = set(binding.get('candidate_targets') or [])
+                if binding.get('module_alias'):
+                    separator = binding.get('member_separator') or '::'
+                    member_names = {
+                        symbol['name']
+                        for rows in definitions.values() for symbol in rows
+                        if symbol.get('cross_file') and symbol['path'] != path
+                        and re.search(r'\b' + re.escape(binding['local_name'])
+                                      + r'\s*' + re.escape(separator) + r'\s*'
+                                      + re.escape(symbol['name']) + r'\b',
+                                      '\n'.join(lines))
+                    }
+                    candidates = [symbol for rows in definitions.values() for symbol in rows
+                                  if symbol.get('cross_file') and symbol['path'] in resolved
+                                  and symbol['path'] != path and symbol['name'] in member_names]
+                    if not candidates:
+                        candidates = [symbol for rows in definitions.values() for symbol in rows
+                                      if symbol.get('cross_file') and symbol['path'] != path
+                                      and symbol['name'] in member_names]
+                elif binding.get('default_import'):
+                    candidates = [symbol for rows in definitions.values() for symbol in rows
+                                  if symbol.get('cross_file') and symbol['path'] in resolved
+                                  and symbol['path'] != path]
+                else:
+                    candidates = [symbol for symbol in definitions.get(imported_name, [])
+                                  if symbol.get('cross_file') and symbol['path'] != path]
+                matching = [symbol for symbol in candidates if symbol['path'] in resolved]
+                if matching:
+                    candidates = matching
+                binding['candidate_symbols'] = [] if binding.get('default_import') else [
+                    {'path': symbol['path'], 'line_start': symbol['line'],
+                     'line_end': symbol['line_end'], 'name': symbol['name']}
+                    for symbol in candidates]
+                candidate_names = ({symbol['name'] for symbol in candidates}
+                                   if binding.get('module_alias') or binding.get('default_import')
+                                   else {imported_name})
+                candidate_search_ranges = []
+                unreadable_candidate_targets = []
+                candidate_targets = set(binding.get('candidate_targets') or [])
+                if binding.get('default_import'):
+                    candidate_targets.update(symbol['path'] for symbol in candidates)
+                for target in sorted(candidate_targets if candidates else ()):
+                    if (not binding.get('default_import')
+                            and any(symbol['path'] == target
+                                    for symbol in binding['candidate_symbols'])):
+                        continue
+                    if target not in candidate_file_cache:
+                        raw_candidate = repo.blob(entries[target]) if target in entries else OVERSIZED_BLOB
+                        if raw_candidate is OVERSIZED_BLOB or b'\0' in raw_candidate:
+                            candidate_file_cache[target] = (None, None, set())
+                        else:
+                            try:
+                                candidate_lines = split_lf_text(raw_candidate.decode('utf-8'))
+                            except UnicodeDecodeError:
+                                candidate_file_cache[target] = (None, None, set())
+                            else:
+                                candidate_declaration = re.compile(
+                                    r'^\s*(?:(?:export|pub|public|private|static|async)\s+)*'
+                                    r'(?:def|fn|function|class|struct|enum|interface|type|const|let|func)\s+'
+                                    r'([A-Za-z_$][\w$]*)')
+                                rows = [(index, index, match.group(1))
+                                        for index, line in enumerate(candidate_lines, 1)
+                                        for match in [candidate_declaration.search(line)] if match]
+                                if Path(target).suffix.lower() in {
+                                        '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.rs',
+                                        '.go', '.java', '.c', '.h', '.cpp', '.cc', '.cxx',
+                                        '.hpp', '.hh', '.hxx'}:
+                                    rows.extend(brace_spans(candidate_lines, Path(target).suffix))
+                                rows = sorted(set(rows))
+                                exported = cross_file_symbols(target, candidate_lines, rows)
+                                exported_rows = [{'path': target, 'line_start': start,
+                                                  'line_end': end, 'name': name}
+                                                 for start, end, name in rows
+                                                 if (start, name) in exported]
+                                candidate_file_cache[target] = (
+                                    exported_rows, len(candidate_lines),
+                                    ts_default_export_names(candidate_lines)
+                                    if is_ts_js_path(target) else set())
+                    target_rows, line_count, default_names = candidate_file_cache[target]
+                    if target_rows is None or not line_count:
+                        unreadable_candidate_targets.append(target)
+                        continue
+                    target_symbols = [row for row in target_rows
+                                      if row['name'] in candidate_names
+                                      and (not binding.get('default_import')
+                                           or row['name'] in default_names)]
+                    binding['candidate_symbols'].extend(target_symbols)
+                    if not target_symbols and line_count:
+                        candidate_search_ranges.append({
+                            'path': target, 'line_start': 1,
+                            'line_end': line_count,
+                        })
+                binding['candidate_symbols'] = sorted(
+                    {encoded(row): row for row in binding['candidate_symbols']}.values(),
+                    key=lambda row: (row['path'], row['line_start'], row['line_end'], row['name']))
+                binding['unresolved'] = (
+                    binding.get('unresolved', False)
+                    or not binding.get('candidate_targets')
+                    or len(binding.get('candidate_targets') or []) > 1
+                    or (binding.get('default_import')
+                        and len(binding['candidate_symbols']) != 1)
+                    or (typed_imports and ambiguous_config
+                        and not binding['reference'].startswith('.'))
+                    or (bool(candidates) and not any(
+                        symbol['path'] in resolved for symbol in candidates))
+                ) if Path(path).suffix.lower() != '.rs' else (
+                    binding.get('unresolved', False) or not binding.get('candidate_targets')
+                    or (bool(candidates) and not any(
+                        symbol['path'] in resolved for symbol in candidates))
+                )
+                obligation = None
+                if candidates and (binding['unresolved']
+                                   or binding['local_name'] != imported_name
+                                   or binding.get('module_alias')):
+                    candidate_targets = sorted(set(binding.get('candidate_targets') or [])
+                                               | {symbol['path'] for symbol in candidates})
+                    obligation = {
+                        'path': path,
+                        'reference': binding['reference'],
+                        'imported_name': imported_name,
+                        'local_name': binding['local_name'],
+                        'line_start': binding['line_start'],
+                        'line_end': binding['line_end'],
+                        'candidate_targets': candidate_targets,
+                        'candidate_symbols': binding['candidate_symbols'],
+                        'candidate_search_ranges': candidate_search_ranges,
+                        'unreadable_candidate_targets': sorted(unreadable_candidate_targets),
+                        'config_ranges': binding.get('config_ranges', []),
+                        'reason': binding.get('reason') or (
+                            'unresolved or ambiguous import matching a changed export'
+                            if binding['unresolved'] else 'aliased import matching a changed export'),
+                    }
+                    unresolved_imports[encoded(obligation)] = obligation
+                    binding['obligation'] = obligation
+                    for symbol in candidates:
+                        dependencies.add((path, symbol['path'], 'ambiguous-import'))
+                        dependencies.update((symbol['path'], target, 'ambiguous-import')
+                                            for target in candidate_targets
+                                            if target != symbol['path'])
+                        dependencies.update((symbol['path'], row['path'], 'ambiguous-import')
+                                            for row in obligation['config_ranges'])
+                bindings_by_local.setdefault(binding['local_name'], []).append(binding)
         for i, line in enumerate(lines, 1):
-            matches = set(tokens.findall(line)) & names
+            matches = set(tokens.findall(line)) & names if code_file else set()
             for name in matches:
-                dependencies.update((path, target, 'lexical-reference') for target in definitions[name] if target != path)
-            for name in sorted(set(call_tokens.findall(line)) & names):
-                calls.append({'path': path, 'line': i, 'name': name, 'kind': 'lexical name( match, not resolved dispatch'})
-            if is_test and not related:
-                related = bool(matches)
-            imports = re.findall(r'(?:from\s+|require\s*\(\s*|import\s*(?:\(\s*)?)["\']([^"\']+)["\']', line)
-            imports += re.findall(r'\b(?:from|import)\s+([\w.]+)', line) if Path(path).suffix == '.py' else []
-            for imported in imports:
-                target = resolve_import(path, imported, entries)
-                if target and target != path:
-                    dependencies.add((path, target, 'local-import'))
+                targets = {symbol['path'] for symbol in definitions[name]
+                           if symbol.get('cross_file') and symbol['path'] in imported_targets
+                           and symbol['path'] != path}
+                dependencies.update((path, target, 'lexical-reference') for target in targets)
+                unresolved_target = any(
+                    binding.get('unresolved')
+                    and (binding['imported_name'] == name
+                         or any(symbol.get('name') == name
+                                for symbol in binding.get('candidate_symbols', [])))
+                    for rows in bindings_by_local.values() for binding in rows)
+                if is_test and (targets or unresolved_target):
+                    related = True
+            for call_name in sorted(set(call_tokens.findall(line)) if code_file else set()):
+                call_bindings = bindings_by_local.get(call_name, [])
+                qualified_module_bindings = []
+                if call_name in definitions:
+                    for rows in bindings_by_local.values():
+                        for binding in rows:
+                            if (binding.get('module_alias')
+                                    and any(symbol['name'] == call_name
+                                            for symbol in binding.get('candidate_symbols', []))
+                                    and re.search(r'\b' + re.escape(binding['local_name'])
+                                                  + r'\s*' + re.escape(
+                                                      binding.get('member_separator') or '::')
+                                                  + r'\s*' + re.escape(call_name)
+                                                  + r'\s*\(', line)):
+                                qualified_module_bindings.append(binding)
+                names_to_record = {call_name} if call_name in definitions else set()
+                names_to_record.update(symbol['name'] for binding in call_bindings
+                                       for symbol in binding['candidate_symbols'])
+                for name in sorted(names_to_record):
+                    matching_bindings = [binding for binding in call_bindings
+                                         if binding['imported_name'] == name
+                                         or any(symbol['name'] == name
+                                                for symbol in binding['candidate_symbols'])]
+                    if name == call_name:
+                        matching_bindings.extend(qualified_module_bindings)
+                    resolved = any(
+                        symbol['path'] == path
+                        or (symbol.get('cross_file') and symbol['path'] in imported_targets)
+                        for symbol in definitions.get(name, []))
+                    unresolved_target = any(binding.get('unresolved')
+                                            for binding in matching_bindings)
+                    if not resolved and not matching_bindings:
+                        continue
+                    call = {'path': path, 'line': i, 'name': name,
+                            'kind': 'lexical name( match, not resolved dispatch'}
+                    if qualified_module_bindings and name == call_name:
+                        binding = qualified_module_bindings[0]
+                        call['local_name'] = (binding['local_name']
+                                              + (binding.get('member_separator') or '::') + name)
+                    elif call_name != name:
+                        call['local_name'] = call_name
+                    if matching_bindings:
+                        binding = matching_bindings[0]
+                        call['import_line_start'] = binding['line_start']
+                        call['import_line_end'] = binding['line_end']
+                    if unresolved_target:
+                        call['resolution'] = 'unresolved import search required'
+                    if call not in calls:
+                        calls.append(call)
+                    if is_test and (resolved or matching_bindings):
+                        related = True
         if is_test and related:
             tests.append({'path': path, 'basis': 'test path with lexical reference or same stem'})
             stem = Path(path).stem.replace('test_', '').replace('_test', '')
@@ -1522,9 +1777,13 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                 if re.search(r'\b(test|lint|check|typecheck|coverage|run)\b|^[\w-]+:', line):
                     gates.append({'path': path, 'line': i, 'command': line.strip(), 'kind': 'lexical gate candidate'})
     return {'symbols': symbols, 'call_sites': calls, 'related_tests': tests, 'gates': gates,
+            'unresolved_imports': [unresolved_imports[key] for key in sorted(unresolved_imports)],
             'dependencies': [{'source': a, 'target': b, 'kind': kind} for a, b, kind in sorted(dependencies)],
             'limitations': ['Lexical navigation only; open source to prove findings.',
                             'Dynamic dispatch and unsupported declarations require file-scope search.',
+                            'Cross-file symbol context follows recognized exports and resolved imports.',
+                            'Unresolved or aliased imports matching changed exports are listed as search obligations.',
+                            'TypeScript config inheritance and paths mappings are bounded lexical resolutions.',
                             'Binary and files over 2000000 bytes have no lexical index.']}
 
 
@@ -1532,17 +1791,626 @@ def is_test_path(path):
     return bool(re.search(r'(^|/)(__tests__|tests?|specs?)(/|_)|(?:test|spec)[._]|[._](?:test|spec)\.', path, re.I))
 
 
-def resolve_import(path, reference, entries):
+def resolve_import(path, reference, entries, base_urls=()):
+    matches = resolve_import_candidates(path, reference, entries, base_urls)
+    return matches[0] if len(matches) == 1 else None
+
+
+def resolve_import_candidates(path, reference, entries, base_urls=()):
     if reference.startswith('.'):
         base = posixpath.normpath(posixpath.join(posixpath.dirname(path), reference))
     else:
         base = reference.replace('.', '/') if Path(path).suffix == '.py' else reference
-    candidates = [base]
+    bases = [base]
+    if not reference.startswith('.') and Path(path).suffix != '.py':
+        configs = [row for row in base_urls if isinstance(row, dict)]
+        roots = {row['base_url'] for row in configs if row.get('base_url')}
+        for config in configs:
+            for pattern, targets in config.get('paths', {}).items():
+                if '*' in pattern:
+                    before, after = pattern.split('*', 1)
+                    if not reference.startswith(before) or not reference.endswith(after):
+                        continue
+                    middle = reference[len(before):len(reference) - len(after) if after else None]
+                elif reference == pattern:
+                    middle = None
+                else:
+                    continue
+                for target in targets:
+                    if '*' in target:
+                        mapped = target.replace('*', middle or '', 1)
+                    elif middle is None:
+                        mapped = target
+                    else:
+                        continue
+                    root = config.get('base_url') or config['directory']
+                    bases.append(posixpath.normpath(posixpath.join(root, mapped)))
+        bases.extend(posixpath.normpath(posixpath.join(root, reference)) for root in roots)
+        if base_urls and not configs:
+            bases.extend(posixpath.normpath(posixpath.join(root, reference)) for root in base_urls)
+    candidates = []
     for suffix in ('.ts', '.tsx', '.js', '.jsx', '.py', '.rs', '.go', '.java', '.c', '.h', '.cpp'):
-        candidates.extend((base + suffix, base + '/index' + suffix))
-    candidates.append(base + '/__init__.py')
-    matches = [candidate for candidate in candidates if candidate in entries]
-    return matches[0] if len(matches) == 1 else None
+        for base in bases:
+            candidates.extend((base + suffix, base + '/index' + suffix))
+    candidates.extend(base + '/__init__.py' for base in bases)
+    return sorted({candidate for candidate in candidates if candidate in entries})
+
+
+def import_references(path, lines):
+    source = '\n'.join(lines)
+    references = re.findall(
+        r"""(?:from\s+|require\s*\(\s*|import\s*(?:\(\s*)?)["']([^"']+)["']""",
+        source)
+    if Path(path).suffix == '.py':
+        references += re.findall(r'\b(?:from|import)\s+([\w.]+)', source)
+    return references
+
+
+def ts_import_bindings(lines):
+    source = '\n'.join(lines)
+    bindings = []
+    default_pattern = re.compile(
+        r"\bimport\s+(?:type\s+)?([A-Za-z_$][\w$]*)"
+        r"(?:\s*,\s*(?:\*\s+as\s+[A-Za-z_$][\w$]*|\{[^}]*\}))?"
+        r"\s*from\s*(['\"])([^'\"]+)\2", re.S)
+    for match in default_pattern.finditer(source):
+        line_start = source.count('\n', 0, match.start()) + 1
+        line_end = source.count('\n', 0, match.end()) + 1
+        bindings.append({'reference': match.group(3), 'imported_name': 'default',
+                         'local_name': match.group(1), 'default_import': True,
+                         'line_start': line_start, 'line_end': line_end})
+    namespace_pattern = re.compile(
+        r"\bimport\s+(?:type\s+)?(?:[A-Za-z_$][\w$]*\s*,\s*)?"
+        r"\*\s+as\s+([A-Za-z_$][\w$]*)\s*from\s*(['\"])([^'\"]+)\2")
+    for match in namespace_pattern.finditer(source):
+        line_start = source.count('\n', 0, match.start()) + 1
+        line_end = source.count('\n', 0, match.end()) + 1
+        bindings.append({'reference': match.group(3), 'imported_name': '*',
+                         'local_name': match.group(1), 'module_alias': True,
+                         'member_separator': '.', 'line_start': line_start,
+                         'line_end': line_end})
+    pattern = re.compile(
+        r"\bimport\s+(?:type\s+)?(?:[A-Za-z_$][\w$]*\s*,\s*)?"
+        r"\{([^}]*)\}\s*from\s*(['\"])([^'\"]+)\2",
+        re.S)
+    for match in pattern.finditer(source):
+        line_start = source.count('\n', 0, match.start()) + 1
+        line_end = source.count('\n', 0, match.end()) + 1
+        for item in match.group(1).split(','):
+            item = re.sub(r'/\*.*?\*/|//[^\n]*', '', item, flags=re.S).strip()
+            item = re.sub(r'^type\s+', '', item)
+            names = re.fullmatch(r'([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?', item)
+            if not names:
+                continue
+            imported_name, local_name = names.group(1), names.group(2) or names.group(1)
+            bindings.append({'reference': match.group(3), 'imported_name': imported_name,
+                             'local_name': local_name, 'line_start': line_start,
+                             'line_end': line_end})
+    return bindings
+
+
+def ts_default_export_names(lines):
+    source = '\n'.join(lines)
+    names = set(re.findall(
+        r'\bexport\s+default\s+(?:(?:async\s+)?function\s*\*?\s+|class\s+)'
+        r'([A-Za-z_$][\w$]*)', source))
+    names.update(re.findall(
+        r'\bexport\s+default\s+([A-Za-z_$][\w$]*)\s*(?=;|$)', source, re.M))
+    for body in re.findall(r'\bexport\s*\{([^}]*)\}', source, re.S):
+        for item in body.split(','):
+            match = re.fullmatch(
+                r'\s*([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*', item)
+            if match and match.group(2) == 'default':
+                names.add(match.group(1))
+    return names
+
+
+def is_ts_js_path(path):
+    return Path(path).suffix.lower() in {'.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx'}
+
+
+def source_base_urls(repo, entries):
+    configs = []
+    for path, entry in entries.items():
+        basename = Path(path).name
+        if not re.fullmatch(r'(?:tsconfig|jsconfig)(?:[-.][\w.-]+)?\.json', basename):
+            continue
+        raw = repo.blob(entry)
+        if raw is OVERSIZED_BLOB or b'\0' in raw:
+            continue
+        try:
+            source = raw.decode('utf-8')
+        except UnicodeDecodeError:
+            continue
+        def strings(name):
+            match = re.search(r'"' + name + r'"\s*:\s*\[([^\]]*)\]', source, re.S)
+            return re.findall(r'"([^"\n]+)"', match.group(1)) if match else []
+        base_match = re.search(r'"baseUrl"\s*:\s*"([^"]+)"', source)
+        paths_match = re.search(r'"paths"\s*:\s*\{([^{}]*)\}', source, re.S)
+        paths = {}
+        if paths_match:
+            paths = {key: re.findall(r'"([^"\n]+)"', values)
+                     for key, values in re.findall(
+                         r'"([^"\n]+)"\s*:\s*\[([^\]]*)\]', paths_match.group(1), re.S)}
+        extends_match = re.search(r'"extends"\s*:\s*"([^"]+)"', source)
+        lines = split_lf_text(source)
+        source_ranges = []
+        for match in re.finditer(r'"(?:baseUrl|paths|extends|include|exclude)"\s*:', source):
+            value_start = match.end()
+            while value_start < len(source) and source[value_start].isspace():
+                value_start += 1
+            line_end_offset = source.find('\n', value_start)
+            if line_end_offset < 0:
+                line_end_offset = len(source)
+            opener = source[value_start:value_start + 1]
+            end_offset = line_end_offset
+            if opener in ('{', '['):
+                stack = []
+                quote = None
+                escaped = False
+                for index in range(value_start, len(source)):
+                    char = source[index]
+                    if quote:
+                        if escaped:
+                            escaped = False
+                        elif char == '\\':
+                            escaped = True
+                        elif char == quote:
+                            quote = None
+                        continue
+                    if char in ('"', "'"):
+                        quote = char
+                    elif char in ('{', '['):
+                        stack.append('}' if char == '{' else ']')
+                    elif char in ('}', ']') and stack:
+                        if char == stack[-1]:
+                            stack.pop()
+                            if not stack:
+                                end_offset = index + 1
+                                break
+            line_start = source.count('\n', 0, match.start()) + 1
+            line_end = source.count('\n', 0, end_offset) + 1
+            source_ranges.append({'path': path, 'line_start': line_start,
+                                  'line_end': max(line_start, line_end)})
+        source_ranges.sort(key=lambda row: (row['line_start'], row['line_end']))
+        compact_ranges = []
+        for row in source_ranges:
+            if compact_ranges and row['line_start'] <= compact_ranges[-1]['line_end'] + 1:
+                compact_ranges[-1]['line_end'] = max(compact_ranges[-1]['line_end'], row['line_end'])
+            else:
+                compact_ranges.append(dict(row))
+        source_ranges = compact_ranges
+        if not source_ranges:
+            source_ranges = [{'path': path, 'line_start': 1,
+                              'line_end': min(READ_LINES, max(1, len(lines)))}]
+        directory = posixpath.dirname(path)
+        configs.append({
+            'path': path,
+            'directory': directory,
+            'base_url': (posixpath.normpath(posixpath.join(directory, base_match.group(1)))
+                         if base_match else (directory or '.') if paths else None),
+            'paths': paths,
+            'extends': extends_match.group(1) if extends_match else None,
+            'include': strings('include'),
+            'exclude': strings('exclude'),
+            'source_ranges': source_ranges,
+        })
+    return configs
+
+
+def source_configs_for_path(path, configs):
+    applicable = []
+    for config in configs:
+        directory = config['directory']
+        if directory and not path.startswith(directory.rstrip('/') + '/'):
+            continue
+        relative = posixpath.relpath(path, directory or '.')
+        if relative == '..' or relative.startswith('../'):
+            continue
+        applicable.append(config)
+    if not applicable:
+        return [], False
+    by_path = {config['path']: config for config in configs}
+    expanded = {config['path']: config for config in applicable}
+    unresolved_extends = False
+    pending = list(applicable)
+    while pending:
+        config = pending.pop()
+        reference = config.get('extends')
+        if not reference:
+            continue
+        base = posixpath.normpath(posixpath.join(config['directory'], reference))
+        candidates = [base]
+        if not posixpath.splitext(base)[1]:
+            candidates.extend((base + '.json', posixpath.join(base, 'tsconfig.json')))
+        parent = next((by_path[candidate] for candidate in candidates if candidate in by_path), None)
+        if parent is None:
+            unresolved_extends = True
+            continue
+        if parent['path'] not in expanded:
+            expanded[parent['path']] = parent
+            pending.append(parent)
+    values = list(expanded.values())
+    roots = {config['base_url'] for config in values if config.get('base_url')}
+    return values, unresolved_extends or len(roots) > 1 or len(applicable) > 1
+
+
+def rust_package(path, entries, repo):
+    directories = [posixpath.dirname(path)]
+    while directories[-1] not in ('', '.'):
+        parent = posixpath.dirname(directories[-1])
+        if parent == directories[-1]:
+            break
+        directories.append(parent)
+    for directory in directories:
+        manifest = posixpath.join(directory, 'Cargo.toml') if directory else 'Cargo.toml'
+        if manifest not in entries:
+            continue
+        raw = repo.blob(entries[manifest])
+        if raw is OVERSIZED_BLOB or b'\0' in raw:
+            continue
+        try:
+            source = raw.decode('utf-8')
+        except UnicodeDecodeError:
+            continue
+        package = re.search(r'(?ms)^\[package\]\s*(.*?)(?=^\[|\Z)', source)
+        name = re.search(r'^\s*name\s*=\s*["\']([^"\']+)', package.group(1), re.M) if package else None
+        return directory, posixpath.join(directory, 'src').strip('/'), \
+            name.group(1).replace('-', '_') if name else None
+    return None
+
+
+def rust_module_parts(path, source_root):
+    if path == source_root + '/lib.rs' or path == source_root + '/main.rs':
+        return []
+    if not path.startswith(source_root.rstrip('/') + '/'):
+        return None
+    relative = path[len(source_root.rstrip('/')) + 1:]
+    parts = relative.split('/')
+    filename = parts.pop()
+    if filename not in ('mod.rs', 'lib.rs', 'main.rs'):
+        parts.append(posixpath.splitext(filename)[0])
+    return parts
+
+
+def rust_module_file(source_root, module_parts, entries):
+    base = posixpath.join(source_root, *module_parts) if module_parts else source_root
+    candidates = ([base + '.rs', base + '/mod.rs'] if module_parts
+                 else [base + '/lib.rs', base + '/main.rs'])
+    matches = sorted(candidate for candidate in candidates if candidate in entries)
+    return matches
+
+
+def rust_code_without_comments_or_literals(source):
+    masked = list(source)
+
+    def blank(start, end):
+        for position in range(start, end):
+            if source[position] != '\n':
+                masked[position] = ' '
+
+    index = 0
+    while index < len(source):
+        if source.startswith('//', index):
+            end = source.find('\n', index)
+            end = len(source) if end < 0 else end
+            blank(index, end)
+            index = end
+            continue
+        if source.startswith('/*', index):
+            start = index
+            depth = 1
+            index += 2
+            while index < len(source) and depth:
+                if source.startswith('/*', index):
+                    depth += 1
+                    index += 2
+                elif source.startswith('*/', index):
+                    depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            blank(start, index)
+            continue
+        raw_prefix = re.match(r'(?:br|r)(#{0,255})"', source[index:])
+        if raw_prefix:
+            start = index
+            terminator = '"' + raw_prefix.group(1)
+            content_start = index + raw_prefix.end()
+            closing = source.find(terminator, content_start)
+            index = len(source) if closing < 0 else closing + len(terminator)
+            blank(start, index)
+            continue
+        if source[index] == '"':
+            start = index
+            index += 1
+            while index < len(source):
+                if source[index] == '\\':
+                    index += 2
+                elif source[index] == '"':
+                    index += 1
+                    break
+                else:
+                    index += 1
+            blank(start, min(index, len(source)))
+            continue
+        if source[index] == "'":
+            cursor = index + 1
+            if cursor < len(source) and source[cursor] != '\n':
+                if source[cursor] == '\\':
+                    cursor += 1
+                    if cursor < len(source) and source[cursor] == 'u' \
+                            and cursor + 1 < len(source) and source[cursor + 1] == '{':
+                        closing = source.find('}', cursor + 2)
+                        cursor = len(source) if closing < 0 else closing + 1
+                    else:
+                        cursor += 1
+                else:
+                    cursor += 1
+                if cursor < len(source) and source[cursor] == "'":
+                    blank(index, cursor + 1)
+                    index = cursor + 1
+                    continue
+        index += 1
+    return ''.join(masked)
+
+
+def split_rust_use_items(source):
+    items = []
+    depth = 0
+    start = 0
+    for index, char in enumerate(source):
+        if char == '{':
+            depth += 1
+        elif char == '}':
+            depth -= 1
+        elif char == ',' and depth == 0:
+            items.append(source[start:index].strip())
+            start = index + 1
+    tail = source[start:].strip()
+    if tail:
+        items.append(tail)
+    return items
+
+
+def expand_rust_use_tree(source):
+    opening = source.find('{')
+    if opening < 0:
+        return [source.strip()]
+    depth = 0
+    closing = None
+    for index in range(opening, len(source)):
+        if source[index] == '{':
+            depth += 1
+        elif source[index] == '}':
+            depth -= 1
+            if depth == 0:
+                closing = index
+                break
+    if closing is None:
+        return []
+    prefix = source[:opening].strip()
+    suffix = source[closing + 1:].strip()
+    expanded = []
+    for child in split_rust_use_items(source[opening + 1:closing]):
+        if child == 'self':
+            value = prefix.rstrip(':')
+        else:
+            value = prefix + child
+        if suffix:
+            value += suffix if suffix.startswith('::') else '::' + suffix
+        expanded.extend(expand_rust_use_tree(value))
+    return expanded
+
+
+def rust_module_candidates(module_reference, path, source_root, package_name, current, entries):
+    parts = module_reference.split('::') if module_reference else []
+    if not parts:
+        return rust_module_file(source_root, [], entries)
+    root = parts.pop(0)
+    if root == 'crate' or (package_name and root == package_name):
+        base_parts = []
+    elif root == 'self':
+        base_parts = list(current or [])
+    elif root == 'super':
+        base_parts = list(current or [])
+        if base_parts:
+            base_parts.pop()
+        while parts and parts[0] == 'super':
+            if base_parts:
+                base_parts.pop()
+            parts.pop(0)
+    else:
+        return []
+    found = set()
+    if not parts:
+        found.update(rust_module_file(source_root, base_parts, entries))
+    else:
+        for count in range(1, len(parts) + 1):
+            found.update(rust_module_file(source_root, base_parts + parts[:count], entries))
+    return sorted(found)
+
+
+def rust_module_path_parts(reference, package_name, current):
+    parts = reference.split('::') if reference else []
+    if not parts:
+        return None
+    root = parts.pop(0)
+    if root == 'crate' or (package_name and root == package_name):
+        base = []
+    elif root == 'self':
+        base = list(current or [])
+    elif root == 'super':
+        base = list(current or [])
+        if not base:
+            return None
+        base.pop()
+        while parts and parts[0] == 'super':
+            if not base:
+                return None
+            base.pop()
+            parts.pop(0)
+    else:
+        return None
+    return base + parts
+
+
+def rust_module_import_targets(reference, source_root, package_name, current, entries, repo):
+    module_parts = rust_module_path_parts(reference, package_name, current)
+    if not module_parts:
+        return []
+    module_name = module_parts[-1]
+    parent_files = rust_module_file(source_root, module_parts[:-1], entries)
+    declarations = []
+    for parent in parent_files:
+        raw = repo.blob(entries[parent])
+        if raw is OVERSIZED_BLOB or b'\0' in raw:
+            continue
+        try:
+            source = raw.decode('utf-8')
+        except UnicodeDecodeError:
+            continue
+        match = re.search(
+            r'(?m)^\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+'
+            + re.escape(module_name) + r'\s*(;|\{)', source)
+        if match:
+            declarations.append((parent, source, match))
+    if not declarations:
+        return []
+
+    base = posixpath.join(source_root, *module_parts)
+    expected = [base + '.rs', base + '/mod.rs']
+    targets = set(path for path in expected if path in entries)
+    for parent, source, match in declarations:
+        if match.group(1) == '{':
+            targets.add(parent)
+            continue
+        prefix = source[:match.start()].rstrip()
+        previous_line = prefix.split('\n')[-1] if prefix else ''
+        path_match = re.fullmatch(
+            r'\s*#\[path\s*=\s*["\']([^"\']+)["\']\s*\]', previous_line)
+        if path_match:
+            targets.add(posixpath.normpath(posixpath.join(
+                posixpath.dirname(parent), path_match.group(1))))
+        else:
+            targets.update(expected)
+    return sorted(targets)
+
+
+def rust_import_bindings(path, lines, entries, repo):
+    package = rust_package(path, entries, repo)
+    source = rust_code_without_comments_or_literals('\n'.join(lines))
+    bindings = []
+    for match in re.finditer(r'\buse\s+([^;]+);', source, re.S):
+        statement = match.group(1).strip()
+        line_start = source.count('\n', 0, match.start()) + 1
+        line_end = source.count('\n', 0, match.end()) + 1
+        for leaf in expand_rust_use_tree(statement):
+            alias = re.fullmatch(r'(.+?)\s+as\s+([A-Za-z_]\w*)', leaf)
+            reference = alias.group(1).strip() if alias else leaf.strip()
+            local_alias = alias.group(2) if alias else None
+            parts = reference.split('::')
+            if not parts or parts[-1] == 'self':
+                continue
+            imported_name = parts[-1]
+            module_reference = '::'.join(parts[:-1])
+            if package is None:
+                if parts[0] not in ('crate', 'self', 'super'):
+                    continue
+                targets = []
+                reason = 'unresolved Rust package or use-tree path'
+                module_alias = False
+            else:
+                _package_dir, source_root, package_name = package
+                current = rust_module_parts(path, source_root)
+                module_targets = rust_module_import_targets(
+                    reference, source_root, package_name, current, entries, repo)
+                module_alias = bool(module_targets)
+                targets = (module_targets if module_alias else rust_module_candidates(
+                    module_reference, path, source_root, package_name, current, entries))
+                if module_alias and local_alias is None:
+                    local_alias = imported_name
+                reason = 'unresolved Rust use-tree path' if not targets else None
+            bindings.append({
+                'reference': reference,
+                'imported_name': imported_name,
+                'local_name': local_alias or imported_name,
+                'module_alias': module_alias,
+                'member_separator': '::' if module_alias else None,
+                'line_start': line_start,
+                'line_end': line_end,
+                'candidate_targets': targets,
+                'unresolved': not targets,
+                'reason': reason,
+            })
+    return bindings
+
+
+def is_source_file(path):
+    return Path(path).suffix.lower() in {
+        '.py', '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.rs', '.go',
+        '.java', '.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx'}
+
+
+def cross_file_symbols(path, lines, rows):
+    if is_test_path(path) or not is_source_file(path):
+        return set()
+    suffix = Path(path).suffix.lower()
+    if suffix == '.py':
+        try:
+            tree = ast.parse('\n'.join(lines))
+        except SyntaxError:
+            return set()
+        return {(node.lineno, node.name) for node in tree.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                and not node.name.startswith('_')}
+    if suffix in ('.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'):
+        code = brace_code('\n'.join(lines), suffix)
+        if code is None:
+            return set()
+        depths = []
+        depth = 0
+        for line in code.splitlines(keepends=True):
+            depths.append(depth)
+            depth += line.count('{') - line.count('}')
+        exported_names = {name for body in re.findall(
+            r'\bexport\s*\{([^}]*)\}', '\n'.join(lines), re.S)
+                          for name in re.findall(r'[A-Za-z_$][\w$]*', body)}
+        exported_names.update(ts_default_export_names(lines))
+        result = set()
+        for start, _, name in rows:
+            if not name:
+                continue
+            declaration = lines[start - 1] if start <= len(lines) else ''
+            if (start <= len(depths) and depths[start - 1] == 0 and (name in exported_names
+                    or re.search(r'\bexport\b[^;\n]*\b' + re.escape(name) + r'\b', declaration))):
+                result.add((start, name))
+        return result
+    result = set()
+    brace_source = None
+    brace_depths = []
+    if suffix in ('.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx'):
+        brace_source = brace_code('\n'.join(lines), suffix)
+        if brace_source is not None:
+            depth = 0
+            for line in brace_source.splitlines(keepends=True):
+                brace_depths.append(depth)
+                depth += line.count('{') - line.count('}')
+    for start, _, name in rows:
+        if not name:
+            continue
+        declaration = '\n'.join(lines[max(0, start - 4):start + 3])
+        if suffix == '.rs' and re.search(r'\bpub(?:\s*\([^)]*\))?', declaration):
+            result.add((start, name))
+        elif suffix == '.go' and name[:1].isupper() and re.search(r'\bfunc\b', declaration):
+            result.add((start, name))
+        elif suffix == '.java' and re.search(r'\b(?:public|protected)\b', declaration):
+            result.add((start, name))
+        elif suffix in ('.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx'):
+            if (start <= len(brace_depths) and brace_depths[start - 1] == 0
+                    and not re.search(r'\bstatic\b', declaration)):
+                result.add((start, name))
+    return result
 
 
 def strict_search_words(words):
@@ -1654,6 +2522,14 @@ def plan_search_argv(contract):
         return ['rg', '--hidden', '--no-ignore', '--glob', '!.git/**', '--null', '-n',
                 '--', pattern, '.']
     return ['grep', '--exclude-dir=.git', '--null', '-r', '-n', '--', pattern, '.']
+
+
+def plan_search_shell_command(contract):
+    argv = plan_search_argv(contract)
+    pattern_index = len(argv) - 2
+    pattern = "'" + argv[pattern_index].replace("'", "'\\''") + "'"
+    return ' '.join((shlex.join(argv[:pattern_index]), pattern,
+                     shlex.join(argv[pattern_index + 1:])))
 
 
 def ripgrep_executable(environment):
@@ -2245,7 +3121,7 @@ def plan_closure_paths(clusters, dependencies, changed):
     resolved = {row['path'] for cluster in clusters for row in cluster['paths']}
     closure = resolved & set(changed)
     for edge in dependencies:
-        if edge['kind'] != 'local-import':
+        if edge['kind'] not in ('local-import', 'ambiguous-import'):
             continue
         if edge['source'] in resolved and edge['target'] in changed:
             closure.add(edge['target'])
@@ -2257,9 +3133,12 @@ def plan_closure_paths(clusters, dependencies, changed):
 def markdown(data, json_path):
     lines = ['# Evidence navigation index', '', f'Complete deterministic facts: {json_path}',
              'Navigation only. Verify claims in source and expand when evidence is insufficient.']
-    for section in ('symbols', 'call_sites', 'related_tests', 'gates', 'instructions'):
+    for section in ('symbols', 'call_sites', 'related_tests', 'unresolved_imports', 'gates', 'instructions'):
         rows = data[section]
-        lines.extend(['', section.replace('_', ' ').title() + ':'])
+        label = ('Unresolved or aliased import proof obligations'
+                 if section == 'unresolved_imports'
+                 else section.replace('_', ' ').title())
+        lines.extend(['', label + ':'])
         included = 0
         for row in rows[:12]:
             rendered = json.dumps(row, sort_keys=True, ensure_ascii=True)
@@ -2436,7 +3315,7 @@ def selected_instruction_paths(paths, exists):
 def instruction_coverage_paths(evidence, changed, clusters=None):
     paths = set(changed)
     paths.update(hunk['path'] for hunk in evidence.get('source_context_hunks', []))
-    for field in ('symbols', 'call_sites', 'related_tests', 'gates'):
+    for field in ('symbols', 'call_sites', 'related_tests', 'unresolved_imports', 'gates'):
         paths.update(row['path'] for row in evidence.get(field, []) if isinstance(row, dict))
     for edge in evidence.get('dependencies', []):
         if isinstance(edge, dict):
@@ -2498,12 +3377,14 @@ def components_for(patches, dependencies, chosen, owner, findings=None, prior_ow
                  (edge['source'], edge['target'], edge['kind']) for edge in dependencies})]
     production = {path for path in changed if not is_test_path(path) and not is_prose_path(path)}
     for edge in edges:
-        if (edge['kind'] == 'local-import' and edge['source'] in production
+        if (edge['kind'] in ('local-import', 'ambiguous-import')
+                and edge['source'] in production
                 and edge['target'] in production):
             join(edge['source'], edge['target'])
     for test in sorted(path for path in changed if is_test_path(path)):
         targets = {edge['target'] for edge in edges
-                   if edge['source'] == test and edge['kind'] in ('local-import', 'related-test')
+                   if edge['source'] == test
+                   and edge['kind'] in ('local-import', 'ambiguous-import', 'related-test')
                    and edge['target'] in production}
         if len(targets) == 1:
             join(test, next(iter(targets)))
@@ -2674,7 +3555,7 @@ def plan_mandatory_source_windows(manifest, packet):
     return list(packet.get('mandatory_source_windows') or [])
 
 
-def merge_repository_windows(ranges):
+def merge_repository_windows(ranges, line_limit=READ_LINES):
     by_path = {}
     for path, start, end in ranges:
         by_path.setdefault(path, []).append((start, end))
@@ -2689,11 +3570,11 @@ def merge_repository_windows(ranges):
         windows = []
         for start, end in union:
             while start <= end:
-                windows.append((start, min(end, start + READ_LINES - 1)))
-                start += READ_LINES
+                windows.append((start, min(end, start + line_limit - 1)))
+                start += line_limit
         merged = []
         for start, end in windows:
-            if merged and end - merged[-1][0] + 1 <= READ_LINES:
+            if merged and end - merged[-1][0] + 1 <= line_limit:
                 merged[-1] = (merged[-1][0], end)
             else:
                 merged.append((start, end))
@@ -2733,7 +3614,8 @@ def uncovered_plan_ranges(assignment, plan_clusters, delivered):
 
 def mandatory_repository_windows(assignment, plan_clusters, delivered):
     return merge_repository_windows(
-        uncovered_plan_ranges(assignment, plan_clusters, delivered))
+        uncovered_plan_ranges(assignment, plan_clusters, delivered),
+        read_line_limit(assignment['adapter']))
 
 
 def published_mandatory_windows(assignment, plan_clusters, delivered):
@@ -2794,6 +3676,7 @@ def code_proof_obligations(assignment, components, evidence, packet):
     seat must still open after the evidence index, inside the frozen budget.
     """
     files = seat_assigned_files(assignment, components)
+    line_limit = read_line_limit(assignment['adapter'])
     delivered = [row for shard in packet.get('shards') or [] for row in shard.get('ranges') or []]
     delivered += list(packet.get('required_source_ranges') or [])
     symbols = {}
@@ -2815,6 +3698,29 @@ def code_proof_obligations(assignment, components, evidence, packet):
         ranges.append((path, start, end))
         owners.setdefault(path, set()).update(owner for owner in owner_paths if owner)
 
+    for obligation in evidence.get('unresolved_imports') or []:
+        candidate_symbols = obligation.get('candidate_symbols') or []
+        owner_paths = {symbol['path'] for symbol in candidate_symbols
+                       if symbol.get('path') in files}
+        if not owner_paths:
+            continue
+        add(obligation.get('path'), obligation.get('line_start'),
+            obligation.get('line_end'), owner_paths)
+        for symbol in candidate_symbols:
+            if symbol.get('path') in files:
+                add(symbol.get('path'), symbol.get('line_start'),
+                    symbol.get('line_end'), owner_paths)
+        for source_range in obligation.get('config_ranges') or []:
+            add(source_range.get('path'), source_range.get('line_start'),
+                source_range.get('line_end'), owner_paths)
+        for source_range in obligation.get('candidate_search_ranges') or []:
+            add(source_range.get('path'), source_range.get('line_start'),
+                source_range.get('line_end'), owner_paths)
+        symbol_paths = {symbol.get('path') for symbol in candidate_symbols}
+        for path in obligation.get('candidate_targets') or []:
+            if path not in symbol_paths:
+                add(path, 1, line_limit, owner_paths)
+
     for hunk in evidence.get('hunks') or []:
         path = hunk.get('path')
         if path not in files or not is_test_path(path):
@@ -2825,7 +3731,7 @@ def code_proof_obligations(assignment, components, evidence, packet):
         while cursor < len(pending):
             start = pending[cursor]
             last = start
-            while cursor < len(pending) and pending[cursor] <= start + READ_LINES - 1:
+            while cursor < len(pending) and pending[cursor] <= start + line_limit - 1:
                 last = pending[cursor]
                 cursor += 1
             add(path, start, last, {path})
@@ -2848,6 +3754,19 @@ def code_proof_obligations(assignment, components, evidence, packet):
             owner_paths.add(row['path'])
         add(row['path'], row['line_start'], row['line_end'], owner_paths)
     return ranges, owners
+
+
+def unrepresentable_import_proofs(assignment, components, evidence):
+    files = seat_assigned_files(assignment, components)
+    rows = []
+    for obligation in evidence.get('unresolved_imports') or []:
+        owns_candidate = any(symbol.get('path') in files
+                             for symbol in obligation.get('candidate_symbols') or [])
+        unreadable = obligation.get('unreadable_candidate_targets') or []
+        if owns_candidate and unreadable:
+            rows.append({'import_path': obligation['path'], 'reference': obligation['reference'],
+                         'targets': sorted(unreadable)})
+    return sorted(rows, key=lambda row: (row['import_path'], row['reference'], row['targets']))
 
 
 def partition_proof_windows(windows, owners, limit=MANDATORY_REPOSITORY_READ_LIMIT):
@@ -2898,11 +3817,12 @@ def partition_proof_windows(windows, owners, limit=MANDATORY_REPOSITORY_READ_LIM
 
 
 def plan_capacity_windows(assignment, plan_clusters, delivered, target):
+    line_limit = read_line_limit(assignment['adapter'])
     windows = mandatory_repository_windows(assignment, plan_clusters, delivered)
     if target is None:
         return windows
     return merge_repository_windows([
-        *windows, (target['path'], target['line_start'], target['line_end'])])
+        *windows, (target['path'], target['line_start'], target['line_end'])], line_limit)
 
 
 def grouped_plan_source_promotions(assignment, plan_clusters, delivered, omitted,
@@ -2942,7 +3862,7 @@ def grouped_plan_source_promotions(assignment, plan_clusters, delivered, omitted
         if len(windows) <= MANDATORY_REPOSITORY_READ_LIMIT:
             return sorted(selected)
         missing = uncovered_plan_ranges(assignment, plan_clusters, covered)
-        direct = merge_repository_windows(missing)
+        direct = merge_repository_windows(missing, read_line_limit(assignment['adapter']))
         choices = []
         for path, window_start, window_end in direct:
             intervals = sorted([
@@ -3062,8 +3982,15 @@ def source_context_inputs(repo, snapshot, base_tree, evidence, components, plan_
     base_entries = source_tree_entries(repo, base_tree, entries_by_tree)
     paths = {path for component in components for path in component['files']}
     boundaries = {path for component in components for path in component['boundary']}
-    paths.update(row['path'] for kind in ('symbols', 'call_sites', 'related_tests')
+    paths.update(row['path'] for kind in ('symbols', 'call_sites', 'related_tests', 'unresolved_imports')
                  for row in evidence[kind] if row['path'] in boundaries)
+    for obligation in evidence.get('unresolved_imports') or []:
+        paths.update(path for path in obligation.get('candidate_targets') or []
+                     if path in boundaries)
+        paths.update(symbol['path'] for symbol in obligation.get('candidate_symbols') or []
+                     if symbol.get('path') in boundaries)
+        paths.update(row['path'] for row in obligation.get('config_ranges') or []
+                     if row.get('path') in boundaries)
     paths.update(gate['path'] for gate in evidence['gates'])
     paths.update(site['path'] for cluster in plan_clusters or [] for site in cluster['paths'])
     blobs = {entry: repo.blob(entry) for tree in (entries, base_entries)
@@ -3088,7 +4015,7 @@ def source_context_evidence(repo, snapshot, evidence, entries_by_tree=None):
     delta_facts = facts(repo, snapshot, delta_hunks, {hunk['path'] for hunk in delta_hunks},
                         entries_by_tree=entries_by_tree)
     result = dict(evidence, hunks=evidence['source_context_hunks'])
-    for field in ('symbols', 'call_sites', 'related_tests', 'gates'):
+    for field in ('symbols', 'call_sites', 'related_tests', 'gates', 'unresolved_imports'):
         known = {encoded(row) for row in evidence[field]}
         result[field] = evidence[field] + [row for row in delta_facts[field]
                                           if encoded(row) not in known]
@@ -3564,8 +4491,9 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
     seats = {}
     for seat, assignment in assignments.items():
         patch_set = patch_sets[assignment['patch_set']]
+        line_limit = read_line_limit(assignment['adapter'])
         patch_calls = (len(patch_set['chunks']) if patch_set['read_mode'] == 'chunks'
-                       else (assignment['patch_lines'] + READ_LINES - 1) // READ_LINES)
+                       else (assignment['patch_lines'] + line_limit - 1) // line_limit)
         batch = read_batch_limit(assignment['adapter'])
         packet = context['seats'][seat]
         packet_calls = len(packet['shards'])
@@ -3584,12 +4512,12 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
         elif packet.get('source_read_required'):
             target = (repository_source_target(packet, context['snapshot_tree'])
                       if context.get('snapshot_tree') else None)
-            direct_calls = ((target['line_end'] - target['line_start'] + READ_LINES) // READ_LINES
+            direct_calls = ((target['line_end'] - target['line_start'] + line_limit) // line_limit
                             if target is not None else 1)
             if target is not None:
                 start = target['line_start']
                 while start <= target['line_end']:
-                    end = min(target['line_end'], start + READ_LINES - 1)
+                    end = min(target['line_end'], start + line_limit - 1)
                     window_row_list.append({
                         'path': target['path'], 'line_start': start, 'line_end': end})
                     start = end + 1
@@ -3597,16 +4525,19 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
         else:
             direct_calls = 0
         proof_partitions = None
+        unrepresentable_imports = (
+            unrepresentable_import_proofs(assignment, components, evidence)
+            if evidence is not None and components is not None else [])
         if plan_clusters is None and evidence is not None and components is not None:
             obligations, owners = code_proof_obligations(
                 assignment, components, evidence, packet)
-            obligation_windows = merge_repository_windows(obligations)
+            obligation_windows = merge_repository_windows(obligations, line_limit)
             if obligation_windows:
                 merged = merge_repository_windows([
                     *obligation_windows,
                     *((row['path'], row['line_start'], row['line_end'])
                       for row in window_row_list),
-                ])
+                ], line_limit)
                 direct_calls = len(merged)
                 window_row_list = repository_window_rows(merged)
                 proof_partitions = (partition_proof_windows(merged, owners)
@@ -3635,6 +4566,7 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
             'final_result_turns': 1,
             'projected_turns': projected,
             'provider_turn_limit': CLAUDE_MAX_TURNS if assignment['adapter'] == 'claude' else None,
+            'unrepresentable_import_proofs': unrepresentable_imports,
         }
         if proof_partitions is not None:
             seats[seat]['proof_partitions'] = proof_partitions
@@ -3668,6 +4600,8 @@ def task_capacity_errors(capacity):
     errors = []
     limit = capacity['mandatory_repository_read_limit']
     for seat, row in capacity['seats'].items():
+        if row.get('unrepresentable_import_proofs'):
+            errors.append('task has unreadable import candidates for ' + seat)
         if row['mandatory_repository_reads'] > limit:
             windows = row.get('mandatory_window_rows') or []
             target = row.get('repository_source_target')
@@ -3854,9 +4788,29 @@ def validate_components(session, manifest, evidence):
     delta = split_patch((session / f'{prefix}-delta.patch').read_bytes(), manifest['delta_paths'])
     if not set(semantic) <= set(full) or any(full[p] != patch for p, patch in semantic.items()):
         raise ValueError('semantic patch does not match full patch')
-    for field in ('symbols', 'call_sites', 'related_tests', 'gates'):
+    for field in ('symbols', 'call_sites', 'related_tests', 'gates', 'unresolved_imports'):
         if not isinstance(evidence.get(field), list) or any(not isinstance(r, dict) or not within(r.get('path'), selected) for r in evidence[field]):
             raise ValueError('evidence fact outside literal scope: ' + field)
+    for obligation in evidence['unresolved_imports']:
+        candidate_targets = obligation.get('candidate_targets')
+        if (not isinstance(candidate_targets, list)
+                or any(not isinstance(path, str) or not within(path, selected)
+                       for path in candidate_targets)):
+            raise ValueError('invalid import candidate targets')
+        for field in ('candidate_symbols', 'candidate_search_ranges', 'config_ranges'):
+            rows = obligation.get(field)
+            if not isinstance(rows, list) or any(
+                    not isinstance(row, dict) or not within(row.get('path'), selected)
+                    or type(row.get('line_start')) is not int
+                    or type(row.get('line_end')) is not int
+                    or row['line_start'] < 1 or row['line_end'] < row['line_start']
+                    for row in rows):
+                raise ValueError('invalid import proof ranges: ' + field)
+        unreadable = obligation.get('unreadable_candidate_targets')
+        if (not isinstance(unreadable, list)
+                or any(not isinstance(path, str) or not within(path, selected)
+                       for path in unreadable)):
+            raise ValueError('invalid unreadable import candidates')
     edges = evidence.get('dependencies')
     if not isinstance(edges, list) or any(not isinstance(e, dict) or not within(e.get('source'), selected)
                                          or not within(e.get('target'), selected) or not isinstance(e.get('kind'), str) for e in edges):
@@ -4010,7 +4964,8 @@ def validate_source_context(session, manifest, evidence):
                         or not within(row['path'], manifest['scope'])
                         or type(row['line_start']) is not int or type(row['line_end']) is not int
                         or row['line_start'] < 1 or row['line_end'] < row['line_start']
-                        or row['line_end'] - row['line_start'] + 1 > READ_LINES):
+                        or row['line_end'] - row['line_start'] + 1
+                        > read_line_limit(assignment['adapter'])):
                     raise ValueError('invalid mandatory source window: ' + seat)
         expected_components = sorted(assignment['components'])
         relevant = [component for component in components if component['id'] in expected_components]
@@ -6175,17 +7130,19 @@ def render_seat(manifest, mh, seat, plan_source):
             first_evidence = (candidates[0] if candidates
                               else manifest['plan']['common_artifacts'][0])
             primary = str(Path(manifest['session']) / first_evidence)
+        read_limit = CODEX_READ_LINES if assignment['adapter'] == 'codex' else READ_LINES
         if assignment['adapter'] == 'codex':
             if assignment['patch_bytes'] and patch_mode != 'chunks':
-                primary_action = ("run sed -n '1," + str(min(240, assignment['patch_lines']))
+                primary_action = ("run sed -n '1," + str(min(read_limit, assignment['patch_lines']))
                                   + "p' " + shlex.quote(primary))
             else:
                 primary_action = 'run ' + shlex.join(['cat', '--', primary])
         else:
             tool = read_tool_name(assignment['adapter'])
             if assignment['patch_bytes'] and patch_mode != 'chunks':
-                primary_action = ('use ' + tool + ' with offset 1 and limit 240 on '
-                                  + primary)
+                primary_action = (
+                    'use ' + tool + ' with offset 1 and limit ' + str(read_limit)
+                    + ' on ' + primary)
             else:
                 primary_action = 'use ' + tool + ' to read ' + primary + ' in full'
         print('Plan specialist first-call contract: ' + primary_action
@@ -6200,7 +7157,7 @@ def render_seat(manifest, mh, seat, plan_source):
                         if cluster['id'] in cluster_ids):
             proof = cluster.get('search_proof')
             if proof is None:
-                command = (shlex.join(plan_search_argv(cluster['search_contract']))
+                command = (plan_search_shell_command(cluster['search_contract'])
                            + ' | head -' + str(PLAN_SEARCH_OVERFLOW_RESULTS))
                 print('Required cluster sibling search: ' + cluster['id'] + ' run ' + command
                       + ' from repository root; at most 80 result lines are accepted, and an '
@@ -6246,15 +7203,19 @@ def render_seat(manifest, mh, seat, plan_source):
                             + ' consecutive listed chunk' + ('' if batch_limit == 1 else 's')
                             + ' in full; continue in exact order.')
     else:
-        print('Read the entire assigned patch in bounded windows of at most 240 lines: '
+        patch_read_lines = (CODEX_READ_LINES if assignment['adapter'] == 'codex'
+                            else READ_LINES)
+        print('Read the entire assigned patch in bounded windows of at most '
+              + str(patch_read_lines) + ' lines: '
               + assignment['patch'])
         if assignment['patch_lines'] == 0:
             print('Assigned patch is empty; no assigned-patch read is required.')
         elif assignment['adapter'] == 'codex':
-            end = min(240, assignment['patch_lines'])
+            end = min(patch_read_lines, assignment['patch_lines'])
             first_action = ("run sed -n '1," + str(end) + "p' "
                             + shlex.quote(assignment['patch'])
-                            + '; continue with consecutive windows of at most 240 lines.')
+                            + '; continue with consecutive windows of at most '
+                            + str(patch_read_lines) + ' lines.')
         else:
             tool = read_tool_name(assignment['adapter'])
             first_action = ('use ' + tool + ' with offset 1 and limit 240 on '

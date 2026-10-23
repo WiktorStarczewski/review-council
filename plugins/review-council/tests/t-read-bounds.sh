@@ -2990,6 +2990,36 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
 audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
 root, session = Path(sys.argv[2]).resolve(), Path(sys.argv[3]).resolve()
+(root / 'src' / 'wide.rs').write_text(''.join(f'line_{index} = {index}\n' for index in range(240)))
+roots = audit.allowed_roots(root, session)
+def codes(command):
+    return [row['code'] for row in audit.shell_violations(
+        command, roots, root, session, read_limit=audit.CODEX_READ_LINES)]
+def ranges(command):
+    rows, unparseable = audit.shell_source_ranges(
+        command, root, {}, session, audit.CODEX_READ_LINES)
+    return [(row['path'], row['line_start'], row['line_end']) for row in rows], unparseable
+assert codes("sed -n '1,40p' src/wide.rs") == []
+assert ranges("sed -n '1,40p' src/wide.rs") == ([('src/wide.rs', 1, 40)], False)
+assert codes("sed -n '1,41p' src/wide.rs") == ['unbounded-shell-output']
+assert ranges("sed -n '1,41p' src/wide.rs") == ([], True)
+assert audit.validate_call(
+    'Read', {'file_path':'src/wide.rs','offset':1,'limit':40}, roots, root, session,
+    read_limit=audit.CODEX_READ_LINES) == []
+assert [row['code'] for row in audit.validate_call(
+    'Read', {'file_path':'src/wide.rs','offset':1,'limit':41}, roots, root, session,
+    read_limit=audit.CODEX_READ_LINES)] == ['unbounded-read']
+assert audit.validate_call(
+    'Read', {'file_path':'src/wide.rs','offset':1,'limit':240}, roots, root, session) == []
+PY
+    assert_eq "Codex source-read audits enforce 40 lines while other adapters retain 240" "$?" 0
+
+    python3 - "$SCRIPTS/lib/review-read-audit.py" "$R" "$S" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
+audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
+root, session = Path(sys.argv[2]).resolve(), Path(sys.argv[3]).resolve()
 oid = 'a' * 40
 def pinned(command):
     rows, _ = audit.shell_source_ranges(command, root, {}, session)

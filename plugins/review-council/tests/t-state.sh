@@ -1,4 +1,23 @@
 # tests for Task 2 - sourced by run-tests.sh
+write_plan_manifest() {
+  local S=$1 label=$2 assignments=$3
+  [ -f "$S/fix-plan.md" ] || printf '# Test plan\n' > "$S/fix-plan.md"
+  python3 - "$S" "$label" "$assignments" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+session = Path(sys.argv[1])
+label = sys.argv[2]
+assignments = json.loads(sys.argv[3])
+plan = hashlib.sha256((session / 'fix-plan.md').read_bytes()).hexdigest()
+manifest = {'label': label, 'phase': 'plan', 'plan': {'sha256': plan},
+            'assignments': assignments}
+(session / f'r{label}-evidence.manifest.json').write_text(json.dumps(manifest))
+PY
+}
+
 test_state() {
   local S="$T/state-sess" ST="$SCRIPTS/rev-state.sh"
   "$ST" "$S" round=1 phase=fan-out min_rounds=7 >/dev/null
@@ -237,9 +256,17 @@ test_state_fix_gate_accepts_a_px_plan_replacement() {
     "$ST" "$S" round=5 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
     "$ST" "$S" phase=plan round=5p 'seats=["codex-terra"]' >/dev/null
     state_write_plan_manifest "$S" 5p stale codex-terra
+    printf 'plan review\n' > "$S/r5p-codex-terra.prompt.md"
     echo 2 > "$S/r5p-codex-terra.exit"; printf '{"summary":"x","findings":[]}\n' > "$S/r5p-codex-terra.audit-invalid.json"
     state_gate_refuses "a hard-failed plan seat" "$S" 5 phase=fix
-    "$ST" "$S" phase=plan round=5px 'seats=["codex-sol"]' plan_replacement_for=5p:codex-terra >/dev/null
+    local before
+    before=$(cksum < "$S/state.json")
+    assert_exit "an unbound plan replacement is refused" 2 \
+      "$ST" "$S" phase=plan round=5px 'seats=["codex-sol"]'
+    assert_eq "an unbound plan replacement leaves state unchanged" \
+      "$(cksum < "$S/state.json")" "$before"
+    "$ST" "$S" phase=plan round=5px 'seats=["codex-sol"]' \
+      plan_replacement_for=5p:codex-terra >/dev/null
     state_write_plan_manifest "$S" 5px current codex-sol
     assert_eq "the <N>px plan launch records its seats" \
       "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plans"].get("5px"))' "$S/state.json")" "['codex-sol']"
