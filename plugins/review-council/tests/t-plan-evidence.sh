@@ -35,7 +35,7 @@ import sys
 
 spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
 audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
-root = Path(sys.argv[2]); patch = root / 'plan.patch'
+root = Path(sys.argv[2]).resolve(); patch = root / 'plan.patch'
 patch.write_text(''.join(f'line {index}\n' for index in range(1, 301)))
 manifest = {
     'schema_version': 4, 'phase': 'plan', 'mechanical_owner': 'sol',
@@ -56,7 +56,8 @@ valid = {'call': ('command_execution',
                   {'command': "sed -n '1,160p' " + shlex.quote(str(patch))}, 0)}
 invalid = {'call': ('command_execution',
                     {'command': "sed -n '1,240p' " + shlex.quote(str(patch))}, 0)}
-assert audit.validate_plan_first_call(manifest, 'luna', 'codex', valid, root, root) == []
+violations = audit.validate_plan_first_call(manifest, 'luna', 'codex', valid, root, root)
+assert violations == [], violations
 assert audit.validate_plan_first_call(manifest, 'luna', 'codex', invalid, root, root)[0]['code'] \
     == 'invalid-plan-first-call'
 PY
