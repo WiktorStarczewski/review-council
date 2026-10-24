@@ -47,7 +47,7 @@ test_status() {
 {"summary":"A P3 note","findings":[{"severity":"P3","file":"src/style.ts","line_start":4,"line_end":4,"claim":"style-only observation","evidence":"fixture","suggested_fix":"","confidence":0.8}]}
 JSON
   echo "$("$SCRIPTS/rev-status.sh" "$P")" > "$T/p3-line"
-  assert_grep "P3 does not change the actionable finding summary" "$T/p3-line" 'No P0-P2 findings remain open'
+  assert_grep "P3 does not change the actionable finding summary" "$T/p3-line" 'No P0-P2 findings are currently recorded as open'
   assert_nogrep "P3 claims are omitted from live progress" "$T/p3-line" 'style-only observation|src/style.ts'
 
   local C="$T/status-collect-zero"; mkdir -p "$C"
@@ -58,7 +58,7 @@ JSON
 {"summary":"A returned P1 finding","findings":[{"severity":"P1","file":"src/pair.ts","line_start":14,"line_end":14,"claim":"pair validation is skipped","evidence":"fixture","suggested_fix":"","confidence":0.9}]}
 JSON
   echo "$("$SCRIPTS/rev-status.sh" "$C")" > "$T/collect-zero-line"
-  assert_grep "collect progress says returned findings await triage" "$T/collect-zero-line" 'returned findings have not yet been triaged'
+  assert_grep "collect progress says returned findings await triage" "$T/collect-zero-line" '[Rr]eturned findings have not yet been triaged'
   assert_nogrep "collect progress does not call a returned P1 review clean" "$T/collect-zero-line" 'No P0-P2 findings remain open'
 
   local B="$T/status-brief"; mkdir -p "$B"; printf '{}\n' > "$B/state.json"

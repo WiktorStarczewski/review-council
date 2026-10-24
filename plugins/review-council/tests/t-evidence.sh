@@ -2297,6 +2297,41 @@ def ts_transitive_excluded_file_uses_project_path_aliases():
         assert {'src/transitive.ts', 'src/history.ts', 'tsconfig.json',
                 'configs/tsconfig.base.json'} <= proof_paths, proof_paths
 
+def ts_explicit_files_root_keeps_path_aliases_outside_config_and_exclude():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('configs/tsconfig.json',
+              '{\n  "compilerOptions": {\n    "baseUrl": "../",\n'
+              '    "paths": { "@history": ["src/history"] }\n  },\n'
+              '  "files": ["../consumer.ts"],\n'
+              '  "exclude": ["../consumer.ts"]\n}\n')
+        write('src/history.ts', 'export const readHistory = () => 1;\n')
+        write('consumer.ts',
+              'import { readHistory } from "@history";\n'
+              'export const consumeHistory = () => readHistory();\n')
+        git('add', '.'); git('commit', '-qm', 'explicit tsconfig file root base'); base = git('rev-parse', 'HEAD')
+        scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('src/history.ts', 'export const readHistory = () => 2;\n')
+
+        manifest = prepare()
+        facts = json.loads((session / 'r1-evidence.json').read_text())
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'consumer.ts')
+        assert obligation['reference'] == '@history', obligation
+        assert obligation['candidate_targets'] == ['src/history.ts'], obligation
+        assert any(row['path'] == 'consumer.ts' and row['name'] == 'readHistory'
+                   for row in facts['call_sites']), facts['call_sites']
+        assert {row['path'] for row in obligation['config_ranges']} == {
+            'configs/tsconfig.json'}, obligation
+        proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
+                       for shard in packet['shards'] for row in shard['ranges']}
+        proof_paths.update(required['path']
+                           for packet in manifest['source_context']['seats'].values()
+                           for required in packet['required_source_ranges'])
+        assert {'consumer.ts', 'src/history.ts', 'configs/tsconfig.json'} <= proof_paths, proof_paths
+
 def complete_declaration_context():
     with fixture() as (root, session, git, write, call, prepare, finish):
         body = ('def long_function():\n'
@@ -4198,6 +4233,7 @@ cases = (
     ambiguous_ts_configs_are_explicit_search_obligations,
     ts_paths_alias_and_missing_targets_are_capacity_counted,
     ts_transitive_excluded_file_uses_project_path_aliases,
+    ts_explicit_files_root_keeps_path_aliases_outside_config_and_exclude,
     provider_visible_source_packet_limit,
     source_context_prefers_named_production_and_maps_gates, complete_declaration_context,
     budget_omissions_are_segmented_or_retained, innermost_declarations_and_bounded_anchors,
@@ -4252,6 +4288,7 @@ groups = {
         ambiguous_ts_configs_are_explicit_search_obligations,
         ts_paths_alias_and_missing_targets_are_capacity_counted,
         ts_transitive_excluded_file_uses_project_path_aliases,
+        ts_explicit_files_root_keeps_path_aliases_outside_config_and_exclude,
         provider_visible_source_packet_limit,
         source_context_prefers_named_production_and_maps_gates,
         complete_declaration_context, budget_omissions_are_segmented_or_retained,
