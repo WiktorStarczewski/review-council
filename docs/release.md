@@ -31,14 +31,14 @@ the pull request.
 From a clean checkout of the merged commit, publish the signed release:
 
 ```bash
-git tag -s review-council--v0.7.13 -m "review-council 0.7.13" "$MERGE_COMMIT"
-git push origin review-council--v0.7.13
-git verify-tag review-council--v0.7.13
-gh release create review-council--v0.7.13 --verify-tag \
-  --title "review-council 0.7.13" --generate-notes
+git tag -s review-council--v0.7.14 -m "review-council 0.7.14" "$MERGE_COMMIT"
+git push origin review-council--v0.7.14
+git verify-tag review-council--v0.7.14
+gh release create review-council--v0.7.14 --verify-tag \
+  --title "review-council 0.7.14" --generate-notes
 ```
 
 Reinstall `review-council@review-council` for Claude and Codex, and run
 `install-cursor.sh` for Cursor. In fresh sessions on each host, require `rev` and
-`stack` at version `0.7.13`, and compare installed file and mode identity with the
+`stack` at version `0.7.14`, and compare installed file and mode identity with the
 released tag.

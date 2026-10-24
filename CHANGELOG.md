@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.7.14
+
+- Retain assigned component ownership when promoting boundary caller and test proofs, so routed specialists can prepare their complete evidence without inventing ownership from a caller path.
+
 ## 0.7.13
 
 - Resolve Rust module declarations, explicit paths and integration crate roots without inventing alternate files or treating comments as declarations.

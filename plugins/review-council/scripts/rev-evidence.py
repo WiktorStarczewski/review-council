@@ -3681,6 +3681,10 @@ def code_proof_obligations(assignment, components, evidence, packet, snapshot=No
         if not caller_names and not test_ids:
             continue
         owner_paths = set()
+        for component_id in row.get('component_ids') or []:
+            component = component_by_id.get(component_id)
+            if component is not None:
+                owner_paths.update(path for path in component['files'] if path in files)
         for name in caller_names:
             owner_paths.update(path for path in symbols.get(name, ()) if path in files)
         for component_id in test_ids:
