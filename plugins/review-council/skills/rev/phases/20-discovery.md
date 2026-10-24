@@ -222,7 +222,7 @@ if [ -z "$MANIFEST" ] && { [ "$PANEL_PHASE" = numeric ] || [ "${COVERED_PHASE:-}
 fi
 ```
 
-A code proof-budget refusal, proof reads exceed repository capacity, is not a legacy rerender and not a provider-seat replacement: stop before rendering, read `prepare-diagnostic-<label>.json`, and review each partitions entry as its own path scope.
+A code proof-budget refusal, proof reads exceed repository capacity, is not a legacy rerender and not a provider-seat replacement. Stop before rendering and read `prepare-diagnostic-<label>.json`. With source context enabled, mandatory code proofs are delivered as exact audited source segments while the full requested scope remains intact. A remaining refusal requires repairing the evidence compiler or its unrepresentable inputs before preparing a fresh label. Diagnostic partitions describe proof windows; they are not executable path scopes or certified partial coverage. Do not disable source context, raise proof limits, or replace the full requested review with separate file reviews to bypass a refusal.
 
 `REV_PATCH_CHUNKS=auto` selects chunks when they save proof reads or are required to
 fit the compiled provider capacity. `REV_PATCH_CHUNKS=1` forces chunks when the patch

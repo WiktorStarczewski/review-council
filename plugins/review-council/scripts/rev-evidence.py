@@ -1379,7 +1379,7 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                         edges.reverse()
                         route_symbols = [
                             {'path': source, 'line_start': edge_line,
-                             'line_end': edge_line, 'name': name}
+                             'line_end': edge_line, 'name': name, 'blob_tree': tree}
                             for source, _, edge_line in edges]
                         route_paths = {start, target}
                         route_paths.update(source for source, _, _ in edges)
@@ -1424,6 +1424,9 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                 reference_targets = {}
                 for imported in imported_refs:
                     targets = resolve_import_candidates(path, imported, entries, applicable_configs)
+                    if not targets and not typed_imports and base_entries:
+                        targets = resolve_import_candidates(
+                            path, imported, base_entries, applicable_configs)
                     reference_targets[imported] = targets
                     imported_targets.update(targets)
                     ambiguous = len(targets) > 1 or (ambiguous_config and not imported.startswith('.'))
@@ -1472,7 +1475,8 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                     candidates = matching
                 binding['candidate_symbols'] = [] if binding.get('default_import') else [
                     {'path': symbol['path'], 'line_start': symbol['line'],
-                     'line_end': symbol['line_end'], 'name': symbol['name']}
+                     'line_end': symbol['line_end'], 'name': symbol['name'],
+                     'blob_tree': symbol['blob_tree']}
                     for symbol in candidates]
                 candidate_names = ({symbol['name'] for symbol in candidates}
                                    if binding.get('module_alias') or binding.get('default_import')
@@ -1735,7 +1739,10 @@ def resolve_import_candidates(path, reference, entries, base_urls=()):
         if base_urls and not configs:
             bases.extend(posixpath.normpath(posixpath.join(root, reference)) for root in base_urls)
     candidates = []
-    for suffix in ('.ts', '.tsx', '.js', '.jsx', '.py', '.rs', '.go', '.java', '.c', '.h', '.cpp'):
+    suffixes = ('.ts', '.tsx', '.js', '.jsx', '.py', '.rs', '.go', '.java', '.c', '.h', '.cpp')
+    if is_ts_js_path(path):
+        suffixes = ('.d.ts',) + suffixes
+    for suffix in suffixes:
         for base in bases:
             candidates.extend((base + suffix, base + '/index' + suffix))
     candidates.extend(base + '/__init__.py' for base in bases)
@@ -1977,6 +1984,10 @@ def rust_package(path, entries, repo):
 
 
 def rust_module_parts(path, source_root):
+    if source_root.endswith('.rs'):
+        if path == source_root:
+            return []
+        source_root = posixpath.dirname(source_root)
     if path == source_root + '/lib.rs' or path == source_root + '/main.rs':
         return []
     if not path.startswith(source_root.rstrip('/') + '/'):
@@ -1990,6 +2001,10 @@ def rust_module_parts(path, source_root):
 
 
 def rust_module_file(source_root, module_parts, entries):
+    if source_root.endswith('.rs'):
+        if not module_parts:
+            return [source_root] if source_root in entries else []
+        source_root = posixpath.dirname(source_root)
     base = posixpath.join(source_root, *module_parts) if module_parts else source_root
     candidates = ([base + '.rs', base + '/mod.rs'] if module_parts
                  else [base + '/lib.rs', base + '/main.rs'])
@@ -2119,32 +2134,15 @@ def expand_rust_use_tree(source):
     return expanded
 
 
-def rust_module_candidates(module_reference, path, source_root, package_name, current, entries):
-    parts = module_reference.split('::') if module_reference else []
-    if not parts:
-        return rust_module_file(source_root, [], entries)
-    root = parts.pop(0)
-    if root == 'crate' or (package_name and root == package_name):
-        base_parts = []
-    elif root == 'self':
-        base_parts = list(current or [])
-    elif root == 'super':
-        base_parts = list(current or [])
-        if base_parts:
-            base_parts.pop()
-        while parts and parts[0] == 'super':
-            if base_parts:
-                base_parts.pop()
-            parts.pop(0)
-    else:
+def rust_module_candidates(module_reference, path, source_root, package_name, current, entries,
+                           repo):
+    parts = (rust_module_path_parts(module_reference, package_name, current)
+             if module_reference else [])
+    if parts is None:
         return []
-    found = set()
-    if not parts:
-        found.update(rust_module_file(source_root, base_parts, entries))
-    else:
-        for count in range(1, len(parts) + 1):
-            found.update(rust_module_file(source_root, base_parts + parts[:count], entries))
-    return sorted(found)
+    modules = rust_module_graph(source_root, entries, repo)['modules']
+    prefixes = [()] if not parts else [tuple(parts[:count]) for count in range(1, len(parts) + 1)]
+    return sorted({node['path'] for prefix in prefixes for node in modules.get(prefix, [])})
 
 
 def rust_module_path_parts(reference, package_name, current):
@@ -2171,46 +2169,145 @@ def rust_module_path_parts(reference, package_name, current):
     return base + parts
 
 
+def rust_module_path_attribute(source, code, offset):
+    attributes = re.search(r'(?s)((?:#\[[^\]]*\]\s*)+)$', code[:offset])
+    if attributes is None:
+        return None
+    for attribute in re.finditer(r'#\[\s*path\s*=\s*[^\]]*\]', attributes.group(1)):
+        start = attributes.start(1) + attribute.start()
+        end = attributes.start(1) + attribute.end()
+        match = re.fullmatch(r'#\[\s*path\s*=\s*["\']([^"\']+)["\']\s*\]', source[start:end])
+        if match:
+            return match.group(1)
+    return None
+
+
+def rust_module_graph(source_root, entries, repo):
+    cached = getattr(repo, 'rust_module_graph_cache', None)
+    if cached is None or cached[0] is not entries:
+        cached = (entries, {})
+        repo.rust_module_graph_cache = cached
+    if source_root in cached[1]:
+        return cached[1][source_root]
+    graph = {'modules': {}, 'contexts': {}}
+    file_sources = {}
+    pending = []
+    for root in rust_module_file(source_root, [], entries):
+        directory = posixpath.dirname(root)
+        pending.append({'path': root, 'parts': (), 'directory': directory,
+                        'path_directory': directory, 'start': 0, 'end': None, 'ancestors': ()})
+    declaration = re.compile(
+        r'\b(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+'
+        r'(?P<name>[A-Za-z_]\w*)\s*(?P<kind>;|\{)|(?P<brace>[{}])')
+    while pending:
+        node = pending.pop()
+        path = node['path']
+        graph['modules'].setdefault(node['parts'], []).append(node)
+        if path not in entries or path in node['ancestors']:
+            continue
+        if path not in file_sources:
+            raw = repo.blob(entries[path])
+            if raw is OVERSIZED_BLOB or b'\0' in raw:
+                file_sources[path] = None
+            else:
+                try:
+                    source = raw.decode('utf-8')
+                except UnicodeDecodeError:
+                    file_sources[path] = None
+                else:
+                    code = rust_code_without_comments_or_literals(source)
+                    stack = []
+                    closings = {}
+                    for brace in re.finditer(r'[{}]', code):
+                        if brace.group() == '{':
+                            stack.append(brace.start())
+                        elif stack:
+                            closings[stack.pop()] = brace.start()
+                    file_sources[path] = source, code, closings
+        if file_sources[path] is None:
+            continue
+        source, code, closings = file_sources[path]
+        if node['end'] is None:
+            node['end'] = len(code)
+        graph['contexts'].setdefault(path, []).append(node)
+        cursor = node['start']
+        while cursor < node['end']:
+            match = declaration.search(code, cursor, node['end'])
+            if match is None:
+                break
+            if match.group('brace'):
+                cursor = closings.get(match.start(), node['end']) + 1
+                continue
+            parts = node['parts'] + (match.group('name'),)
+            attribute = rust_module_path_attribute(source, code, match.start())
+            if match.group('kind') == '{':
+                opening = match.end() - 1
+                closing = closings.get(opening)
+                if closing is None:
+                    break
+                directory = posixpath.normpath(posixpath.join(
+                    node['path_directory'] if attribute is not None else node['directory'],
+                    attribute if attribute is not None else match.group('name')))
+                pending.append({'path': path, 'parts': parts, 'directory': directory,
+                                'path_directory': directory, 'start': opening + 1,
+                                'end': closing, 'ancestors': node['ancestors']})
+                cursor = closing + 1
+                continue
+            if attribute is not None:
+                targets = [posixpath.normpath(posixpath.join(node['path_directory'], attribute))]
+            else:
+                base = posixpath.join(node['directory'], match.group('name'))
+                expected = [base + '.rs', base + '/mod.rs']
+                targets = [target for target in expected if target in entries] or expected
+            for target in targets:
+                directory = (posixpath.dirname(target) if posixpath.basename(target) == 'mod.rs'
+                             else posixpath.splitext(target)[0])
+                pending.append({'path': target, 'parts': parts, 'directory': directory,
+                                'path_directory': posixpath.dirname(target), 'start': 0,
+                                'end': None, 'ancestors': node['ancestors'] + (path,)})
+            cursor = match.end()
+    cached[1][source_root] = graph
+    return graph
+
+
 def rust_module_import_targets(reference, source_root, package_name, current, entries, repo):
     module_parts = rust_module_path_parts(reference, package_name, current)
     if not module_parts:
         return []
-    module_name = module_parts[-1]
-    parent_files = rust_module_file(source_root, module_parts[:-1], entries)
-    declarations = []
-    for parent in parent_files:
-        raw = repo.blob(entries[parent])
-        if raw is OVERSIZED_BLOB or b'\0' in raw:
-            continue
-        try:
-            source = raw.decode('utf-8')
-        except UnicodeDecodeError:
-            continue
-        match = re.search(
-            r'(?m)^\s*(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+'
-            + re.escape(module_name) + r'\s*(;|\{)', source)
-        if match:
-            declarations.append((parent, source, match))
-    if not declarations:
-        return []
+    modules = rust_module_graph(source_root, entries, repo)['modules']
+    return sorted({node['path'] for node in modules.get(tuple(module_parts), [])})
 
-    base = posixpath.join(source_root, *module_parts)
-    expected = [base + '.rs', base + '/mod.rs']
-    targets = set(path for path in expected if path in entries)
-    for parent, source, match in declarations:
-        if match.group(1) == '{':
-            targets.add(parent)
-            continue
-        prefix = source[:match.start()].rstrip()
-        previous_line = prefix.split('\n')[-1] if prefix else ''
-        path_match = re.fullmatch(
-            r'\s*#\[path\s*=\s*["\']([^"\']+)["\']\s*\]', previous_line)
-        if path_match:
-            targets.add(posixpath.normpath(posixpath.join(
-                posixpath.dirname(parent), path_match.group(1))))
-        else:
-            targets.update(expected)
-    return sorted(targets)
+
+def rust_import_contexts(path, source_root, entries, repo, offset):
+    cached = getattr(repo, 'rust_import_context_cache', None)
+    if cached is None or cached[0] is not entries:
+        cached = (entries, {})
+        repo.rust_import_context_cache = cached
+    contexts_by_root = cached[1]
+    if source_root not in contexts_by_root:
+        test_directory = posixpath.join(posixpath.dirname(source_root), 'tests')
+        roots = rust_module_file(source_root, [], entries)
+        for candidate in sorted(entries):
+            if not candidate.startswith(test_directory + '/') or not candidate.endswith('.rs'):
+                continue
+            relative = candidate[len(test_directory) + 1:]
+            if '/' not in relative or (relative.count('/') == 1 and relative.endswith('/main.rs')):
+                roots.append(candidate)
+        contexts = {}
+        for root in roots:
+            for parent, nodes in rust_module_graph(root, entries, repo)['contexts'].items():
+                contexts.setdefault(parent, []).extend((root, node) for node in nodes)
+        contexts_by_root[source_root] = contexts
+    matches = [(root, node) for root, node in contexts_by_root[source_root].get(path, [])
+               if node['start'] <= offset < node['end']]
+    contexts = [(root, list(node['parts'])) for root, node in matches
+                if not any(other_root == root and other['start'] >= node['start']
+                           and other['end'] <= node['end']
+                           and (other['start'], other['end']) != (node['start'], node['end'])
+                           for other_root, other in matches)]
+    if not contexts and path.startswith(source_root.rstrip('/') + '/'):
+        contexts.append((source_root, rust_module_parts(path, source_root)))
+    return contexts
 
 
 def rust_import_bindings(path, lines, entries, repo):
@@ -2238,12 +2335,19 @@ def rust_import_bindings(path, lines, entries, repo):
                 module_alias = False
             else:
                 _package_dir, source_root, package_name = package
-                current = rust_module_parts(path, source_root)
-                module_targets = rust_module_import_targets(
-                    reference, source_root, package_name, current, entries, repo)
-                module_alias = bool(module_targets)
-                targets = (module_targets if module_alias else rust_module_candidates(
-                    module_reference, path, source_root, package_name, current, entries))
+                library_root = source_root + '/lib.rs'
+                contexts = ([(library_root if library_root in entries else source_root, [])]
+                            if package_name and parts[0] == package_name
+                            else rust_import_contexts(path, source_root, entries, repo, match.start()))
+                targets = set()
+                module_alias = False
+                for crate_root, current in contexts:
+                    module_targets = rust_module_import_targets(
+                        reference, crate_root, package_name, current, entries, repo)
+                    module_alias = module_alias or bool(module_targets)
+                    targets.update(module_targets or rust_module_candidates(
+                        module_reference, path, crate_root, package_name, current, entries, repo))
+                targets = sorted(targets)
                 if module_alias and local_alias is None:
                     local_alias = imported_name
                 reason = 'unresolved Rust use-tree path' if not targets else None
@@ -3585,13 +3689,16 @@ def seat_assigned_files(assignment, components):
             for path in component['files']}
 
 
-def code_proof_obligations(assignment, components, evidence, packet):
+def code_proof_obligations(assignment, components, evidence, packet, snapshot=None,
+                           base_tree=None, with_tree=False):
     """Post-index reads for edited assertions, consumers, and sibling tests.
 
     Delivered source packets already satisfy a range. What remains is what the
     seat must still open after the evidence index, inside the frozen budget.
     """
     files = seat_assigned_files(assignment, components)
+    snapshot = snapshot or evidence.get('snapshot_tree')
+    base_tree = base_tree or evidence.get('base_tree')
     line_limit = read_line_limit(assignment['adapter'])
     delivered = [row for shard in packet.get('shards') or [] for row in shard.get('ranges') or []]
     delivered += list(packet.get('required_source_ranges') or [])
@@ -3605,14 +3712,18 @@ def code_proof_obligations(assignment, components, evidence, packet):
     ranges = []
     owners = {}
 
-    def add(path, start, end, owner_paths):
+    def add(path, start, end, owner_paths, blob_tree=None):
         if type(start) is not int or type(end) is not int or start < 1 or end < start:
             return
+        blob_tree = blob_tree or snapshot
+        matching = [row for row in delivered
+                    if blob_tree is None or row.get('blob_tree') == blob_tree]
         if source_target_covered(
-                {'path': path, 'line_start': start, 'line_end': end}, delivered):
+                {'path': path, 'line_start': start, 'line_end': end}, matching):
             return
-        ranges.append((path, start, end))
-        owners.setdefault(path, set()).update(owner for owner in owner_paths if owner)
+        ranges.append((path, start, end, blob_tree) if with_tree else (path, start, end))
+        owner_key = (path, blob_tree) if with_tree else path
+        owners.setdefault(owner_key, set()).update(owner for owner in owner_paths if owner)
 
     for obligation in evidence.get('unresolved_imports') or []:
         candidate_symbols = obligation.get('candidate_symbols') or []
@@ -3621,23 +3732,24 @@ def code_proof_obligations(assignment, components, evidence, packet):
         if not owner_paths:
             continue
         add(obligation.get('path'), obligation.get('line_start'),
-            obligation.get('line_end'), owner_paths)
+            obligation.get('line_end'), owner_paths, obligation.get('blob_tree'))
         for symbol in candidate_symbols:
-            if symbol.get('path') in files:
-                add(symbol.get('path'), symbol.get('line_start'),
-                    symbol.get('line_end'), owner_paths)
+            add(symbol.get('path'), symbol.get('line_start'),
+                symbol.get('line_end'), owner_paths, symbol.get('blob_tree'))
         for source_range in obligation.get('candidate_route_symbols') or []:
             add(source_range.get('path'), source_range.get('line_start'),
-                source_range.get('line_end'), owner_paths)
+                source_range.get('line_end'), owner_paths, source_range.get('blob_tree'))
         for source_range in obligation.get('config_ranges') or []:
             add(source_range.get('path'), source_range.get('line_start'),
-                source_range.get('line_end'), owner_paths)
+                source_range.get('line_end'), owner_paths, source_range.get('blob_tree'))
         for source_range in obligation.get('candidate_search_ranges') or []:
             add(source_range.get('path'), source_range.get('line_start'),
-                source_range.get('line_end'), owner_paths)
+                source_range.get('line_end'), owner_paths, source_range.get('blob_tree'))
         symbol_paths = {symbol.get('path') for symbol in candidate_symbols}
+        searched_paths = {row.get('path')
+                          for row in obligation.get('candidate_search_ranges') or []}
         for path in obligation.get('candidate_targets') or []:
-            if path not in symbol_paths:
+            if path not in symbol_paths | searched_paths:
                 add(path, 1, line_limit, owner_paths)
 
     for hunk in evidence.get('hunks') or []:
@@ -3653,7 +3765,7 @@ def code_proof_obligations(assignment, components, evidence, packet):
             while cursor < len(pending) and pending[cursor] <= start + line_limit - 1:
                 last = pending[cursor]
                 cursor += 1
-            add(path, start, last, {path})
+            add(path, start, last, {path}, base_tree if hunk.get('kind') == 'delete' else snapshot)
     for row in packet.get('omitted_source_ranges') or []:
         reasons = row.get('reasons') or []
         caller_names = [reason.split(':', 1)[1] for reason in reasons
@@ -3663,6 +3775,10 @@ def code_proof_obligations(assignment, components, evidence, packet):
         if not caller_names and not test_ids:
             continue
         owner_paths = set()
+        for component_id in row.get('component_ids') or []:
+            component = component_by_id.get(component_id)
+            if component is not None:
+                owner_paths.update(path for path in component['files'] if path in files)
         for name in caller_names:
             owner_paths.update(path for path in symbols.get(name, ()) if path in files)
         for component_id in test_ids:
@@ -3671,7 +3787,7 @@ def code_proof_obligations(assignment, components, evidence, packet):
                 owner_paths.update(path for path in component['files'] if path in files)
         if not owner_paths:
             owner_paths.add(row['path'])
-        add(row['path'], row['line_start'], row['line_end'], owner_paths)
+        add(row['path'], row['line_start'], row['line_end'], owner_paths, row.get('blob_tree'))
     return ranges, owners
 
 
@@ -3900,18 +4016,25 @@ def source_context_inputs(repo, snapshot, base_tree, evidence, components, plan_
     entries = source_tree_entries(repo, snapshot, entries_by_tree)
     base_entries = source_tree_entries(repo, base_tree, entries_by_tree)
     paths = {path for component in components for path in component['files']}
+    changed_paths = set(paths)
+    paths.update(row['path'] for row in evidence.get('symbols', []))
     boundaries = {path for component in components for path in component['boundary']}
     paths.update(row['path'] for kind in ('symbols', 'call_sites', 'related_tests', 'unresolved_imports')
-                 for row in evidence[kind] if row['path'] in boundaries)
+                 for row in evidence.get(kind, []) if row['path'] in boundaries)
     for obligation in evidence.get('unresolved_imports') or []:
+        owns_candidate = any(symbol.get('path') in changed_paths
+                             for symbol in obligation.get('candidate_symbols') or [])
         paths.update(path for path in obligation.get('candidate_targets') or []
-                     if path in boundaries)
+                     if path in boundaries or owns_candidate)
         paths.update(row['path'] for row in obligation.get('candidate_route_symbols') or []
                      if row.get('path') in entries)
         paths.update(symbol['path'] for symbol in obligation.get('candidate_symbols') or []
-                     if symbol.get('path') in boundaries)
-        paths.update(row['path'] for row in obligation.get('config_ranges') or []
-                     if row.get('path') in boundaries)
+                     if symbol.get('path') in boundaries or owns_candidate)
+        if owns_candidate:
+            paths.add(obligation['path'])
+        paths.update(row['path'] for field in ('config_ranges', 'candidate_search_ranges')
+                     for row in obligation.get(field) or []
+                     if row.get('path') in boundaries or owns_candidate)
     paths.update(gate['path'] for gate in evidence['gates'])
     paths.update(site['path'] for cluster in plan_clusters or [] for site in cluster['paths'])
     blobs = {entry: repo.blob(entry) for tree in (entries, base_entries)
@@ -4063,6 +4186,11 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
 
         for symbol in evidence['symbols']:
             symbol_components = mapped(symbol['path'])
+            entry = entries.get(symbol['path'])
+            if (not symbol_components and seat == integration and entry
+                    and entry[0] in ('100644', '100755')
+                    and classify(symbol['path'], blobs[entry], entry[0]) == 'generated'):
+                symbol_components = relevant
             if not symbol_components:
                 continue
             name = symbol['name'] or 'changed-line-anchor'
@@ -4090,7 +4218,8 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
                                 if owner_paths & set(component['files'])]
             for route in obligation.get('candidate_route_symbols') or []:
                 add('declaration', 'declaration:import-route:' + route['name'],
-                    route['path'], route['line_start'], route['line_end'], route_components)
+                    route['path'], route['line_start'], route['line_end'], route_components,
+                    route.get('blob_tree'))
 
         for component in relevant:
             tests = [tests_by_path[path] for path in component['boundary'] if path in tests_by_path]
@@ -4184,6 +4313,37 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
                 {key: value for key, value in row.items() if key != 'preferred_tree'},
                 line_start=start, line_end=end, blob_mode=entry[0], blob_oid=entry[1],
                 blob_tree=blob_tree))
+
+        if plan_clusters is None and not unrepresentable_import_proofs(
+                assignment, components, evidence):
+            obligations, proof_owners = code_proof_obligations(
+                assignment, components, evidence, {
+                    'omitted_source_ranges': [dict(row, reasons=[row['reason']])
+                                              for row in prepared],
+                }, snapshot=snapshot, base_tree=base_tree, with_tree=True)
+            obligations_by_tree = {}
+            for path, start, end, proof_tree in obligations:
+                obligations_by_tree.setdefault(proof_tree, []).append((path, start, end))
+            for proof_tree, ranges in sorted(obligations_by_tree.items()):
+                for path, start, end in merge_repository_windows(
+                        ranges, read_line_limit(assignment['adapter'])):
+                    kind, source = source_choice(path, proof_tree)
+                    if kind != 'source' or source is None or source[2] != proof_tree:
+                        raise ValueError('required code proof cannot be represented: ' + path)
+                    entry, lines, blob_tree = source
+                    if start > len(lines) or end > len(lines):
+                        raise ValueError('required code proof lies outside source: ' + path)
+                    owner_paths = proof_owners[(path, proof_tree)]
+                    ids = sorted(component['id'] for component in relevant
+                                 if owner_paths.intersection(component['files']))
+                    if not ids:
+                        raise ValueError('required code proof has no assigned owner: ' + path)
+                    prepared.append({
+                        'path': path, 'line_start': start, 'line_end': end,
+                        'reason': 'declaration:code-proof', 'component_ids': ids,
+                        'priority': len(candidates) + len(prepared),
+                        'blob_mode': entry[0], 'blob_oid': entry[1], 'blob_tree': blob_tree,
+                    })
 
         represented = {component['id'] for component in relevant for row in prepared
                        if row['path'] in component['files']
@@ -4289,6 +4449,7 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
                     # Dropping that range keeps the rest of the code panel launchable.
                     # Plan sites stay a hard refusal: their windows are still mandatory.
                     if (plan_clusters is not None
+                            or 'declaration:code-proof' in row['reasons']
                             or str(error) != 'required source line exceeds visible segment limit'):
                         raise
                 else:
@@ -4325,10 +4486,15 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
                 'declaration:changed-line-anchor' in row.get('reasons', [])
                 for row in delivered + omitted_source_ranges))
         try:
-            promoted_indices = set(grouped_plan_source_promotions(
-                assignment, plan_clusters, delivered, omitted_source_ranges,
-                lambda index, row: len(promotion(index, row)['segments']),
-                snapshot=snapshot, count_target=needs_target, promote_row=promotion))
+            if plan_clusters is None:
+                promoted_indices = {
+                    index for index, row in enumerate(omitted_source_ranges)
+                    if 'declaration:code-proof' in row['reasons']}
+            else:
+                promoted_indices = set(grouped_plan_source_promotions(
+                    assignment, plan_clusters, delivered, omitted_source_ranges,
+                    lambda index, row: len(promotion(index, row)['segments']),
+                    snapshot=snapshot, count_target=needs_target, promote_row=promotion))
         except CapacityRefusal as refusal:
             PREPARE_PROGRESS['refusals'] = [{
                 'seat': seat, 'limit': refusal.limit, 'count': refusal.count,
@@ -4678,6 +4844,14 @@ def validate_source_context_snapshot(repo, session, manifest, canonical_changes=
 
         for seat, packet in context['seats'].items():
             expected = canonical['seats'][seat]
+            if clusters is None:
+                shards = [{key: value for key, value in shard.items() if key != 'sha256'}
+                          for shard in packet['shards']]
+                if (shards != expected['shards'] or any(
+                        packet[field] != expected[field]
+                        for field in ('omitted', 'omitted_source_ranges',
+                                      'required_source_ranges'))):
+                    raise ValueError('code source proofs do not match canonical snapshot: ' + seat)
             if target_identity(packet) != target_identity(expected):
                 raise ValueError('source context target does not match canonical snapshot: ' + seat)
             if packet['source_read_required'] is not expected['source_read_required']:

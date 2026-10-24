@@ -1019,7 +1019,21 @@ def shell_violations(command, roots, root, session, authorized=None, complete=No
                 name == 'git' and git_source(words, read_limit))
             source_limit = shell_line_limit(words, root, session, read_limit)
             if name in ('head', 'tail', 'sed'):
-                is_source = not line_limiter(words, source_limit)
+                stream_limiter = (
+                    name in ('head', 'tail') and (
+                        len(words) == 2 and re.fullmatch(r'-[0-9]+|--lines=[0-9]+', words[1])
+                        or len(words) == 3 and words[1] in ('-n', '--lines')
+                        and re.fullmatch(r'[0-9]+', words[2]))
+                    or name == 'sed' and len(words) == 3 and words[1] == '-n'
+                    and re.fullmatch(r'[0-9]+,[0-9]+p', words[2]))
+                limiter_maximum = source_limit
+                if position and stream_limiter:
+                    previous = pipeline[position - 1]
+                    if shell_search_producer(previous):
+                        limiter_maximum = SEARCH_RESULT_SENTINEL
+                    elif shell_discovery_producer(previous):
+                        limiter_maximum = SEARCH_RESULTS
+                is_source = not line_limiter(words, limiter_maximum)
             if name == 'cat':
                 try:
                     operands = [resolved(value, root) for value in path_candidates(words, root)]

@@ -85,6 +85,12 @@ test_skill_contract() {
     'Only explicit numeric panels without a `cursor-sdk` row keep the legacy path'
   assert_nogrep "no-SDK legacy evidence path is not stated as a global fallback" "$K" \
     '^Without a `cursor-sdk` row, keep the legacy path'
+  assert_grep "Codex no-SDK legacy evidence path is scoped to numeric panels" "$CK" \
+    'Only explicit numeric panels without a `cursor-sdk` row keep the legacy path'
+  assert_grep "Codex adaptive panels prepare evidence without an SDK row" "$CK" \
+    'whether or not their roster contains a `cursor-sdk` row'
+  assert_nogrep "Codex no-SDK legacy evidence path is not stated as a global fallback" "$CK" \
+    '^Without a `cursor-sdk` row, keep the legacy path'
 
   # --- the agent and its read-only fence ------------------------------------
   if [ ! -f "$AG" ]; then fail "agent file exists" "$AG missing"; return; fi
