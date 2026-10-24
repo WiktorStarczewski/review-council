@@ -1015,6 +1015,45 @@ def bounded_navigation_markdown():
         assert huge.encode() not in packet
         assert b'complete list SHA-256:' in packet and b'Omitted:' in packet
 
+def dense_navigation_keeps_complete_footer():
+    sections = ('symbols', 'call_sites', 'related_tests', 'unresolved_imports', 'gates', 'instructions')
+    limitations = [
+        'Lexical navigation only; open source to prove findings.',
+        'Dynamic dispatch and unsupported declarations require file-scope search.',
+        'Cross-file symbol context follows recognized exports and resolved imports.',
+        'Unresolved or aliased imports matching changed exports are listed as search obligations.',
+        'TypeScript config inheritance and paths mappings are bounded lexical resolutions.',
+        'Binary and files over 2000000 bytes have no lexical index.',
+    ]
+    for width in (208, 216, 240):
+        data = {section: [{'path': f'src/{section}/{index}/' + 'x' * width + '.py'}
+                          for index in range(12)] for section in sections}
+        data['limitations'] = limitations
+        original = json.dumps(data, sort_keys=True)
+        packet = module.markdown(data, Path('évidence.json'))
+        assert 14336 < len(packet) <= 16384, (width, len(packet))
+        assert packet.endswith(('\n' + '\n'.join(limitations) + '\n').encode())
+        for section in sections:
+            label = ('Unresolved or aliased import proof obligations' if section == 'unresolved_imports'
+                     else section.replace('_', ' ').title())
+            lines = packet.split(('\n' + label + ':\n').encode(), 1)[1].split(b'\n\n', 1)[0].splitlines()
+            footer = re.fullmatch(rb'Omitted: (\d+); complete list SHA-256: ([0-9a-f]{64}); complete list in JSON\.', lines[-1])
+            assert footer and int(footer[1]) == 12 - (len(lines) - 1), (section, lines)
+            complete = json.dumps(data[section], sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()
+            assert footer[2].decode() == hashlib.sha256(complete).hexdigest()
+        assert json.dumps(data, sort_keys=True) == original
+
+def oversized_mandatory_navigation_footer_is_refused():
+    data = {section: [] for section in
+            ('symbols', 'call_sites', 'related_tests', 'unresolved_imports', 'gates', 'instructions')}
+    data['limitations'] = ['é' * 8192]
+    try:
+        module.markdown(data, Path('evidence.json'))
+    except ValueError as error:
+        assert str(error) == 'navigation packet exceeds byte limit'
+    else:
+        raise AssertionError('mandatory navigation footer exceeded the UTF-8 byte limit')
+
 def opaque_transitions():
     for reverse in (False, True):
         with fixture() as (root, session, git, write, call, prepare, finish):
@@ -4097,7 +4136,9 @@ def binary_files_are_hash_pointers():
 cases = (
     storage_redirects, quoted_paths, changed_symbols, empty_patch_needs_no_fake_read,
     binary_files_are_hash_pointers,
-    conservative_mechanical_classification, bounded_navigation_markdown, opaque_transitions,
+    conservative_mechanical_classification, bounded_navigation_markdown,
+    dense_navigation_keeps_complete_footer, oversized_mandatory_navigation_footer_is_refused,
+    opaque_transitions,
     opaque_mode_transition, invalid_manifests, phase_and_predecessor_integrity,
     cumulative_verification_routing, verification_delta_retains_restored_path_source_context,
     verification_delta_source_context_controls, verification_nested_restoration_retains_instruction_context,
@@ -4143,6 +4184,7 @@ groups = {
     'structure': (
         storage_redirects, quoted_paths, changed_symbols, empty_patch_needs_no_fake_read,
         conservative_mechanical_classification, bounded_navigation_markdown,
+        dense_navigation_keeps_complete_footer, oversized_mandatory_navigation_footer_is_refused,
         binary_files_are_hash_pointers,
         opaque_transitions, opaque_mode_transition, invalid_manifests,
         phase_and_predecessor_integrity,
