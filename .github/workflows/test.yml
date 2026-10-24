@@ -17,6 +17,9 @@ jobs:
       - name: Search pipeline bound regressions
         if: always()
         run: python3 -m unittest discover -s tests -p test_search_pipeline_bounds.py -v
+      - name: Import source identity regressions
+        if: always()
+        run: python3 -m unittest discover -s tests -p test_import_source_roots.py -v
   verify:
     strategy:
       fail-fast: false
