@@ -15,6 +15,17 @@ import tempfile
 script = sys.argv[1]
 spec = importlib.util.spec_from_file_location('evidence', script)
 module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+unknown_parent = {'seat': 'custom', 'adapter': 'codex', 'model': 'custom-model'}
+unknown_child = {'seat': 'custom-next', 'adapter': 'claude', 'model': 'custom-model', 'extra': False}
+try:
+    module.validate_replacement_edge(unknown_parent, unknown_child)
+except ValueError as error:
+    assert str(error) == 'replacement executor must be on the default model chain', error
+else:
+    raise AssertionError('unknown root replacement executor was accepted')
+module.validate_replacement_edge(
+    unknown_parent,
+    {'seat': 'opus', 'adapter': 'claude', 'model': 'opus', 'extra': False})
 with tempfile.TemporaryDirectory(prefix='evidence-test-') as tmp:
     root = Path(tmp) / 'repo'; root.mkdir()
     session = Path(tmp) / 'session'; session.mkdir()
@@ -978,6 +989,26 @@ def changed_symbols():
                    and symbol['line'] == 2 for symbol in facts['symbols'])
         assert facts['mechanical']['_locales/en/messages.json'] == 'locale'
 
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('test_unresolved_calls.py', 'assert first() == 1\nassert second() == 1\n')
+        prepare(); facts = json.loads((session / 'r1-evidence.json').read_text())
+        calls = [row for row in facts['call_sites'] if row['path'] == 'test_unresolved_calls.py']
+        assert {(row['name'], row['line']) for row in calls} == {('first', 1), ('second', 2)}
+        assert all(row.get('resolution') == 'unresolved name search required' for row in calls), calls
+        assert any(row['path'] == 'test_unresolved_calls.py' for row in facts['related_tests']), facts['related_tests']
+        assert not any(row['source'] == 'test_unresolved_calls.py' and row['target'] == 'main.py'
+                       for row in facts['dependencies']), facts['dependencies']
+
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('main.py', 'def first():\n    return 2\n')
+        prepare(); facts = json.loads((session / 'r1-evidence.json').read_text())
+        assert any(row['path'] == 'main.py' and row['name'] == 'second'
+                   and row['kind'] == 'deleted lexical declaration'
+                   for row in facts['symbols']), facts['symbols']
+        assert any(row['path'] == 'test_calls.py' and row['name'] == 'second'
+                   and row.get('resolution') == 'unresolved name search required'
+                   for row in facts['call_sites']), facts['call_sites']
+
 def empty_patch_needs_no_fake_read():
     with fixture() as (root, session, git, write, call, prepare, finish):
         write('main.py', (root / 'main.py').read_text().replace('return 2', 'return 1'))
@@ -1709,7 +1740,7 @@ def provider_visible_source_packet_limit():
         'hunks': [{'path': 'main.py', 'sha256': 'b' * 64}],
         'symbols': [{'path': 'main.py', 'line': 1, 'line_end': 314,
                      'name': 'boundary', 'blob_tree': '1' * 40}],
-        'call_sites': [], 'related_tests': [], 'gates': [],
+        'call_sites': [], 'related_tests': [], 'gates': [], 'unresolved_imports': [],
     }
     components = [{'id': 'component', 'files': ['main.py'], 'boundary': ['main.py']}]
     assignments = {'sol': {'components': ['component'], 'adapter': 'codex'}}
@@ -1786,6 +1817,7 @@ def source_context_prefers_named_production_and_maps_gates():
             {'path': 'pyproject.toml', 'line': 2},
             {'path': 'global.cfg', 'line': 1},
         ],
+        'unresolved_imports': [],
     }
     components = [
         {'id': 'main', 'files': ['src/main.py'],
@@ -1873,6 +1905,9 @@ def local_names_do_not_expand_cross_file_proof():
         assert not any(row['source'] == 'src/consumer.ts' and row['target'] == 'utility/history.ts'
                        and row['kind'] == 'lexical-reference'
                        for row in facts['dependencies']), facts['dependencies']
+        assert not any(row.get('path') == 'src/consumer.ts'
+                       and 'utility/history.ts' in row.get('candidate_targets', [])
+                       for row in facts['unresolved_imports']), facts['unresolved_imports']
         assert any(row['path'] == 'tests/history.test.ts' for row in facts['related_tests'])
         assert not any(row['path'] in {'src/unrelated.ts', 'tests/unrelated.test.ts', 'docs/notes.md'}
                        for row in facts['call_sites'] + facts['related_tests'])
@@ -2082,6 +2117,10 @@ def rust_module_alias_and_self_import_keep_qualified_callers():
                        and row.get('local_name') == alias for row in facts['call_sites']), facts['call_sites']
             assert any(row['source'] == path and row['target'] == 'src/history.rs'
                        for row in facts['dependencies']), facts['dependencies']
+        rust_candidates = [target for row in facts['unresolved_imports']
+                           for target in row.get('candidate_targets', [])]
+        assert rust_candidates and all((root / target).is_file()
+                                       for target in rust_candidates), facts['unresolved_imports']
         proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
                        for shard in packet['shards'] for row in shard['ranges']}
         proof_paths.update(required['path']
@@ -2168,7 +2207,7 @@ def coexisting_ts_projects_are_explicitly_ambiguous_with_matching_base_url():
         write('src/tsconfig.json',
               '{\n  "compilerOptions": {\n    "baseUrl": "../",\n'
               '    "paths": { "@history": ["missing/history"] }\n  },\n'
-              '  "include": ["only-another-root.ts"]\n}\n')
+              '  "include": ["consumer.ts"]\n}\n')
         write('src/history.ts', 'export const readHistory = () => 1;\n')
         write('src/consumer.ts',
               'import { readHistory } from "@history";\n'
@@ -2242,6 +2281,14 @@ def ambiguous_ts_configs_are_explicit_search_obligations():
                    for row in obligation['candidate_symbols']), obligation
         assert {'src/consumer.ts', 'src/history.ts', 'lib/history.ts',
                 'tsconfig.json', 'src/tsconfig-alt.json'} <= proof_paths, proof_paths
+        proof_ranges = [row for packet in manifest['source_context']['seats'].values()
+                        for shard in packet['shards'] for row in shard['ranges']]
+        proof_ranges.extend(row for packet in manifest['source_context']['seats'].values()
+                            for row in packet['required_source_ranges'])
+        proof_ranges.extend(row for capacity in manifest['task_capacity']['seats'].values()
+                            for row in capacity['mandatory_window_rows'])
+        assert any(row['path'] == 'lib/history.ts' and row['line_start'] <= 1 <= row['line_end']
+                   for row in proof_ranges), proof_ranges
         closure = module.plan_closure_paths(
             [{'id': 'history', 'paths': [{'path': 'src/consumer.ts'}]}],
             facts['dependencies'], ['src/history.ts'])
@@ -2321,6 +2368,9 @@ def ts_transitive_excluded_file_uses_project_path_aliases():
         obligation = next(row for row in facts['unresolved_imports']
                           if row['path'] == 'src/transitive.ts')
         assert obligation['candidate_targets'] == ['src/history.ts'], obligation
+        assert obligation['reason'] == 'path-mapped import matching a changed export', obligation
+        assert {row['path'] for row in obligation['config_ranges']} == {
+            'tsconfig.json', 'configs/tsconfig.base.json'}, obligation
         proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
                        for shard in packet['shards'] for row in shard['ranges']}
         proof_paths.update(required['path']
@@ -2331,6 +2381,41 @@ def ts_transitive_excluded_file_uses_project_path_aliases():
                            for row in capacity['mandatory_window_rows'])
         assert {'src/transitive.ts', 'src/history.ts', 'tsconfig.json',
                 'configs/tsconfig.base.json'} <= proof_paths, proof_paths
+
+def ts_explicit_files_root_keeps_path_aliases_outside_config_and_exclude():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('configs/tsconfig.json',
+              '{\n  "compilerOptions": {\n    "baseUrl": "../",\n'
+              '    "paths": { "@history": ["src/history"] }\n  },\n'
+              '  "files": ["../consumer.ts"],\n'
+              '  "exclude": ["../consumer.ts"]\n}\n')
+        write('src/history.ts', 'export const readHistory = () => 1;\n')
+        write('consumer.ts',
+              'import { readHistory } from "@history";\n'
+              'export const consumeHistory = () => readHistory();\n')
+        git('add', '.'); git('commit', '-qm', 'explicit tsconfig file root base'); base = git('rev-parse', 'HEAD')
+        scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('src/history.ts', 'export const readHistory = () => 2;\n')
+
+        manifest = prepare()
+        facts = json.loads((session / 'r1-evidence.json').read_text())
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'consumer.ts')
+        assert obligation['reference'] == '@history', obligation
+        assert obligation['candidate_targets'] == ['src/history.ts'], obligation
+        assert any(row['path'] == 'consumer.ts' and row['name'] == 'readHistory'
+                   for row in facts['call_sites']), facts['call_sites']
+        assert {row['path'] for row in obligation['config_ranges']} == {
+            'configs/tsconfig.json'}, obligation
+        proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
+                       for shard in packet['shards'] for row in shard['ranges']}
+        proof_paths.update(required['path']
+                           for packet in manifest['source_context']['seats'].values()
+                           for required in packet['required_source_ranges'])
+        assert {'consumer.ts', 'src/history.ts', 'configs/tsconfig.json'} <= proof_paths, proof_paths
 
 def complete_declaration_context():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -2961,8 +3046,11 @@ def receipt_read_audits():
 def seat_local_recovery():
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
         roster = {'seats': [
-            {'seat': seat, 'extra': False, 'adapter': 'claude',
-             'model': 'model-' + seat, 'effort': 'max'} for seat in seats]}
+            {'seat': seat, 'extra': False,
+             'adapter': 'codex' if seat == 'terra' else 'claude',
+             'model': ('gpt-5.6-luna' if seat == 'terra' else
+                       'sonnet' if seat == 'sol' else 'model-' + seat),
+             'effort': 'high' if seat in ('terra', 'sol') else 'max'} for seat in seats]}
         (session / 'roster.json').write_text(json.dumps(roster))
         parent = prepare('parent', 'risk', *assign)
         parent_path = session / 'rparent-evidence.manifest.json'
@@ -2984,8 +3072,8 @@ def seat_local_recovery():
             'seat': 'terra', 'snapshot_tree': parent['snapshot_tree'],
             'roster_sha256': parent['inputs']['roster.json'],
             'assignment_sha256': module.digest(module.encoded(parent['assignments']['terra'])),
-            'bundle': bundles[1], 'adapter': 'claude',
-            'model': 'model-terra', 'effort': 'max',
+            'bundle': bundles[1], 'adapter': 'codex',
+            'model': 'gpt-5.6-luna', 'effort': 'high',
             'patch_chunks_mode': 'auto', 'source_context_enabled': True}
         assert child['assignments']['sol']['scope'] == 'full'
         assert child['patch_chunks_mode'] == parent['patch_chunks_mode'] == 'auto'
@@ -3025,7 +3113,7 @@ def seat_local_recovery():
         (session / 'rparent-terra.exit').write_text('0\n')
         (session / 'rparent-opus.exit').write_text('1\n')
         call('verify-panel', session, 'parent', '--replacement', 'opus=parentx',
-             good=False, error='replacement child is bound to another parent seat')
+             good=False, error='replacement child is bound to another parent assignment')
         (session / 'rparent-terra.exit').write_text('1\n')
         (session / 'rparent-opus.exit').write_text('0\n')
 
@@ -3093,9 +3181,16 @@ def seat_local_recovery():
 def replacement_runs_on_another_seat():
     attempt = script.parent / 'lib' / 'rev-attempt.py'
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        chain_identities = {
+            'sol': ('claude', 'sonnet', 'high'),
+            'terra': ('codex', 'gpt-5.6-sol', 'high'),
+            'opus': ('codex', 'gpt-5.6-luna', 'high'),
+            'sonnet': ('agent', 'sonnet', 'high'),
+        }
         roster = {'seats': [
-            {'seat': seat, 'extra': False, 'adapter': 'agent' if seat == 'sonnet' else 'claude',
-             'model': 'model-' + seat, 'effort': 'max'} for seat in seats]}
+            {'seat': seat, 'extra': False,
+             'adapter': chain_identities[seat][0], 'model': chain_identities[seat][1],
+             'effort': chain_identities[seat][2]} for seat in seats]}
         (session / 'roster.json').write_text(json.dumps(roster))
         parent = prepare('4', 'risk', *assign, '--full-seat', 'sonnet')
         path = session / 'r4-evidence.manifest.json'
@@ -3109,6 +3204,11 @@ def replacement_runs_on_another_seat():
         child_args = ('--assignment', 'terra=' + bundles[0], '--parent-assignment', '4:sol')
         call('prepare', session, '4x', '--phase', 'repair', *child_args, good=False,
              error='parent assignment has no recorded terminal failure')
+        prompt = session / 'r4-sol.prompt.md'
+        for code in ('1', '2'):
+            assert reserve_launch(session, '4', 'sol', prompt).returncode == 0
+            assert record_launch(session, '4', 'sol', prompt, code).returncode == 0
+            (session / 'r4-sol.exit').write_text(code + '\n')
         (session / 'r4-sol.audit-invalid.json').write_text('{"summary":"kept","findings":[]}\n')
         call('prepare', session, '4x', '--phase', 'repair', '--assignment', 'sol=' + bundles[0],
              '--parent-assignment', '4:sol', good=False,
@@ -3117,7 +3217,7 @@ def replacement_runs_on_another_seat():
              '--parent-assignment', '4:sol', good=False,
              error='replacement executor must be an enforced seat')
         call('prepare', session, '4y', '--phase', 'repair', *child_args, good=False,
-             error='replacement label must be 4x')
+             error='replacement label must be in the root assignment namespace')
         call('prepare', session, '4x', '--phase', 'repair', '--assignment', 'terra=' + bundles[1],
              '--parent-assignment', '4:sol', good=False,
              error='repair assignment does not match its parent')
@@ -3133,8 +3233,8 @@ def replacement_runs_on_another_seat():
         call('prepare', session, '4x', '--phase', 'repair', '--assignment', 'sol=' + bundles[2],
              '--parent-assignment', '4:opus', good=False,
              error='replacement label is already bound to another parent assignment')
-        call('prepare', session, '4x', '--phase', 'repair', '--assignment', 'opus=' + bundles[0],
-             '--parent-assignment', '4:sol', good=False,
+        call('prepare', session, '4x', '--phase', 'repair', '--assignment', 'terra=' + bundles[2],
+             '--parent-assignment', '4:opus', good=False,
              error='replacement label is already bound to another parent assignment')
         (session / 'r4-opus.exit').write_text('0\n')
         (session / 'r4-opus.audit-invalid.json').unlink()
@@ -3169,7 +3269,7 @@ def replacement_runs_on_another_seat():
         receipt = json.loads((session / 'r4-coverage.receipt.json').read_text())
         rows = receipt['selected_generations']
         assert (rows['sol']['label'], rows['sol']['seat'], rows['sol']['adapter'],
-                rows['sol']['enforced']) == ('4x', 'terra', 'claude', True), rows['sol']
+                rows['sol']['enforced']) == ('4x', 'terra', 'codex', True), rows['sol']
         assert rows['sol']['result_sha256'] == module.digest((session / 'r4x-terra.json').read_bytes())
         assert (rows['opus']['label'], rows['opus']['seat']) == ('4x2', 'sol'), rows['opus']
         assert receipt['selected_generations']['terra']['label'] == '4'
@@ -3201,10 +3301,99 @@ def replacement_runs_on_another_seat():
         assert child['assignments'][executor]['full_state'] is True
         assert child['assignments'][executor]['bundle'] == bundle
 
+def replacement_chain_reaches_opus():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        root_seats = ['codex-luna', 'codex-luna-2', 'codex-luna-3', 'codex-luna-4']
+        roster = {'seats': [
+            {'seat': seat, 'extra': False, 'adapter': 'codex',
+             'model': 'gpt-5.6-luna', 'effort': 'high'} for seat in root_seats]}
+        (session / 'roster.json').write_text(json.dumps(roster))
+        root_assignments = [
+            '--assignment', root_seats[0] + '=' + bundles[0],
+            '--assignment', root_seats[1] + '=' + bundles[1],
+            '--assignment', root_seats[2] + '=' + bundles[2],
+            '--assignment', root_seats[3] + '=' + bundles[3],
+            '--full-seat', root_seats[3],
+        ]
+        parent = prepare('chain', 'risk', *root_assignments)
+        root_path = session / 'rchain-evidence.manifest.json'
+        for seat in parent['assignments']:
+            (session / f'rchain-{seat}.prompt.md').write_text(call('render', root_path, seat))
+            (session / f'rchain-{seat}.json').write_text('{"summary":"root","findings":[]}')
+            (session / f'rchain-{seat}.exit').write_text('0\n')
+            if seat != root_seats[0]:
+                write_agent_audit(session, 'chain', seat)
+        (session / f'rchain-{root_seats[0]}.exit').write_text('2\n')
+        (session / f'rchain-{root_seats[0]}.audit-invalid.json').write_text(
+            '{"summary":"terminal failure","findings":[]}\n')
+        failed_bundle = parent['assignments'][root_seats[0]]['bundle']
+
+        replacements = [
+            ('chainx', 'chain', root_seats[0], 'escalate-sonnet', 'sonnet',
+             'claude', 'sonnet', 'high'),
+            ('chainx2', 'chainx', 'escalate-sonnet', 'escalate-sol', 'sol',
+             'codex', 'gpt-5.6-sol', 'high'),
+            ('chainx3', 'chainx2', 'escalate-sol', 'escalate-opus', 'opus',
+             'claude', 'opus', 'high'),
+        ]
+        for index, (label, parent_label, parent_seat, executor, family,
+                    adapter, model, effort) in enumerate(replacements):
+            (session / 'escalation.json').write_text(json.dumps({
+                'version': 1, 'seat': executor, 'family': family,
+                'lab': 'openai' if family == 'sol' else 'anthropic',
+                'adapter': adapter, 'model': model, 'effort': effort,
+                'extra': False,
+            }))
+            child = prepare(label, 'repair', '--assignment', executor + '=' + failed_bundle,
+                            '--parent-assignment', parent_label + ':' + parent_seat)
+            assert child['replacement_executor'] == {
+                'seat': executor, 'family': family, 'adapter': adapter,
+                'model': model, 'effort': effort, 'extra': False,
+            }, child['replacement_executor']
+            child_path = session / f'r{label}-evidence.manifest.json'
+            (session / f'r{label}-{executor}.prompt.md').write_text(
+                call('render', child_path, executor))
+            (session / f'r{label}-{executor}.json').write_text(
+                '{"summary":"replacement","findings":[]}')
+            if index < len(replacements) - 1:
+                (session / f'r{label}-{executor}.exit').write_text('2\n')
+                (session / f'r{label}-{executor}.audit-invalid.json').write_text(
+                    '{"summary":"terminal failure","findings":[]}\n')
+            else:
+                (session / f'r{label}-{executor}.exit').write_text('0\n')
+                write_agent_audit(session, label, executor)
+
+        (session / 'rchainx3-escalate-opus.exit').write_text('2\n')
+        (session / 'rchainx3-escalate-opus.audit-invalid.json').write_text(
+            '{"summary":"terminal failure","findings":[]}\n')
+        (session / 'escalation.json').write_text(json.dumps({
+            'version': 1, 'seat': 'escalate-sol', 'family': 'sol', 'lab': 'openai',
+            'adapter': 'codex', 'model': 'gpt-5.6-sol', 'effort': 'high', 'extra': False,
+        }))
+        call('prepare', session, 'chainx4', '--phase', 'repair', '--assignment',
+             'escalate-sol=' + failed_bundle, '--parent-assignment',
+             'chainx3:escalate-opus', good=False,
+             error='replacement executor must advance the default model chain')
+        (session / 'rchainx3-escalate-opus.exit').write_text('0\n')
+        (session / 'rchainx3-escalate-opus.audit-invalid.json').unlink()
+
+        verified = json.loads(call('verify-panel', session, 'chain', '--replacement',
+                                   root_seats[0] + '=chainx3'))
+        assert verified['replacements'] == {root_seats[0]: 'chainx3'}
+        selected = verified['selected_generations']
+        assert (selected[root_seats[0]]['label'], selected[root_seats[0]]['seat']) == (
+            'chainx3', 'escalate-opus')
+        assert all(selected[seat]['label'] == 'chain' for seat in root_seats[1:])
+        call('receipt', session, 'chain', '--replacement', root_seats[0] + '=chainx3')
+
 def incomplete_proof_panel(session, call, prepare, summary='INCOMPLETE PROOF: assigned source remains unread'):
     """A risk panel whose sol seat exits 0 with `summary` and a valid read audit."""
-    roster = {'seats': [{'seat': seat, 'extra': False, 'adapter': 'claude', 'model': 'model-' + seat,
-                         'effort': 'max'} for seat in seats]}
+    roster = {'seats': [{'seat': seat, 'extra': False,
+                         'adapter': 'codex' if seat == 'sol' else 'claude',
+                         'model': 'gpt-5.6-luna' if seat == 'sol' else
+                         'sonnet' if seat == 'terra' else 'model-' + seat,
+                         'effort': 'high' if seat in ('sol', 'terra') else 'max'}
+                        for seat in seats]}
     (session / 'roster.json').write_text(json.dumps(roster))
     path = session / 'r6-evidence.manifest.json'
     for seat in prepare('6', 'risk', *assign)['assignments']:
@@ -3374,8 +3563,16 @@ def incomplete_proof_is_only_a_summary_prefix():
 def review_origin_counts_the_reviews_own_lines():
     state_script = script.parent / 'rev-state.sh'
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
-        roster = {'seats': [{'seat': seat, 'extra': False, 'adapter': 'claude', 'model': 'model-' + seat,
-                             'effort': 'max'} for seat in seats]}
+        chain_identities = {
+            'sol': ('codex', 'gpt-5.6-luna', 'high'),
+            'terra': ('codex', 'gpt-5.6-sol', 'high'),
+            'opus': ('claude', 'sonnet', 'high'),
+            'sonnet': ('claude', 'opus', 'high'),
+        }
+        roster = {'seats': [
+            {'seat': seat, 'extra': False, 'adapter': chain_identities[seat][0],
+             'model': chain_identities[seat][1], 'effort': chain_identities[seat][2]}
+            for seat in seats]}
         (session / 'roster.json').write_text(json.dumps(roster))
         for name, text in (('head.py', 'a = 1\nb = 2\nc = 3\n'), ('tail.py', 'a = 1\nb = 2\nc = 3\n'),
                            ('empty.py', 'x = 1\n'), ('gone.py', 'y = 1\n')):
@@ -4030,6 +4227,12 @@ def current_coverage_receipts():
 
 def current_coverage_replacements_and_refs():
     with fixture(adapter='codex') as (root, session, git, write, call, prepare, finish):
+        roster = json.loads((session / 'roster.json').read_text())
+        next(row for row in roster['seats'] if row['seat'] == 'terra').update(
+            model='gpt-5.6-luna', effort='high')
+        next(row for row in roster['seats'] if row['seat'] == 'sol').update(
+            model='gpt-5.6-sol', effort='high')
+        (session / 'roster.json').write_text(json.dumps(roster))
         parent = prepare('parent', 'verification', *assign)
         for seat in parent['assignments']:
             (session / f'rparent-{seat}.prompt.md').write_text(
@@ -4117,6 +4320,7 @@ cases = (
     ambiguous_ts_configs_are_explicit_search_obligations,
     ts_paths_alias_and_missing_targets_are_capacity_counted,
     ts_transitive_excluded_file_uses_project_path_aliases,
+    ts_explicit_files_root_keeps_path_aliases_outside_config_and_exclude,
     provider_visible_source_packet_limit,
     source_context_prefers_named_production_and_maps_gates, complete_declaration_context,
     budget_omissions_are_segmented_or_retained, innermost_declarations_and_bounded_anchors,
@@ -4126,6 +4330,7 @@ cases = (
     full_seat_requires_proven_reads, unenforced_agent_seat_binds_only_its_prompt,
     unenforced_audit_is_opt_in, unenforced_audit_cache_is_keyed_on_every_input,
     nested_walks_reuse_cached_audits, replacement_runs_on_another_seat,
+    replacement_chain_reaches_opus,
     incomplete_proof_is_never_a_valid_result, incomplete_proof_is_replaced_at_once,
     hardlinked_incomplete_proof_cannot_verify, hardlinked_incomplete_proof_cannot_seal,
     symlinked_incomplete_proof_cannot_verify, symlinked_incomplete_proof_cannot_seal,
@@ -4172,6 +4377,7 @@ groups = {
         ambiguous_ts_configs_are_explicit_search_obligations,
         ts_paths_alias_and_missing_targets_are_capacity_counted,
         ts_transitive_excluded_file_uses_project_path_aliases,
+        ts_explicit_files_root_keeps_path_aliases_outside_config_and_exclude,
         provider_visible_source_packet_limit,
         source_context_prefers_named_production_and_maps_gates,
         complete_declaration_context, budget_omissions_are_segmented_or_retained,
@@ -4187,7 +4393,8 @@ groups = {
         nested_walks_reuse_cached_audits,
     ),
     'replacement': (
-        replacement_runs_on_another_seat, incomplete_proof_is_never_a_valid_result,
+        replacement_runs_on_another_seat, replacement_chain_reaches_opus,
+        incomplete_proof_is_never_a_valid_result,
         incomplete_proof_is_replaced_at_once, incomplete_proof_latches_only_its_label_and_seat,
         hardlinked_incomplete_proof_cannot_verify, hardlinked_incomplete_proof_cannot_seal,
         symlinked_incomplete_proof_cannot_verify, symlinked_incomplete_proof_cannot_seal,

@@ -34,7 +34,8 @@ from review_limits import (CLAUDE_MAX_TURNS, MANDATORY_REPOSITORY_READ_LIMIT,
                            REPOSITORY_REFUTATION_CALL_RESERVE)
 from session_inputs import session_input_lock, validate_standard_inputs
 from roster import cursor_sdk_identity, validate_cursor_sdk_qualification
-from workhorse import SEAT, escalation_row, overlay_roster, plan_seat
+from workhorse import (CHAIN as WORKHORSE_CHAIN, ORDER as WORKHORSE_ORDER, SEAT,
+                       escalation_row, overlay_roster, plan_seat, roster_family)
 
 BUNDLES = ('correctness-boundaries', 'security-state-api',
            'concurrency-resources-performance', 'tests-observability-maintenance-regression')
@@ -193,6 +194,100 @@ def with_workhorse(session, roster, seats_in_play):
     if any(isinstance(name, str) and name.startswith('escalate-') for name in names):
         roster = overlay_roster(roster, escalation_row(session), names)
     return roster
+
+
+def replacement_executor_row(manifest):
+    row = manifest.get('replacement_executor')
+    if row is None:
+        return None
+    required = {'seat', 'family', 'adapter', 'model', 'effort', 'extra'}
+    assignments = manifest.get('assignments')
+    if (manifest.get('phase') != 'repair' or not isinstance(row, dict)
+            or set(row) != required or not isinstance(assignments, dict)
+            or len(assignments) != 1):
+        raise ValueError('invalid replacement executor')
+    seat = next(iter(assignments))
+    assignment = assignments[seat]
+    family = row.get('family')
+    model = row.get('model')
+    effort = row.get('effort')
+    if (row.get('seat') != seat
+            or family is not None and family not in WORKHORSE_CHAIN
+            or not isinstance(row.get('adapter'), str)
+            or (model is not None and (not isinstance(model, str) or not model))
+            or (effort is not None and (not isinstance(effort, str) or not effort))
+            or (family is not None and (model is None or effort is None))
+            or row.get('extra') is not False or not isinstance(assignment, dict)
+            or assignment.get('adapter') != row.get('adapter')
+            or row.get('adapter') not in ('codex', 'claude')
+            or roster_family(row) != family):
+        raise ValueError('replacement executor does not match its assignment')
+    return dict(row)
+
+
+def replacement_executor_metadata(row):
+    if not isinstance(row, dict):
+        raise ValueError('replacement executor must be an enforced chain seat')
+    family = roster_family(row)
+    if (row.get('adapter') not in ('codex', 'claude')
+            or row.get('extra') is not False):
+        raise ValueError('replacement executor must be an enforced chain seat')
+    value = {key: row.get(key) for key in ('seat', 'adapter', 'model', 'effort', 'extra')}
+    value['family'] = family
+    return value
+
+
+def with_manifest_workhorse(session, roster, manifest):
+    seats = set(manifest.get('assignments') or {})
+    row = replacement_executor_row(manifest)
+    if row is None:
+        return with_workhorse(session, roster, seats)
+    roster = overlay_roster(roster, row, seats)
+    return with_workhorse(session, roster, seats - {row['seat']})
+
+
+def executor_row_for_manifest(session, manifest, seat):
+    row = replacement_executor_row(manifest)
+    if row is not None:
+        if row['seat'] != seat:
+            raise ValueError('replacement parent assignment does not match its executor')
+        return row
+    roster = read_json(session / 'roster.json')
+    roster = with_workhorse(session, roster, {seat})
+    return next((candidate for candidate in roster['seats']
+                 if candidate.get('seat') == seat), None)
+
+
+def replacement_root_manifest(session, manifest, fresh=False, seen=None, offline=False):
+    current = manifest
+    visited = set()
+    while current.get('phase') == 'repair':
+        if current.get('label') in visited:
+            raise ValueError('cyclic replacement lineage')
+        visited.add(current.get('label'))
+        binding = current.get('parent_assignment')
+        if not isinstance(binding, dict) or not isinstance(binding.get('manifest'), str):
+            raise ValueError('repair manifest has no parent assignment')
+        current, _ = validated_manifest(
+            session / binding['manifest'], fresh=fresh, seen=seen, offline=offline,
+            replay_plan_searches=False)
+    return current
+
+
+def validate_replacement_edge(parent_row, child_row, parent_is_repair=False):
+    parent_family = roster_family(parent_row) if parent_row else None
+    child_family = roster_family(child_row) if child_row else None
+    if child_family not in WORKHORSE_CHAIN:
+        if parent_is_repair:
+            raise ValueError('nested replacement executor must remain on the default model chain')
+        raise ValueError('replacement executor must be on the default model chain')
+    if parent_family is None:
+        if parent_is_repair:
+            raise ValueError('nested replacement parent is not on the default model chain')
+        return
+    if (parent_family not in WORKHORSE_ORDER or child_family not in WORKHORSE_CHAIN
+            or WORKHORSE_ORDER.index(child_family) <= WORKHORSE_ORDER.index(parent_family)):
+        raise ValueError('replacement executor must advance the default model chain')
 
 
 def validate_live_roster_adapters(roster):
@@ -423,6 +518,86 @@ def scope(session):
     if not all(values.get(k) for k in ('REV_ROOT', 'REV_BASE', 'REV_SCOPE')):
         raise ValueError('scope requires root, base and scope')
     return values
+
+
+def validate_pinned_pr_checkout(values):
+    pr_number = values.get('REV_PR_NUMBER')
+    pr_repo = values.get('REV_PR_REPO')
+    pinned_head = values.get('REV_PR_HEAD')
+    pinned_base = values.get('REV_PR_BASE_HEAD')
+    pinned_base_ref = values.get('REV_PR_BASE_REF')
+    if not any((pr_number, pr_repo, pinned_head, pinned_base, pinned_base_ref)):
+        return
+    if (not pr_number or not re.fullmatch(r'[1-9][0-9]*', pr_number)
+            or not pr_repo or not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', pr_repo)
+            or not pinned_head or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', pinned_head)
+            or not pinned_base or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', pinned_base)
+            or not pinned_base_ref):
+        raise ValueError('invalid pinned PR identity')
+    root = str(Path(values['REV_ROOT']).resolve())
+    env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+
+    def git(*args):
+        result = subprocess.run(['git', '-C', root, *args], env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip()
+
+    current_head = git('rev-parse', '--verify', 'HEAD')
+    if current_head != pinned_head:
+        raise ValueError(f'checked out HEAD does not match pinned PR #{pr_number} head')
+    current_branch = git('symbolic-ref', '--quiet', '--short', 'HEAD')
+    if current_branch != values.get('REV_BRANCH'):
+        raise ValueError(f'checked out branch does not match pinned PR #{pr_number}')
+    status = git('status', '--porcelain')
+    if status is None:
+        raise ValueError(f'cannot verify pinned PR #{pr_number} checkout status')
+    if status:
+        raise ValueError(f'pinned PR #{pr_number} checkout has uncommitted changes')
+    base_branch = values.get('REV_BASE_BRANCH')
+    if not base_branch:
+        raise ValueError('pinned PR identity has no base branch')
+    if pinned_base_ref not in ('refs/remotes/origin/' + base_branch,
+                               'refs/heads/' + base_branch):
+        raise ValueError('pinned PR identity has an invalid local base ref')
+    current_base = git('rev-parse', '--verify', '--end-of-options', pinned_base_ref + '^{commit}')
+    if current_base != pinned_base:
+        raise ValueError(f'local base for pinned PR #{pr_number} no longer matches its recorded base head')
+    gh_env = dict(env)
+    gh_env.pop('GH_REPO', None)
+    gh_env['GH_HOST'] = 'github.com'
+    gh_env['GH_PROMPT_DISABLED'] = '1'
+    try:
+        result = subprocess.run(
+            ['gh', 'pr', 'view', pr_number, '--repo', pr_repo, '--json',
+             'number,url,state,headRefName,headRefOid,baseRefName,baseRefOid'],
+            env=gh_env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise ValueError(f'cannot revalidate pinned PR #{pr_number}: {error}') from error
+    if result.returncode != 0:
+        detail = result.stderr.strip() or 'gh exited with status ' + str(result.returncode)
+        raise ValueError(f'cannot revalidate pinned PR #{pr_number}: {detail}')
+    try:
+        live = json.loads(result.stdout)
+        live_number = live['number']
+        live_url = live['url']
+        match = re.fullmatch(
+            r'https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)/?',
+            live_url, re.IGNORECASE)
+    except (json.JSONDecodeError, KeyError, TypeError) as error:
+        raise ValueError(f'cannot revalidate pinned PR #{pr_number}: invalid GitHub metadata') from error
+    live_repo = match.group(1) + '/' + match.group(2) if match is not None else None
+    if (isinstance(live_number, bool) or not isinstance(live_number, int)
+            or match is None or int(match.group(3)) != live_number
+            or live_number != int(pr_number)
+            or live_repo.lower() != pr_repo.lower()
+            or live.get('state') != 'OPEN'
+            or live.get('headRefName') != values.get('REV_BRANCH')
+            or live.get('headRefOid') != pinned_head
+            or live.get('baseRefName') != base_branch
+            or live.get('baseRefOid') != pinned_base):
+        raise ValueError(f'live PR #{pr_number} identity no longer matches preflight scope')
 
 
 def git_quote(path):
@@ -1339,6 +1514,7 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
     tokens = re.compile(r'\b[A-Za-z_$][\w$]*\b')
     call_tokens = re.compile(r'\b([A-Za-z_$][\w$]*)\s*\(')
     base_url_configs = source_base_urls(repo, entries)
+    source_config_cache = {}
     candidate_file_cache = {}
     wildcard_lines_cache = {}
 
@@ -1417,7 +1593,9 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
             else:
                 typed_imports = is_ts_js_path(path)
                 applicable_configs, ambiguous_config = (
-                    source_configs_for_path(path, base_url_configs) if typed_imports else ([], False))
+                    source_configs_for_path(
+                        path, base_url_configs, entries, repo, source_config_cache)
+                    if typed_imports else ([], False))
                 config_ranges = [source_range for config in applicable_configs
                                  for source_range in config['source_ranges']]
                 imported_refs = import_references(path, lines)
@@ -1573,9 +1751,12 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                         symbol['path'] in resolved for symbol in candidates))
                 )
                 obligation = None
+                path_mapped = (typed_imports and ts_paths_mapping_matches(
+                    binding['reference'], applicable_configs))
                 if candidates and (binding['unresolved']
                                    or binding['local_name'] != imported_name
-                                   or binding.get('module_alias')):
+                                   or binding.get('module_alias')
+                                   or path_mapped):
                     candidate_targets = sorted(set(binding.get('candidate_targets') or [])
                                                | {symbol['path'] for symbol in candidates}
                                                | route_paths)
@@ -1595,7 +1776,10 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                         'unreadable_candidate_targets': sorted(unreadable_candidate_targets),
                         'config_ranges': binding.get('config_ranges', []),
                         'reason': binding.get('reason') or (
-                            'unresolved or ambiguous import matching a changed export'
+                            'path-mapped import matching a changed export'
+                            if path_mapped and not binding['unresolved']
+                            and binding['local_name'] == imported_name
+                            else 'unresolved or ambiguous import matching a changed export'
                             if binding['unresolved'] else 'aliased import matching a changed export'),
                     }
                     unresolved_imports[encoded(obligation)] = obligation
@@ -1654,7 +1838,10 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                         for symbol in definitions.get(name, []))
                     unresolved_target = any(binding.get('unresolved')
                                             for binding in matching_bindings)
-                    if not resolved and not matching_bindings:
+                    unbound_candidate = (not resolved and not matching_bindings and any(
+                        symbol['path'] != path and symbol.get('cross_file')
+                        for symbol in definitions.get(name, [])))
+                    if not resolved and not matching_bindings and not unbound_candidate:
                         continue
                     call = {'path': path, 'line': i, 'name': name,
                             'kind': 'lexical name( match, not resolved dispatch'}
@@ -1670,9 +1857,11 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                         call['import_line_end'] = binding['line_end']
                     if unresolved_target:
                         call['resolution'] = 'unresolved import search required'
+                    elif unbound_candidate:
+                        call['resolution'] = 'unresolved name search required'
                     if call not in calls:
                         calls.append(call)
-                    if is_test and (resolved or matching_bindings):
+                    if is_test and (resolved or matching_bindings or unbound_candidate):
                         related = True
         if is_test and related:
             tests.append({'path': path, 'basis': 'test path with lexical reference or same stem'})
@@ -1858,7 +2047,7 @@ def source_base_urls(repo, entries):
         extends_match = re.search(r'"extends"\s*:\s*"([^"]+)"', source)
         lines = split_lf_text(source)
         source_ranges = []
-        for match in re.finditer(r'"(?:baseUrl|paths|extends|include|exclude)"\s*:', source):
+        for match in re.finditer(r'"(?:baseUrl|paths|extends|files|include|exclude)"\s*:', source):
             value_start = match.end()
             while value_start < len(source) and source[value_start].isspace():
                 value_start += 1
@@ -1914,29 +2103,49 @@ def source_base_urls(repo, entries):
                          if base_match else (directory or '.') if paths else None),
             'paths': paths,
             'extends': extends_match.group(1) if extends_match else None,
+            'files': strings('files'),
             'include': strings('include'),
             'exclude': strings('exclude'),
+            'has_files': bool(re.search(r'"files"\s*:', source)),
+            'has_include': bool(re.search(r'"include"\s*:', source)),
+            'has_exclude': bool(re.search(r'"exclude"\s*:', source)),
             'source_ranges': source_ranges,
         })
     return configs
 
 
-def source_configs_for_path(path, configs):
-    applicable = []
-    for config in configs:
-        directory = config['directory']
-        if directory and not path.startswith(directory.rstrip('/') + '/'):
-            continue
-        relative = posixpath.relpath(path, directory or '.')
-        if relative == '..' or relative.startswith('../'):
-            continue
-        applicable.append(config)
-    if not applicable:
-        return [], False
-    by_path = {config['path']: config for config in configs}
-    expanded = {config['path']: config for config in applicable}
+def ts_config_pattern_matches(path, pattern):
+    pattern = posixpath.normpath(pattern.replace('\\', '/'))
+    if pattern == '.':
+        return path != '..' and not path.startswith('../')
+    if not any(char in pattern for char in '*?'):
+        return path == pattern or path.startswith(pattern.rstrip('/') + '/')
+    expression = ['^']
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith('**/', index):
+            expression.append('(?:.*/)?')
+            index += 3
+        elif pattern.startswith('**', index):
+            expression.append('.*')
+            index += 2
+        elif pattern[index] == '*':
+            expression.append('[^/]*')
+            index += 1
+        elif pattern[index] == '?':
+            expression.append('[^/]')
+            index += 1
+        else:
+            expression.append(re.escape(pattern[index]))
+            index += 1
+    expression.append('$')
+    return bool(re.match(''.join(expression), path))
+
+
+def source_config_chain(config, by_path):
+    expanded = {config['path']: config}
     unresolved_extends = False
-    pending = list(applicable)
+    pending = [config]
     while pending:
         config = pending.pop()
         reference = config.get('extends')
@@ -1953,9 +2162,106 @@ def source_configs_for_path(path, configs):
         if parent['path'] not in expanded:
             expanded[parent['path']] = parent
             pending.append(parent)
-    values = list(expanded.values())
+    return list(expanded.values()), unresolved_extends
+
+
+def source_config_patterns(config, configs, field):
+    chain, _ = source_config_chain(config, {row['path']: row for row in configs})
+    has_field = 'has_' + field
+    for owner in chain:
+        if owner.get(has_field):
+            return owner.get(field) or [], owner.get('directory') or '.'
+    if field == 'include' and any(owner.get('has_files') for owner in chain):
+        return [], config.get('directory') or '.'
+    if field == 'include':
+        return ['**/*'], config.get('directory') or '.'
+    if field == 'files':
+        return [], config.get('directory') or '.'
+    return ['node_modules', 'bower_components', 'jspm_packages'], config.get('directory') or '.'
+
+
+def source_config_is_root(path, config, configs):
+    if not is_ts_js_path(path):
+        return False
+    chain, _ = source_config_chain(config, {row['path']: row for row in configs})
+    files, files_directory = source_config_patterns(config, configs, 'files')
+    if any(posixpath.normpath(posixpath.join(files_directory, pattern.replace('\\', '/'))) == path
+           for pattern in files):
+        return True
+    if not any(owner.get('has_include') for owner in chain):
+        if any(owner.get('has_files') for owner in chain):
+            return False
+        project_path = posixpath.relpath(path, config.get('directory') or '.')
+        if project_path == '..' or project_path.startswith('../'):
+            return False
+    includes, include_directory = source_config_patterns(config, configs, 'include')
+    include_path = posixpath.relpath(path, include_directory)
+    if not any(ts_config_pattern_matches(include_path, pattern) for pattern in includes):
+        return False
+    excludes, exclude_directory = source_config_patterns(config, configs, 'exclude')
+    exclude_path = posixpath.relpath(path, exclude_directory)
+    return not any(ts_config_pattern_matches(exclude_path, pattern) for pattern in excludes)
+
+
+def source_config_import_closure(config, configs, entries, repo, cache):
+    if config['path'] in cache:
+        return cache[config['path']]
+    chain, _ = source_config_chain(config, {row['path']: row for row in configs})
+    roots = sorted(path for path in entries
+                   if source_config_is_root(path, config, configs))
+    reached = set(roots)
+    pending = list(roots)
+    while pending:
+        source_path = pending.pop()
+        raw = repo.blob(entries[source_path])
+        if raw is OVERSIZED_BLOB or b'\0' in raw:
+            continue
+        try:
+            source_lines = split_lf_text(raw.decode('utf-8'))
+        except UnicodeDecodeError:
+            continue
+        for reference in import_references(source_path, source_lines):
+            for target in resolve_import_candidates(source_path, reference, entries, chain):
+                if is_ts_js_path(target) and target not in reached:
+                    reached.add(target)
+                    pending.append(target)
+    cache[config['path']] = reached
+    return reached
+
+
+def source_configs_for_path(path, configs, entries=None, repo=None, cache=None):
+    applicable = []
+    cache = {} if cache is None else cache
+    for config in configs:
+        if source_config_is_root(path, config, configs):
+            applicable.append(config)
+        elif entries is not None and repo is not None and path in source_config_import_closure(
+                config, configs, entries, repo, cache):
+            applicable.append(config)
+    if not applicable:
+        return [], False
+    values = []
+    unresolved_extends = False
+    by_path = {config['path']: config for config in configs}
+    for config in applicable:
+        chain, unresolved = source_config_chain(config, by_path)
+        unresolved_extends = unresolved_extends or unresolved
+        for inherited in chain:
+            if inherited['path'] not in {row['path'] for row in values}:
+                values.append(inherited)
     roots = {config['base_url'] for config in values if config.get('base_url')}
     return values, unresolved_extends or len(roots) > 1 or len(applicable) > 1
+
+
+def ts_paths_mapping_matches(reference, configs):
+    for config in configs:
+        for pattern in config.get('paths', {}):
+            if not any(char in pattern for char in '*?'):
+                if reference == pattern:
+                    return True
+            elif ts_config_pattern_matches(reference, pattern):
+                return True
+    return False
 
 
 def rust_package(path, entries, repo):
@@ -4822,7 +5128,7 @@ def validate_source_context_snapshot(repo, session, manifest, canonical_changes=
         canonical_facts = source_context_evidence(
             repo, manifest['snapshot_tree'], canonical_facts, entries_by_tree)
         roster = read_json(session / 'roster.json')
-        roster = with_workhorse(session, roster, set(manifest['assignments']))
+        roster = with_manifest_workhorse(session, roster, manifest)
         ordered_assignments = {
             row['seat']: manifest['assignments'][row['seat']]
             for row in roster['seats']
@@ -4925,7 +5231,7 @@ def validate_components(session, manifest, evidence):
         raise ValueError('invalid dependency components')
     assigned = manifest['assignments']; owner = manifest['mechanical_owner']
     roster = read_json(session / 'roster.json')
-    roster = with_workhorse(session, roster, set(assigned))
+    roster = with_manifest_workhorse(session, roster, manifest)
     ordered = {row['seat']: assigned[row['seat']] for row in roster['seats'] if row['seat'] in assigned}
     adaptive = (not manifest['fallback_reason'] and manifest['phase'] not in ('repair', 'numeric')
                 and len(assigned) > 1)
@@ -5491,7 +5797,7 @@ def validate_plan(session, manifest, evidence, check_source, replay_searches=Tru
         raise ValueError('mixed prepared and legacy plan searches')
     assignments = manifest['assignments']
     roster = read_json(session / 'roster.json')
-    roster = with_workhorse(session, roster, set(assignments))
+    roster = with_manifest_workhorse(session, roster, manifest)
     roster_order = [row['seat'] for row in roster['seats']
                     if row.get('seat') in assignments]
     ordered_assignments = {seat: assignments[seat] for seat in roster_order}
@@ -5689,7 +5995,7 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
     roster = read_json(session / 'roster.json')
     if not isinstance(roster, dict) or not isinstance(roster.get('seats'), list) or any(not isinstance(s, dict) for s in roster['seats']):
         raise ValueError('invalid roster shape')
-    roster = with_workhorse(session, roster, set(manifest.get('assignments') or {}))
+    roster = with_manifest_workhorse(session, roster, manifest)
     if fresh and not offline and provider_contract_input(session) != contract_binding:
         raise ValueError('provider contract input changed after prepare')
     core = {s['seat'] for s in roster['seats'] if not s.get('extra')}
@@ -5755,6 +6061,8 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
             raise ValueError('evidence/manifest mismatch: ' + field)
     if evidence.get('numeric') != numeric:
         raise ValueError('evidence/manifest mismatch: numeric')
+    if evidence.get('replacement_executor') != manifest.get('replacement_executor'):
+        raise ValueError('evidence/manifest mismatch: replacement_executor')
     binding = manifest.get('parent_assignment')
     if evidence.get('parent_assignment') != binding:
         raise ValueError('evidence/manifest mismatch: parent_assignment')
@@ -5771,10 +6079,10 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
             session / binding['manifest'], fresh=fresh, seen=seen, offline=offline,
             replay_plan_searches=False)
         seat = binding['seat']
-        if parent['phase'] == 'repair' or seat not in parent['assignments']:
+        if seat not in parent['assignments']:
             raise ValueError('invalid parent assignment binding')
         parent_assignment = parent['assignments'][seat]
-        roster_seat = next((row for row in roster['seats'] if row.get('seat') == seat), None)
+        roster_seat = executor_row_for_manifest(session, parent, seat)
         expected_binding = {
             'manifest': f"r{parent['label']}-evidence.manifest.json",
             'manifest_sha256': parent_hash,
@@ -5790,9 +6098,17 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
             'source_context_enabled': parent['source_context']['enabled'],
         }
         executor, child_assignment = next(iter(assigned.items()))
+        child_executor = replacement_executor_row(manifest)
+        root = replacement_root_manifest(session, parent, fresh=fresh, seen=seen, offline=offline)
+        if root['phase'] == 'plan' or not is_replacement_label(root['label'], manifest['label']):
+            raise ValueError('replacement label must be in the root assignment namespace')
+        if parent['phase'] == 'repair' and child_executor is None:
+            raise ValueError('nested replacement requires immutable executor metadata')
+        if child_executor is not None:
+            validate_replacement_edge(
+                roster_seat, child_executor, parent_is_repair=parent['phase'] == 'repair')
         if (binding != expected_binding or len(assigned) != 1 or executor == seat
                 or unenforced_adapter(child_assignment['adapter'])
-                or not is_replacement_label(parent['label'], manifest['label'])
                 or child_assignment['scope'] != 'full'
                 or child_assignment['bundle'] != parent_assignment['bundle']
                 or child_assignment.get('emphasis') != parent_assignment.get('emphasis')
@@ -6433,7 +6749,7 @@ def result_generation(session, manifest, manifest_hash, seat):
     hashes = validate_results(session, manifest, manifest_hash, [seat], verdicts)
     stem = f"r{manifest['label']}-{seat}"
     roster = read_json(session / 'roster.json')
-    roster = with_workhorse(session, roster, [seat])
+    roster = with_manifest_workhorse(session, roster, manifest)
     roster_seat = next(row for row in roster['seats'] if row.get('seat') == seat)
     assignment = manifest['assignments'][seat]
     row = {
@@ -6665,6 +6981,7 @@ def prepare(args):
 
 
 def _prepare_locked(args, session):
+    validate_pinned_pr_checkout(scope(session))
     repo = Repository(session)
     roster = read_json(session / 'roster.json')
     validate_live_roster_adapters(roster)
@@ -6687,6 +7004,7 @@ def _prepare_locked(args, session):
     parent_assignment = None
     parent_manifest = None
     parent_manifest_hash = None
+    replacement_executor = None
     parent_value = getattr(args, 'parent_assignment', None)
     if parent_value is not None:
         parent_label, separator, parent_seat = parent_value.partition(':')
@@ -6698,18 +7016,31 @@ def _prepare_locked(args, session):
             session / f'r{parent_label}-evidence.manifest.json')
         if parent_manifest['phase'] == 'plan':
             raise ValueError('plan parent assignments require whole-panel recovery')
-        if parent_manifest['phase'] == 'repair' or parent_seat not in parent_manifest['assignments']:
+        if parent_seat not in parent_manifest['assignments']:
             raise ValueError('invalid parent assignment')
-        if not is_replacement_label(parent_label, args.label):
-            raise ValueError('replacement label must be ' + parent_label + 'x or a unique numeric suffix')
+        root_manifest = replacement_root_manifest(session, parent_manifest, fresh=True)
+        if root_manifest['phase'] == 'plan':
+            raise ValueError('plan parent assignments require whole-panel recovery')
+        if not is_replacement_label(root_manifest['label'], args.label):
+            raise ValueError('replacement label must be in the root assignment namespace')
     chunk_mode, source_context_enabled = evidence_modes(os.environ, parent_manifest)
     source_head = args.head
+    pinned_pr_number = repo.scope.get('REV_PR_NUMBER')
+    pinned_pr_head = repo.scope.get('REV_PR_HEAD')
+    if (pinned_pr_number and args.head is not None
+            and args.head != pinned_pr_head):
+        raise ValueError(
+            f'explicit source selector conflicts with pinned PR #{pinned_pr_number} head')
     if parent_manifest is not None:
         parent_source = parent_manifest['source']
         parent_head = parent_source.get('ref') if parent_source['mode'] == 'ref' else None
         if args.head is not None and args.head != parent_head:
             raise ValueError('explicit source selector conflicts with parent assignment')
         source_head = parent_head
+    if (pinned_pr_number and source_head is not None
+            and source_head != pinned_pr_head):
+        raise ValueError(
+            f'parent source conflicts with pinned PR #{pinned_pr_number} head')
     if args.phase == 'plan':
         if not getattr(args, 'plan', None) or not getattr(args, 'plan_sha256', None):
             raise ValueError('plan phase requires --plan and --plan-sha256')
@@ -6757,16 +7088,24 @@ def _prepare_locked(args, session):
         if executor_row is None or unenforced_adapter(executor_row.get('adapter')):
             # An Agent result cannot be bound against copying, so it cannot stand in for another seat.
             raise ValueError('replacement executor must be an enforced seat')
+        parent_executor = executor_row_for_manifest(session, parent_manifest, parent_seat)
+        replacement_executor = replacement_executor_metadata(executor_row)
+        validate_replacement_edge(
+            parent_executor, replacement_executor, parent_is_repair=parent_manifest['phase'] == 'repair')
         if not attempt_module().terminal_failure(session, parent_label, parent_seat,
                                                  session / f'r{parent_label}-{parent_seat}.prompt.md'):
             raise ValueError('parent assignment has no recorded terminal failure')
         existing = session / f'r{args.label}-evidence.manifest.json'
         if existing.exists():
             prior = read_json(existing)
-            if ((prior.get('parent_assignment') or {}).get('seat') != parent_seat
+            prior_binding = prior.get('parent_assignment') or {}
+            if (prior_binding.get('manifest') != f'r{parent_label}-evidence.manifest.json'
+                    or prior_binding.get('manifest_sha256') != parent_manifest_hash
+                    or prior_binding.get('seat') != parent_seat
+                    or prior.get('replacement_executor') != replacement_executor
                     or list(prior.get('assignments') or {}) != [executor]):
                 raise ValueError('replacement label is already bound to another parent assignment')
-        roster_seat = next((row for row in roster['seats'] if row.get('seat') == parent_seat), None)
+        roster_seat = parent_executor
         if roster_seat is None:
             raise ValueError('parent assignment seat is absent from roster')
         parent_assignment = {
@@ -7008,6 +7347,7 @@ def _prepare_locked(args, session):
                 or source != parent_manifest['source'] or inputs['roster.json'] != parent_assignment['roster_sha256']):
             raise ValueError('repair child does not match its parent panel boundary')
         data['parent_assignment'] = parent_assignment
+        data['replacement_executor'] = replacement_executor
     if args.phase == 'plan':
         plan_name = prefix + '-plan.md'
         data['plan'] = {'source': str(plan_source), 'source_sha256': args.plan_sha256,
@@ -7104,6 +7444,7 @@ def _prepare_locked(args, session):
     manifest['unenforced_seats'] = unenforced_seats
     if parent_assignment is not None:
         manifest['parent_assignment'] = parent_assignment
+        manifest['replacement_executor'] = replacement_executor
     manifest_path = session / (prefix + '-evidence.manifest.json')
     receipt_path = session / (prefix + '-coverage.receipt.json')
     if receipt_path.exists() and (not manifest_path.exists() or manifest_path.read_bytes() != encoded(manifest)):
@@ -7402,6 +7743,47 @@ def parse_replacements(values):
     return replacements
 
 
+def replacement_chain_to_root(session, root_manifest, root_hash, root_seat, final_label,
+                              fresh=True, seen=None):
+    if not is_replacement_label(root_manifest['label'], final_label):
+        raise ValueError('replacement label is outside the root assignment namespace')
+    current_path = session / f'r{final_label}-evidence.manifest.json'
+    current, current_hash = validated_manifest(
+        current_path, fresh=fresh, seen=seen, replay_plan_searches=False)
+    final_manifest, final_hash = current, current_hash
+    chain = []
+    visited = set()
+    while True:
+        if (current['label'] in visited or current['phase'] != 'repair'
+                or not is_replacement_label(root_manifest['label'], current['label'])):
+            raise ValueError('invalid replacement chain')
+        visited.add(current['label'])
+        binding = current.get('parent_assignment')
+        if not isinstance(binding, dict):
+            raise ValueError('replacement chain is missing its parent assignment')
+        parent_path = session / binding['manifest']
+        parent, parent_hash = validated_manifest(
+            parent_path, fresh=fresh, seen=seen, replay_plan_searches=False)
+        parent_seat = binding['seat']
+        if parent['label'] == root_manifest['label']:
+            if parent_hash != root_hash or parent_seat != root_seat:
+                raise ValueError('replacement child is bound to another parent assignment')
+            if not attempt_module().terminal_failure(
+                    session, parent['label'], parent_seat,
+                    session / f"r{parent['label']}-{parent_seat}.prompt.md"):
+                raise ValueError('replacement parent assignment has no recorded terminal failure')
+            chain.append((current_path, current, current_hash))
+            return final_manifest, final_hash, next(iter(final_manifest['assignments'])), chain
+        if parent['phase'] != 'repair':
+            raise ValueError('replacement chain does not lead to the selected root panel')
+        if not attempt_module().terminal_failure(
+                session, parent['label'], parent_seat,
+                session / f"r{parent['label']}-{parent_seat}.prompt.md"):
+            raise ValueError('replacement parent assignment has no recorded terminal failure')
+        chain.append((current_path, current, current_hash))
+        current_path, current, current_hash = parent_path, parent, parent_hash
+
+
 def verify_panel_selection(session, label, replacement_values=None, fresh=True, seen=None,
                            verdicts=None):
     manifest_path = session / f'r{label}-evidence.manifest.json'
@@ -7426,6 +7808,7 @@ def verify_panel_selection(session, label, replacement_values=None, fresh=True, 
     results = {}
     generations = {}
     children = {}
+    used_chain_labels = set()
     for seat in manifest['assignments']:
         child_label = replacements.get(seat)
         if child_label is None:
@@ -7435,18 +7818,19 @@ def verify_panel_selection(session, label, replacement_values=None, fresh=True, 
                 result_generation(session, manifest, mh, seat)
             except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError,
                     RecursionError, UnicodeError):
+                # Validate the requested child binding before checking this root seat's failure.
                 pass
             else:
                 raise ValueError('replacement parent assignment is already valid: ' + seat)
-            child_path = session / f'r{child_label}-evidence.manifest.json'
-            child, child_hash = validated_manifest(child_path, fresh=fresh, seen=seen)
-            binding = child.get('parent_assignment')
-            if (not isinstance(binding, dict) or binding.get('manifest') != manifest_path.name
-                    or binding.get('manifest_sha256') != mh or binding.get('seat') != seat):
-                raise ValueError('replacement child is bound to another parent seat: ' + seat)
+            child, child_hash, executor, lineage = replacement_chain_to_root(
+                session, manifest, mh, seat, child_label, fresh=fresh, seen=seen)
+            chain_labels = {item[1]['label'] for item in lineage}
+            if len(chain_labels) != len(lineage) or used_chain_labels & chain_labels:
+                raise ValueError('replacement child labels must be unique across assignment chains')
+            used_chain_labels.update(chain_labels)
             hashes, generation = result_generation(session, child, child_hash,
-                                                   next(iter(child['assignments'])))
-            children[seat] = (child_path, child, child_hash)
+                                                   executor)
+            children[seat] = lineage
         overlap = set(results) & set(hashes)
         if overlap:
             raise ValueError('mixed result generations: ' + ', '.join(sorted(overlap)))
@@ -7458,11 +7842,12 @@ def verify_panel_selection(session, label, replacement_values=None, fresh=True, 
         manifest_path, fresh=fresh, seen=seen, replay_plan_searches=False)
     if final_hash != mh or final_manifest != manifest:
         raise ValueError('panel manifest changed during verification')
-    for seat, (child_path, child, child_hash) in children.items():
-        final_child, final_child_hash = validated_manifest(
-            child_path, fresh=fresh, seen=seen, replay_plan_searches=False)
-        if final_child_hash != child_hash or final_child != child:
-            raise ValueError('replacement manifest changed during verification: ' + seat)
+    for seat, lineage in children.items():
+        for child_path, child, child_hash in lineage:
+            final_child, final_child_hash = validated_manifest(
+                child_path, fresh=fresh, seen=seen, replay_plan_searches=False)
+            if final_child_hash != child_hash or final_child != child:
+                raise ValueError('replacement manifest changed during verification: ' + seat)
     return manifest, mh, results, generations, replacements
 
 

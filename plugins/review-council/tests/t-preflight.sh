@@ -368,6 +368,78 @@ SH
   cd "$old_pwd" 2>/dev/null || cd "$T" || return 1
   PATH=$old_path; export PATH; unset RSTUB_ARGS
 }
+test_preflight_pr_identity() {
+  ( local B="$T/pf-pr"; seat_env; local PF; PF="$(pf_bin)/rev-preflight.sh"
+    local R="$B/repo" S="$B/session" STALE="$B/stale-session" base head
+    mkdir -p "$B/bin"
+    cat > "$B/bin/gh" <<'SH'
+#!/bin/bash
+printf '%s\n' "$@" >> "$GH_ARGS"
+printf '%s\n' "${GH_REPO-unset}" >> "$GH_REPO_OBS"
+[ "$1" = pr ] && [ "$2" = view ] || exit 2
+payload="{\"number\":71,\"url\":\"https://github.com/acme/repo/pull/71\",\"state\":\"$PR_STATE\",\"headRefName\":\"$PR_BRANCH\",\"headRefOid\":\"$STUB_PR_HEAD\",\"baseRefName\":\"main\",\"baseRefOid\":\"$PR_BASE\"}"
+printf '%s\n' "$payload" > "$GH_JSON"
+cat "$GH_JSON"
+SH
+    chmod +x "$B/bin/gh"
+    export PATH="$B/bin:$PATH" GH_ARGS="$B/gh.args" GH_JSON="$B/gh.json" \
+      GH_REPO_OBS="$B/gh-repo-observed" GH_REPO=wrong/repo RSTUB_ARGS="$B/roster.args"
+    unset REV_BASE_REF
+    mkrepo "$R"; git -C "$R" checkout -qb feat
+    printf 'change\n' > "$R/change.txt"; git -C "$R" add change.txt; git -C "$R" commit -qm change
+    base=$(git -C "$R" rev-parse main); head=$(git -C "$R" rev-parse HEAD)
+    export PR_STATE=OPEN PR_BRANCH=feat STUB_PR_HEAD="$head" PR_BASE="$base"
+    (cd "$R" && "$PF" --pr 71 --write "$S") > "$B/out" 2> "$B/err"
+    local preflight_rc=$?
+    if [ "$preflight_rc" -ne 0 ]; then cat "$B/err" "$B/gh.json" >&2; fi
+    assert_eq "exact PR checkout passes preflight" "$preflight_rc" 0
+    assert_grep "preflight pins PR number" "$S/scope.env" "^REV_PR_NUMBER='71'$"
+    assert_grep "preflight pins PR repository" "$S/scope.env" "^REV_PR_REPO='acme/repo'$"
+    assert_grep "preflight pins exact PR head" "$S/scope.env" "^REV_PR_HEAD='$head'$"
+    assert_grep "preflight pins exact PR base head" "$S/scope.env" "^REV_PR_BASE_HEAD='$base'$"
+    assert_grep "preflight pins PR base branch" "$S/scope.env" "^REV_BASE_BRANCH='main'$"
+    assert_grep "preflight pins the exact local base ref" "$S/scope.env" "^REV_PR_BASE_REF='refs/heads/main'$"
+    assert_grep "preflight measures the PR against its exact base" "$B/out" "^base=$base base_branch=main \\(open PR #71\\) branch=feat"
+    assert_eq "preflight ignores the ambient repository override" \
+      "$(grep -c '^unset$' "$GH_REPO_OBS")" 2
+    : > "$GH_ARGS"; : > "$GH_REPO_OBS"
+    (cd "$R" && "$PF" --pr 71 --pr-repo acme/repo --write "$B/explicit-repo") \
+      > "$B/explicit-repo.out" 2> "$B/explicit-repo.err"
+    assert_eq "an explicit pinned PR repository passes preflight" "$?" 0
+    assert_eq "an explicit PR repository skips ambient context resolution" \
+      "$(grep -c '^pr$' "$GH_ARGS")" 1
+    assert_eq "an explicit PR repository query ignores GH_REPO" \
+      "$(grep -c '^unset$' "$GH_REPO_OBS")" 1
+    (cd "$R" && "$PF" --pr-repo acme/repo --write "$B/repo-without-pr") \
+      > "$B/repo-without-pr.out" 2> "$B/repo-without-pr.err"
+    assert_eq "an explicit PR repository requires a PR number" "$?" 1
+    assert_grep "missing PR number is explained" "$B/repo-without-pr.err" '--pr-repo requires --pr'
+    (cd "$R" && "$PF" --pr 71 --pr-repo ../repo --write "$B/invalid-repo") \
+      > "$B/invalid-repo.out" 2> "$B/invalid-repo.err"
+    assert_eq "an invalid PR repository is refused" "$?" 1
+    assert_grep "invalid PR repository format is explained" "$B/invalid-repo.err" \
+      '--pr-repo must be an owner/repository pair'
+    export PR_BASE="$head"
+    rm -f "$RSTUB_ARGS"
+    (cd "$R" && "$PF" --pr 71 --write "$B/base-drift") > "$B/base-drift.out" 2> "$B/base-drift.err"
+    assert_eq "PR preflight refuses a stale local base" "$?" 1
+    assert_grep "stale base refusal identifies the PR binding" "$B/base-drift.err" \
+      'no local ref for PR #71 base branch matches its base head'
+    assert_exit "stale base refusal happens before a provider probe" 0 test ! -e "$RSTUB_ARGS"
+    export PR_BASE="$base"
+    printf 'new local commit\n' >> "$R/change.txt"
+    git -C "$R" add change.txt; git -C "$R" commit -qm stale
+    rm -f "$RSTUB_ARGS"
+    (cd "$R" && "$PF" --pr 71 --write "$STALE") > "$B/stale.out" 2> "$B/stale.err"
+    assert_eq "stale PR checkout is refused" "$?" 1
+    assert_grep "stale PR refusal identifies the head mismatch" "$B/stale.err" 'checked out HEAD does not match PR #71 head'
+    assert_exit "stale PR refusal happens before a provider probe" 1 test -e "$RSTUB_ARGS"
+    assert_grep "preflight asks GitHub for repository, head and base identities" "$GH_ARGS" '^number,url,state,headRefName,headRefOid,baseRefName,baseRefOid$'
+    assert_grep "preflight explicitly re-queries the resolved PR repository" "$GH_ARGS" '^--repo$'
+    assert_grep "preflight uses the repository resolved from the local PR context" "$GH_ARGS" '^acme/repo$'
+  )
+}
+
 test_prompt() {
   local S="$T/pr-sess"; mkdir -p "$S"
   printf 'REV_BASE=abc123\nREV_BRANCH=feat\nREV_DEFAULT=main\nREV_ROOT=/repo\nREV_SCOPE=branch\n' > "$S/scope.env"
@@ -380,6 +452,10 @@ test_prompt() {
   assert_grep "diff command" "$p" 'git diff abc123'
   assert_grep "files listed" "$p" '^- src/x.test.ts$'
   assert_grep "lens text" "$p" 'off-by-one'
+  printf "REV_BASE='abc123'\nREV_BRANCH='feat'\nREV_DEFAULT='main'\nREV_BASE_BRANCH='main'\nREV_ROOT='/repo'\nREV_SCOPE='branch'\nREV_PR_NUMBER='71'\nREV_PR_HEAD='0123456789012345678901234567890123456789'\nREV_PR_BASE_HEAD='abcdefabcdefabcdefabcdefabcdefabcdefabcd'\n" > "$S/scope.env"
+  p=$("$SCRIPTS/rev-prompt.sh" "$S" 2 codex-terra correctness "Correctness, edge cases, error handling")
+  assert_grep "PR-bound prompt names the exact head and base" "$p" \
+    'Bound pull request: #71 \(head 0123456789012345678901234567890123456789, base branch `main` at abcdefabcdefabcdefabcdefabcdefabcdefabcd\)'
   assert_grep "emphasis" "$p" '^Round emphasis: Correctness, edge cases, error handling$'
   assert_grep "baseline included" "$p" 'pre-existing failures'
   assert_grep "rejected none" "$p" '\(none yet\)'

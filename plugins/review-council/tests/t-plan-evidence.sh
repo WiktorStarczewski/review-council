@@ -780,11 +780,47 @@ PY
     assert_grep "plan prompt permits only its exact compiler-rendered overflow search" \
       "$S/r1p-sol.prompt.md" \
       'Never compose a `head -81` search yourself.*run that exact command unchanged.*sole plan-audit exception'
+    local exact_search_payload generic_search_payload
+    exact_search_payload=$(python3 - <<'PY'
+import json
+print(json.dumps({'tool_name':'Bash','tool_input':{'command':
+    "rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'run(Service|Alias)' . | head -81"}}))
+PY
+) || return
+    read_bound_hook "$R" "$S" "$exact_search_payload" "$S/r1p-sol.prompt.md"
+    assert_eq "read hook allows the exact assigned plan overflow search" "$?" 0
+    generic_search_payload=$(python3 - <<'PY'
+import json
+print(json.dumps({'tool_name':'Bash','tool_input':{'command':
+    "rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'runService' . | head -81"}}))
+PY
+) || return
+    read_bound_hook "$R" "$S" "$generic_search_payload" "$S/r1p-sol.prompt.md"
+    assert_eq "read hook rejects a generic 81-result search" "$?" 2
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
       --raw "$S/r1p-sol.stream.ndjson" --prompt "$S/r1p-sol.prompt.md" \
       --root "$R" --session "$S" --out "$S/r1p-sol.read-audit.json" >/dev/null || return
     cp "$S/r1p-sol.stream.ndjson" "$T/terra.stream.valid"
     cp "$S/r1p-sol.read-audit.json" "$T/terra.audit.valid"
+    python3 - "$T/terra.stream.valid" "$S/r1p-sol.stream.ndjson" <<'PY'
+import json, sys
+source, target = sys.argv[1:]
+rows=[]
+for line in open(source):
+    row=json.loads(line)
+    item=row.get('item') or {}
+    if item.get('id') == 'search-rg':
+        item['command']="rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'runService' . | head -81"
+    rows.append(json.dumps(row))
+open(target,'w').write('\n'.join(rows)+'\n')
+PY
+    assert_exit "Codex rejects head-81 for a nonassigned plan search" 2 \
+      python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+        --raw "$S/r1p-sol.stream.ndjson" --prompt "$S/r1p-sol.prompt.md" \
+        --root "$R" --session "$S" --out "$S/r1p-sol.read-audit.json"
+    assert_grep "a nonassigned head-81 search exceeds the generic result cap" \
+      "$S/r1p-sol.read-audit.json" '"code":"unbounded-shell-output"'
+    cp "$T/terra.stream.valid" "$S/r1p-sol.stream.ndjson"
     # Severity: a proof call sharing its turn with an oversized read earns nothing.
     local sibling_target sibling_want
     while IFS='|' read -r sibling_target sibling_want; do
@@ -1948,8 +1984,8 @@ if assignment['patch_read_mode'] == 'chunks':
         path = session / row['artifact']; call('patch-' + str(row['index']), path, path.read_text())
 else:
     patch = pathlib.Path(assignment['patch']); lines = patch.read_text().splitlines(keepends=True)
-    for start in range(1, len(lines) + 1, 240):
-        end = min(len(lines), start + 239)
+    for start in range(1, len(lines) + 1, 40):
+        end = min(len(lines), start + 39)
         call('patch-' + str(start), patch, ''.join(lines[start - 1:end]),
              "sed -n '%d,%dp' %s" % (start, end, patch))
 context = m['source_context']['seats']['sol']
@@ -1974,8 +2010,8 @@ if context['source_read_required']:
     assert tree == m['snapshot_tree'] and entry[1] == oid
     lines = evidence.split_lf_lines(repository.blob(entry))
     assert hashlib.sha256(b''.join(lines[start - 1:end])).hexdigest() == content_hash
-    for first in range(start, end + 1, 240):
-        last = min(first + 239, end)
+    for first in range(start, end + 1, 40):
+        last = min(first + 39, end)
         call('source-' + str(first), root / relative, b''.join(lines[first - 1:last]).decode(),
              shlex.join(['git', 'show', tree + ':' + relative])
              + ' | ' + shlex.join(['sed', '-n', f'{first},{last}p']))

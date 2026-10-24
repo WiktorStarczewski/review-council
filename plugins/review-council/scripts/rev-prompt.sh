@@ -122,14 +122,19 @@ else
     HAS_UNTRACKED=1
   fi
   # Parsed, never sourced: a repo path with a space or a branch name with shell metacharacters must not execute.
-  REV_BASE=""; REV_BRANCH=""; REV_DEFAULT=""; REV_ROOT=""; REV_SCOPE=""; k=""; v=""
+  REV_BASE=""; REV_BRANCH=""; REV_DEFAULT=""; REV_BASE_BRANCH=""; REV_ROOT=""; REV_SCOPE=""
+  REV_PR_NUMBER=""; REV_PR_HEAD=""; REV_PR_BASE_HEAD=""; k=""; v=""
   while IFS='=' read -r k v || [ -n "$k" ]; do
     case "$k" in
       REV_BASE) REV_BASE=$(unq "$v");;
       REV_BRANCH) REV_BRANCH=$(unq "$v");;
       REV_DEFAULT) REV_DEFAULT=$(unq "$v");;
+      REV_BASE_BRANCH) REV_BASE_BRANCH=$(unq "$v");;
       REV_ROOT) REV_ROOT=$(unq "$v");;
       REV_SCOPE) REV_SCOPE=$(unq "$v");;
+      REV_PR_NUMBER) REV_PR_NUMBER=$(unq "$v");;
+      REV_PR_HEAD) REV_PR_HEAD=$(unq "$v");;
+      REV_PR_BASE_HEAD) REV_PR_BASE_HEAD=$(unq "$v");;
     esac
   done < "$S/scope.env"
   [ -n "$REV_BASE" ] && [ -n "$REV_ROOT" ] && [ -n "$REV_SCOPE" ] || {
@@ -665,6 +670,9 @@ EOC
   else
     echo "Repository: $REV_ROOT"
     echo "Base commit: $REV_BASE (branch \`$REV_BRANCH\`, default branch \`$REV_DEFAULT\`)"
+    if [ -n "$REV_PR_NUMBER" ]; then
+      echo "Bound pull request: #$REV_PR_NUMBER (head $REV_PR_HEAD, base branch \`$REV_BASE_BRANCH\` at $REV_PR_BASE_HEAD)"
+    fi
     if [ -n "$EVIDENCE" ]; then
       echo "Prepared review scope:"
       cat "$EVIDENCE_TMP"

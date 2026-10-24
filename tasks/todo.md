@@ -1,23 +1,36 @@
-# Plan review workload and recovery (#1752)
+# Release 0.8.0
 
-- [x] Add the Council self-review restriction to repository `AGENTS.md`.
-- [x] Make the prepared assignment workload and hard-limit status visible before seat launch.
-- [x] Clarify Codex's one-producer-per-shell-call proof rule with the exact failed pattern.
-- [x] Allow failed assignments to continue through the configured replacement chain with unique children bound to the original parent.
-- [x] Bind every plan replacement to one failed or stale original assignment; require current-hash proof for every original seat.
-- [x] Run an independent normal review of the Council changes and fix its actionable findings.
-- [x] Align all plugin manifests, changelog, and release procedure for 0.7.12.
-- [x] Diagnose recent Luna seat failures and align Codex patch and plan-first-read limits with the audit ceiling.
-- [x] Close independent-review findings for TypeScript default imports, comment-aware Rust use trees, and the plan-search sentinel exception.
-- [x] Complete an independent normal review of the full release candidate; no actionable P0-P2 findings remain.
-- [ ] Push the candidate branch and update PR #69. The user explicitly waived CI as a release gate; report current-head check results accurately.
-- [ ] Squash-merge, publish the signed 0.7.12 tag and GitHub release, then verify each installed host.
+- [x] Verify and merge the latest signed release, `review-council--v0.7.14`, into the candidate.
+- [x] Bind PR-number preflight to the live head and base before provider probes.
+- [x] Preserve the exact PR identity in session inputs and reject a checkout change before evidence preparation.
+- [x] Continue failed review assignments through multiple replacements until success or chain exhaustion.
+- [x] Set all three host manifests and the release procedure to 0.8.0.
+- [x] Push tests-only regressions and confirm expected failures for PR pinning, quota fallback, repository binding, and replacement-chain certification.
+- [x] Finish and re-review the exact-PR renderer/evidence checks and all internal-review fixes.
+- [x] Integrate PR #69, signed tag `review-council--v0.7.12`, into this candidate.
+- [x] Fetch and merge latest `origin/main` at `ff13856` in merge commit `f562d78`.
+- [ ] Complete the one-seat normal internal review, push the combined candidate, and record macOS, Ubuntu, and Cursor package CI on its exact head.
+- [ ] Squash-merge and publish signed 0.8.0 even if candidate CI is red, as explicitly authorized; preserve exact failures and prepare 0.8.1 follow-up fixes if any check fails.
 
-### Review
+## Release review
 
-Root cause evidence and implementation decisions are recorded in
-`docs/superpowers/plans/2026-10-23-plan-review-recovery.md`. The independent normal
-review found three P1 gate gaps; all three were fixed and re-reviewed. No tests were run.
+- Expected-red run `40010322339` confirmed on Ubuntu and macOS: `prepare --head <other>` succeeded, omitted the pinned-PR refusal, and published a manifest before the fix.
+- The latest stable source is the signed `review-council--v0.7.14` tag, now merged into this candidate.
+- The normal one-seat internal review found a P1 exact-PR identity gap and a P2 live-PR drift gap. The follow-up review found three more P2 gaps: quota fallback dropped the PR number, evidence could certify an unknown replacement family, and ambient `GH_REPO` could select the wrong repository. Regressions and fixes are now prepared locally.
+- Expected-red run `40028556658` confirmed the new PR pinning, live metadata drift, quota fallback, repository binding, and replacement-family regressions on both Ubuntu and macOS. Package CI `40028556537` passed on the same test-only commit.
+- Full verifier run `40031235290` finished with the same placeholder-family replacement-fixture failures on Ubuntu and macOS; the multiple-replacement test through Opus passed on both. Updated the affected fixtures locally and queued normal internal review before the next push.
+- The first internal fixture follow-up caught an idempotent duplicate-label assertion. Reparenting to Opus exposed a bundle mismatch, so the retry now carries Opus's assigned bundle and reaches the rebinding check; requested another focused re-review.
+- The focused normal internal re-review confirmed the fixture now reaches the intended rebinding refusal and found no open issues.
+- Normal one-seat internal review completed with no open P0-P2 findings and verified closure of the three follow-up gaps above. Review Council was not used to review its own repository.
+- Current-head CI run `40034257541` exposed three stale test fixtures: a Codex executor expected Claude in its receipt, a review-origin replacement used identities outside the enforced chain, and the preflight stub reused `PR_HEAD`, which the script clears internally. Corrected those fixtures and passed normal internal review.
+- Baseline verifier `40025636171` failed on both platforms at `39724b5`: a shell quoting error in preflight broke its embedded Python, and plan-gate fixtures did not provide 0.7.11's required manifests. Both root causes are fixed in local commit `e54e369`; macOS's 476 Python tests passed. Package CI `40025636204` passed.
+
+## Internal review follow-up: exact PR identity and live evidence scope
+
+- [x] Add regressions for renderer PR pinning, evidence checkout/live metadata drift, quota fallback identity, ambient repository overrides, and enforced replacement families.
+- [x] Pin exact PR number and repository, recheck live PR identity during evidence preparation, and keep quota fallback bound to the same PR in both hosts.
+- [x] Run the expected-red gates and send the complete implementation diff for normal internal re-review.
+- [ ] Push the reviewed implementation and wait for current-head macOS, Ubuntu, and Cursor package CI before release work.
 
 The rolling 180-minute sample ending 2026-10-23 23:25 UTC contained 74 Luna audit
 artifacts under `/private/tmp`: 11 were invalid (14.9%). They are attempts, not
@@ -33,7 +46,8 @@ prompt, audit, and capacity estimates; the prompt targets 24 KiB with a 32 KiB h
 Compiler-rendered searches are quoted, manually composed searches reject shell expansion,
 and result searches remain capped at 80. Fresh independent review found no remaining
 actionable P0-P2 issues. `git diff --check` and `bash -n` preflights pass; the full tests
-were not run. CI is waived for this release by explicit user instruction.
+were not run locally. Exact-head CI will be recorded, and the user authorized publishing
+0.8.0 with failures followed by a 0.8.1 correction release.
 
 # Release 0.5.10
 
@@ -868,6 +882,53 @@ wave 19 records and prose; functional code remains identical to that verified he
 
 Review results: pending. SDK credentials absent; no live SDK qualification or product code exists yet. Existing wallet runtimes remain frozen.
 
+## PR #67: Exact PR Binding and Exhaustible Model Replacement
+
+- [x] Verify latest published Council is signed 0.7.14; Council changes use one normal internal reviewer, never Review Council.
+- [x] Confirm the checkout-binding test-only CI red on both macOS and Ubuntu before implementation.
+- [x] Confirm test-only checkout-binding and repeated replacement-chain regressions fail on both Ubuntu and macOS before implementation. CI run `40001522036` failed `replacement_chain_reaches_opus` with `assignment roster mismatch` after escalation advances; the same test-only head also has the expected checkout-binding failures.
+- [x] Fix the candidate failures and align both host skill trees, fixtures, and replacement-chain assertions.
+- [x] Re-run the frozen test-only failures and complete the normal internal review before the latest main merge.
+- [ ] Finish normal internal review of the combined post-0.7.14 diff, then release and install 0.8.0.
+
+### Current-head verifier repair
+
+- [x] Run `40035902345` completed with the same `replacement_runs_on_another_seat` fixture failure on Ubuntu and macOS: it wrote a terminal exit without recording the launch attempts required by `rev-attempt.py`.
+- [x] Correct the fixture so refusal is checked before two recorded terminal failures; syntax, diff check, and normal internal review pass.
+- [x] Commit and push the fixture correction. Test run `40038629026` is on pre-merge head `6a4d6f31`; Ubuntu failed and macOS is still running. Package run `40038629054` passed on that old head. These do not satisfy the required post-merge-head gate.
+
+### Candidate CI repair notes
+
+### Live review progress narration
+
+- [x] Extend `rev-status.sh` with a short narrative derived only from current session state, seat actions, and returned P0-P2 findings.
+- [x] Preserve the existing compact status metrics for stack consumers, and update status, stack, and skill tests/docs.
+- [x] Add regressions for normal config opt-out loading, pre-triage findings, and unresolved related-test evidence.
+- [x] Push the first regression-only commit and confirm the intended narration/config failures on both verifier platforms. Exact-head run `40046718778` was red on Ubuntu and macOS; it also exposed existing 0.7.12 verifier failures that need a separate baseline assessment.
+- [x] Add regression tests for long-running Codex watch narration and explicit TypeScript `files` roots in test-only commit `c42ed4c`.
+- [x] Confirm the new watcher and explicit-files tests fail for their intended reasons before implementation. Exact-head run `40048223443` failed on Ubuntu and macOS; both logs show the narration, indefinite-watch, and explicit `files`-root regressions.
+- [x] Fetch origin/main after the user requested an update. It advanced to `ff13856` and was merged as `f562d78`.
+- [x] Test-only run `40050561834` confirms the live narration, watcher, and incomplete-result regressions fail on Ubuntu and macOS. Package run `40050561782` passed on that exact head.
+- [ ] Repair the proof-preparation fixture that omits its assigned patch range, and fix current-main verifier failures when they are within the 0.8.0 candidate scope; preserve any remaining red results for the authorized 0.8.1 follow-up.
+- [ ] Fix actionable review findings, separate current-main baseline failures from new regressions, and rerun normal internal review after fixes.
+
+Main verifier history: the last green test run was `39960935469` on `268b65d` (0.7.10). The failure streak starts at `40023278462` on `67972f4` (0.7.11). The latest-main run `40039675890` on `6208b71` and exact-head run `40050561834` expose failures that predate the narration implementation; use the artifact logs to separate those from new regressions.
+
+- [x] Register the stray `REV_PR_BASE_REF` regression in `test-costs.tsv`. Run `40040867680` failed before test execution with missing metadata, so it is not regression proof. Cursor package validation passed at `2543495d`.
+- [x] Rerun test-only CI and confirm the stray-base-ref assertion fails on Ubuntu and macOS before changing production code. Exact-head run `40041805103` confirmed both assertions fail as intended, alongside the red 0.7.12 main baseline.
+- [x] Capture the exact `rev-preflight.sh --pr` refusal and verify successful and stale-base paths against local refs.
+- [x] Keep `rev-evidence.py`'s documented CLI refusal status consistent while asserting nonzero PR binding refusals.
+- [x] Permit `REV_PR_BASE_REF` alone to trigger partial-identity validation and require its presence in a complete identity.
+- [ ] Repair candidate-caused verifier failures without removing or weakening the new proof and read-limit behavior; carry unresolved baseline failures into 0.8.1.
+- [ ] Complete normal internal review and record current-head macOS, Ubuntu, and Cursor package results before merging.
+- [ ] Squash-merge PR #67, publish the signed `review-council--v0.8.0` tag and release, then verify installed host copies; publish 0.8.1 follow-up if any CI job fails.
+- [x] Keep failed ancestors in a replacement chain as terminal-failure evidence; validate only the selected final generation as a successful result.
+- [x] Preserve the pre-existing unchained replacement coverage path without weakening chained executor metadata or assignment binding.
+- [x] Ensure all verification prompt entry points append the sibling-site check, while risk and unphased prompts remain unchanged.
+- [x] Update both bundled skill copies and exact text assertions for the local-cluster fallback and unique replacement labels.
+
+Review results: the focused fixture re-review was clean before integrating 0.7.12. Post-merge internal review is pending. The user authorized publishing 0.8.0 with exact-head CI failures preserved and fixed in a 0.8.1 follow-up.
+
 ## 0.7.12 proof-capacity recovery for #1752
 
 - [x] Trace the exact source of the 2,000+ mandatory reads and confirm the failed recovery contract.
@@ -876,7 +937,7 @@ Review results: pending. SDK credentials absent; no live SDK qualification or pr
 - [x] Clarify Codex tool-call batching and add bounded, copyable source-read and search examples without relaxing read-audit enforcement.
 - [x] Add regression coverage for the observed failure modes. The full test suite was not run.
 - [x] Run one independent normal code review, fix actionable P0-P2 findings, and re-verify.
-- [ ] Publish the signed 0.7.12 tag and GitHub release. CI checks are explicitly waived for this release.
+- [x] Publish the signed 0.7.12 tag and GitHub release; the release is published at `review-council--v0.7.12`.
 - [ ] Resume #1752 on the new runtime and report its exact review state.
 
 ## Luna proof-capacity follow-up

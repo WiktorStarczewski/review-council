@@ -49,8 +49,14 @@ preflight choice.
    ```
    A printed path is `$S/roster-config.json`. Pass it as `REVIEW_COUNCIL_CONFIG` for this preflight only. Do not edit the user's config. A non-zero exit is fatal: relay it and do not preflight. Then:
    ```bash
-   ${CLAUDE_PLUGIN_ROOT}/scripts/rev-preflight.sh --scope <branch|uncommitted|path> --write $S
+   ${CLAUDE_PLUGIN_ROOT}/scripts/rev-preflight.sh --scope <branch|uncommitted|path> --write $S [--pr <number>]
    ```
+   For an open PR review, pass `--pr <number>`. This binds the scope to the live PR
+   number, branch, head SHA and base head SHA. It refuses a closed PR, mismatched or
+   dirty checkout, or a local base ref that does not match GitHub. Fetch the exact
+   refs into a clean worktree before preflight, then retry only with a fresh session.
+   Do not replace a refused PR-bound preflight with an unbound branch review. Do not
+   combine `--pr` with an explicit `--base`.
    The default mode is normal: four Luna seats, or four Cursor Grok seats when this host is Cursor and the SDK can seat them. `high effort` selects high: one Opus, one Sol, one Sonnet, and one Luna. An explicit `4*luna` or `4*grok` overrides that preset. `$S/panel-request.json` records the mode and the chain. Every later code panel and the plan panel uses that frozen roster. Do not rebuild it, and do not put the workhorse in those panels.
    For a fresh session, non-zero → relay the one-line reason verbatim. Exit 5 is retryable. Preserve the
    session and retry after the temporary provider availability problem clears. Exit 6 is permanent.
@@ -63,8 +69,10 @@ preflight choice.
    carry that sentence into the report. After fresh initialization, or immediately for a
    validated initialized session, `$S/scope.env`, `$S/files.txt`, `$S/untracked.txt` and
    `$S/roster.json` exist. Source `scope.env` for
-   `REV_BASE`, `REV_ROOT`, `REV_SCOPE` - every value in it is single-quoted, so a
-   branch name or path with shell metacharacters is inert data.
+   `REV_BASE`, `REV_ROOT`, `REV_SCOPE`, and `REV_PR_NUMBER` plus `REV_PR_REPO` when
+   present - every
+   value in it is single-quoted, so a branch name or path with shell metacharacters
+   is inert data. Preserve the optional PR number for any quota fallback preflight.
    Arm the recursion guard once preflight has passed (it refuses when `REV_ACTIVE` is
    already set, so arming it earlier would block your own run): from here on every seat
    runs with `REV_ACTIVE=1` in its environment - `rev-seat.sh` exports it itself, and
@@ -110,9 +118,11 @@ preflight choice.
    for a compact briefing from current state, exact roster identities and artifacts.
    Follow its references when evaluating a claim; it does not evaluate certification
    or replace collection and receipt checks.
-5. Do not arm a 10-minute status monitor unless `$S/state.json` has `"status_tick": true` or the config key `status_tick` is true. By default, wake only on a phase change, a seat failure, or a terminal result, and run `rev-status.sh` then. When the tick is enabled (not in stack-leg mode):
+5. Arm a 10-minute status monitor by default. `rev-brief.py` enables `status_tick` unless the session state or config explicitly sets it to `false`. When disabled, wake on a phase change, a seat failure, or a terminal result and run `rev-status.sh` then. When the tick is enabled (not in stack-leg mode):
    ```
-   Monitor({ command: "while true; do sleep 600; ${CLAUDE_PLUGIN_ROOT}/scripts/rev-status.sh <S>; done",
+   Monitor({ command: "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-context.py \"$S\" --watch --interval 600 --poll-interval 5",
              description: "rev status <S>", persistent: true, timeout_ms: 3600000 })
    ```
-   Every event it emits is relayed to the user (see **Status tick**).
+   Every narrated status line it emits is relayed to the user (see **Status tick**). The
+   watcher exits when the session reaches a terminal phase. The Monitor expires after
+   one hour; if the review is still nonterminal, re-arm it.

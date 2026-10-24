@@ -144,9 +144,12 @@ The probe binds the exact models and efforts. Preflight reuses a hash-keyed pass
 only when the boundary, fixtures, contract tests, and provider versions match; a replay
 failure blocks the paid run.
 
-Update state and the ledger after every phase. Do not wake on a ten-minute
-cadence unless `status_tick` is true. Wake on a phase change, a seat failure, or a
-terminal result, and run `rev-status.sh "$S"` then. The status script reads artifacts
-without model calls. Large changes deserve explicit remaining-coverage notes, not just counts.
-When `status_tick` is true, use `python3 "$PLUGIN/scripts/rev-context.py" "$S" --watch --duration 600`
-in an attached execution. Relay those scheduled events only while the tick is enabled.
+Update state and the ledger after every phase. The ten-minute status cadence is enabled
+by default unless session state or config explicitly sets `status_tick` to false. Wake on
+a phase change, a seat failure, or a terminal result, and run `rev-status.sh "$S"` then.
+The status script reads artifacts without model calls and summarizes reviewer activity,
+open P0-P2 findings, fixes, and the latest returned finding. Large changes deserve
+explicit remaining-coverage notes, not just counts. When `status_tick` is true, use
+`python3 "$PLUGIN/scripts/rev-context.py" "$S" --watch` in an attached execution.
+It runs until a terminal phase, emits narrated live status, and keeps the ten-minute
+cadence fixed across state changes. Relay scheduled events only while the tick is enabled.

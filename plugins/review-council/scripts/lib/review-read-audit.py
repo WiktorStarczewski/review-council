@@ -634,6 +634,19 @@ def line_limiter(words, maximum=READ_LINES):
     return False
 
 
+def head_result_limiter(words, maximum):
+    if not words or Path(words[0]).name != 'head':
+        return False
+    if len(words) == 2 and re.fullmatch(r'-\d+', words[1]):
+        return line_limiter(words, maximum)
+    if len(words) == 3 and words[1] in ('-n', '--lines') \
+            and re.fullmatch(r'[0-9]+', words[2]):
+        return line_limiter(words, maximum)
+    if len(words) == 2 and re.fullmatch(r'--lines=[0-9]+', words[1]):
+        return line_limiter(words, maximum)
+    return False
+
+
 def limiter_range(words, total_lines=None, maximum=READ_LINES):
     if not words:
         return None
@@ -958,7 +971,7 @@ def repository_search_pattern(name, data, root):
 
 
 def shell_violations(command, roots, root, session, authorized=None, complete=None, cache=None,
-                     dependency=None, read_limit=READ_LINES):
+                     dependency=None, read_limit=READ_LINES, plan_search_commands=None):
     tool = 'Bash'
     command = unwrap_shell(command)
     # A refused program must never hide behind a shape code, several of which are advisories.
@@ -1008,17 +1021,33 @@ def shell_violations(command, roots, root, session, authorized=None, complete=No
     for words, _ in parsed:
         if words and words[0] in ('for', 'while', 'until', 'if', 'then', 'do', 'case', '{'):
             return [violation('unsupported-shell-shape', tool)]
+    exact_plan_search = command in (plan_search_commands or ())
     for pipeline in pipelines:
         for position, words in enumerate(pipeline):
             if not words:
                 continue
             name = Path(words[0]).name
+            prior_search = any(shell_search_producer(previous)
+                               for previous in pipeline[:position])
+            prior_discovery = any(shell_discovery_producer(previous)
+                                  for previous in pipeline[:position])
+            sentinel_limiter = head_result_limiter(words, SEARCH_RESULT_SENTINEL) \
+                and not head_result_limiter(words, SEARCH_RESULTS)
+            if name == 'head' and sentinel_limiter \
+                    and not (prior_search and exact_plan_search):
+                return [violation('unbounded-shell-output', tool)]
             if name in UNSUPPORTED_FILE_COMMANDS and path_candidates(words, root):
                 return [violation('unsupported-source-range', tool)]
             is_source = name in SOURCE_COMMANDS or (
                 name == 'git' and git_source(words, read_limit))
             source_limit = shell_line_limit(words, root, session, read_limit)
-            if name in ('head', 'tail', 'sed'):
+            if name == 'head' and (prior_search or prior_discovery):
+                result_limit = SEARCH_RESULT_SENTINEL if prior_search and exact_plan_search \
+                    else SEARCH_RESULTS
+                if not head_result_limiter(words, result_limit):
+                    return [violation('unbounded-shell-output', tool)]
+                is_source = False
+            elif name in ('head', 'tail', 'sed'):
                 stream_limiter = (
                     name in ('head', 'tail') and (
                         len(words) == 2 and re.fullmatch(r'-[0-9]+|--lines=[0-9]+', words[1])
@@ -1045,11 +1074,13 @@ def shell_violations(command, roots, root, session, authorized=None, complete=No
             result_producer = shell_search_producer(words) or shell_discovery_producer(words)
             maximum = SEARCH_RESULTS if result_producer else source_limit
             bounded_here = result_producer and line_limiter(words, maximum)
-            downstream_maximum = (SEARCH_RESULT_SENTINEL
-                                  if shell_search_producer(words) else maximum)
-            if is_source and not bounded_here \
-                    and not any(line_limiter(later, downstream_maximum)
-                                for later in pipeline[position + 1:]):
+            downstream_maximum = (SEARCH_RESULT_SENTINEL if exact_plan_search
+                                  and shell_search_producer(words) else maximum)
+            downstream_bounded = any(
+                head_result_limiter(later, downstream_maximum) if result_producer else
+                line_limiter(later, downstream_maximum)
+                for later in pipeline[position + 1:])
+            if is_source and not bounded_here and not downstream_bounded:
                 return [violation('unbounded-shell-output', tool)]
     _, unparseable = shell_source_ranges(command, root, cache, session, read_limit)
     if unparseable:
@@ -1058,7 +1089,8 @@ def shell_violations(command, roots, root, session, authorized=None, complete=No
 
 
 def validate_call(name, data, roots, root, session, authorized=None, complete=None, cache=None,
-                  dependency=None, *, target=None, read_limit=READ_LINES):
+                  dependency=None, *, target=None, read_limit=READ_LINES,
+                  plan_search_commands=None):
     normalized = name.lower()
     path = tool_path(data)
     if path is not None:
@@ -1095,7 +1127,8 @@ def validate_call(name, data, roots, root, session, authorized=None, complete=No
         if not isinstance(command, str) or not command.strip():
             return [violation('missing-shell-command', name)]
         return shell_violations(
-            command, roots, root, session, authorized, complete, cache, dependency, read_limit)
+            command, roots, root, session, authorized, complete, cache, dependency, read_limit,
+            plan_search_commands)
     elif normalized in TERMINAL_TOOLS:
         return []
     return [violation('unrecognized-review-tool', name)]
@@ -1598,6 +1631,24 @@ def load_evidence_manifest(session, declared_hash, prompt, root, *, fresh=False,
     return manifest, manifest_hash, seat, repository
 
 
+def compiled_plan_search_command(cluster, module):
+    return (module.plan_search_shell_command(cluster['search_contract'])
+            + ' | head -' + str(SEARCH_RESULT_SENTINEL))
+
+
+def assigned_plan_search_commands(manifest, seat, module):
+    if manifest is None or manifest.get('phase') != 'plan':
+        return set()
+    assignment = manifest['assignments'][seat]
+    assigned = set(assignment.get(
+        'plan_clusters', [cluster['id'] for cluster in manifest['plan']['clusters']]))
+    return {
+        compiled_plan_search_command(cluster, module)
+        for cluster in manifest['plan']['clusters']
+        if cluster['id'] in assigned and cluster.get('search_proof') is None
+    }
+
+
 def validate_plan_prompt_binding(manifest, seat, prompt, module, *, text=None):
     if manifest is None or manifest.get('phase') != 'plan':
         return
@@ -1630,8 +1681,7 @@ def validate_plan_prompt_binding(manifest, seat, prompt, module, *, text=None):
             continue
         proof = cluster.get('search_proof')
         if proof is None:
-            command = (module.plan_search_shell_command(cluster['search_contract'])
-                       + ' | head -' + str(SEARCH_RESULT_SENTINEL))
+            command = compiled_plan_search_command(cluster, module)
             required_once.append(
                 'Required cluster sibling search: ' + cluster_id + ' run ' + command
                 + ' from repository root; at most 80 result lines are accepted, and an 81st '
@@ -2399,6 +2449,28 @@ def intersects(finding, ranges):
                for row in ranges)
 
 
+def prompt_plan_search_commands(prompt, root, session):
+    if not prompt:
+        return set()
+    prompt = Path(prompt).resolve()
+    try:
+        text = prompt.read_text()
+        lines = text.splitlines()
+        if not any(line.startswith('Immutable plan snapshot SHA-256:') for line in lines):
+            return set()
+        declared, manifest_hash = evidence_manifest_declaration(lines)
+        if not declared or manifest_hash is None:
+            return set()
+        manifest, _, seat, _ = load_evidence_manifest(session, manifest_hash, prompt, root)
+        validate_assignment_prompt_binding(manifest, seat, lines)
+        module = _load_evidence_module()
+        validate_plan_prompt_binding(manifest, seat, prompt, module, text=text)
+        return assigned_plan_search_commands(manifest, seat, module)
+    except (AttributeError, ImportError, KeyError, OSError, TypeError, ValueError,
+            json.JSONDecodeError):
+        return set()
+
+
 def hook(args):
     name = ''
     data = {}
@@ -2412,8 +2484,10 @@ def hook(args):
             if args.prompt else (None, None)
         dependency = Path(args.deps).resolve() if args.deps else None
         roots = allowed_roots(root, session, args.deps)
+        plan_search_commands = prompt_plan_search_commands(args.prompt, root, session)
         failures = validate_call(
-            name, data, roots, root, session, authorized, complete, {}, dependency)
+            name, data, roots, root, session, authorized, complete, {}, dependency,
+            plan_search_commands=plan_search_commands)
     except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
         failures = [violation('invalid-hook-payload', 'unknown')]
     if failures:
@@ -2443,9 +2517,11 @@ def post_hook(args):
         authorized, complete = prompt_permissions(args.prompt, root, session) \
             if args.prompt else (None, None)
         dependency = Path(args.deps).resolve() if args.deps else None
+        plan_search_commands = prompt_plan_search_commands(args.prompt, root, session)
         failures = validate_call(
             name, data, allowed_roots(root, session, args.deps), root, session,
-            authorized, complete, {}, dependency)
+            authorized, complete, {}, dependency,
+            plan_search_commands=plan_search_commands)
         if failures:
             code = failures[0]['code']
             blocked = True
@@ -2610,6 +2686,7 @@ def assess(args, blocked):
     manifest_hash = None
     seat = None
     evidence_repository = None
+    plan_search_commands = set()
     if declared_manifest_hash is not None:
         try:
             manifest, manifest_hash, seat, evidence_repository = load_evidence_manifest(
@@ -2618,14 +2695,24 @@ def assess(args, blocked):
                 json.JSONDecodeError):
             failures.append(violation('invalid-source-context', args.adapter))
         else:
+            assignment_prompt_bound = False
+            plan_prompt_bound = False
             try:
                 validate_assignment_prompt_binding(manifest, seat, prompt_lines)
+                assignment_prompt_bound = True
             except (KeyError, TypeError, ValueError):
                 failures.append(violation('invalid-assignment-prompt-binding', args.adapter))
             try:
                 validate_plan_prompt_binding(manifest, seat, prompt, _load_evidence_module())
+                plan_prompt_bound = True
             except (KeyError, OSError, TypeError, ValueError):
                 failures.append(violation('invalid-plan-prompt-binding', args.adapter))
+            if assignment_prompt_bound and plan_prompt_bound:
+                try:
+                    plan_search_commands = assigned_plan_search_commands(
+                        manifest, seat, _load_evidence_module())
+                except (KeyError, TypeError, ValueError):
+                    failures.append(violation('invalid-plan-prompt-binding', args.adapter))
             try:
                 validate_prompt_artifact_set(manifest, seat, prompt, root, session)
             except (KeyError, OSError, TypeError, ValueError):
@@ -2679,7 +2766,8 @@ def assess(args, blocked):
         read_limit = read_limit_for_call(args.adapter, name, data, root, assigned_patch)
         call_failures = validate_call(
             name, data, roots, root, session, authorized, complete_paths, source_cache,
-            dependency, read_limit=read_limit)
+            dependency, read_limit=read_limit,
+            plan_search_commands=plan_search_commands)
         failures.extend(call_failures)
         if call_failures:
             blocked.add(call_id)

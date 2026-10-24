@@ -42,7 +42,7 @@ panel_prompt_fixture() {  # panel_prompt_fixture <repo> <session> <panel-tsv>
     "$(git -C "$1" rev-parse HEAD)" "$1" > "$2/scope.env"
   printf 'a.txt\n' > "$2/files.txt"
   : > "$2/untracked.txt"
-  printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$2/roster.json"
+  printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex","extra":false},{"seat":"terra","adapter":"codex","extra":false},{"seat":"opus","adapter":"claude","extra":false},{"seat":"sonnet","adapter":"claude","extra":false}]}' > "$2/roster.json"
   printf '%s\t%s\t%s\n' sol correctness-boundaries 'round focus' terra security-state-api 'round focus' \
     opus concurrency-resources-performance 'round focus' \
     sonnet tests-observability-maintenance-regression 'round focus' > "$3"
