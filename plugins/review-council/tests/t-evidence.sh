@@ -2766,6 +2766,10 @@ def budget_omissions_are_segmented_or_retained():
                     assert re.fullmatch(r'unit_[1-8]\.py', row['path']), row
                     assert row['line_start'] == 1 and row['line_end'] == 142, row
                     assert row['blob_tree'] == manifest['snapshot_tree'], row
+                elif row['path'] == 'package.json':
+                    assert row['line_start'] == row['line_end'] == 1, row
+                    assert row['blob_tree'] == manifest['snapshot_tree'], row
+                    assert set(row['reasons']) == {'gate:package.json:1', 'gate:package.json:file'}, row
                 else:
                     source_lengths = {'main.py': 5, 'test_calls.py': 3}
                     assert row['path'] in source_lengths, row
