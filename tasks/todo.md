@@ -901,3 +901,13 @@ Review results: pending. No Bread review receipt, merge or deployment is claimed
 Independent cumulative recheck: all three P2 findings are fixed; no additional P0-P2 findings. This is source-review approval, not passing candidate CI. New pushes are held for cross-session ownership coordination requested by the user. Native queue messages to both peer sessions remain pending and are not acknowledgements.
 
 Release authorization: the user explicitly requested releasing0.7.13 without CI and then resuming the frozen Bread review. CI is waived for this release; no passing current-candidate CI is claimed. Prior normal review is clean after all three P2 corrections.
+
+## Routed source proof ownership follow-up
+
+- [x] Preserve actual0.7.13 enabled-context Bread refusal at prepare-diagnostic-1s.json.
+- [x] Recover assigned ownership from source range component IDs without dropping boundary proof.
+- [x] Add a routed-specialist regression and obtain one independent normal review.
+- [x] Verify preparation on the actual frozen Bread branch before publication.
+- [ ] Publish the narrow follow-up under the user's Council release CI waiver and resume Bread review.
+
+Operational acceptance: complete Bread snapshot5b9ce74207af51bba5831a318bf48e28f2dd056c prepared with source context enabled at /private/tmp/wlg-bread-owner-probe-yw2di0gt. All four seats fit the unchanged12-read limit, using1,1,6,2 post-index reads. Exact required segments remain mandatory. Independent normal source review approved. The existing user waiver applies to this narrow follow-up release; no passing candidate CI is claimed.
