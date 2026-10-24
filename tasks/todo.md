@@ -1,3 +1,14 @@
+# Luna seat repository-root fix
+
+- [x] Confirm that `rev-seat.sh` ignores the reviewed session's frozen `REV_ROOT`.
+- [x] Add a regression for launching from outside the reviewed repository.
+- [ ] Confirm the regression fails on the test-only commit in CI.
+- [ ] Resolve the seat root from `scope.env` and preserve legacy fallback when scope metadata is absent.
+- [ ] Complete one independent normal review and pass required checks on the exact PR head.
+- [ ] Squash-merge and publish a signed release with the fix installed.
+
+The active wallet PR replacement was launched from the home directory while its session scope points at the wallet checkout. The runner therefore assigned the wrong root to both its adapter and read audit. The session scope is the audited authority for that review.
+
 # Issue #77 and release 0.8.2
 
 - [x] Compare issue #77 with current main and verify the signed 0.8.1 release.

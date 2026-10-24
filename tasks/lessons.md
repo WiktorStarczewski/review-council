@@ -278,6 +278,10 @@ When changing the Review Council repository, do not use Review Council to review
 itself, including release candidates. Use the normal internal review workflow with
 one reviewer even when the general code-review workflow defaults to a Council panel.
 
+- When live monitoring confirms a bounded runner defect with a direct fix, start the
+  patch immediately and keep monitoring only for the active seat's terminal evidence.
+  Repeated observation does not substitute for fixing the confirmed cause.
+
 - Before releasing Council, fetch and verify the latest signed tag and merge any newer main commit before editing the next version's manifests, changelog, plan, or release procedure.
 - If the user restores a CI gate after explicitly waiving it, follow the latest direction. Older-head results do not satisfy the required current-head gate before merge or release.
 - Adapter review prompts must distinguish multiple calls in one turn from batching multiple source reads into one payload. Show commands that the active adapter and its read audit both accept.

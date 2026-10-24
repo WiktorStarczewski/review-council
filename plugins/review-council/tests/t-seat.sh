@@ -557,3 +557,23 @@ test_seat_process_group_cancellation_preserves_partial_stream() {
     "$S/rkill-codex-sol.stream.ndjson" '"type":"item.started"'
   seat_env_reset "$_path"
 }
+
+test_seat_scope_env_selects_root_outside_repository() {
+  local _path="$PATH"; seat_env
+  local R="$T/scope-root" S="$T/seat-scope-root" CALLER="$T/caller"
+  mkrepo "$R"
+  seat_roster "$S"
+  echo "review the diff" > "$S/p.md"
+  printf "REV_ROOT='%s'\n" "$R" > "$S/scope.env"
+  mkdir -p "$CALLER"
+  : > "$T/args"
+  : > "$T/args.env"
+  (
+    cd "$CALLER"
+    env -u REV_REPO SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md"
+  ) > "$T/scope-root.out"
+  assert_eq "scope-root seat exits successfully outside the repository" "$?" 0
+  assert_grep "Codex receives the frozen scope root" "$T/args" "^$R$"
+  assert_nogrep "Codex does not receive the caller's unrelated directory" "$T/args" "^$CALLER$"
+  seat_env_reset "$_path"
+}
