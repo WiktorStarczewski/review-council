@@ -74,6 +74,26 @@ JSON
   assert_grep "session can opt out of default progress ticks" "$T/brief.json" '"status_tick": false'
 }
 
+test_status_rejects_incomplete_or_invalid_results() {
+  local S="$T/status-proof"; mkdir -p "$S"
+  "$SCRIPTS/rev-state.sh" "$S" round=1 min_rounds=1 phase=collect \
+    'seats=["complete","incomplete","malformed"]' open.P0=0 open.P1=0 open.P2=0 fixed=0 >/dev/null
+  cp "$FX/findings-valid.json" "$S/r1-complete.json"
+  printf '%s\n' '{"summary":"INCOMPLETE PROOF: source remains unread","findings":[]}' > "$S/r1-incomplete.json"
+  printf '%s\n' '{broken json' > "$S/r1-malformed.json"
+  for seat in complete incomplete malformed; do echo 0 > "$S/r1-$seat.exit"; : > "$S/r1-$seat.prompt.md"; done
+
+  local line; line=$("$SCRIPTS/rev-status.sh" "$S"); echo "    $line"; echo "$line" > "$T/proof-line"
+  assert_grep "only a schema-valid complete result counts as returned" "$T/proof-line" \
+    'Council is in collect, round 1 of 1: 1 of 3 review seats have returned results'
+  assert_grep "incomplete proof is reported separately" "$T/proof-line" 'incomplete: incomplete proof'
+  assert_grep "malformed result is reported separately" "$T/proof-line" 'malformed: invalid result'
+  assert_grep "invalid results are narrated as failed proof" "$T/proof-line" \
+    '2 reviewer seats have failed or returned invalid proof'
+  assert_nogrep "incomplete proof finding is not surfaced" "$T/proof-line" \
+    'A recent returned report flags.*source remains unread'
+}
+
 test_status_agent_transcripts() {
   local S="$T/status-agent-transcripts"; mkdir -p "$S"
   "$SCRIPTS/rev-state.sh" "$S" round=4 min_rounds=4 phase=collect \
