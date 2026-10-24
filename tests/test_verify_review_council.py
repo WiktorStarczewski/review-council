@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -832,9 +833,18 @@ finally:
             ],
         )
         workflow = (REPO / ".github/workflows/test.yml").read_text()
-        self.assertIn("python3 scripts/verify-review-council.py", workflow)
-        self.assertNotIn("python3 -m unittest discover", workflow)
-        self.assertNotIn("plugins/review-council/tests/run-tests.sh", workflow)
+        _, header, job_text = workflow.partition("\njobs:\n")
+        self.assertTrue(header)
+        jobs = dict(re.findall(r"(?ms)^  ([\w-]+):\n(.*?)(?=^  [\w-]+:|\Z)", job_text))
+        self.assertIn("verify", jobs)
+        self.assertEqual(jobs["verify"].count("python3 scripts/verify-review-council.py"), 1)
+        self.assertNotIn("python3 -m unittest discover", jobs["verify"])
+        self.assertNotIn("plugins/review-council/tests/run-tests.sh", jobs["verify"])
+        self.assertIn("proof-preparation", jobs)
+        for name in ("test_rust_import_resolution.py", "test_code_source_promotion.py",
+                     "test_search_pipeline_bounds.py", "test_import_source_roots.py"):
+            self.assertIn("run: python3 -m unittest discover -s tests -p " + name + " -v",
+                          jobs["proof-preparation"])
 
 
 if __name__ == "__main__":

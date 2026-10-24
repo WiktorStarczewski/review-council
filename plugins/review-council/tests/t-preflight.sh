@@ -377,7 +377,7 @@ test_preflight_pr_identity() {
 printf '%s\n' "$@" >> "$GH_ARGS"
 printf '%s\n' "${GH_REPO-unset}" >> "$GH_REPO_OBS"
 [ "$1" = pr ] && [ "$2" = view ] || exit 2
-payload="{\"number\":71,\"url\":\"https://github.com/acme/repo/pull/71\",\"state\":\"$PR_STATE\",\"headRefName\":\"$PR_BRANCH\",\"headRefOid\":\"$STUB_PR_HEAD\",\"baseRefName\":\"main\",\"baseRefOid\":\"$PR_BASE\"}"
+payload="{\"number\":71,\"url\":\"https://github.com/${PR_REPOSITORY:-acme/repo}/pull/71\",\"state\":\"$PR_STATE\",\"headRefName\":\"$PR_BRANCH\",\"headRefOid\":\"$STUB_PR_HEAD\",\"baseRefName\":\"main\",\"baseRefOid\":\"$PR_BASE\"}"
 printf '%s\n' "$payload" > "$GH_JSON"
 cat "$GH_JSON"
 SH
@@ -414,11 +414,27 @@ SH
       > "$B/repo-without-pr.out" 2> "$B/repo-without-pr.err"
     assert_eq "an explicit PR repository requires a PR number" "$?" 1
     assert_grep "missing PR number is explained" "$B/repo-without-pr.err" '--pr-repo requires --pr'
+    local repository
+    for repository in acme-org/.github acme-org/repo_name-1; do
+      (export PR_REPOSITORY="$repository"; cd "$R" && "$PF" --pr 71 --pr-repo "$repository" \
+        --write "$B/valid-repository") > "$B/valid-repository.out" 2> "$B/valid-repository.err"
+      assert_eq "legitimate PR repository $repository passes preflight" "$?" 0
+    done
+    : > "$GH_ARGS"
     (cd "$R" && "$PF" --pr 71 --pr-repo ../repo --write "$B/invalid-repo") \
       > "$B/invalid-repo.out" 2> "$B/invalid-repo.err"
     assert_eq "an invalid PR repository is refused" "$?" 1
     assert_grep "invalid PR repository format is explained" "$B/invalid-repo.err" \
       '--pr-repo must be an owner/repository pair'
+    assert_exit "invalid PR repository fails before a GitHub lookup" 0 test ! -s "$GH_ARGS"
+    for repository in ./repo .../repo acme/. acme/.. acme/... ac.me/repo ac_me/repo; do
+      (cd "$R" && "$PF" --pr 71 --pr-repo "$repository" --write "$B/invalid-component") \
+        > "$B/invalid-component.out" 2> "$B/invalid-component.err"
+      assert_eq "invalid PR repository component $repository is refused" "$?" 1
+      assert_grep "invalid component $repository explains repository format" "$B/invalid-component.err" \
+        '--pr-repo must be an owner/repository pair'
+    done
+    assert_exit "invalid PR components fail before every GitHub lookup" 0 test ! -s "$GH_ARGS"
     export PR_BASE="$head"
     rm -f "$RSTUB_ARGS"
     (cd "$R" && "$PF" --pr 71 --write "$B/base-drift") > "$B/base-drift.out" 2> "$B/base-drift.err"

@@ -40,7 +40,7 @@ PY
     assert_eq "thirteen qualified consumers launch with exact source proof" "$status" 0
     [ "$status" -eq 0 ] || return 0
     local manifest="$S/rproof-evidence.manifest.json" prompt
-    prompt=$("$SCRIPTS/rev-prompt.sh" "$S" proof sol correctness-boundaries \
+    prompt=$("$SCRIPTS/rev-prompt.sh" "$S" proof sol simplicity \
       proof-budget --evidence "$manifest") || return
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/rproof-sol.json"
     python3 - "$manifest" "$SCRIPTS/rev-evidence.py" <<'PYPROOF'

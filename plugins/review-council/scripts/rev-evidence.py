@@ -1833,8 +1833,9 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                     if name == call_name:
                         matching_bindings.extend(qualified_module_bindings)
                     resolved = any(
-                        symbol['path'] == path
-                        or (symbol.get('cross_file') and symbol['path'] in imported_targets)
+                        symbol['blob_tree'] == tree
+                        and (symbol['path'] == path
+                             or (symbol.get('cross_file') and symbol['path'] in imported_targets))
                         for symbol in definitions.get(name, []))
                     unresolved_target = any(binding.get('unresolved')
                                             for binding in matching_bindings)
@@ -1857,7 +1858,7 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                         call['import_line_end'] = binding['line_end']
                     if unresolved_target:
                         call['resolution'] = 'unresolved import search required'
-                    elif unbound_candidate:
+                    elif not resolved:
                         call['resolution'] = 'unresolved name search required'
                     if call not in calls:
                         calls.append(call)
@@ -3457,31 +3458,38 @@ def plan_closure_paths(clusters, dependencies, changed):
 
 
 def markdown(data, json_path):
-    lines = ['# Evidence navigation index', '', f'Complete deterministic facts: {json_path}',
-             'Navigation only. Verify claims in source and expand when evidence is insufficient.']
+    sections = []
     for section in ('symbols', 'call_sites', 'related_tests', 'unresolved_imports', 'gates', 'instructions'):
         rows = data[section]
         label = ('Unresolved or aliased import proof obligations'
                  if section == 'unresolved_imports'
                  else section.replace('_', ' ').title())
-        lines.extend(['', label + ':'])
-        included = 0
+        sections.append((label, rows, digest(encoded(rows)), []))
+
+    def packet():
+        lines = ['# Evidence navigation index', '', f'Complete deterministic facts: {json_path}',
+                 'Navigation only. Verify claims in source and expand when evidence is insufficient.']
+        for label, rows, row_hash, selected in sections:
+            lines.extend(['', label + ':', *selected])
+            lines.append(f'Omitted: {len(rows) - len(selected)}; complete list SHA-256: {row_hash}; complete list in JSON.')
+        lines.extend(['', *data['limitations']])
+        return ('\n'.join(lines) + '\n').encode()
+
+    result = packet()
+    if len(result) > NAVIGATION_TOTAL_LIMIT:
+        raise ValueError('navigation packet exceeds byte limit')
+    for _, rows, _, selected in sections:
         for row in rows[:12]:
             rendered = json.dumps(row, sort_keys=True, ensure_ascii=True)
             if len(rendered.encode()) > NAVIGATION_ROW_LIMIT:
                 continue
-            candidate = '- ' + rendered
-            projected = ('\n'.join([*lines, candidate]) + '\n').encode()
-            if len(projected) > NAVIGATION_TOTAL_LIMIT - 512:
-                continue
-            lines.append(candidate); included += 1
-        row_hash = digest(encoded(rows))
-        lines.append(f'Omitted: {len(rows) - included}; complete list SHA-256: {row_hash}; complete list in JSON.')
-    lines.extend(['', *data['limitations']])
-    packet = ('\n'.join(lines) + '\n').encode()
-    if len(packet) > NAVIGATION_TOTAL_LIMIT:
-        raise ValueError('navigation packet exceeds byte limit')
-    return packet
+            selected.append('- ' + rendered)
+            candidate = packet()
+            if len(candidate) <= NAVIGATION_TOTAL_LIMIT:
+                result = candidate
+            else:
+                selected.pop()
+    return result
 
 
 def numeric_panel_binding(session, label, roster, number, minimum, panel):

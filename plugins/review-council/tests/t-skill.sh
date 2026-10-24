@@ -641,7 +641,9 @@ test_skill_contract() {
   # inherited loop machinery that other tasks' scripts depend on
   assert_grep "failure table kept" "$K" '\| seat exit 3 \|'
   assert_grep "status tick kept" "$K" 'rev-status\.sh'
-  assert_grep "Claude status watcher exits at terminal state" "$K" \
+  local watcher_text="$T/claude-status-watcher.md"
+  sed 's/\\"/"/g' "$K" > "$watcher_text"
+  assert_grep "Claude status watcher exits at terminal state" "$watcher_text" \
     'rev-context\.py "\$S" --watch --interval 600 --poll-interval 5'
   assert_nogrep "Claude status watcher does not loop past terminal state" "$K" \
     'while true; do sleep 600;.*rev-status\.sh'

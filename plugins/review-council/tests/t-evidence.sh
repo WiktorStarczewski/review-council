@@ -1073,6 +1073,15 @@ def dense_navigation_keeps_complete_footer():
             complete = (json.dumps(data[section], sort_keys=True, ensure_ascii=True, indent=2) + '\n').encode()
             assert footer[2].decode() == hashlib.sha256(complete).hexdigest(), ('complete-list hash', width, section)
         assert json.dumps(data, sort_keys=True) == original, ('complete facts mutated', width)
+    data = {section: [] for section in sections}
+    data['limitations'] = []
+    empty_bytes = len(module.markdown(data, Path('evidence.json')))
+    data['limitations'] = ['x' * (16384 - empty_bytes - 64)]
+    data['symbols'] = [{'path': 'x' * 128}, {'path': 'small.py'}]
+    packet = module.markdown(data, Path('evidence.json'))
+    assert len(packet) <= 16384
+    assert b'- {"path": "small.py"}' in packet, 'a skipped row hid a later row that fits'
+    assert ('- ' + json.dumps(data['symbols'][0])).encode() not in packet
 
 def oversized_mandatory_navigation_footer_is_refused():
     data = {section: [] for section in
@@ -1938,11 +1947,10 @@ def local_names_do_not_expand_cross_file_proof():
         assert any(row['name'] == 'page' and row['cross_file'] is False for row in facts['symbols'])
         assert any(row['path'] == 'src/consumer.ts' and row['name'] == 'readHistory'
                    for row in facts['call_sites'])
-        assert any(row['source'] == 'src/consumer.ts' and row['target'] == 'utility/history.ts'
-                   and row['kind'] == 'ambiguous-import'
+        assert any(row['source'] == 'src/consumer.ts' and row['target'] == 'src/history.ts'
+                   and row['kind'] == 'local-import'
                    for row in facts['dependencies']), facts['dependencies']
-        assert not any(row['source'] == 'src/consumer.ts' and row['target'] == 'utility/history.ts'
-                       and row['kind'] == 'lexical-reference'
+        assert not any(row['target'] == 'utility/history.ts'
                        for row in facts['dependencies']), facts['dependencies']
         assert not any(row.get('path') == 'src/consumer.ts'
                        and 'utility/history.ts' in row.get('candidate_targets', [])
@@ -1956,7 +1964,8 @@ def local_names_do_not_expand_cross_file_proof():
                            for packet in manifest['source_context']['seats'].values()
                            for required in packet['required_source_ranges'])
         assert 'src/consumer.ts' in proof_paths and 'tests/history.test.ts' in proof_paths, proof_paths
-        assert not proof_paths & {'src/unrelated.ts', 'tests/unrelated.test.ts', 'docs/notes.md'}, proof_paths
+        assert not proof_paths & {'src/unrelated.ts', 'tests/unrelated.test.ts', 'docs/notes.md',
+                                  'utility/history.ts'}, proof_paths
 
 def wildcard_reexports_use_exact_source_proof():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -2708,6 +2717,19 @@ def budget_omissions_are_segmented_or_retained():
         assert all(packet['source_read_required'] for packet in omitted)
         assert any(packet['required_source_ranges'] for packet in omitted)
         assert any(packet['omitted_source_ranges'] for packet in omitted)
+        promoted = set()
+        source_cache = {}
+
+        def frozen_range(row):
+            identity = (row['blob_tree'], row['path'])
+            if identity not in source_cache:
+                source_cache[identity] = subprocess.check_output(
+                    ['git', '-C', str(root), 'show', ':'.join(identity)]).splitlines(keepends=True)
+            assert row['blob_oid'] == git('rev-parse', ':'.join(identity))
+            raw = b''.join(source_cache[identity][row['line_start'] - 1:row['line_end']])
+            assert hashlib.sha256(raw).hexdigest() == row['content_sha256']
+            return raw
+
         for packet in omitted:
             required = packet['required_source_ranges']
             retained = packet['omitted_source_ranges']
@@ -2717,14 +2739,26 @@ def budget_omissions_are_segmented_or_retained():
             retained_ids = {(row['path'], row['line_start'], row['line_end']) for row in retained}
             assert not required_ids & retained_ids
             for row in required:
-                assert row['path'] == 'unit_0.py' and row['line_start'] == 1
-                assert row['line_end'] == 262 and row['segments']
+                assert row['reasons'] and row['component_ids'] and row['segments']
+                assert row['blob_tree'] in (manifest['snapshot_tree'], manifest['source_context']['base_tree'])
+                if row['path'].startswith('unit_'):
+                    assert row['path'] == 'unit_0.py' and row['line_start'] == 1
+                    assert row['line_end'] == 262 and row['blob_tree'] == manifest['snapshot_tree']
+                else:
+                    assert row['path'] in ('main.py', 'test_calls.py')
+                    promoted.add(row['path'])
+                expected = frozen_range(row)
+                rebuilt = b''
                 cursor = row['line_start']
                 for segment in row['segments']:
                     assert segment['line_start'] == cursor
                     assert segment['predicted_visible_bytes'] <= 16384
+                    raw = (session / segment['artifact']).read_bytes()
+                    assert len(raw) == segment['raw_bytes']
+                    assert hashlib.sha256(raw).hexdigest() == segment['content_sha256']
+                    rebuilt += raw
                     cursor = segment['line_end'] + 1
-                assert cursor == row['line_end'] + 1
+                assert cursor == row['line_end'] + 1 and rebuilt == expected
             for row in retained:
                 assert row['path'].startswith('unit_') and row['line_start'] == 1
                 assert row['path'] != 'unit_0.py' and row['line_end'] == 142
@@ -2733,6 +2767,8 @@ def budget_omissions_are_segmented_or_retained():
                 assert len(row['blob_oid']) in (40, 64)
                 assert len(row['content_sha256']) == 64
                 assert 'content' not in row and 'segments' not in row
+                frozen_range(row)
+        assert promoted == {'main.py', 'test_calls.py'}, promoted
         call('verify', session / 'rbudget-omissions-evidence.manifest.json')
 
 def innermost_declarations_and_bounded_anchors():
@@ -3316,8 +3352,9 @@ def replacement_runs_on_another_seat():
             ('child claim', ['sol']), ('second child claim', ['opus'])], receipt['findings']
 
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
-        roster = {'seats': [{'seat': seat, 'extra': False, 'adapter': 'claude', 'model': 'model-' + seat,
-                             'effort': 'max'} for seat in seats]}
+        roster = {'seats': [{'seat': seat, 'extra': False, 'adapter': 'claude',
+                             'model': 'opus' if seat == 'sol' else 'sonnet',
+                             'effort': 'high'} for seat in seats]}
         (session / 'roster.json').write_text(json.dumps(roster))
         parent = prepare('5', 'risk', *assign, '--full-seat', 'sonnet')
         owner = parent['mechanical_owner']
@@ -3328,7 +3365,8 @@ def replacement_runs_on_another_seat():
             assert subprocess.run([sys.executable, str(attempt), 'reserve', session, '5', owner, prompt]).returncode == 0
             assert subprocess.run([sys.executable, str(attempt), 'record', session, '5', owner, prompt, code]).returncode == 0
             (session / f'r5-{owner}.exit').write_text(code + '\n')
-        executor = next(seat for seat in seats if seat != owner)
+        executor = 'sol'
+        assert owner != executor
         bundle = parent['assignments'][owner]['bundle']
         args = ('--assignment', executor + '=' + bundle, '--parent-assignment', '5:' + owner)
         launch('1')
