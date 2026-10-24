@@ -2718,7 +2718,6 @@ def budget_omissions_are_segmented_or_retained():
         assert all(packet['source_read_required'] for packet in omitted)
         assert any(packet['required_source_ranges'] for packet in omitted)
         assert any(packet['omitted_source_ranges'] for packet in omitted)
-        promoted = set()
         source_cache = {}
         repository = module.Repository(session.resolve())
 
@@ -2727,6 +2726,7 @@ def budget_omissions_are_segmented_or_retained():
             if identity not in source_cache:
                 source_cache[identity] = repository.git('show', ':'.join(identity)).splitlines(keepends=True)
             assert row['blob_oid'] == repository.git('rev-parse', ':'.join(identity)).decode().strip()
+            assert row['blob_mode'] == repository.entries(row['blob_tree'])[row['path']][0], row
             assert 1 <= row['line_start'] <= row['line_end'] <= len(source_cache[identity]), row
             raw = b''.join(source_cache[identity][row['line_start'] - 1:row['line_end']])
             assert hashlib.sha256(raw).hexdigest() == row['content_sha256']
@@ -2748,7 +2748,6 @@ def budget_omissions_are_segmented_or_retained():
                     assert row['line_end'] == 262 and row['blob_tree'] == manifest['snapshot_tree']
                 else:
                     assert row['path'] in ('main.py', 'test_calls.py')
-                    promoted.add(row['path'])
                 expected = frozen_range(row)
                 rebuilt = b''
                 cursor = row['line_start']
@@ -2781,7 +2780,33 @@ def budget_omissions_are_segmented_or_retained():
                 assert len(row['content_sha256']) == 64
                 assert 'content' not in row and 'segments' not in row
                 frozen_range(row)
-        assert promoted == {'main.py', 'test_calls.py'}, promoted
+        owner_packet = manifest['source_context']['seats'][manifest['mechanical_owner']]
+        delivered = [row for shard in owner_packet['shards']
+                     for row in json.loads((session / shard['artifact']).read_text())['entries']]
+        delivered += owner_packet['required_source_ranges']
+        coverage = {'main.py': set(), 'test_calls.py': set()}
+        for row in delivered:
+            if row['path'] not in coverage or row['blob_tree'] != manifest['snapshot_tree']:
+                continue
+            expected = frozen_range(row)
+            if 'content' in row:
+                actual = row['content'].encode()
+            else:
+                actual = b''
+                cursor = row['line_start']
+                for segment in row['segments']:
+                    assert segment['line_start'] == cursor, segment
+                    assert segment['predicted_visible_bytes'] <= 16384, segment
+                    raw = (session / segment['artifact']).read_bytes()
+                    assert len(raw) == segment['raw_bytes'], segment
+                    assert hashlib.sha256(raw).hexdigest() == segment['content_sha256'], segment
+                    actual += raw
+                    cursor = segment['line_end'] + 1
+                assert cursor == row['line_end'] + 1, row
+            assert actual == expected, row
+            coverage[row['path']].update(range(row['line_start'], row['line_end'] + 1))
+        assert {1, 2, 4, 5} <= coverage['main.py'], coverage
+        assert {1, 2, 3} <= coverage['test_calls.py'], coverage
         call('verify', session / 'rbudget-omissions-evidence.manifest.json')
 
 def innermost_declarations_and_bounded_anchors():
