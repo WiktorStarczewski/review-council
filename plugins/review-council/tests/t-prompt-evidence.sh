@@ -522,7 +522,7 @@ PY
           assert_grep "$recovery_adapter prefix names the hard byte ceiling" \
             "$recovery_prefix" 'Hard ceilings are 32 KiB per response and for an ordinary turn'
           assert_grep "$recovery_adapter prefix caps Codex patch windows at 40 lines" \
-            "$recovery_prefix" 'at most 40 lines.*Forty lines is a ceiling'
+            "$recovery_prefix" 'at most 40 lines.*This is a ceiling, not a target'
           assert_grep "$recovery_adapter prefix applies 40-line windows to repository reads" \
             "$recovery_prefix" 'at most 40 lines for every patch or repository source window'
           assert_grep "$recovery_adapter prefix splits over-target outputs before reading" \

@@ -985,9 +985,24 @@ def changed_symbols():
         prepare(); facts = json.loads((session / 'r1-evidence.json').read_text())
         assert {s['name'] for s in facts['symbols'] if s['path'] == 'main.py'} == {'first', 'second'}
         assert {(c['name'], c['line']) for c in facts['call_sites'] if c['path'] == 'test_calls.py'} == {('first', 1), ('second', 2)}
+        assert all(c.get('resolution') == 'unresolved name search required'
+                   for c in facts['call_sites'] if c['path'] == 'test_calls.py'), facts['call_sites']
+        assert any(row['path'] == 'test_calls.py' for row in facts['related_tests']), facts['related_tests']
+        assert not any(row['source'] == 'test_calls.py' and row['target'] == 'main.py'
+                       for row in facts['dependencies']), facts['dependencies']
         assert any(symbol['path'] == 'weird.py' and symbol['name'] == 'target'
                    and symbol['line'] == 2 for symbol in facts['symbols'])
         assert facts['mechanical']['_locales/en/messages.json'] == 'locale'
+
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('main.py', 'def first():\n    return 2\n')
+        prepare(); facts = json.loads((session / 'r1-evidence.json').read_text())
+        assert any(row['path'] == 'main.py' and row['name'] == 'second'
+                   and row['kind'] == 'deleted lexical declaration'
+                   for row in facts['symbols']), facts['symbols']
+        assert any(row['path'] == 'test_calls.py' and row['name'] == 'second'
+                   and row.get('resolution') == 'unresolved name search required'
+                   for row in facts['call_sites']), facts['call_sites']
 
 def empty_patch_needs_no_fake_read():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -1608,7 +1623,7 @@ def source_context_packets():
         assert any(reason.startswith('gate:') for reason in reasons)
         prompt = call('render', session / 'r1-evidence.manifest.json', owner)
         assert 'Source context enabled: true' in prompt and 'Source context packet:' in prompt and 'Source read required:' in prompt
-        assert 'Read the entire assigned patch in bounded windows of at most 40 lines:' in prompt
+        assert 'Read the entire assigned patch in bounded windows of at most 240 lines:' in prompt
         old = module.Repository
         try:
             module.Repository = lambda *_: (_ for _ in ()).throw(AssertionError('offline source-context validation used Git'))
@@ -1719,7 +1734,7 @@ def provider_visible_source_packet_limit():
         'hunks': [{'path': 'main.py', 'sha256': 'b' * 64}],
         'symbols': [{'path': 'main.py', 'line': 1, 'line_end': 314,
                      'name': 'boundary', 'blob_tree': '1' * 40}],
-        'call_sites': [], 'related_tests': [], 'gates': [],
+        'call_sites': [], 'related_tests': [], 'gates': [], 'unresolved_imports': [],
     }
     components = [{'id': 'component', 'files': ['main.py'], 'boundary': ['main.py']}]
     assignments = {'sol': {'components': ['component']}}
@@ -1796,6 +1811,7 @@ def source_context_prefers_named_production_and_maps_gates():
             {'path': 'pyproject.toml', 'line': 2},
             {'path': 'global.cfg', 'line': 1},
         ],
+        'unresolved_imports': [],
     }
     components = [
         {'id': 'main', 'files': ['src/main.py'],
@@ -1879,6 +1895,9 @@ def local_names_do_not_expand_cross_file_proof():
                    for row in facts['call_sites'])
         assert not any(row['source'] == 'src/consumer.ts' and row['target'] == 'utility/history.ts'
                        for row in facts['dependencies']), facts['dependencies']
+        assert not any(row.get('path') == 'src/consumer.ts'
+                       and 'utility/history.ts' in row.get('candidate_targets', [])
+                       for row in facts['unresolved_imports']), facts['unresolved_imports']
         assert any(row['path'] == 'tests/history.test.ts' for row in facts['related_tests'])
         assert not any(row['path'] in {'src/unrelated.ts', 'tests/unrelated.test.ts', 'docs/notes.md'}
                        for row in facts['call_sites'] + facts['related_tests'])
@@ -2018,6 +2037,10 @@ def rust_module_alias_and_self_import_keep_qualified_callers():
                        and row.get('local_name') == alias for row in facts['call_sites']), facts['call_sites']
             assert any(row['source'] == path and row['target'] == 'src/history.rs'
                        for row in facts['dependencies']), facts['dependencies']
+        rust_candidates = [target for row in facts['unresolved_imports']
+                           for target in row.get('candidate_targets', [])]
+        assert rust_candidates and all((root / target).is_file()
+                                       for target in rust_candidates), facts['unresolved_imports']
         proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
                        for shard in packet['shards'] for row in shard['ranges']}
         proof_paths.update(required['path']
@@ -2104,7 +2127,7 @@ def coexisting_ts_projects_are_explicitly_ambiguous_with_matching_base_url():
         write('src/tsconfig.json',
               '{\n  "compilerOptions": {\n    "baseUrl": "../",\n'
               '    "paths": { "@history": ["missing/history"] }\n  },\n'
-              '  "include": ["only-another-root.ts"]\n}\n')
+              '  "include": ["consumer.ts"]\n}\n')
         write('src/history.ts', 'export const readHistory = () => 1;\n')
         write('src/consumer.ts',
               'import { readHistory } from "@history";\n'
@@ -2176,6 +2199,14 @@ def ambiguous_ts_configs_are_explicit_search_obligations():
                            for row in capacity['mandatory_window_rows'])
         assert {'src/consumer.ts', 'src/history.ts', 'lib/history.ts',
                 'tsconfig.json', 'src/tsconfig-alt.json'} <= proof_paths, proof_paths
+        proof_ranges = [row for packet in manifest['source_context']['seats'].values()
+                        for shard in packet['shards'] for row in shard['ranges']]
+        proof_ranges.extend(row for packet in manifest['source_context']['seats'].values()
+                            for row in packet['required_source_ranges'])
+        proof_ranges.extend(row for capacity in manifest['task_capacity']['seats'].values()
+                            for row in capacity['mandatory_window_rows'])
+        assert any(row['path'] == 'lib/history.ts' and row['line_start'] <= 1 <= row['line_end']
+                   for row in proof_ranges), proof_ranges
         closure = module.plan_closure_paths(
             [{'id': 'history', 'paths': [{'path': 'src/consumer.ts'}]}],
             facts['dependencies'], ['src/history.ts'])
@@ -2255,6 +2286,9 @@ def ts_transitive_excluded_file_uses_project_path_aliases():
         obligation = next(row for row in facts['unresolved_imports']
                           if row['path'] == 'src/transitive.ts')
         assert obligation['candidate_targets'] == ['src/history.ts'], obligation
+        assert obligation['reason'] == 'path-mapped import matching a changed export', obligation
+        assert {row['path'] for row in obligation['config_ranges']} == {
+            'tsconfig.json', 'configs/tsconfig.base.json'}, obligation
         proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
                        for shard in packet['shards'] for row in shard['ranges']}
         proof_paths.update(required['path']

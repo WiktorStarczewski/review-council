@@ -169,7 +169,7 @@ omitted.append({
     'path': 'src/extra.py', 'line_start': 1, 'line_end': 1, 'priority': 0,
     'blob_tree': snapshot, 'reasons': ['declaration:kept'],
 })
-assignment = {'plan_clusters': ['C-01']}
+assignment = {'adapter': 'codex', 'plan_clusters': ['C-01']}
 bare = module.mandatory_repository_windows(assignment, [cluster], [])
 assert len(bare) == 12, len(bare)
 target = module.repository_source_target({
@@ -471,8 +471,9 @@ for seat, assignment in m['assignments'].items():
         assert tree == m['snapshot_tree'] and entry[1] == oid
         lines=evidence.split_lf_lines(repository.blob(entry))
         assert hashlib.sha256(b''.join(lines[start-1:end])).hexdigest() == content_hash
-        for first in range(start,end+1,240):
-            last=min(first+239,end)
+        read_limit = 40 if assignment['adapter'] == 'codex' else 240
+        for first in range(start,end+1,read_limit):
+            last=min(first+read_limit-1,end)
             read('source-'+str(first),repository.root/path,b''.join(lines[first-1:last]).decode(),first,last)
     stream.write_text(''.join(json.dumps(event)+'\n' for event in events))
     subprocess.run([sys.executable,str(pathlib.Path(script).parent/'lib/review-read-audit.py'),
@@ -697,8 +698,8 @@ if manifest['source_context']['seats']['sol']['source_read_required']:
     assert tree == manifest['snapshot_tree'] and entry[1] == oid
     lines = evidence.split_lf_lines(repository.blob(entry))
     assert hashlib.sha256(b''.join(lines[start - 1:end])).hexdigest() == content_hash
-    for first in range(start, end + 1, 240):
-        last = min(first + 239, end)
+    for first in range(start, end + 1, 40):
+        last = min(first + 39, end)
         command('source-' + str(first), shlex.join(['git', 'show', tree + ':' + path])
                 + ' | ' + shlex.join(['sed', '-n', f'{first},{last}p']),
                 b''.join(lines[first - 1:last]).decode())
@@ -710,7 +711,7 @@ if mode == 'failed-expansion-overflow':
     for index in range(17):
         command('failed-search-' + str(index), "rg -n 'missing' . | head -80", '', 1)
 if mode == 'discovery-overflow':
-    command('discovery-overflow', "rg -n 'value' . | head -81",
+    command('discovery-overflow', "rg -n 'value' . | head -80",
             ''.join('src/large.py:' + str(index) + ':value\n' for index in range(1, 82)))
 with out.open('w') as stream:
     for event in events:
