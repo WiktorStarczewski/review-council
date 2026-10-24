@@ -899,3 +899,5 @@ Review results: pending. No Bread review receipt, merge or deployment is claimed
 - Frozen release baseline6208b71 already fails27 shell task groups on both operating systems. Fixture corrections retain source40, search80/sentinel81, byte ceilings and the12-read manual limit.
 
 Independent cumulative recheck: all three P2 findings are fixed; no additional P0-P2 findings. This is source-review approval, not passing candidate CI. New pushes are held for cross-session ownership coordination requested by the user. Native queue messages to both peer sessions remain pending and are not acknowledgements.
+
+Release authorization: the user explicitly requested releasing0.7.13 without CI and then resuming the frozen Bread review. CI is waived for this release; no passing current-candidate CI is claimed. Prior normal review is clean after all three P2 corrections.
