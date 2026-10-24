@@ -9,8 +9,8 @@
 - [x] Finish and re-review the exact-PR renderer/evidence checks and all internal-review fixes.
 - [x] Integrate PR #69, signed tag `review-council--v0.7.12`, into this candidate.
 - [x] Fetch and merge latest `origin/main` at `ff13856` in merge commit `f562d78`.
-- [ ] Complete the one-seat normal internal review, push the combined candidate, and record macOS, Ubuntu, and Cursor package CI on its exact head.
-- [ ] Squash-merge and publish signed 0.8.0 even if candidate CI is red, as explicitly authorized; preserve exact failures and prepare 0.8.1 follow-up fixes if any check fails.
+- [x] Complete the one-seat normal internal review and merge the combined candidate as PR #67.
+- [x] Publish signed 0.8.0 as explicitly authorized, preserving the exact failed run for the 0.8.1 follow-up.
 
 ## Release review
 
@@ -48,6 +48,20 @@ and result searches remain capped at 80. Fresh independent review found no remai
 actionable P0-P2 issues. `git diff --check` and `bash -n` preflights pass; the full tests
 were not run locally. Exact-head CI will be recorded, and the user authorized publishing
 0.8.0 with failures followed by a 0.8.1 correction release.
+
+# Release 0.8.1
+
+- [x] Pull the merged 0.8.0 source and inspect the exact main CI failures from run `40054245261`.
+- [x] Fix deleted-reference proof, explicit PR repository path validation, and replacement failure precedence.
+- [x] Correct stale plan-read, repository-call, search, workflow-split, and progress-monitor fixtures.
+- [ ] Finish the normal internal review and apply actionable findings.
+- [ ] Push the candidate PR and require proof-preparation, macOS, Ubuntu, and Cursor package CI to pass on the exact head.
+- [ ] Squash-merge, publish signed 0.8.1, reinstall all hosts, and verify installed versions and file identity.
+
+## 0.8.1 follow-up evidence
+
+- Main CI run `40054245261` failed on `58862c9` in proof preparation, the Python verifier, and the shell verifier on both operating systems. Complete artifacts are preserved under `/tmp/council-main-40054245261`.
+- The 0.8.1 candidate is not yet CI-validated. Release remains blocked until all required checks pass on the exact candidate head.
 
 # Release 0.5.10
 

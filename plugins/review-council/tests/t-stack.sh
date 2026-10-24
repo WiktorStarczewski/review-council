@@ -110,7 +110,7 @@ RSEOF
     : > "$STACK_PUBLISH_CALLS"
     local R="$T/stk"; mkrepo "$R"; git -C "$R" checkout -qb feat; echo w > "$R/w.txt"; git -C "$R" add w.txt; git -C "$R" commit -qm "feat: w"
     printf 'legs() { run_leg "%s" 1 leg1 "premise one"; }\n' "$R" > "$T/stack.cfg"
-    export ROOT="$T/stack-root" LOG="$T/stack.log" POLL=1 STATUS_EVERY=2 STALL_SECS=30 CPU_SAMPLE_SECS=1 \
+    export ROOT="$T/stack-root" LOG="$T/stack.log" POLL=1 STATUS_EVERY=0 STALL_SECS=30 CPU_SAMPLE_SECS=1 \
            INFRA_SLEEP_SECS=1 FAST_FAIL_SECS=1 AUTH_WAIT_SECS=1 NO_PUSH=1 PASSES=2
     SHIM_MODE=ok "$STACK/stack.sh" "$T/stack.cfg" > "$T/stack.out" 2>&1; assert_eq "stack ok exit" "$?" 0
     assert_grep "pass 1 done" "$LOG" '=== DONE leg1 pass1 exit=0'

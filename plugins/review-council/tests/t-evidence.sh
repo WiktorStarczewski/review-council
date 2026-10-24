@@ -1000,7 +1000,7 @@ def changed_symbols():
                        for row in facts['dependencies']), facts['dependencies']
 
     with fixture() as (root, session, git, write, call, prepare, finish):
-        write('main.py', 'def first():\n    return 2\n')
+        write('main.py', 'def first():\n    return 2\n\nsecond()\n')
         prepare(); facts = json.loads((session / 'r1-evidence.json').read_text())
         assert any(row['path'] == 'main.py' and row['name'] == 'second'
                    and row['kind'] == 'deleted lexical declaration'
@@ -1008,6 +1008,21 @@ def changed_symbols():
         assert any(row['path'] == 'test_calls.py' and row['name'] == 'second'
                    and row.get('resolution') == 'unresolved name search required'
                    for row in facts['call_sites']), facts['call_sites']
+        assert any(row['path'] == 'main.py' and row['name'] == 'second'
+                   and row.get('resolution') == 'unresolved name search required'
+                   for row in facts['call_sites']), facts['call_sites']
+
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('main.py', 'def _private():\n    return 1\n')
+        write('caller.py', 'def call_private():\n    return _private()\n')
+        git('add', 'main.py', 'caller.py'); git('commit', '-qm', 'base private declaration')
+        base = git('rev-parse', 'HEAD')
+        (session / 'scope.env').write_text(
+            f"REV_BASE='{base}'\nREV_ROOT='{root}'\nREV_SCOPE='branch'\n")
+        write('main.py', 'def public():\n    return 1\n')
+        prepare(); facts = json.loads((session / 'r1-evidence.json').read_text())
+        assert not any(row['path'] == 'caller.py' and row['name'] == '_private'
+                       for row in facts['call_sites']), facts['call_sites']
 
 def empty_patch_needs_no_fake_read():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -1866,7 +1881,7 @@ def local_names_do_not_expand_cross_file_proof():
               '};\n')
         write('tsconfig.json', '{"compilerOptions":{"baseUrl":"src"},"include":["src","tests"]}\n')
         write('tsconfig-utility.json',
-              '{"compilerOptions":{"baseUrl":"utility"},"include":["utility"]}\n')
+              '{"compilerOptions":{"baseUrl":"utility"},"include":["src","utility"]}\n')
         write('utility/history.ts', 'export const readHistory = () => 999;\n')
         write('src/consumer.ts',
               'import { readHistory } from "history";\n'
@@ -2687,8 +2702,11 @@ def budget_omissions_are_segmented_or_retained():
                     cursor = segment['line_end'] + 1
                 assert cursor == row['line_end'] + 1
             for row in retained:
-                assert row['path'].startswith('unit_') and row['line_start'] == 1
-                assert row['path'] != 'unit_0.py' and row['line_end'] == 142
+                if any(reason.startswith('gate:') for reason in row['reasons']):
+                    assert row['path'] == 'package.json' and row['line_start'] == row['line_end'] == 1
+                else:
+                    assert row['path'].startswith('unit_') and row['line_start'] == 1
+                    assert row['path'] != 'unit_0.py' and row['line_end'] == 142
                 assert row['reasons'] and row['component_ids']
                 assert row['blob_tree'] == manifest['snapshot_tree']
                 assert len(row['blob_oid']) in (40, 64)

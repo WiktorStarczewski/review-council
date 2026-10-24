@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.1
+
+- Keep deleted declarations from resolving live references, require the exact assigned plan-search command for sentinel proof, and reject invalid path segments in explicit PR repositories.
+- Report replacement eligibility only after confirming the parent assignment has a terminal failure.
+- Repair the 0.8.0 CI fixtures for bounded plan reads, repository-call accounting, and the split proof-preparation job.
+
 ## 0.8.0
 
 - Live status lines narrate phase progress, reviewer activity, recorded P0-P2 findings, and fixes. The Codex watcher stays attached until the review reaches a terminal phase.

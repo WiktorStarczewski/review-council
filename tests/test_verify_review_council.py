@@ -833,8 +833,10 @@ finally:
         )
         workflow = (REPO / ".github/workflows/test.yml").read_text()
         self.assertIn("python3 scripts/verify-review-council.py", workflow)
-        self.assertNotIn("python3 -m unittest discover", workflow)
-        self.assertNotIn("plugins/review-council/tests/run-tests.sh", workflow)
+        self.assertIn("name: proof-preparation", workflow)
+        verify_job = workflow.split("  verify:\\n", 1)[1]
+        self.assertNotIn("python3 -m unittest discover", verify_job)
+        self.assertNotIn("plugins/review-council/tests/run-tests.sh", verify_job)
 
 
 if __name__ == "__main__":
