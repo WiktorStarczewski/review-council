@@ -603,11 +603,11 @@ four provider calls.
 
 | Failure | Recovery |
 | --- | --- |
-| exit 1 or 2, with no invalid read audit | retry only that seat, once, with the exact prompt, assignment, model and effort |
-| hard read-audit failure | keep every artifact, never relaunch under that label, and replace the assignment once on another enforced seat |
-| a seat still failing after its retry | replace that assignment once on another enforced seat |
-| multiple failed assignments in one panel | replace each failed assignment independently with a unique child label (`<N>x`, then `<N>x2` and upward) |
-| no eligible replacement seat or a failed replacement | cover the missing lens as orchestrator coverage and continue without certifying that seat |
+| exit 1 or 2, with no invalid read audit | retry only that seat, once, with the exact prompt, assignment, model and effort; if it still fails, advance through its replacement chain |
+| hard read-audit failure or incomplete proof | keep every artifact, never relaunch under that label, and advance immediately to the next available enforced family |
+| failed replacement | bind the next child to that failed generation and continue through distinct higher enforced families until success or exhaustion at Opus |
+| multiple failed assignments in one panel | run independent replacement chains with unique child labels (`<N>x`, then `<N>x2`, `<N>x3` and upward) |
+| no eligible family remains | cover the missing lens as orchestrator coverage and continue without certifying that seat |
 | receipt failure | diagnose the provenance or contract defect and end the run |
 
 A hard audit failure ends only that seat's assignment; siblings keep running and keep their
@@ -883,8 +883,8 @@ override its paths.
 - A panel with an Agent-adapter seat is never certified.
 - Legacy numeric code reviews and document reviews keep full scope without an evidence receipt. SDK numeric code panels carry a full-scope receipt that never grants adaptive coverage; SDK document reviews are unsupported.
 - Chunk reads prove the change was read; they do not replace source reads for a finding.
-- Publication cannot find a PR whose head branch lives on a fork and skips it as if there
-  were none; post the rendered `pr-review.md` by hand.
+- Without `--pr`, publication searches repositories inferred from local remotes and may not
+  find a PR whose head lives on a fork. Use `--pr` to pin the PR repository and head.
 - The Gemini adapter is fixture-tested, not certified on a live Gemini CLI.
 - Sandboxes that restrict nested CLIs or gates fail visibly and never widen permissions.
 

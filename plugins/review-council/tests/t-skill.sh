@@ -357,6 +357,12 @@ test_skill_contract() {
       '`quota_fallback`.*`true`'
     assert_grep "host reruns preflight after a quota failure" "$H" \
       '[Rr]un preflight again.*fresh sibling session'
+    assert_grep "quota fallback reloads sealed parent scope in a fresh shell" "$H" \
+      '\. "\$PARENT_S/scope\.env"'
+    assert_grep "quota fallback preserves a pinned PR number" "$H" \
+      '--pr "\$REV_PR_NUMBER"'
+    assert_grep "quota fallback preserves the pinned PR repository" "$H" \
+      '--pr-repo "\$REV_PR_REPO"'
     assert_grep "host binds a mid-panel quota seat into preflight" "$H" \
       '--quota-failed-seat "\$SEAT"'
     assert_grep "quota fallback keeps the original session immutable" "$H" \
@@ -635,6 +641,10 @@ test_skill_contract() {
   # inherited loop machinery that other tasks' scripts depend on
   assert_grep "failure table kept" "$K" '\| seat exit 3 \|'
   assert_grep "status tick kept" "$K" 'rev-status\.sh'
+  assert_grep "Claude status watcher exits at terminal state" "$K" \
+    'rev-context\.py "\$S" --watch --interval 600 --poll-interval 5'
+  assert_nogrep "Claude status watcher does not loop past terminal state" "$K" \
+    'while true; do sleep 600;.*rev-status\.sh'
   assert_grep "ledger format kept" "$K" '## F-012 · P1 · FIXED'
   assert_grep "report sections kept" "$K" 'Residual risk'
   assert_grep "stack-leg mode kept" "$K" 'REV_STACK_LEG=1'
@@ -672,7 +682,7 @@ skill_adapter_and_plan_gate_contract() {
   # sentence meant evidence mode never ran on a code panel at all.
   local blanket_skip='skip evidence preparation'
   local plan_default='When `$S/panel-request.json` is absent, the plan panel is one `plan-completeness` seat on the resolved workhorse: set `PLAN_COMPLETENESS_SEAT` to the `seat` in `$S/workhorse.json` when `family` is set, `PLAN_SEATS` to the JSON array `["<that seat>"]`, and set `PLAN_EVIDENCE_ARGS=(--assignment "$PLAN_COMPLETENESS_SEAT=plan-completeness")`.'
-  local local_cluster='A cluster is local when its Sites list names one file and at most 3 sites, and the change does not add a mechanism, cross a realm, or change a public contract. Two anchors in one file are two sites. Excluded paths are not sites. The workhorse writes the fix plan whenever it is available. You implement each local cluster. You launch the workhorse for every other cluster. When a panel or assignment is incomplete, fix a local cause you can see. By default, retry on the next higher enforced seat: Luna, then Sonnet, then Sol, then Opus.'
+  local local_cluster='A cluster is local when its Sites list names one file and at most 3 sites, and the change does not add a mechanism, cross a realm, or change a public contract. Two anchors in one file are two sites. Excluded paths are not sites. The workhorse writes the fix plan whenever it is available. You implement each local cluster. You launch the workhorse for every other cluster. When a panel or assignment is incomplete, fix a local cause you can see.'
   local plan_all='When `roster.json` has `"plan_seats": "all"`, set `PLAN_SEATS` to the JSON array of every surviving non-extra seat'
   local minimum='Repair children use `<N>x`, then distinct suffixed labels such as `<N>x2`; the default one-seat plan panel remains a separate exception.'
   local verify_one='`verify-panel` certifies the one-seat plan panel once that seat returns'
@@ -862,7 +872,7 @@ test_skill_rev_mutate_precedes_commit() {
       "$T/codex-skills/rev/SKILL.md" 'the test command.*Commit only when' )
 }
 
-# One replacement rule replaces every hard-audit stop and every coverage-repair clause, found by
+# The replacement-chain rule replaces every hard-audit stop and every coverage-repair clause, found by
 # search in both host skills, and the review-origin breaker is stated where phase=fix is.
 test_skill_replacement_and_breaker_contract() {
   rev_bundle "$SK/skills/rev" "$T/skills/rev/SKILL.md"
@@ -872,6 +882,10 @@ import re, sys
 RULE = ('continue that assignment through the configured eligible replacement chain until '
         'valid proof exists or no eligible seat remains.')
 REMOVED = [
+    'Each failed assignment gets at most one replacement',
+    'If no eligible family remains, finish that assignment yourself',
+    'a second failure occurs on the same assignment',
+    'second replacement for the same assignment',
     'stop the current panel without another paid retry',
     'widen an evidence-audit failure into a full-state repair',
     'If a hard audit failure occurs in the fallback panel, stop',
@@ -896,7 +910,7 @@ for path in sys.argv[1:]:
     paragraphs = [' '.join(block.split()) for block in re.split(r'\n\s*\n', text)]
     rows = [line for line in text.splitlines() if line.startswith('|')]
     replacement_commands = [i for i, p in enumerate(paragraphs)
-                            if '--parent-assignment "<N>:$FAILED_SEAT"' in p]
+                            if '--parent-assignment "$PARENT_LABEL:$FAILED_SEAT"' in p]
     locations = {
         'hard-audit': [p for p in paragraphs if "hard evidence-audit failure ends only that seat's assignment" in p],
         'coverage-repair': [p for p in paragraphs if 'Do not certify an adaptive panel until every assignment has a valid result' in p],
@@ -915,7 +929,8 @@ for path in sys.argv[1:]:
             problems.append(f'{host}: no {name} location')
         elif name == 'replacement procedure' and not all(
                 'parent without a terminal failure' in item
-                and 'permits multiple attempts for the same original failed assignment' in item
+                and 'permits multiple attempts for one original failed assignment' in item
+                and 'immediately failed parent' in item
                 and 'duplicate child label' in item for item in found):
             problems.append(f'{host}: replacement procedure omits its binding safeguards')
         elif name not in ('plan replacement', 'replacement procedure') and not all(RULE in item for item in found):

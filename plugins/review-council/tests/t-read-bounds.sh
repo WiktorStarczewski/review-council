@@ -50,7 +50,7 @@ test_read_bound_hook_contract() {
       "$S/r1-sol-source-segment-001-001.txt")
     local grep_ok='{"tool_name":"Grep","tool_input":{"pattern":"retry","path":"src","head_limit":50}}'
     local shell_ok='{"tool_name":"Bash","tool_input":{"command":"git diff HEAD | sed -n '\''1,200p'\''"}}'
-    local shell_search_ok='{"tool_name":"Bash","tool_input":{"command":"rg -n retry src | head -81"}}'
+    local shell_search_ok='{"tool_name":"Bash","tool_input":{"command":"rg -n retry src | head -80"}}'
     local shell_log_ok='{"tool_name":"Bash","tool_input":{"command":"git log -n 240"}}'
     for payload in "$source_ok" "$prompt_ok" "$index_ok" "$segment_ok" "$grep_ok" "$shell_ok" "$shell_search_ok" "$shell_log_ok"; do
       read_bound_hook "$R" "$S" "$payload"
@@ -723,14 +723,14 @@ args = types.SimpleNamespace(adapter='codex', raw=str(stream), prompt=str(prompt
                              session=str(session), deps=None,
                              out=str(session / 'r4-sol.read-audit.json'))
 full = index.read_text()
-bounded = "sed -n '1,240p' " + shlex.quote(str(index))
+bounded = "sed -n '1,40p' " + shlex.quote(str(index))
 cases = [
     (bounded, full, True),
     ("sed -n '1,1p' " + shlex.quote(str(index)), full, False),
     (bounded, full[:-1], False),
     (bounded, 'changed' + full[7:], False),
     (bounded + '; :', full, False),
-    (bounded + ' | head -240', full, False),
+    (bounded + ' | head -40', full, False),
 ]
 for command, output, expected in cases:
     changed = json.loads(json.dumps(rows))
@@ -978,7 +978,7 @@ PY
     write_patch_transcript() {
       python3 - "$manifest" "$S/r8-sol.stream.ndjson" "$1" "$R" <<'PY'
 import json, pathlib, sys
-manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2]); complete = sys.argv[3] == 'complete'
+manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2])
 root = pathlib.Path(sys.argv[4])
 session = pathlib.Path(sys.argv[1]).parent
 seat = 'sol'; assignment = manifest['assignments'][seat]
@@ -993,11 +993,16 @@ patch = pathlib.Path(assignment['patch']); lines = patch.read_text().splitlines(
 starts = list(range(1, len(lines) + 1, 40))
 if sys.argv[3] == 'reversed':
     starts.reverse()
-elif not complete:
+elif sys.argv[3] == 'missing-first':
+    starts = starts[1:]
+elif sys.argv[3] == 'missing-interior':
+    starts.pop(len(starts) // 2)
+elif sys.argv[3] == 'missing-tail':
     starts = starts[:-1]
 for start in starts:
     end = min(start + 39, len(lines))
-    command('patch-' + str(start), f"sed -n '{start},{end}p' '{patch}'", ''.join(lines[start - 1:end]))
+    command('patch-' + str(start), f"sed -n '{start},{end}p' '{patch}'",
+            ''.join(lines[start - 1:end]))
 for index, shard in enumerate(manifest['source_context']['seats'][seat]['shards'], 1):
     path = session / shard['artifact']
     command('packet-' + str(index), "cat '" + str(path) + "'", path.read_text())
@@ -1028,6 +1033,8 @@ PY
       "\"assigned_patch_reads\":$expected_patch_reads"
     assert_grep "assigned patch receipt covers the second chunk" "$S/r8-sol.read-audit.json" \
       '"line_start":41'
+    assert_grep "assigned patch receipt covers a later window" "$S/r8-sol.read-audit.json" \
+      '"line_start":241'
 
     write_claude_patch_overshoot() {
       python3 - "$manifest" "$S/r8-sol.stream.ndjson" "$1" "$R" <<'PY'
@@ -1100,13 +1107,16 @@ PY
     assert_grep "reversed complete patch proof has no fatal violation" \
       "$S/r8-sol.read-audit.json" '"violations":\[\]'
 
-    write_patch_transcript partial
-    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
-      --raw "$S/r8-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
-      --out "$S/r8-sol.read-audit.json" >/dev/null 2>&1
-    assert_eq "assigned patch receipt rejects an uncovered trailing chunk" "$?" 2
-    assert_grep "assigned patch gap has a stable violation" "$S/r8-sol.read-audit.json" \
-      '"code":"missing-assigned-patch-range"'
+    local gap
+    for gap in missing-first missing-interior missing-tail; do
+      write_patch_transcript "$gap"
+      python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+        --raw "$S/r8-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
+        --out "$S/r8-sol.read-audit.json" >/dev/null 2>&1
+      assert_eq "assigned patch receipt rejects a $gap window gap" "$?" 2
+      assert_grep "$gap patch gap has a stable violation" "$S/r8-sol.read-audit.json" \
+        '"code":"missing-assigned-patch-range"'
+    done
   )
 }
 
@@ -1596,13 +1606,13 @@ PY
     python3 - <<'PY' | post_bound_hook \
       --root "$R" --session "$S" --prompt "$S/prompt.md" >/dev/null 2> "$S/shell-overflow.err"
 import json
-print(json.dumps({'tool_name':'Bash','tool_input':{'command':'rg -n retry src | head -81'},
+print(json.dumps({'tool_name':'Bash','tool_input':{'command':'rg -n retry src | head -80'},
                   'tool_response':{'stdout':'\n'.join('src/x.ts:' + str(index) + ':retry'
                                                      for index in range(1, 82)),
                                    'stderr':''}}))
 PY
-    assert_eq "post-hook rejects the shell search overflow sentinel" "$?" 2
-    assert_grep "shell search overflow has a stable diagnostic" "$S/shell-overflow.err" \
+    assert_eq "post-hook rejects over-cap output from a bounded shell search" "$?" 2
+    assert_grep "shell search output overflow has a stable diagnostic" "$S/shell-overflow.err" \
       'discovery-output-too-large'
 
     python3 - <<'PY' | post_bound_hook \
@@ -1834,7 +1844,7 @@ PY
         >/dev/null 2>&1
     }
 
-    local good="sed -n '1,80p' 'src/a.ts'; sed -n '121,200p' 'src/b.ts'"
+    local good="sed -n '1,40p' 'src/a.ts'; sed -n '121,160p' 'src/b.ts'"
     write_codex_batch good "$good" exact || return
     audit_codex_batch good
     local good_rc=$?
@@ -1868,12 +1878,12 @@ PY
       assert_grep "Codex source batch $label has a stable violation" "$S/$label-audit.json" \
         "\"code\":\"$code\""
     done <<'CASES'
-conditional~sed -n '1,80p' 'src/a.ts' && sed -n '121,200p' 'src/b.ts'~unsupported-source-batch
-wide-total~sed -n '1,121p' 'src/a.ts'; sed -n '121,241p' 'src/b.ts'~unsupported-source-batch
-overlap~sed -n '1,80p' 'src/a.ts'; sed -n '80,120p' 'src/a.ts'~unsupported-source-batch
-mixed-search~sed -n '1,80p' 'src/a.ts'; rg -n 'never-matches' src | head -80~unsupported-source-batch
-mixed-output~sed -n '1,80p' 'src/a.ts'; printf marker; sed -n '121,160p' 'src/b.ts'~unsupported-source-batch
-variable-path~sed -n '1,80p' "$FILE"; sed -n '121,160p' 'src/b.ts'~unresolved-path-variable
+conditional~sed -n '1,40p' 'src/a.ts' && sed -n '121,160p' 'src/b.ts'~unsupported-source-batch
+wide-total~sed -n '1,40p' 'src/a.ts'; sed -n '121,160p' 'src/b.ts'~unsupported-source-batch
+overlap~sed -n '1,40p' 'src/a.ts'; sed -n '40,79p' 'src/a.ts'~unsupported-source-batch
+mixed-search~sed -n '1,40p' 'src/a.ts'; rg -n 'never-matches' src | head -80~unsupported-source-batch
+mixed-output~sed -n '1,40p' 'src/a.ts'; printf marker; sed -n '121,160p' 'src/b.ts'~unsupported-source-batch
+variable-path~sed -n '1,40p' "$FILE"; sed -n '121,160p' 'src/b.ts'~unresolved-path-variable
 CASES
 
     write_codex_batch mismatch "$good" mismatch || return
@@ -1882,11 +1892,18 @@ CASES
     assert_grep "Codex altered multirange output cannot enter source proof" "$S/mismatch-audit.json" \
       '"code":"unsupported-source-batch"'
 
-    local overflow="sed -n '1,20p' 'src/wide.ts'; sed -n '21,40p' 'src/wide.ts'"
+    local overflow="sed -n '1,40p' 'src/a.ts'; sed -n '41,80p' 'src/a.ts'; sed -n '81,120p' 'src/a.ts'; sed -n '1,40p' 'src/b.ts'; sed -n '41,80p' 'src/b.ts'"
     write_codex_batch overflow "$overflow" exact || return
     audit_codex_batch overflow
     assert_eq "Codex rejects exact multirange output above 32 KiB" "$?" 2
     assert_grep "Codex multirange overflow is fatal" "$S/overflow-audit.json" \
+      '"code":"tool-output-too-large"'
+
+    local wide_overflow="sed -n '1,20p' 'src/wide.ts'; sed -n '21,40p' 'src/wide.ts'"
+    write_codex_batch wide-overflow "$wide_overflow" exact || return
+    audit_codex_batch wide-overflow
+    assert_eq "Codex rejects one path whose exact multirange exceeds 32 KiB" "$?" 2
+    assert_grep "single-path multirange overflow is fatal" "$S/wide-overflow-audit.json" \
       '"code":"tool-output-too-large"'
 
     # Historical Grok shell transcripts remain rejected by the compatibility decoder.
@@ -2837,7 +2854,7 @@ if mode in ('fixture-a', 'base-commit', 'base-tree'):
                 "# Question: Does the new Asset wrapper's construction preserve the variant invariant?\n")
     pinned('question-search',
            "# Question: Which production paths enumerate assets, and which tests exercise them?\n"
-           "git grep -n -e 'Asset' {REV} -- src | head -81", rev)
+           "git grep -n -e 'Asset' {REV} -- src | head -80", rev)
     pinned('refutation',
            "# Refutation question for the Asset-name collision: is the interface aliased?\n"
            "git show {REV}:src/types.ts | sed -n '1,40p'", rev)
@@ -2989,8 +3006,8 @@ cases = [
     ("sed -n '1,2p' 'src/a.rs' # trailing note that isn't quoted", [], ([('src/a.rs', 1, 2)], False)),
     ("sed -n '1,2p' 'src/a.rs' #; rg -n x src", [], ([('src/a.rs', 1, 2)], False)),
     ("sed -n '1,2p' src/a#b.rs", [], ([('src/a#b.rs', 1, 2)], False)),
-    ("rg -n '#include' src | head -81", [], ([], False)),
-    ("# note\nsed -n '1,2p' 'src/a.rs'\nrg -n x src | head -81", ['unsupported-source-batch'], None),
+    ("rg -n '#include' src | head -80", [], ([], False)),
+    ("# note\nsed -n '1,2p' 'src/a.rs'\nrg -n x src | head -80", ['unsupported-source-batch'], None),
     ("# it's a comment, but the command is not\nsed -n '1,2p' 'src/a.rs' 'unterminated", ['unsupported-shell-command'], None),
 ]
 failed = False
@@ -3053,6 +3070,10 @@ assert audit.validate_call(
 assert [row['code'] for row in audit.validate_call(
     'Read', {'file_path':'src/wide.rs','offset':1,'limit':161}, roots, root, session,
     read_limit=audit.CODEX_READ_LINES)] == ['unbounded-read']
+for read_limit in (audit.CODEX_READ_LINES, audit.READ_LINES):
+    assert codes('rg -n value src | head -80', read_limit) == []
+    assert codes('rg -n value src | head -81', read_limit) == ['unbounded-shell-output']
+    assert codes(f'head -{read_limit + 1} src/wide.rs', read_limit) == ['unbounded-shell-output']
 assert audit.validate_call(
     'Read', {'file_path':'src/wide.rs','offset':1,'limit':40}, roots, root, session,
     read_limit=source_limit) == []
@@ -3157,6 +3178,7 @@ for line in (session / 'scope.env').read_text().splitlines():
         root = pathlib.Path(shlex.split(line.split('=', 1)[1])[0])
 prompt = session / f'r{label}-sol.prompt.md'
 assignment = manifest['assignments']['sol']; context = manifest['source_context']['seats']['sol']
+read_limit = 40 if adapter == 'codex' else 240
 counter = [0]
 def lines_of(path, start, end):
     return ''.join(pathlib.Path(path).read_text().splitlines(keepends=True)[start - 1:end])
@@ -3214,7 +3236,7 @@ else:
         if adapter == 'codex':
             call = {'cmd': f"sed -n '{start},{end}p' {shlex.quote(str(patch))}", 'out': lines_of(patch, start, end)}
         else:
-            call = {'tool': 'read_file', 'input': {'path': str(patch), 'offset': start, 'limit': 240},
+            call = {'tool': 'read_file', 'input': {'path': str(patch), 'offset': start, 'limit': read_limit},
                     'out': lines_of(patch, start, end)}
         named.setdefault('patch', call); turns.append([call])
 for index, shard in enumerate(context['shards'], 1):
@@ -3321,7 +3343,7 @@ tool-output-too-large^codex^[{"sed":["src/wide.rs",181,220]}]^$wide_clean^tool-o
 tool-turn-output-too-large^codex^[{"sed":["src/wide.rs",91,110]},{"sed":["src/wide.rs",191,210]}]^$wide_clean^tool-turn-output-too-large@codex
 unbounded-read^gemini^[{"read":["src/wide.rs",290,250]}]^$read_clean^unbounded-read@read_file
 unbounded-search^gemini^[{"tool":"search_file_content","input":{"pattern":"W150","path":"src"},"out":"src/wide.rs:151:W150\n"}]^$read_clean^unbounded-search@search_file_content
-unsupported-source-batch^codex^[{"cmd":"sed -n '1,20p' src/wide.rs; rg -n W150 src | head -81","out_lines":["src/wide.rs",1,20]}]^$wide_clean^unsupported-source-batch@Bash
+unsupported-source-batch^codex^[{"cmd":"sed -n '1,20p' src/wide.rs; rg -n W150 src | head -80","out_lines":["src/wide.rs",1,20]}]^$wide_clean^unsupported-source-batch@Bash
 source-batch-lines-too-large^codex^[{"batch":[["src/lines.txt",1,200],["src/lines.txt",201,241]]}]^$wide_clean^unsupported-source-batch@Bash
 overlapping-source-batch^codex^[{"batch":[["src/lines.txt",1,20],["src/lines.txt",10,30]]}]^$wide_clean^unsupported-source-batch@Bash
 source-batch-output-mismatch^codex^[{"batch":[["src/lines.txt",1,20],["src/lines.txt",30,40]],"tamper":true}]^$wide_clean^unsupported-source-batch@Bash

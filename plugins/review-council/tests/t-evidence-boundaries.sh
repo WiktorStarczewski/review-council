@@ -245,3 +245,113 @@ PY
     assert_eq "generated declarations, changed output and explicit pinned dependencies stay reviewable" "$?" 0
   )
 }
+
+test_pr_scope_refuses_pinned_head_or_base_drift() {
+  ( local R="$T/pr-head-drift-root" S="$T/pr-head-drift-session" base pinned other bin="$T/pr-live-bin" drift live_head live_base live_branch live_state live_base_branch
+    mkrepo "$R"; mkdir -p "$S"; git -C "$R" checkout -qb feat
+    printf 'reviewed change\n' > "$R/change.txt"
+    git -C "$R" add change.txt && git -C "$R" commit -qm "reviewed head"
+    base=$(git -C "$R" rev-parse main); pinned=$(git -C "$R" rev-parse HEAD)
+    printf "REV_BASE='%s'\nREV_BRANCH='feat'\nREV_BASE_BRANCH='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\nREV_PR_NUMBER='71'\nREV_PR_REPO='acme/repo'\nREV_PR_HEAD='%s'\nREV_PR_BASE_HEAD='%s'\nREV_PR_BASE_REF='refs/heads/main'\n" \
+      "$base" "$R" "$pinned" "$base" > "$S/scope.env"
+    printf '%s\n' 'change.txt' > "$S/files.txt"; : > "$S/untracked.txt"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+    mkdir -p "$bin"
+    cat > "$bin/gh" <<'SH'
+#!/bin/sh
+printf '%s\n' "$*" >> "$GH_PR_CALLS"
+[ "$1" = pr ] && [ "$2" = view ] && [ "$3" = 71 ] \
+  && [ "$4" = --repo ] && [ "$5" = acme/repo ] || exit 2
+printf '{"number":71,"url":"https://github.com/acme/repo/pull/71","state":"%s","headRefName":"%s","headRefOid":"%s","baseRefName":"%s","baseRefOid":"%s"}\n' \
+  "$GH_PR_STATE" "$GH_PR_BRANCH" "$GH_PR_HEAD" "$GH_PR_BASE_BRANCH" "$GH_PR_BASE"
+SH
+    chmod +x "$bin/gh"
+    export PATH="$bin:$PATH" GH_PR_CALLS="$T/pr-live.calls"
+    export GH_PR_STATE=OPEN GH_PR_BRANCH=feat GH_PR_HEAD="$pinned" GH_PR_BASE_BRANCH=main GH_PR_BASE="$base"
+    env -u REV_DEPS_DIR python3 "$SCRIPTS/rev-evidence.py" prepare "$S" live-match --phase discovery \
+      > "$T/pr-live-match.out" 2> "$T/pr-live-match.err"
+    assert_eq "evidence preparation accepts an unchanged live PR identity" "$?" 0
+    assert_grep "evidence preparation queries the pinned PR number and repository" \
+      "$T/pr-live.calls" '^pr view 71 --repo acme/repo --json '
+    for drift in state branch head base-branch base; do
+      live_state=OPEN; live_branch=feat; live_head=$pinned; live_base_branch=main; live_base=$base
+      case "$drift" in
+        state) live_state=CLOSED;;
+        branch) live_branch=other;;
+        head) live_head=0000000000000000000000000000000000000009;;
+        base-branch) live_base_branch=next;;
+        base) live_base=$pinned;;
+      esac
+      GH_PR_STATE=$live_state GH_PR_BRANCH=$live_branch GH_PR_HEAD=$live_head \
+        GH_PR_BASE_BRANCH=$live_base_branch GH_PR_BASE=$live_base \
+        env -u REV_DEPS_DIR python3 "$SCRIPTS/rev-evidence.py" prepare "$S" "live-$drift" --phase discovery \
+        > "$T/pr-live-$drift.out" 2> "$T/pr-live-$drift.err"
+      assert_eq "evidence preparation refuses live PR $drift drift" "$?" 2
+      assert_grep "live PR $drift drift names the frozen PR mismatch" \
+        "$T/pr-live-$drift.err" 'live PR #71 identity no longer matches preflight scope'
+      assert_exit "live PR $drift drift publishes no evidence" 0 \
+        test ! -e "$S/rlive-$drift-evidence.manifest.json"
+    done
+    git -C "$R" checkout -qb unrelated
+    printf 'unrelated source\n' > "$R/unrelated.txt"
+    git -C "$R" add unrelated.txt && git -C "$R" commit -qm 'unrelated source'
+    other=$(git -C "$R" rev-parse HEAD)
+    git -C "$R" checkout -q feat
+    env -u REV_DEPS_DIR python3 "$SCRIPTS/rev-evidence.py" prepare "$S" wrong-source \
+      --phase discovery --head "$other" \
+      > "$T/pr-wrong-source.out" 2> "$T/pr-wrong-source.err"
+    assert_eq "evidence preparation refuses a source selector outside the pinned PR head" "$?" 2
+    assert_grep "source selector refusal identifies the pinned PR" "$T/pr-wrong-source.err" \
+      'explicit source selector conflicts with pinned PR #71 head'
+    assert_exit "source selector refusal publishes no evidence" 0 \
+      test ! -e "$S/rwrong-source-evidence.manifest.json"
+
+    git -C "$R" checkout -q main
+    printf 'base moved\n' > "$R/base-only.txt"
+    git -C "$R" add base-only.txt && git -C "$R" commit -qm 'advance base'
+    git -C "$R" checkout -q feat
+    env -u REV_DEPS_DIR python3 "$SCRIPTS/rev-evidence.py" prepare "$S" base-drift --phase discovery \
+      > "$T/pr-base-drift.out" 2> "$T/pr-base-drift.err"
+    assert_eq "evidence preparation refuses a changed PR base" "$?" 2
+    assert_grep "base drift refusal identifies the pinned PR" "$T/pr-base-drift.err" \
+      'local base for pinned PR #71 no longer matches its recorded base head'
+    assert_exit "base drift refusal publishes no evidence" 0 \
+      test ! -e "$S/rbase-drift-evidence.manifest.json"
+    git -C "$R" branch -f main "$base"
+    printf 'stale checkout change\n' >> "$R/change.txt"
+    git -C "$R" add change.txt && git -C "$R" commit -qm "later local head"
+    env -u REV_DEPS_DIR python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 1 --phase discovery \
+      > "$T/pr-head-drift.out" 2> "$T/pr-head-drift.err"
+    assert_eq "evidence preparation refuses a changed PR checkout" "$?" 2
+    assert_grep "head drift refusal identifies the pinned PR" "$T/pr-head-drift.err" \
+      'checked out HEAD does not match pinned PR #71 head'
+    assert_exit "head drift refusal happens before publishing evidence" 0 \
+      test ! -e "$S/r1-evidence.manifest.json"
+
+    git -C "$R" reset --hard -q "$pinned"
+    printf 'uncommitted post-preflight edit\n' >> "$R/change.txt"
+    env -u REV_DEPS_DIR python3 "$SCRIPTS/rev-evidence.py" prepare "$S" dirty --phase discovery \
+      > "$T/pr-dirty.out" 2> "$T/pr-dirty.err"
+    assert_eq "evidence preparation refuses a dirty PR checkout" "$?" 2
+    assert_grep "dirty checkout refusal identifies the pinned PR" "$T/pr-dirty.err" \
+      'pinned PR #71 checkout has uncommitted changes'
+    assert_exit "dirty checkout refusal publishes no evidence" 0 \
+      test ! -e "$S/rdirty-evidence.manifest.json"
+
+    python3 - "$SCRIPTS/rev-evidence.py" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location('rev_evidence', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+try:
+    module.validate_pinned_pr_checkout({'REV_PR_BASE_REF': 'refs/heads/main'})
+except ValueError as error:
+    assert str(error) == 'invalid pinned PR identity', error
+else:
+    raise AssertionError('partial PR identity was accepted')
+PY
+    assert_eq "partial pinned PR metadata is rejected" "$?" 0
+  )
+}

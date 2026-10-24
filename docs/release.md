@@ -11,6 +11,12 @@ Start from a clean candidate commit and keep all three plugin manifest versions 
 The repository rule in `AGENTS.md` applies to every host and release path. Do not invoke
 Review Council `rev` or `stack` for this repository.
 
+Verify the latest signed stable release before using it as the candidate base:
+
+```bash
+git verify-tag review-council--v0.7.14
+```
+
 Run the complete deterministic candidate gate in CI for the exact candidate commit on
 macOS and Ubuntu:
 
@@ -31,14 +37,14 @@ the pull request.
 From a clean checkout of the merged commit, publish the signed release:
 
 ```bash
-git tag -s review-council--v0.7.14 -m "review-council 0.7.14" "$MERGE_COMMIT"
-git push origin review-council--v0.7.14
-git verify-tag review-council--v0.7.14
-gh release create review-council--v0.7.14 --verify-tag \
-  --title "review-council 0.7.14" --generate-notes
+git tag -s review-council--v0.8.0 -m "review-council 0.8.0" "$MERGE_COMMIT"
+git push origin review-council--v0.8.0
+git verify-tag review-council--v0.8.0
+gh release create review-council--v0.8.0 --verify-tag \
+  --title "review-council 0.8.0" --generate-notes
 ```
 
 Reinstall `review-council@review-council` for Claude and Codex, and run
 `install-cursor.sh` for Cursor. In fresh sessions on each host, require `rev` and
-`stack` at version `0.7.14`, and compare installed file and mode identity with the
+`stack` at version `0.8.0`, and compare installed file and mode identity with the
 released tag.

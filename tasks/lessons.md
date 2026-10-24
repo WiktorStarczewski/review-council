@@ -262,6 +262,24 @@
 - For Cursor automation, verify the supported public interface before treating a rejected internal option as a general prohibition. Keep CLI compatibility, ambient configuration controls and delivered source proof as separate claims.
 - Preserve existing complete-packet and context exceptions when adding a transport; applying a blanket cap or symlink ban can invalidate faithful reviews without improving the canonical proof.
 - A verification assertion and a later mutation must be sequential tool operations or a fail-fast script. A failing assertion must never fall through to a commit, seat launch or publication.
+- A PR review must bind the live GitHub head and base before provider discovery. A branch name or inferred merge base can point at an older checkout and produce plausible but irrelevant capacity diagnostics. Preserve the exact PR identity in session inputs and refuse drift before evidence preparation.
+
+# Failed assignments need a full replacement chain
+
+A panel-wide cap is different from a per-assignment cap. Council already preserved
+independent sibling replacements, but it stopped a failed assignment after one
+replacement. Keep the lineage auditable and advance that assignment through each
+available enforced family in order, ending at Opus; only then finish the remaining
+assignment locally.
+
+# Review Council changes use an independent internal review
+
+When changing the Review Council repository, do not use Review Council to review
+itself, including release candidates. Use the normal internal review workflow with
+one reviewer even when the general code-review workflow defaults to a Council panel.
+
+- Before releasing Council, fetch and verify the latest signed tag and merge any newer main commit before editing the next version's manifests, changelog, plan, or release procedure.
+- If the user restores a CI gate after explicitly waiving it, follow the latest direction. Older-head results do not satisfy the required current-head gate before merge or release.
 - Adapter review prompts must distinguish multiple calls in one turn from batching multiple source reads into one payload. Show commands that the active adapter and its read audit both accept.
 - Review prompts must keep bounded line counts below the byte ceiling too. A 240-line patch window returned 44 KiB, and the prescribed `head -81` search exceeded an 80-line audit limit. Cap Codex patch and source windows at 40 lines, split further before a response risks 24 KiB, and cap searches at 80 results with a narrow path or pattern.
 - A plan's compiler-rendered `head -81` query is an overflow-sentinel proof contract. Tell the reviewer to run only that exact command unchanged; every search it composes must use `head -80` and narrower follow-ups.
@@ -269,3 +287,4 @@
 - When several active sessions repair the same shared plugin, identify all exact surfaces and agree file ownership, CI ownership and one integration owner before expanding implementation. Isolated worktrees alone do not prevent duplicate fixes or conflicting releases.
 - For coordination among concurrent Codex sessions, use the internal Codex communications channel when available. Do not substitute cmux messages; discover the internal session roster and message API first.
 - A native message queue receipt proves persistence only. Verify recipient consumption and acknowledgement before claiming independent sessions are coordinated; this session's live subagent channel does not address external session UUIDs.
+- When asked to make Review Council more talkative, change Council's user-visible progress output rather than only increasing the orchestrator's chat updates. Derive narration from observed review activity, findings, and completed work; never invent reviewer thoughts or unsupported "interesting facts".

@@ -1,5 +1,6 @@
 #!/bin/bash
-# rev-preflight.sh [--scope branch|uncommitted|<path>] [--write <session-dir>] [--base <ref>]
+# rev-preflight.sh [--scope branch|uncommitted|<path>] [--write <session-dir>] [--base <ref>] [--pr <number>]
+#                  [--pr-repo <owner/repo>]
 #                  [--quota-failed-seat <seat>]...
 # The base branch is, in order: --base, $REV_BASE_REF, the open PR's base (gh, when installed and signed in),
 # the nearest fork point among the long-lived branches (origin/HEAD's, next, develop, dev, release), else
@@ -16,12 +17,14 @@
 # Strict availability failures use exit 5. Permanent exact-setting conflicts use exit 6.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
-SCOPE=branch; WRITE=""; BASEREF=${REV_BASE_REF:-}; QUOTA_FAILED_SEATS=()
+SCOPE=branch; WRITE=""; BASEREF=${REV_BASE_REF:-}; PR_NUMBER=""; PR_REPO_ARG=""; QUOTA_FAILED_SEATS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --scope) SCOPE=${2:?}; shift 2;;
     --write) WRITE=${2:?}; shift 2;;
     --base) BASEREF=${2:?}; shift 2;;
+    --pr) PR_NUMBER=${2:?}; shift 2;;
+    --pr-repo) PR_REPO_ARG=${2:?}; shift 2;;
     --quota-failed-seat)
       [ $# -ge 2 ] && [ -n "$2" ] || { echo "rev-preflight: --quota-failed-seat needs a seat" >&2; exit 1; }
       QUOTA_FAILED_SEATS+=("$2"); shift 2;;
@@ -44,8 +47,71 @@ fi
 [ -n "$DEFAULT" ] || die "cannot determine the default branch (no origin/HEAD, no local main or master)"
 # ref_for <name> → the ref to measure against: the remote-tracking branch when it exists, else the local one.
 ref_for() { git show-ref --verify -q "refs/remotes/origin/$1" && { echo "origin/$1"; return; }; git show-ref --verify -q "refs/heads/$1" && { echo "$1"; return; }; return 1; }
-BASE_BRANCH=""; BASE_HOW=""
-if [ -n "$BASEREF" ]; then
+BASE_BRANCH=""; BASE_HOW=""; PR_REPO=""; PR_HEAD=""; PR_BASE_HEAD=""; PR_BASE_REF=""
+[ -z "$PR_REPO_ARG" ] || [ -n "$PR_NUMBER" ] || die "--pr-repo requires --pr"
+if [ -n "$PR_NUMBER" ]; then
+  [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || die "--pr must be a positive PR number"
+  [[ -z "$PR_REPO_ARG" || "$PR_REPO_ARG" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
+    || die "--pr-repo must be an owner/repository pair"
+  [ -z "$BASEREF" ] || die "--pr cannot be combined with --base or REV_BASE_REF"
+  [ "$SCOPE" != uncommitted ] || die "--pr cannot review an uncommitted scope"
+  if [ -n "$PR_REPO_ARG" ]; then
+    PR_CONTEXT_REPO=$PR_REPO_ARG
+  else
+    PR_CONTEXT_JSON=$(env -u GH_REPO GH_HOST=github.com GH_PROMPT_DISABLED=1 \
+      gh pr view "$PR_NUMBER" --json number,url 2>/dev/null) \
+      || die "cannot read GitHub PR #$PR_NUMBER metadata"
+    PR_CONTEXT_REPO=$(printf '%s' "$PR_CONTEXT_JSON" | python3 -c 'import json,re,sys
+try:
+ value=json.load(sys.stdin)
+ number=value["number"]
+ match=re.fullmatch(r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)/?",value["url"],re.IGNORECASE)
+ if not isinstance(number,int) or isinstance(number,bool) or number != int(sys.argv[1]) or match is None or int(match.group(3)) != number: raise ValueError()
+ print(match.group(1)+"/"+match.group(2))
+except Exception:
+ raise SystemExit(1)' "$PR_NUMBER") || die "GitHub returned invalid PR #$PR_NUMBER repository metadata"
+  fi
+  PR_JSON=$(env -u GH_REPO GH_HOST=github.com GH_PROMPT_DISABLED=1 \
+    gh pr view "$PR_NUMBER" --repo "$PR_CONTEXT_REPO" \
+      --json number,url,state,headRefName,headRefOid,baseRefName,baseRefOid 2>/dev/null) \
+    || die "cannot read GitHub PR #$PR_NUMBER from $PR_CONTEXT_REPO"
+  PR_FIELDS=$(printf '%s' "$PR_JSON" | python3 -c 'import json,re,sys
+try:
+ value=json.load(sys.stdin)
+ number=value["number"]
+ match=re.fullmatch(r"https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/([1-9][0-9]*)/?",value["url"],re.IGNORECASE)
+ if not isinstance(number,int) or isinstance(number,bool) or match is None or int(match.group(3)) != number: raise ValueError("unsupported PR identity")
+ repository=match.group(1)+"/"+match.group(2)
+ fields=(number,repository,value["state"],value["headRefName"],value["headRefOid"],value["baseRefName"],value["baseRefOid"])
+ if not all(isinstance(x,str) and x and chr(9) not in x and chr(10) not in x for x in fields[1:]): raise ValueError()
+ print(chr(9).join(map(str,fields)))
+except Exception as error:
+ print(f"preflight: invalid PR metadata: {type(error).__name__}: {error}",file=sys.stderr)
+ raise SystemExit(1)') || die "GitHub returned invalid PR #$PR_NUMBER metadata"
+  IFS=$'\t' read -r LIVE_PR_NUMBER PR_REPO PR_STATE PR_BRANCH PR_HEAD PR_BASE_BRANCH PR_BASE_HEAD <<< "$PR_FIELDS"
+  [ "$LIVE_PR_NUMBER" = "$PR_NUMBER" ] || die "GitHub returned a different PR number for #$PR_NUMBER"
+  [ "$PR_REPO" = "$PR_CONTEXT_REPO" ] || die "PR #$PR_NUMBER repository changed while resolving"
+  [ "$PR_STATE" = OPEN ] || die "PR #$PR_NUMBER is not open"
+  [ "$PR_BRANCH" = "$BRANCH" ] || die "checked out branch '$BRANCH' does not match PR #$PR_NUMBER branch '$PR_BRANCH'"
+  [[ "$PR_HEAD" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || die "PR #$PR_NUMBER has an invalid head SHA"
+  [[ "$PR_BASE_HEAD" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || die "PR #$PR_NUMBER has an invalid base SHA"
+  LOCAL_HEAD=$(git rev-parse HEAD) || die "cannot resolve checked out HEAD"
+  [ "$LOCAL_HEAD" = "$PR_HEAD" ] || die "checked out HEAD does not match PR #$PR_NUMBER head"
+  [ -z "$(git status --porcelain)" ] || die "PR #$PR_NUMBER checkout has uncommitted changes"
+  BASE_BRANCH=$PR_BASE_BRANCH; BASE_HOW="open PR #$PR_NUMBER"
+  for candidate in "refs/remotes/origin/$BASE_BRANCH" "refs/heads/$BASE_BRANCH"; do
+    git show-ref --verify -q "$candidate" || continue
+    LOCAL_PR_BASE=$(git rev-parse --verify "$candidate^{commit}" 2>/dev/null) || continue
+    [ "$LOCAL_PR_BASE" = "$PR_BASE_HEAD" ] || continue
+    PR_BASE_REF=$candidate
+    case "$candidate" in
+      refs/remotes/origin/*) BASE_TARGET="origin/$BASE_BRANCH";;
+      refs/heads/*) BASE_TARGET=$BASE_BRANCH;;
+    esac
+    break
+  done
+  [ -n "$PR_BASE_REF" ] || die "no local ref for PR #$PR_NUMBER base branch matches its base head"
+elif [ -n "$BASEREF" ]; then
   BASE_BRANCH=$BASEREF; BASE_HOW="given"
   BASE_TARGET=$(ref_for "$BASEREF" || git rev-parse --verify -q "$BASEREF^{commit}") || die "base '$BASEREF' is not a branch, tag or commit here"
 else
@@ -118,6 +184,13 @@ if [ -n "$WRITE" ]; then
     printf 'REV_BASE_BRANCH=%s\n' "$(q "$BASE_BRANCH")"
     printf 'REV_ROOT=%s\n'    "$(q "$ROOT")"
     printf 'REV_SCOPE=%s\n'   "$(q "$SCOPE")"
+    if [ -n "$PR_NUMBER" ]; then
+      printf 'REV_PR_NUMBER=%s\n' "$(q "$PR_NUMBER")"
+      printf 'REV_PR_REPO=%s\n' "$(q "$PR_REPO")"
+      printf 'REV_PR_HEAD=%s\n' "$(q "$PR_HEAD")"
+      printf 'REV_PR_BASE_HEAD=%s\n' "$(q "$PR_BASE_HEAD")"
+      printf 'REV_PR_BASE_REF=%s\n' "$(q "$PR_BASE_REF")"
+    fi
   } > "$STAGE/scope.env" || die "cannot stage scope.env"
   printf '%s\n' "$FILES" > "$STAGE/files.txt" || die "cannot stage files.txt"
   if [ -n "$UNTRACKED" ]; then printf '%s\n' "$UNTRACKED" > "$STAGE/untracked.txt" || die "cannot stage untracked.txt"

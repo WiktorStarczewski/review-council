@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import runpy
 import stat
+import subprocess
 import sys
 import time
 
@@ -159,27 +160,43 @@ def render(context):
             'Artifacts: ' + ', '.join(f'{key}={value}' for key, value in context['artifacts'].items()))
 
 
-def watch(session, interval=600, poll_interval=1, duration=600, json_output=False):
+def live_status(session, context):
+    script = Path(__file__).with_name('rev-status.sh')
+    try:
+        result = subprocess.run([str(script), str(Path(session).resolve())], capture_output=True,
+                                text=True, errors='replace', timeout=10, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return render(context)
+    status = result.stdout.strip()
+    return status if result.returncode == 0 and status else render(context)
+
+
+def watch(session, interval=600, poll_interval=5, duration=None, json_output=False):
     start = time.monotonic()
     next_tick = start + interval
-    end = start + duration
+    end = start + duration if duration is not None else None
     previous = None
     while True:
         now = time.monotonic()
         context = briefing(session)
+        status_line = None if json_output else live_status(session, context)
+        snapshot = context if json_output else (context, status_line)
         scheduled = now >= next_tick
         event = 'initial' if previous is None else 'scheduled' if scheduled else 'changed'
-        if previous is None or context != previous or scheduled:
+        if previous is None or snapshot != previous or scheduled:
             if json_output:
                 print(json.dumps({'event': event, 'elapsed_seconds': round(now - start, 3), 'context': context}), flush=True)
             else:
-                print(f'[{event} {int(now - start)}s] {render(context)}', flush=True)
-        previous = context
+                print(f'[{event} {int(now - start)}s] {status_line}', flush=True)
+        previous = snapshot
         while next_tick <= now:
             next_tick += interval
-        if context['phase'] in TERMINAL_PHASES or now >= end:
+        if context['phase'] in TERMINAL_PHASES or (end is not None and now >= end):
             return
-        time.sleep(min(poll_interval, next_tick - now, end - now))
+        sleep_for = min(poll_interval, next_tick - now)
+        if end is not None:
+            sleep_for = min(sleep_for, end - now)
+        time.sleep(sleep_for)
 
 
 def positive(value):
@@ -195,8 +212,9 @@ def main():
     parser.add_argument('--json', action='store_true')
     parser.add_argument('--watch', action='store_true')
     parser.add_argument('--interval', type=positive, default=600)
-    parser.add_argument('--poll-interval', type=positive, default=1)
-    parser.add_argument('--duration', type=positive, default=600)
+    parser.add_argument('--poll-interval', type=positive, default=5)
+    parser.add_argument('--duration', type=positive,
+                        help='stop the watch after this many seconds (default: until terminal state)')
     args = parser.parse_args()
     try:
         if args.watch:

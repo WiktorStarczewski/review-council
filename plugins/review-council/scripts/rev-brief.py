@@ -2,6 +2,7 @@
 """Print the compact brief a fresh orchestrator needs for one wake."""
 import argparse
 import json
+import os
 from pathlib import Path
 import sys
 
@@ -59,10 +60,15 @@ def phase_file(phases, phase):
 
 def brief(session, host, config_path):
     state = load_json(Path(session) / 'state.json')
-    config = load_json(Path(config_path)) if config_path else {}
+    path = (config_path or os.environ.get('REVIEW_COUNCIL_CONFIG')
+            or Path.home() / '.config/review-council/config.json')
+    config = load_json(Path(path))
     phase = state.get('phase') if isinstance(state.get('phase'), str) else 'setup'
     skill = skill_dir(host)
     mechanical = phase in MECHANICAL
+    status_tick = state.get('status_tick')
+    if not isinstance(status_tick, bool):
+        status_tick = config.get('status_tick', True)
     document = {
         'session': str(Path(session)),
         'phase': phase,
@@ -70,7 +76,7 @@ def brief(session, host, config_path):
         'open': {key: state.get(key) for key in ('open.P0', 'open.P1', 'open.P2', 'open.P3')},
         'phase_file': phase_file(skill / 'phases', phase),
         'mechanical': mechanical,
-        'status_tick': bool(state.get('status_tick') or config.get('status_tick') is True),
+        'status_tick': status_tick is True,
     }
     model = config.get('host_mechanical_model')
     if mechanical and isinstance(model, str) and model.strip():

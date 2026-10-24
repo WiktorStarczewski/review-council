@@ -14,8 +14,9 @@ t-eval.sh::test_eval_truth_retry	1	normal
 t-evidence-boundaries.sh::test_deleted_symbol_caller_evidence	1	normal
 t-evidence-boundaries.sh::test_generated_declarations_and_changed_outputs_remain_reviewable	1	normal
 t-evidence-boundaries.sh::test_generated_lexical_callers_do_not_become_source_obligations	1	normal
+t-evidence-boundaries.sh::test_pr_scope_refuses_pinned_head_or_base_drift	1	normal
 t-evidence.sh::test_evidence_contract	18	normal
-t-evidence.sh::test_evidence_hardening_context	30	normal
+t-evidence.sh::test_evidence_hardening_context	31	normal
 t-evidence.sh::test_evidence_hardening_routing	25	normal
 t-evidence.sh::test_evidence_hardening_scale_receipts	25	normal
 t-evidence.sh::test_evidence_hardening_structure	25	normal
@@ -115,7 +116,9 @@ t-pr-review.sh::test_pr_review_publish	1	normal
 t-pr-review.sh::test_pr_review_publish_failure	1	normal
 t-pr-review.sh::test_pr_review_rejects_invalid_review_pages	1	normal
 t-pr-review.sh::test_pr_review_rejects_untrusted_links	1	normal
+t-pr-review.sh::test_pr_review_rejects_stray_pinned_base_ref	1	normal
 t-pr-review.sh::test_pr_review_render	1	normal
+t-pr-review.sh::test_pr_review_preserves_preflight_pr_identity	1	normal
 t-pr-review.sh::test_pr_review_repository_and_base_identity	1	normal
 t-pr-review.sh::test_pr_review_required_lists	1	normal
 t-pr-review.sh::test_pr_review_stack_finalization	1	normal
@@ -123,6 +126,7 @@ t-pr-review.sh::test_pr_review_validate_stack	1	normal
 t-pr-review.sh::test_pr_review_unsquashed_stack_keeps_per_fix_links	1	normal
 t-preflight.sh::test_preflight	1	normal
 t-preflight.sh::test_preflight_installs_complete_staged_generation	1	normal
+t-preflight.sh::test_preflight_pr_identity	1	normal
 t-preflight.sh::test_preflight_refuses_sealed_session_inputs	1	normal
 t-preflight.sh::test_prompt	1	normal
 t-preflight2.sh::test_preflight_base	1	normal
@@ -252,6 +256,7 @@ t-stack.sh::test_stack_status_never_blank	1	normal
 t-state.sh::test_state	1	normal
 t-state.sh::test_state_fix_gate	1	normal
 t-status.sh::test_status	1	normal
+t-status.sh::test_status_rejects_incomplete_or_invalid_results	1	normal
 t-status.sh::test_status_agent_transcripts	1	normal
 t-status.sh::test_status_overflow	1	normal
 t-status.sh::test_status_post_extra_exact_seats	1	normal
@@ -339,6 +344,8 @@ t-cost-session.sh::test_cost_session_brief_keeps_incomplete_results_visible	1	no
 t-cost-session.sh::test_cost_session_brief_refuses_unsafe_state	1	normal
 t-cost-session.sh::test_cost_session_watch_preserves_scheduled_relays	1	normal
 t-cost-session.sh::test_cost_session_watch_stops_on_declared_terminal_state	1	normal
+t-cost-session.sh::test_cost_session_watch_without_duration_runs_until_terminal_state	1	normal
+t-cost-session.sh::test_cost_session_watch_uses_narrated_live_status	1	normal
 t-profile-usage.sh::test_profile_usage_normalizes_categories	1	normal
 t-profile-usage.sh::test_profile_usage_deduplicates_native_messages	1	normal
 t-profile-usage.sh::test_profile_usage_prefers_terminal_totals	1	normal

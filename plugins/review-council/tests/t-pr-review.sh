@@ -186,7 +186,9 @@ if [ "${1:-} ${2:-}" = "pr view" ]; then
     echo 'no pull requests found for branch "feat"' >&2
     exit 1
   fi
-  printf '{"number":12,"url":"https://github.com/%s/pull/12","state":"%s","headRefName":"feat","headRefOid":"%s","baseRefName":"%s","baseRefOid":"%s"}\n' "$repo" "$live_state" "$live_head" "$live_base" "$live_base_oid"
+  number=${GH_BRANCH_PR_NUMBER:-12}
+  if [[ "${3:-}" =~ ^[1-9][0-9]*$ ]]; then number=$3; fi
+  printf '{"number":%s,"url":"https://github.com/%s/pull/%s","state":"%s","headRefName":"feat","headRefOid":"%s","baseRefName":"%s","baseRefOid":"%s"}\n' "$number" "$repo" "$number" "$live_state" "$live_head" "$live_base" "$live_base_oid"
   exit 0
 fi
   if [ "${1:-}" = api ]; then
@@ -1270,6 +1272,53 @@ PY
   assert_eq "altered target tree fails scope rebinding" "$?" 1
   assert_nogrep "altered target tree never posts" "$T/pr-identity-tree.calls" \
     '^api --method POST '
+}
+
+test_pr_review_preserves_preflight_pr_identity() {
+  local session="$T/pr-pinned-identity" root="$T/pr-pinned-identity-repo" bin="$T/pr-pinned-identity-bin"
+  local head base
+  pr_review_session "$session" "$root"
+  pr_review_gh_shim "$bin"
+  head=$(git -C "$root" rev-parse HEAD)
+  base=$(git -C "$root" rev-parse main)
+  cat >> "$session/scope.env" <<EOF
+REV_PR_NUMBER='71'
+REV_PR_REPO='acme/repo'
+REV_PR_HEAD='$head'
+REV_PR_BASE_HEAD='$base'
+REV_PR_BASE_REF='refs/heads/main'
+EOF
+  : > "$T/pr-pinned-identity.calls"
+  PATH="$bin:$PATH" GH_REPO=evil/other GH_BRANCH_PR_NUMBER=12 \
+    GH_CALLS="$T/pr-pinned-identity.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 \
+    > "$T/pr-pinned-identity.out" 2> "$T/pr-pinned-identity.err"
+  assert_eq "renderer resolves the exact PR from preflight" "$?" 0
+  assert_eq "target keeps the preflight PR number" \
+    "$(jq -r .number "$session/pr-review-target.json")" 71
+  assert_eq "target keeps the preflight repository" \
+    "$(jq -r .repo "$session/pr-review-target.json")" acme/repo
+  assert_grep "pinned PR lookup uses its exact number and repository" \
+    "$T/pr-pinned-identity.calls" '^pr view 71 --repo acme/repo '
+  assert_nogrep "branch discovery cannot substitute a different PR" \
+    "$T/pr-pinned-identity.calls" '^pr view feat '
+}
+
+test_pr_review_rejects_stray_pinned_base_ref() {
+  local session="$T/pr-stray-base-ref" root="$T/pr-stray-base-ref-repo" bin="$T/pr-stray-base-ref-bin"
+  pr_review_session "$session" "$root"
+  pr_review_gh_shim "$bin"
+  printf "%s\n" "REV_PR_BASE_REF='refs/heads/main'" >> "$session/scope.env"
+  : > "$T/pr-stray-base-ref.calls"
+  PATH="$bin:$PATH" GH_REPO=evil/other GH_BRANCH_PR_NUMBER=12 \
+    GH_CALLS="$T/pr-stray-base-ref.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 \
+    > "$T/pr-stray-base-ref.out" 2> "$T/pr-stray-base-ref.err"
+  assert_eq "renderer rejects a stray pinned PR base ref" "$?" 1
+  assert_grep "stray base ref reports incomplete pinned identity" \
+    "$T/pr-stray-base-ref.err" 'incomplete pinned PR identity'
+  assert_nogrep "partial pinned identity never falls back to branch discovery" \
+    "$T/pr-stray-base-ref.calls" '^pr view '
 }
 
 test_pr_review_finalization_integrity() {
