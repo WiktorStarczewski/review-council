@@ -897,5 +897,11 @@ The independent normal review found three P2 gaps in the wildcard re-export reso
 and regression: multiline exports were not parsed, the first-route fixture did not
 exercise the multiline route, and CRLF files retained a trailing carriage return at
 EOF. The parser and regressions now cover exact source-line routing for single-line,
-multiline, and CRLF exports. Final independent re-review found no actionable P0-P2
-findings. `git diff --check` and shell preflights pass; CI verification is pending.
+multiline, and CRLF exports. A follow-up review found that multi-hop route lines were
+indexed but not included in prepared source packets. Route ranges now flow through
+packet planning and proof obligations, with a two-barrel packet regression. Final
+independent re-review found no actionable P0-P2 findings. CI run 40047800326 failed on
+both platforms at 539465a; its only additional failing test group versus the 0.7.12
+baseline is the wildcard route packet regression being fixed here. `git diff --check`
+passes. Guarded shell preflight was refused at load 6.54 against the 6.0 limit, so no
+command ran. New exact-head CI is pending.

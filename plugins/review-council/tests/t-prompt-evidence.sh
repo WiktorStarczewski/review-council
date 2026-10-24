@@ -102,7 +102,7 @@ test_prompt_evidence_contract() {
       case "$seat" in
         sol)
           assert_grep "$seat prompt bounds Codex patch windows to 160 lines" "$prompt" \
-            'read every byte of the assigned patch.*window mode.*at most 160 lines.*ending at line [0-9]+'
+            '^Read the entire assigned patch in bounded windows of at most 160 lines, ending at line [0-9]+:'
           assert_grep "$seat prompt uses a portable shell window recipe" "$prompt" \
             "^First assigned-patch action: run .*sed -n '[0-9][0-9]*,[0-9][0-9]*p' .*r1-.*\\.patch"
           assert_nogrep "$seat prompt never asks Codex for a native read tool" "$prompt" \
@@ -110,7 +110,7 @@ test_prompt_evidence_contract() {
           ;;
         terra)
           assert_grep "$seat prompt bounds Codex patch windows to 160 lines" "$prompt" \
-            'read every byte of the assigned patch.*window mode.*at most 160 lines.*ending at line [0-9]+'
+            '^Read the entire assigned patch in bounded windows of at most 160 lines, ending at line [0-9]+:'
           assert_grep "$seat prompt uses a portable shell window recipe" "$prompt" \
             "^First assigned-patch action: run .*sed -n '[0-9][0-9]*,[0-9][0-9]*p' .*r1-.*\\.patch"
           ;;
@@ -530,7 +530,8 @@ PY
           assert_grep "$recovery_adapter prefix names the hard byte ceiling" \
             "$recovery_prefix" 'Hard ceilings are 32 KiB per response and for an ordinary turn'
           assert_grep "$recovery_adapter prefix caps Codex patch windows at 160 lines" \
-            "$recovery_prefix" 'at most 160 lines.*160 lines is a ceiling'
+            "$recovery_prefix" \
+            'at most 200 lines for every repository source window and at most 160 lines for each assigned-patch window'
           assert_grep "$recovery_adapter prefix applies 200-line windows to repository reads" \
             "$recovery_prefix" 'at most 200 lines for every repository source window'
           assert_grep "$recovery_adapter prefix splits over-target outputs before reading" \

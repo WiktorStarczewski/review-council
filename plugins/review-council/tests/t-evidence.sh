@@ -1888,8 +1888,10 @@ def wildcard_reexports_use_exact_source_proof():
               '  return page;\n'
               '};\n')
         write('src/history/index.ts', '// retain the route line after a header\n'
-              'export *\n  from "../history-implementation";\n'
+              'export *\n  from "../history-exports";\n'
               + '// unrelated barrel content\n' * 80)
+        write('src/history-exports.ts',
+              'export * from "./history-implementation";\n')
         write('src/consumer.ts',
               'import { readHistory } from "./history";\n'
               'export const consumeHistory = () => readHistory(1);\n')
@@ -1910,13 +1912,25 @@ def wildcard_reexports_use_exact_source_proof():
                        for row in obligation['candidate_search_ranges']), obligation
         assert any(row == {'path': 'src/history/index.ts', 'line_start': 2,
                            'line_end': 2, 'name': 'readHistory'}
-                   for row in obligation['candidate_symbols']), obligation
+                   for row in obligation['candidate_route_symbols']), obligation
+        assert any(row == {'path': 'src/history-exports.ts', 'line_start': 1,
+                           'line_end': 1, 'name': 'readHistory'}
+                   for row in obligation['candidate_route_symbols']), obligation
         proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
                        for shard in packet['shards'] for row in shard['ranges']}
         proof_paths.update(required['path']
                            for packet in manifest['source_context']['seats'].values()
                            for required in packet['required_source_ranges'])
-        assert 'src/history/index.ts' in proof_paths, proof_paths
+        assert {'src/history/index.ts', 'src/history-exports.ts'} <= proof_paths, proof_paths
+        proof_ranges = [row for packet in manifest['source_context']['seats'].values()
+                        for shard in packet['shards'] for row in shard['ranges']]
+        proof_ranges.extend(required
+                            for packet in manifest['source_context']['seats'].values()
+                            for required in packet['required_source_ranges'])
+        assert any(row['path'] == 'src/history/index.ts'
+                   and row['line_start'] <= 2 <= row['line_end'] for row in proof_ranges), proof_ranges
+        assert any(row['path'] == 'src/history-exports.ts'
+                   and row['line_start'] <= 1 <= row['line_end'] for row in proof_ranges), proof_ranges
 
 def wildcard_reexport_syntax_preserves_start_lines():
     assert module.ts_wildcard_references([

@@ -1481,6 +1481,7 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                 unreadable_candidate_targets = []
                 candidate_targets = set(binding.get('candidate_targets') or [])
                 route_paths = set()
+                candidate_route_symbols = []
                 if binding.get('default_import'):
                     candidate_targets.update(symbol['path'] for symbol in candidates)
                 for target in sorted(candidate_targets if candidates else ()):
@@ -1539,6 +1540,7 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                                 target, symbol['path'], symbol['name'])
                             if rows:
                                 route_symbols.extend(rows)
+                                candidate_route_symbols.extend(rows)
                                 route_paths.update(paths)
                                 imported_targets.update(paths)
                                 dependencies.update(route_edges)
@@ -1582,6 +1584,9 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                         'line_end': binding['line_end'],
                         'candidate_targets': candidate_targets,
                         'candidate_symbols': binding['candidate_symbols'],
+                        'candidate_route_symbols': sorted(
+                            {encoded(row): row for row in candidate_route_symbols}.values(),
+                            key=lambda row: (row['path'], row['line_start'], row['line_end'], row['name'])),
                         'candidate_search_ranges': candidate_search_ranges,
                         'unreadable_candidate_targets': sorted(unreadable_candidate_targets),
                         'config_ranges': binding.get('config_ranges', []),
@@ -3621,6 +3626,9 @@ def code_proof_obligations(assignment, components, evidence, packet):
             if symbol.get('path') in files:
                 add(symbol.get('path'), symbol.get('line_start'),
                     symbol.get('line_end'), owner_paths)
+        for source_range in obligation.get('candidate_route_symbols') or []:
+            add(source_range.get('path'), source_range.get('line_start'),
+                source_range.get('line_end'), owner_paths)
         for source_range in obligation.get('config_ranges') or []:
             add(source_range.get('path'), source_range.get('line_start'),
                 source_range.get('line_end'), owner_paths)
@@ -3898,6 +3906,8 @@ def source_context_inputs(repo, snapshot, base_tree, evidence, components, plan_
     for obligation in evidence.get('unresolved_imports') or []:
         paths.update(path for path in obligation.get('candidate_targets') or []
                      if path in boundaries)
+        paths.update(row['path'] for row in obligation.get('candidate_route_symbols') or []
+                     if row.get('path') in entries)
         paths.update(symbol['path'] for symbol in obligation.get('candidate_symbols') or []
                      if symbol.get('path') in boundaries)
         paths.update(row['path'] for row in obligation.get('config_ranges') or []
@@ -4073,6 +4083,14 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
             for call in calls[1:]:
                 add('extra-caller', 'extra-caller:' + symbol['name'], call['path'],
                     call['line'] - 2, call['line'] + 2, mapped(call['path'], symbol_components))
+
+        for obligation in evidence.get('unresolved_imports') or []:
+            owner_paths = {symbol.get('path') for symbol in obligation.get('candidate_symbols') or []}
+            route_components = [component for component in relevant
+                                if owner_paths & set(component['files'])]
+            for route in obligation.get('candidate_route_symbols') or []:
+                add('declaration', 'declaration:import-route:' + route['name'],
+                    route['path'], route['line_start'], route['line_end'], route_components)
 
         for component in relevant:
             tests = [tests_by_path[path] for path in component['boundary'] if path in tests_by_path]
@@ -4709,8 +4727,9 @@ def validate_components(session, manifest, evidence):
                 or any(not isinstance(path, str) or not within(path, selected)
                        for path in candidate_targets)):
             raise ValueError('invalid import candidate targets')
-        for field in ('candidate_symbols', 'candidate_search_ranges', 'config_ranges'):
-            rows = obligation.get(field)
+        for field in ('candidate_symbols', 'candidate_route_symbols',
+                      'candidate_search_ranges', 'config_ranges'):
+            rows = obligation.get(field, [] if field == 'candidate_route_symbols' else None)
             if not isinstance(rows, list) or any(
                     not isinstance(row, dict) or not within(row.get('path'), selected)
                     or type(row.get('line_start')) is not int

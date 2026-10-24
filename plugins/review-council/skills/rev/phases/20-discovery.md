@@ -122,12 +122,13 @@ one. Every segment must be read once in order before the parent range
 earns a receipt.
 
 Evidence preparation applies to adaptive code panels and accepted-fix plan panels,
-whether or not their roster contains a `cursor-sdk` row. Explicit numeric panels use
-the full cumulative patch for every launched seat. Only explicit numeric panels
-without a `cursor-sdk` row keep the legacy path: omit evidence preparation and leave
-`MANIFEST` and `PANEL_PHASE` empty. With an SDK row, use the explicit numeric evidence
-protocol below; retain the numbered schedule, lenses, final composed emphases and
-actual launched set. Numeric evidence is never adaptive verification.
+whether or not their roster contains a `cursor-sdk` row.
+Explicit numeric panels use the full cumulative patch for every launched seat.
+Only explicit numeric panels without a `cursor-sdk` row keep the legacy path: omit
+evidence preparation and leave `MANIFEST`
+and `PANEL_PHASE` empty. With an SDK row, use the explicit numeric evidence protocol
+below; retain the numbered schedule, lenses, final composed emphases and actual
+launched set. Numeric evidence is never adaptive verification.
 Scheduled opaque extras such as `codex-review` refuse before launch with
 `cursor-sdk numeric extra mode is unsupported`; they cannot be silently dropped.
 `extras:false` removes them explicitly. A dormant extra does not block its other
