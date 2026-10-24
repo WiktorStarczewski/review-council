@@ -139,6 +139,8 @@ test_prompt_evidence_contract() {
         'package-manager cache is unavailable or unwritable.*do not install or change dependencies.*runtime validation as unverified'
       assert_grep "$seat review does not mark an unavailable optional test incomplete" "$prompt" \
         'this alone is not incomplete proof'
+      assert_grep "$seat review keeps required evidence and call limits fail-closed" "$prompt" \
+        'unread assigned evidence or an exhausted review-call budget still requires an INCOMPLETE PROOF result'
       assert_grep "$seat prompt gives one explicit post-patch evidence order" "$prompt" \
         '^Post-patch evidence order: read every listed source-context packet and required source segment in exact order before the evidence index or original source\.$'
       assert_grep "$seat prompt limits source-context packets to one per turn" "$prompt" \
