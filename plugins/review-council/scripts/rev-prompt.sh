@@ -524,9 +524,17 @@ prefixes = (
     'Required post-index original-source target: ',
     'Optional post-index original-source target: ',
 )
+index_prefix = 'Evidence navigation index: '
 step = 1
 for line in lines:
-    if line.startswith(prefixes):
+    if line.startswith(index_prefix):
+        path = line[len(index_prefix):]
+        action = ('Read the complete evidence navigation index after all listed source-context '
+                  'packets and required source segments, before opening or searching original '
+                  'repository source: ' + path)
+        print('%d. %s' % (step, action))
+        step += 1
+    elif line.startswith(prefixes):
         print('%d. %s' % (step, line))
         step += 1
 print('%d. Searches return at most 80 lines. If more matches exist, narrow the pattern or the path and read the next page. Do not read an unbounded search result.' % step)

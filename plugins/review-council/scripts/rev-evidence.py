@@ -7706,8 +7706,10 @@ def render_seat(manifest, mh, seat, plan_source):
               + 'are historical-only or absent from the frozen snapshot; '
               + 'every listed historical packet and source segment remains required.')
     print('Mechanical owner: ' + str(manifest['mechanical_owner']))
-    print('After completing the post-patch evidence order, open original source to prove each '
-          + 'finding; expand beyond this index when needed.')
+    print('Prepared source-context packet lines are exact source bytes from the frozen repository '
+          + 'tree; they already verify every plan site they cover and may support finding citations; '
+          + 'do not reopen a covered range unless a concrete unresolved question requires context '
+          + 'outside it. Required source reads for uncovered sites remain mandatory.')
 
 
 def verify(args):
