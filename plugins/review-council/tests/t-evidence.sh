@@ -1597,7 +1597,8 @@ def source_context_packets():
         assert any(reason.startswith('gate:') for reason in reasons)
         prompt = call('render', session / 'r1-evidence.manifest.json', owner)
         assert 'Source context enabled: true' in prompt and 'Source context packet:' in prompt and 'Source read required:' in prompt
-        assert 'Read the entire assigned patch in bounded windows of at most 40 lines:' in prompt
+        assert ('Read the entire assigned patch in bounded windows of at most 160 lines, '
+                + f"ending at line {m['assignments'][owner]['patch_lines']}: ") in prompt
         old = module.Repository
         try:
             module.Repository = lambda *_: (_ for _ in ()).throw(AssertionError('offline source-context validation used Git'))

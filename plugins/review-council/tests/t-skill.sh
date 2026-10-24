@@ -82,7 +82,7 @@ test_skill_contract() {
   assert_grep "simplicity discovery uses every seat" "$K" '\| Simplicity discovery \|.*\| simplicity for every seat \|'
   assert_grep "PR description is not passed to seats by default" "$K" 'do \*\*not\*\* pass `--pr \$S/pr\.md`'
   assert_grep "no-SDK legacy evidence path is scoped to numeric panels" "$K" \
-    'numeric panel has no `cursor-sdk` row, keep its legacy path'
+    'Only explicit numeric panels without a `cursor-sdk` row keep the legacy path'
   assert_nogrep "no-SDK legacy evidence path is not stated as a global fallback" "$K" \
     '^Without a `cursor-sdk` row, keep the legacy path'
 
