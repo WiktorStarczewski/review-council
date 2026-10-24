@@ -66,7 +66,7 @@ JSON
   assert_grep "10-minute progress ticks are enabled by default" "$T/brief.json" '"status_tick": true'
   local H="$T/status-home"; mkdir -p "$H/.config/review-council"
   printf '{"status_tick": false}\n' > "$H/.config/review-council/config.json"
-  HOME="$H" python3 "$SCRIPTS/rev-brief.py" "$B" --host codex > "$T/brief.json"
+  env -u REVIEW_COUNCIL_CONFIG HOME="$H" python3 "$SCRIPTS/rev-brief.py" "$B" --host codex > "$T/brief.json"
   assert_grep "normal brief invocation honors the user's config opt-out" "$T/brief.json" '"status_tick": false'
   printf '{"status_tick": true}\n' > "$T/status-config.json"
   "$SCRIPTS/rev-state.sh" "$B" status_tick=false >/dev/null

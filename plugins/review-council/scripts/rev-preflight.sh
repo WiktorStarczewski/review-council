@@ -53,6 +53,9 @@ if [ -n "$PR_NUMBER" ]; then
   [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || die "--pr must be a positive PR number"
   [[ -z "$PR_REPO_ARG" || "$PR_REPO_ARG" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] \
     || die "--pr-repo must be an owner/repository pair"
+  case "$PR_REPO_ARG" in
+    ../*|./*|*/..|*/.) die "--pr-repo must be an owner/repository pair";;
+  esac
   [ -z "$BASEREF" ] || die "--pr cannot be combined with --base or REV_BASE_REF"
   [ "$SCOPE" != uncommitted ] || die "--pr cannot review an uncommitted scope"
   if [ -n "$PR_REPO_ARG" ]; then

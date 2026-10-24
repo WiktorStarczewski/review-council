@@ -24,16 +24,22 @@ class SearchPipelineBoundsTests(unittest.TestCase):
         self.root.mkdir()
         (self.root / 'source.txt').write_text('needle\n' * 100)
 
-    def codes(self, command):
+    def codes(self, command, plan_search_commands=None):
         return [item['code'] for item in self.audit.shell_violations(
-            command, [self.root], self.root, None, read_limit=40)]
+            command, [self.root], self.root, None, read_limit=40,
+            plan_search_commands=plan_search_commands)]
 
     def test_search_result_limiter_accepts_eighty_lines(self):
         self.assertEqual(self.codes('rg -n -- needle . | head -80'), [])
 
     def test_compiler_search_sentinel_accepts_eighty_one_lines(self):
         command = "rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'needle' . | head -81"
-        self.assertEqual(self.codes(command), [])
+        self.assertEqual(self.codes(command, {command}), [])
+
+    def test_search_sentinel_requires_the_exact_assigned_plan_command(self):
+        command = "rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'needle' . | head -81"
+        self.assertEqual(self.codes(command), ['unbounded-shell-output'])
+        self.assertEqual(self.codes(command, {command + ' '}), ['unbounded-shell-output'])
 
     def test_search_result_limiter_rejects_more_than_the_sentinel(self):
         self.assertEqual(self.codes('rg -n -- needle . | head -82'),

@@ -1,3 +1,19 @@
+# Release 0.8.1 follow-up
+
+- [x] Pull the latest stable Council release into the 0.8.1 candidate and preserve the completed normal internal review.
+- [x] Run current-head CI and retain its exact Linux, macOS, proof-preparation, and packaging results.
+- [x] Correct the failing verifier cases: ambiguous TypeScript project candidates, replacement-chain identities, deterministic live-status polling, and canonical paths through a symlinked temp root.
+- [x] Correct the workflow test to assert the actual `proof-preparation` job key.
+- [x] Complete normal internal review and correct its P2 finding about the stale CI handoff status.
+- [x] Diagnose the next exact-head failures: the workflow test searched for a literal `\\n`, and the stack-test fixture omitted `rev-context.py` beside its temporary `rev-status.sh`.
+- [x] Fix the workflow split to use a newline and initialize fake session state before the delay.
+- [x] Add the missing status-context symlink to the stack-test fixture.
+- [x] Complete normal internal review of the fixture correction and push it.
+- [ ] Pass proof-preparation, Ubuntu, macOS, and Cursor package CI on the exact final head.
+- [ ] Squash-merge PR #74, publish the signed 0.8.1 tag and release, install it on Claude, Codex, and Cursor, and verify each installation.
+
+PR #74 is at `cf6baa078bf0afbc51cbfa5996d8f91b0419a89a`, based on latest `origin/main` `58862c988d545dee67f79fafdf0e8008a4e66632`. Old-head run `40061351310` confirmed the escaped-newline Python error and the stack status-line failure. The newline and state-timing fixes are on this candidate. On `40062066942`, Ubuntu's 519 Python tests passed, but the shell gate still failed because its temporary `REV_SCRIPTS` directory linked `rev-status.sh` without the required adjacent `rev-context.py`. The test fixture now links that companion, and normal internal follow-up review found no actionable P0-P2 findings. Exact-head proof preparation and Cursor packaging passed; macOS is still running.
+
 # Release 0.8.0
 
 - [x] Verify and merge the latest signed release, `review-council--v0.7.14`, into the candidate.
@@ -9,8 +25,8 @@
 - [x] Finish and re-review the exact-PR renderer/evidence checks and all internal-review fixes.
 - [x] Integrate PR #69, signed tag `review-council--v0.7.12`, into this candidate.
 - [x] Fetch and merge latest `origin/main` at `ff13856` in merge commit `f562d78`.
-- [ ] Complete the one-seat normal internal review, push the combined candidate, and record macOS, Ubuntu, and Cursor package CI on its exact head.
-- [ ] Squash-merge and publish signed 0.8.0 even if candidate CI is red, as explicitly authorized; preserve exact failures and prepare 0.8.1 follow-up fixes if any check fails.
+- [x] Complete the one-seat normal internal review and merge the combined candidate as PR #67.
+- [x] Publish signed 0.8.0 as explicitly authorized, preserving the exact failed run for the 0.8.1 follow-up.
 
 ## Release review
 
@@ -48,6 +64,20 @@ and result searches remain capped at 80. Fresh independent review found no remai
 actionable P0-P2 issues. `git diff --check` and `bash -n` preflights pass; the full tests
 were not run locally. Exact-head CI will be recorded, and the user authorized publishing
 0.8.0 with failures followed by a 0.8.1 correction release.
+
+# Release 0.8.1
+
+- [x] Pull the merged 0.8.0 source and inspect the exact main CI failures from run `40054245261`.
+- [x] Fix deleted-reference proof, explicit PR repository path validation, and replacement failure precedence.
+- [x] Correct stale plan-read, repository-call, search, workflow-split, and progress-monitor fixtures.
+- [ ] Finish the normal internal review and apply actionable findings.
+- [ ] Push the candidate PR and require proof-preparation, macOS, Ubuntu, and Cursor package CI to pass on the exact head.
+- [ ] Squash-merge, publish signed 0.8.1, reinstall all hosts, and verify installed versions and file identity.
+
+## 0.8.1 follow-up evidence
+
+- Main CI run `40054245261` failed on `58862c9` in proof preparation, the Python verifier, and the shell verifier on both operating systems. Complete artifacts are preserved under `/tmp/council-main-40054245261`.
+- The 0.8.1 candidate is not yet CI-validated. Release remains blocked until all required checks pass on the exact candidate head.
 
 # Release 0.5.10
 
