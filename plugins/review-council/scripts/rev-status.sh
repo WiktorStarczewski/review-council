@@ -1,14 +1,14 @@
 #!/bin/bash
 # rev-status.sh <session-dir>
-# ONE line (≤220 chars) describing the run, from files in the session dir only:
-#   r3/7 triage | sol: done 4f 9m | terra: done 2f 11m | opus: running 14m ← rg "retry" src/api | sonnet: done 3f 8m | open P0:0 P1:1 P2:3 fixed 6
+# One narrative status line plus compact metrics, from session files only.
+# The narrative reports phase, reviewer activity, open P0-P2 findings, fixes, and a recent returned finding.
 # Per seat: pending | running <t>m ← <last action> | done <k>f <t>m | failed exit=<c> | dropped
 set -u
 S=${1:?usage: rev-status.sh <session-dir>}
 [ -d "$S" ] || { echo "no session at $S"; exit 1; }
 HERE=$(cd "$(dirname "$0")" && pwd)
 python3 - "$S" "$HERE" <<'PY'
-import hashlib, importlib.util, json, os, re, subprocess, sys, time
+import hashlib, importlib.util, json, os, re, runpy, subprocess, sys, time
 from pathlib import Path
 S = sys.argv[1]
 st = {}
@@ -18,6 +18,9 @@ if os.path.exists(p):
         with open(p) as f: st = json.load(f)
     except Exception: st = {}
 now = time.time()
+context_tools = runpy.run_path(os.path.join(sys.argv[2], 'rev-context.py'))
+read_file = context_tools['read_file']
+valid_result = context_tools['valid_result']
 rnd = st.get('round', '?'); mn = st.get('min_rounds', '?'); phase = st.get('phase', 'setup')
 seats = st.get('seats') or []
 if not isinstance(seats, list): seats = [seats]   # a bare name is one seat, not one per character
@@ -46,10 +49,42 @@ def mtime(path):
 def minutes(a, b):
     return int(max(0, b - a) // 60)
 
-def findings_count(js):
+def completed_report(js):
     try:
-        with open(js) as f: return len(json.load(f).get('findings', []))
-    except Exception: return '?'
+        raw = read_file(Path(js), optional=True)
+    except (OSError, ValueError):
+        return 'invalid', None
+    if raw is None:
+        return 'missing', None
+    report = valid_result(raw)
+    if report is None:
+        return 'invalid', None
+    if report['summary'].startswith('INCOMPLETE PROOF'):
+        return 'incomplete', report
+    return 'complete', report
+
+def plain(value, limit):
+    value = re.sub(r'[\x00-\x1f\x7f]', ' ', str(value))
+    value = re.sub(r'\s+', ' ', value).replace('|', '/')
+    return value.strip()[:limit]
+
+def readable_action(action):
+    try:
+        data = json.loads(action)
+    except (TypeError, ValueError):
+        return plain(action, 64)
+    if not isinstance(data, dict):
+        return plain(action, 64)
+    command = data.get('command')
+    if isinstance(command, str) and command:
+        return plain(command, 64)
+    pattern = data.get('pattern')
+    path = data.get('path') or data.get('file_path')
+    if isinstance(pattern, str) and pattern:
+        return plain(f'search {pattern!r}' + (f' in {path}' if path else ''), 64)
+    if isinstance(path, str) and path:
+        return plain(f'inspect {path}', 64)
+    return plain(action, 64)
 
 def last_action(log):
     try:
@@ -60,7 +95,7 @@ def last_action(log):
     l = lines[-1]
     l = re.sub(r'^(exec: |tool_call [^:]*: |done: exit=\S+ )', '', l)
     l = re.sub(r"^/bin/zsh -lc '?", '', l).rstrip("'")
-    return l
+    return readable_action(l)
 
 def transcript_action(tx):
     if not isinstance(tx, str) or not tx or not os.path.exists(tx): return ''
@@ -81,9 +116,11 @@ def seat_action(seat, log):
     return last_action(log)
 
 MAX = 220
+STORY_MAX = 560
 ACTION_MAX = 40
 
 seats_out = []          # (prefix, action) -- action is '' when there is none
+valid_reports = {}
 for seat in seats:
     base = os.path.join(S, f"r{rnd}-{seat}")
     js, ex, lg, pr = base + '.json', base + '.exit', base + '.log', base + '.prompt.md'
@@ -103,10 +140,18 @@ for seat in seats:
     if os.path.exists(ex):
         code = open(ex).read().strip()
         if code == '0':
+            proof, report = completed_report(js)
+            if proof == 'missing':
+                seats_out.append((f"{name}: missing result", '')); continue
+            if proof == 'invalid':
+                seats_out.append((f"{name}: invalid result", '')); continue
+            if proof == 'incomplete':
+                seats_out.append((f"{name}: incomplete proof", '')); continue
             if seat in sdk_seats and (not sdk_identity_valid or not profile.is_completed_sdk_result(Path(js), seat)):
                 seats_out.append((f"{name}: invalid SDK proof", '')); continue
             dur = minutes(started, mtime(ex)) if started else 0
-            seats_out.append((f"{name}: done {findings_count(js)}f {dur}m", ''))
+            valid_reports[seat] = report
+            seats_out.append((f"{name}: done {len(report['findings'])}f {dur}m", ''))
         else:
             seats_out.append((f"{name}: failed exit={code}", ''))
         continue
@@ -117,7 +162,13 @@ for seat in seats:
 
 o = st.get('open') or {}
 header = f"r{rnd}/{mn} {phase} | "
-tail = f"open P0:{o.get('P0', 0)} P1:{o.get('P1', 0)} P2:{o.get('P2', 0)} fixed {st.get('fixed', 0)}"
+def count(value):
+    try: return max(0, int(value or 0))
+    except (TypeError, ValueError): return 0
+
+counts = {severity: count(o.get(severity)) for severity in ('P0', 'P1', 'P2')}
+fixed = count(st.get('fixed'))
+tail = f"open P0:{counts['P0']} P1:{counts['P1']} P2:{counts['P2']} fixed {fixed}"
 # The header and the aggregate tail are never sacrificed; only the seat section flexes.
 budget = MAX - len(header) - len(tail) - (len(" | ") if seats_out else 0)
 
@@ -139,6 +190,55 @@ if seats_out:
             body = cand
             if len(cand) <= budget: break
 
-line = header + (body + " | " if seats_out else '') + tail
-print(line[:MAX])
+done = sum(': done ' in prefix for prefix, _ in seats_out)
+running = [(prefix, action) for prefix, action in seats_out if ': running ' in prefix]
+pending = sum(': pending' in prefix for prefix, _ in seats_out)
+failed = sum(any(marker in prefix for marker in (
+    ': failed ', ': invalid SDK proof', ': missing result', ': invalid result',
+    ': incomplete proof')) for prefix, _ in seats_out)
+dropped_count = sum(': dropped' in prefix for prefix, _ in seats_out)
+open_count = sum(counts.values())
+story = [f"Council is in {phase}, round {rnd} of {mn}: {done} of {len(seats_out)} review seats have returned results."]
+for prefix, action in running[:2]:
+    name = prefix.split(':', 1)[0]
+    story.append(f"{name} is still reviewing" +
+                 (f"; its last recorded step was {plain(action, 64)}." if action else '.'))
+if pending:
+    story.append(f"{pending} reviewer seat{'s are' if pending != 1 else ' is'} waiting to start.")
+if dropped_count:
+    story.append(f"{dropped_count} reviewer seat{'s were' if dropped_count != 1 else ' was'} dropped.")
+if failed:
+    story.append(f"{failed} reviewer seat{'s have' if failed != 1 else ' has'} failed or returned invalid proof.")
+if phase in ('setup', 'discovery', 'fan-out', 'collect') and done:
+    story.append(f"Returned findings have not yet been triaged; {open_count} P0-P2 findings are currently recorded as open (P0: {counts['P0']}, P1: {counts['P1']}, P2: {counts['P2']}); {fixed} fixes are recorded.")
+elif open_count:
+    story.append(f"{open_count} P0-P2 findings are currently recorded as open (P0: {counts['P0']}, P1: {counts['P1']}, P2: {counts['P2']}); {fixed} fixes are recorded.")
+else:
+    story.append(f"No P0-P2 findings are currently recorded as open; {fixed} fixes are recorded.")
+
+recent = []
+for seat, (prefix, _) in zip(seats, seats_out):
+    if ': done ' not in prefix:
+        continue
+    report = valid_reports.get(seat)
+    if report is None:
+        continue
+    stamp = mtime(os.path.join(S, f"r{rnd}-{seat}.json")) or 0
+    for finding in report.get('findings', []):
+        if finding.get('severity') in ('P0', 'P1', 'P2'):
+            recent.append((stamp, finding))
+if recent:
+    _, finding = max(recent, key=lambda row: row[0])
+    claim = plain(finding.get('claim', ''), 100)
+    location = plain(finding.get('file', ''), 100)
+    line_number = finding.get('line_start')
+    if location and isinstance(line_number, int):
+        location = f"{location}:{line_number}"
+    if claim:
+        story.append(f"A recent returned report flags {finding.get('severity')} at {location}: {claim}.")
+
+narrative = ' '.join(story)
+if len(narrative) > STORY_MAX:
+    narrative = narrative[:STORY_MAX - 3].rstrip() + '...'
+print(header + narrative + ' | ' + (body + ' | ' if seats_out else '') + tail)
 PY

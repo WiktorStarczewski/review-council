@@ -2,6 +2,7 @@
 
 ## 0.8.0
 
+- Live status lines narrate phase progress, reviewer activity, recorded P0-P2 findings, and fixes. The Codex watcher stays attached until the review reaches a terminal phase.
 - PR-scoped reviews pin the GitHub repository, number, head, and base at preflight. Rendering and evidence preparation reject live identity drift before creating a target or evidence snapshot.
 - Failed review assignments can continue through the configured replacement chain with each child bound to its failed parent, preserving sibling results and selecting only the terminal valid result.
 

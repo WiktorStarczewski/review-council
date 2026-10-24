@@ -642,7 +642,9 @@ test_skill_contract() {
   assert_grep "failure table kept" "$K" '\| seat exit 3 \|'
   assert_grep "status tick kept" "$K" 'rev-status\.sh'
   assert_grep "Claude status watcher exits at terminal state" "$K" \
-    'rev-context\.py <S> --watch --interval 600'
+    'rev-context\.py "\$S" --watch --interval 600 --poll-interval 5'
+  assert_nogrep "Claude status watcher does not loop past terminal state" "$K" \
+    'while true; do sleep 600;.*rev-status\.sh'
   assert_grep "ledger format kept" "$K" '## F-012 · P1 · FIXED'
   assert_grep "report sections kept" "$K" 'Residual risk'
   assert_grep "stack-leg mode kept" "$K" 'REV_STACK_LEG=1'

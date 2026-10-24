@@ -279,6 +279,7 @@ itself, including release candidates. Use the normal internal review workflow wi
 one reviewer even when the general code-review workflow defaults to a Council panel.
 
 - Before releasing Council, fetch and verify the latest signed tag and merge any newer main commit before editing the next version's manifests, changelog, plan, or release procedure.
+- If the user restores a CI gate after explicitly waiving it, follow the latest direction. Older-head results do not satisfy the required current-head gate before merge or release.
 - Adapter review prompts must distinguish multiple calls in one turn from batching multiple source reads into one payload. Show commands that the active adapter and its read audit both accept.
 - Review prompts must keep bounded line counts below the byte ceiling too. A 240-line patch window returned 44 KiB, and the prescribed `head -81` search exceeded an 80-line audit limit. Cap Codex patch and source windows at 40 lines, split further before a response risks 24 KiB, and cap searches at 80 results with a narrow path or pattern.
 - A plan's compiler-rendered `head -81` query is an overflow-sentinel proof contract. Tell the reviewer to run only that exact command unchanged; every search it composes must use `head -80` and narrower follow-ups.
@@ -286,3 +287,4 @@ one reviewer even when the general code-review workflow defaults to a Council pa
 - When several active sessions repair the same shared plugin, identify all exact surfaces and agree file ownership, CI ownership and one integration owner before expanding implementation. Isolated worktrees alone do not prevent duplicate fixes or conflicting releases.
 - For coordination among concurrent Codex sessions, use the internal Codex communications channel when available. Do not substitute cmux messages; discover the internal session roster and message API first.
 - A native message queue receipt proves persistence only. Verify recipient consumption and acknowledgement before claiming independent sessions are coordinated; this session's live subagent channel does not address external session UUIDs.
+- When asked to make Review Council more talkative, change Council's user-visible progress output rather than only increasing the orchestrator's chat updates. Derive narration from observed review activity, findings, and completed work; never invent reviewer thoughts or unsupported "interesting facts".

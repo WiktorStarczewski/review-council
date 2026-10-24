@@ -136,18 +136,34 @@ spec = importlib.util.spec_from_file_location('cost_context_narrated', sys.argv[
 module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 session = Path(sys.argv[2]); session.mkdir()
 (session/'state.json').write_text(json.dumps({
-    'phase':'done','round':'1','min_rounds':1,'seats':['opus'],
+    'phase':'collect','round':'1','min_rounds':1,'seats':['opus'],
     'open':{'P1':1},'fixed':0}))
 (session/'r1-opus.prompt.md').write_text('review prompt\n')
-(session/'r1-opus.exit').write_text('0\n')
-(session/'r1-opus.json').write_text(json.dumps({
-    'summary':'one finding','findings':[{'severity':'P1','file':'src/pair.ts',
+log = session/'r1-opus.log'
+log.write_text('tool_call shell: rg "pair" src/pair.ts\n')
+state = json.loads((session/'state.json').read_text())
+clock = [0.0]
+def sleep(seconds):
+    clock[0] += seconds
+    if clock[0] >= 5:
+        log.write_text('tool_call shell: sed -n 10,20p src/pair.ts\n')
+    if clock[0] >= 10:
+        (session/'r1-opus.exit').write_text('0\n')
+        (session/'r1-opus.json').write_text(json.dumps({
+            'summary':'one finding','findings':[{'severity':'P1','file':'src/pair.ts',
         'line_start':14,'line_end':14,'claim':'pair validation is skipped',
-        'evidence':'fixture','suggested_fix':'','confidence':0.9}]}))
+                'evidence':'fixture','suggested_fix':'','confidence':0.9}]}))
+        state['phase'] = 'done'
+        (session/'state.json').write_text(json.dumps(state))
 stream = io.StringIO()
-with patch.object(module.time, 'sleep'), contextlib.redirect_stdout(stream):
-    module.watch(session, interval=600, poll_interval=1)
-output = stream.getvalue()
+with patch.object(module.time, 'monotonic', side_effect=lambda:clock[0]), \
+     patch.object(module.time, 'sleep', side_effect=sleep), contextlib.redirect_stdout(stream):
+    module.watch(session, interval=600, poll_interval=5)
+lines = stream.getvalue().splitlines()
+assert len(lines) == 3, lines
+assert lines[0].startswith('[initial 0s]') and 'rg "pair" src/pair.ts' in lines[0], lines
+assert lines[1].startswith('[changed 5s]') and 'sed -n 10,20p src/pair.ts' in lines[1], lines
+output = lines[-1]
 assert 'Council is in done' in output, output
 assert 'pair validation is skipped' in output, output
 PY

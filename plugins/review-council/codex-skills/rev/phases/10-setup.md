@@ -113,3 +113,12 @@ An optional `S/baseline.json` records each check's command, outcome, applicabili
 and failure evidence using the [structured baseline format](../../../../docs/cost-accounting.md).
 When present it replaces `baseline.md` in reviewer prompts; include the full baseline,
 including skipped checks and pre-existing failures.
+
+Unless session state or config explicitly sets `status_tick` to `false`, keep a live
+progress watcher attached from setup through completion:
+`python3 "$PLUGIN/scripts/rev-context.py" "$S" --watch`.
+Relay each narrated status line as-is. Also run `rev-status.sh "$S"` after a phase
+change, seat failure, or terminal result; see the triage phase for what each update
+contains and what it must omit.
+The default watch runs until a terminal phase. Add `--duration <seconds>` only for a
+deliberately bounded watch.

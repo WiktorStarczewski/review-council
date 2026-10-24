@@ -278,7 +278,8 @@ def parse_scope(path):
     base_branch = values.get("REV_BASE_BRANCH")
     require(branch and base_branch and base and OID.fullmatch(base) is not None,
             f"scope has no usable reviewed base or branch identity: {path}")
-    pr_keys = ("REV_PR_NUMBER", "REV_PR_REPO", "REV_PR_HEAD", "REV_PR_BASE_HEAD")
+    pr_keys = ("REV_PR_NUMBER", "REV_PR_REPO", "REV_PR_HEAD", "REV_PR_BASE_HEAD",
+               "REV_PR_BASE_REF")
     pr_values = [values.get(key) for key in pr_keys]
     pr_number = pr_values[0]
     pr_repo = pr_values[1]

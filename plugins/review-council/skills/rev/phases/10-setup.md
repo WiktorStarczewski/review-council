@@ -118,9 +118,11 @@ preflight choice.
    for a compact briefing from current state, exact roster identities and artifacts.
    Follow its references when evaluating a claim; it does not evaluate certification
    or replace collection and receipt checks.
-5. Do not arm a 10-minute status monitor unless `$S/state.json` has `"status_tick": true` or the config key `status_tick` is true. By default, wake only on a phase change, a seat failure, or a terminal result, and run `rev-status.sh` then. When the tick is enabled (not in stack-leg mode):
+5. Arm a 10-minute status monitor by default. `rev-brief.py` enables `status_tick` unless the session state or config explicitly sets it to `false`. When disabled, wake on a phase change, a seat failure, or a terminal result and run `rev-status.sh` then. When the tick is enabled (not in stack-leg mode):
    ```
-   Monitor({ command: "while true; do sleep 600; ${CLAUDE_PLUGIN_ROOT}/scripts/rev-status.sh <S>; done",
+   Monitor({ command: "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-context.py \"$S\" --watch --interval 600 --poll-interval 5",
              description: "rev status <S>", persistent: true, timeout_ms: 3600000 })
    ```
-   Every event it emits is relayed to the user (see **Status tick**).
+   Every narrated status line it emits is relayed to the user (see **Status tick**). The
+   watcher exits when the session reaches a terminal phase. The Monitor expires after
+   one hour; if the review is still nonterminal, re-arm it.

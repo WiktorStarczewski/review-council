@@ -72,12 +72,14 @@ to you *after* reporting, as its own separate change the user can see.
 
 ## Status tick - every 10 minutes, unprompted
 
-Arm this monitor only when `status_tick` is true (see Setup). Otherwise run `rev-status.sh` on a phase change, a seat failure, or a terminal result, and do not start the 10-minute loop.
+Arm this monitor by default unless `status_tick` is explicitly false (see Setup). Otherwise run `rev-status.sh` on a phase change, a seat failure, or a terminal result, and do not start the 10-minute loop.
 
-`rev-status.sh` renders one line from the session dir:
+`rev-status.sh` renders one narrated line from the session dir using the recorded phase,
+seat activity, P0-P2 counts, fixes, and latest successful reviewer result. It does not
+report private reasoning:
 
 ```
-r3/7 triage | sol: done 4f 9m | terra: running 14m ← rg "retry" src/api | opus: done 3f 8m | sonnet: done 2f 7m | open P0:0 P1:1 P2:3 fixed 6
+r3/7 triage | Council is in triage, round 3 of 7: 3 of 4 reviewers have returned results. Terra is still reviewing; its last recorded step was rg "retry" src/api. 1 P0-P2 finding remains open (P0: 0, P1: 1, P2: 0); 6 fixes are recorded. A recent returned report flags P1 at src/api.ts:42: retry skips the expired response. | sol: done 4f 9m | terra: running 14m ← rg "retry" src/api | opus: done 3f 8m | sonnet: done 2f 7m | open P0:0 P1:1 P2:0 fixed 6
 ```
 
 On a padded panel the seat columns read `opus`, `claude-1`, `claude-2` - three Claude

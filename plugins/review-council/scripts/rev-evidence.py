@@ -1514,6 +1514,7 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
     tokens = re.compile(r'\b[A-Za-z_$][\w$]*\b')
     call_tokens = re.compile(r'\b([A-Za-z_$][\w$]*)\s*\(')
     base_url_configs = source_base_urls(repo, entries)
+    source_config_cache = {}
     candidate_file_cache = {}
     wildcard_lines_cache = {}
 
@@ -1592,7 +1593,9 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
             else:
                 typed_imports = is_ts_js_path(path)
                 applicable_configs, ambiguous_config = (
-                    source_configs_for_path(path, base_url_configs) if typed_imports else ([], False))
+                    source_configs_for_path(
+                        path, base_url_configs, entries, repo, source_config_cache)
+                    if typed_imports else ([], False))
                 config_ranges = [source_range for config in applicable_configs
                                  for source_range in config['source_ranges']]
                 imported_refs = import_references(path, lines)
@@ -1748,9 +1751,12 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                         symbol['path'] in resolved for symbol in candidates))
                 )
                 obligation = None
+                path_mapped = (typed_imports and ts_paths_mapping_matches(
+                    binding['reference'], applicable_configs))
                 if candidates and (binding['unresolved']
                                    or binding['local_name'] != imported_name
-                                   or binding.get('module_alias')):
+                                   or binding.get('module_alias')
+                                   or path_mapped):
                     candidate_targets = sorted(set(binding.get('candidate_targets') or [])
                                                | {symbol['path'] for symbol in candidates}
                                                | route_paths)
@@ -1770,7 +1776,10 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                         'unreadable_candidate_targets': sorted(unreadable_candidate_targets),
                         'config_ranges': binding.get('config_ranges', []),
                         'reason': binding.get('reason') or (
-                            'unresolved or ambiguous import matching a changed export'
+                            'path-mapped import matching a changed export'
+                            if path_mapped and not binding['unresolved']
+                            and binding['local_name'] == imported_name
+                            else 'unresolved or ambiguous import matching a changed export'
                             if binding['unresolved'] else 'aliased import matching a changed export'),
                     }
                     unresolved_imports[encoded(obligation)] = obligation
@@ -1829,7 +1838,10 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                         for symbol in definitions.get(name, []))
                     unresolved_target = any(binding.get('unresolved')
                                             for binding in matching_bindings)
-                    if not resolved and not matching_bindings:
+                    unbound_candidate = (not resolved and not matching_bindings and any(
+                        symbol['path'] != path and symbol.get('cross_file')
+                        for symbol in definitions.get(name, [])))
+                    if not resolved and not matching_bindings and not unbound_candidate:
                         continue
                     call = {'path': path, 'line': i, 'name': name,
                             'kind': 'lexical name( match, not resolved dispatch'}
@@ -1845,9 +1857,11 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                         call['import_line_end'] = binding['line_end']
                     if unresolved_target:
                         call['resolution'] = 'unresolved import search required'
+                    elif unbound_candidate:
+                        call['resolution'] = 'unresolved name search required'
                     if call not in calls:
                         calls.append(call)
-                    if is_test and (resolved or matching_bindings):
+                    if is_test and (resolved or matching_bindings or unbound_candidate):
                         related = True
         if is_test and related:
             tests.append({'path': path, 'basis': 'test path with lexical reference or same stem'})
@@ -2033,7 +2047,7 @@ def source_base_urls(repo, entries):
         extends_match = re.search(r'"extends"\s*:\s*"([^"]+)"', source)
         lines = split_lf_text(source)
         source_ranges = []
-        for match in re.finditer(r'"(?:baseUrl|paths|extends|include|exclude)"\s*:', source):
+        for match in re.finditer(r'"(?:baseUrl|paths|extends|files|include|exclude)"\s*:', source):
             value_start = match.end()
             while value_start < len(source) and source[value_start].isspace():
                 value_start += 1
@@ -2089,29 +2103,49 @@ def source_base_urls(repo, entries):
                          if base_match else (directory or '.') if paths else None),
             'paths': paths,
             'extends': extends_match.group(1) if extends_match else None,
+            'files': strings('files'),
             'include': strings('include'),
             'exclude': strings('exclude'),
+            'has_files': bool(re.search(r'"files"\s*:', source)),
+            'has_include': bool(re.search(r'"include"\s*:', source)),
+            'has_exclude': bool(re.search(r'"exclude"\s*:', source)),
             'source_ranges': source_ranges,
         })
     return configs
 
 
-def source_configs_for_path(path, configs):
-    applicable = []
-    for config in configs:
-        directory = config['directory']
-        if directory and not path.startswith(directory.rstrip('/') + '/'):
-            continue
-        relative = posixpath.relpath(path, directory or '.')
-        if relative == '..' or relative.startswith('../'):
-            continue
-        applicable.append(config)
-    if not applicable:
-        return [], False
-    by_path = {config['path']: config for config in configs}
-    expanded = {config['path']: config for config in applicable}
+def ts_config_pattern_matches(path, pattern):
+    pattern = posixpath.normpath(pattern.replace('\\', '/'))
+    if pattern == '.':
+        return path != '..' and not path.startswith('../')
+    if not any(char in pattern for char in '*?'):
+        return path == pattern or path.startswith(pattern.rstrip('/') + '/')
+    expression = ['^']
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith('**/', index):
+            expression.append('(?:.*/)?')
+            index += 3
+        elif pattern.startswith('**', index):
+            expression.append('.*')
+            index += 2
+        elif pattern[index] == '*':
+            expression.append('[^/]*')
+            index += 1
+        elif pattern[index] == '?':
+            expression.append('[^/]')
+            index += 1
+        else:
+            expression.append(re.escape(pattern[index]))
+            index += 1
+    expression.append('$')
+    return bool(re.match(''.join(expression), path))
+
+
+def source_config_chain(config, by_path):
+    expanded = {config['path']: config}
     unresolved_extends = False
-    pending = list(applicable)
+    pending = [config]
     while pending:
         config = pending.pop()
         reference = config.get('extends')
@@ -2128,9 +2162,106 @@ def source_configs_for_path(path, configs):
         if parent['path'] not in expanded:
             expanded[parent['path']] = parent
             pending.append(parent)
-    values = list(expanded.values())
+    return list(expanded.values()), unresolved_extends
+
+
+def source_config_patterns(config, configs, field):
+    chain, _ = source_config_chain(config, {row['path']: row for row in configs})
+    has_field = 'has_' + field
+    for owner in chain:
+        if owner.get(has_field):
+            return owner.get(field) or [], owner.get('directory') or '.'
+    if field == 'include' and any(owner.get('has_files') for owner in chain):
+        return [], config.get('directory') or '.'
+    if field == 'include':
+        return ['**/*'], config.get('directory') or '.'
+    if field == 'files':
+        return [], config.get('directory') or '.'
+    return ['node_modules', 'bower_components', 'jspm_packages'], config.get('directory') or '.'
+
+
+def source_config_is_root(path, config, configs):
+    if not is_ts_js_path(path):
+        return False
+    chain, _ = source_config_chain(config, {row['path']: row for row in configs})
+    files, files_directory = source_config_patterns(config, configs, 'files')
+    if any(posixpath.normpath(posixpath.join(files_directory, pattern.replace('\\', '/'))) == path
+           for pattern in files):
+        return True
+    if not any(owner.get('has_include') for owner in chain):
+        if any(owner.get('has_files') for owner in chain):
+            return False
+        project_path = posixpath.relpath(path, config.get('directory') or '.')
+        if project_path == '..' or project_path.startswith('../'):
+            return False
+    includes, include_directory = source_config_patterns(config, configs, 'include')
+    include_path = posixpath.relpath(path, include_directory)
+    if not any(ts_config_pattern_matches(include_path, pattern) for pattern in includes):
+        return False
+    excludes, exclude_directory = source_config_patterns(config, configs, 'exclude')
+    exclude_path = posixpath.relpath(path, exclude_directory)
+    return not any(ts_config_pattern_matches(exclude_path, pattern) for pattern in excludes)
+
+
+def source_config_import_closure(config, configs, entries, repo, cache):
+    if config['path'] in cache:
+        return cache[config['path']]
+    chain, _ = source_config_chain(config, {row['path']: row for row in configs})
+    roots = sorted(path for path in entries
+                   if source_config_is_root(path, config, configs))
+    reached = set(roots)
+    pending = list(roots)
+    while pending:
+        source_path = pending.pop()
+        raw = repo.blob(entries[source_path])
+        if raw is OVERSIZED_BLOB or b'\0' in raw:
+            continue
+        try:
+            source_lines = split_lf_text(raw.decode('utf-8'))
+        except UnicodeDecodeError:
+            continue
+        for reference in import_references(source_path, source_lines):
+            for target in resolve_import_candidates(source_path, reference, entries, chain):
+                if is_ts_js_path(target) and target not in reached:
+                    reached.add(target)
+                    pending.append(target)
+    cache[config['path']] = reached
+    return reached
+
+
+def source_configs_for_path(path, configs, entries=None, repo=None, cache=None):
+    applicable = []
+    cache = {} if cache is None else cache
+    for config in configs:
+        if source_config_is_root(path, config, configs):
+            applicable.append(config)
+        elif entries is not None and repo is not None and path in source_config_import_closure(
+                config, configs, entries, repo, cache):
+            applicable.append(config)
+    if not applicable:
+        return [], False
+    values = []
+    unresolved_extends = False
+    by_path = {config['path']: config for config in configs}
+    for config in applicable:
+        chain, unresolved = source_config_chain(config, by_path)
+        unresolved_extends = unresolved_extends or unresolved
+        for inherited in chain:
+            if inherited['path'] not in {row['path'] for row in values}:
+                values.append(inherited)
     roots = {config['base_url'] for config in values if config.get('base_url')}
     return values, unresolved_extends or len(roots) > 1 or len(applicable) > 1
+
+
+def ts_paths_mapping_matches(reference, configs):
+    for config in configs:
+        for pattern in config.get('paths', {}):
+            if not any(char in pattern for char in '*?'):
+                if reference == pattern:
+                    return True
+            elif ts_config_pattern_matches(reference, pattern):
+                return True
+    return False
 
 
 def rust_package(path, entries, repo):
