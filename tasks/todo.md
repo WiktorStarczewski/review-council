@@ -908,8 +908,11 @@ failed on both platforms at 539465a; its only additional failing test group vers
 --check` passes. Guarded shell preflight was refused twice, most recently at load 6.54
 against the 6.0 limit, so no tests ran. Main advanced to 0.7.14 while this PR was open,
 leaving its old head conflicting and preventing a current-head check from appearing.
-The branch is now reconciled with current main. `bash -n` and `git diff --check` pass;
-focused tests and exact-head CI are pending.
+The branch is now reconciled with current main. `bash -n` and `git diff --check` pass.
+Exact-head run 40050428060 found that a shared test fixture replayed patch chunks even
+when `auto` selected a direct patch window, producing a false `missing-assigned-patch-range`
+violation. The fixture now replays the assigned patch file in windows mode, and its
+regression asserts that mode. Independent re-review and fresh exact-head CI are pending.
 
 ## WLG Bread review preparation repair
 
