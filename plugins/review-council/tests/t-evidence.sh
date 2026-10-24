@@ -2727,6 +2727,7 @@ def budget_omissions_are_segmented_or_retained():
             if identity not in source_cache:
                 source_cache[identity] = repository.git('show', ':'.join(identity)).splitlines(keepends=True)
             assert row['blob_oid'] == repository.git('rev-parse', ':'.join(identity)).decode().strip()
+            assert 1 <= row['line_start'] <= row['line_end'] <= len(source_cache[identity]), row
             raw = b''.join(source_cache[identity][row['line_start'] - 1:row['line_end']])
             assert hashlib.sha256(raw).hexdigest() == row['content_sha256']
             return raw
@@ -2761,10 +2762,17 @@ def budget_omissions_are_segmented_or_retained():
                     cursor = segment['line_end'] + 1
                 assert cursor == row['line_end'] + 1 and rebuilt == expected
             for row in retained:
-                assert row['path'].startswith('unit_') and row['line_start'] == 1
-                assert row['path'] != 'unit_0.py' and row['line_end'] == 142
+                if row['path'].startswith('unit_'):
+                    assert re.fullmatch(r'unit_[1-8]\.py', row['path']), row
+                    assert row['line_start'] == 1 and row['line_end'] == 142, row
+                    assert row['blob_tree'] == manifest['snapshot_tree'], row
+                else:
+                    source_lengths = {'main.py': 5, 'test_calls.py': 3}
+                    assert row['path'] in source_lengths, row
+                    assert 1 <= row['line_start'] <= row['line_end'] <= source_lengths[row['path']], row
+                    assert row['blob_tree'] in (manifest['snapshot_tree'], manifest['source_context']['base_tree']), row
                 assert row['reasons'] and row['component_ids']
-                assert row['blob_tree'] == manifest['snapshot_tree']
+                assert 'declaration:code-proof' not in row['reasons'], row
                 assert len(row['blob_oid']) in (40, 64)
                 assert len(row['content_sha256']) == 64
                 assert 'content' not in row and 'segments' not in row
