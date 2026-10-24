@@ -1620,27 +1620,25 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                         binding['config_ranges'] = config_ranges
 
             bindings_by_local = {}
+            module_alias_source = None
             for binding in bindings:
                 imported_name = binding['imported_name']
                 resolved = set(binding.get('candidate_targets') or [])
                 if binding.get('module_alias'):
                     separator = binding.get('member_separator') or '::'
-                    member_names = {
-                        symbol['name']
-                        for rows in definitions.values() for symbol in rows
-                        if symbol.get('cross_file') and symbol['path'] != path
-                        and re.search(r'\b' + re.escape(binding['local_name'])
-                                      + r'\s*' + re.escape(separator) + r'\s*'
-                                      + re.escape(symbol['name']) + r'\b',
-                                      '\n'.join(lines))
-                    }
-                    candidates = [symbol for rows in definitions.values() for symbol in rows
-                                  if symbol.get('cross_file') and symbol['path'] in resolved
-                                  and symbol['path'] != path and symbol['name'] in member_names]
+                    if module_alias_source is None:
+                        module_alias_source = '\n'.join(lines)
+                    alias_symbols = [symbol for rows in definitions.values() for symbol in rows
+                                     if symbol.get('cross_file') and symbol['path'] != path]
+                    member_names = module_alias_member_names(
+                        module_alias_source, binding['local_name'], separator,
+                        {symbol['name'] for symbol in alias_symbols})
+                    alias_candidates = [symbol for symbol in alias_symbols
+                                        if symbol['name'] in member_names]
+                    candidates = [symbol for symbol in alias_candidates
+                                  if symbol['path'] in resolved]
                     if not candidates:
-                        candidates = [symbol for rows in definitions.values() for symbol in rows
-                                      if symbol.get('cross_file') and symbol['path'] != path
-                                      and symbol['name'] in member_names]
+                        candidates = alias_candidates
                 elif binding.get('default_import'):
                     candidates = [symbol for rows in definitions.values() for symbol in rows
                                   if symbol.get('cross_file') and symbol['path'] in resolved
@@ -2675,6 +2673,12 @@ def rust_import_bindings(path, lines, entries, repo):
                 'reason': reason,
             })
     return bindings
+
+
+def module_alias_member_names(source, alias, separator, candidate_names):
+    member = re.compile(r'\b' + re.escape(alias) + r'\s*' + re.escape(separator)
+                        + r'\s*([A-Za-z_$][\w$]*)\b')
+    return set(member.findall(source)) & candidate_names
 
 
 def is_source_file(path):
