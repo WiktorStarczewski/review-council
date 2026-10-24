@@ -1832,15 +1832,20 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                                                 for symbol in binding['candidate_symbols'])]
                     if name == call_name:
                         matching_bindings.extend(qualified_module_bindings)
+                    live_definitions = [
+                        symbol for symbol in definitions.get(name, [])
+                        if symbol.get('kind') != 'deleted lexical declaration']
                     resolved = any(
                         symbol['blob_tree'] == tree
                         and (symbol['path'] == path
                              or (symbol.get('cross_file') and symbol['path'] in imported_targets))
-                        for symbol in definitions.get(name, []))
+                        for symbol in live_definitions)
                     unresolved_target = any(binding.get('unresolved')
                                             for binding in matching_bindings)
                     unbound_candidate = (not resolved and not matching_bindings and any(
-                        symbol['path'] == path or symbol.get('cross_file')
+                        (symbol.get('kind') == 'deleted lexical declaration'
+                         and symbol['path'] == path)
+                        or (symbol['path'] != path and symbol.get('cross_file'))
                         for symbol in definitions.get(name, [])))
                     if not resolved and not matching_bindings and not unbound_candidate:
                         continue
@@ -7097,12 +7102,12 @@ def _prepare_locked(args, session):
             # An Agent result cannot be bound against copying, so it cannot stand in for another seat.
             raise ValueError('replacement executor must be an enforced seat')
         parent_executor = executor_row_for_manifest(session, parent_manifest, parent_seat)
-        replacement_executor = replacement_executor_metadata(executor_row)
-        validate_replacement_edge(
-            parent_executor, replacement_executor, parent_is_repair=parent_manifest['phase'] == 'repair')
         if not attempt_module().terminal_failure(session, parent_label, parent_seat,
                                                  session / f'r{parent_label}-{parent_seat}.prompt.md'):
             raise ValueError('parent assignment has no recorded terminal failure')
+        replacement_executor = replacement_executor_metadata(executor_row)
+        validate_replacement_edge(
+            parent_executor, replacement_executor, parent_is_repair=parent_manifest['phase'] == 'repair')
         existing = session / f'r{args.label}-evidence.manifest.json'
         if existing.exists():
             prior = read_json(existing)

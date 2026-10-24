@@ -42,7 +42,7 @@ panel_prompt_fixture() {  # panel_prompt_fixture <repo> <session> <panel-tsv>
     "$(git -C "$1" rev-parse HEAD)" "$1" > "$2/scope.env"
   printf 'a.txt\n' > "$2/files.txt"
   : > "$2/untracked.txt"
-  printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex","model":"gpt-5.6-sol","effort":"high","extra":false},{"seat":"terra","adapter":"codex","model":"gpt-5.6-luna","effort":"high","extra":false},{"seat":"opus","adapter":"claude","model":"opus","effort":"high","extra":false},{"seat":"sonnet","adapter":"claude","model":"sonnet","effort":"high","extra":false}]}' > "$2/roster.json"
+  printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex","model":"gpt-5.6-sol","effort":"high","extra":false},{"seat":"terra","adapter":"codex","extra":false},{"seat":"opus","adapter":"claude","extra":false},{"seat":"sonnet","adapter":"claude","model":"opus","effort":"high","extra":false}]}' > "$2/roster.json"
   printf '%s\t%s\t%s\n' sol correctness-boundaries 'round focus' terra security-state-api 'round focus' \
     opus concurrency-resources-performance 'round focus' \
     sonnet tests-observability-maintenance-regression 'round focus' > "$3"
@@ -105,18 +105,27 @@ test_panel_verification_prompts_carry_sibling_site_check() {
       'evidence manifest phase is risk, not verification'
     assert_exit "phase conflict removes the stale prompt" 1 test -e "$S/r3-sol.prompt.md"
 
+    prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 3 sol correctness-boundaries 'round focus' --phase risk \
+      --evidence "$risk") || return
+    local attempt="$SCRIPTS/lib/rev-attempt.py"
+    for code in 2 2; do
+      python3 "$attempt" reserve "$S" 3 sol "$prompt" || return
+      python3 "$attempt" record "$S" 3 sol "$prompt" "$code" || return
+    done
+    printf '2\n' > "$S/r3-sol.exit"
     local repair
-    repair=$(REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 4x \
-      --phase repair --assignment sol=correctness-boundaries --full-seat sol) || return
-    prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 4x sol correctness-boundaries 'round focus' --phase verification \
+    repair=$(REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 3x \
+      --phase repair --assignment sonnet=correctness-boundaries --full-seat sonnet \
+      --parent-assignment 3:sol) || return
+    prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 3x sonnet correctness-boundaries 'round focus' --phase verification \
       --evidence "$repair") || return
     assert_eq "a repair of a verification panel keeps the sibling-site check" \
       "$(grep -Fxc -- "Round emphasis: round focus $check" "$prompt")" 1
-    prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 4x sol correctness-boundaries 'round focus' --phase risk \
+    prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 3x sonnet correctness-boundaries 'round focus' --phase risk \
       --evidence "$repair") || return
     assert_eq "a repair of a risk panel has no sibling-site check" "$(grep -Fc 'Sibling-site completeness:' "$prompt")" 0
     assert_exit "a repair seat cannot claim a plan phase" 1 \
-      "$SCRIPTS/rev-prompt.sh" "$S" 4x sol correctness-boundaries 'round focus' --phase plan --evidence "$repair"
+      "$SCRIPTS/rev-prompt.sh" "$S" 3x sonnet correctness-boundaries 'round focus' --phase plan --evidence "$repair"
     assert_exit "panel --phase that conflicts with the manifest is rejected" 1 \
       "$SCRIPTS/rev-prompt.sh" "$S" 3 --panel "$TSV" --phase verification --evidence "$risk"
     for seat in sol terra opus sonnet; do

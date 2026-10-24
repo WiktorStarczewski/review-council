@@ -43,6 +43,11 @@ case "${SHIM_MODE:-ok}" in
     for i in 1 2 3; do echo "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"round $i\"}]}}"; done
     finish;;
   *)
+    if [ -n "${SHIM_STATUS_HOLD_SECS:-}" ]; then
+      mkdir -p "$S"
+      printf '%s\n' '{"round":1,"min_rounds":1,"phase":"collect","seats":[],"open":{}}' > "$S/state.json"
+      sleep "$SHIM_STATUS_HOLD_SECS"
+    fi
     for i in 1 2 3; do echo "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"round $i\"}]}}"; sleep 1; done
     finish;;
 esac
