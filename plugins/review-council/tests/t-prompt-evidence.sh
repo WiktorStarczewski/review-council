@@ -145,6 +145,10 @@ test_prompt_evidence_contract() {
         'unread assigned evidence or an exhausted review-call budget still requires an INCOMPLETE PROOF result'
       assert_grep "$seat prompt gives one explicit post-patch evidence order" "$prompt" \
         '^Post-patch evidence order: read every listed source-context packet and required source segment in exact order before the evidence index or original source\.$'
+      assert_grep "$seat prompt makes the evidence index a numbered required read" "$prompt" \
+        '^[0-9]+\. Read the complete evidence navigation index after all listed source-context packets and required source segments, before opening or searching original repository source: .*/r1-evidence\.md$'
+      assert_grep "$seat prompt treats opened source-context ranges as source proof" "$prompt" \
+        'Prepared source-context packet lines are exact source bytes from the frozen repository tree.*already verify every plan site they cover and may support finding citations; do not reopen a covered range unless a concrete unresolved question requires context outside it\.'
       assert_grep "$seat prompt limits source-context packets to one per turn" "$prompt" \
         '^Source context packet batch limit: 1$'
       case "$seat" in
