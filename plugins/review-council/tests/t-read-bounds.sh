@@ -3005,34 +3005,67 @@ PY
     assert_eq "shell comments neither hide commands nor break the audit parser" "$?" 0
 
     python3 - "$SCRIPTS/lib/review-read-audit.py" "$R" "$S" <<'PY'
-import importlib.util, sys
+import importlib.util, shlex, sys
 from pathlib import Path
 spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
 audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
 root, session = Path(sys.argv[2]).resolve(), Path(sys.argv[3]).resolve()
 (root / 'src' / 'wide.rs').write_text(''.join(f'line_{index} = {index}\n' for index in range(240)))
 roots = audit.allowed_roots(root, session)
-def codes(command):
+def codes(command, read_limit=audit.CODEX_READ_LINES):
     return [row['code'] for row in audit.shell_violations(
-        command, roots, root, session, read_limit=audit.CODEX_READ_LINES)]
-def ranges(command):
+        command, roots, root, session, read_limit=read_limit)]
+def ranges(command, read_limit=audit.CODEX_READ_LINES):
     rows, unparseable = audit.shell_source_ranges(
-        command, root, {}, session, audit.CODEX_READ_LINES)
+        command, root, {}, session, read_limit)
     return [(row['path'], row['line_start'], row['line_end']) for row in rows], unparseable
-assert codes("sed -n '1,40p' src/wide.rs") == []
-assert ranges("sed -n '1,40p' src/wide.rs") == ([('src/wide.rs', 1, 40)], False)
-assert codes("sed -n '1,41p' src/wide.rs") == ['unbounded-shell-output']
-assert ranges("sed -n '1,41p' src/wide.rs") == ([], True)
+source_limit = audit.CODEX_SOURCE_READ_LINES
+assert audit.CODEX_READ_LINES == 160
+assert source_limit == 200
+patch_path = session / 'r1-full.patch'
+patch_path.write_text('patch line\n' * 240)
+patch_command = "sed -n '1,160p' " + shlex.quote(str(patch_path))
+source_command = "sed -n '1,200p' src/wide.rs"
+assert audit.read_limit_for_call(
+    'codex', 'Bash', {'command': patch_command}, root, patch_path) == 160
+assert audit.read_limit_for_call(
+    'codex', 'Bash', {'command': source_command}, root, patch_path) == source_limit
+assert [row['code'] for row in audit.validate_call(
+    'Bash', {'command': "sed -n '1,161p' " + shlex.quote(str(patch_path))},
+    roots, root, session, read_limit=audit.read_limit_for_call(
+        'codex', 'Bash', {'command': "sed -n '1,161p' " + shlex.quote(str(patch_path))},
+        root, patch_path))] == ['unbounded-shell-output']
+assert codes("sed -n '1,160p' src/wide.rs") == []
+assert ranges("sed -n '1,160p' src/wide.rs") == ([('src/wide.rs', 1, 160)], False)
+assert codes("sed -n '1,161p' src/wide.rs") == ['unbounded-shell-output']
+assert ranges("sed -n '1,161p' src/wide.rs")[1] is True
+assert codes("sed -n '1,200p' src/wide.rs", read_limit=source_limit) == []
+assert audit.shell_source_ranges(
+    "sed -n '1,200p' src/wide.rs", root, {}, session, source_limit
+)[1] is False
+assert codes("sed -n '1,201p' src/wide.rs", read_limit=source_limit) == ['unbounded-shell-output']
+assert audit.shell_source_ranges(
+    "sed -n '1,201p' src/wide.rs", root, {}, session, source_limit
+)[1] is True
 assert audit.validate_call(
-    'Read', {'file_path':'src/wide.rs','offset':1,'limit':40}, roots, root, session,
+    'Read', {'file_path':'src/wide.rs','offset':1,'limit':160}, roots, root, session,
     read_limit=audit.CODEX_READ_LINES) == []
 assert [row['code'] for row in audit.validate_call(
-    'Read', {'file_path':'src/wide.rs','offset':1,'limit':41}, roots, root, session,
+    'Read', {'file_path':'src/wide.rs','offset':1,'limit':161}, roots, root, session,
     read_limit=audit.CODEX_READ_LINES)] == ['unbounded-read']
+assert audit.validate_call(
+    'Read', {'file_path':'src/wide.rs','offset':1,'limit':40}, roots, root, session,
+    read_limit=source_limit) == []
+assert audit.validate_call(
+    'Read', {'file_path':'src/wide.rs','offset':1,'limit':200}, roots, root, session,
+    read_limit=source_limit) == []
+assert [row['code'] for row in audit.validate_call(
+    'Read', {'file_path':'src/wide.rs','offset':1,'limit':201}, roots, root, session,
+    read_limit=source_limit)] == ['unbounded-read']
 assert audit.validate_call(
     'Read', {'file_path':'src/wide.rs','offset':1,'limit':240}, roots, root, session) == []
 PY
-    assert_eq "Codex source-read audits enforce 40 lines while other adapters retain 240" "$?" 0
+    assert_eq "Codex patch reads cap at 160 while repository source reads cap at 200" "$?" 0
 
     python3 - "$SCRIPTS/lib/review-read-audit.py" "$R" "$S" <<'PY'
 import importlib.util, sys

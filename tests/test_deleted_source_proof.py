@@ -136,8 +136,19 @@ class SourceFixture:
                 read(shlex.join(['cat', '--', str(path)]), path.read_text())
 
         assignment = self.manifest['assignments'][self.seat]
-        for chunk in self.manifest['patch_sets'][assignment['patch_set']]['chunks']:
-            read_artifact(self.session / chunk['artifact'])
+        patch_set = self.manifest['patch_sets'][assignment['patch_set']]
+        if patch_set['read_mode'] == 'chunks':
+            for chunk in patch_set['chunks']:
+                read_artifact(self.session / chunk['artifact'])
+        else:
+            patch = Path(assignment['patch'])
+            patch_lines = patch.read_text().splitlines(keepends=True)
+            read_limit = load_evidence().CODEX_READ_LINES
+            for offset in range(0, len(patch_lines), read_limit):
+                start = offset + 1
+                end = min(len(patch_lines), start + read_limit - 1)
+                command = shlex.join(['sed', '-n', f'{start},{end}p', str(patch)])
+                read(command, ''.join(patch_lines[offset:end]))
         for shard in self.context['shards']:
             read_artifact(self.session / shard['artifact'])
         for required in self.context['required_source_ranges']:
