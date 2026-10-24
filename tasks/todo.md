@@ -5,10 +5,11 @@
 - [x] Correct the failing verifier cases: ambiguous TypeScript project candidates, replacement-chain identities, deterministic live-status polling, and canonical paths through a symlinked temp root.
 - [x] Correct the workflow test to assert the actual `proof-preparation` job key.
 - [x] Complete normal internal review and correct its P2 finding about the stale CI handoff status.
-- [ ] Commit and push the reviewed candidate, then wait for exact-head verifier and packaging CI.
+- [x] Commit and push the reviewed candidate.
+- [ ] Pass proof-preparation, Ubuntu, macOS, and Cursor package CI on the exact final head.
 - [ ] Squash-merge PR #74, publish the signed 0.8.1 tag and release, install it on Claude, Codex, and Cursor, and verify each installation.
 
-Current evidence: PR #74 head `6beebb48b2026dd9432fdd503b5d2573162f5ddd`; proof-preparation and Cursor packaging passed. Verifier run `40058256403` completed on 2026-10-24 with both Ubuntu and macOS failing the same three shell assertions and one Python workflow assertion. The corrected fixtures now match the analyzer's ambiguous-import facts, the enforced replacement model chain, and the actual workflow job key; the stack test keeps its fake process alive long enough to observe a status line. The macOS-only symlink canonicalization failure is fixed by normalizing both compared paths, with a regression fixture that uses a symlinked temp root. Linux and macOS artifacts are saved under `/tmp/council-pr74-linux-failure` and `/tmp/council-pr74-macos-failure`. Normal internal review found no code defects and one stale handoff-status P2, now corrected.
+The first exact-head run for candidate `064e84f710b8f2e893040c2790c210efae44f4ce` passed proof-preparation and Cursor packaging; Ubuntu and macOS verification were still running when this status note was refreshed. That head includes latest `origin/main` `58862c988d545dee67f79fafdf0e8008a4e66632`. The earlier verifier run `40058256403` failed both platforms on the ambiguous-import, replacement-chain, workflow-key, and macOS symlink-path fixtures. The corrected fixtures now match the analyzer's ambiguous-import facts, the enforced replacement model chain, and the actual workflow job key; the stack test keeps its fake process alive long enough to observe a status line. The macOS-only symlink canonicalization failure is fixed by normalizing both compared paths, with a regression fixture that uses a symlinked temp root. Normal internal review found no code defects and one stale handoff-status P2, now corrected. This handoff update changes the candidate head, so the final release still requires a fresh exact-head run of every required CI job.
 
 # Release 0.8.0
 
