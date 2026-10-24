@@ -35,16 +35,16 @@ import sys
 
 spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
 audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
-root = Path(sys.argv[2]); alias = root.parent / 'plan-evidence-alias'
+root = Path(sys.argv[2]).resolve(); alias = root.parent / 'plan-evidence-alias'
 alias.symlink_to(root, target_is_directory=True)
 patch = alias / 'plan.patch'
 patch.write_text(''.join(f'line {index}\n' for index in range(1, 301)))
 manifest = {
     'schema_version': 4, 'phase': 'plan', 'mechanical_owner': 'sol',
     'assignments': {
-        'luna': {'adapter': 'codex', 'patch': str(patch), 'patch_bytes': 3000,
+        'luna': {'adapter': 'codex', 'patch': str(patch), 'patch_bytes': patch.stat().st_size,
                  'patch_lines': 300, 'patch_read_mode': 'windows'},
-        'sonnet': {'adapter': 'claude', 'patch': str(patch), 'patch_bytes': 3000,
+        'sonnet': {'adapter': 'claude', 'patch': str(patch), 'patch_bytes': patch.stat().st_size,
                    'patch_lines': 300, 'patch_read_mode': 'windows'},
     },
 }
@@ -58,7 +58,8 @@ valid = {'call': ('command_execution',
                   {'command': "sed -n '1,160p' " + shlex.quote(str(patch))}, 0)}
 invalid = {'call': ('command_execution',
                     {'command': "sed -n '1,240p' " + shlex.quote(str(patch))}, 0)}
-assert audit.validate_plan_first_call(manifest, 'luna', 'codex', valid, root, root) == []
+violations = audit.validate_plan_first_call(manifest, 'luna', 'codex', valid, root, root)
+assert violations == [], violations
 assert audit.validate_plan_first_call(manifest, 'luna', 'codex', invalid, root, root)[0]['code'] \
     == 'invalid-plan-first-call'
 PY
@@ -936,6 +937,8 @@ more than 80 exact matches	search-rg	rg --hidden --no-ignore --glob '!.git/**' -
 smaller head can hide matches	search-rg	rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'run(Service|Alias)' . | head -40	src/service.ts@NUL@2:runService
 tail can hide earlier matches	search-rg	rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'run(Service|Alias)' . | tail -80	src/service.ts@NUL@2:runService
 recursive grep follows symlinks	search-grep	grep --exclude-dir=.git --null -R -n -- 'helper' . | head -81	./src/helper.ts@NUL@1:helper
+unbound long recursive grep	search-grep	grep --exclude-dir=.git --null --recursive -n -- 'helper' . | head -81	./src/helper.ts@NUL@1:helper
+unbound grep with filename	search-grep	grep --exclude-dir=.git --null -rH -n -- 'helper' . | head -81	./src/helper.ts@NUL@1:helper
 egrep alias cannot prove BRE search	search-grep	egrep --exclude-dir=.git --null -r -n -- 'helper' . | head -81	./src/helper.ts@NUL@1:helper
 fgrep alias cannot prove BRE search	search-grep	fgrep --exclude-dir=.git --null -r -n -- 'helper' . | head -81	./src/helper.ts@NUL@1:helper
 unknown grep diagnostic	search-grep	grep --null -R -n '\(' . | head -81	grep: parentheses not balanced
@@ -2167,11 +2170,20 @@ context = {'seats': {
     'claude': {'shards':[], 'required_source_ranges':[], 'source_read_required':False},
 }}
 assignments = {
-    'luna': {'adapter':'codex', 'patch_set':'p', 'patch_lines':160},
-    'claude': {'adapter':'claude', 'patch_set':'p', 'patch_lines':240},
+    'luna': {'adapter':'codex', 'patch_set':'p', 'patch_lines':121},
+    'claude': {'adapter':'claude', 'patch_set':'p', 'patch_lines':121},
 }
 compiled = module.compile_task_capacity(assignments, patch_sets, context)
 assert compiled['seats']['luna']['patch_proof_calls'] == 1
+assert compiled['seats']['claude']['patch_proof_calls'] == 1
+assignments['luna']['patch_lines'] = 160
+assignments['claude']['patch_lines'] = 240
+compiled = module.compile_task_capacity(assignments, patch_sets, context)
+assert compiled['seats']['luna']['patch_proof_calls'] == 1
+assert compiled['seats']['claude']['patch_proof_calls'] == 1
+assignments['luna']['patch_lines'] = 161
+compiled = module.compile_task_capacity(assignments, patch_sets, context)
+assert compiled['seats']['luna']['patch_proof_calls'] == 2
 assert compiled['seats']['claude']['patch_proof_calls'] == 1
 assert module.merge_repository_windows([('src/a.rs', 1, 121)], 40) == [
     ('src/a.rs', 1, 40), ('src/a.rs', 41, 80),

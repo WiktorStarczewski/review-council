@@ -36,6 +36,19 @@ class SearchPipelineBoundsTests(unittest.TestCase):
         command = "rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'needle' . | head -81"
         self.assertEqual(self.codes(command, {command}), [])
 
+    def test_unbound_compiler_search_sentinel_is_rejected(self):
+        command = "rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'needle' . | head -81"
+        self.assertEqual(self.codes(command), ['unbounded-shell-output'])
+
+    def test_altered_compiler_search_sentinel_is_rejected(self):
+        command = "rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'needle' . | head -81"
+        altered = command.replace("'needle'", "'other'")
+        self.assertEqual(self.codes(altered, {command}), ['unbounded-shell-output'])
+
+    def test_bound_compiler_search_cannot_exceed_eighty_one_lines(self):
+        command = "rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'needle' . | head -82"
+        self.assertEqual(self.codes(command, {command}), ['unbounded-shell-output'])
+
     def test_search_sentinel_requires_the_exact_assigned_plan_command(self):
         command = "rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'needle' . | head -81"
         self.assertEqual(self.codes(command), ['unbounded-shell-output'])

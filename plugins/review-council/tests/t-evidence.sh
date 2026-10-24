@@ -808,6 +808,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 
 script = Path(sys.argv[1]); spec = importlib.util.spec_from_file_location('evidence', script)
 module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
@@ -1060,6 +1061,54 @@ def bounded_navigation_markdown():
         assert len(packet) <= 16384
         assert huge.encode() not in packet
         assert b'complete list SHA-256:' in packet and b'Omitted:' in packet
+
+def dense_navigation_keeps_complete_footer():
+    sections = ('symbols', 'call_sites', 'related_tests', 'unresolved_imports', 'gates', 'instructions')
+    limitations = [
+        'Lexical navigation only; open source to prove findings.',
+        'Dynamic dispatch and unsupported declarations require file-scope search.',
+        'Cross-file symbol context follows recognized exports and resolved imports.',
+        'Unresolved or aliased imports matching changed exports are listed as search obligations.',
+        'TypeScript config inheritance and paths mappings are bounded lexical resolutions.',
+        'Binary and files over 2000000 bytes have no lexical index.',
+    ]
+    for width in (216, 208, 240):
+        data = {section: [{'path': f'src/{section}/{index}/' + 'x' * width + '.py'}
+                          for index in range(12)] for section in sections}
+        data['limitations'] = limitations
+        original = json.dumps(data, sort_keys=True)
+        packet = module.markdown(data, Path('évidence.json'))
+        assert 14336 < len(packet) <= 16384, (width, len(packet))
+        assert packet.endswith(('\n' + '\n'.join(limitations) + '\n').encode()), ('limitations', width)
+        for section in sections:
+            label = ('Unresolved or aliased import proof obligations' if section == 'unresolved_imports'
+                     else section.replace('_', ' ').title())
+            lines = packet.split(('\n' + label + ':\n').encode(), 1)[1].split(b'\n\n', 1)[0].splitlines()
+            footer = re.fullmatch(rb'Omitted: (\d+); complete list SHA-256: ([0-9a-f]{64}); complete list in JSON\.', lines[-1])
+            assert footer and int(footer[1]) == 12 - (len(lines) - 1), ('omissions', width, section)
+            complete = (json.dumps(data[section], sort_keys=True, ensure_ascii=True, indent=2) + '\n').encode()
+            assert footer[2].decode() == hashlib.sha256(complete).hexdigest(), ('complete-list hash', width, section)
+        assert json.dumps(data, sort_keys=True) == original, ('complete facts mutated', width)
+    data = {section: [] for section in sections}
+    data['limitations'] = []
+    empty_bytes = len(module.markdown(data, Path('evidence.json')))
+    data['limitations'] = ['x' * (16384 - empty_bytes - 64)]
+    data['symbols'] = [{'path': 'x' * 128}, {'path': 'small.py'}]
+    packet = module.markdown(data, Path('evidence.json'))
+    assert len(packet) <= 16384
+    assert b'- {"path": "small.py"}' in packet, 'a skipped row hid a later row that fits'
+    assert ('- ' + json.dumps(data['symbols'][0])).encode() not in packet
+
+def oversized_mandatory_navigation_footer_is_refused():
+    data = {section: [] for section in
+            ('symbols', 'call_sites', 'related_tests', 'unresolved_imports', 'gates', 'instructions')}
+    data['limitations'] = ['é' * 8192]
+    try:
+        module.markdown(data, Path('evidence.json'))
+    except ValueError as error:
+        assert str(error) == 'navigation packet exceeds byte limit'
+    else:
+        raise AssertionError('mandatory navigation footer exceeded the UTF-8 byte limit')
 
 def opaque_transitions():
     for reverse in (False, True):
@@ -1576,6 +1625,14 @@ def roster_bundle_coverage():
         args = [part for seat, bundle in zip(seats, skewed) for part in ('--assignment', seat + '=' + bundle)]
         call('prepare', session, 'skewed', '--phase', 'risk', *args, good=False)
 
+def full_state_fallback_counts_as_panel_coverage():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        manifest = prepare('unassigned', 'verification')
+        assert manifest['fallback_reason'] == 'missing bundle or full-state assignment'
+        assert all(row['scope'] == 'full' and row['full_state']
+                   for row in manifest['assignments'].values())
+        module.validate_panel_coverage(manifest)
+
 def source_context_packets():
     with fixture(adapter='codex') as (root, session, git, write, call, prepare, finish):
         write('main.py',
@@ -1914,11 +1971,10 @@ def local_names_do_not_expand_cross_file_proof():
         assert any(row['name'] == 'page' and row['cross_file'] is False for row in facts['symbols'])
         assert any(row['path'] == 'src/consumer.ts' and row['name'] == 'readHistory'
                    for row in facts['call_sites'])
-        assert any(row['source'] == 'src/consumer.ts' and row['target'] == 'utility/history.ts'
-                   and row['kind'] == 'ambiguous-import'
+        assert any(row['source'] == 'src/consumer.ts' and row['target'] == 'src/history.ts'
+                   and row['kind'] == 'local-import'
                    for row in facts['dependencies']), facts['dependencies']
-        assert not any(row['source'] == 'src/consumer.ts' and row['target'] == 'utility/history.ts'
-                       and row['kind'] == 'lexical-reference'
+        assert not any(row['target'] == 'utility/history.ts'
                        for row in facts['dependencies']), facts['dependencies']
         assert any(row.get('path') == 'src/consumer.ts'
                    and {'src/history.ts', 'utility/history.ts'} <= set(row.get('candidate_targets', []))
@@ -1932,7 +1988,8 @@ def local_names_do_not_expand_cross_file_proof():
                            for packet in manifest['source_context']['seats'].values()
                            for required in packet['required_source_ranges'])
         assert 'src/consumer.ts' in proof_paths and 'tests/history.test.ts' in proof_paths, proof_paths
-        assert not proof_paths & {'src/unrelated.ts', 'tests/unrelated.test.ts', 'docs/notes.md'}, proof_paths
+        assert not proof_paths & {'src/unrelated.ts', 'tests/unrelated.test.ts', 'docs/notes.md',
+                                  'utility/history.ts'}, proof_paths
 
 def wildcard_reexports_use_exact_source_proof():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -2684,6 +2741,20 @@ def budget_omissions_are_segmented_or_retained():
         assert all(packet['source_read_required'] for packet in omitted)
         assert any(packet['required_source_ranges'] for packet in omitted)
         assert any(packet['omitted_source_ranges'] for packet in omitted)
+        source_cache = {}
+        repository = module.Repository(session.resolve())
+
+        def frozen_range(row):
+            identity = (row['blob_tree'], row['path'])
+            if identity not in source_cache:
+                source_cache[identity] = repository.git('show', ':'.join(identity)).splitlines(keepends=True)
+            assert row['blob_oid'] == repository.git('rev-parse', ':'.join(identity)).decode().strip()
+            assert row['blob_mode'] == repository.entries(row['blob_tree'])[row['path']][0], row
+            assert 1 <= row['line_start'] <= row['line_end'] <= len(source_cache[identity]), row
+            raw = b''.join(source_cache[identity][row['line_start'] - 1:row['line_end']])
+            assert hashlib.sha256(raw).hexdigest() == row['content_sha256']
+            return raw
+
         for packet in omitted:
             required = packet['required_source_ranges']
             retained = packet['omitted_source_ranges']
@@ -2693,25 +2764,72 @@ def budget_omissions_are_segmented_or_retained():
             retained_ids = {(row['path'], row['line_start'], row['line_end']) for row in retained}
             assert not required_ids & retained_ids
             for row in required:
-                assert row['path'] == 'unit_0.py' and row['line_start'] == 1
-                assert row['line_end'] == 262 and row['segments']
+                assert row['reasons'] and row['component_ids'] and row['segments']
+                assert row['blob_tree'] in (manifest['snapshot_tree'], manifest['source_context']['base_tree'])
+                if row['path'].startswith('unit_'):
+                    assert row['path'] == 'unit_0.py' and row['line_start'] == 1
+                    assert row['line_end'] == 262 and row['blob_tree'] == manifest['snapshot_tree']
+                else:
+                    assert row['path'] in ('main.py', 'test_calls.py')
+                expected = frozen_range(row)
+                rebuilt = b''
                 cursor = row['line_start']
                 for segment in row['segments']:
                     assert segment['line_start'] == cursor
                     assert segment['predicted_visible_bytes'] <= 16384
+                    raw = (session / segment['artifact']).read_bytes()
+                    assert len(raw) == segment['raw_bytes']
+                    assert hashlib.sha256(raw).hexdigest() == segment['content_sha256']
+                    rebuilt += raw
                     cursor = segment['line_end'] + 1
-                assert cursor == row['line_end'] + 1
+                assert cursor == row['line_end'] + 1 and rebuilt == expected
             for row in retained:
-                if any(reason.startswith('gate:') for reason in row['reasons']):
-                    assert row['path'] == 'package.json' and row['line_start'] == row['line_end'] == 1
+                if row['path'].startswith('unit_'):
+                    assert re.fullmatch(r'unit_[1-8]\.py', row['path']), row
+                    assert row['line_start'] == 1 and row['line_end'] == 142, row
+                    assert row['blob_tree'] == manifest['snapshot_tree'], row
+                elif row['path'] == 'package.json':
+                    assert row['line_start'] == row['line_end'] == 1, row
+                    assert row['blob_tree'] == manifest['snapshot_tree'], row
+                    assert set(row['reasons']) == {'gate:package.json:1', 'gate:package.json:file'}, row
                 else:
-                    assert row['path'].startswith('unit_') and row['line_start'] == 1
-                    assert row['path'] != 'unit_0.py' and row['line_end'] == 142
+                    source_lengths = {'main.py': 5, 'test_calls.py': 3}
+                    assert row['path'] in source_lengths, row
+                    assert 1 <= row['line_start'] <= row['line_end'] <= source_lengths[row['path']], row
+                    assert row['blob_tree'] in (manifest['snapshot_tree'], manifest['source_context']['base_tree']), row
                 assert row['reasons'] and row['component_ids']
-                assert row['blob_tree'] == manifest['snapshot_tree']
+                assert 'declaration:code-proof' not in row['reasons'], row
                 assert len(row['blob_oid']) in (40, 64)
                 assert len(row['content_sha256']) == 64
                 assert 'content' not in row and 'segments' not in row
+                frozen_range(row)
+        owner_packet = manifest['source_context']['seats'][manifest['mechanical_owner']]
+        delivered = [row for shard in owner_packet['shards']
+                     for row in json.loads((session / shard['artifact']).read_text())['entries']]
+        delivered += owner_packet['required_source_ranges']
+        coverage = {'main.py': set(), 'test_calls.py': set()}
+        for row in delivered:
+            if row['path'] not in coverage or row['blob_tree'] != manifest['snapshot_tree']:
+                continue
+            expected = frozen_range(row)
+            if 'content' in row:
+                actual = row['content'].encode()
+            else:
+                actual = b''
+                cursor = row['line_start']
+                for segment in row['segments']:
+                    assert segment['line_start'] == cursor, segment
+                    assert segment['predicted_visible_bytes'] <= 16384, segment
+                    raw = (session / segment['artifact']).read_bytes()
+                    assert len(raw) == segment['raw_bytes'], segment
+                    assert hashlib.sha256(raw).hexdigest() == segment['content_sha256'], segment
+                    actual += raw
+                    cursor = segment['line_end'] + 1
+                assert cursor == row['line_end'] + 1, row
+            assert actual == expected, row
+            coverage[row['path']].update(range(row['line_start'], row['line_end'] + 1))
+        assert {1, 2, 4, 5} <= coverage['main.py'], coverage
+        assert {1, 2, 3} <= coverage['test_calls.py'], coverage
         call('verify', session / 'rbudget-omissions-evidence.manifest.json')
 
 def innermost_declarations_and_bounded_anchors():
@@ -3314,7 +3432,8 @@ def replacement_runs_on_another_seat():
             assert subprocess.run([sys.executable, str(attempt), 'reserve', session, '5', owner, prompt]).returncode == 0
             assert subprocess.run([sys.executable, str(attempt), 'record', session, '5', owner, prompt, code]).returncode == 0
             (session / f'r5-{owner}.exit').write_text(code + '\n')
-        executor = next(seat for seat in seats if seat != owner)
+        executor = 'sol'
+        assert owner != executor
         bundle = parent['assignments'][owner]['bundle']
         args = ('--assignment', executor + '=' + bundle, '--parent-assignment', '5:' + owner)
         launch('1')
@@ -4325,13 +4444,16 @@ def binary_files_are_hash_pointers():
 cases = (
     storage_redirects, quoted_paths, changed_symbols, empty_patch_needs_no_fake_read,
     binary_files_are_hash_pointers,
-    conservative_mechanical_classification, bounded_navigation_markdown, opaque_transitions,
+    conservative_mechanical_classification, bounded_navigation_markdown,
+    dense_navigation_keeps_complete_footer, oversized_mandatory_navigation_footer_is_refused,
+    opaque_transitions,
     opaque_mode_transition, invalid_manifests, phase_and_predecessor_integrity,
     cumulative_verification_routing, verification_delta_retains_restored_path_source_context,
     verification_delta_source_context_controls, verification_nested_restoration_retains_instruction_context,
     verification_nested_restoration_refuses_unusable_instruction_budget, coverage_head_publication_is_monotonic,
     same_stat_and_index_flags, cstyle_enclosing_bodies, wallet_scale,
     literal_scope_and_inventories, sparse_gitlink_and_special, roster_bundle_coverage,
+    full_state_fallback_counts_as_panel_coverage,
     source_context_packets, local_names_do_not_expand_cross_file_proof,
     wildcard_reexports_use_exact_source_proof,
     wildcard_reexport_syntax_preserves_start_lines,
@@ -4373,6 +4495,7 @@ groups = {
     'structure': (
         storage_redirects, quoted_paths, changed_symbols, empty_patch_needs_no_fake_read,
         conservative_mechanical_classification, bounded_navigation_markdown,
+        dense_navigation_keeps_complete_footer, oversized_mandatory_navigation_footer_is_refused,
         binary_files_are_hash_pointers,
         opaque_transitions, opaque_mode_transition, invalid_manifests,
         phase_and_predecessor_integrity,
@@ -4383,6 +4506,7 @@ groups = {
         verification_nested_restoration_refuses_unusable_instruction_budget, coverage_head_publication_is_monotonic,
         same_stat_and_index_flags, literal_scope_and_inventories,
         sparse_gitlink_and_special, roster_bundle_coverage,
+        full_state_fallback_counts_as_panel_coverage,
         scoped_names_and_gitlink_lifecycle, component_and_full_tampering,
         offline_structure_and_predecessor_walk, local_ignored_instructions,
         overlapping_boundaries_keep_prior_owner_routing,
@@ -4453,6 +4577,7 @@ for test in cases:
         test(); print('PASS', test.__name__)
     except Exception as error:
         failures.append(test.__name__); print('FAIL', test.__name__, str(error))
+        traceback.print_exc()
 assert not failures, failures
 PY
   local rc=$?

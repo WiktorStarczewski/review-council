@@ -74,6 +74,17 @@ class CodeSourcePromotionTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         return PromotionFixture(Path(temporary.name))
 
+    def test_omission_budget_fixture_retains_complete_proof(self):
+        environment = dict(os.environ)
+        environment.pop('REV_EVIDENCE_GROUP', None)
+        process = subprocess.run([
+            'bash', '-c', 'source "$1"\n'
+            'REV_EVIDENCE_CASE=budget_omissions_are_segmented_or_retained evidence_hardening',
+            'budget-proof-regression', str(SCRIPTS.parent / 'tests' / 't-evidence.sh'),
+        ], env=environment, text=True, capture_output=True, timeout=60)
+        self.assertEqual(process.returncode, 0, process.stdout + '\n' + process.stderr)
+        self.assertIn('PASS budget_omissions_are_segmented_or_retained', process.stdout)
+
     def callers(self):
         fixture = self.fixture()
         declarations = []
@@ -86,6 +97,33 @@ class CodeSourcePromotionTests(unittest.TestCase):
         fixture.freeze()
         fixture.write('src/lib.py', '\n'.join(declarations).replace('return "x', 'return "z'))
         return fixture
+
+    def test_deleted_private_helper_retains_distant_current_caller_proof(self):
+        fixture = self.fixture()
+        padding = ''.join(f'padding_{index} = {index}\n' for index in range(100))
+        caller = '\ndef consumer():\n    return _removed_helper()\n'
+        fixture.write('src/internal.py', 'def _removed_helper():\n    return 1\n\n' + padding + caller)
+        fixture.freeze()
+        fixture.write('src/internal.py', padding + caller)
+        process = fixture.prepare()
+        self.assertEqual(process.returncode, 0, process.stderr)
+        fixture.load()
+        facts = json.loads((fixture.session / 'r1-evidence.json').read_text())
+        self.assertTrue(any(row['path'] == 'src/internal.py' and row['name'] == '_removed_helper'
+                            and row['kind'] == 'deleted lexical declaration'
+                            for row in facts['symbols']), facts['symbols'])
+        calls = [row for row in facts['call_sites']
+                 if row['path'] == 'src/internal.py' and row['name'] == '_removed_helper']
+        self.assertEqual(len(calls), 1, 'the distant unchanged private caller must remain indexed')
+        self.assertEqual(calls[0].get('resolution'), 'unresolved name search required')
+        self.assertEqual(calls[0]['line'], 103)
+        delivered = [row for shard in fixture.context['shards'] for row in shard['ranges']]
+        delivered += fixture.context['required_source_ranges']
+        self.assertTrue(any(row['path'] == 'src/internal.py'
+                            and row['blob_tree'] == fixture.manifest['snapshot_tree']
+                            and row['line_start'] <= 103 <= row['line_end']
+                            and 'production-caller:_removed_helper' in row['reasons']
+                            for row in delivered), 'snapshot caller source proof must remain delivered')
 
     def assert_full_proof(self, fixture, required_ranges):
         status_before = fixture.git('status', '--porcelain')
