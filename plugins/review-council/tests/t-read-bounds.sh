@@ -2999,20 +2999,32 @@ def ranges(command):
     rows, unparseable = audit.shell_source_ranges(
         command, root, {}, session, audit.CODEX_READ_LINES)
     return [(row['path'], row['line_start'], row['line_end']) for row in rows], unparseable
+source_limit = audit.CODEX_SOURCE_READ_LINES
+assert audit.CODEX_READ_LINES == 40
+assert source_limit == 200
 assert codes("sed -n '1,40p' src/wide.rs") == []
 assert ranges("sed -n '1,40p' src/wide.rs") == ([('src/wide.rs', 1, 40)], False)
-assert codes("sed -n '1,41p' src/wide.rs") == ['unbounded-shell-output']
-assert ranges("sed -n '1,41p' src/wide.rs") == ([], True)
+assert codes("sed -n '1,200p' src/wide.rs", read_limit=source_limit) == []
+assert audit.shell_source_ranges(
+    "sed -n '1,200p' src/wide.rs", root, {}, session, source_limit
+)[1] is False
+assert codes("sed -n '1,201p' src/wide.rs", read_limit=source_limit) == ['unbounded-shell-output']
+assert audit.shell_source_ranges(
+    "sed -n '1,201p' src/wide.rs", root, {}, session, source_limit
+)[1] is True
 assert audit.validate_call(
     'Read', {'file_path':'src/wide.rs','offset':1,'limit':40}, roots, root, session,
-    read_limit=audit.CODEX_READ_LINES) == []
+    read_limit=source_limit) == []
+assert audit.validate_call(
+    'Read', {'file_path':'src/wide.rs','offset':1,'limit':200}, roots, root, session,
+    read_limit=source_limit) == []
 assert [row['code'] for row in audit.validate_call(
-    'Read', {'file_path':'src/wide.rs','offset':1,'limit':41}, roots, root, session,
-    read_limit=audit.CODEX_READ_LINES)] == ['unbounded-read']
+    'Read', {'file_path':'src/wide.rs','offset':1,'limit':201}, roots, root, session,
+    read_limit=source_limit)] == ['unbounded-read']
 assert audit.validate_call(
     'Read', {'file_path':'src/wide.rs','offset':1,'limit':240}, roots, root, session) == []
 PY
-    assert_eq "Codex source-read audits enforce 40 lines while other adapters retain 240" "$?" 0
+    assert_eq "Codex patch windows stay at 40 lines while source reads allow 200" "$?" 0
 
     python3 - "$SCRIPTS/lib/review-read-audit.py" "$R" "$S" <<'PY'
 import importlib.util, sys

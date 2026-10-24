@@ -513,8 +513,8 @@ PY
         "$recovery_prefix" '[Uu]nsubstantiated.*citation.*invalid'
       case "$recovery_adapter" in
         codex)
-          assert_grep "$recovery_adapter prefix keeps inclusive 40-line source windows" \
-            "$recovery_prefix" 'END - START \+ 1 <= 40'
+          assert_grep "$recovery_adapter prefix keeps inclusive 200-line source windows" \
+            "$recovery_prefix" 'END - START \+ 1 <= 200'
           assert_grep "$recovery_adapter prefix sets a safe per-turn byte target" \
             "$recovery_prefix" 'under 24 KiB per response and per ordinary turn'
           assert_grep "$recovery_adapter prefix preserves larger ordered proof turns" \
@@ -523,8 +523,8 @@ PY
             "$recovery_prefix" 'Hard ceilings are 32 KiB per response and for an ordinary turn'
           assert_grep "$recovery_adapter prefix caps Codex patch windows at 40 lines" \
             "$recovery_prefix" 'at most 40 lines.*Forty lines is a ceiling'
-          assert_grep "$recovery_adapter prefix applies 40-line windows to repository reads" \
-            "$recovery_prefix" 'at most 40 lines for every patch or repository source window'
+          assert_grep "$recovery_adapter prefix applies 200-line windows to repository reads" \
+            "$recovery_prefix" 'at most 200 lines for every repository source window'
           assert_grep "$recovery_adapter prefix splits over-target outputs before reading" \
             "$recovery_prefix" 'if a planned response or turn may exceed 24 KiB, narrow it before reading';;
         claude)
@@ -549,6 +549,7 @@ PY
     assert_nogrep "Codex prefix avoids ambiguous generic batching language" "$sol_prefix" 'Batch independent bounded tool calls into one turn'
     assert_grep "Codex prefix distinguishes separate calls from source batching" "$sol_prefix" 'Codex source batching is disabled.*Each source read is a separate tool call'
     assert_grep "Codex prefix uses short patch windows to avoid byte overflow" "$sol_prefix" 'at most 40 lines, then continue at the next line'
+    assert_grep "Codex prefix uses wider source windows within the byte ceiling" "$sol_prefix" 'at most 200 lines for every repository source window.*under 24 KiB per response'
     assert_grep "Codex prefix budgets each response below the audit ceiling" "$sol_prefix" 'under 24 KiB per response.*Line limits do not limit bytes'
     assert_grep "Codex prefix gives a safe bounded source-read command" "$sol_prefix" "sed -n '40,75p' 'src/file.ts'"
     assert_grep "Codex prefix gives a bounded literal-search command" "$sol_prefix" "rg -n -F 'symbolName' 'src/path' \\| head -80"
