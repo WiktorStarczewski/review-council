@@ -1920,9 +1920,9 @@ def local_names_do_not_expand_cross_file_proof():
         assert not any(row['source'] == 'src/consumer.ts' and row['target'] == 'utility/history.ts'
                        and row['kind'] == 'lexical-reference'
                        for row in facts['dependencies']), facts['dependencies']
-        assert not any(row.get('path') == 'src/consumer.ts'
-                       and 'utility/history.ts' in row.get('candidate_targets', [])
-                       for row in facts['unresolved_imports']), facts['unresolved_imports']
+        assert any(row.get('path') == 'src/consumer.ts'
+                   and {'src/history.ts', 'utility/history.ts'} <= set(row.get('candidate_targets', []))
+                   for row in facts['unresolved_imports']), facts['unresolved_imports']
         assert any(row['path'] == 'tests/history.test.ts' for row in facts['related_tests'])
         assert not any(row['path'] in {'src/unrelated.ts', 'tests/unrelated.test.ts', 'docs/notes.md'}
                        for row in facts['call_sites'] + facts['related_tests'])
@@ -3295,8 +3295,15 @@ def replacement_runs_on_another_seat():
             ('child claim', ['sol']), ('second child claim', ['opus'])], receipt['findings']
 
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
-        roster = {'seats': [{'seat': seat, 'extra': False, 'adapter': 'claude', 'model': 'model-' + seat,
-                             'effort': 'max'} for seat in seats]}
+        chain_identities = {
+            'sol': ('claude', 'sonnet'),
+            'terra': ('codex', 'gpt-5.6-sol'),
+            'opus': ('claude', 'opus'),
+            'sonnet': ('codex', 'gpt-5.6-luna'),
+        }
+        roster = {'seats': [
+            {'seat': seat, 'extra': False, 'adapter': chain_identities[seat][0],
+             'model': chain_identities[seat][1], 'effort': 'high'} for seat in seats]}
         (session / 'roster.json').write_text(json.dumps(roster))
         parent = prepare('5', 'risk', *assign, '--full-seat', 'sonnet')
         owner = parent['mechanical_owner']

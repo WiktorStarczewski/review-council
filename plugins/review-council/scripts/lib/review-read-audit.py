@@ -2218,7 +2218,7 @@ def exact_single_shell_read(data, primary, mode, window_end, root):
         if len(words) != len(expected) or Path(words[0]).name != expected[0] \
                 or words[1:-1] != expected[1:-1]:
             return False
-        return resolved(words[-1], root) == primary
+        return resolved(words[-1], root) == resolved(primary, root)
     except (OSError, TypeError, ValueError):
         return False
 
@@ -2233,7 +2233,7 @@ def exact_native_first_read(adapter, name, data, primary, mode, window_end, root
         return False
     raw_path = tool_path(data)
     try:
-        if raw_path is None or resolved(raw_path, root) != primary:
+        if raw_path is None or resolved(raw_path, root) != resolved(primary, root):
             return False
     except (OSError, ValueError):
         return False

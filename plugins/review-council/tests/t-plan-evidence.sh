@@ -35,7 +35,9 @@ import sys
 
 spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
 audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
-root = Path(sys.argv[2]); patch = root / 'plan.patch'
+root = Path(sys.argv[2]); alias = root.parent / 'plan-evidence-alias'
+alias.symlink_to(root, target_is_directory=True)
+patch = alias / 'plan.patch'
 patch.write_text(''.join(f'line {index}\n' for index in range(1, 301)))
 manifest = {
     'schema_version': 4, 'phase': 'plan', 'mechanical_owner': 'sol',

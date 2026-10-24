@@ -1,3 +1,15 @@
+# Release 0.8.1 follow-up
+
+- [x] Pull the latest stable Council release into the 0.8.1 candidate and preserve the completed normal internal review.
+- [x] Run current-head CI and retain its exact Linux, macOS, proof-preparation, and packaging results.
+- [x] Correct the failing verifier cases: ambiguous TypeScript project candidates, replacement-chain identities, deterministic live-status polling, and canonical paths through a symlinked temp root.
+- [x] Correct the workflow test to assert the actual `proof-preparation` job key.
+- [x] Complete normal internal review and correct its P2 finding about the stale CI handoff status.
+- [ ] Commit and push the reviewed candidate, then wait for exact-head verifier and packaging CI.
+- [ ] Squash-merge PR #74, publish the signed 0.8.1 tag and release, install it on Claude, Codex, and Cursor, and verify each installation.
+
+Current evidence: PR #74 head `6beebb48b2026dd9432fdd503b5d2573162f5ddd`; proof-preparation and Cursor packaging passed. Verifier run `40058256403` completed on 2026-10-24 with both Ubuntu and macOS failing the same three shell assertions and one Python workflow assertion. The corrected fixtures now match the analyzer's ambiguous-import facts, the enforced replacement model chain, and the actual workflow job key; the stack test keeps its fake process alive long enough to observe a status line. The macOS-only symlink canonicalization failure is fixed by normalizing both compared paths, with a regression fixture that uses a symlinked temp root. Linux and macOS artifacts are saved under `/tmp/council-pr74-linux-failure` and `/tmp/council-pr74-macos-failure`. Normal internal review found no code defects and one stale handoff-status P2, now corrected.
+
 # Release 0.8.0
 
 - [x] Verify and merge the latest signed release, `review-council--v0.7.14`, into the candidate.
