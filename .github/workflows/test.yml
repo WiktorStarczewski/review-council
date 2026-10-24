@@ -4,6 +4,19 @@ on:
     branches: [main]
   pull_request:
 jobs:
+  proof-preparation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust import proof regressions
+        run: python3 -m unittest discover -s tests -p test_rust_import_resolution.py -v
+      - name: Complete code source proof regressions
+        if: always()
+        run: python3 -m unittest discover -s tests -p test_code_source_promotion.py -v
+      - name: Search pipeline bound regressions
+        if: always()
+        run: python3 -m unittest discover -s tests -p test_search_pipeline_bounds.py -v
   verify:
     strategy:
       fail-fast: false

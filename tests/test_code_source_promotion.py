@@ -80,6 +80,7 @@ class CodeSourcePromotionTests(unittest.TestCase):
         for index in range(15):
             declarations.append(f'def fn{index:02d}():\n    return "{"x" * 10000}"\n')
             fixture.write(f'src/use{index:02d}.py',
+                          f'from src.lib import fn{index:02d}\n'
                           f'def use{index:02d}():\n    return fn{index:02d}("{"y" * 8000}")\n')
         fixture.write('src/lib.py', '\n'.join(declarations))
         fixture.freeze()
@@ -130,7 +131,7 @@ class CodeSourcePromotionTests(unittest.TestCase):
     def test_many_real_consumers_are_promoted_with_complete_branch_scope(self):
         fixture = self.callers()
         evidence, repository = self.assert_full_proof(
-            fixture, {f'src/use{index:02d}.py': (1, 2) for index in range(15)})
+            fixture, {f'src/use{index:02d}.py': (1, 3) for index in range(15)})
         target = evidence.repository_source_target(fixture.context, fixture.manifest['snapshot_tree'])
         source = (target, None, fixture.current_bytes(target)) if target is not None else None
         status, audit = fixture.audit(source=source)
