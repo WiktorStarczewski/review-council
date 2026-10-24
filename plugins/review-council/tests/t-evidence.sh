@@ -938,7 +938,7 @@ def fixture(name='repo', object_format=None, adapter='agent'):
         git('init', '-q', *(['--object-format=' + object_format] if object_format else []))
         git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.invalid'); git('config', 'commit.gpgsign', 'false')
         write('main.py', 'def first():\n    return 1\n\ndef second():\n    return 1\n')
-        write('test_calls.py', 'assert first() == 1\nassert second() == 1\n')
+        write('test_calls.py', 'from main import first, second\nassert first() == 1\nassert second() == 1\n')
         write('package.json', '{"scripts":{"test":"pytest"}}\n')
         git('add', '.'); git('commit', '-qm', 'base'); base = git('rev-parse', 'HEAD')
         (session / 'scope.env').write_text(''.join(k + '=' + shlex.quote(v) + '\n' for k, v in [('REV_BASE', base), ('REV_ROOT', str(root)), ('REV_SCOPE', 'branch')]))
@@ -973,7 +973,7 @@ def changed_symbols():
         write('weird.py', 'prefix\rform\fstill one LF line\ndef target():\n    return 1\n')
         prepare(); facts = json.loads((session / 'r1-evidence.json').read_text())
         assert {s['name'] for s in facts['symbols'] if s['path'] == 'main.py'} == {'first', 'second'}
-        assert {(c['name'], c['line']) for c in facts['call_sites'] if c['path'] == 'test_calls.py'} == {('first', 1), ('second', 2)}
+        assert {(c['name'], c['line']) for c in facts['call_sites'] if c['path'] == 'test_calls.py'} == {('first', 2), ('second', 3)}
         assert any(symbol['path'] == 'weird.py' and symbol['name'] == 'target'
                    and symbol['line'] == 2 for symbol in facts['symbols'])
         assert facts['mechanical']['_locales/en/messages.json'] == 'locale'
@@ -1531,7 +1531,7 @@ def roster_bundle_coverage():
         call('prepare', session, 'skewed', '--phase', 'risk', *args, good=False)
 
 def source_context_packets():
-    with fixture() as (root, session, git, write, call, prepare, finish):
+    with fixture(adapter='codex') as (root, session, git, write, call, prepare, finish):
         write('main.py',
               'def first(value):\n    return value + 1\n\n'
               'def second(value):\n    return value + 2\n\n'
@@ -1711,7 +1711,7 @@ def provider_visible_source_packet_limit():
         'call_sites': [], 'related_tests': [], 'gates': [],
     }
     components = [{'id': 'component', 'files': ['main.py'], 'boundary': ['main.py']}]
-    assignments = {'sol': {'components': ['component']}}
+    assignments = {'sol': {'components': ['component'], 'adapter': 'codex'}}
     context, artifacts = module.source_context(
         Repo(raw), '1' * 40, '2' * 40, evidence, components, assignments, 'sol', 'r1')
     packet = context['seats']['sol']
@@ -1793,8 +1793,8 @@ def source_context_prefers_named_production_and_maps_gates():
         {'id': 'other', 'files': ['src/other.py'], 'boundary': ['src/other.py']},
     ]
     assignments = {
-        'owner': {'components': ['main', 'other']},
-        'specialist': {'components': ['main', 'other']},
+        'owner': {'components': ['main', 'other'], 'adapter': 'codex'},
+        'specialist': {'components': ['main', 'other'], 'adapter': 'codex'},
     }
     with tempfile.TemporaryDirectory(prefix='source-ranking-') as tmp:
         context, artifacts = module.source_context(
@@ -1866,7 +1866,11 @@ def local_names_do_not_expand_cross_file_proof():
         assert any(row['name'] == 'page' and row['cross_file'] is False for row in facts['symbols'])
         assert any(row['path'] == 'src/consumer.ts' and row['name'] == 'readHistory'
                    for row in facts['call_sites'])
+        assert any(row['source'] == 'src/consumer.ts' and row['target'] == 'utility/history.ts'
+                   and row['kind'] == 'ambiguous-import'
+                   for row in facts['dependencies']), facts['dependencies']
         assert not any(row['source'] == 'src/consumer.ts' and row['target'] == 'utility/history.ts'
+                       and row['kind'] == 'lexical-reference'
                        for row in facts['dependencies']), facts['dependencies']
         assert any(row['path'] == 'tests/history.test.ts' for row in facts['related_tests'])
         assert not any(row['path'] in {'src/unrelated.ts', 'tests/unrelated.test.ts', 'docs/notes.md'}
@@ -2163,6 +2167,8 @@ def ambiguous_ts_configs_are_explicit_search_obligations():
         proof_paths.update(row['path']
                            for capacity in manifest['task_capacity']['seats'].values()
                            for row in capacity['mandatory_window_rows'])
+        assert any(row['path'] == 'lib/history.ts'
+                   for row in obligation['candidate_symbols']), obligation
         assert {'src/consumer.ts', 'src/history.ts', 'lib/history.ts',
                 'tsconfig.json', 'src/tsconfig-alt.json'} <= proof_paths, proof_paths
         closure = module.plan_closure_paths(
@@ -2249,6 +2255,9 @@ def ts_transitive_excluded_file_uses_project_path_aliases():
         proof_paths.update(required['path']
                            for packet in manifest['source_context']['seats'].values()
                            for required in packet['required_source_ranges'])
+        proof_paths.update(row['path']
+                           for capacity in manifest['task_capacity']['seats'].values()
+                           for row in capacity['mandatory_window_rows'])
         assert {'src/transitive.ts', 'src/history.ts', 'tsconfig.json',
                 'configs/tsconfig.base.json'} <= proof_paths, proof_paths
 

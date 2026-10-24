@@ -169,7 +169,7 @@ omitted.append({
     'path': 'src/extra.py', 'line_start': 1, 'line_end': 1, 'priority': 0,
     'blob_tree': snapshot, 'reasons': ['declaration:kept'],
 })
-assignment = {'plan_clusters': ['C-01']}
+assignment = {'plan_clusters': ['C-01'], 'adapter': 'codex'}
 bare = module.mandatory_repository_windows(assignment, [cluster], [])
 assert len(bare) == 12, len(bare)
 target = module.repository_source_target({
