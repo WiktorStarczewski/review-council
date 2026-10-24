@@ -5,13 +5,14 @@
 - [x] Correct the failing verifier cases: ambiguous TypeScript project candidates, replacement-chain identities, deterministic live-status polling, and canonical paths through a symlinked temp root.
 - [x] Correct the workflow test to assert the actual `proof-preparation` job key.
 - [x] Complete normal internal review and correct its P2 finding about the stale CI handoff status.
-- [x] Diagnose the next exact-head failures: the workflow test searched for a literal `\\n`, and the stack-test fake created session state only after its status-observation delay.
+- [x] Diagnose the next exact-head failures: the workflow test searched for a literal `\\n`, and the stack-test fixture omitted `rev-context.py` beside its temporary `rev-status.sh`.
 - [x] Fix the workflow split to use a newline and initialize fake session state before the delay.
-- [x] Complete normal internal follow-up review and push the fixes.
+- [x] Add the missing status-context symlink to the stack-test fixture.
+- [x] Complete normal internal review of the fixture correction and push it.
 - [ ] Pass proof-preparation, Ubuntu, macOS, and Cursor package CI on the exact final head.
 - [ ] Squash-merge PR #74, publish the signed 0.8.1 tag and release, install it on Claude, Codex, and Cursor, and verify each installation.
 
-PR #74 is at `04acf32588f99e4e9a212a19bf9f818f3b687bae`, based on latest `origin/main` `58862c988d545dee67f79fafdf0e8008a4e66632`. Its prior exact-head run `40060602238` failed on both platforms: Python exposed an escaped newline in the workflow fixture, and the shell suite showed the fake reviewer had no session state during the status poll. Both causes are corrected locally and passed the normal internal follow-up review. Run `40061351310` still tests the old head and cannot satisfy final-head CI; the reviewed fix is ready to push. Earlier fixture fixes and normal internal review remain complete.
+PR #74 is at `cf6baa078bf0afbc51cbfa5996d8f91b0419a89a`, based on latest `origin/main` `58862c988d545dee67f79fafdf0e8008a4e66632`. Old-head run `40061351310` confirmed the escaped-newline Python error and the stack status-line failure. The newline and state-timing fixes are on this candidate. On `40062066942`, Ubuntu's 519 Python tests passed, but the shell gate still failed because its temporary `REV_SCRIPTS` directory linked `rev-status.sh` without the required adjacent `rev-context.py`. The test fixture now links that companion, and normal internal follow-up review found no actionable P0-P2 findings. Exact-head proof preparation and Cursor packaging passed; macOS is still running.
 
 # Release 0.8.0
 

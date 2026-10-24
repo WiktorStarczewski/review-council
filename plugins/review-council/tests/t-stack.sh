@@ -12,6 +12,7 @@ test_stack() {
     local RS="$T/rs"; mkdir -p "$RS"
     ln -sf "$SCRIPTS/rev-status.sh" "$RS/rev-status.sh"; ln -sf "$SCRIPTS/rev-squash.sh" "$RS/rev-squash.sh"
     ln -sf "$SCRIPTS/rev-state.sh" "$RS/rev-state.sh"
+    ln -sf "$SCRIPTS/rev-context.py" "$RS/rev-context.py"
     # lib/ comes along: the copy must run in the shipped configuration, portability layer and all, or the
     # REV_SCRIPTS-default case below would exercise a stack.sh whose compat.sh never loaded.
     ln -sfn "$SCRIPTS/lib" "$RS/lib"
