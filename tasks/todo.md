@@ -2,12 +2,19 @@
 
 - [x] Confirm that `rev-seat.sh` ignores the reviewed session's frozen `REV_ROOT`.
 - [x] Add a regression for launching from outside the reviewed repository.
-- [ ] Confirm the regression fails on the test-only commit in CI.
-- [ ] Resolve the seat root from `scope.env` and preserve legacy fallback when scope metadata is absent.
-- [ ] Complete one independent normal review and pass required checks on the exact PR head.
+- [x] Confirm the regression fails on the test-only commit in CI.
+- [x] Resolve the seat root from `scope.env` and preserve legacy fallback when scope metadata is absent.
+- [x] Complete one independent normal review and resolve its P2 finding.
+- [ ] Pass required checks on the exact PR head.
 - [ ] Squash-merge and publish a signed release with the fix installed.
 
 The active wallet PR replacement was launched from the home directory while its session scope points at the wallet checkout. The runner therefore assigned the wrong root to both its adapter and read audit. The session scope is the audited authority for that review.
+
+The expected-red test-only run `40139997146` on `347b673d3cb521a103ed6935d96477b5d0c987c4` failed only the two new repository-root assertions on Ubuntu and macOS. Each platform passed 5,093 assertions; proof preparation and Cursor package validation passed.
+
+## Review
+
+Initial normal review found one P2: shell-quoted repository paths containing apostrophes were not decoded by the shared scope parser. The parser now uses `shlex.split`, and the seat regression covers an apostrophe path. Follow-up review confirmed the fix and found no actionable P0-P2 findings.
 
 # Issue #77 and release 0.8.2
 

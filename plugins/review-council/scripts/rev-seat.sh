@@ -78,7 +78,24 @@ EFFORT=$ROSTER_EFFORT
 [ "$MODE" != review ] || [ -n "$BASE" ] || { echo "rev-seat: seat '$SEAT' (mode=review) needs --base <ref>" >&2; exit 1; }
 
 mkdir -p "$SESSION"
-ROOT=${REV_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}
+if [ -f "$SESSION/scope.env" ]; then
+  ROOT=$(python3 - "$HERE/lib" "$SESSION" <<'PY'
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from workhorse import scope_value
+
+try:
+    print(scope_value(sys.argv[2], 'REV_ROOT'))
+except (OSError, ValueError) as error:
+    print('rev-seat: invalid repository root in scope.env: ' + str(error), file=sys.stderr)
+    raise SystemExit(1)
+PY
+  ) || exit 1
+else
+  ROOT=${REV_REPO:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}
+fi
+[ -d "$ROOT" ] || { echo "rev-seat: repository root is not a directory: $ROOT" >&2; exit 1; }
 BASEN="$SESSION/r${ROUND}-${SEAT}"
 OUT="$BASEN.json"; LOG="$BASEN.log"; RAW="$BASEN.stream.ndjson"; EXITF="$BASEN.exit"
 AUDITF="$BASEN.read-audit.json"

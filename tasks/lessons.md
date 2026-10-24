@@ -281,6 +281,8 @@ one reviewer even when the general code-review workflow defaults to a Council pa
 - When live monitoring confirms a bounded runner defect with a direct fix, start the
   patch immediately and keep monitoring only for the active seat's terminal evidence.
   Repeated observation does not substitute for fixing the confirmed cause.
+- Parse `scope.env` values with `shlex.split` to match the preflight writer. Removing
+  only the outer quotes corrupts paths containing apostrophes.
 
 - Before releasing Council, fetch and verify the latest signed tag and merge any newer main commit before editing the next version's manifests, changelog, plan, or release procedure.
 - If the user restores a CI gate after explicitly waiving it, follow the latest direction. Older-head results do not satisfy the required current-head gate before merge or release.
