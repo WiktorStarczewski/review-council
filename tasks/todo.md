@@ -917,3 +917,36 @@ Review results: the focused fixture re-review was clean before integrating 0.7.1
 - [x] Run one independent normal code review, fix actionable P0-P2 findings, and re-verify.
 - [x] Publish the signed 0.7.12 tag and GitHub release; the release is published at `review-council--v0.7.12`.
 - [ ] Resume #1752 on the new runtime and report its exact review state.
+
+## WLG Bread review preparation repair
+
+- [x] Freeze Bread source at 747e032b and reproduce latest 0.7.12 preparation refusal.
+- [x] Add Rust module resolution regression tests and obtain intended failing CI evidence.
+- [x] Correct absent-alternative handling while retaining missing-import proof failures.
+- [x] Resolve proof-capacity recovery with complete scope and unchanged proof limits.
+- [x] Run one independent normal reviewer, address actionable P0-P2 findings.
+- [ ] Verify both platform CI gates, publish a concrete repair PR and prepare a fixed runtime.
+- [ ] Resume the complete Bread review on the frozen source and deliver the feature PR.
+
+Review results: pending. No Bread review receipt, merge or deployment is claimed.
+
+### Repair verification evidence
+
+- Expected-red run40045649035 at9076df0:8 of9 Rust resolution regressions fail on intended targets/root identity; missing-module protection passes.
+- Expected-red focused job120729884016 in run40046674469 at05ea5a0: capacity cases reject23 and16 reads against12; search80, compiler81 and discovery80 incorrectly reject. Boundary negatives pass.
+- Independent normal review: three P2 findings require historical blob identity, physical Rust module directories, and comment-masked declaration parsing. Corrections are in progress.
+- Frozen release baseline6208b71 already fails27 shell task groups on both operating systems. Fixture corrections retain source40, search80/sentinel81, byte ceilings and the12-read manual limit.
+
+Independent cumulative recheck: all three P2 findings are fixed; no additional P0-P2 findings. This is source-review approval, not passing candidate CI. New pushes are held for cross-session ownership coordination requested by the user. Native queue messages to both peer sessions remain pending and are not acknowledgements.
+
+Release authorization: the user explicitly requested releasing0.7.13 without CI and then resuming the frozen Bread review. CI is waived for this release; no passing current-candidate CI is claimed. Prior normal review is clean after all three P2 corrections.
+
+## Routed source proof ownership follow-up
+
+- [x] Preserve actual0.7.13 enabled-context Bread refusal at prepare-diagnostic-1s.json.
+- [x] Recover assigned ownership from source range component IDs without dropping boundary proof.
+- [x] Add a routed-specialist regression and obtain one independent normal review.
+- [x] Verify preparation on the actual frozen Bread branch before publication.
+- [ ] Publish the narrow follow-up under the user's Council release CI waiver and resume Bread review.
+
+Operational acceptance: complete Bread snapshot5b9ce74207af51bba5831a318bf48e28f2dd056c prepared with source context enabled at /private/tmp/wlg-bread-owner-probe-yw2di0gt. All four seats fit the unchanged12-read limit, using1,1,6,2 post-index reads. Exact required segments remain mandatory. Independent normal source review approved. The existing user waiver applies to this narrow follow-up release; no passing candidate CI is claimed.

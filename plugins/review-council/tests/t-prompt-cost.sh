@@ -130,7 +130,7 @@ test_prompt_cost_shared_limits_and_copy() {
     cp "$SCRIPTS/../schema/findings.schema.json" "$COPY/schema/"
     printf 'READ_LINES = 240\nCODEX_READ_LINES = 40\nREPOSITORY_EXPANSION_CALL_LIMIT = 9\nMANDATORY_REPOSITORY_READ_LIMIT = 6\n' > "$COPY/scripts/lib/review_limits.py"
     printf 'frozen patch\n' > "$S/rlimits-full.patch"
-    local codex claude
+    local codex claude codex120
     codex=$("$COPY/scripts/rev-prompt.sh" "$S" limits sol correctness focused) || return
     claude=$("$COPY/scripts/rev-prompt.sh" "$S" limits opus correctness focused) || return
     assert_grep 'copied prompt derives Codex windows from CODEX_READ_LINES' "$codex" \
@@ -138,6 +138,10 @@ test_prompt_cost_shared_limits_and_copy() {
     assert_grep 'copied prompt derives native windows from READ_LINES' "$claude" \
       'END - START \+ 1 <= 240'
     assert_grep 'copied prompt derives expansion and reserve from bundled constants' "$codex" 'use at most 9 repository tool calls.*no new evidence path after call 6'
+    printf 'READ_LINES = 120\nCODEX_READ_LINES = 120\nREPOSITORY_EXPANSION_CALL_LIMIT = 9\nMANDATORY_REPOSITORY_READ_LIMIT = 6\n' > "$COPY/scripts/lib/review_limits.py"
+    codex120=$("$COPY/scripts/rev-prompt.sh" "$S" limits sol correctness focused) || return
+    assert_grep 'copied prompt uses configured Codex window when limits change' "$codex120" \
+      'END - START \+ 1 <= 120'
   )
 }
 

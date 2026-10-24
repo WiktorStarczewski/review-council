@@ -5,6 +5,16 @@
 - PR-scoped reviews pin the GitHub repository, number, head, and base at preflight. Rendering and evidence preparation reject live identity drift before creating a target or evidence snapshot.
 - Failed review assignments can continue through the configured replacement chain with each child bound to its failed parent, preserving sibling results and selecting only the terminal valid result.
 
+## 0.7.14
+
+- Retain assigned component ownership when promoting boundary caller and test proofs, so routed specialists can prepare their complete evidence without inventing ownership from a caller path.
+
+## 0.7.13
+
+- Resolve Rust module declarations, explicit paths and integration crate roots without inventing alternate files or treating comments as declarations.
+- Deliver complete code proofs through exact audited source segments, preserving historical blobs and ambiguous candidates within unchanged read limits.
+- Accept bounded search pipelines without applying source-window limits to their result limiters. Retain deleted import callers and TypeScript declaration-file evidence.
+
 ## 0.7.12
 
 - Bound Codex patch and repository reads to 40 lines, keep responses under a 24 KiB target, and align capacity estimates and audits with those limits.

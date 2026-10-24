@@ -36,12 +36,14 @@ with tempfile.TemporaryDirectory(prefix='deleted-symbol-') as tmp:
     signature_body = ''.join(f'    value_{index} = {index}\n' for index in range(500))
     (root / 'signature.py').write_text('def compute(value):\n' + signature_body)
     (root / 'overload.ts').write_text(
-        'function parse(value: string): string;\n'
-        'function parse(value: number): number;\n'
-        'function parse(value: string | number): string | number { return value; }\n')
+        'export function parse(value: string): string;\n'
+        'export function parse(value: number): number;\n'
+        'export function parse(value: string | number): string | number { return value; }\n')
     (root / 'caller.py').write_text(
-        'first = gone(1)\nsecond = removed(1)\nthird = A().duplicate()\n'
-        'fourth = parse("1")\n')
+        'from deleted import gone\nfrom mixed import removed\nfrom containers import A\n\n'
+        'first = gone(1)\nsecond = removed(1)\nthird = A().duplicate()\n')
+    (root / 'caller.ts').write_text(
+        'import { parse } from "./overload";\nconst fourth = parse("1");\n')
     git('add', '.')
     git('commit', '-qm', 'base')
     base = git('rev-parse', 'HEAD')
@@ -53,8 +55,8 @@ with tempfile.TemporaryDirectory(prefix='deleted-symbol-') as tmp:
     (root / 'signature.py').write_text(
         'def compute(value, extra=0):\n' + signature_body)
     (root / 'overload.ts').write_text(
-        'function parse(value: number, radix?: number): number;\n'
-        'function parse(value: string | number): string | number { return value; }\n')
+        'export function parse(value: number, radix?: number): number;\n'
+        'export function parse(value: string | number): string | number { return value; }\n')
     (session / 'scope.env').write_text(
         f"REV_BASE='{base}'\nREV_ROOT='{root}'\nREV_SCOPE='branch'\n")
     (session / 'roster.json').write_text(json.dumps({'seats': [
@@ -83,8 +85,11 @@ with tempfile.TemporaryDirectory(prefix='deleted-symbol-') as tmp:
                and row['blob_tree'] == manifest['base_tree']
                and row['line'] == 2 and row['line_end'] == 3
                for row in evidence['symbols']), evidence['symbols']
-    assert any(row['path'] == 'caller.py' and row['name'] == 'duplicate'
-               for row in evidence['call_sites']), evidence['call_sites']
+    assert any(row['source'] == 'caller.py' and row['target'] == 'containers.py'
+               and row['kind'] == 'local-import'
+               for row in evidence['dependencies']), evidence['dependencies']
+    assert not any(row['path'] == 'caller.py' and row['name'] == 'duplicate'
+                   for row in evidence['call_sites']), evidence['call_sites']
     compute = [row for row in evidence['symbols']
                if row['path'] == 'signature.py' and row['name'] == 'compute']
     assert len(compute) == 1 and compute[0]['blob_tree'] == manifest['snapshot_tree'], compute
@@ -92,7 +97,7 @@ with tempfile.TemporaryDirectory(prefix='deleted-symbol-') as tmp:
                  if row['path'] == 'overload.ts' and row['name'] == 'parse'
                  and row['blob_tree'] == manifest['base_tree']]
     assert len(old_parse) == 1 and old_parse[0]['line'] == 1, old_parse
-    assert any(row['path'] == 'caller.py' and row['name'] == 'parse'
+    assert any(row['path'] == 'caller.ts' and row['name'] == 'parse'
                for row in evidence['call_sites']), evidence['call_sites']
     ranges = [row for packet in manifest['source_context']['seats'].values()
               for shard in packet['shards'] for row in shard['ranges']]
@@ -121,11 +126,11 @@ import sys
 root = Path(sys.argv[1])
 (root / 'src/main.py').write_text('def options(value):\n    return value + 1\n')
 (root / 'src/consumer.py').write_text(
-    'from main import options\n\ndef consume():\n    return options(1)\n')
-(root / 'src/original.ts').write_text(
-    'export function consumeOriginal() { return options(2); }\n')
+    'from src.main import options\n\ndef consume():\n    return options(1)\n')
+(root / 'src/original.py').write_text(
+    'from src.main import options\n\ndef consume_original():\n    return options(2)\n')
 source_map = json.dumps({
-    'version': 3, 'file': 'bundle.js', 'sources': ['../src/original.ts'],
+    'version': 3, 'file': 'bundle.js', 'sources': ['../src/original.py'],
     'sourcesContent': ['options(2);\n' + 'x' * (20 * 1024)],
     'names': ['options'], 'mappings': '',
 }, separators=(',', ':')) + '\n'
@@ -161,7 +166,7 @@ rows = [row for packet in manifest['source_context']['seats'].values()
         for shard in packet['shards'] for row in shard['ranges']]
 rows += [row for packet in manifest['source_context']['seats'].values()
          for row in packet['required_source_ranges']]
-for caller in ('src/consumer.py', 'src/original.ts'):
+for caller in ('src/consumer.py', 'src/original.py'):
     assert any(row['path'] == caller and any(
         reason in ('production-caller:options', 'extra-caller:options')
         for reason in row['reasons']) for row in rows), (caller, rows)
@@ -169,7 +174,7 @@ generated = {'00-first.js.map', 'zz-last.js.map', 'dist/bundle.min.js',
              'generated/bundle.js', 'emitted/bundle.js'}
 selected = [row for row in rows if row['path'] in generated]
 assert not selected, ('unchanged generated lexical callers became source obligations', selected)
-assert any(row['path'] in ('src/consumer.py', 'src/original.ts')
+assert any(row['path'] in ('src/consumer.py', 'src/original.py')
            and 'production-caller:options' in row['reasons'] for row in rows), rows
 PY
     assert_eq "generated lexical noise leaves authored caller proof selected" "$?" 0

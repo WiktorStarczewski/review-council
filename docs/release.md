@@ -14,7 +14,7 @@ Review Council `rev` or `stack` for this repository.
 Verify the latest signed stable release before using it as the candidate base:
 
 ```bash
-git verify-tag review-council--v0.7.12
+git verify-tag review-council--v0.7.14
 ```
 
 Run the complete deterministic candidate gate in CI for the exact candidate commit on

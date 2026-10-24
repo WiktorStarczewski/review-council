@@ -978,7 +978,7 @@ PY
     write_patch_transcript() {
       python3 - "$manifest" "$S/r8-sol.stream.ndjson" "$1" "$R" <<'PY'
 import json, pathlib, sys
-manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2]); complete = sys.argv[3] == 'complete'
+manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2])
 root = pathlib.Path(sys.argv[4])
 session = pathlib.Path(sys.argv[1]).parent
 seat = 'sol'; assignment = manifest['assignments'][seat]
@@ -990,13 +990,17 @@ def command(call_id, command, output):
                                          'aggregated_output':output,'exit_code':0}},
     ])
 patch = pathlib.Path(assignment['patch']); lines = patch.read_text().splitlines(keepends=True)
-ranges = list(range(1, len(lines) + 1, 40))
+starts = list(range(1, len(lines) + 1, 40))
 if sys.argv[3] == 'reversed':
-    ranges.reverse()
-elif not complete:
-    ranges = ranges[:1]
-for start in ranges:
-    end = min(len(lines), start + 39)
+    starts.reverse()
+elif sys.argv[3] == 'missing-first':
+    starts = starts[1:]
+elif sys.argv[3] == 'missing-interior':
+    starts.pop(len(starts) // 2)
+elif sys.argv[3] == 'missing-tail':
+    starts = starts[:-1]
+for start in starts:
+    end = min(start + 39, len(lines))
     command('patch-' + str(start), f"sed -n '{start},{end}p' '{patch}'",
             ''.join(lines[start - 1:end]))
 for index, shard in enumerate(manifest['source_context']['seats'][seat]['shards'], 1):
@@ -1017,9 +1021,18 @@ PY
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
       --raw "$S/r8-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
       --out "$S/r8-sol.read-audit.json" >/dev/null 2>&1
-    assert_eq "eight bounded reads can prove one assigned patch" "$?" 0
+    assert_eq "bounded reads can prove one assigned patch" "$?" 0
+    local expected_patch_reads
+    expected_patch_reads=$(python3 - "$manifest" <<'PY'
+import json, pathlib, sys
+patch = pathlib.Path(json.load(open(sys.argv[1]))['assignments']['sol']['patch'])
+print((len(patch.read_text().splitlines()) + 39) // 40)
+PY
+    ) || return
     assert_grep "assigned patch receipt records every proven window" "$S/r8-sol.read-audit.json" \
-      '"assigned_patch_reads":8'
+      "\"assigned_patch_reads\":$expected_patch_reads"
+    assert_grep "assigned patch receipt covers the second chunk" "$S/r8-sol.read-audit.json" \
+      '"line_start":41'
     assert_grep "assigned patch receipt covers a later window" "$S/r8-sol.read-audit.json" \
       '"line_start":241'
 
@@ -1094,13 +1107,16 @@ PY
     assert_grep "reversed complete patch proof has no fatal violation" \
       "$S/r8-sol.read-audit.json" '"violations":\[\]'
 
-    write_patch_transcript partial
-    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
-      --raw "$S/r8-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
-      --out "$S/r8-sol.read-audit.json" >/dev/null 2>&1
-    assert_eq "assigned patch receipt rejects an uncovered trailing chunk" "$?" 2
-    assert_grep "assigned patch gap has a stable violation" "$S/r8-sol.read-audit.json" \
-      '"code":"missing-assigned-patch-range"'
+    local gap
+    for gap in missing-first missing-interior missing-tail; do
+      write_patch_transcript "$gap"
+      python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+        --raw "$S/r8-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
+        --out "$S/r8-sol.read-audit.json" >/dev/null 2>&1
+      assert_eq "assigned patch receipt rejects a $gap window gap" "$?" 2
+      assert_grep "$gap patch gap has a stable violation" "$S/r8-sol.read-audit.json" \
+        '"code":"missing-assigned-patch-range"'
+    done
   )
 }
 
@@ -1801,6 +1817,8 @@ test_codex_multirange_source_batch_contract() {
 import pathlib, sys
 for path, prefix in zip(sys.argv[1:], ('a', 'b')):
     pathlib.Path(path).write_text(''.join(f'{prefix}{index:03d}:' + 'x' * 160 + '\n' for index in range(1, 261)))
+pathlib.Path(sys.argv[1]).with_name('wide.ts').write_text(''.join(
+    f'w{index:03d}:' + 'x' * 900 + '\n' for index in range(1, 41)))
 PY
     printf 'Codex source batching enabled: true\nAssigned scope: full\n' > "$S/prompt.md"
 
@@ -1879,6 +1897,13 @@ CASES
     audit_codex_batch overflow
     assert_eq "Codex rejects exact multirange output above 32 KiB" "$?" 2
     assert_grep "Codex multirange overflow is fatal" "$S/overflow-audit.json" \
+      '"code":"tool-output-too-large"'
+
+    local wide_overflow="sed -n '1,20p' 'src/wide.ts'; sed -n '21,40p' 'src/wide.ts'"
+    write_codex_batch wide-overflow "$wide_overflow" exact || return
+    audit_codex_batch wide-overflow
+    assert_eq "Codex rejects one path whose exact multirange exceeds 32 KiB" "$?" 2
+    assert_grep "single-path multirange overflow is fatal" "$S/wide-overflow-audit.json" \
       '"code":"tool-output-too-large"'
 
     # Historical Grok shell transcripts remain rejected by the compatibility decoder.
@@ -2804,6 +2829,15 @@ preamble = {'fixture-a': XCRUN, 'base-commit': XCRUN, 'base-tree': XCRUN,
 def pinned(call_id, text, rev=snap, output=None):
     command(call_id, text.replace('{REV}', rev),
             preamble + (run(text.replace('{REV}', rev)) if output is None else output))
+def asset_reads(call_id, rev=snap, question=''):
+    for first, last in ((1, 40), (41, 45)):
+        text = question + f"git show {{REV}}:src/asset.rs | sed -n '{first},{last}p'"
+        output = None
+        if mode == 'tampered':
+            output = run(text.replace('{REV}', snap)).replace('+ 1', '+ 2')
+        elif mode == 'base-bytes':
+            output = run(text.replace('{REV}', base))
+        pinned(call_id + '-' + str(first), text, rev, output)
 patch = pathlib.Path(manifest['assignments'][seat]['patch'])
 lines = patch.read_text().splitlines(keepends=True)
 for start in range(1, len(lines) + 1, 40):
@@ -2816,9 +2850,8 @@ if mode in ('fixture-a', 'base-commit', 'base-tree'):
     pinned('target', "git show {REV}:src/asset.rs | sed -n '24,30p'", rev)
 command('evidence-index', "cat -- '" + str(index) + "'", index.read_text())
 if mode in ('fixture-a', 'base-commit', 'base-tree'):
-    pinned('question-apostrophe',
-           "# Question: Does the new Asset wrapper's construction preserve the variant invariant?\n"
-           "git show {REV}:src/asset.rs | sed -n '1,40p'", rev)
+    asset_reads('question-apostrophe', rev,
+                "# Question: Does the new Asset wrapper's construction preserve the variant invariant?\n")
     pinned('question-search',
            "# Question: Which production paths enumerate assets, and which tests exercise them?\n"
            "git grep -n -e 'Asset' {REV} -- src | head -80", rev)
@@ -2829,30 +2862,32 @@ elif mode == 'absent-path':
     pinned('absent', "git show {REV}:src/absent.rs | sed -n '1,5p'")
     pinned('refutation', "git show {REV}:src/types.ts | sed -n '1,5p'")
 elif mode == 'foreign-preamble':
-    pinned('source', "git show {REV}:src/asset.rs | sed -n '1,40p'")
+    asset_reads('source')
     command('refutation', "sed -n '1,5p' 'src/types.ts'", run("sed -n '1,5p' 'src/types.ts'"))
 elif mode == 'tampered':
-    text = "git show {REV}:src/asset.rs | sed -n '1,40p'"
-    pinned('tampered', text, output=run(text.replace('{REV}', snap)).replace('+ 1', '+ 2'))
+    asset_reads('tampered')
     pinned('refutation', "git show {REV}:src/types.ts | sed -n '1,5p'")
 elif mode == 'base-bytes':
-    text = "git show {REV}:src/asset.rs | sed -n '1,40p'"
-    pinned('base-bytes', text, output=run(text.replace('{REV}', base)))
+    asset_reads('base-bytes')
     pinned('refutation', "git show {REV}:src/types.ts | sed -n '1,5p'")
 elif mode == 'unbounded':
     pinned('unbounded', 'git show {REV}:src/asset.rs')
     pinned('refutation', "git show {REV}:src/types.ts | sed -n '1,5p'")
 elif mode == 'oversized':
     pinned('oversized', 'git show {REV}:src/big.txt')
-    pinned('source', "git show {REV}:src/asset.rs | sed -n '1,40p'")
+    asset_reads('source')
     pinned('refutation', "git show {REV}:src/types.ts | sed -n '1,5p'")
 elif mode == 'minified-search':
-    command('source', "sed -n '1,40p' 'src/asset.rs'", run("sed -n '1,40p' 'src/asset.rs'"))
+    for first, last in ((1, 40), (41, 45)):
+        text = f"sed -n '{first},{last}p' 'src/asset.rs'"
+        command('source-' + str(first), text, run(text))
     command('refutation', "sed -n '1,5p' 'src/types.ts'", run("sed -n '1,5p' 'src/types.ts'"))
     # Three minified bundle lines pass `head -80` and still carry about 45 KiB.
     command('minified', "rg -n 'class Word|vaultKey' 'dist/st' | head -80",
             ''.join(f'dist/st/Cargo.js:{n}:' + 'w' * 15000 + '\n' for n in (13388, 25450, 27398)))
-    pinned('base-read', "git show {REV}:src/asset.rs | sed -n '1,40p'", base)
+    for first, last in ((1, 40), (41, 80)):
+        pinned('base-read-' + str(first),
+               f"git show {{REV}}:src/asset.rs | sed -n '{first},{last}p'", base)
 with open(out, 'w') as stream:
     for event in events:
         stream.write(json.dumps(event) + '\n')
@@ -2892,7 +2927,7 @@ test_codex_snapshot_tree_reads_are_audited_source() {
     summary=$(pinned_read_summary "$S/r$label-$seat.read-audit.json")
     assert_eq "commented snapshot-tree reads earn exact snapshot ranges" "$summary" \
       "$(printf '%s\n' - 'advisories=evidence-read-order' \
-        'ranges=src/asset.rs:1-40 src/asset.rs:24-30 src/types.ts:1-8')"
+        'ranges=src/asset.rs:1-40 src/asset.rs:24-30 src/asset.rs:41-45 src/types.ts:1-8')"
 
     for mode in base-commit base-tree; do
       pinned_read_transcript "$(cat "$S/fixture.manifest")" "$S/r$label-$seat.stream.ndjson" "$R" "$base" "$mode"
@@ -2929,7 +2964,7 @@ test_codex_snapshot_tree_reads_are_audited_source() {
     summary=$(pinned_read_summary "$S/r$label-$seat.read-audit.json")
     assert_eq "an oversized unbounded snapshot-tree read is an advisory that earns no range" "$summary" \
       "$(printf '%s\n' - 'advisories=tool-output-too-large tool-turn-output-too-large unbounded-shell-output' \
-        'ranges=src/asset.rs:1-40 src/types.ts:1-5')"
+        'ranges=src/asset.rs:1-40 src/asset.rs:41-45 src/types.ts:1-5')"
   )
 }
 
@@ -2945,7 +2980,7 @@ test_codex_line_bounded_minified_search_is_an_advisory() {
     summary=$(pinned_read_summary "$S/r$label-$seat.read-audit.json")
     assert_eq "the byte ceilings are advisories, and the base read adds no range" "$summary" \
       "$(printf '%s\n' - 'advisories=tool-output-too-large tool-turn-output-too-large' \
-        'ranges=src/asset.rs:1-40 src/types.ts:1-5')"
+        'ranges=src/asset.rs:1-40 src/asset.rs:41-45 src/types.ts:1-5')"
   )
 }
 
@@ -3163,8 +3198,9 @@ if assignment['patch_read_mode'] == 'chunks':
             turns.append([call])
 else:
     patch = pathlib.Path(assignment['patch']); total = len(patch.read_text().splitlines())
-    for start in range(1, total + 1, read_limit):
-        end = min(total, start + read_limit - 1)
+    window = 40 if adapter == 'codex' else 240
+    for start in range(1, total + 1, window):
+        end = min(total, start + window - 1)
         if adapter == 'codex':
             call = {'cmd': f"sed -n '{start},{end}p' {shlex.quote(str(patch))}", 'out': lines_of(patch, start, end)}
         else:
@@ -3193,8 +3229,9 @@ if manifest['source_context']['enabled'] and context['source_read_required']:
     assert tree == manifest['snapshot_tree'] and entry[1] == oid
     lines = evidence.split_lf_lines(repository.blob(entry))
     assert hashlib.sha256(b''.join(lines[start-1:end])).hexdigest() == content_hash
-    for first in range(start, end + 1, read_limit):
-        last = min(first + read_limit - 1, end)
+    window = 40 if adapter == 'codex' else 240
+    for first in range(start, end + 1, window):
+        last = min(first + window - 1, end)
         output = b''.join(lines[first-1:last]).decode()
         call = ({'cmd': shlex.join(['git', 'show', tree + ':' + path]) + ' | '
                        + shlex.join(['sed', '-n', f'{first},{last}p']), 'out': output}
@@ -3270,8 +3307,8 @@ test_audit_severity_size_and_batch_codes() {
       assert_eq "$name beside a clean read is an advisory" \
         "$(severity_audit "$R" "$S" 31 "$adapter")" "$(severity_expect valid - "$code")"
     done <<CASES
-tool-output-too-large^codex^[{"sed":["src/wide.rs",1,40]}]^$wide_clean^tool-output-too-large@command_execution,tool-turn-output-too-large@codex
-tool-turn-output-too-large^codex^[{"sed":["src/wide.rs",1,20]},{"sed":["src/wide.rs",21,40]}]^$wide_clean^tool-turn-output-too-large@codex
+tool-output-too-large^codex^[{"sed":["src/wide.rs",181,220]}]^$wide_clean^tool-output-too-large@command_execution,tool-turn-output-too-large@codex
+tool-turn-output-too-large^codex^[{"sed":["src/wide.rs",91,110]},{"sed":["src/wide.rs",191,210]}]^$wide_clean^tool-turn-output-too-large@codex
 unbounded-read^gemini^[{"read":["src/wide.rs",290,250]}]^$read_clean^unbounded-read@read_file
 unbounded-search^gemini^[{"tool":"search_file_content","input":{"pattern":"W150","path":"src"},"out":"src/wide.rs:151:W150\n"}]^$read_clean^unbounded-search@search_file_content
 unsupported-source-batch^codex^[{"cmd":"sed -n '1,20p' src/wide.rs; rg -n W150 src | head -80","out_lines":["src/wide.rs",1,20]}]^$wide_clean^unsupported-source-batch@Bash
@@ -3307,7 +3344,7 @@ test_audit_severity_credit_on_every_proof_surface() {
       "$(severity_expect valid - "missing-evidence-index@codex,$size")"
 
     severity_findings "$S" 31 src/wide.rs 200 210
-    severity_transcript "$S" 31 codex "{\"tail\":[[{\"sed\":[\"src/wide.rs\",1,40]}],$clean]}"
+    severity_transcript "$S" 31 codex "{\"tail\":[[{\"sed\":[\"src/wide.rs\",181,220]}],$clean]}"
     assert_eq "an oversized read earns no citation" \
       "$(severity_audit "$R" "$S" 31 codex)" \
       "$(severity_expect invalid "$size,unsubstantiated-finding-range@codex" -)"
@@ -3318,7 +3355,7 @@ test_audit_severity_credit_on_every_proof_surface() {
     local line
     for line in 100 200; do
       severity_findings "$S" 31 src/wide.rs "$line" "$((line + 1))"
-      severity_transcript "$S" 31 codex "{\"tail\":[[{\"sed\":[\"src/wide.rs\",1,20]},{\"sed\":[\"src/wide.rs\",21,40]}],$clean]}"
+      severity_transcript "$S" 31 codex "{\"tail\":[[{\"sed\":[\"src/wide.rs\",91,110]},{\"sed\":[\"src/wide.rs\",191,210]}],$clean]}"
       assert_eq "an overflowing turn earns no citation at line $line" \
         "$(severity_audit "$R" "$S" 31 codex)" \
         "$(severity_expect invalid "tool-turn-output-too-large@codex,unsubstantiated-finding-range@codex" -)"
@@ -3402,7 +3439,7 @@ test_audit_severity_mixed_codes_are_all_violations() {
   ( local R="$T/severity-mixed-root" S="$T/severity-mixed-session"
     severity_fixture "$R" "$S" || return
     severity_findings "$S" 31
-    severity_transcript "$S" 31 codex "{\"tail\":[[{\"sed\":[\"src/wide.rs\",1,40]}],[{\"cmd\":\"cat -- '$S/r31-terra.prompt.md'\",\"out\":\"x\\n\"}],[{\"sed\":[\"src/wide.rs\",1,20]}]]}"
+    severity_transcript "$S" 31 codex "{\"tail\":[[{\"sed\":[\"src/wide.rs\",181,220]}],[{\"cmd\":\"cat -- '$S/r31-terra.prompt.md'\",\"out\":\"x\\n\"}],[{\"sed\":[\"src/wide.rs\",1,20]}]]}"
     assert_eq "a fatal code turns every advisory into a violation" \
       "$(severity_audit "$R" "$S" 31 codex)" \
       "$(severity_expect invalid "tool-output-too-large@command_execution,tool-turn-output-too-large@codex,unnamed-session-artifact@Bash" -)"
