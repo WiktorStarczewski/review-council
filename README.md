@@ -883,8 +883,8 @@ override its paths.
 - A panel with an Agent-adapter seat is never certified.
 - Legacy numeric code reviews and document reviews keep full scope without an evidence receipt. SDK numeric code panels carry a full-scope receipt that never grants adaptive coverage; SDK document reviews are unsupported.
 - Chunk reads prove the change was read; they do not replace source reads for a finding.
-- Publication cannot find a PR whose head branch lives on a fork and skips it as if there
-  were none; post the rendered `pr-review.md` by hand.
+- Without `--pr`, publication searches repositories inferred from local remotes and may not
+  find a PR whose head lives on a fork. Use `--pr` to pin the PR repository and head.
 - The Gemini adapter is fixture-tested, not certified on a live Gemini CLI.
 - Sandboxes that restrict nested CLIs or gates fail visibly and never widen permissions.
 
