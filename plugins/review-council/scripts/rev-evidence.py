@@ -1840,7 +1840,7 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                     unresolved_target = any(binding.get('unresolved')
                                             for binding in matching_bindings)
                     unbound_candidate = (not resolved and not matching_bindings and any(
-                        symbol['path'] != path and symbol.get('cross_file')
+                        symbol['path'] == path or symbol.get('cross_file')
                         for symbol in definitions.get(name, [])))
                     if not resolved and not matching_bindings and not unbound_candidate:
                         continue
