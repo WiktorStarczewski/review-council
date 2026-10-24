@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'plugins/review-council/scripts/rev-evidence.py'
@@ -197,6 +198,38 @@ class RustImportResolutionTests(unittest.TestCase):
         repository, entries = self.freeze()
         self.assertEqual(self.binding('tests/login_options/mod.rs', entries, repository)[
             'candidate_targets'], ['tests/durable.rs', 'tests/recovery.rs'])
+
+    def test_module_alias_matches_changed_exports_with_one_importer_scan(self):
+        names = [f'export_{index:03d}' for index in range(300)]
+        self.write('src/consumer.rs',
+                   'use crate::login_options as options;\n'
+                   'pub fn consume() -> usize { options::export_017() + options::export_299() }\n')
+        repository, _ = self.freeze()
+        base = self.git('rev-parse', 'HEAD')
+        self.write('src/login_options.rs', ''.join(
+            f'pub fn {name}() -> usize {{ {index} }}\n'
+            for index, name in enumerate(names)))
+
+        snapshot, unsafe = repository.snapshot()
+        self.assertEqual(unsafe, [])
+        base_tree = repository.tree(base)
+        _, hunks, categories, _ = repository.changes(base_tree, snapshot)
+        original_search = EVIDENCE.re.search
+        alias_searches = []
+
+        def count_alias_search(pattern, text, *args, **kwargs):
+            if isinstance(pattern, str) and 'options' in pattern and '::' in pattern:
+                alias_searches.append(pattern)
+            return original_search(pattern, text, *args, **kwargs)
+
+        with mock.patch.object(EVIDENCE.re, 'search', side_effect=count_alias_search):
+            result = EVIDENCE.facts(repository, snapshot, hunks, categories, base_tree)
+
+        consumer_calls = [call for call in result['call_sites']
+                          if call['path'] == 'src/consumer.rs']
+        self.assertEqual({call['name'] for call in consumer_calls},
+                         {'export_017', 'export_299'})
+        self.assertLessEqual(len(alias_searches), 3, alias_searches)
 
     def test_directory_integration_crate_resolves_its_own_modules(self):
         self.write('src/login_options.rs', 'pub fn library_only() {}\n')
