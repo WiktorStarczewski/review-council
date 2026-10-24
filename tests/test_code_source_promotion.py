@@ -189,6 +189,9 @@ class CodeSourcePromotionTests(unittest.TestCase):
         process = fixture.prepare()
         self.assertEqual(process.returncode, 0, process.stderr)
         fixture.load()
+        assignment = fixture.manifest['assignments'][fixture.seat]
+        self.assertEqual(
+            fixture.manifest['patch_sets'][assignment['patch_set']]['read_mode'], 'windows')
         evidence = load_evidence()
         facts = json.loads((fixture.session / 'r1-evidence.json').read_text())
         obligation = next(row for row in facts['unresolved_imports']

@@ -1628,7 +1628,8 @@ def source_context_packets():
         assert any(reason.startswith('gate:') for reason in reasons)
         prompt = call('render', session / 'r1-evidence.manifest.json', owner)
         assert 'Source context enabled: true' in prompt and 'Source context packet:' in prompt and 'Source read required:' in prompt
-        assert 'Read the entire assigned patch in bounded windows of at most 240 lines:' in prompt
+        assert ('Read the entire assigned patch in bounded windows of at most 160 lines, '
+                + f"ending at line {m['assignments'][owner]['patch_lines']}: ") in prompt
         old = module.Repository
         try:
             module.Repository = lambda *_: (_ for _ in ()).throw(AssertionError('offline source-context validation used Git'))
@@ -1917,6 +1918,76 @@ def local_names_do_not_expand_cross_file_proof():
                            for required in packet['required_source_ranges'])
         assert 'src/consumer.ts' in proof_paths and 'tests/history.test.ts' in proof_paths, proof_paths
         assert not proof_paths & {'src/unrelated.ts', 'tests/unrelated.test.ts', 'docs/notes.md'}, proof_paths
+
+def wildcard_reexports_use_exact_source_proof():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('src/history-implementation.ts',
+              'export const readHistory = (input: number) => {\n'
+              '  const page = input + 1;\n'
+              '  return page;\n'
+              '};\n')
+        write('src/history/index.ts', '// retain the route line after a header\n'
+              'export *\n  from "../history-exports";\n'
+              + '// unrelated barrel content\n' * 80)
+        write('src/history-exports.ts',
+              'export * from "./history-implementation";\n')
+        write('src/consumer.ts',
+              'import { readHistory } from "./history";\n'
+              'export const consumeHistory = () => readHistory(1);\n')
+        git('add', '.'); git('commit', '-qm', 'wildcard re-export base'); base = git('rev-parse', 'HEAD')
+        scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('src/history-implementation.ts',
+              (root / 'src/history-implementation.ts').read_text().replace(
+                  'input + 1', 'input + 2'))
+
+        manifest = prepare()
+        facts = json.loads((session / 'r1-evidence.json').read_text())
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'src/consumer.ts')
+        assert not any(row['path'] == 'src/history/index.ts'
+                       for row in obligation['candidate_search_ranges']), obligation
+        assert any(row == {'path': 'src/history/index.ts', 'line_start': 2,
+                           'line_end': 2, 'name': 'readHistory',
+                           'blob_tree': manifest['snapshot_tree']}
+                   for row in obligation['candidate_route_symbols']), obligation
+        assert any(row == {'path': 'src/history-exports.ts', 'line_start': 1,
+                           'line_end': 1, 'name': 'readHistory',
+                           'blob_tree': manifest['snapshot_tree']}
+                   for row in obligation['candidate_route_symbols']), obligation
+        proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
+                       for shard in packet['shards'] for row in shard['ranges']}
+        proof_paths.update(required['path']
+                           for packet in manifest['source_context']['seats'].values()
+                           for required in packet['required_source_ranges'])
+        assert {'src/history/index.ts', 'src/history-exports.ts'} <= proof_paths, proof_paths
+        proof_ranges = [row for packet in manifest['source_context']['seats'].values()
+                        for shard in packet['shards'] for row in shard['ranges']]
+        proof_ranges.extend(required
+                            for packet in manifest['source_context']['seats'].values()
+                            for required in packet['required_source_ranges'])
+        assert any(row['path'] == 'src/history/index.ts'
+                   and row['line_start'] <= 2 <= row['line_end']
+                   and row['blob_tree'] == manifest['snapshot_tree'] for row in proof_ranges), proof_ranges
+        assert any(row['path'] == 'src/history-exports.ts'
+                   and row['line_start'] <= 1 <= row['line_end']
+                   and row['blob_tree'] == manifest['snapshot_tree'] for row in proof_ranges), proof_ranges
+
+def wildcard_reexport_syntax_preserves_start_lines():
+    assert module.ts_wildcard_references([
+        'export * from "../single-implementation";',
+        '// line before the multiline route',
+        'export *',
+        '  from "../multiline-implementation";',
+    ]) == [(1, '../single-implementation'), (3, '../multiline-implementation')]
+    assert module.ts_wildcard_references(module.split_lf_text(
+        'export * from "../single-crlf-implementation";\r\n'
+        '// line before the multiline CRLF route\r\n'
+        'export *\r\n'
+        '  from "../multiline-crlf-implementation";\r\n'
+    )) == [(1, '../single-crlf-implementation'), (3, '../multiline-crlf-implementation')]
 
 def rust_use_imports_keep_cross_file_callers():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -4237,6 +4308,8 @@ cases = (
     same_stat_and_index_flags, cstyle_enclosing_bodies, wallet_scale,
     literal_scope_and_inventories, sparse_gitlink_and_special, roster_bundle_coverage,
     source_context_packets, local_names_do_not_expand_cross_file_proof,
+    wildcard_reexports_use_exact_source_proof,
+    wildcard_reexport_syntax_preserves_start_lines,
     rust_use_imports_keep_cross_file_callers,
     rust_grouped_use_alias_is_a_capacity_counted_obligation,
     ts_default_import_alias_is_a_capacity_counted_obligation,
@@ -4292,6 +4365,8 @@ groups = {
     'context': (
         cstyle_enclosing_bodies, source_context_packets,
         local_names_do_not_expand_cross_file_proof,
+        wildcard_reexports_use_exact_source_proof,
+        wildcard_reexport_syntax_preserves_start_lines,
         rust_use_imports_keep_cross_file_callers,
         rust_grouped_use_alias_is_a_capacity_counted_obligation,
         ts_default_import_alias_is_a_capacity_counted_obligation,

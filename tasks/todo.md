@@ -918,6 +918,41 @@ Review results: the focused fixture re-review was clean before integrating 0.7.1
 - [x] Publish the signed 0.7.12 tag and GitHub release; the release is published at `review-council--v0.7.12`.
 - [ ] Resume #1752 on the new runtime and report its exact review state.
 
+## Luna proof-capacity follow-up
+
+- [x] Reproduce the #1752 preflight refusal in a copy of the review session.
+- [x] Add regressions for wildcard re-export proof and numeric-only no-SDK legacy wording.
+- [x] Add regressions for 160-line Codex patch windows, 200-line source reads, path-specific limits, exact patch end bounds, and sandbox-blocked tests.
+- [x] Resolve imported symbols through TypeScript wildcard re-exports while retaining exact source proof.
+- [x] Prepare bounded evidence for adaptive panels without requiring an SDK seat.
+- [x] Keep repository source reads within 200 lines and the existing byte ceiling, and use 160-line patch windows.
+- [ ] Run focused evidence tests and repeat the #1752 capacity preflight for every seat.
+- [x] Get one independent normal review of the Council diff and resolve its actionable P2 findings.
+- [ ] Record the test, CI, PR, and release state before closing this item.
+
+### Luna follow-up review
+
+The independent normal review found three P2 gaps in the wildcard re-export resolver
+and regression: multiline exports were not parsed, the first-route fixture did not
+exercise the multiline route, and CRLF files retained a trailing carriage return at
+EOF. The parser and regressions now cover exact source-line routing for single-line,
+multiline, and CRLF exports. A follow-up review found that multi-hop route lines were
+indexed but not included in prepared source packets. Route ranges now flow through
+packet planning and proof obligations, with a two-barrel packet regression. After
+reconciling current main, review found that the Codex skill still described the old
+no-SDK fallback for every panel. Its rule and contract test now match the generic skill.
+The final independent re-review found no actionable P0-P2 findings. CI run 40047800326
+failed on both platforms at 539465a; its only additional failing test group versus the
+0.7.12 baseline is the wildcard route packet regression fixed in 8a5fd35. `git diff
+--check` passes. Guarded shell preflight was refused twice, most recently at load 6.54
+against the 6.0 limit, so no tests ran. Main advanced to 0.7.14 while this PR was open,
+leaving its old head conflicting and preventing a current-head check from appearing.
+The branch is now reconciled with current main. `bash -n` and `git diff --check` pass.
+Exact-head run 40050428060 found that a shared test fixture replayed patch chunks even
+when `auto` selected a direct patch window, producing a false `missing-assigned-patch-range`
+violation. The fixture now replays the assigned patch file in windows mode, and its
+regression asserts that mode. Independent re-review and fresh exact-head CI are pending.
+
 ## WLG Bread review preparation repair
 
 - [x] Freeze Bread source at 747e032b and reproduce latest 0.7.12 preparation refusal.

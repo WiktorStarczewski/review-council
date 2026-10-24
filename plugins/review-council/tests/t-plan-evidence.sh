@@ -46,21 +46,21 @@ manifest = {
                    'patch_lines': 300, 'patch_read_mode': 'windows'},
     },
 }
-assert audit.plan_specialist_primary(manifest, 'luna', root)[2] == 40
+assert audit.plan_specialist_primary(manifest, 'luna', root)[2] == 160
 assert audit.plan_specialist_first_call_contract(manifest, 'luna', root).endswith(
-    "run sed -n '1,40p' " + shlex.quote(str(patch))
+    "run sed -n '1,160p' " + shlex.quote(str(patch))
     + ' as exactly one native primary-artifact read. Do not run a directory command, '
     + 'search, or compound shell command before or with this read.')
 assert audit.plan_specialist_primary(manifest, 'sonnet', root)[2] == 240
 valid = {'call': ('command_execution',
-                  {'command': "sed -n '1,40p' " + shlex.quote(str(patch))}, 0)}
+                  {'command': "sed -n '1,160p' " + shlex.quote(str(patch))}, 0)}
 invalid = {'call': ('command_execution',
                     {'command': "sed -n '1,240p' " + shlex.quote(str(patch))}, 0)}
 assert audit.validate_plan_first_call(manifest, 'luna', 'codex', valid, root, root) == []
 assert audit.validate_plan_first_call(manifest, 'luna', 'codex', invalid, root, root)[0]['code'] \
     == 'invalid-plan-first-call'
 PY
-    assert_eq "Codex plan first read uses 40 lines and Claude remains at 240" "$?" 0
+    assert_eq "Codex plan first read uses 160 lines and Claude remains at 240" "$?" 0
     cat > "$R/src/helper.ts" <<'EOF'
 export function helper() { return 1; }
 EOF

@@ -101,16 +101,16 @@ test_prompt_evidence_contract() {
       assert_grep "$seat prompt has bounded evidence steps" "$prompt" '^## Bounded evidence protocol$'
       case "$seat" in
         sol)
-          assert_grep "$seat prompt bounds Codex patch windows to 40 lines" "$prompt" \
-            'read every byte of the assigned patch.*window mode.*at most 40 lines'
+          assert_grep "$seat prompt bounds Codex patch windows to 160 lines" "$prompt" \
+            '^Read the entire assigned patch in bounded windows of at most 160 lines, ending at line [0-9]+:'
           assert_grep "$seat prompt uses a portable shell window recipe" "$prompt" \
             "^First assigned-patch action: run .*sed -n '[0-9][0-9]*,[0-9][0-9]*p' .*r1-.*\\.patch"
           assert_nogrep "$seat prompt never asks Codex for a native read tool" "$prompt" \
             'First assigned-patch action:.*Read|First assigned-patch action:.*read_file'
           ;;
         terra)
-          assert_grep "$seat prompt bounds Codex patch windows to 40 lines" "$prompt" \
-            'read every byte of the assigned patch.*window mode.*at most 40 lines'
+          assert_grep "$seat prompt bounds Codex patch windows to 160 lines" "$prompt" \
+            '^Read the entire assigned patch in bounded windows of at most 160 lines, ending at line [0-9]+:'
           assert_grep "$seat prompt uses a portable shell window recipe" "$prompt" \
             "^First assigned-patch action: run .*sed -n '[0-9][0-9]*,[0-9][0-9]*p' .*r1-.*\\.patch"
           ;;
@@ -131,6 +131,10 @@ test_prompt_evidence_contract() {
         '^First assigned-patch action:.*Do not read the evidence index, source context, or original source until the assigned patch is complete\.$'
       assert_nogrep "$seat prompt does not request the embedded instruction artifact" "$prompt" \
         'repository instructions: /.*-instructions\.md$'
+      assert_grep "$seat review treats test execution as optional evidence" "$prompt" \
+        'Test runners on existing files.*are optional and read-only'
+      assert_grep "$seat review continues after sandbox blocks a test runner" "$prompt" \
+        'Sandbox denial alone is not incomplete proof'
       assert_grep "$seat prompt gives one explicit post-patch evidence order" "$prompt" \
         '^Post-patch evidence order: read every listed source-context packet and required source segment in exact order before the evidence index or original source\.$'
       assert_grep "$seat prompt limits source-context packets to one per turn" "$prompt" \
@@ -351,7 +355,7 @@ SH
     assert_grep "paired baseline requires direct source reads" "$disabled_prompt" \
       '^Source read required: true$'
     assert_grep "paired baseline keeps component-scoped assigned patch" "$disabled_prompt" \
-      '^Read the entire assigned patch in bounded windows of at most 40 lines: '
+      '^Read the entire assigned patch in bounded windows of at most 160 lines, ending at line [0-9]+: '
 
     local default_manifest
     default_manifest=$(python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 13 \
@@ -394,8 +398,12 @@ PY
     legacy=$("$SCRIPTS/rev-prompt.sh" "$S" 8 sol regression numeric) || return
     assert_grep "legacy prompt names its exact frozen patch" "$legacy" \
       "^Exact frozen assigned patch: $session_real/r8-full\\.patch$"
+    local legacy_patch_lines
+    legacy_patch_lines=$(awk 'END {print NR}' "$S/r8-full.patch") || return
+    assert_grep "legacy prompt binds the frozen patch line count" "$legacy" \
+      "^Assigned patch line count: $legacy_patch_lines$"
     assert_grep "legacy Codex prompt makes a portable patch read the first evidence action" "$legacy" \
-      '^First evidence action: run portable bounded sed windows over '
+      "^First evidence action: run portable bounded sed windows over .* from line 1 through line $legacy_patch_lines, then stop\\.$"
     local legacy_agent
     printf '%s\n' '{"seats":[{"seat":"opus","adapter":"agent"}]}' > "$S/roster.json"
     legacy_agent=$("$SCRIPTS/rev-prompt.sh" "$S" 8 opus regression numeric) || return
@@ -513,18 +521,19 @@ PY
         "$recovery_prefix" '[Uu]nsubstantiated.*citation.*invalid'
       case "$recovery_adapter" in
         codex)
-          assert_grep "$recovery_adapter prefix keeps inclusive 40-line source windows" \
-            "$recovery_prefix" 'END - START \+ 1 <= 40'
+          assert_grep "$recovery_adapter prefix keeps inclusive 200-line source windows" \
+            "$recovery_prefix" 'END - START \+ 1 <= 200'
           assert_grep "$recovery_adapter prefix sets a safe per-turn byte target" \
             "$recovery_prefix" 'under 24 KiB per response and per ordinary turn'
           assert_grep "$recovery_adapter prefix preserves larger ordered proof turns" \
             "$recovery_prefix" 'Ordered proof phases may use their rendered 60 KiB turn budget'
           assert_grep "$recovery_adapter prefix names the hard byte ceiling" \
             "$recovery_prefix" 'Hard ceilings are 32 KiB per response and for an ordinary turn'
-          assert_grep "$recovery_adapter prefix caps Codex patch windows at 40 lines" \
-            "$recovery_prefix" 'at most 40 lines.*This is a ceiling, not a target'
-          assert_grep "$recovery_adapter prefix applies 40-line windows to repository reads" \
-            "$recovery_prefix" 'at most 40 lines for every patch or repository source window'
+          assert_grep "$recovery_adapter prefix caps Codex patch windows at 160 lines" \
+            "$recovery_prefix" \
+            'at most 200 lines for every repository source window and at most 160 lines for each assigned-patch window'
+          assert_grep "$recovery_adapter prefix applies 200-line windows to repository reads" \
+            "$recovery_prefix" 'at most 200 lines for every repository source window'
           assert_grep "$recovery_adapter prefix splits over-target outputs before reading" \
             "$recovery_prefix" 'if a planned response or turn may exceed 24 KiB, narrow it before reading';;
         claude)
@@ -548,7 +557,8 @@ PY
       '\| head -80.*81st line invalidates the audit'
     assert_nogrep "Codex prefix avoids ambiguous generic batching language" "$sol_prefix" 'Batch independent bounded tool calls into one turn'
     assert_grep "Codex prefix distinguishes separate calls from source batching" "$sol_prefix" 'Codex source batching is disabled.*Each source read is a separate tool call'
-    assert_grep "Codex prefix uses short patch windows to avoid byte overflow" "$sol_prefix" 'at most 40 lines, then continue at the next line'
+    assert_grep "Codex prefix uses bounded patch windows" "$sol_prefix" 'at most 160 lines, then continue at the next line'
+    assert_grep "Codex prefix uses wider source windows within the byte ceiling" "$sol_prefix" 'at most 200 lines for every repository source window.*under 24 KiB per response'
     assert_grep "Codex prefix budgets each response below the audit ceiling" "$sol_prefix" 'under 24 KiB per response.*Line limits do not limit bytes'
     assert_grep "Codex prefix gives a safe bounded source-read command" "$sol_prefix" "sed -n '40,75p' 'src/file.ts'"
     assert_grep "Codex prefix gives a bounded literal-search command" "$sol_prefix" "rg -n -F 'symbolName' 'src/path' \\| head -80"

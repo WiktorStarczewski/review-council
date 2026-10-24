@@ -28,7 +28,8 @@ LIB_DIR = Path(__file__).resolve().parent / 'lib'
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
 from review_limits import (CLAUDE_MAX_TURNS, MANDATORY_REPOSITORY_READ_LIMIT,
-                           CODEX_READ_LINES, PROVIDER_TURN_RESERVE, READ_LINES,
+                           CODEX_READ_LINES, CODEX_SOURCE_READ_LINES,
+                           PROVIDER_TURN_RESERVE, READ_LINES,
                            REPOSITORY_EXPANSION_CALL_LIMIT,
                            REPOSITORY_REFUTATION_CALL_RESERVE)
 from session_inputs import session_input_lock, validate_standard_inputs
@@ -88,6 +89,10 @@ def read_batch_limit(adapter):
 
 
 def read_line_limit(adapter):
+    return CODEX_SOURCE_READ_LINES if adapter == 'codex' else READ_LINES
+
+
+def patch_line_limit(adapter):
     return CODEX_READ_LINES if adapter == 'codex' else READ_LINES
 
 
@@ -1510,6 +1515,59 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
     call_tokens = re.compile(r'\b([A-Za-z_$][\w$]*)\s*\(')
     base_url_configs = source_base_urls(repo, entries)
     candidate_file_cache = {}
+    wildcard_lines_cache = {}
+
+    def wildcard_source_lines(path):
+        if path not in wildcard_lines_cache:
+            entry = entries.get(path)
+            raw = repo.blob(entry) if entry is not None else OVERSIZED_BLOB
+            if (not is_ts_js_path(path) or raw is OVERSIZED_BLOB or b'\0' in raw):
+                wildcard_lines_cache[path] = None
+            else:
+                try:
+                    wildcard_lines_cache[path] = split_lf_text(raw.decode('utf-8'))
+                except UnicodeDecodeError:
+                    wildcard_lines_cache[path] = None
+        return wildcard_lines_cache[path]
+
+    def wildcard_reexport_route(start, target, name):
+        if start == target:
+            return [], [], {start}
+        queue = [start]
+        parents = {start: None}
+        while queue and len(parents) <= 256:
+            current = queue.pop(0)
+            lines = wildcard_source_lines(current)
+            if lines is None:
+                continue
+            configs, _ = source_configs_for_path(current, base_url_configs)
+            for line_number, reference in ts_wildcard_references(lines):
+                for child in resolve_import_candidates(current, reference, entries, configs):
+                    if child == target:
+                        parents[child] = (current, line_number)
+                        edges = []
+                        node = child
+                        while node != start:
+                            previous, edge_line = parents[node]
+                            edges.append((previous, node, edge_line))
+                            node = previous
+                        edges.reverse()
+                        route_symbols = [
+                            {'path': source, 'line_start': edge_line,
+                             'line_end': edge_line, 'name': name, 'blob_tree': tree}
+                            for source, _, edge_line in edges]
+                        route_paths = {start, target}
+                        route_paths.update(source for source, _, _ in edges)
+                        route_paths.update(destination for _, destination, _ in edges)
+                        route_dependencies = [
+                            (source, destination, 'local-import')
+                            for source, destination, _ in edges]
+                        return route_symbols, route_dependencies, route_paths
+                    if child not in parents and child in entries and len(parents) < 256:
+                        parents[child] = (current, line_number)
+                        queue.append(child)
+        return [], [], set()
+
     for path, raw in repo.iter_blobs(entries):
         if entries[path][0] not in ('100644', '100755') or raw is OVERSIZED_BLOB or b'\0' in raw:
             continue
@@ -1523,6 +1581,7 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
         imported_targets = set()
         bindings = []
         config_ranges = []
+        typed_imports = False
         if code_file:
             if Path(path).suffix.lower() == '.rs':
                 bindings = rust_import_bindings(path, lines, entries, repo)
@@ -1600,6 +1659,8 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                 candidate_search_ranges = []
                 unreadable_candidate_targets = []
                 candidate_targets = set(binding.get('candidate_targets') or [])
+                route_paths = set()
+                candidate_route_symbols = []
                 if binding.get('default_import'):
                     candidate_targets.update(symbol['path'] for symbol in candidates)
                 for target in sorted(candidate_targets if candidates else ()):
@@ -1648,7 +1709,22 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                                       and (not binding.get('default_import')
                                            or row['name'] in default_names)]
                     binding['candidate_symbols'].extend(target_symbols)
-                    if not target_symbols and line_count:
+                    route_symbols = []
+                    if (not target_symbols and typed_imports
+                            and not binding.get('default_import')):
+                        for symbol in candidates:
+                            if symbol['name'] not in candidate_names:
+                                continue
+                            rows, route_edges, paths = wildcard_reexport_route(
+                                target, symbol['path'], symbol['name'])
+                            if rows:
+                                route_symbols.extend(rows)
+                                candidate_route_symbols.extend(rows)
+                                route_paths.update(paths)
+                                imported_targets.update(paths)
+                                dependencies.update(route_edges)
+                    binding['candidate_symbols'].extend(route_symbols)
+                    if not target_symbols and not route_symbols and line_count:
                         candidate_search_ranges.append({
                             'path': target, 'line_start': 1,
                             'line_end': line_count,
@@ -1676,7 +1752,8 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                                    or binding['local_name'] != imported_name
                                    or binding.get('module_alias')):
                     candidate_targets = sorted(set(binding.get('candidate_targets') or [])
-                                               | {symbol['path'] for symbol in candidates})
+                                               | {symbol['path'] for symbol in candidates}
+                                               | route_paths)
                     obligation = {
                         'path': path,
                         'reference': binding['reference'],
@@ -1686,6 +1763,9 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                         'line_end': binding['line_end'],
                         'candidate_targets': candidate_targets,
                         'candidate_symbols': binding['candidate_symbols'],
+                        'candidate_route_symbols': sorted(
+                            {encoded(row): row for row in candidate_route_symbols}.values(),
+                            key=lambda row: (row['path'], row['line_start'], row['line_end'], row['name'])),
                         'candidate_search_ranges': candidate_search_ranges,
                         'unreadable_candidate_targets': sorted(unreadable_candidate_targets),
                         'config_ranges': binding.get('config_ranges', []),
@@ -1786,6 +1866,7 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
             'limitations': ['Lexical navigation only; open source to prove findings.',
                             'Dynamic dispatch and unsupported declarations require file-scope search.',
                             'Cross-file symbol context follows recognized exports and resolved imports.',
+                            'TypeScript wildcard re-exports follow exact source-line routes when resolved.',
                             'Unresolved or aliased imports matching changed exports are listed as search obligations.',
                             'TypeScript config inheritance and paths mappings are bounded lexical resolutions.',
                             'Binary and files over 2000000 bytes have no lexical index.']}
@@ -1851,6 +1932,16 @@ def import_references(path, lines):
     if Path(path).suffix == '.py':
         references += re.findall(r'\b(?:from|import)\s+([\w.]+)', source)
     return references
+
+
+def ts_wildcard_references(lines):
+    pattern = re.compile(
+        r'^[ \t]*export[ \t]+(?:type[ \t]+)?\*[ \t]*(?:\n[ \t]*)?'
+        r'from[ \t]*(["\'])([^"\']+)\1[ \t]*;?[ \t]*(?://[^\n]*)?$',
+        re.M)
+    source = '\n'.join(line[:-1] if line.endswith('\r') else line for line in lines)
+    return [(source.count('\n', 0, match.start()) + 1, match.group(2))
+            for match in pattern.finditer(source)]
 
 
 def ts_import_bindings(lines):
@@ -3820,6 +3911,9 @@ def code_proof_obligations(assignment, components, evidence, packet, snapshot=No
         for symbol in candidate_symbols:
             add(symbol.get('path'), symbol.get('line_start'),
                 symbol.get('line_end'), owner_paths, symbol.get('blob_tree'))
+        for source_range in obligation.get('candidate_route_symbols') or []:
+            add(source_range.get('path'), source_range.get('line_start'),
+                source_range.get('line_end'), owner_paths, source_range.get('blob_tree'))
         for source_range in obligation.get('config_ranges') or []:
             add(source_range.get('path'), source_range.get('line_start'),
                 source_range.get('line_end'), owner_paths, source_range.get('blob_tree'))
@@ -4107,6 +4201,8 @@ def source_context_inputs(repo, snapshot, base_tree, evidence, components, plan_
                              for symbol in obligation.get('candidate_symbols') or [])
         paths.update(path for path in obligation.get('candidate_targets') or []
                      if path in boundaries or owns_candidate)
+        paths.update(row['path'] for row in obligation.get('candidate_route_symbols') or []
+                     if row.get('path') in entries)
         paths.update(symbol['path'] for symbol in obligation.get('candidate_symbols') or []
                      if symbol.get('path') in boundaries or owns_candidate)
         if owns_candidate:
@@ -4290,6 +4386,15 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
             for call in calls[1:]:
                 add('extra-caller', 'extra-caller:' + symbol['name'], call['path'],
                     call['line'] - 2, call['line'] + 2, mapped(call['path'], symbol_components))
+
+        for obligation in evidence.get('unresolved_imports') or []:
+            owner_paths = {symbol.get('path') for symbol in obligation.get('candidate_symbols') or []}
+            route_components = [component for component in relevant
+                                if owner_paths & set(component['files'])]
+            for route in obligation.get('candidate_route_symbols') or []:
+                add('declaration', 'declaration:import-route:' + route['name'],
+                    route['path'], route['line_start'], route['line_end'], route_components,
+                    route.get('blob_tree'))
 
         for component in relevant:
             tests = [tests_by_path[path] for path in component['boundary'] if path in tests_by_path]
@@ -4656,9 +4761,10 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
     seats = {}
     for seat, assignment in assignments.items():
         patch_set = patch_sets[assignment['patch_set']]
+        patch_limit = patch_line_limit(assignment['adapter'])
         line_limit = read_line_limit(assignment['adapter'])
         patch_calls = (len(patch_set['chunks']) if patch_set['read_mode'] == 'chunks'
-                       else (assignment['patch_lines'] + line_limit - 1) // line_limit)
+                       else (assignment['patch_lines'] + patch_limit - 1) // patch_limit)
         batch = read_batch_limit(assignment['adapter'])
         packet = context['seats'][seat]
         packet_calls = len(packet['shards'])
@@ -4970,8 +5076,9 @@ def validate_components(session, manifest, evidence):
                 or any(not isinstance(path, str) or not within(path, selected)
                        for path in candidate_targets)):
             raise ValueError('invalid import candidate targets')
-        for field in ('candidate_symbols', 'candidate_search_ranges', 'config_ranges'):
-            rows = obligation.get(field)
+        for field in ('candidate_symbols', 'candidate_route_symbols',
+                      'candidate_search_ranges', 'config_ranges'):
+            rows = obligation.get(field, [] if field == 'candidate_route_symbols' else None)
             if not isinstance(rows, list) or any(
                     not isinstance(row, dict) or not within(row.get('path'), selected)
                     or type(row.get('line_start')) is not int
@@ -7303,7 +7410,7 @@ def render_seat(manifest, mh, seat, plan_source):
             first_evidence = (candidates[0] if candidates
                               else manifest['plan']['common_artifacts'][0])
             primary = str(Path(manifest['session']) / first_evidence)
-        read_limit = CODEX_READ_LINES if assignment['adapter'] == 'codex' else READ_LINES
+        read_limit = patch_line_limit(assignment['adapter'])
         if assignment['adapter'] == 'codex':
             if assignment['patch_bytes'] and patch_mode != 'chunks':
                 primary_action = ("run sed -n '1," + str(min(read_limit, assignment['patch_lines']))
@@ -7376,10 +7483,10 @@ def render_seat(manifest, mh, seat, plan_source):
                             + ' consecutive listed chunk' + ('' if batch_limit == 1 else 's')
                             + ' in full; continue in exact order.')
     else:
-        patch_read_lines = (CODEX_READ_LINES if assignment['adapter'] == 'codex'
-                            else READ_LINES)
+        patch_read_lines = patch_line_limit(assignment['adapter'])
         print('Read the entire assigned patch in bounded windows of at most '
-              + str(patch_read_lines) + ' lines: '
+              + str(patch_read_lines) + ' lines, ending at line '
+              + str(assignment['patch_lines']) + ': '
               + assignment['patch'])
         if assignment['patch_lines'] == 0:
             print('Assigned patch is empty; no assigned-patch read is required.')
@@ -7388,7 +7495,8 @@ def render_seat(manifest, mh, seat, plan_source):
             first_action = ("run sed -n '1," + str(end) + "p' "
                             + shlex.quote(assignment['patch'])
                             + '; continue with consecutive windows of at most '
-                            + str(patch_read_lines) + ' lines.')
+                            + str(patch_read_lines) + ' lines through line '
+                            + str(assignment['patch_lines']) + ', then stop.')
         else:
             tool = read_tool_name(assignment['adapter'])
             first_action = ('use ' + tool + ' with offset 1 and limit 240 on '
