@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.2
+
+- Treat unavailable optional test tooling, dependencies, caches, or permissions as unverified runtime validation while keeping required review proof binding (#77).
+
 ## 0.8.1
 
 - Keep deleted declarations from resolving live references, require the exact assigned plan-search command for sentinel proof, and reject invalid path segments in explicit PR repositories.
