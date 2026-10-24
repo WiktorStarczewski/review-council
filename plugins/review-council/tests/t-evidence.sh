@@ -1056,23 +1056,23 @@ def dense_navigation_keeps_complete_footer():
         'TypeScript config inheritance and paths mappings are bounded lexical resolutions.',
         'Binary and files over 2000000 bytes have no lexical index.',
     ]
-    for width in (208, 216, 240):
+    for width in (216, 208, 240):
         data = {section: [{'path': f'src/{section}/{index}/' + 'x' * width + '.py'}
                           for index in range(12)] for section in sections}
         data['limitations'] = limitations
         original = json.dumps(data, sort_keys=True)
         packet = module.markdown(data, Path('évidence.json'))
         assert 14336 < len(packet) <= 16384, (width, len(packet))
-        assert packet.endswith(('\n' + '\n'.join(limitations) + '\n').encode())
+        assert packet.endswith(('\n' + '\n'.join(limitations) + '\n').encode()), ('limitations', width)
         for section in sections:
             label = ('Unresolved or aliased import proof obligations' if section == 'unresolved_imports'
                      else section.replace('_', ' ').title())
             lines = packet.split(('\n' + label + ':\n').encode(), 1)[1].split(b'\n\n', 1)[0].splitlines()
             footer = re.fullmatch(rb'Omitted: (\d+); complete list SHA-256: ([0-9a-f]{64}); complete list in JSON\.', lines[-1])
-            assert footer and int(footer[1]) == 12 - (len(lines) - 1), (section, lines)
-            complete = json.dumps(data[section], sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()
-            assert footer[2].decode() == hashlib.sha256(complete).hexdigest()
-        assert json.dumps(data, sort_keys=True) == original
+            assert footer and int(footer[1]) == 12 - (len(lines) - 1), ('omissions', width, section)
+            complete = (json.dumps(data[section], sort_keys=True, ensure_ascii=True, indent=2) + '\n').encode()
+            assert footer[2].decode() == hashlib.sha256(complete).hexdigest(), ('complete-list hash', width, section)
+        assert json.dumps(data, sort_keys=True) == original, ('complete facts mutated', width)
 
 def oversized_mandatory_navigation_footer_is_refused():
     data = {section: [] for section in
