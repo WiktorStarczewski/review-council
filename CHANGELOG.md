@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.3
+
+- Bind reviewer launches and read audits to the repository root frozen in the session scope, even when the caller starts elsewhere.
+
 ## 0.8.2
 
 - Treat unavailable optional test tooling, dependencies, caches, or permissions as unverified runtime validation while keeping required review proof binding (#77).

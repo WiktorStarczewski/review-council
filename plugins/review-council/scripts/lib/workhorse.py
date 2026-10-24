@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -497,7 +498,7 @@ def overlay_roster(roster, row, seats_in_play):
     return overlaid
 
 
-def _scope_value(session, key):
+def scope_value(session, key):
     path = Path(session) / 'scope.env'
     try:
         text = path.read_text(encoding='utf-8')
@@ -508,8 +509,12 @@ def _scope_value(session, key):
         if not line.startswith(prefix):
             continue
         raw = line[len(prefix):]
-        if len(raw) >= 2 and raw[0] == "'" and raw[-1] == "'":
-            return raw[1:-1]
+        try:
+            values = shlex.split(raw)
+        except ValueError as error:
+            raise ValueError('unsafe scope.env value: ' + key) from error
+        if len(values) == 1:
+            return values[0]
         raise ValueError('unsafe scope.env value: ' + key)
     raise ValueError('missing scope.env value: ' + key)
 
@@ -766,7 +771,7 @@ def prepare_launch(session, task, cluster=None, prompt=None, out=None):
     record = read_record(session / 'workhorse.json')
     if record is None or record.get('family') is None:
         raise ValueError('no workhorse to launch')
-    root = _scope_value(session, 'REV_ROOT')
+    root = scope_value(session, 'REV_ROOT')
     if task == 'review':
         if prompt is None:
             raise ValueError('review requires --prompt')
