@@ -834,7 +834,7 @@ finally:
         workflow = (REPO / ".github/workflows/test.yml").read_text()
         self.assertIn("python3 scripts/verify-review-council.py", workflow)
         self.assertIn("jobs:\n  proof-preparation:", workflow)
-        verify_job = workflow.split("  verify:\\n", 1)[1]
+        verify_job = workflow.split("  verify:\n", 1)[1]
         self.assertNotIn("python3 -m unittest discover", verify_job)
         self.assertNotIn("plugins/review-council/tests/run-tests.sh", verify_job)
 

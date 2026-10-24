@@ -5,11 +5,13 @@
 - [x] Correct the failing verifier cases: ambiguous TypeScript project candidates, replacement-chain identities, deterministic live-status polling, and canonical paths through a symlinked temp root.
 - [x] Correct the workflow test to assert the actual `proof-preparation` job key.
 - [x] Complete normal internal review and correct its P2 finding about the stale CI handoff status.
-- [x] Commit and push the reviewed candidate.
+- [x] Diagnose the next exact-head failures: the workflow test searched for a literal `\\n`, and the stack-test fake created session state only after its status-observation delay.
+- [x] Fix the workflow split to use a newline and initialize fake session state before the delay.
+- [x] Complete normal internal follow-up review and push the fixes.
 - [ ] Pass proof-preparation, Ubuntu, macOS, and Cursor package CI on the exact final head.
 - [ ] Squash-merge PR #74, publish the signed 0.8.1 tag and release, install it on Claude, Codex, and Cursor, and verify each installation.
 
-The first exact-head run for candidate `064e84f710b8f2e893040c2790c210efae44f4ce` passed proof-preparation and Cursor packaging; Ubuntu and macOS verification were still running when this status note was refreshed. That head includes latest `origin/main` `58862c988d545dee67f79fafdf0e8008a4e66632`. The earlier verifier run `40058256403` failed both platforms on the ambiguous-import, replacement-chain, workflow-key, and macOS symlink-path fixtures. The corrected fixtures now match the analyzer's ambiguous-import facts, the enforced replacement model chain, and the actual workflow job key; the stack test keeps its fake process alive long enough to observe a status line. The macOS-only symlink canonicalization failure is fixed by normalizing both compared paths, with a regression fixture that uses a symlinked temp root. Normal internal review found no code defects and one stale handoff-status P2, now corrected. This handoff update changes the candidate head, so the final release still requires a fresh exact-head run of every required CI job.
+PR #74 is at `04acf32588f99e4e9a212a19bf9f818f3b687bae`, based on latest `origin/main` `58862c988d545dee67f79fafdf0e8008a4e66632`. Its prior exact-head run `40060602238` failed on both platforms: Python exposed an escaped newline in the workflow fixture, and the shell suite showed the fake reviewer had no session state during the status poll. Both causes are corrected locally and passed the normal internal follow-up review. Run `40061351310` still tests the old head and cannot satisfy final-head CI; the reviewed fix is ready to push. Earlier fixture fixes and normal internal review remain complete.
 
 # Release 0.8.0
 
