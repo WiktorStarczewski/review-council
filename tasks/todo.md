@@ -878,3 +878,15 @@ Review results: pending. SDK credentials absent; no live SDK qualification or pr
 - [x] Run one independent normal code review, fix actionable P0-P2 findings, and re-verify.
 - [ ] Publish the signed 0.7.12 tag and GitHub release. CI checks are explicitly waived for this release.
 - [ ] Resume #1752 on the new runtime and report its exact review state.
+
+## WLG Bread review preparation repair
+
+- [x] Freeze Bread source at 747e032b and reproduce latest 0.7.12 preparation refusal.
+- [ ] Add Rust module resolution regression tests and obtain intended failing CI evidence.
+- [ ] Correct absent-alternative handling while retaining missing-import proof failures.
+- [ ] Resolve proof-capacity recovery with complete scope and unchanged proof limits.
+- [ ] Run one independent normal reviewer, address actionable P0-P2 findings.
+- [ ] Verify both platform CI gates, publish a concrete repair PR and prepare a fixed runtime.
+- [ ] Resume the complete Bread review on the frozen source and deliver the feature PR.
+
+Review results: pending. No Bread review receipt, merge or deployment is claimed.
