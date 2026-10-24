@@ -883,7 +883,7 @@ Review results: pending. SDK credentials absent; no live SDK qualification or pr
 
 - [x] Reproduce the #1752 preflight refusal in a copy of the review session.
 - [x] Add regressions for wildcard re-export proof and numeric-only no-SDK legacy wording.
-- [ ] Add regressions for 160-line Codex patch windows, 200-line source reads, exact patch end bounds, and sandbox-blocked tests.
+- [ ] Add regressions for 160-line Codex patch windows, 200-line source reads, path-specific limits, exact patch end bounds, and sandbox-blocked tests.
 - [ ] Resolve imported symbols through TypeScript re-exports while retaining exact source proof.
 - [ ] Prepare bounded evidence for adaptive panels without requiring an SDK seat.
 - [ ] Keep repository source reads within 200 lines and the existing byte ceiling, and use 160-line patch windows.

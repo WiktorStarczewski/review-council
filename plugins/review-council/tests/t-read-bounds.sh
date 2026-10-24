@@ -2985,7 +2985,7 @@ PY
     assert_eq "shell comments neither hide commands nor break the audit parser" "$?" 0
 
     python3 - "$SCRIPTS/lib/review-read-audit.py" "$R" "$S" <<'PY'
-import importlib.util, sys
+import importlib.util, shlex, sys
 from pathlib import Path
 spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
 audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
@@ -3002,6 +3002,19 @@ def ranges(command, read_limit=audit.CODEX_READ_LINES):
 source_limit = audit.CODEX_SOURCE_READ_LINES
 assert audit.CODEX_READ_LINES == 160
 assert source_limit == 200
+patch_path = session / 'r1-full.patch'
+patch_path.write_text('patch line\n' * 240)
+patch_command = "sed -n '1,160p' " + shlex.quote(str(patch_path))
+source_command = "sed -n '1,200p' src/wide.rs"
+assert audit.read_limit_for_call(
+    'codex', 'Bash', {'command': patch_command}, root, patch_path) == 160
+assert audit.read_limit_for_call(
+    'codex', 'Bash', {'command': source_command}, root, patch_path) == source_limit
+assert [row['code'] for row in audit.validate_call(
+    'Bash', {'command': "sed -n '1,161p' " + shlex.quote(str(patch_path))},
+    roots, root, session, read_limit=audit.read_limit_for_call(
+        'codex', 'Bash', {'command': "sed -n '1,161p' " + shlex.quote(str(patch_path))},
+        root, patch_path))] == ['unbounded-shell-output']
 assert codes("sed -n '1,160p' src/wide.rs") == []
 assert ranges("sed -n '1,160p' src/wide.rs") == ([('src/wide.rs', 1, 160)], False)
 assert codes("sed -n '1,161p' src/wide.rs") == ['unbounded-shell-output']
@@ -3032,7 +3045,7 @@ assert [row['code'] for row in audit.validate_call(
 assert audit.validate_call(
     'Read', {'file_path':'src/wide.rs','offset':1,'limit':240}, roots, root, session) == []
 PY
-    assert_eq "Codex patch windows allow 160 lines while source reads allow 200" "$?" 0
+    assert_eq "Codex patch reads cap at 160 while repository source reads cap at 200" "$?" 0
 
     python3 - "$SCRIPTS/lib/review-read-audit.py" "$R" "$S" <<'PY'
 import importlib.util, sys

@@ -398,8 +398,12 @@ PY
     legacy=$("$SCRIPTS/rev-prompt.sh" "$S" 8 sol regression numeric) || return
     assert_grep "legacy prompt names its exact frozen patch" "$legacy" \
       "^Exact frozen assigned patch: $session_real/r8-full\\.patch$"
+    local legacy_patch_lines
+    legacy_patch_lines=$(awk 'END {print NR}' "$S/r8-full.patch") || return
+    assert_grep "legacy prompt binds the frozen patch line count" "$legacy" \
+      "^Assigned patch line count: $legacy_patch_lines$"
     assert_grep "legacy Codex prompt makes a portable patch read the first evidence action" "$legacy" \
-      '^First evidence action: run portable bounded sed windows over '
+      "^First evidence action: run portable bounded sed windows over .* from line 1 through line $legacy_patch_lines, then stop\\.$"
     local legacy_agent
     printf '%s\n' '{"seats":[{"seat":"opus","adapter":"agent"}]}' > "$S/roster.json"
     legacy_agent=$("$SCRIPTS/rev-prompt.sh" "$S" 8 opus regression numeric) || return
