@@ -16,7 +16,8 @@ import tempfile
 LIB_DIR = Path(__file__).resolve().parent
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
-from review_limits import CODEX_READ_LINES, READ_LINES, REPOSITORY_EXPANSION_CALL_LIMIT
+from review_limits import (CODEX_READ_LINES, CODEX_SOURCE_READ_LINES, READ_LINES,
+                           REPOSITORY_EXPANSION_CALL_LIMIT)
 SEARCH_RESULTS = 80
 SEARCH_RESULT_SENTINEL = SEARCH_RESULTS + 1
 OUTPUT_BYTES = 32 * 1024
@@ -1703,6 +1704,35 @@ def paths_opened_by_call(name, data, root):
     return paths
 
 
+def read_limit_for_call(adapter, name, data, root, assigned_patch):
+    if adapter != 'codex':
+        return READ_LINES
+    if assigned_patch is not None:
+        try:
+            patch = Path(assigned_patch).resolve()
+        except (OSError, TypeError, ValueError):
+            patch = None
+        if patch is not None and patch in paths_opened_by_call(name, data, root):
+            return CODEX_READ_LINES
+    return CODEX_SOURCE_READ_LINES
+
+
+def assigned_patch_path(manifest, seat, prompt_lines, root, session):
+    if manifest is not None and seat in manifest.get('assignments', {}):
+        raw_path = manifest['assignments'][seat].get('patch')
+    else:
+        prefix = 'Exact frozen assigned patch: '
+        matches = [line[len(prefix):] for line in prompt_lines if line.startswith(prefix)]
+        raw_path = matches[0] if len(matches) == 1 else None
+    if not isinstance(raw_path, str) or not raw_path:
+        return None
+    try:
+        path = resolved(raw_path, root)
+    except (OSError, TypeError, ValueError):
+        return None
+    return path if path.parent == Path(session).resolve() else None
+
+
 def complete_packet_read(name, data, packet, root):
     normalized = name.lower()
     if normalized in READ_TOOLS:
@@ -2591,6 +2621,7 @@ def assess(args, blocked):
                     manifest, seat, args.adapter, attempted_calls, root, session))
             except (KeyError, OSError, TypeError, ValueError):
                 failures.append(violation('invalid-plan-first-call', args.adapter))
+    assigned_patch = assigned_patch_path(manifest, seat, prompt_lines, root, session)
     frozen_entries = {}
     if evidence_repository is not None:
         try:
@@ -2630,8 +2661,8 @@ def assess(args, blocked):
     source_read_call_ids = set()
     verified_call_ranges = {}
     pending_source_ranges = []
-    read_limit = CODEX_READ_LINES if args.adapter == 'codex' else READ_LINES
     for call_id, (name, data, turn) in calls.items():
+        read_limit = read_limit_for_call(args.adapter, name, data, root, assigned_patch)
         call_failures = validate_call(
             name, data, roots, root, session, authorized, complete_paths, source_cache,
             dependency, read_limit=read_limit)

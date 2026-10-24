@@ -883,10 +883,19 @@ Review results: pending. SDK credentials absent; no live SDK qualification or pr
 
 - [x] Reproduce the #1752 preflight refusal in a copy of the review session.
 - [x] Add regressions for wildcard re-export proof and numeric-only no-SDK legacy wording.
-- [ ] Add regressions for 160-line Codex patch windows, 200-line source reads, path-specific limits, exact patch end bounds, and sandbox-blocked tests.
-- [ ] Resolve imported symbols through TypeScript re-exports while retaining exact source proof.
-- [ ] Prepare bounded evidence for adaptive panels without requiring an SDK seat.
-- [ ] Keep repository source reads within 200 lines and the existing byte ceiling, and use 160-line patch windows.
+- [x] Add regressions for 160-line Codex patch windows, 200-line source reads, path-specific limits, exact patch end bounds, and sandbox-blocked tests.
+- [x] Resolve imported symbols through TypeScript wildcard re-exports while retaining exact source proof.
+- [x] Prepare bounded evidence for adaptive panels without requiring an SDK seat.
+- [x] Keep repository source reads within 200 lines and the existing byte ceiling, and use 160-line patch windows.
 - [ ] Run focused evidence tests and repeat the #1752 capacity preflight for every seat.
-- [ ] Get one independent normal review of the Council diff.
+- [x] Get one independent normal review of the Council diff and resolve its actionable P2 findings.
 - [ ] Record the test, CI, PR, and release state before closing this item.
+
+### Luna follow-up review
+
+The independent normal review found three P2 gaps in the wildcard re-export resolver
+and regression: multiline exports were not parsed, the first-route fixture did not
+exercise the multiline route, and CRLF files retained a trailing carriage return at
+EOF. The parser and regressions now cover exact source-line routing for single-line,
+multiline, and CRLF exports. Final independent re-review found no actionable P0-P2
+findings. `git diff --check` and shell preflights pass; CI verification is pending.

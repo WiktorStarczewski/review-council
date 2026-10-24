@@ -1887,7 +1887,8 @@ def wildcard_reexports_use_exact_source_proof():
               '  const page = input + 1;\n'
               '  return page;\n'
               '};\n')
-        write('src/history/index.ts', 'export * from "../history-implementation";\n'
+        write('src/history/index.ts', '// retain the route line after a header\n'
+              'export *\n  from "../history-implementation";\n'
               + '// unrelated barrel content\n' * 80)
         write('src/consumer.ts',
               'import { readHistory } from "./history";\n'
@@ -1907,8 +1908,8 @@ def wildcard_reexports_use_exact_source_proof():
                           if row['path'] == 'src/consumer.ts')
         assert not any(row['path'] == 'src/history/index.ts'
                        for row in obligation['candidate_search_ranges']), obligation
-        assert any(row == {'path': 'src/history/index.ts', 'line_start': 1,
-                           'line_end': 1, 'name': 'readHistory'}
+        assert any(row == {'path': 'src/history/index.ts', 'line_start': 2,
+                           'line_end': 2, 'name': 'readHistory'}
                    for row in obligation['candidate_symbols']), obligation
         proof_paths = {row['path'] for packet in manifest['source_context']['seats'].values()
                        for shard in packet['shards'] for row in shard['ranges']}
@@ -1916,6 +1917,20 @@ def wildcard_reexports_use_exact_source_proof():
                            for packet in manifest['source_context']['seats'].values()
                            for required in packet['required_source_ranges'])
         assert 'src/history/index.ts' in proof_paths, proof_paths
+
+def wildcard_reexport_syntax_preserves_start_lines():
+    assert module.ts_wildcard_references([
+        'export * from "../single-implementation";',
+        '// line before the multiline route',
+        'export *',
+        '  from "../multiline-implementation";',
+    ]) == [(1, '../single-implementation'), (3, '../multiline-implementation')]
+    assert module.ts_wildcard_references(module.split_lf_text(
+        'export * from "../single-crlf-implementation";\r\n'
+        '// line before the multiline CRLF route\r\n'
+        'export *\r\n'
+        '  from "../multiline-crlf-implementation";\r\n'
+    )) == [(1, '../single-crlf-implementation'), (3, '../multiline-crlf-implementation')]
 
 def rust_use_imports_keep_cross_file_callers():
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -4064,6 +4079,7 @@ cases = (
     literal_scope_and_inventories, sparse_gitlink_and_special, roster_bundle_coverage,
     source_context_packets, local_names_do_not_expand_cross_file_proof,
     wildcard_reexports_use_exact_source_proof,
+    wildcard_reexport_syntax_preserves_start_lines,
     rust_use_imports_keep_cross_file_callers,
     rust_grouped_use_alias_is_a_capacity_counted_obligation,
     ts_default_import_alias_is_a_capacity_counted_obligation,
@@ -4118,6 +4134,7 @@ groups = {
         cstyle_enclosing_bodies, source_context_packets,
         local_names_do_not_expand_cross_file_proof,
         wildcard_reexports_use_exact_source_proof,
+        wildcard_reexport_syntax_preserves_start_lines,
         rust_use_imports_keep_cross_file_callers,
         rust_grouped_use_alias_is_a_capacity_counted_obligation,
         ts_default_import_alias_is_a_capacity_counted_obligation,
