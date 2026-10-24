@@ -129,7 +129,7 @@ PY
 
 test_cost_session_watch_uses_narrated_live_status() {
   python3 - "$SCRIPTS/rev-context.py" "$T/cost-watch-narrated" <<'PY'
-import contextlib, importlib.util, io, json, sys
+import contextlib, importlib.util, io, json, subprocess, sys
 from pathlib import Path
 from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('cost_context_narrated', sys.argv[1])
@@ -155,8 +155,15 @@ def sleep(seconds):
                 'evidence':'fixture','suggested_fix':'','confidence':0.9}]}))
         state['phase'] = 'done'
         (session/'state.json').write_text(json.dumps(state))
+def run_status(args, **kwargs):
+    if state['phase'] == 'done':
+        status = 'Council is in done; live finding: pair validation is skipped'
+    else:
+        status = 'live step: ' + log.read_text().split(': ', 1)[1].strip()
+    return subprocess.CompletedProcess(args, 0, status + '\n', '')
 stream = io.StringIO()
-with patch.object(module.time, 'monotonic', side_effect=lambda:clock[0]), \
+with patch.object(module.subprocess, 'run', side_effect=run_status), \
+     patch.object(module.time, 'monotonic', side_effect=lambda:clock[0]), \
      patch.object(module.time, 'sleep', side_effect=sleep), contextlib.redirect_stdout(stream):
     module.watch(session, interval=600, poll_interval=5)
 lines = stream.getvalue().splitlines()

@@ -1,3 +1,20 @@
+# Issue #77 and release 0.8.2
+
+- [x] Compare issue #77 with current main and verify the signed 0.8.1 release.
+- [x] Add a regression for optional tests blocked by missing tools or an unwritable package cache.
+- [x] Clarify that optional test environment limits leave runtime validation unverified; preserve incomplete status for required proof or exhausted review capacity.
+- [x] Align the three plugin manifests, changelog, and release procedure at 0.8.2.
+- [ ] Complete one independent normal review, fix actionable P0-P2 findings, and pass all required CI checks on the exact PR head.
+- [ ] Squash-merge, publish the signed 0.8.2 release, reinstall each host, and verify installed identity.
+
+The read-shape instructions and advisory audit codes are already present on 0.8.1. This release targets the remaining reproduced environment case and keeps the audit fail-closed when required evidence is incomplete.
+
+Expected-red run `40128169457` on test-only commit `b862620d1be54359eb84b4d67059999724bc9c44` reached the new prompt assertions on both Ubuntu and macOS and failed them as intended: each platform passed 5,076 assertions and failed 8 across the four adapters. Cursor package validation and proof preparation passed on that exact head.
+
+## Review
+
+One normal reviewer found a P2 test gap: the optional-test exception needed an assertion that unread assigned evidence and exhausted review-call budgets still require `INCOMPLETE PROOF`. The assertion was added and re-reviewed at `6c7a22c`; no actionable P0-P2 findings remain. Final-head CI is pending.
+
 # Release 0.8.1 follow-up
 
 - [x] Pull the latest stable Council release into the 0.8.1 candidate and preserve the completed normal internal review.

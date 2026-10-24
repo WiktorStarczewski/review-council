@@ -133,8 +133,16 @@ test_prompt_evidence_contract() {
         'repository instructions: /.*-instructions\.md$'
       assert_grep "$seat review treats test execution as optional evidence" "$prompt" \
         'Test runners on existing files.*are optional and read-only'
-      assert_grep "$seat review continues after sandbox blocks a test runner" "$prompt" \
-        'Sandbox denial alone is not incomplete proof'
+      assert_grep "$seat review skips an optional test when its runner or dependency is missing" "$prompt" \
+        'optional test cannot start because its runner or dependency is missing'
+      assert_grep "$seat review skips optional tests when the package-manager cache is unavailable" "$prompt" \
+        'package-manager cache is unavailable or unwritable.*without installing or changing dependencies.*runtime validation as unverified'
+      assert_grep "$seat review skips optional tests blocked by runtime permissions" "$prompt" \
+        'runtime permissions block it, skip the test without installing or changing dependencies'
+      assert_grep "$seat review does not mark an unavailable optional test incomplete" "$prompt" \
+        'this alone is not incomplete proof'
+      assert_grep "$seat review keeps required evidence and call limits fail-closed" "$prompt" \
+        'unread assigned evidence or an exhausted review-call budget still requires an INCOMPLETE PROOF result'
       assert_grep "$seat prompt gives one explicit post-patch evidence order" "$prompt" \
         '^Post-patch evidence order: read every listed source-context packet and required source segment in exact order before the evidence index or original source\.$'
       assert_grep "$seat prompt limits source-context packets to one per turn" "$prompt" \
