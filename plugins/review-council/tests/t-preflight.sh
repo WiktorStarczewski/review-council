@@ -414,11 +414,13 @@ SH
       > "$B/repo-without-pr.out" 2> "$B/repo-without-pr.err"
     assert_eq "an explicit PR repository requires a PR number" "$?" 1
     assert_grep "missing PR number is explained" "$B/repo-without-pr.err" '--pr-repo requires --pr'
-    local repository
+    local repository valid_rc
     for repository in acme-org/.github acme-org/repo_name-1; do
       (export PR_REPOSITORY="$repository"; cd "$R" && "$PF" --pr 71 --pr-repo "$repository" \
-        --write "$B/valid-repository") > "$B/valid-repository.out" 2> "$B/valid-repository.err"
-      assert_eq "legitimate PR repository $repository passes preflight" "$?" 0
+        --write "$B/valid-${repository##*/}") > "$B/valid-repository.out" 2> "$B/valid-repository.err"
+      valid_rc=$?
+      [ "$valid_rc" -eq 0 ] || cat "$B/valid-repository.err" >&2
+      assert_eq "legitimate PR repository $repository passes preflight" "$valid_rc" 0
     done
     : > "$GH_ARGS"
     (cd "$R" && "$PF" --pr 71 --pr-repo ../repo --write "$B/invalid-repo") \

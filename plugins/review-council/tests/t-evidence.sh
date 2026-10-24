@@ -2719,13 +2719,13 @@ def budget_omissions_are_segmented_or_retained():
         assert any(packet['omitted_source_ranges'] for packet in omitted)
         promoted = set()
         source_cache = {}
+        repository = module.Repository(session.resolve())
 
         def frozen_range(row):
             identity = (row['blob_tree'], row['path'])
             if identity not in source_cache:
-                source_cache[identity] = subprocess.check_output(
-                    ['git', '-C', str(root), 'show', ':'.join(identity)]).splitlines(keepends=True)
-            assert row['blob_oid'] == git('rev-parse', ':'.join(identity))
+                source_cache[identity] = repository.git('show', ':'.join(identity)).splitlines(keepends=True)
+            assert row['blob_oid'] == repository.git('rev-parse', ':'.join(identity)).decode().strip()
             raw = b''.join(source_cache[identity][row['line_start'] - 1:row['line_end']])
             assert hashlib.sha256(raw).hexdigest() == row['content_sha256']
             return raw

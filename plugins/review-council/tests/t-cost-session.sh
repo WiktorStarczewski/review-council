@@ -131,6 +131,7 @@ test_cost_session_watch_uses_narrated_live_status() {
   python3 - "$SCRIPTS/rev-context.py" "$T/cost-watch-narrated" <<'PY'
 import contextlib, importlib.util, io, json, sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('cost_context_narrated', sys.argv[1])
 module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
@@ -156,14 +157,15 @@ def sleep(seconds):
         state['phase'] = 'done'
         (session/'state.json').write_text(json.dumps(state))
 stream = io.StringIO()
-with patch.object(module.time, 'monotonic', side_effect=lambda:clock[0]), \
-     patch.object(module.time, 'sleep', side_effect=sleep), contextlib.redirect_stdout(stream):
+with patch.object(module, 'time', SimpleNamespace(monotonic=lambda:clock[0], sleep=sleep)), \
+     contextlib.redirect_stdout(stream):
     module.watch(session, interval=600, poll_interval=5)
 lines = stream.getvalue().splitlines()
 assert len(lines) == 3, lines
 assert lines[0].startswith('[initial 0s]') and 'rg "pair" src/pair.ts' in lines[0], lines
 assert lines[1].startswith('[changed 5s]') and 'sed -n 10,20p src/pair.ts' in lines[1], lines
 output = lines[-1]
+assert output.startswith('[changed 10s]'), lines
 assert 'Council is in done' in output, output
 assert 'pair validation is skipped' in output, output
 PY
