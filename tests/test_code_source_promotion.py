@@ -87,6 +87,33 @@ class CodeSourcePromotionTests(unittest.TestCase):
         fixture.write('src/lib.py', '\n'.join(declarations).replace('return "x', 'return "z'))
         return fixture
 
+    def test_deleted_private_helper_retains_distant_current_caller_proof(self):
+        fixture = self.fixture()
+        padding = ''.join(f'padding_{index} = {index}\n' for index in range(100))
+        caller = '\ndef consumer():\n    return _removed_helper()\n'
+        fixture.write('src/internal.py', 'def _removed_helper():\n    return 1\n\n' + padding + caller)
+        fixture.freeze()
+        fixture.write('src/internal.py', padding + caller)
+        process = fixture.prepare()
+        self.assertEqual(process.returncode, 0, process.stderr)
+        fixture.load()
+        facts = json.loads((fixture.session / 'r1-evidence.json').read_text())
+        self.assertTrue(any(row['path'] == 'src/internal.py' and row['name'] == '_removed_helper'
+                            and row['kind'] == 'deleted lexical declaration'
+                            for row in facts['symbols']), facts['symbols'])
+        calls = [row for row in facts['call_sites']
+                 if row['path'] == 'src/internal.py' and row['name'] == '_removed_helper']
+        self.assertEqual(len(calls), 1, 'the distant unchanged private caller must remain indexed')
+        self.assertEqual(calls[0].get('resolution'), 'unresolved name search required')
+        self.assertEqual(calls[0]['line'], 103)
+        delivered = [row for shard in fixture.context['shards'] for row in shard['ranges']]
+        delivered += fixture.context['required_source_ranges']
+        self.assertTrue(any(row['path'] == 'src/internal.py'
+                            and row['blob_tree'] == fixture.manifest['snapshot_tree']
+                            and row['line_start'] <= 103 <= row['line_end']
+                            and 'production-caller:_removed_helper' in row['reasons']
+                            for row in delivered), 'snapshot caller source proof must remain delivered')
+
     def assert_full_proof(self, fixture, required_ranges):
         status_before = fixture.git('status', '--porcelain')
         process = fixture.prepare()
