@@ -174,6 +174,87 @@ class CodeSourcePromotionTests(unittest.TestCase):
         diagnostic = json.loads((fixture.session / 'prepare-diagnostic-1.json').read_text())
         self.assertFalse(diagnostic['certifying'])
 
+    def test_deleted_import_candidate_retains_its_exact_historical_segments(self):
+        fixture = self.fixture()
+        fixture.write('Cargo.toml', '[package]\nname = "fixture_game"\nversion = "0.1.0"\n')
+        fixture.write('src/lib.rs', 'pub mod options;\npub mod consumer;\n')
+        fixture.write('src/options.rs',
+                      'pub fn keep() -> usize { 1 }\n\n\n'
+                      'pub fn retired() -> usize {\n    2 // ' + 'x' * 20000 + '\n}\n')
+        fixture.write('src/consumer.rs',
+                      'use crate::options as opts;\n'
+                      'pub fn consume() -> usize { opts::retired() }\n')
+        fixture.freeze()
+        fixture.write('src/options.rs', 'pub fn keep() -> usize { 1 }\n')
+        process = fixture.prepare()
+        self.assertEqual(process.returncode, 0, process.stderr)
+        fixture.load()
+        evidence = load_evidence()
+        facts = json.loads((fixture.session / 'r1-evidence.json').read_text())
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'src/consumer.rs')
+        retired = next(row for row in obligation['candidate_symbols'] if row['name'] == 'retired')
+        self.assertEqual(retired['blob_tree'], fixture.manifest['base_tree'])
+        historical = [row for row in fixture.context['required_source_ranges']
+                      if row['path'] == 'src/options.rs'
+                      and row['blob_tree'] == fixture.manifest['base_tree']]
+        self.assertTrue(historical, 'the deleted declaration must require exact historical segments')
+        self.assertTrue(any(row['line_start'] <= 4 and row['line_end'] >= 6 for row in historical))
+        target = evidence.repository_source_target(fixture.context, fixture.manifest['snapshot_tree'])
+        source = (target, None, fixture.current_bytes(target)) if target is not None else None
+        status, audit = fixture.audit(source=source)
+        self.assertEqual(status, 0, audit['violations'])
+        fixture.receipt_gate(audit)
+        segment = historical[0]['segments'][0]['artifact']
+        status, audit = fixture.audit(source=source, omitted_artifacts=(segment,))
+        self.assertNotEqual(status, 0)
+        self.assertIn('missing-required-source-segment',
+                      {row['code'] for row in audit['violations']})
+        evidence.validated_manifest(fixture.manifest_path)
+
+    def test_historical_and_current_proofs_at_same_coordinates_do_not_cover_each_other(self):
+        evidence = load_evidence()
+        path = 'tests/policy.rs'
+        assignment = {'adapter': 'codex', 'full_state': True}
+        components = [{'id': 'policy', 'files': [path]}]
+        facts = {
+            'snapshot_tree': 'current', 'base_tree': 'historical',
+            'hunks': [{'path': path, 'kind': 'modify', 'changed_lines': [2]}],
+            'unresolved_imports': [{
+                'path': 'src/consumer.rs', 'line_start': 1, 'line_end': 1,
+                'candidate_symbols': [{
+                    'path': path, 'name': 'retired', 'line_start': 2, 'line_end': 2,
+                    'blob_tree': 'historical',
+                }],
+            }],
+        }
+        for delivered_tree, missing_tree in [('historical', 'current'), ('current', 'historical')]:
+            with self.subTest(delivered_tree=delivered_tree):
+                packet = {'required_source_ranges': [{
+                    'path': path, 'line_start': 2, 'line_end': 2, 'blob_tree': delivered_tree,
+                }]}
+                ranges, _ = evidence.code_proof_obligations(
+                    assignment, components, facts, packet, with_tree=True)
+                self.assertIn((path, 2, 2, missing_tree), ranges)
+                self.assertNotIn((path, 2, 2, delivered_tree), ranges)
+
+    def test_owned_import_keeps_other_candidates_outside_assigned_files(self):
+        evidence = load_evidence()
+        assignment = {'adapter': 'codex', 'components': ['active']}
+        components = [{'id': 'active', 'files': ['src/active.ts']}]
+        facts = {'snapshot_tree': 'current', 'unresolved_imports': [{
+            'path': 'src/consumer.ts', 'line_start': 1, 'line_end': 1,
+            'candidate_targets': ['src/active.ts', 'lib/history.ts'],
+            'candidate_symbols': [
+                {'path': 'src/active.ts', 'line_start': 1, 'line_end': 2},
+                {'path': 'lib/history.ts', 'line_start': 8, 'line_end': 10},
+            ],
+        }]}
+        ranges, owners = evidence.code_proof_obligations(
+            assignment, components, facts, {}, with_tree=True)
+        self.assertIn(('lib/history.ts', 8, 10, 'current'), ranges)
+        self.assertEqual(owners[('lib/history.ts', 'current')], {'src/active.ts'})
+
 
 if __name__ == '__main__':
     unittest.main()

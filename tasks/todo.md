@@ -882,11 +882,20 @@ Review results: pending. SDK credentials absent; no live SDK qualification or pr
 ## WLG Bread review preparation repair
 
 - [x] Freeze Bread source at 747e032b and reproduce latest 0.7.12 preparation refusal.
-- [ ] Add Rust module resolution regression tests and obtain intended failing CI evidence.
-- [ ] Correct absent-alternative handling while retaining missing-import proof failures.
-- [ ] Resolve proof-capacity recovery with complete scope and unchanged proof limits.
-- [ ] Run one independent normal reviewer, address actionable P0-P2 findings.
+- [x] Add Rust module resolution regression tests and obtain intended failing CI evidence.
+- [x] Correct absent-alternative handling while retaining missing-import proof failures.
+- [x] Resolve proof-capacity recovery with complete scope and unchanged proof limits.
+- [x] Run one independent normal reviewer, address actionable P0-P2 findings.
 - [ ] Verify both platform CI gates, publish a concrete repair PR and prepare a fixed runtime.
 - [ ] Resume the complete Bread review on the frozen source and deliver the feature PR.
 
 Review results: pending. No Bread review receipt, merge or deployment is claimed.
+
+### Repair verification evidence
+
+- Expected-red run40045649035 at9076df0:8 of9 Rust resolution regressions fail on intended targets/root identity; missing-module protection passes.
+- Expected-red focused job120729884016 in run40046674469 at05ea5a0: capacity cases reject23 and16 reads against12; search80, compiler81 and discovery80 incorrectly reject. Boundary negatives pass.
+- Independent normal review: three P2 findings require historical blob identity, physical Rust module directories, and comment-masked declaration parsing. Corrections are in progress.
+- Frozen release baseline6208b71 already fails27 shell task groups on both operating systems. Fixture corrections retain source40, search80/sentinel81, byte ceilings and the12-read manual limit.
+
+Independent cumulative recheck: all three P2 findings are fixed; no additional P0-P2 findings. This is source-review approval, not passing candidate CI. New pushes are held for cross-session ownership coordination requested by the user. Native queue messages to both peer sessions remain pending and are not acknowledgements.

@@ -86,6 +86,13 @@ class RustImportResolutionTests(unittest.TestCase):
         self.assertEqual(self.binding('src/consumer.rs', entries, repository)['candidate_targets'],
                          ['src/login_options/mod.rs'])
 
+    def test_coexisting_layouts_preserve_both_real_candidates(self):
+        self.write('src/login_options.rs', 'pub fn read_options() -> usize { 1 }\n')
+        self.write('src/login_options/mod.rs', 'pub fn read_options() -> usize { 2 }\n')
+        repository, entries = self.freeze()
+        self.assertEqual(self.binding('src/consumer.rs', entries, repository)['candidate_targets'],
+                         ['src/login_options.rs', 'src/login_options/mod.rs'])
+
     def test_explicit_path_excludes_existing_conventional_module(self):
         self.write('src/lib.rs', '#[path = "chosen.rs"]\npub mod login_options;\n')
         self.write('src/chosen.rs', 'pub fn read_options() -> usize { 1 }\n')
@@ -101,6 +108,32 @@ class RustImportResolutionTests(unittest.TestCase):
         repository, entries = self.freeze()
         self.assertEqual(self.binding('src/consumer.rs', entries, repository)['candidate_targets'],
                          ['src/lib.rs'])
+
+    def test_commented_inline_declaration_cannot_shadow_real_external_module(self):
+        self.write('src/lib.rs',
+                   '/*\npub mod login_options {\n}\n*/\npub mod login_options;\n')
+        self.write('src/login_options.rs', 'pub fn read_options() -> usize { 1 }\n')
+        repository, entries = self.freeze()
+        self.assertEqual(self.binding('src/consumer.rs', entries, repository)['candidate_targets'],
+                         ['src/login_options.rs'])
+
+    def test_raw_literal_declaration_cannot_shadow_real_external_module(self):
+        self.write('src/lib.rs',
+                   'const EXAMPLE: &str = r#"\npub mod login_options {\n}\n"#;\n'
+                   'pub mod login_options;\n')
+        self.write('src/login_options.rs', 'pub fn read_options() -> usize { 1 }\n')
+        repository, entries = self.freeze()
+        self.assertEqual(self.binding('src/consumer.rs', entries, repository)['candidate_targets'],
+                         ['src/login_options.rs'])
+
+    def test_nested_inline_declaration_cannot_shadow_root_module(self):
+        self.write('src/lib.rs',
+                   'pub mod example {\n    pub mod login_options {}\n}\n'
+                   'pub mod login_options;\n')
+        self.write('src/login_options.rs', 'pub fn read_options() -> usize { 1 }\n')
+        repository, entries = self.freeze()
+        self.assertEqual(self.binding('src/consumer.rs', entries, repository)['candidate_targets'],
+                         ['src/login_options.rs'])
 
     def test_missing_declared_module_keeps_unreadable_candidates(self):
         self.write('src/other.rs', 'pub fn read_options() -> usize { 1 }\n')
@@ -144,6 +177,88 @@ class RustImportResolutionTests(unittest.TestCase):
         repository, entries = self.freeze()
         self.assertEqual(self.binding('tests/login_options/mod.rs', entries, repository)[
             'candidate_targets'], ['tests/durable.rs'])
+
+    def test_integration_package_name_keeps_library_context(self):
+        self.write('src/login_options.rs', 'pub fn library_only() {}\n')
+        self.write('tests/durable.rs',
+                   'mod login_options;\nuse fixture_game::login_options as options;\n')
+        self.write('tests/login_options/mod.rs', 'pub fn exercise() {}\n')
+        repository, entries = self.freeze()
+        self.assertEqual(self.binding('tests/durable.rs', entries, repository)['candidate_targets'],
+                         ['src/login_options.rs'])
+
+    def test_shared_integration_child_keeps_every_owning_crate(self):
+        self.write('tests/durable.rs',
+                   'mod login_options;\npub mod support {\n    pub fn helper() {}\n}\n')
+        self.write('tests/recovery.rs',
+                   'mod login_options;\npub mod support {\n    pub fn helper() {}\n}\n')
+        self.write('tests/login_options/mod.rs',
+                   'use super::support as helpers;\npub fn exercise() { helpers::helper(); }\n')
+        repository, entries = self.freeze()
+        self.assertEqual(self.binding('tests/login_options/mod.rs', entries, repository)[
+            'candidate_targets'], ['tests/durable.rs', 'tests/recovery.rs'])
+
+    def test_directory_integration_crate_resolves_its_own_modules(self):
+        self.write('src/login_options.rs', 'pub fn library_only() {}\n')
+        self.write('tests/durable/main.rs',
+                   'mod login_options;\nuse crate::login_options as options;\n')
+        self.write('tests/durable/login_options/mod.rs', 'pub fn exercise() {}\n')
+        repository, entries = self.freeze()
+        self.assertEqual(self.binding('tests/durable/main.rs', entries, repository)[
+            'candidate_targets'], ['tests/durable/login_options/mod.rs'])
+
+    def test_missing_integration_module_keeps_test_crate_candidates(self):
+        self.write('src/login_options.rs', 'pub fn library_only() {}\n')
+        self.write('tests/durable.rs',
+                   'mod login_options;\nuse crate::login_options as options;\n')
+        repository, entries = self.freeze()
+        self.assertEqual(self.binding('tests/durable.rs', entries, repository)['candidate_targets'],
+                         ['tests/login_options.rs', 'tests/login_options/mod.rs'])
+
+    def test_renamed_integration_module_uses_physical_directory_for_children(self):
+        self.write('tests/durable.rs', '#[path = "helpers.rs"]\nmod support;\n')
+        self.write('tests/helpers.rs', 'mod nested;\nuse self::nested as child;\n')
+        self.write('tests/helpers/nested.rs', 'pub fn helper() {}\n')
+        self.write('tests/nested.rs', 'pub fn root_helper() {}\n')
+        self.write('tests/support/nested.rs', 'pub fn unrelated() {}\n')
+        repository, entries = self.freeze()
+        self.assertEqual(self.binding('tests/helpers.rs', entries, repository)['candidate_targets'],
+                         ['tests/helpers/nested.rs', 'tests/nested.rs'])
+        self.assertEqual(EVIDENCE.rust_module_import_targets(
+            'self::nested', 'tests/durable.rs', 'fixture_game', ['support'], entries, repository),
+            ['tests/helpers/nested.rs'])
+
+    def test_inline_import_uses_its_logical_scope(self):
+        self.write('tests/durable.rs',
+                   'mod outer {\n    mod nested;\n    use self::nested as child;\n}\n')
+        self.write('tests/outer/nested.rs', 'pub fn helper() {}\n')
+        self.write('tests/nested.rs', 'pub fn unrelated() {}\n')
+        repository, entries = self.freeze()
+        self.assertEqual(self.binding('tests/durable.rs', entries, repository)['candidate_targets'],
+                         ['tests/outer/nested.rs'])
+
+    def test_inline_path_in_non_mod_rs_uses_physical_file_stem(self):
+        self.write('src/lib.rs', 'pub mod a;\n')
+        self.write('src/a/mod.rs', 'pub mod b;\n')
+        self.write('src/a/b.rs',
+                   'mod inline {\n    #[path = "other.rs"]\n    mod inner;\n'
+                   '    use self::inner as child;\n}\n')
+        self.write('src/a/b/inline/other.rs', 'pub fn helper() {}\n')
+        self.write('src/a/inline/other.rs', 'pub fn unrelated() {}\n')
+        repository, entries = self.freeze()
+        self.assertEqual(self.binding('src/a/b.rs', entries, repository)['candidate_targets'],
+                         ['src/a/b/inline/other.rs'])
+
+    def test_inline_path_attribute_changes_directory_of_nested_path(self):
+        self.write('tests/durable.rs',
+                   '#[path = "thread_files"]\nmod thread {\n'
+                   '    #[path = "tls.rs"]\n    mod local_data;\n'
+                   '    use self::local_data as data;\n}\n')
+        self.write('tests/thread_files/tls.rs', 'pub fn helper() {}\n')
+        self.write('tests/thread/tls.rs', 'pub fn unrelated() {}\n')
+        repository, entries = self.freeze()
+        self.assertEqual(self.binding('tests/durable.rs', entries, repository)['candidate_targets'],
+                         ['tests/thread_files/tls.rs'])
 
     def test_prepare_retains_real_module_proof_without_phantom_alternate(self):
         self.write('src/login_options.rs', 'pub fn read_options() -> usize { 1 }\n')
