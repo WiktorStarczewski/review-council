@@ -74,6 +74,17 @@ class CodeSourcePromotionTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         return PromotionFixture(Path(temporary.name))
 
+    def test_omission_budget_fixture_retains_complete_proof(self):
+        environment = dict(os.environ)
+        environment.pop('REV_EVIDENCE_GROUP', None)
+        process = subprocess.run([
+            'bash', '-c', 'source "$1"\n'
+            'REV_EVIDENCE_CASE=budget_omissions_are_segmented_or_retained evidence_hardening',
+            'budget-proof-regression', str(SCRIPTS.parent / 'tests' / 't-evidence.sh'),
+        ], env=environment, text=True, capture_output=True, timeout=60)
+        self.assertEqual(process.returncode, 0, process.stdout + '\n' + process.stderr)
+        self.assertIn('PASS budget_omissions_are_segmented_or_retained', process.stdout)
+
     def callers(self):
         fixture = self.fixture()
         declarations = []

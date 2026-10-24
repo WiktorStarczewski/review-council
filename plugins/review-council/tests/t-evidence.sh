@@ -808,6 +808,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 
 script = Path(sys.argv[1]); spec = importlib.util.spec_from_file_location('evidence', script)
 module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
@@ -4508,6 +4509,7 @@ for test in cases:
         test(); print('PASS', test.__name__)
     except Exception as error:
         failures.append(test.__name__); print('FAIL', test.__name__, str(error))
+        traceback.print_exc()
 assert not failures, failures
 PY
   local rc=$?
