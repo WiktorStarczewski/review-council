@@ -837,17 +837,24 @@ source, target, identity, prompt = sys.argv[1:]
 command = "cat -- '" + prompt + "'"
 rows = []
 for line in open(source):
-    row = json.loads(line); rows.append(row)
+    row = json.loads(line)
     item = row.get('item') or {}
     if item.get('id') != identity:
+        rows.append(row)
         continue
     sibling = {'id': 'oversized-sibling', 'type': 'command_execution', 'command': command}
     if row['type'] == 'item.started':
+        rows.append({'type': 'turn.started'})
+        rows.append(row)
         rows.append({'type': 'item.started', 'item': sibling})
     else:
+        rows.append(row)
         rows.append({'type': 'item.completed', 'item': dict(
             sibling, aggregated_output='z' * (33 * 1024), exit_code=0)})
+        rows.append({'type': 'turn.completed'})
 assert any((row.get('item') or {}).get('id') == 'oversized-sibling' for row in rows)
+assert any(row.get('type') == 'turn.started' for row in rows)
+assert any(row.get('type') == 'turn.completed' for row in rows)
 open(target, 'w').write(''.join(json.dumps(row) + '\n' for row in rows))
 PY
       python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
