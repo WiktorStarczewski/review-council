@@ -142,7 +142,7 @@ class ContractWorkerBoundsTests(unittest.TestCase):
         def observe_launch(command, *args, **kwargs):
             launched.append(command[-1])
             self.live_at_launch.append(1 + sum(
-                group['process'].poll() is None for group in self.observed_groups))
+                group['process'].returncode is None for group in self.observed_groups))
             group = launch(command, *args, **kwargs)
             if group is not None:
                 self.observed_groups.append(group)
