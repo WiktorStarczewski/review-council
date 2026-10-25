@@ -1192,6 +1192,169 @@ def phase_and_predecessor_integrity():
         prior = session / 'r1-coverage.receipt.json'; prior.write_text('{"manifest":null}')
         call('render', mpath, 'sol', good=False)
 
+def coverage_reference(session, label):
+    path = session / f'r{label}-coverage.receipt.json'
+    raw = path.read_bytes()
+    return {'receipt': path.name, 'sha256': module.digest(raw)}
+
+def source_context_memo_validation_guards():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        prepare('seed', 'risk', *assign)
+        manifest_path = session / 'rseed-evidence.manifest.json'
+        manifest, _ = module.validated_manifest(manifest_path, fresh=False)
+        shards = [shard for packet in manifest['source_context']['seats'].values()
+                  for shard in packet['shards']]
+        assert shards
+        artifact = session / shards[0]['artifact']
+        original_artifact = artifact.read_bytes()
+        artifact.write_bytes(original_artifact + b' tampered')
+        try:
+            module.validated_manifest(manifest_path, fresh=False)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError('a memo hit must not accept a changed source-context shard')
+        artifact.write_bytes(original_artifact)
+        module.validated_manifest(manifest_path, fresh=False)
+        try:
+            module.validated_manifest(
+                manifest_path, fresh=False, seen={str(manifest_path.resolve())})
+        except ValueError as error:
+            assert 'cyclic coverage predecessor' in str(error), error
+        else:
+            raise AssertionError('cycle detection must run before a memo lookup')
+
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        prepare('retry', 'risk', *assign)
+        manifest_path = session / 'rretry-evidence.manifest.json'
+        original = module.plan_source_context
+        attempts = 0
+
+        def fail_once(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise ValueError('injected reconstruction failure')
+            return original(*args, **kwargs)
+
+        module.plan_source_context = fail_once
+        try:
+            try:
+                module.validated_manifest(manifest_path, fresh=False)
+            except ValueError as error:
+                assert 'injected reconstruction failure' in str(error), error
+            else:
+                raise AssertionError('the injected reconstruction failure was ignored')
+            module.validated_manifest(manifest_path, fresh=False)
+        finally:
+            module.plan_source_context = original
+        assert attempts == 2, 'a failed reconstruction must not seed a memo entry'
+
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        prepare('seed', 'risk', *assign)
+        finish('seed')
+        write('main.py', (root / 'main.py').read_text().replace('return 2', 'return 3', 1))
+        child = prepare('verify', 'verification', *assign)
+        repo = module.Repository(session.resolve())
+        _, hunks, categories, _ = repo.changes(child['base_tree'], child['snapshot_tree'])
+        prior = module.prior_coverage(
+            session, repo, child['base_tree'], child['predecessor'])
+        assert prior['status'] == 'valid', prior
+        _, delta_hunks, delta_categories, _ = repo.changes(
+            prior['coverage']['snapshot_tree'], child['snapshot_tree'])
+        assert delta_hunks and all(row['path'] in {hunk['path'] for hunk in hunks}
+                                   for row in delta_hunks)
+        original = module.plan_source_context
+        calls = {}
+
+        def count_child(*args, **kwargs):
+            calls[args[6]] = calls.get(args[6], 0) + 1
+            return original(*args, **kwargs)
+
+        module.plan_source_context = count_child
+        try:
+            module.validate_source_context_snapshot(
+                repo, session, child, (hunks, categories), (delta_hunks, delta_categories))
+            changed_delta = list(delta_hunks)
+            changed_delta[0] = dict(changed_delta[0], sha256='0' * 64)
+            module.validate_source_context_snapshot(
+                repo, session, child, (hunks, categories),
+                (changed_delta, delta_categories))
+        finally:
+            module.plan_source_context = original
+        assert calls.get('rverify') == 2, calls
+
+        key_builder = getattr(module, '_source_context_reconstruction_key', None)
+        if key_builder is not None:
+            manifest, manifest_hash = module.validated_manifest(
+                session / 'rverify-evidence.manifest.json', fresh=False)
+            changes = (hunks, categories)
+            delta = (delta_hunks, delta_categories)
+            key = key_builder(repo, session.resolve(), manifest, manifest_hash, changes, delta)
+            assert key == key_builder(
+                repo, session.resolve(), manifest, manifest_hash, changes, delta)
+            other_session = session.parent / 'other-session'
+            assert key != key_builder(
+                repo, other_session, manifest, manifest_hash, changes, delta)
+            other_root = session.parent / 'other-repository'
+            shutil.copytree(root, other_root)
+            scope_path = session / 'scope.env'
+            saved_scope = scope_path.read_bytes()
+            try:
+                scope_path.write_text(saved_scope.decode().replace(str(root), str(other_root)))
+                other_repo = module.Repository(session.resolve())
+            finally:
+                scope_path.write_bytes(saved_scope)
+            assert key != key_builder(
+                other_repo, session.resolve(), manifest, manifest_hash, changes, delta)
+
+        memo = getattr(module, 'SOURCE_CONTEXT_RECONSTRUCTION_MEMO', None)
+        if memo is not None:
+            memo[('prepare-clear-sentinel',)] = {}
+            validate_inputs = module.validate_standard_inputs
+            prepare_locked = module._prepare_locked
+            module.validate_standard_inputs = lambda *_args, **_kwargs: None
+            module._prepare_locked = lambda *_args, **_kwargs: 'prepared'
+            try:
+                args = type('Args', (), {'session': str(session)})()
+                assert module.prepare(args) == 'prepared'
+            finally:
+                module.validate_standard_inputs = validate_inputs
+                module._prepare_locked = prepare_locked
+            assert not memo
+
+def source_context_memo_reuses_shared_predecessor_reconstruction():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        seed = prepare('seed', 'risk', *assign)
+        finish('seed')
+        seed_reference = coverage_reference(session, 'seed')
+        write('main.py', (root / 'main.py').read_text().replace('return 2', 'return 3', 1))
+        prepare('branch-a', 'verification', *assign)
+        finish('branch-a')
+        (session / 'coverage-head.json').write_bytes(module.encoded(seed_reference))
+        write('main.py', (root / 'main.py').read_text().replace('return 3', 'return 4', 1))
+        prepare('branch-b', 'verification', *assign)
+        finish('branch-b')
+        repo = module.Repository(session.resolve())
+        calls = {}
+        original = module.plan_source_context
+
+        def count_reconstruction(*args, **kwargs):
+            label = args[6]
+            calls[label] = calls.get(label, 0) + 1
+            return original(*args, **kwargs)
+
+        module.plan_source_context = count_reconstruction
+        try:
+            for label in ('branch-a', 'branch-b'):
+                result = module.prior_coverage(
+                    session, repo, seed['base_tree'], coverage_reference(session, label))
+                assert result['status'] == 'valid', result
+        finally:
+            module.plan_source_context = original
+        expected = {'rseed': 1, 'rbranch-a': 1, 'rbranch-b': 1}
+        assert calls == expected, f'expected one reconstruction per manifest, got {calls}'
+
 def cumulative_verification_routing():
     with fixture() as (root, session, git, write, call, prepare, finish):
         semantic = prepare('semantic', 'verification', *assign)
@@ -4623,6 +4786,8 @@ cases = (
     binary_files_are_hash_pointers,
     conservative_mechanical_classification, bounded_navigation_markdown, opaque_transitions,
     opaque_mode_transition, invalid_manifests, phase_and_predecessor_integrity,
+    source_context_memo_validation_guards,
+    source_context_memo_reuses_shared_predecessor_reconstruction,
     cumulative_verification_routing, verification_delta_retains_restored_path_source_context,
     verification_delta_source_context_controls, verification_nested_restoration_retains_instruction_context,
     verification_nested_restoration_refuses_unusable_instruction_budget, coverage_head_publication_is_monotonic,
@@ -4684,6 +4849,10 @@ groups = {
         binary_files_are_hash_pointers,
         opaque_transitions, opaque_mode_transition, invalid_manifests,
         phase_and_predecessor_integrity,
+    ),
+    'source_context_memo': (
+        source_context_memo_validation_guards,
+        source_context_memo_reuses_shared_predecessor_reconstruction,
     ),
     'routing': (
         cumulative_verification_routing, verification_delta_retains_restored_path_source_context,
@@ -4774,6 +4943,10 @@ test_evidence_hardening_structure() {
   REV_EVIDENCE_GROUP=structure evidence_hardening
 }
 
+test_evidence_source_context_memo() {
+  REV_EVIDENCE_GROUP=source_context_memo evidence_hardening
+}
+
 test_evidence_hardening_routing() {
   REV_EVIDENCE_GROUP=routing evidence_hardening
 }
@@ -4801,6 +4974,7 @@ test_evidence_semantic_rejection() {
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   test_evidence_contract \
     && test_evidence_hardening_structure \
+    && test_evidence_source_context_memo \
     && test_evidence_hardening_routing \
     && test_evidence_hardening_context \
     && test_evidence_hardening_scale_receipts \
