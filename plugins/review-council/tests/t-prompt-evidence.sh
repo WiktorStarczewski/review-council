@@ -127,6 +127,12 @@ test_prompt_evidence_contract() {
             '^First assigned-patch action: use Read with offset 1 and limit 240 '
           ;;
       esac
+      case "$seat" in
+        sol|terra)
+          assert_grep "$seat prompt gives safe fixed-string recovery guidance for shell quote errors" "$prompt" \
+            '^For shell searches, prefer simple fixed-string patterns.*unmatched quote.*retry with separate fixed-string searches before continuing\.$'
+          ;;
+      esac
       assert_grep "$seat prompt forbids all pre-patch artifact reads" "$prompt" \
         '^First assigned-patch action:.*Do not read the evidence index, source context, or original source until the assigned patch is complete\.$'
       assert_nogrep "$seat prompt does not request the embedded instruction artifact" "$prompt" \
