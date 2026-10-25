@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.8
+
+- Reject unfinished mandatory review generations with immutable evidence bindings, one-seat recovery and preserved receipt history.
+- Retry publication advances the coverage head when it still names the successor's predecessor, while preserving a head already moved to a newer panel.
+
 ## 0.8.7
 
 - Give source-required seats without prepared context four extra calls while keeping required reads within 16 calls and preserving the four-call refutation reserve; render their assigned source boundary and separate complete Codex patch-chunk reads from line-window guidance.
