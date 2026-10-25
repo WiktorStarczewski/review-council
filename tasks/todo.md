@@ -1,3 +1,29 @@
+# Issue #77: Luna reviewer proof reliability
+
+- [x] Fix the reviewer launch root and publish signed 0.8.3.
+- [x] Confirm merge-triggered main CI run `40142430721` on `383218599c6efc4cb812821740fc77e9ca67d9f3`.
+- [x] Diagnose the current Luna source-read budget and evidence-order failures.
+- [x] Add prompt regressions and confirm the expected failure in CI on a test-only commit.
+- [x] Make the evidence index an explicit ordered read and treat opened source-context ranges as source proof.
+- [x] Complete an independent normal internal review and follow-up re-review with no actionable P0-P2 findings.
+- [ ] Pass required CI on the exact final head.
+- [ ] Squash-merge, publish signed 0.8.4, reinstall each host, and verify installed identity.
+- [ ] Monitor fresh Luna results and keep issue #77 open until audit failures meet the under-5% target.
+
+The 0.8.3 fix resolves a confirmed launch-root mismatch. It does not resolve the Luna proof-budget failures. In `r3p`, the three locale ranges named by the incomplete result were already present in required source-context packets, but the reviewer spent its limited post-index calls reopening other source. In `r2-codex-luna-3`, the reviewer read repository source before the evidence index. The prompt's numbered required-read sequence currently omits the index.
+
+PR #79 merged as `383218599c6efc4cb812821740fc77e9ca67d9f3`. Required PR-head CI passed on `25c3154bca9045b0caa239a06cbd992ba4ef5be8`; the release tag is signed and published. Claude, Codex, and Cursor 0.8.3 installs match the released source or CI package by file and mode identity.
+
+Merge-triggered main gate `40142430721` passed on `383218599c6efc4cb812821740fc77e9ca67d9f3` on Ubuntu and macOS, with proof preparation also passing.
+
+An independent normal internal review and follow-up re-review found no actionable P0-P2 findings. The follow-up confirmed packet ranges count as proof only after exact packet reads, while uncovered sites, required source reads, and the existing call and output limits remain enforced.
+
+Expected-red run `40142951169` on test-only commit `3207ae860e2ae37b295e1fc113f0087411a7cd9f` failed only the two new prompt assertions for each of four seats on Ubuntu and macOS. Each platform passed 5,098 assertions and failed 8; proof preparation passed.
+
+Candidate run `40144222587` on `7ee84f6b5ac0c236e36a06335d04514886756e9e` exposed four existing cost-mode assertions that require source-context-disabled prompts to omit packet guidance. Each platform passed 5,102 assertions and failed 4; proof preparation passed. Prompt and footer wording now depend on the prepared packet and segment list.
+
+Final candidate run `40145281389` on `3da7ae1ce7e2bd115320e02fa4863814651043e3` failed the same prompt assertion four times per platform. The risk-phase fixture has source-context packets but no required source segments, so its expected index wording must mention packets only. Run `40146454334` on `b0765d0a2cd4780559b3702b9456cad216374ca8` exposed the same format assumption in the added plan fixture: plan source obligations render as cluster sources, while its relevant ranges are in packets rather than generic source segments. The test now checks the assigned cluster-source obligation and packet-only index ordering. Corrected exact-head CI remains pending.
+
 # Luna seat repository-root fix
 
 - [x] Confirm that `rev-seat.sh` ignores the reviewed session's frozen `REV_ROOT`.
@@ -5,10 +31,12 @@
 - [x] Confirm the regression fails on the test-only commit in CI.
 - [x] Resolve the seat root from `scope.env` and preserve legacy fallback when scope metadata is absent.
 - [x] Complete one independent normal review and resolve its P2 finding.
-- [ ] Pass required checks on the exact PR head.
-- [ ] Squash-merge and publish a signed release with the fix installed.
+- [x] Pass required checks on the exact PR head.
+- [x] Squash-merge and publish a signed release with the fix installed.
 
 The active wallet PR replacement was launched from the home directory while its session scope points at the wallet checkout. The runner therefore assigned the wrong root to both its adapter and read audit. The session scope is the audited authority for that review.
+
+Final-head run `40141054096` passed proof preparation and release-tree verification on Ubuntu and macOS, and Cursor package run `40141054102` passed on the same source tree. PR #79 was squash-merged, signed tag `review-council--v0.8.3` was published and verified, and the release was installed on Claude, Codex, and Cursor.
 
 The expected-red test-only run `40139997146` on `347b673d3cb521a103ed6935d96477b5d0c987c4` failed only the two new repository-root assertions on Ubuntu and macOS. Each platform passed 5,093 assertions; proof preparation and Cursor package validation passed.
 
@@ -22,16 +50,16 @@ Initial normal review found one P2: shell-quoted repository paths containing apo
 - [x] Add a regression for optional tests blocked by missing tools or an unwritable package cache.
 - [x] Clarify that optional test environment limits leave runtime validation unverified; preserve incomplete status for required proof or exhausted review capacity.
 - [x] Align the three plugin manifests, changelog, and release procedure at 0.8.2.
-- [ ] Complete one independent normal review, fix actionable P0-P2 findings, and pass all required CI checks on the exact PR head.
-- [ ] Squash-merge, publish the signed 0.8.2 release, reinstall each host, and verify installed identity.
+- [x] Complete one independent normal review, fix actionable P0-P2 findings, and pass all required CI checks on the exact PR head.
+- [x] Squash-merge, publish the signed 0.8.2 release, reinstall each host, and verify installed identity.
 
-The read-shape instructions and advisory audit codes are already present on 0.8.1. This release targets the remaining reproduced environment case and keeps the audit fail-closed when required evidence is incomplete.
+The read-shape instructions and advisory audit codes were already present on 0.8.1. This release targeted the remaining reproduced optional-test environment case and kept the audit fail-closed when required evidence is incomplete. PR #78 merged and signed release 0.8.2 was published.
 
 Expected-red run `40128169457` on test-only commit `b862620d1be54359eb84b4d67059999724bc9c44` reached the new prompt assertions on both Ubuntu and macOS and failed them as intended: each platform passed 5,076 assertions and failed 8 across the four adapters. Cursor package validation and proof preparation passed on that exact head.
 
 ## Review
 
-One normal reviewer found a P2 test gap: the optional-test exception needed an assertion that unread assigned evidence and exhausted review-call budgets still require `INCOMPLETE PROOF`. The assertion was added and re-reviewed at `6c7a22c`; no actionable P0-P2 findings remain. Final-head CI is pending.
+One normal reviewer found a P2 test gap: the optional-test exception needed an assertion that unread assigned evidence and exhausted review-call budgets still require `INCOMPLETE PROOF`. The assertion was added and re-reviewed at `6c7a22c`; no actionable P0-P2 findings remained before PR #78 merged.
 
 # Release 0.8.1 follow-up
 

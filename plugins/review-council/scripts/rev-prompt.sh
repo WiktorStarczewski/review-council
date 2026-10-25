@@ -517,6 +517,8 @@ render_prompt() (
       python3 - "$EVIDENCE_TMP" <<'PY'
 import sys
 lines = open(sys.argv[1], encoding='utf-8').read().splitlines()
+has_source_context_packets = any(line.startswith('Source context packet: ') for line in lines)
+has_required_source_segments = any(line.startswith('Required source segment ') for line in lines)
 prefixes = (
     'First assigned-patch action: ',
     'First source-context action: ',
@@ -524,9 +526,27 @@ prefixes = (
     'Required post-index original-source target: ',
     'Optional post-index original-source target: ',
 )
+index_prefix = 'Evidence navigation index: '
 step = 1
 for line in lines:
-    if line.startswith(prefixes):
+    if line.startswith(index_prefix):
+        path = line[len(index_prefix):]
+        if has_source_context_packets and has_required_source_segments:
+            action = ('Read the complete evidence navigation index after all listed source-context '
+                      'packets and required source segments, before opening or searching original '
+                      'repository source: ' + path)
+        elif has_source_context_packets:
+            action = ('Read the complete evidence navigation index after all listed source-context '
+                      'packets, before opening or searching original repository source: ' + path)
+        elif has_required_source_segments:
+            action = ('Read the complete evidence navigation index after all required source '
+                      'segments, before opening or searching original repository source: ' + path)
+        else:
+            action = ('Read the complete evidence navigation index before opening or searching '
+                      'original repository source: ' + path)
+        print('%d. %s' % (step, action))
+        step += 1
+    elif line.startswith(prefixes):
         print('%d. %s' % (step, line))
         step += 1
 print('%d. Searches return at most 80 lines. If more matches exist, narrow the pattern or the path and read the next page. Do not read an unbounded search result.' % step)

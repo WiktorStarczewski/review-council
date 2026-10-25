@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.4
+
+- Put evidence-index reads in the required order and use prepared source-context packet lines as proof for covered plan sites, avoiding redundant post-index reads.
+
 ## 0.8.3
 
 - Bind reviewer launches and read audits to the repository root frozen in the session scope, even when the caller starts elsewhere.
