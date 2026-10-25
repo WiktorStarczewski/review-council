@@ -56,6 +56,7 @@ CONTRACT_TESTS = (
     'provider_envelope_replay', 'read_audit_binds_delivered_output', 'plan_evidence',
     'rev_reviewer')
 POLICY_LIMITS = {
+    'max_workers': ('REVIEW_COUNCIL_CONTRACT_WORKERS', 4, 1, 4),
     'shared_deadline_seconds': ('REVIEW_COUNCIL_CONTRACT_DEADLINE_SECONDS', 300, 1, 3600),
     'output_bytes': ('REVIEW_COUNCIL_CONTRACT_OUTPUT_BYTES', 4 * 1024 * 1024, 1024, 64 * 1024 * 1024),
     'diagnostic_bytes': ('REVIEW_COUNCIL_CONTRACT_DIAGNOSTIC_BYTES', 8192, 128, 64 * 1024),
@@ -586,42 +587,59 @@ def contract_failure(message, group=None):
 
 def run_contracts(runner, plugin, environment, policy):
     groups = []
+    completed = set()
     selector = selectors.DefaultSelector()
     started = time.monotonic()
+    deadline = started + policy['shared_deadline_seconds']
     failure = None
     succeeded = False
     try:
-        for index, name in enumerate(CONTRACT_TESTS):
-            try:
-                group = launch_group(
-                    [str(runner), name],
-                    {'index': index, 'name': name, 'output': bytearray(),
-                     'tail': bytearray(), 'size': 0, 'eof': False},
-                    policy['term_grace_seconds'], cwd=plugin, stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=environment,
-                    start_new_session=True)
-            except OSError as error:
-                failure = contract_failure(
-                    'contract replay failed: ' + name + ' (launch error: '
-                    + str(error) + ')')
-                break
-            if group is None:
+        while failure is None:
+            if _CANCELLED.is_set():
                 failure = contract_failure('contract replay failed: cancelled')
                 break
-            groups.append(group)
-            process = group['process']
-            os.set_blocking(process.stdout.fileno(), False)
-            selector.register(process.stdout, selectors.EVENT_READ, group)
-        deadline = started + policy['shared_deadline_seconds']
-        while failure is None and len(groups) == len(CONTRACT_TESTS):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                pending = [group['name'] for group in groups
-                           if group['process'].poll() is None or not group['eof']]
+                pending = [name for index, name in enumerate(CONTRACT_TESTS)
+                           if index not in completed]
                 failure = contract_failure(
                     'contract replay failed: shared deadline exceeded'
                     + (': ' + ', '.join(pending) if pending else ''))
                 break
+            while len(groups) < len(CONTRACT_TESTS) \
+                    and len(groups) - len(completed) < policy['max_workers']:
+                if _CANCELLED.is_set():
+                    failure = contract_failure('contract replay failed: cancelled')
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                index = len(groups)
+                name = CONTRACT_TESTS[index]
+                try:
+                    group = launch_group(
+                        [str(runner), name],
+                        {'index': index, 'name': name, 'output': bytearray(),
+                         'tail': bytearray(), 'size': 0, 'eof': False},
+                        policy['term_grace_seconds'], cwd=plugin, stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=environment,
+                        start_new_session=True)
+                except OSError as error:
+                    failure = contract_failure(
+                        'contract replay failed: ' + name + ' (launch error: '
+                        + str(error) + ')')
+                    break
+                if group is None:
+                    failure = contract_failure('contract replay failed: cancelled')
+                    break
+                groups.append(group)
+                process = group['process']
+                os.set_blocking(process.stdout.fileno(), False)
+                selector.register(process.stdout, selectors.EVENT_READ, group)
+            if failure is not None:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                continue
             for key, _ in sorted(selector.select(min(0.05, remaining)),
                                  key=lambda item: item[0].data['index']):
                 group = key.data
@@ -631,27 +649,31 @@ def run_contracts(runner, plugin, environment, policy):
             if failure is not None:
                 break
             for group in groups:
+                if group['index'] in completed:
+                    continue
                 code = group['process'].poll()
                 if code is not None and code != 0:
                     failure = contract_failure(
                         'contract replay failed: ' + group['name']
                         + ' (exit ' + str(code) + ')', group)
                     break
+                if group['eof'] and code == 0:
+                    if group_alive(group['process'].pid):
+                        failure = contract_failure(
+                            'contract replay failed: ' + group['name']
+                            + ' left a descendant process running', group)
+                        break
+                    unregister_group(group)
+                    completed.add(group['index'])
             if failure is not None:
                 break
-            if all(group['eof'] and group['process'].poll() == 0 for group in groups):
-                descendant = next((group for group in groups
-                                   if group_alive(group['process'].pid)), None)
-                if descendant is not None:
-                    failure = contract_failure(
-                        'contract replay failed: ' + descendant['name']
-                        + ' left a descendant process running', descendant)
-                    break
+            if len(completed) == len(CONTRACT_TESTS):
                 succeeded = True
                 return [bytes(group['output']) for group in groups], None
     finally:
         if not succeeded:
-            terminate_groups(groups, policy['term_grace_seconds'])
+            terminate_groups([group for group in groups if group['index'] not in completed],
+                             policy['term_grace_seconds'])
         for group in groups:
             stream = group['process'].stdout
             if stream is not None and not stream.closed:
