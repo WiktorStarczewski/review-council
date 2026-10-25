@@ -9,6 +9,7 @@ import stat
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from unittest.mock import patch
 
@@ -98,7 +99,7 @@ class ContractWorkerBoundsTests(unittest.TestCase):
         self.checker = module(REPO / 'plugins/review-council/scripts/rev-contract-check.py')
         self.runner = self.root / 'runner'
         self.runner.write_text('#!' + sys.executable + '\n' + textwrap.dedent('''\
-            import fcntl, json, os, sys, time
+            import fcntl, json, os, subprocess, sys, time
             name = sys.argv[1]
             def record(kind):
                 with open(os.environ['CONTRACT_TRACE'], 'a') as stream:
@@ -110,9 +111,19 @@ class ContractWorkerBoundsTests(unittest.TestCase):
                 time.sleep(30)
             if os.environ['CONTRACT_MODE'] == 'fail' and name == 'provider_envelope_replay':
                 raise SystemExit(7)
-            time.sleep(0.15)
+            if os.environ['CONTRACT_MODE'] == 'descendant' and name == 'provider_envelope_replay':
+                child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],
+                                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                         stderr=subprocess.DEVNULL)
+            time.sleep(0.7 if os.environ['CONTRACT_MODE'] == 'budget' else 0.15)
             print(name, flush=True)
             record('end')
+            if os.environ['CONTRACT_MODE'] == 'eof':
+                sink = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(sink, 1)
+                os.dup2(sink, 2)
+                os.close(sink)
+                time.sleep(0.25)
         '''))
         self.runner.chmod(0o755)
 
@@ -122,13 +133,20 @@ class ContractWorkerBoundsTests(unittest.TestCase):
         with patch.dict(os.environ, {'REVIEW_COUNCIL_CONTRACT_WORKERS': str(workers)},
                         clear=True):
             policy = self.checker.execution_policy()
-        policy.update(shared_deadline_seconds=1 if mode == 'timeout' else 10,
+        policy.update(shared_deadline_seconds={'timeout': 1, 'budget': 2}.get(mode, 10),
                       term_grace_seconds=1)
         launched = []
+        self.observed_groups = []
+        self.live_at_launch = []
         launch = self.checker.launch_group
         def observe_launch(command, *args, **kwargs):
             launched.append(command[-1])
-            return launch(command, *args, **kwargs)
+            self.live_at_launch.append(1 + sum(
+                group['process'].poll() is None for group in self.observed_groups))
+            group = launch(command, *args, **kwargs)
+            if group is not None:
+                self.observed_groups.append(group)
+            return group
         with patch.object(self.checker, 'launch_group', side_effect=observe_launch):
             outputs, failure = self.checker.run_contracts(
                 self.runner, self.root, environment, policy)
@@ -152,6 +170,7 @@ class ContractWorkerBoundsTests(unittest.TestCase):
                     peak = max(peak, active)
                 self.assertEqual(active, 0)
                 self.assertLessEqual(peak, workers)
+                self.assertLessEqual(max(self.live_at_launch), workers)
 
     def test_failure_does_not_launch_queued_groups(self):
         outputs, failure, launched, _ = self.run_contracts(1, 'fail')
@@ -166,6 +185,32 @@ class ContractWorkerBoundsTests(unittest.TestCase):
         for name in self.checker.CONTRACT_TESTS:
             self.assertIn(name, failure[0])
         self.assertEqual(launched, ['provider_envelope_replay'])
+
+    def test_successful_queued_groups_share_one_deadline(self):
+        outputs, failure, launched, events = self.run_contracts(1, 'budget')
+        self.assertIsNone(outputs)
+        self.assertIn('shared deadline exceeded', failure[0])
+        self.assertGreaterEqual(len(launched), 2)
+        self.assertTrue(any(kind == 'end' for kind, _ in events))
+        self.assertNotIn(self.checker.CONTRACT_TESTS[-1], launched)
+
+    def test_stdout_eof_does_not_release_a_live_parent_slot(self):
+        outputs, failure, launched, _ = self.run_contracts(1, 'eof')
+        self.assertIsNone(failure)
+        self.assertEqual(launched, list(self.checker.CONTRACT_TESTS))
+        self.assertEqual(outputs, [(name + '\n').encode() for name in self.checker.CONTRACT_TESTS])
+        self.assertEqual(max(self.live_at_launch), 1)
+
+    def test_reaped_parent_descendant_blocks_queued_launch(self):
+        outputs, failure, launched, _ = self.run_contracts(1, 'descendant')
+        self.assertIsNone(outputs)
+        self.assertIn('provider_envelope_replay left a descendant process running', failure[0])
+        self.assertEqual(launched, ['provider_envelope_replay'])
+        deadline = time.monotonic() + 2
+        while self.checker.group_alive(self.observed_groups[0]['process'].pid) \
+                and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertFalse(self.checker.group_alive(self.observed_groups[0]['process'].pid))
 
     def test_cancelled_replay_does_not_launch_any_groups(self):
         self.checker._CANCELLED.set()
