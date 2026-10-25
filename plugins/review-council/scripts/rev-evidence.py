@@ -8202,7 +8202,10 @@ def receipt_locked(args, session):
             raise ValueError('coverage receipt is immutable')
     else:
         publish(path, raw)
-    if manifest['phase'] != 'numeric' and (created or head is None):
+    predecessor = data.get('supersedes') or manifest['predecessor']
+    predecessor_head = ({key: predecessor[key] for key in ('receipt', 'sha256')}
+                        if isinstance(predecessor, dict) else None)
+    if manifest['phase'] != 'numeric' and (created or head == predecessor_head):
         publish(session / 'coverage-head.json', encoded({'receipt': path.name, 'sha256': digest(raw)}))
     print(path)
 

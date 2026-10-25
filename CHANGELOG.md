@@ -1,8 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.8.8
 
 - Reject unfinished mandatory review generations with immutable evidence bindings, one-seat recovery and preserved receipt history.
+- Retry publication advances the coverage head when it still names the successor's predecessor, while preserving a head already moved to a newer panel.
 
 ## 0.8.7
 

@@ -8,13 +8,15 @@
 - [x] Trace the five failures to 3 expansion-budget gaps and 2 source/patch-read audit failures.
 - [x] Reconcile the pending evidence-order and prepared-source prompt work with the 0.8.6 baseline.
 - [x] Add regressions for complete patch-chunk reads, explicit no-context source targets, and risk-scoped proof budgets.
-- [ ] Fix the two reproduced prompt/audit mismatches and give only affected no-context source-required seats additional expansion capacity.
-- [ ] Complete one independent internal review, resolve actionable P0-P2 findings, and rerun the review.
-- [ ] Pass expected-red and all required current-head CI checks.
-- [ ] Squash-merge, publish a signed release, reinstall all hosts, and verify installed identity.
+- [x] Fix the two reproduced prompt/audit mismatches and give affected no-context source-required seats additional expansion capacity.
+- [x] Complete independent internal review and resolve its actionable P2 finding.
+- [x] Pass expected-red and all required current-head CI checks.
+- [x] Squash-merge PR #83, publish signed release 0.8.7, reinstall all hosts, and verify installed identity.
 - [ ] Monitor fresh post-release first-attempt Luna results until the failure rate is below 5%; keep issue #77 open until then.
 
-The 0.8.3 fix resolves a confirmed launch-root mismatch. It does not resolve the Luna proof-budget failures. In `r3p`, the three locale ranges named by the incomplete result were already present in required source-context packets, but the reviewer spent its limited post-index calls reopening other source. In `r2-codex-luna-3`, the reviewer read repository source before the evidence index. The prompt's numbered required-read sequence currently omits the index.
+The 0.8.3 fix resolves a confirmed launch-root mismatch. It did not resolve the Luna proof-budget failures. In `r3p`, the three locale ranges named by the incomplete result were already present in required source-context packets, but the reviewer spent its limited post-index calls reopening other source. In `r2-codex-luna-3`, the reviewer read repository source before the evidence index. The prompt's numbered required-read sequence omitted the index.
+
+PR #83 merged as `6be75ef10b46db6159337bddb3b8dcb074aa6ff1` from `656212573ae690c4cbc8047a23d4ecf64f339260`. Exact-head test run `40175923246` and Cursor package run `40175923301` passed. Signed release `review-council--v0.8.7` was published, and Claude, Codex, and Cursor installs match the release. Issue #77 remains open because no eligible first-attempt Luna sample pinned to 0.8.7 or later has completed.
 
 PR #79 merged as `383218599c6efc4cb812821740fc77e9ca67d9f3`. Required PR-head CI passed on `25c3154bca9045b0caa239a06cbd992ba4ef5be8`; the release tag is signed and published. Claude, Codex, and Cursor 0.8.3 installs match the released source or CI package by file and mode identity.
 
@@ -28,16 +30,30 @@ Candidate run `40144222587` on `7ee84f6b5ac0c236e36a06335d04514886756e9e` expose
 
 Final candidate run `40145281389` on `3da7ae1ce7e2bd115320e02fa4863814651043e3` failed the same prompt assertion four times per platform. The risk-phase fixture has source-context packets but no required source segments, so its expected index wording must mention packets only. Run `40146454334` on `b0765d0a2cd4780559b3702b9456cad216374ca8` exposed the same format assumption in the added plan fixture: plan source obligations render as cluster sources, while its relevant ranges are in packets rather than generic source segments. The test now checks the assigned cluster-source obligation and packet-only index ordering. The current 0.8.6 baseline already contains the ordered index and packet-as-proof behavior, so the stale branch changes are not reapplied.
 
-## Post-0.8.6 sample and current repair
+## Post-0.8.6 sample and 0.8.7 repair
 
 The first post-0.8.6 sample is 25%, so 0.8.6 does not meet the issue target. Three seats exhausted the 16-call expansion budget while proving assigned behavior. Two audits failed on source-read issues: one assignment had no rendered boundary target, and a chunk-mode prompt combined full-chunk reads with later line-window instructions. Keep the global budget at 16, add a narrow reserve only for source-required seats without prepared context, and make source targets and chunk read shapes explicit.
 
 Expected-red run `40171439450` is on test-only SHA `2018c6f38607996c3710c7624111a49d6cc8eff5`. Proof preparation passed. Ubuntu and macOS each passed 5,122 assertions and failed 9 across only the three new regression groups for chunk reads, the assigned no-context boundary/budget, and the 20-call audit bound. Cursor package run `40171439488` passed on the same SHA. The failed assertions are intentional and recorded in both OS artifacts.
 
-P1 regression run `40172561766` is on test-only SHA `56cedf15fe3e51ac7cf26359a8bbcedff4c9c896`. Proof preparation passed. Ubuntu and macOS each passed 5,122 assertions and failed 10 across only the three intended regression groups; both added deleted-boundary assertions failed because `000-deleted.py` was rendered instead of live `a.txt`. Cursor package run `40172561840` passed on the same SHA. The selector now filters component boundaries against regular files in the frozen snapshot. Independent internal re-review confirmed the P1 fixed and found no additional actionable P0-P2 issues. Guarded local `git diff --check` was initially refused at load 6.10 (exit 75), then passed once load fell below the limit. Exact-head candidate CI is pending.
+P1 regression run `40172561766` is on test-only SHA `56cedf15fe3e51ac7cf26359a8bbcedff4c9c896`. Proof preparation passed. Ubuntu and macOS each passed 5,122 assertions and failed 10 across only the three intended regression groups; both added deleted-boundary assertions failed because `000-deleted.py` was rendered instead of live `a.txt`. Cursor package run `40172561840` passed on the same SHA. The selector now filters component boundaries against regular files in the frozen snapshot. Independent internal re-review confirmed the P1 fixed and found no additional actionable P0-P2 issues. Guarded local `git diff --check` was initially refused at load 6.10 (exit 75), then passed once load fell below the limit.
+
+## PR #84: Retry-safe semantic receipt publication
+
+- [x] Add a regression reproducing interruption after publishing a successor receipt but before advancing `coverage-head.json`.
+- [x] Confirm the regression fails on the exact test-only head for the intended head-promotion assertion.
+- [x] Advance the head on retry only when it still matches the successor's recorded predecessor; preserve a newer head.
+- [x] Complete an independent internal review, resolve actionable P0-P2 findings, and re-review.
+- [ ] Pass exact-head macOS, Ubuntu, and Cursor package CI, then squash-merge and publish signed release 0.8.8.
+
+Expected-red run `40177694903` on test-only commit `645ecb8644e536dd9e8cc9ba67124fd4467da715` failed only `semantic_rejection_retry_promotes_existing_successor` on proof preparation, Ubuntu, and macOS. All other shell tests passed on both platforms, and Cursor package validation passed.
+
+The independent internal re-review confirmed the retry fix advances the head only from its recorded predecessor, preserves a later panel's head, and found no actionable P0-P2 findings.
 
 
-The active wallet PR #1830 review is initialized at 0.8.4 and is excluded from the post-release denominator. Its original Luna-2 audit was valid but returned INCOMPLETE PROOF after using all 16 post-index repository calls before checking sibling direct-switch callers and the production copy; the audit itself had no violations. The 3px Sonnet escalation remains 0/1 with 8 P1/P2 findings open and no fixes as of 07:42 UTC, after 200 minutes. Provider quota status is allowed. At 07:30 UTC, tool results for source-context segments 1-2 arrived and the seat began reading segments 3-4. The stream has not changed since 07:30; no terminal failure is recorded. Keep the 30-second status watcher active while advancing the Council fix.
+The active wallet PR #1830 review is initialized at 0.8.4 and is excluded from the post-release denominator. Its original Luna-2 audit was valid but returned INCOMPLETE PROOF after using all 16 post-index repository calls before checking sibling direct-switch callers and the production copy; the audit itself had no violations. At 09:04 UTC, the plan review remains 0/1 with 8 P1/P2 findings open and no fixes; its Sonnet escalation is still running at 286 minutes. It is not a Luna attempt.
+
+The active wallet PR #1844 review is initialized at 0.8.6 and is excluded from the post-0.8.7 denominator. At 09:04 UTC, one of four seats returned a valid Luna result and three Luna seats were rejected for proof/audit failures. Two exceeded the repository expansion-call limit and missed required source reads; the third also had unbounded shell output, unsupported source ranges, and incomplete assigned patch-chunk reads. These are not provider failures. Its separate base Luna report found a P1 that the wallet review owner is handling.
 
 # Luna seat repository-root fix
 
