@@ -1,0 +1,86 @@
+"""Fresh plan generations retain their own root assignment and replacement chain."""
+import json
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+from test_deleted_source_proof import SourceFixture, SCRIPTS
+
+
+SEATS = ('sol', 'second', 'third', 'fourth')
+BUNDLES = ('plan-completeness', 'plan-soundness', 'plan-simplicity', 'plan-tests')
+
+
+class PlanGenerationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='plan-generations-')
+        self.addCleanup(self.temp.cleanup)
+        self.fixture = SourceFixture(Path(self.temp.name), 'plan')
+        self.session = self.fixture.session
+
+    def state(self, *args):
+        return subprocess.run([str(SCRIPTS / 'rev-state.sh'), str(self.session), *args],
+                              env=self.fixture.env, text=True, capture_output=True)
+
+    def success(self, *args):
+        result = self.state(*args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads((self.session / 'state.json').read_text())
+
+    def prepare(self, label, seats=SEATS):
+        args = []
+        for seat in seats:
+            args += ['--assignment', seat + '=' + BUNDLES[SEATS.index(seat)]]
+        if len(seats) == 1:
+            args = ['--assignment', seats[0] + '=plan-completeness']
+        plan = self.fixture.manifest['plan']
+        self.fixture.run('prepare', str(self.session), label, '--phase', 'plan',
+                         '--plan', str(self.session / 'fix-plan.md'), '--plan-sha256',
+                         plan['sha256'], '--full-seat', seats[0], *args)
+        path = self.session / f'r{label}-evidence.manifest.json'
+        manifest = json.loads(path.read_text())
+        panel = self.session / f'r{label}-panel.tsv'
+        panel.write_text(''.join(seat + '\t' + assignment['bundle'] + '\tplan generation\n'
+                                 for seat, assignment in manifest['assignments'].items()))
+        result = subprocess.run([
+            str(SCRIPTS / 'rev-prompt.sh'), str(self.session), label, '--panel', str(panel),
+            '--phase', 'plan', '--evidence', str(path), '--plan',
+            str(self.session / manifest['plan']['artifact'])], env=self.fixture.env,
+            text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.fixture.run('verify', str(path))
+        return path
+
+    def complete(self, label, seats=SEATS):
+        for seat in seats:
+            (self.session / f'r{label}-{seat}.json').write_text(
+                json.dumps({'summary': 'checked', 'findings': []}))
+            (self.session / f'r{label}-{seat}.exit').write_text('0\n')
+
+    def test_numbered_root_registers_and_its_own_replacement_allows_fix(self):
+        self.success('phase=triage', 'round=3', 'open.P0=0', 'open.P1=1', 'open.P2=0')
+        manifest = self.prepare('3p2')
+        frozen = manifest.read_bytes()
+        state = self.success('phase=plan', 'round=3p2', 'seats=' + json.dumps(SEATS))
+        self.assertEqual(state.get('plans', {}).get('3p2'), list(SEATS),
+                         'a prepared numbered plan generation must register its exact four seats')
+        self.complete('3p2', SEATS[1:])
+        (self.session / 'r3p2-sol.exit').write_text('2\n')
+        (self.session / 'r3p2-sol.audit-invalid.json').write_text('{}\n')
+        siblings = {path.name: path.read_bytes() for path in self.session.glob('r3p2-*')
+                    if path.is_file()}
+        self.assertEqual(self.state('phase=fix').returncode, 2)
+        state = self.success('phase=plan', 'round=3p2x', 'seats=["fourth"]',
+                             'plan_replacement_for=3p2:sol')
+        self.assertEqual(state['plan_replacements']['3p2']['sol'], ['3p2x'])
+        self.prepare('3p2x', ('fourth',))
+        self.complete('3p2x', ('fourth',))
+        self.success('phase=fix')
+        self.assertEqual(manifest.read_bytes(), frozen)
+        for name, raw in siblings.items():
+            self.assertEqual((self.session / name).read_bytes(), raw)
+
+
+if __name__ == '__main__':
+    unittest.main()
