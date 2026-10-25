@@ -104,7 +104,8 @@ assert ('source-context packet' in prefix) == ('Source context packet:' in fragm
 assert ('required-source-segment' in prefix) == ('Required source segment 1/' in fragment), prefix
 if sys.argv[4] == '1' and sys.argv[5] == 'sol':
     assert 'Required source segment 1/' in fragment, 'fixture must exercise active segments'
-assert 'After the evidence index, use at most 16' in prefix
+expected_call_limit = '20' if sys.argv[4] == '0' else '16'
+assert f'After the evidence index, use at most {expected_call_limit}' in prefix
 assert 'INCOMPLETE PROOF:' in prefix
 assert 'Try to refute each candidate' in prefix
 assert 'Never run an interpreter or inline script' in prefix

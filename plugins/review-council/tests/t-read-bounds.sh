@@ -2795,7 +2795,7 @@ PY
 # Writes a codex transcript: patch windows, then MODE's repository reads around the evidence index.
 pinned_read_transcript() {
   python3 - "$1" "$2" "$3" "$4" "$5" <<'PY'
-import json, pathlib, subprocess, sys
+import json, pathlib, shlex, subprocess, sys
 manifest_path, out, root, base, mode = sys.argv[1:6]
 manifest = json.load(open(manifest_path)); root = pathlib.Path(root)
 session = pathlib.Path(manifest_path).parent

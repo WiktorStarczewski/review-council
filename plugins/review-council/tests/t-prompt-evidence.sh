@@ -403,7 +403,7 @@ assert ('Required post-index original-source boundary: a.txt\n'
 PY
     assert_eq "required source boundary skips paths absent from the frozen snapshot" "$?" 0
     assert_grep "paired baseline renders the narrow no-context expansion budget" "$disabled_prompt" \
-      'use at most 20 repository tool calls.*finish required reads by call 16.*reserve calls 17-20 for refutation'
+      'use at most 20 repository tool calls.*Finish required reads by call 16.*reserve calls 17-20 for refutation'
     assert_grep "paired baseline keeps component-scoped assigned patch" "$disabled_prompt" \
       '^Read the entire assigned patch in bounded windows of at most 160 lines, ending at line [0-9]+: '
     python3 - "$SCRIPTS/lib/review_limits.py" <<'PY'

@@ -389,7 +389,7 @@ PY
     assert_nogrep "chunk prompt does not request line windows" "$prompt" \
       '^Read the entire assigned patch in bounded windows'
     assert_grep "chunk prompt requires complete ordered artifact reads" "$prompt" \
-      'read only consecutive chunks in exact order and in full'
+      'reading only consecutive chunks in exact order and in full'
     assert_nogrep "chunk prompt does not reapply line-window limits to complete artifacts" "$prompt" \
       'at most 160 lines for each assigned-patch window'
     assert_grep "Codex keeps one patch chunk per turn" "$prompt" \
