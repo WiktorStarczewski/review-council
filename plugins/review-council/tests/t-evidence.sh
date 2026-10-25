@@ -1325,18 +1325,27 @@ def source_context_memo_validation_guards():
 
 def source_context_memo_reuses_shared_predecessor_reconstruction():
     with fixture() as (root, session, git, write, call, prepare, finish):
+        for i in range(8):
+            write(f'src/unit{i}.py', f'def unit{i}():\n' + ''.join(f'    value_{j} = {j}\n' for j in range(400)))
         seed = prepare('seed', 'risk', *assign)
         finish('seed')
         seed_reference = coverage_reference(session, 'seed')
         write('main.py', (root / 'main.py').read_text().replace('return 2', 'return 3', 1))
-        prepare('branch-a', 'verification', *assign)
+        branch_a = prepare('branch-a', 'verification', *assign)
+        assert branch_a['predecessor'] == seed_reference
+        assert any(assignment['scope'] == 'delta' for assignment in branch_a['assignments'].values())
         finish('branch-a')
         (session / 'coverage-head.json').write_bytes(module.encoded(seed_reference))
         write('main.py', (root / 'main.py').read_text().replace('return 3', 'return 4', 1))
-        prepare('branch-b', 'verification', *assign)
+        branch_b = prepare('branch-b', 'verification', *assign)
+        assert branch_b['predecessor'] == seed_reference
+        assert any(assignment['scope'] == 'delta' for assignment in branch_b['assignments'].values())
         finish('branch-b')
         repo = module.Repository(session.resolve())
         calls = {}
+        memo = getattr(module, 'SOURCE_CONTEXT_RECONSTRUCTION_MEMO', None)
+        if memo is not None:
+            memo.clear()
         original = module.plan_source_context
 
         def count_reconstruction(*args, **kwargs):
