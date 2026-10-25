@@ -134,7 +134,7 @@ test_prompt_evidence_contract() {
           assert_grep "$seat prompt avoids mixed shell quote fragments" "$prompt" \
             'avoid mixing single- and double-quoted fragments'
           assert_grep "$seat prompt gives a stable literal for mixed quote searches" "$prompt" \
-            'If a pattern needs both quote types, search a stable literal such as the attribute name with -F'
+            'If a pattern needs both quote types, search a stable literal such as the attribute name with `-F`\.'
           assert_grep "$seat prompt says later searches cannot repair an unmatched quote" "$prompt" \
             'An unmatched quote invalidates the read audit, even if a later query succeeds\.'
           ;;
