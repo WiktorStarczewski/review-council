@@ -3641,14 +3641,14 @@ def semantic_rejection_replaces_a_different_original_sibling():
         (session / 'escalation.json').write_text(json.dumps({
             'version': 1, 'seat': 'escalate-sol', 'family': 'sol', 'lab': 'openai',
             'adapter': 'codex', 'model': 'gpt-5.6-sol', 'effort': 'high', 'extra': False}))
-        prepare('6y', 'repair', '--assignment', 'escalate-sol=' + bundles[1], '--parent-assignment', '6:terra')
-        (session / 'r6y-escalate-sol.prompt.md').write_text(
-            call('render', session / 'r6y-evidence.manifest.json', 'escalate-sol'))
-        (session / 'r6y-escalate-sol.json').write_text('{"summary":"verified","findings":[]}')
-        (session / 'r6y-escalate-sol.exit').write_text('0\n')
-        write_agent_audit(session, '6y', 'escalate-sol')
+        prepare('6x2', 'repair', '--assignment', 'escalate-sol=' + bundles[1], '--parent-assignment', '6:terra')
+        (session / 'r6x2-escalate-sol.prompt.md').write_text(
+            call('render', session / 'r6x2-evidence.manifest.json', 'escalate-sol'))
+        (session / 'r6x2-escalate-sol.json').write_text('{"summary":"verified","findings":[]}')
+        (session / 'r6x2-escalate-sol.exit').write_text('0\n')
+        write_agent_audit(session, '6x2', 'escalate-sol')
         second_path = Path(call('receipt', session, '6', '--replacement', 'sol=6x',
-                                '--replacement', 'terra=6y').strip())
+                                '--replacement', 'terra=6x2').strip())
         second = json.loads(second_path.read_text())
         assert second['supersedes']['receipt'] == first_path.name
         assert set(second['supersedes']['rejections']) == {'r6-terra.semantic-rejection.json'}
@@ -3668,7 +3668,7 @@ def semantic_rejection_replaces_a_different_original_sibling():
         coverage = json.loads(call('current-coverage', session))
         assert coverage['eligible'] is True, coverage
         assert coverage['selected_generations']['sol']['label'] == '6x'
-        assert coverage['selected_generations']['terra']['label'] == '6y'
+        assert coverage['selected_generations']['terra']['label'] == '6x2'
         call('review-origin', session, '6')
         assert (session / 'r6-coverage.receipt.json').read_bytes() == original
         assert first_path.read_bytes() == first_raw
