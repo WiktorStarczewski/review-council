@@ -3877,9 +3877,9 @@ def incomplete_proof_is_only_a_summary_prefix():
         call('verify-panel', session, '6')
         call('prepare', session, '6x', '--phase', 'repair', '--assignment', 'terra=' + bundles[0],
              '--parent-assignment', '6:sol', good=False, error='parent assignment has no recorded terminal failure')
+        call('receipt', session, '6')
         launched = reserve_launch(session, '6', 'sol', session / 'r6-sol.prompt.md')
         assert launched.returncode == 0, launched.stderr
-        call('receipt', session, '6')
 
 def review_origin_counts_the_reviews_own_lines():
     state_script = script.parent / 'rev-state.sh'
