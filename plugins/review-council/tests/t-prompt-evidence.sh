@@ -380,8 +380,30 @@ SH
       '^Source read required: true$'
     assert_grep "paired baseline names its required assigned source boundary" "$disabled_prompt" \
       '^Required post-index original-source boundary: .+$'
+    python3 - "$SCRIPTS/rev-evidence.py" "$disabled_manifest" <<'PY'
+import contextlib
+import io
+import json
+import runpy
+import sys
+
+module = runpy.run_path(sys.argv[1])
+with open(sys.argv[2], encoding='utf-8') as stream:
+    manifest = json.load(stream)
+context = manifest['source_context']['seats']['sol']
+component_id = context['components'][0]
+context['components'] = [component_id]
+component = next(row for row in manifest['components'] if row['id'] == component_id)
+component['boundary'] = ['000-deleted.py', 'a.txt']
+rendered = io.StringIO()
+with contextlib.redirect_stdout(rendered):
+    module['render_seat'](manifest, 'a' * 64, 'sol', None)
+assert ('Required post-index original-source boundary: a.txt\n'
+        in rendered.getvalue()), rendered.getvalue()
+PY
+    assert_eq "required source boundary skips paths absent from the frozen snapshot" "$?" 0
     assert_grep "paired baseline renders the narrow no-context expansion budget" "$disabled_prompt" \
-      'Use at most 20 repository tool calls; finish required reads by call 16 and reserve calls 17-20 for refutation'
+      'use at most 20 repository tool calls.*finish required reads by call 16.*reserve calls 17-20 for refutation'
     assert_grep "paired baseline keeps component-scoped assigned patch" "$disabled_prompt" \
       '^Read the entire assigned patch in bounded windows of at most 160 lines, ending at line [0-9]+: '
     python3 - "$SCRIPTS/lib/review_limits.py" <<'PY'
