@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Skip shell-only plan evidence reconstruction for native hooks and bound contract replay concurrency to its selected worker limit.
 - Register numbered fresh plan generations and bind replacement children to their exact root, with the newest generation required by the fix gate.
 - Recover token-bound terminal completion records before a permitted exact reviewer retry.
 

@@ -114,6 +114,117 @@ PY
   )
 }
 
+test_plan_non_shell_hooks_skip_search_binding_validation() {
+  ( local R="$T/plan-hook-root" S="$T/plan-hook-session"
+    unset REV_RG
+    mkrepo "$R"; mkdir -p "$R/src" "$R/tests" "$S"
+    printf 'export function runService() { return 1; }\n' > "$R/src/service.ts"
+    cat > "$R/tests/service.test.ts" <<'EOF'
+import { runService } from "../src/service";
+test("service", () => runService());
+EOF
+    git -C "$R" add . && git -C "$R" commit -qm "plan base"
+    local base; base=$(git -C "$R" rev-parse HEAD)
+    python3 - "$R/src/service.ts" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1]); text = path.read_text()
+if 'return 1;' not in text:
+    raise SystemExit('plan fixture source changed unexpectedly')
+path.write_text(text.replace('return 1;', 'return 2;', 1))
+PY
+    printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+      "$base" "$R" > "$S/scope.env"
+    printf '%s\n' src/service.ts > "$S/files.txt"
+    : > "$S/untracked.txt"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+    cat > "$S/fix-plan.md" <<'EOF'
+## C-01 - keep the service entry visible
+Findings: F-001 (P1)
+Rule: Keep the service result stable.
+Sites: src/service.ts:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'runService' .)
+Test: tests/service.test.ts:1
+Prediction: reverting the fix fails the service test because the entry returns the changed helper result.
+EOF
+    local plan_hash manifest prompt
+    plan_hash=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/fix-plan.md") || return
+    manifest=$(REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 1hook --phase plan \
+      --plan "$S/fix-plan.md" --plan-sha256 "$plan_hash" --full-seat sol \
+      --assignment sol=plan-completeness) || return
+    "$SCRIPTS/rev-prompt.sh" "$S" 1hook sol plan-completeness plan \
+      --plan "$S/r1hook-plan.md" --evidence "$manifest" >/dev/null || return
+    prompt="$S/r1hook-sol.prompt.md"
+    local source_read='{"tool_name":"Read","tool_input":{"file_path":"src/service.ts","offset":1,"limit":1}}'
+    read_bound_hook "$R" "$S" "$source_read" "$prompt"
+    assert_eq "plan pre-hook allows a bounded source read" "$?" 0
+    python3 - <<'PY' | post_bound_hook --root "$R" --session "$S" --prompt "$prompt" \
+      >/dev/null 2> "$S/post-hook.err"
+import json
+print(json.dumps({'tool_name':'Read',
+                  'tool_input':{'file_path':'src/service.ts','offset':1,'limit':1},
+                  'tool_response':'export function runService() { return 2; }'}))
+PY
+    assert_eq "plan post-hook allows the bounded source read" "$?" 0
+    python3 - "$SCRIPTS/lib/review-read-audit.py" "$R" "$S" "$prompt" <<'PY'
+import argparse, importlib.util, io, json, sys
+spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
+audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
+calls = []
+original = audit.prompt_plan_search_commands
+def counted(*args):
+    calls.append(True)
+    return original(*args)
+audit.prompt_plan_search_commands = counted
+args = argparse.Namespace(root=sys.argv[2], session=sys.argv[3], prompt=sys.argv[4], deps=None)
+read = {'tool_name':'Read',
+        'tool_input':{'file_path':'src/service.ts','offset':1,'limit':1}}
+events = [
+    ('pre-read', audit.hook, read),
+    ('post-read', audit.post_hook, dict(read, tool_response='export function runService() { return 2; }')),
+]
+shell = {'tool_name':'Bash','tool_input':{'command':'git diff HEAD'}}
+events.extend((('pre-shell', audit.hook, shell),
+               ('post-shell', audit.post_hook, dict(shell, tool_response=''))))
+old_stdout, old_stderr = sys.stdout, sys.stderr
+try:
+    sys.stdout = io.StringIO(); sys.stderr = io.StringIO()
+    for label, handler, event in events:
+        calls.clear()
+        audit.sys.stdin = io.StringIO(json.dumps(event))
+        handler(args)
+        expected = 0 if label in ('pre-read', 'post-read') else 1
+        if len(calls) != expected:
+            raise SystemExit(f'{label} derived plan search commands {len(calls)} times; expected {expected}')
+finally:
+    sys.stdout, sys.stderr = old_stdout, old_stderr
+PY
+    assert_eq "only shell hooks derive plan search commands" "$?" 0
+
+    local artifact
+    artifact=$(python3 - "$manifest" <<'PY'
+import json, sys
+manifest = json.load(open(sys.argv[1]))
+print(next(name for name in manifest['artifacts'] if name.endswith('-plan-search-C-01.txt')))
+PY
+) || return
+    printf 'tampered\n' >> "$S/$artifact"
+    python3 - "$SCRIPTS/lib/review-read-audit.py" "$S" "$manifest" "$prompt" "$R" <<'PY'
+import hashlib, importlib.util, pathlib, sys
+spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
+audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
+session, manifest, prompt, root = map(pathlib.Path, sys.argv[2:])
+try:
+    audit.load_evidence_manifest(
+        session, hashlib.sha256(manifest.read_bytes()).hexdigest(), prompt, root,
+        replay_plan_searches=False)
+except ValueError:
+    raise SystemExit(0)
+raise SystemExit('tampered prepared search proof was accepted')
+PY
+    assert_eq "skipping replay still rejects a tampered search proof" "$?" 0
+  )
+}
+
 test_claude_terminal_hook_responses() {
   ( local R="$T/terminal-hook-root" S="$T/terminal-hook-session"
     mkdir -p "$R/src" "$S"
