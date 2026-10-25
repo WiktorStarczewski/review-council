@@ -521,7 +521,7 @@ def scope(session):
     return values
 
 
-def validate_pinned_pr_checkout(values):
+def validate_pinned_pr_checkout(values, progress=None):
     pr_number = values.get('REV_PR_NUMBER')
     pr_repo = values.get('REV_PR_REPO')
     pinned_head = values.get('REV_PR_HEAD')
@@ -535,8 +535,14 @@ def validate_pinned_pr_checkout(values):
             or not pinned_base or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', pinned_base)
             or not pinned_base_ref):
         raise ValueError('invalid pinned PR identity')
+    if progress is not None and (not isinstance(progress, dict)
+            or any(not isinstance(progress.get(key), str)
+                   or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', progress[key])
+                   for key in ('head', 'live_head'))):
+        raise ValueError('invalid explicit PR progression identity')
     root = str(Path(values['REV_ROOT']).resolve())
     env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+    env['GIT_OPTIONAL_LOCKS'] = '0'
 
     def git(*args):
         result = subprocess.run(['git', '-C', root, *args], env=env,
@@ -546,7 +552,7 @@ def validate_pinned_pr_checkout(values):
         return result.stdout.strip()
 
     current_head = git('rev-parse', '--verify', 'HEAD')
-    if current_head != pinned_head:
+    if current_head != (progress['head'] if progress else pinned_head):
         raise ValueError(f'checked out HEAD does not match pinned PR #{pr_number} head')
     current_branch = git('symbolic-ref', '--quiet', '--short', 'HEAD')
     if current_branch != values.get('REV_BRANCH'):
@@ -554,7 +560,7 @@ def validate_pinned_pr_checkout(values):
     status = git('status', '--porcelain')
     if status is None:
         raise ValueError(f'cannot verify pinned PR #{pr_number} checkout status')
-    if status:
+    if status and progress is None:
         raise ValueError(f'pinned PR #{pr_number} checkout has uncommitted changes')
     base_branch = values.get('REV_BASE_BRANCH')
     if not base_branch:
@@ -589,16 +595,253 @@ def validate_pinned_pr_checkout(values):
     except (json.JSONDecodeError, KeyError, TypeError) as error:
         raise ValueError(f'cannot revalidate pinned PR #{pr_number}: invalid GitHub metadata') from error
     live_repo = match.group(1) + '/' + match.group(2) if match is not None else None
+    live_heads = {progress['live_head']} if progress else {pinned_head}
+    if progress and progress.get('published_head') == progress['head']:
+        live_heads.add(progress['head'])
     if (isinstance(live_number, bool) or not isinstance(live_number, int)
             or match is None or int(match.group(3)) != live_number
             or live_number != int(pr_number)
             or live_repo.lower() != pr_repo.lower()
             or live.get('state') != 'OPEN'
             or live.get('headRefName') != values.get('REV_BRANCH')
-            or live.get('headRefOid') != pinned_head
+            or live.get('headRefOid') not in live_heads
             or live.get('baseRefName') != base_branch
             or live.get('baseRefOid') != pinned_base):
         raise ValueError(f'live PR #{pr_number} identity no longer matches preflight scope')
+
+
+def pr_progress_prior(session, binding, seen=None, offline=False):
+    match = re.fullmatch(r'([A-Za-z0-9][A-Za-z0-9._-]*):([0-9a-f]{64})', binding or '')
+    if match is None:
+        raise ValueError('PR progression requires an exact prior label and manifest SHA-256')
+    path = session / f'r{match.group(1)}-evidence.manifest.json'
+    if digest(attempt_module().private_bytes(path)) != match.group(2):
+        raise ValueError('PR progression prior manifest hash mismatch')
+    manifest, actual = validated_manifest(path, fresh=False, seen=seen, offline=offline)
+    if actual != match.group(2) or digest(attempt_module().private_bytes(path)) != actual:
+        raise ValueError('PR progression prior manifest changed during validation')
+    return manifest
+
+
+def pr_progress_head(session, manifest):
+    binding = manifest.get('pr_progress')
+    if binding is None:
+        return scope(session)['REV_PR_HEAD']
+    return json.loads(attempt_module().private_bytes(session / binding['artifact']))['head']
+
+
+def pr_index_tree(repo):
+    rows = repo.git('ls-files', '--stage', '-z')
+    for row in rows.split(b'\0'):
+        if row and row.split(b'\t', 1)[0].split()[-1] != b'0':
+            raise ValueError('PR progression refuses an unmerged index')
+    descriptor, name = tempfile.mkstemp(prefix='.pr-progress-index-', dir=repo.session)
+    os.close(descriptor)
+    os.unlink(name)
+    environment = dict(repo.env, GIT_INDEX_FILE=name)
+    try:
+        repo.git('read-tree', '--empty', env=environment)
+        repo.git('update-index', '-z', '--index-info', data=rows, env=environment)
+        return repo.git('write-tree', env=environment).decode().strip()
+    finally:
+        for path in (name, name + '.lock'):
+            if os.path.lexists(path):
+                os.unlink(path)
+
+
+def pr_progress_changes(repo, prior, head, index, snapshot):
+    old_head = pr_progress_head(repo.session, prior)
+    paths = set()
+    for commit in repo.git('rev-list', old_head + '..' + head).decode().splitlines():
+        paths.update(os.fsdecode(path) for path in repo.git(
+            'diff-tree', '--root', '-m', '--no-commit-id', '--no-renames',
+            '--name-only', '-r', '-z', commit).split(b'\0') if path)
+    prior_binding = prior.get('pr_progress')
+    prior_index = (json.loads(attempt_module().private_bytes(repo.session / prior_binding['artifact']))['index_tree']
+                   if prior_binding else repo.tree(old_head))
+    trees = [repo.entries(tree) for tree in (prior['snapshot_tree'], prior_index, repo.tree(head), index, snapshot)]
+    for left, right in zip(trees, trees[1:]):
+        paths.update(path for path in left.keys() | right.keys() if left.get(path) != right.get(path))
+    return [{'path': path, **{name: list(entries[path]) if path in entries else None
+                             for name, entries in zip(('prior', 'prior_index', 'head', 'index', 'snapshot'), trees)}}
+            for path in sorted(paths)]
+
+
+def pr_progress_ancestry(repo, prior, head, live_head):
+    original = repo.scope.get('REV_PR_HEAD')
+    if repo.selected != '.' or not original:
+        raise ValueError('PR progression requires a pinned whole-branch PR scope')
+    for older, newer in ((original, live_head), (live_head, head), (pr_progress_head(repo.session, prior), head)):
+        repo.git('merge-base', '--is-ancestor', older, newer)
+
+
+def pr_progress_idle(session):
+    attempt_api = attempt_module()
+    terminal = set()
+    directory = session / 'attempts'
+    if directory.is_symlink():
+        raise ValueError('redirected PR progression attempt directory')
+    for path in directory.glob('*.json'):
+        attempt = json.loads(attempt_api.private_bytes(path))
+        if any(not isinstance(attempt.get(key), str) or not SAFE_NAME.fullmatch(attempt[key])
+               for key in ('panel', 'seat')):
+            raise ValueError('invalid PR progression launch identity')
+        stem = f"r{attempt['panel']}-{attempt['seat']}"
+        prompt = session / (stem + '.prompt.md')
+        prompt_hash = digest(attempt_api.private_bytes(prompt))
+        identity = {key: attempt.get(key) for key in ('panel', 'seat', 'prompt_sha256')}
+        expected = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest() + '.json'
+        if identity['prompt_sha256'] != prompt_hash or path.name != expected:
+            raise ValueError('PR progression attempt does not bind its canonical prompt identity')
+        calls = attempt.get('calls')
+        launches = attempt.get('launches', [])
+        if (type(calls) is not int or calls < 0 or not isinstance(launches, list)
+                or any(type(code) is not int or code not in (0, 1, 2, 3, 4, 7) for code in launches)
+                or len(launches) > calls):
+            raise ValueError('invalid PR progression launch lifecycle')
+        completed = attempt.get('completed_calls')
+        legacy_fields = {'panel', 'seat', 'prompt_sha256', 'calls', 'launches'}
+        if 'lifecycle_version' in attempt and (type(attempt['lifecycle_version']) is not int
+                                              or attempt['lifecycle_version'] != 2):
+            raise ValueError('unknown provider launch lifecycle version')
+        if attempt.get('lifecycle_version') == 2:
+            if set(attempt) - legacy_fields != {'lifecycle_version', 'completed_calls', 'active_launch', 'last_launch'}:
+                raise ValueError('invalid bound provider lifecycle fields')
+            last = attempt.get('last_launch')
+            if (type(completed) is not int or completed != calls or attempt.get('active_launch') is not None
+                    or (calls and (not launches or not isinstance(last, str)
+                                   or re.fullmatch(r'[0-9a-f]{32}', last) is None))):
+                raise ValueError('PR progression refuses an unfinished provider launch')
+        elif (set(attempt) != legacy_fields or completed is not None or calls != len(launches) or not calls):
+            raise ValueError('ambiguous legacy provider lifecycle; PR progression refuses to infer completion')
+        else:
+            exit_path = session / (stem + '.exit')
+            if (not exit_path.exists()
+                    or attempt_api.private_bytes(exit_path).strip() != str(launches[-1]).encode()):
+                raise ValueError('legacy managed launch has no matching terminal exit evidence')
+        if calls:
+            terminal.add(stem)
+    for path in session.glob('r*-*.stream.ndjson'):
+        if not attempt_api.safe_regular(path):
+            raise ValueError('redirected provider stream lifecycle evidence')
+        if path.name.removesuffix('.stream.ndjson') not in terminal:
+            raise ValueError('provider stream has no unambiguous canonical terminal lifecycle')
+
+
+def pr_progress_observation(session, binding, live_head, published_head=None, require_idle=True):
+    if not isinstance(live_head, str) or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', live_head):
+        raise ValueError('PR progression requires an exact live PR head')
+    prior = pr_progress_prior(session, binding)
+    repo = Repository(session)
+    head = repo.git('rev-parse', '--verify', 'HEAD').decode().strip()
+    identity = {'head': head, 'live_head': live_head}
+    validate_pinned_pr_checkout(repo.scope, dict(identity, published_head=published_head))
+    pr_progress_ancestry(repo, prior, head, live_head)
+    if require_idle:
+        pr_progress_idle(session)
+    snapshot, unsafe = repo.snapshot()
+    if unsafe:
+        raise ValueError('PR progression snapshot cannot be represented safely')
+    index = pr_index_tree(repo)
+    changes = pr_progress_changes(repo, prior, head, index, snapshot)
+    return dict(identity, schema_version=1, scope_sha256=digest(attempt_module().private_bytes(session / 'scope.env')),
+                prior=binding, snapshot_tree=snapshot, index_tree=index,
+                paths=[row['path'] for row in changes], changes=changes)
+
+
+def prepare_pr_progress(args, session):
+    names = ('from', 'head', 'live_head', 'tree', 'path', 'reason')
+    values = {name: getattr(args, 'pr_progress_' + name, None) for name in names}
+    if not any(values.values()):
+        return None
+    if not all(values.values()):
+        raise ValueError('prepare requires a complete explicit PR progression declaration')
+    observation = pr_progress_observation(session, values['from'], values['live_head'])
+    if (values['head'] != observation['head'] or values['tree'] != observation['snapshot_tree']
+            or sorted(values['path']) != observation['paths']):
+        raise ValueError('PR progression declared head, snapshot or exact paths do not match observation')
+    if not isinstance(values['reason'], str) or not values['reason'].strip() or len(values['reason']) > 2048:
+        raise ValueError('PR progression requires a bounded controller ownership reason')
+    if values['from'].split(':', 1)[0] == args.label:
+        raise ValueError('PR progression cannot replace its own prior generation')
+    return dict(observation, label=args.label, phase=args.phase, reason=values['reason'])
+
+
+def validate_pr_progress(session, manifest, seen, fresh, offline):
+    binding = manifest.get('pr_progress')
+    if (not isinstance(binding, dict) or set(binding) != {'artifact', 'sha256'}
+            or binding['artifact'] != f"r{manifest['label']}-pr-progress.json"):
+        raise ValueError('invalid PR progression artifact binding')
+    raw = attempt_module().private_bytes(session / binding['artifact'])
+    if digest(raw) != binding['sha256']:
+        raise ValueError('PR progression artifact hash mismatch')
+    record = json.loads(raw)
+    fields = {'schema_version', 'scope_sha256', 'prior', 'head', 'live_head', 'snapshot_tree',
+              'index_tree', 'paths', 'changes', 'label', 'phase', 'reason'}
+    if (not isinstance(record, dict) or set(record) != fields or type(record['schema_version']) is not int or record['schema_version'] != 1
+            or record['label'] != manifest['label'] or record['phase'] != manifest['phase']
+            or record['snapshot_tree'] != manifest['snapshot_tree']
+            or record['scope_sha256'] != manifest['inputs']['scope.env']
+            or not isinstance(record['reason'], str) or not record['reason'].strip()
+            or len(record['reason']) > 2048):
+        raise ValueError('invalid PR progression generation binding')
+    for field in ('head', 'live_head', 'snapshot_tree', 'index_tree'):
+        if not isinstance(record[field], str) or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', record[field]):
+            raise ValueError('invalid PR progression Git identity')
+    if (not isinstance(record['paths'], list) or not record['paths']
+            or any(not isinstance(path, str) or not within(path, '.') for path in record['paths'])
+            or record['paths'] != sorted(set(record['paths']))):
+        raise ValueError('invalid PR progression path declaration')
+    if (not isinstance(record['changes'], list)
+            or [row.get('path') if isinstance(row, dict) else None for row in record['changes']] != record['paths']):
+        raise ValueError('invalid PR progression change metadata')
+    for row in record['changes']:
+        if set(row) != {'path', 'prior', 'prior_index', 'head', 'index', 'snapshot'}:
+            raise ValueError('invalid PR progression path metadata')
+        for name in ('prior', 'prior_index', 'head', 'index', 'snapshot'):
+            entry = row[name]
+            if entry is not None and (not isinstance(entry, list) or len(entry) != 2
+                    or entry[0] not in ('100644', '100755', '120000', '160000')
+                    or not isinstance(entry[1], str)
+                    or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', entry[1])):
+                raise ValueError('invalid PR progression mode/blob identity')
+    prior = pr_progress_prior(session, record['prior'], seen, offline)
+    if prior['inputs'] != manifest['inputs'] or prior['base_tree'] != manifest['base_tree']:
+        raise ValueError('PR progression changes its frozen inputs or base')
+    if not offline:
+        repo = Repository(session)
+        pr_progress_ancestry(repo, prior, record['head'], record['live_head'])
+        changes = pr_progress_changes(repo, prior, record['head'], record['index_tree'], record['snapshot_tree'])
+        if changes != record['changes'] or record['paths'] != [row['path'] for row in changes]:
+            raise ValueError('PR progression historical path identities changed')
+        if fresh:
+            observed = pr_progress_observation(session, record['prior'], record['live_head'], record['head'], require_idle=False)
+            if any(record[key] != value for key, value in observed.items()):
+                raise ValueError('PR progression checkout or index changed after prepare')
+    return record
+
+
+def inspect_pr_progress(args):
+    session = Path(args.session).resolve()
+    with session_input_lock(session):
+        validate_standard_inputs(session, require_all=True)
+        print(json.dumps(pr_progress_observation(session, args.prior, args.live_head), sort_keys=True))
+
+
+def publish_pr_generation(path, raw):
+    descriptor, name = tempfile.mkstemp(prefix='.pr-generation-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(name, path)
+        except FileExistsError:
+            if attempt_module().private_bytes(path) != raw:
+                raise ValueError('cannot overwrite an immutable PR progression generation')
+    finally:
+        os.unlink(name)
 
 
 def git_quote(path):
@@ -6002,6 +6245,9 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         for required in packet.get('required_source_ranges', []):
             for segment in required.get('segments', []):
                 expected.add(segment['artifact'])
+    if 'pr_progress' in manifest:
+        validate_pr_progress(session, manifest, seen, fresh and not offline, offline)
+        expected.add(manifest['pr_progress']['artifact'])
     validate_patch_sets(session, manifest, expected)
     contract_binding = contract_binding_from_inputs(session, manifest['inputs'])
     expected_inputs = set(STANDARD_INPUTS)
@@ -7001,7 +7247,8 @@ def prepare(args):
 
 
 def _prepare_locked(args, session):
-    validate_pinned_pr_checkout(scope(session))
+    progress = prepare_pr_progress(args, session)
+    validate_pinned_pr_checkout(scope(session), progress)
     repo = Repository(session)
     roster = read_json(session / 'roster.json')
     validate_live_roster_adapters(roster)
@@ -7046,7 +7293,7 @@ def _prepare_locked(args, session):
     chunk_mode, source_context_enabled = evidence_modes(os.environ, parent_manifest)
     source_head = args.head
     pinned_pr_number = repo.scope.get('REV_PR_NUMBER')
-    pinned_pr_head = repo.scope.get('REV_PR_HEAD')
+    pinned_pr_head = progress['head'] if progress else repo.scope.get('REV_PR_HEAD')
     if (pinned_pr_number and args.head is not None
             and args.head != pinned_pr_head):
         raise ValueError(
@@ -7426,6 +7673,10 @@ def _prepare_locked(args, session):
     if args.phase == 'plan':
         artifacts[prefix + '-plan.md'] = plan_raw
         artifacts[prefix + '-plan-closure.patch'] = closure_raw
+    if progress is not None:
+        if snapshot != progress['snapshot_tree']:
+            raise ValueError('PR progression source differs from declared snapshot')
+        artifacts[prefix + '-pr-progress.json'] = encoded(progress)
     if numeric is not None:
         artifacts[numeric['panel']] = numeric_raw
     words = {'full': len(full.split()), 'semantic': len(semantic.split()), 'delta': len(delta.split()),
@@ -7453,6 +7704,9 @@ def _prepare_locked(args, session):
                 'task_capacity': task_capacity,
                 'word_counts': words, 'inputs': inputs,
                 'artifacts': {name: {'sha256': digest(raw), 'words': len(raw.split())} for name, raw in artifacts.items()}}
+    if progress is not None:
+        manifest['pr_progress'] = {'artifact': prefix + '-pr-progress.json',
+                                   'sha256': digest(encoded(progress))}
     if args.phase == 'plan':
         manifest['plan'] = data['plan']
     if numeric is not None:
@@ -7469,14 +7723,28 @@ def _prepare_locked(args, session):
     receipt_path = session / (prefix + '-coverage.receipt.json')
     if receipt_path.exists() and (not manifest_path.exists() or manifest_path.read_bytes() != encoded(manifest)):
         raise ValueError('cannot replace an already receipted manifest')
+    frozen = progress is not None
+    if manifest_path.exists():
+        old = json.loads(attempt_module().private_bytes(manifest_path))
+        frozen = frozen or 'pr_progress' in old
+    for path in session.glob('r*-pr-progress.json'):
+        prior = json.loads(attempt_module().private_bytes(path)).get('prior', '')
+        frozen = frozen or prior.split(':', 1)[0] == args.label
+    if frozen and manifest_path.exists() and attempt_module().private_bytes(manifest_path) != encoded(manifest):
+        raise ValueError('cannot overwrite an immutable PR progression generation')
+    if progress is not None:
+        observed = pr_progress_observation(session, progress['prior'], progress['live_head'])
+        if any(progress[key] != value for key, value in observed.items()):
+            raise ValueError('PR progression changed during preparation')
+    writer = publish_pr_generation if frozen else publish
     prepare_stage('publish')
     for name, raw in artifacts.items():
         if numeric is not None and name == numeric['panel']:
             continue
-        publish(session / name, raw)
+        writer(session / name, raw)
     if numeric is not None and attempt_module().private_bytes(session / numeric['panel']) != numeric_raw:
         raise ValueError('numeric panel changed during preparation')
-    publish(manifest_path, encoded(manifest))
+    writer(manifest_path, encoded(manifest))
     discard_prepare_diagnostic(session, args.label)
     print(manifest_path)
 
@@ -7535,6 +7803,12 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
     elif not plan_source or Path(plan_source).resolve() != expected_plan:
         raise ValueError('plan evidence requires its immutable plan snapshot')
     print('Evidence manifest SHA-256: ' + mh)
+    if 'pr_progress' in manifest:
+        binding = manifest['pr_progress']
+        record = json.loads(attempt_module().private_bytes(Path(manifest['session']) / binding['artifact']))
+        print('Explicit controller-owned PR progression: ' + json.dumps(
+            dict(binding, head=record['head'], live_head=record['live_head'],
+                 snapshot_tree=record['snapshot_tree'], prior=record['prior'], reason=record['reason']), sort_keys=True))
     print('Assigned scope: ' + assignment['scope'])
     print('Assigned risk bundle: ' + assignment['bundle'])
     capacity = (manifest.get('task_capacity', {}).get('seats', {}).get(seat)
@@ -8266,6 +8540,12 @@ def main():
     prep.add_argument('--full-seat')
     prep.add_argument('--plan'); prep.add_argument('--plan-sha256')
     prep.add_argument('--parent-assignment')
+    for name in ('from', 'head', 'live-head', 'tree', 'reason'):
+        prep.add_argument('--pr-progress-' + name)
+    prep.add_argument('--pr-progress-path', action='append', default=[])
+    inspect = commands.add_parser('pr-progress-inspect')
+    inspect.add_argument('session'); inspect.add_argument('--from', dest='prior', required=True)
+    inspect.add_argument('--live-head', required=True)
     prep.add_argument('--numeric-round', type=int); prep.add_argument('--numeric-min-rounds', type=int)
     prep.add_argument('--numeric-panel')
     reject = commands.add_parser('reject-result')
@@ -8294,7 +8574,7 @@ def main():
         if hasattr(args, 'label') and not SAFE_NAME.fullmatch(args.label):
             raise ValueError('invalid label')
         with plan_search_signal_handlers():
-            {'prepare': prepare, 'render': render, 'render-panel': render_panel,
+            {'prepare': prepare, 'pr-progress-inspect': inspect_pr_progress, 'render': render, 'render-panel': render_panel,
              'verify': verify, 'same-source': same_source,
              'verify-panel': verify_panel, 'receipt': receipt, 'current-coverage': current_coverage,
              'reject-result': reject_result,

@@ -122,13 +122,14 @@ preserve_audit_invalid_result() {
 }
 
 RESERVED=0
+LAUNCH_TOKEN=$(python3 -c 'import uuid; print(uuid.uuid4().hex)') || exit 1
 finish() {  # <code> - validate on 0, record, print the one-line summary, exit
   local code=$1 n="-"
   if [ "$code" = 0 ]; then n=$(python3 "$VALIDATE" "$OUT" 2>>"$LOG") || { code=2; n="-"; }; fi
   echo "$code" > "$EXITF"
   # A launch that reserved a call records its exit, so an exhausted exact retry is on record.
   if [ "$RESERVED" = 1 ]; then
-    python3 "$HERE/lib/rev-attempt.py" record "$SESSION" "$ROUND" "$SEAT" "$PROMPT" "$code" >>"$LOG" 2>&1 \
+    python3 "$HERE/lib/rev-attempt.py" record "$SESSION" "$ROUND" "$SEAT" "$PROMPT" "$code" "$LAUNCH_TOKEN" >>"$LOG" 2>&1 \
       || echo "cannot record this launch's exit" >> "$LOG"
   fi
   echo "seat=$SEAT round=$ROUND exit=$code findings=$n"
@@ -209,7 +210,7 @@ attempt=0
 while :; do
   attempt=$((attempt+1))
   archive_raw || { echo "cannot archive prior stream before attempt $attempt" >> "$LOG"; finish 1; }
-  reserve_error=$(python3 "$HERE/lib/rev-attempt.py" reserve "$SESSION" "$ROUND" "$SEAT" "$PROMPT" 2>&1)
+  reserve_error=$(python3 "$HERE/lib/rev-attempt.py" reserve "$SESSION" "$ROUND" "$SEAT" "$PROMPT" "$LAUNCH_TOKEN" 2>&1)
   reserve_rc=$?
   if [ "$reserve_rc" -ne 0 ]; then
     restore_raw || { echo "cannot restore prior stream after reservation refusal" >> "$LOG"; finish 1; }

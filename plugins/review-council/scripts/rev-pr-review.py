@@ -6,6 +6,7 @@ import datetime
 import fcntl
 import hashlib
 import html
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -293,7 +294,7 @@ def parse_scope(path):
                 "scope has an invalid pinned PR repository")
         require(OID.fullmatch(pr_head) is not None and OID.fullmatch(pr_base_head) is not None,
                 "scope has an invalid pinned PR head or base")
-    return {"root": Path(root), "branch": branch, "base": base,
+    return {"root": Path(root), "session": path.resolve().parent, "branch": branch, "base": base,
             "base_branch": base_branch, "pr_number": pr_number,
             "pr_repo": pr_repo, "pr_head": pr_head, "pr_base_head": pr_base_head}
 
@@ -397,6 +398,35 @@ def parse_pr(metadata, branch):
     }
 
 
+def certified_pr_progress_head(scope):
+    session = scope.get("session")
+    require(isinstance(session, Path), "PR progression has no reviewed session")
+    require_clean_review_tree(scope["root"], session)
+    script = Path(__file__).with_name("rev-evidence.py")
+    spec = importlib.util.spec_from_file_location("pr_publication_evidence", script)
+    evidence = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(evidence)
+    try:
+        with evidence.session_input_lock(session):
+            evidence.validate_standard_inputs(session, require_all=True)
+            coverage = evidence.current_coverage_data(session)
+            require(coverage.get("eligible") is True,
+                    "PR progression requires eligible current verification: " + str(coverage.get("reason")))
+            manifest, _ = evidence.validated_manifest(
+                session / ("r" + coverage["label"] + "-evidence.manifest.json"))
+            require("pr_progress" in manifest, "current verification has no explicit PR progression")
+            binding = manifest["pr_progress"]
+            record = json.loads(evidence.attempt_module().private_bytes(session / binding["artifact"]))
+            head = run_git(["rev-parse", "HEAD"], scope["root"])
+            tree = run_git(["rev-parse", "HEAD^{tree}"], scope["root"])
+            require(record["head"] == head and record["snapshot_tree"] == tree
+                    and record["index_tree"] == tree and manifest["snapshot_tree"] == tree,
+                    "current verification does not certify the exact clean local PR head and tree")
+            return head
+    except (OSError, ValueError, KeyError, RuntimeError) as error:
+        raise ReviewError("cannot certify PR progression: " + str(error)) from error
+
+
 def resolve_pr(scope, repositories=None):
     root = scope["root"]
     repositories = github_repositories(root) if repositories is None else repositories
@@ -417,7 +447,12 @@ def resolve_pr(scope, repositories=None):
                 and target["number"] == int(scope["pr_number"]),
                 "gh returned a different PR than preflight pinned")
         require(target["state"] == "OPEN", "the preflight-pinned PR is no longer open")
-        require(target["head"] == scope["pr_head"]
+        expected_head = scope["pr_head"]
+        session = scope.get("session")
+        has_progress = isinstance(session, Path) and any(session.glob("r*-pr-progress.json"))
+        if target["head"] != expected_head or has_progress:
+            expected_head = certified_pr_progress_head(scope)
+        require(target["head"] == expected_head
                 and target["base_branch"] == scope["base_branch"]
                 and target["base_head"] == scope["pr_base_head"],
                 "the live PR identity no longer matches preflight scope")
