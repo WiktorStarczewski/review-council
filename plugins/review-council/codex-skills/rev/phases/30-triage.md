@@ -157,3 +157,18 @@ cadence fixed across state changes. Relay scheduled events only while the tick i
 For an initialized PR scope, later review-owned commits or dirty fixes require the explicit [PR progression declaration](../../../docs/pr-progress.md) on the next prepare. Keep original scope and evidence immutable; never bypass the pinned guard or infer ownership from ancestry.
 
 For explicit PR progression, commit all final fixes before preparing final verification. The declared local HEAD and clean tree must be the exact published HEAD and tree. A later commit, even with the same tree, requires fresh final verification rather than rebinding an old record.
+
+An explicitly authorized fresh full plan generation for the same code round uses
+`<N>p2`, then `<N>p3` and upward. Use that exact label for state registration,
+preparation, rendering and launch, preserving every earlier generation. Record its
+full roster with `rev-state.sh` before launch. A failed assignment in `<N>p2` uses
+children `<N>p2x`, `<N>p2x2` and upward with
+`plan_replacement_for="<N>p2:<ORIGINAL_FAILED_SEAT>"`; never bind it to `<N>p`.
+The fix gate requires the highest registered root generation for that numeric code
+round, even after restoring `round=<N>`. Older completion or skip evidence cannot
+bypass a newer pending generation. New root suffixes start at 2 without leading
+zeros; legacy replacement spellings such as `<N>px02` remain accepted. Differently
+spelled roots tied at the newest generation are ambiguous and refuse the fix gate.
+Original manifests, prompts, plan hashes and sibling results remain unchanged;
+children still require a failed or stale original assignment and successful
+current-plan-hash evidence.

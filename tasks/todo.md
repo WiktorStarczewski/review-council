@@ -1131,3 +1131,14 @@ Release authorization: the user explicitly requested releasing0.7.13 without CI 
 - [ ] Publish the narrow follow-up under the user's Council release CI waiver and resume Bread review.
 
 Operational acceptance: complete Bread snapshot5b9ce74207af51bba5831a318bf48e28f2dd056c prepared with source context enabled at /private/tmp/wlg-bread-owner-probe-yw2di0gt. All four seats fit the unchanged12-read limit, using1,1,6,2 post-index reads. Exact required segments remain mandatory. Independent normal source review approved. The existing user waiver applies to this narrow follow-up release; no passing candidate CI is claimed.
+
+## Review Council PR #90 and review speed
+
+- [x] Merge current `origin/main` into the PR #90 worktree and preserve both Unreleased notes.
+- [x] Confirm the stale skipped-plan regression with expected-red CI run `40200399044`.
+- [x] Trace #1841 preparation time to repeated predecessor source-context validation; observed 42 replays for each Luna seat and 13 for Sonnet.
+- [x] Finish the registered-plan skip fix and independent review.
+- [ ] Push PR #90, pass exact-head CI, and squash-merge.
+- [ ] Design hash-bound reuse for unchanged historical evidence validation while retaining full checks after any input change.
+- [ ] Implement and measure the approved speed change, then release it.
+- [ ] Continue monitoring #1830 and #1841 to terminal reviewer results.
