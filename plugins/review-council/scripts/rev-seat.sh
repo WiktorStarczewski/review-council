@@ -122,13 +122,17 @@ preserve_audit_invalid_result() {
 }
 
 RESERVED=0
+PUBLISH_UNRESERVED_EXIT=0
+LAUNCH_TOKEN=$(python3 -c 'import uuid; print(uuid.uuid4().hex)') || exit 1
 finish() {  # <code> - validate on 0, record, print the one-line summary, exit
   local code=$1 n="-"
   if [ "$code" = 0 ]; then n=$(python3 "$VALIDATE" "$OUT" 2>>"$LOG") || { code=2; n="-"; }; fi
-  echo "$code" > "$EXITF"
+  if [ "$RESERVED" = 1 ] || [ "$PUBLISH_UNRESERVED_EXIT" = 1 ]; then echo "$code" > "$EXITF"; fi
   # A launch that reserved a call records its exit, so an exhausted exact retry is on record.
   if [ "$RESERVED" = 1 ]; then
-    python3 "$HERE/lib/rev-attempt.py" record "$SESSION" "$ROUND" "$SEAT" "$PROMPT" "$code" >>"$LOG" 2>&1 \
+    python3 "$HERE/lib/rev-attempt.py" complete "$SESSION" "$ROUND" "$SEAT" "$PROMPT" "$code" "$LAUNCH_TOKEN" >>"$LOG" 2>&1 \
+      || echo "cannot persist this launch's terminal intent" >> "$LOG"
+    python3 "$HERE/lib/rev-attempt.py" record "$SESSION" "$ROUND" "$SEAT" "$PROMPT" "$code" "$LAUNCH_TOKEN" >>"$LOG" 2>&1 \
       || echo "cannot record this launch's exit" >> "$LOG"
   fi
   echo "seat=$SEAT round=$ROUND exit=$code findings=$n"
@@ -142,23 +146,6 @@ classify_failure() {  # after a non-zero rc or missing output: 3 auth, 4 cap, 2 
     quota) echo 4;;
     *) if [ ! -s "$OUT" ]; then echo 2; else echo 1; fi;;
   esac
-}
-archive_raw() {
-  ARCHIVED_RAW=""
-  [ -s "$RAW" ] || return 0
-  local n=1 archived
-  while :; do
-    archived="${RAW%.ndjson}.attempt${n}.ndjson"
-    [ -e "$archived" ] || break
-    n=$((n+1))
-  done
-  mv "$RAW" "$archived" || return 1
-  ARCHIVED_RAW=$archived
-}
-restore_raw() {
-  [ -n "${ARCHIVED_RAW:-}" ] || return 0
-  mv "$ARCHIVED_RAW" "$RAW" || return 1
-  ARCHIVED_RAW=""
 }
 has_tool_call() {
   case "$ADAPTER" in
@@ -202,27 +189,26 @@ if [ "$check_rc" -ne 0 ]; then
     echo "seat=$SEAT round=$ROUND exit=$check_rc findings=-"
     exit "$check_rc"
   fi
+  PUBLISH_UNRESERVED_EXIT=1
   finish "$check_rc"
 fi
-rm -f "$EXITF"
 attempt=0
 while :; do
   attempt=$((attempt+1))
-  archive_raw || { echo "cannot archive prior stream before attempt $attempt" >> "$LOG"; finish 1; }
-  reserve_error=$(python3 "$HERE/lib/rev-attempt.py" reserve "$SESSION" "$ROUND" "$SEAT" "$PROMPT" 2>&1)
+  reserve_error=$(python3 "$HERE/lib/rev-attempt.py" reserve "$SESSION" "$ROUND" "$SEAT" "$PROMPT" "$LAUNCH_TOKEN" 2>&1)
   reserve_rc=$?
   if [ "$reserve_rc" -ne 0 ]; then
-    restore_raw || { echo "cannot restore prior stream after reservation refusal" >> "$LOG"; finish 1; }
     [ -z "$reserve_error" ] || printf 'rev-seat: %s\n' "$reserve_error" >&2
     [ -z "$reserve_error" ] || printf '%s\n' "$reserve_error" >> "$LOG"
     if [ "$reserve_rc" -eq 7 ]; then
       echo "persistent provider-call cap reached for this seat generation" >> "$LOG"
       echo "rev-seat: persistent provider-call cap reached for this seat generation" >&2
+      PUBLISH_UNRESERVED_EXIT=1
     fi
     finish "$reserve_rc"
   fi
   RESERVED=1
-  rm -f "$OUT" "$AUDITF"
+  rm -f "$EXITF" "$OUT" "$AUDITF"
   [ "$attempt" -ne 1 ] || : > "$LOG"
   "$ADAPTER_SH"; rc=$?
   case "$ADAPTER" in

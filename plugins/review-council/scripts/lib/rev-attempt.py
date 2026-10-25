@@ -8,6 +8,12 @@ import os
 from pathlib import Path
 import stat
 import sys
+import tempfile
+
+LIB_DIR = Path(__file__).resolve().parent
+if str(LIB_DIR) not in sys.path:
+    sys.path.insert(0, str(LIB_DIR))
+from session_inputs import session_input_lock
 
 TERMINAL_EXITS = ('1', '2')
 
@@ -53,6 +59,83 @@ def hard_audit_failure(audit: Path) -> bool:
 def incomplete_summary(document) -> bool:
     return (isinstance(document, dict) and isinstance(document.get('summary'), str)
             and document['summary'].startswith('INCOMPLETE PROOF'))
+
+
+def semantic_rejection_path(session, panel, seat):
+    return session / f'r{panel}-{seat}.semantic-rejection.json'
+
+
+def semantic_rejection(session, panel, seat):
+    path = semantic_rejection_path(session, panel, seat)
+    try:
+        record = json.loads(private_bytes(path))
+    except FileNotFoundError:
+        return None
+    if (not isinstance(record, dict) or set(record) != {
+            'schema_version', 'label', 'seat', 'generation', 'obligation', 'evidence', 'reason'}
+            or type(record['schema_version']) is not int or record['schema_version'] != 1
+            or record['label'] != panel or record['seat'] != seat
+            or any(not isinstance(record[key], str) or not record[key].strip()
+                   for key in ('obligation', 'evidence', 'reason'))):
+        raise ValueError('invalid semantic rejection: ' + seat)
+    generation = record['generation']
+    stem = f'r{panel}-{seat}'
+    manifest_name = f'r{panel}-evidence.manifest.json'
+    if (not isinstance(generation, dict) or generation.get('label') != panel
+            or generation.get('seat') != seat or generation.get('manifest') != manifest_name):
+        raise ValueError('invalid semantic rejection generation: ' + seat)
+    manifest = json.loads(private_bytes(session / manifest_name))
+    if (not isinstance(manifest, dict) or not isinstance(manifest.get('assignments'), dict)
+            or not isinstance(manifest.get('inputs'), dict)
+            or not isinstance(manifest.get('unenforced_seats', []), list)):
+        raise ValueError('invalid semantic rejection manifest: ' + seat)
+    assignment = manifest['assignments'].get(seat)
+    enforced = seat not in manifest.get('unenforced_seats', [])
+    if (not isinstance(assignment, dict) or generation.get('enforced') is not enforced
+            or generation.get('adapter') != assignment.get('adapter')):
+        raise ValueError('invalid semantic rejection assignment: ' + seat)
+    bindings = {'manifest_sha256': manifest_name, 'prompt_sha256': stem + '.prompt.md',
+                'result_sha256': stem + '.json', 'exit_sha256': stem + '.exit',
+                'stream_sha256': stem + '.stream.ndjson', 'audit_sha256': stem + '.read-audit.json'}
+    for key, name in bindings.items():
+        expected = generation.get(key)
+        if key in ('stream_sha256', 'audit_sha256') and expected is None and not enforced:
+            continue
+        if (not isinstance(expected, str) or len(expected) != 64
+                or not set(expected) <= set('0123456789abcdef')
+                or hashlib.sha256(private_bytes(session / name)).hexdigest() != expected):
+            raise ValueError('stale semantic rejection binding: ' + seat + ' ' + key)
+    encoded_assignment = (json.dumps(assignment, sort_keys=True, ensure_ascii=True, indent=2) + '\n').encode()
+    if (manifest.get('session') != str(session.resolve()) or manifest.get('label') != panel
+            or assignment is None or generation.get('snapshot_tree') != manifest.get('snapshot_tree')
+            or generation.get('roster_sha256') != manifest.get('inputs', {}).get('roster.json')
+            or generation.get('assignment_sha256') != hashlib.sha256(encoded_assignment).hexdigest()
+            or private_bytes(session / (stem + '.exit')).strip() != b'0'):
+        raise ValueError('invalid semantic rejection identity: ' + seat)
+    prompt = private_bytes(session / (stem + '.prompt.md')).decode('utf-8')
+    result = json.loads(private_bytes(session / (stem + '.json')))
+    if (not isinstance(result, dict) or not isinstance(result.get('summary'), str)
+            or record['obligation'] not in prompt or record['evidence'] not in result['summary']
+            or prompt.splitlines().count('Evidence manifest SHA-256: ' + generation['manifest_sha256']) != 1):
+        raise ValueError('unbound semantic rejection evidence: ' + seat)
+    return record
+
+
+def publish_semantic_rejection(session, panel, seat, raw):
+    path = semantic_rejection_path(session, panel, seat)
+    descriptor, temporary = tempfile.mkstemp(prefix='.semantic-rejection-', dir=session)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            if private_bytes(path) != raw:
+                raise ValueError('semantic rejection is immutable: ' + seat)
+    finally:
+        os.unlink(temporary)
 
 
 def incomplete_proof(result: Path) -> bool:
@@ -144,7 +227,8 @@ def ended_by_incomplete_proof(session: Path, panel: str, seat: str, prompt: Path
 def terminal_failure(session: Path, panel: str, seat: str, prompt: Path) -> bool:
     """The assignment failed for good: a hard audit, a completed launch's incomplete proof, or its one
     exact retry also exited 1 or 2."""
-    if latched(session, panel, seat) or ended_by_incomplete_proof(session, panel, seat, prompt):
+    if (semantic_rejection(session, panel, seat) is not None
+            or latched(session, panel, seat) or ended_by_incomplete_proof(session, panel, seat, prompt)):
         return True
     exit_path = session / f'r{panel}-{seat}.exit'
     try:
@@ -172,11 +256,109 @@ def open_private(path):
     return descriptor, created
 
 
+def write_attempt(path, current):
+    # The session and panel locks serialize writers across atomic inode replacement.
+    descriptor, temporary = tempfile.mkstemp(prefix='.attempt-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+            json.dump(current, stream, sort_keys=True, separators=(',', ':'))
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def archive_stream(session, panel, seat):
+    raw = session / f'r{panel}-{seat}.stream.ndjson'
+    try:
+        if raw.stat().st_size == 0:
+            return None
+    except FileNotFoundError:
+        return None
+    n = 1
+    while True:
+        archived = session / f'r{panel}-{seat}.stream.attempt{n}.ndjson'
+        if not os.path.lexists(archived):
+            os.replace(raw, archived)
+            return archived
+        n += 1
+
+
+def restore_stream(archived, raw):
+    if archived is None:
+        return
+    if os.path.lexists(raw):
+        raise OSError('cannot restore prior provider stream because its path is occupied')
+    os.replace(archived, raw)
+
+
+def discard_new_attempt(path, stream, created):
+    if not created:
+        return
+    opened = os.fstat(stream.fileno())
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return
+    if (stat.S_ISREG(current.st_mode) and current.st_nlink == 1 and current.st_size == 0
+            and (current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino)):
+        path.unlink()
+
+
+def recover_completion(session, panel, seat, prompt):
+    path, identity = record_path(session, panel, seat, prompt)
+    if not path.exists():
+        return
+    descriptor, _ = open_private(path)
+    with os.fdopen(descriptor, 'r+', encoding='utf-8') as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        try:
+            current = json.load(stream)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(current, dict):
+            return
+        intent = current.get('terminal_intent')
+        if intent is None:
+            return
+        calls = current.get('calls')
+        if (any(current.get(key) != value for key, value in identity.items())
+                or current.get('lifecycle_version') != 2
+                or not isinstance(intent, dict) or set(intent) != {'token', 'calls', 'exit'}
+                or type(calls) is not int or calls < 1
+                or type(current.get('completed_calls')) is not int
+                or not 0 <= current['completed_calls'] < calls
+                or type(intent['calls']) is not int or intent['calls'] != calls
+                or type(intent['exit']) is not int or intent['exit'] not in (0, 1, 2, 3, 4, 7)
+                or not isinstance(intent['token'], str) or len(intent['token']) != 32
+                or not set(intent['token']) <= set('0123456789abcdef')
+                or intent['token'] != current.get('active_launch')):
+            raise ValueError('unbound terminal completion intent')
+        current['launches'] = [*current.get('launches', []), intent['exit']]
+        current.update(completed_calls=calls, active_launch=None, last_launch=intent['token'])
+        del current['terminal_intent']
+        write_attempt(path, current)
+    if intent['exit'] == 0:
+        remember_incomplete_proof(session, panel, seat, prompt)
+
+
 def main():
     command = sys.argv[1] if len(sys.argv) > 1 else None
-    if (command, len(sys.argv)) not in (('check', 6), ('reserve', 6), ('record', 7)):
+    if (command, len(sys.argv)) not in (('check', 6), ('reserve', 6), ('reserve', 7), ('record', 7), ('record', 8), ('complete', 8)):
+        return 1
+    token = sys.argv[-1] if (command, len(sys.argv)) in (('reserve', 7), ('record', 8), ('complete', 8)) else None
+    if token is not None and (len(token) != 32 or not set(token) <= set('0123456789abcdef')):
         return 1
     session = Path(sys.argv[2]).resolve()
+    # Preparation holds this lock through its final idle scan and generation publication.
+    with session_input_lock(session):
+        return _main_locked(session, command, token)
+
+
+def _main_locked(session, command, token):
     panel, seat = sys.argv[3], sys.argv[4]
     safe = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-')
     if not panel or not seat or not set(panel) <= safe or not set(seat) <= safe:
@@ -194,6 +376,12 @@ def main():
         return 1
     with os.fdopen(panel_descriptor, 'r+', encoding='utf-8') as panel_lock:
         fcntl.flock(panel_lock, fcntl.LOCK_EX)
+        if command in ('check', 'reserve'):
+            recover_completion(session, panel, seat, Path(sys.argv[5]))
+        if command in ('check', 'reserve') and semantic_rejection(session, panel, seat) is not None:
+            print(f'{seat} under label {panel} has a semantic rejection; replace the assignment '
+                  'on another eligible seat, never relaunch it', file=sys.stderr)
+            return 2
         if command in ('check', 'reserve') and latched(session, panel, seat):
             print(f'{seat} under label {panel} failed a hard evidence audit; replace the assignment '
                   'on another eligible seat, never relaunch it', file=sys.stderr)
@@ -206,7 +394,7 @@ def main():
         if command == 'check':
             return 0
         path, identity = record_path(session, panel, seat, Path(sys.argv[5]))
-        if command == 'record' and not path.exists():
+        if command in ('record', 'complete') and not path.exists():
             return 1
         try:
             descriptor, created = open_private(path)
@@ -218,7 +406,7 @@ def main():
             try:
                 current = json.load(stream)
             except (json.JSONDecodeError, ValueError):
-                if not created or command == 'record':
+                if not created or command in ('record', 'complete'):
                     return 1
                 current = dict(identity, calls=0)
             if any(current.get(field) != value for field, value in identity.items()):
@@ -226,20 +414,68 @@ def main():
             calls = current.get('calls')
             if type(calls) is not int or calls < 0:
                 return 1
-            if command == 'record':
+            if 'lifecycle_version' in current and (type(current['lifecycle_version']) is not int
+                                                    or current['lifecycle_version'] != 2):
+                return 1
+            bound = current.get('lifecycle_version') == 2
+            if token is not None:
+                if not bound:
+                    if calls or current.get('launches'):
+                        print('legacy attempt cannot acquire an inferred completion watermark', file=sys.stderr)
+                        return 1
+                    current.update(lifecycle_version=2, completed_calls=0, active_launch=None, last_launch=None)
+                completed = current.get('completed_calls')
+                active = current.get('active_launch')
+                if type(completed) is not int or not 0 <= completed <= calls:
+                    return 1
+                if command in ('record', 'complete'):
+                    if active != token or completed == calls:
+                        return 1
+                elif (active is not None and active != token) or current.get('last_launch') == token:
+                    return 1
+                elif active is None and completed != calls:
+                    return 1
+            elif bound:
+                return 1
+            if command in ('record', 'complete'):
                 if sys.argv[6] not in ('0', '1', '2', '3', '4', '7'):
                     return 1
-                current['launches'] = [*current.get('launches', []), int(sys.argv[6])]
+                intent = dict(token=token, calls=calls, exit=int(sys.argv[6]))
+                if current.get('terminal_intent') not in (None, intent):
+                    return 1
+                if command == 'complete':
+                    current['terminal_intent'] = intent
+                else:
+                    current['launches'] = [*current.get('launches', []), int(sys.argv[6])]
+                    if token is not None:
+                        current.update(completed_calls=calls, active_launch=None, last_launch=token)
+                    current.pop('terminal_intent', None)
             elif calls >= 4:
                 return 7
             else:
+                archived_stream = None
+                if command == 'reserve':
+                    try:
+                        archived_stream = archive_stream(session, panel, seat)
+                    except OSError:
+                        discard_new_attempt(path, stream, created)
+                        raise
                 current['calls'] = calls + 1
-            stream.seek(0)
-            stream.truncate()
-            json.dump(current, stream, sort_keys=True, separators=(',', ':'))
-            stream.write('\n')
-            stream.flush()
-            os.fsync(stream.fileno())
+                if token is not None:
+                    current['active_launch'] = token
+            try:
+                write_attempt(path, current)
+            except OSError as error:
+                restore_error = None
+                if command == 'reserve':
+                    try:
+                        restore_stream(archived_stream, session / f'r{panel}-{seat}.stream.ndjson')
+                    except OSError as failure:
+                        restore_error = failure
+                discard_new_attempt(path, stream, created)
+                if restore_error is not None:
+                    raise OSError(f'{error}; {restore_error}') from error
+                raise error
         if command == 'record' and sys.argv[6] == '0':
             remember_incomplete_proof(session, panel, seat, Path(sys.argv[5]))
         return 0
@@ -248,6 +484,6 @@ def main():
 if __name__ == '__main__':
     try:
         sys.exit(main())
-    except (OSError, ValueError, RecursionError) as error:
+    except (OSError, ValueError, RecursionError, RuntimeError) as error:
         print('attempt state: ' + str(error), file=sys.stderr)
         sys.exit(1)

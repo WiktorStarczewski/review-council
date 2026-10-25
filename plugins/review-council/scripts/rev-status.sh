@@ -137,6 +137,9 @@ for seat in seats:
     started = mtime(pr)
     if seat in dropped:
         seats_out.append((f"{name}: dropped", '')); continue
+    semantic = context_tools['semantic_rejection_state'](S, rnd, seat)
+    if semantic is not None:
+        seats_out.append((f"{name}: {semantic}", '')); continue
     if os.path.exists(ex):
         code = open(ex).read().strip()
         if code == '0':
@@ -195,7 +198,7 @@ running = [(prefix, action) for prefix, action in seats_out if ': running ' in p
 pending = sum(': pending' in prefix for prefix, _ in seats_out)
 failed = sum(any(marker in prefix for marker in (
     ': failed ', ': invalid SDK proof', ': missing result', ': invalid result',
-    ': incomplete proof')) for prefix, _ in seats_out)
+    ': incomplete proof', ': semantic rejection', ': invalid semantic rejection')) for prefix, _ in seats_out)
 dropped_count = sum(': dropped' in prefix for prefix, _ in seats_out)
 open_count = sum(counts.values())
 story = [f"Council is in {phase}, round {rnd} of {mn}: {done} of {len(seats_out)} review seats have returned results."]

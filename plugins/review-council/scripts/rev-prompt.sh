@@ -345,21 +345,28 @@ if sys.argv[2]:
         manifest = json.load(stream)
 for seat in sys.argv[3:]:
     mode, packets, segments = 'windows', False, False
+    call_limit = limits['REPOSITORY_EXPANSION_CALL_LIMIT']
+    mandatory_limit = limits['MANDATORY_REPOSITORY_READ_LIMIT']
     if manifest:
         mode = manifest['assignments'][seat]['patch_read_mode']
         context = manifest['source_context']['seats'][seat]
         packets = bool(context['shards'])
         segments = any(row['segments'] for row in context['required_source_ranges'])
-    print('mode', mode, int(packets), int(segments))
+        capacity = manifest.get('task_capacity', {}).get('seats', {}).get(seat, {})
+        call_limit = limits['repository_expansion_call_limit_for_seat'](
+            context['source_read_required'], capacity.get('repository_source_target'))
+        mandatory_limit = call_limit - limits['REPOSITORY_REFUTATION_CALL_RESERVE']
+    print('mode', mode, int(packets), int(segments), call_limit, mandatory_limit)
 PY
 ) || die "cannot compile prompt limits and evidence modes"
-PATCH_MODES=(); PACKET_MODES=(); SEGMENT_MODES=()
+PATCH_MODES=(); PACKET_MODES=(); SEGMENT_MODES=(); CALL_LIMITS=(); MANDATORY_LIMITS=()
 while read -r kind first second third fourth fifth; do
   if [ "$kind" = limits ]; then
     READ_LINES=$first; CODEX_READ_LINES=$second; CODEX_SOURCE_READ_LINES=$third
     CALL_LIMIT=$fourth; REFUTATION_START=$fifth
   else
     PATCH_MODES+=("$first"); PACKET_MODES+=("$second"); SEGMENT_MODES+=("$third")
+    CALL_LIMITS+=("$fourth"); MANDATORY_LIMITS+=("$fifth")
   fi
 done <<< "$COMPILED_MODES"
 PATCH_ARTIFACT=""; PATCH_AVAILABLE=0
@@ -524,6 +531,7 @@ prefixes = (
     'First source-context action: ',
     'Required source range: ',
     'Required post-index original-source target: ',
+    'Required post-index original-source boundary: ',
     'Optional post-index original-source target: ',
 )
 index_prefix = 'Evidence navigation index: '
@@ -619,7 +627,11 @@ EOC
 EOC
     fi
     if [ "$ADAPTER" = codex ]; then
-      printf '5. Codex source batching is disabled; do not use a source-batch payload. Each source read is a separate tool call. Use at most %s lines for every repository source window and at most %s lines for each assigned-patch window, splitting further into consecutive windows as needed. Aim for under 24 KiB per response and per ordinary turn; if a planned response or turn may exceed 24 KiB, narrow it before reading. Hard ceilings are 32 KiB per response and for an ordinary turn. Ordered proof phases may use their rendered 60 KiB turn budget, with each response below 32 KiB; source packets stay within their ordinary 32 KiB turn cap. Line limits do not limit bytes. ' "$PROMPT_SOURCE_READ_LINES" "$PROMPT_PATCH_READ_LINES"
+      if [ "$PATCH_MODE" = chunks ]; then
+        printf '5. Codex source batching is disabled; do not use a source-batch payload. Each source read is a separate tool call. Read each assigned-patch chunk artifact once, completely, and in exact order; do not split or reread chunk contents in line windows. Use at most %s lines for every repository source window. Aim for under 24 KiB per response and per ordinary turn; if a planned response or turn may exceed 24 KiB, narrow it before reading. Hard ceilings are 32 KiB per response and for an ordinary turn. Ordered proof phases may use their rendered 60 KiB turn budget, with each response below 32 KiB; source packets stay within their ordinary 32 KiB turn cap. Line limits do not limit bytes. ' "$PROMPT_SOURCE_READ_LINES"
+      else
+        printf '5. Codex source batching is disabled; do not use a source-batch payload. Each source read is a separate tool call. Use at most %s lines for every repository source window and at most %s lines for each assigned-patch window, splitting further into consecutive windows as needed. Aim for under 24 KiB per response and per ordinary turn; if a planned response or turn may exceed 24 KiB, narrow it before reading. Hard ceilings are 32 KiB per response and for an ordinary turn. Ordered proof phases may use their rendered 60 KiB turn budget, with each response below 32 KiB; source packets stay within their ordinary 32 KiB turn cap. Line limits do not limit bytes. ' "$PROMPT_SOURCE_READ_LINES" "$PROMPT_PATCH_READ_LINES"
+      fi
     else
       printf '5. Batch independent bounded tool calls into one turn with a 32 KiB combined output ceiling. '
     fi
@@ -649,7 +661,8 @@ EOC
     [ -z "$EVIDENCE" ] || printf 'the navigation index or '
     echo 'a summary as proof.'
     if [ -n "$EVIDENCE" ]; then printf '8. After the evidence index, '; else printf '8. After assigned-patch discovery, '; fi
-    printf 'use at most %s repository tool calls. Start no new evidence path after call %s; use the remaining calls only to refute or cite candidates, then return the required JSON.\n\n' "$CALL_LIMIT" "$REFUTATION_START"
+    printf 'use at most %s repository tool calls. Finish required reads by call %s; start no new evidence path after call %s and reserve calls %s-%s for refutation and citations, then return the required JSON.\n\n' \
+      "$CALL_LIMIT" "$REFUTATION_START" "$REFUTATION_START" "$((REFUTATION_START + 1))" "$CALL_LIMIT"
     echo '## Evidence and output'
     printf '%s' '- Every finding names a file and lines you opened yourself. Its cited range must intersect '
     if [ "$HAS_PACKETS" = 1 ]; then printf 'a source-context packet range you opened or '; fi
@@ -817,6 +830,7 @@ for i in "${!SEATS[@]}"; do
     PROMPT_SOURCE_READ_LINES=$CODEX_SOURCE_READ_LINES
   fi
   PATCH_MODE=${PATCH_MODES[$i]}; HAS_PACKETS=${PACKET_MODES[$i]}; HAS_SEGMENTS=${SEGMENT_MODES[$i]}
+  CALL_LIMIT=${CALL_LIMITS[$i]}; REFUTATION_START=${MANDATORY_LIMITS[$i]}
   CLEAN_ROOM=0; FIRST_EVIDENCE='First evidence action'
   case "+$LENS+" in *+clean-room+*) CLEAN_ROOM=1; FIRST_EVIDENCE+=' after required clean-room design';; esac
   case "$ADAPTER" in agent|cursor-agent|gemini|cursor-sdk) INLINE_SCHEMA=1;; *) INLINE_SCHEMA=0;; esac

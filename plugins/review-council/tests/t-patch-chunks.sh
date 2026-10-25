@@ -388,6 +388,10 @@ PY
 )"
     assert_nogrep "chunk prompt does not request line windows" "$prompt" \
       '^Read the entire assigned patch in bounded windows'
+    assert_grep "chunk prompt requires complete ordered artifact reads" "$prompt" \
+      'reading only consecutive chunks in exact order and in full'
+    assert_nogrep "chunk prompt does not reapply line-window limits to complete artifacts" "$prompt" \
+      'at most 160 lines for each assigned-patch window'
     assert_grep "Codex keeps one patch chunk per turn" "$prompt" \
       '^Patch chunk batch limit: 1$'
     assert_grep "Codex chunk prompt gives an exact shell recipe" "$prompt" \
@@ -704,11 +708,11 @@ if manifest['source_context']['seats']['sol']['source_read_required']:
                 + ' | ' + shlex.join(['sed', '-n', f'{first},{last}p']),
                 b''.join(lines[first - 1:last]).decode())
 if mode == 'expansion-overflow':
-    for index in range(17):
+    for index in range(21):
         command('search-' + str(index), "rg -n 'value_1' . | head -80",
                 'src/large.py:2:value_0001 = 0001\n')
 if mode == 'failed-expansion-overflow':
-    for index in range(17):
+    for index in range(21):
         command('failed-search-' + str(index), "rg -n 'missing' . | head -80", '', 1)
 if mode == 'discovery-overflow':
     command('discovery-overflow', "rg -n 'value' . | head -80",

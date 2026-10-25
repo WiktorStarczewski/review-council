@@ -17,7 +17,7 @@ LIB_DIR = Path(__file__).resolve().parent
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
 from review_limits import (CODEX_READ_LINES, CODEX_SOURCE_READ_LINES, READ_LINES,
-                           REPOSITORY_EXPANSION_CALL_LIMIT)
+                           repository_expansion_call_limit_for_seat)
 SEARCH_RESULTS = 80
 SEARCH_RESULT_SENTINEL = SEARCH_RESULTS + 1
 OUTPUT_BYTES = 32 * 1024
@@ -1663,6 +1663,7 @@ def validate_plan_prompt_binding(manifest, seat, prompt, module, *, text=None):
         'The immutable snapshot is embedded below with source line numbers.',
         numbered,
     ]
+    prepared_outputs = []
     assignment = manifest['assignments'][seat]
     first_call = plan_specialist_first_call_contract(manifest, seat, session)
     if first_call is not None:
@@ -1675,6 +1676,7 @@ def validate_plan_prompt_binding(manifest, seat, prompt, module, *, text=None):
                 'Prepared cluster sibling search: ' + cluster_id + ' ',
                 'Required cluster sibling search: ' + cluster_id + ' ',
                 'Required cluster source: ' + cluster_id + ' ',
+                'Prepared cluster search output: ' + cluster_id + ' ',
             ]
             if any(token in text for token in forbidden):
                 raise ValueError('prompt contains an unassigned plan cluster')
@@ -1688,12 +1690,11 @@ def validate_plan_prompt_binding(manifest, seat, prompt, module, *, text=None):
                 + 'line invalidates proof.')
         else:
             body = (session / proof['artifact']).read_text()
-            required_once.extend([
+            required_once.append(
                 'Prepared cluster sibling search: ' + cluster_id + ' ' + proof['artifact']
-                + ' SHA-256 ' + proof['sha256'],
-                'Prepared cluster search output: '
-                + json.dumps(body, ensure_ascii=True, separators=(',', ':')),
-            ])
+                + ' SHA-256 ' + proof['sha256'])
+            prepared_outputs.append((
+                cluster_id, json.dumps(body, ensure_ascii=True, separators=(',', ':'))))
         for row in cluster['paths']:
             location = row['path']
             if row['line_start'] is not None:
@@ -1708,6 +1709,19 @@ def validate_plan_prompt_binding(manifest, seat, prompt, module, *, text=None):
         required_once.append(
             'Mandatory cluster source window: ' + row['path'] + ':'
             + str(row['line_start']) + '-' + str(row['line_end']))
+    output_prefix = 'Prepared cluster search output: '
+    observed_outputs = [line for line in text.splitlines() if line.startswith(output_prefix)]
+    bound_outputs = [output_prefix + cluster_id + ' ' + body
+                     for cluster_id, body in prepared_outputs]
+    legacy_outputs = [output_prefix + body for _, body in prepared_outputs]
+    if sorted(observed_outputs) == sorted(bound_outputs):
+        required_once.extend(bound_outputs)
+    elif (len(set(legacy_outputs)) == len(legacy_outputs)
+          and sorted(observed_outputs) == sorted(legacy_outputs)):
+        # Historical prompts can bind unique raw tokens without rewriting their hashes.
+        required_once.extend(legacy_outputs)
+    else:
+        raise ValueError('prompt omits or duplicates bound plan evidence')
     if any(not token or text.count(token) != 1 for token in required_once):
         raise ValueError('prompt omits or duplicates bound plan evidence')
     if first_call is not None:
@@ -3208,7 +3222,11 @@ def assess(args, blocked):
                 call_id for call_id, (name, data, _) in calls.items()
                 if repository_expansion_call(name, data, root, session)
             ]
-            if len(expansion_calls) > REPOSITORY_EXPANSION_CALL_LIMIT:
+            seat_capacity = manifest.get('task_capacity', {}).get('seats', {}).get(seat, {})
+            expansion_limit = repository_expansion_call_limit_for_seat(
+                context['source_read_required'],
+                seat_capacity.get('repository_source_target'))
+            if len(expansion_calls) > expansion_limit:
                 failures.append(violation('repository-expansion-call-limit', args.adapter))
             ordered_proof_calls = ({call_id for call_id, _ in paced_chunk_calls}
                                    | {call_id for call_id, _ in paced_segment_calls}

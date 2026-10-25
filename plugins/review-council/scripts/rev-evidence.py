@@ -31,7 +31,8 @@ from review_limits import (CLAUDE_MAX_TURNS, MANDATORY_REPOSITORY_READ_LIMIT,
                            CODEX_READ_LINES, CODEX_SOURCE_READ_LINES,
                            PROVIDER_TURN_RESERVE, READ_LINES,
                            REPOSITORY_EXPANSION_CALL_LIMIT,
-                           REPOSITORY_REFUTATION_CALL_RESERVE)
+                           REPOSITORY_REFUTATION_CALL_RESERVE,
+                           repository_expansion_call_limit_for_seat)
 from session_inputs import session_input_lock, validate_standard_inputs
 from roster import cursor_sdk_identity, validate_cursor_sdk_qualification
 from workhorse import (CHAIN as WORKHORSE_CHAIN, ORDER as WORKHORSE_ORDER, SEAT,
@@ -520,7 +521,7 @@ def scope(session):
     return values
 
 
-def validate_pinned_pr_checkout(values):
+def validate_pinned_pr_checkout(values, progress=None):
     pr_number = values.get('REV_PR_NUMBER')
     pr_repo = values.get('REV_PR_REPO')
     pinned_head = values.get('REV_PR_HEAD')
@@ -534,8 +535,14 @@ def validate_pinned_pr_checkout(values):
             or not pinned_base or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', pinned_base)
             or not pinned_base_ref):
         raise ValueError('invalid pinned PR identity')
+    if progress is not None and (not isinstance(progress, dict)
+            or any(not isinstance(progress.get(key), str)
+                   or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', progress[key])
+                   for key in ('head', 'live_head'))):
+        raise ValueError('invalid explicit PR progression identity')
     root = str(Path(values['REV_ROOT']).resolve())
     env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
+    env['GIT_OPTIONAL_LOCKS'] = '0'
 
     def git(*args):
         result = subprocess.run(['git', '-C', root, *args], env=env,
@@ -545,7 +552,7 @@ def validate_pinned_pr_checkout(values):
         return result.stdout.strip()
 
     current_head = git('rev-parse', '--verify', 'HEAD')
-    if current_head != pinned_head:
+    if current_head != (progress['head'] if progress else pinned_head):
         raise ValueError(f'checked out HEAD does not match pinned PR #{pr_number} head')
     current_branch = git('symbolic-ref', '--quiet', '--short', 'HEAD')
     if current_branch != values.get('REV_BRANCH'):
@@ -553,7 +560,7 @@ def validate_pinned_pr_checkout(values):
     status = git('status', '--porcelain')
     if status is None:
         raise ValueError(f'cannot verify pinned PR #{pr_number} checkout status')
-    if status:
+    if status and progress is None:
         raise ValueError(f'pinned PR #{pr_number} checkout has uncommitted changes')
     base_branch = values.get('REV_BASE_BRANCH')
     if not base_branch:
@@ -588,16 +595,253 @@ def validate_pinned_pr_checkout(values):
     except (json.JSONDecodeError, KeyError, TypeError) as error:
         raise ValueError(f'cannot revalidate pinned PR #{pr_number}: invalid GitHub metadata') from error
     live_repo = match.group(1) + '/' + match.group(2) if match is not None else None
+    live_heads = {progress['live_head']} if progress else {pinned_head}
+    if progress and progress.get('published_head') == progress['head']:
+        live_heads.add(progress['head'])
     if (isinstance(live_number, bool) or not isinstance(live_number, int)
             or match is None or int(match.group(3)) != live_number
             or live_number != int(pr_number)
             or live_repo.lower() != pr_repo.lower()
             or live.get('state') != 'OPEN'
             or live.get('headRefName') != values.get('REV_BRANCH')
-            or live.get('headRefOid') != pinned_head
+            or live.get('headRefOid') not in live_heads
             or live.get('baseRefName') != base_branch
             or live.get('baseRefOid') != pinned_base):
         raise ValueError(f'live PR #{pr_number} identity no longer matches preflight scope')
+
+
+def pr_progress_prior(session, binding, seen=None, offline=False):
+    match = re.fullmatch(r'([A-Za-z0-9][A-Za-z0-9._-]*):([0-9a-f]{64})', binding or '')
+    if match is None:
+        raise ValueError('PR progression requires an exact prior label and manifest SHA-256')
+    path = session / f'r{match.group(1)}-evidence.manifest.json'
+    if digest(attempt_module().private_bytes(path)) != match.group(2):
+        raise ValueError('PR progression prior manifest hash mismatch')
+    manifest, actual = validated_manifest(path, fresh=False, seen=seen, offline=offline)
+    if actual != match.group(2) or digest(attempt_module().private_bytes(path)) != actual:
+        raise ValueError('PR progression prior manifest changed during validation')
+    return manifest
+
+
+def pr_progress_head(session, manifest):
+    binding = manifest.get('pr_progress')
+    if binding is None:
+        return scope(session)['REV_PR_HEAD']
+    return json.loads(attempt_module().private_bytes(session / binding['artifact']))['head']
+
+
+def pr_index_tree(repo):
+    rows = repo.git('ls-files', '--stage', '-z')
+    for row in rows.split(b'\0'):
+        if row and row.split(b'\t', 1)[0].split()[-1] != b'0':
+            raise ValueError('PR progression refuses an unmerged index')
+    descriptor, name = tempfile.mkstemp(prefix='.pr-progress-index-', dir=repo.session)
+    os.close(descriptor)
+    os.unlink(name)
+    environment = dict(repo.env, GIT_INDEX_FILE=name)
+    try:
+        repo.git('read-tree', '--empty', env=environment)
+        repo.git('update-index', '-z', '--index-info', data=rows, env=environment)
+        return repo.git('write-tree', env=environment).decode().strip()
+    finally:
+        for path in (name, name + '.lock'):
+            if os.path.lexists(path):
+                os.unlink(path)
+
+
+def pr_progress_changes(repo, prior, head, index, snapshot):
+    old_head = pr_progress_head(repo.session, prior)
+    paths = set()
+    for commit in repo.git('rev-list', old_head + '..' + head).decode().splitlines():
+        paths.update(os.fsdecode(path) for path in repo.git(
+            'diff-tree', '--root', '-m', '--no-commit-id', '--no-renames',
+            '--name-only', '-r', '-z', commit).split(b'\0') if path)
+    prior_binding = prior.get('pr_progress')
+    prior_index = (json.loads(attempt_module().private_bytes(repo.session / prior_binding['artifact']))['index_tree']
+                   if prior_binding else repo.tree(old_head))
+    trees = [repo.entries(tree) for tree in (prior['snapshot_tree'], prior_index, repo.tree(head), index, snapshot)]
+    for left, right in zip(trees, trees[1:]):
+        paths.update(path for path in left.keys() | right.keys() if left.get(path) != right.get(path))
+    return [{'path': path, **{name: list(entries[path]) if path in entries else None
+                             for name, entries in zip(('prior', 'prior_index', 'head', 'index', 'snapshot'), trees)}}
+            for path in sorted(paths)]
+
+
+def pr_progress_ancestry(repo, prior, head, live_head):
+    original = repo.scope.get('REV_PR_HEAD')
+    if repo.selected != '.' or not original:
+        raise ValueError('PR progression requires a pinned whole-branch PR scope')
+    for older, newer in ((original, live_head), (live_head, head), (pr_progress_head(repo.session, prior), head)):
+        repo.git('merge-base', '--is-ancestor', older, newer)
+
+
+def pr_progress_idle(session):
+    attempt_api = attempt_module()
+    terminal = set()
+    directory = session / 'attempts'
+    if directory.is_symlink():
+        raise ValueError('redirected PR progression attempt directory')
+    for path in directory.glob('*.json'):
+        attempt = json.loads(attempt_api.private_bytes(path))
+        if any(not isinstance(attempt.get(key), str) or not SAFE_NAME.fullmatch(attempt[key])
+               for key in ('panel', 'seat')):
+            raise ValueError('invalid PR progression launch identity')
+        stem = f"r{attempt['panel']}-{attempt['seat']}"
+        prompt = session / (stem + '.prompt.md')
+        prompt_hash = digest(attempt_api.private_bytes(prompt))
+        identity = {key: attempt.get(key) for key in ('panel', 'seat', 'prompt_sha256')}
+        expected = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest() + '.json'
+        if identity['prompt_sha256'] != prompt_hash or path.name != expected:
+            raise ValueError('PR progression attempt does not bind its canonical prompt identity')
+        calls = attempt.get('calls')
+        launches = attempt.get('launches', [])
+        if (type(calls) is not int or calls < 0 or not isinstance(launches, list)
+                or any(type(code) is not int or code not in (0, 1, 2, 3, 4, 7) for code in launches)
+                or len(launches) > calls):
+            raise ValueError('invalid PR progression launch lifecycle')
+        completed = attempt.get('completed_calls')
+        legacy_fields = {'panel', 'seat', 'prompt_sha256', 'calls', 'launches'}
+        if 'lifecycle_version' in attempt and (type(attempt['lifecycle_version']) is not int
+                                              or attempt['lifecycle_version'] != 2):
+            raise ValueError('unknown provider launch lifecycle version')
+        if attempt.get('lifecycle_version') == 2:
+            if set(attempt) - legacy_fields != {'lifecycle_version', 'completed_calls', 'active_launch', 'last_launch'}:
+                raise ValueError('invalid bound provider lifecycle fields')
+            last = attempt.get('last_launch')
+            if (type(completed) is not int or completed != calls or attempt.get('active_launch') is not None
+                    or (calls and (not launches or not isinstance(last, str)
+                                   or re.fullmatch(r'[0-9a-f]{32}', last) is None))):
+                raise ValueError('PR progression refuses an unfinished provider launch')
+        elif (set(attempt) != legacy_fields or completed is not None or calls != len(launches) or not calls):
+            raise ValueError('ambiguous legacy provider lifecycle; PR progression refuses to infer completion')
+        else:
+            exit_path = session / (stem + '.exit')
+            if (not exit_path.exists()
+                    or attempt_api.private_bytes(exit_path).strip() != str(launches[-1]).encode()):
+                raise ValueError('legacy managed launch has no matching terminal exit evidence')
+        if calls:
+            terminal.add(stem)
+    for path in session.glob('r*-*.stream.ndjson'):
+        if not attempt_api.safe_regular(path):
+            raise ValueError('redirected provider stream lifecycle evidence')
+        if path.name.removesuffix('.stream.ndjson') not in terminal:
+            raise ValueError('provider stream has no unambiguous canonical terminal lifecycle')
+
+
+def pr_progress_observation(session, binding, live_head, published_head=None, require_idle=True):
+    if not isinstance(live_head, str) or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', live_head):
+        raise ValueError('PR progression requires an exact live PR head')
+    prior = pr_progress_prior(session, binding)
+    repo = Repository(session)
+    head = repo.git('rev-parse', '--verify', 'HEAD').decode().strip()
+    identity = {'head': head, 'live_head': live_head}
+    validate_pinned_pr_checkout(repo.scope, dict(identity, published_head=published_head))
+    pr_progress_ancestry(repo, prior, head, live_head)
+    if require_idle:
+        pr_progress_idle(session)
+    snapshot, unsafe = repo.snapshot()
+    if unsafe:
+        raise ValueError('PR progression snapshot cannot be represented safely')
+    index = pr_index_tree(repo)
+    changes = pr_progress_changes(repo, prior, head, index, snapshot)
+    return dict(identity, schema_version=1, scope_sha256=digest(attempt_module().private_bytes(session / 'scope.env')),
+                prior=binding, snapshot_tree=snapshot, index_tree=index,
+                paths=[row['path'] for row in changes], changes=changes)
+
+
+def prepare_pr_progress(args, session):
+    names = ('from', 'head', 'live_head', 'tree', 'path', 'reason')
+    values = {name: getattr(args, 'pr_progress_' + name, None) for name in names}
+    if not any(values.values()):
+        return None
+    if not all(values.values()):
+        raise ValueError('prepare requires a complete explicit PR progression declaration')
+    observation = pr_progress_observation(session, values['from'], values['live_head'])
+    if (values['head'] != observation['head'] or values['tree'] != observation['snapshot_tree']
+            or sorted(values['path']) != observation['paths']):
+        raise ValueError('PR progression declared head, snapshot or exact paths do not match observation')
+    if not isinstance(values['reason'], str) or not values['reason'].strip() or len(values['reason']) > 2048:
+        raise ValueError('PR progression requires a bounded controller ownership reason')
+    if values['from'].split(':', 1)[0] == args.label:
+        raise ValueError('PR progression cannot replace its own prior generation')
+    return dict(observation, label=args.label, phase=args.phase, reason=values['reason'])
+
+
+def validate_pr_progress(session, manifest, seen, fresh, offline):
+    binding = manifest.get('pr_progress')
+    if (not isinstance(binding, dict) or set(binding) != {'artifact', 'sha256'}
+            or binding['artifact'] != f"r{manifest['label']}-pr-progress.json"):
+        raise ValueError('invalid PR progression artifact binding')
+    raw = attempt_module().private_bytes(session / binding['artifact'])
+    if digest(raw) != binding['sha256']:
+        raise ValueError('PR progression artifact hash mismatch')
+    record = json.loads(raw)
+    fields = {'schema_version', 'scope_sha256', 'prior', 'head', 'live_head', 'snapshot_tree',
+              'index_tree', 'paths', 'changes', 'label', 'phase', 'reason'}
+    if (not isinstance(record, dict) or set(record) != fields or type(record['schema_version']) is not int or record['schema_version'] != 1
+            or record['label'] != manifest['label'] or record['phase'] != manifest['phase']
+            or record['snapshot_tree'] != manifest['snapshot_tree']
+            or record['scope_sha256'] != manifest['inputs']['scope.env']
+            or not isinstance(record['reason'], str) or not record['reason'].strip()
+            or len(record['reason']) > 2048):
+        raise ValueError('invalid PR progression generation binding')
+    for field in ('head', 'live_head', 'snapshot_tree', 'index_tree'):
+        if not isinstance(record[field], str) or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', record[field]):
+            raise ValueError('invalid PR progression Git identity')
+    if (not isinstance(record['paths'], list) or not record['paths']
+            or any(not isinstance(path, str) or not within(path, '.') for path in record['paths'])
+            or record['paths'] != sorted(set(record['paths']))):
+        raise ValueError('invalid PR progression path declaration')
+    if (not isinstance(record['changes'], list)
+            or [row.get('path') if isinstance(row, dict) else None for row in record['changes']] != record['paths']):
+        raise ValueError('invalid PR progression change metadata')
+    for row in record['changes']:
+        if set(row) != {'path', 'prior', 'prior_index', 'head', 'index', 'snapshot'}:
+            raise ValueError('invalid PR progression path metadata')
+        for name in ('prior', 'prior_index', 'head', 'index', 'snapshot'):
+            entry = row[name]
+            if entry is not None and (not isinstance(entry, list) or len(entry) != 2
+                    or entry[0] not in ('100644', '100755', '120000', '160000')
+                    or not isinstance(entry[1], str)
+                    or not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', entry[1])):
+                raise ValueError('invalid PR progression mode/blob identity')
+    prior = pr_progress_prior(session, record['prior'], seen, offline)
+    if prior['inputs'] != manifest['inputs'] or prior['base_tree'] != manifest['base_tree']:
+        raise ValueError('PR progression changes its frozen inputs or base')
+    if not offline:
+        repo = Repository(session)
+        pr_progress_ancestry(repo, prior, record['head'], record['live_head'])
+        changes = pr_progress_changes(repo, prior, record['head'], record['index_tree'], record['snapshot_tree'])
+        if changes != record['changes'] or record['paths'] != [row['path'] for row in changes]:
+            raise ValueError('PR progression historical path identities changed')
+        if fresh:
+            observed = pr_progress_observation(session, record['prior'], record['live_head'], record['head'], require_idle=False)
+            if any(record[key] != value for key, value in observed.items()):
+                raise ValueError('PR progression checkout or index changed after prepare')
+    return record
+
+
+def inspect_pr_progress(args):
+    session = Path(args.session).resolve()
+    with session_input_lock(session):
+        validate_standard_inputs(session, require_all=True)
+        print(json.dumps(pr_progress_observation(session, args.prior, args.live_head), sort_keys=True))
+
+
+def publish_pr_generation(path, raw):
+    descriptor, name = tempfile.mkstemp(prefix='.pr-generation-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(name, path)
+        except FileExistsError:
+            if attempt_module().private_bytes(path) != raw:
+                raise ValueError('cannot overwrite an immutable PR progression generation')
+    finally:
+        os.unlink(name)
 
 
 def git_quote(path):
@@ -3466,31 +3710,38 @@ def plan_closure_paths(clusters, dependencies, changed):
 
 
 def markdown(data, json_path):
-    lines = ['# Evidence navigation index', '', f'Complete deterministic facts: {json_path}',
-             'Navigation only. Verify claims in source and expand when evidence is insufficient.']
+    sections = []
     for section in ('symbols', 'call_sites', 'related_tests', 'unresolved_imports', 'gates', 'instructions'):
         rows = data[section]
         label = ('Unresolved or aliased import proof obligations'
                  if section == 'unresolved_imports'
                  else section.replace('_', ' ').title())
-        lines.extend(['', label + ':'])
-        included = 0
+        sections.append((label, rows, digest(encoded(rows)), []))
+
+    def packet():
+        lines = ['# Evidence navigation index', '', f'Complete deterministic facts: {json_path}',
+                 'Navigation only. Verify claims in source and expand when evidence is insufficient.']
+        for label, rows, row_hash, selected in sections:
+            lines.extend(['', label + ':', *selected])
+            lines.append(f'Omitted: {len(rows) - len(selected)}; complete list SHA-256: {row_hash}; complete list in JSON.')
+        lines.extend(['', *data['limitations']])
+        return ('\n'.join(lines) + '\n').encode()
+
+    result = packet()
+    if len(result) > NAVIGATION_TOTAL_LIMIT:
+        raise ValueError('navigation packet exceeds byte limit')
+    for _, rows, _, selected in sections:
         for row in rows[:12]:
             rendered = json.dumps(row, sort_keys=True, ensure_ascii=True)
             if len(rendered.encode()) > NAVIGATION_ROW_LIMIT:
                 continue
-            candidate = '- ' + rendered
-            projected = ('\n'.join([*lines, candidate]) + '\n').encode()
-            if len(projected) > NAVIGATION_TOTAL_LIMIT - 512:
+            selected.append('- ' + rendered)
+            candidate = packet()
+            if len(candidate) > NAVIGATION_TOTAL_LIMIT:
+                selected.pop()
                 continue
-            lines.append(candidate); included += 1
-        row_hash = digest(encoded(rows))
-        lines.append(f'Omitted: {len(rows) - included}; complete list SHA-256: {row_hash}; complete list in JSON.')
-    lines.extend(['', *data['limitations']])
-    packet = ('\n'.join(lines) + '\n').encode()
-    if len(packet) > NAVIGATION_TOTAL_LIMIT:
-        raise ValueError('navigation packet exceeds byte limit')
-    return packet
+            result = candidate
+    return result
 
 
 def numeric_panel_binding(session, label, roster, number, minimum, panel):
@@ -5994,6 +6245,9 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         for required in packet.get('required_source_ranges', []):
             for segment in required.get('segments', []):
                 expected.add(segment['artifact'])
+    if 'pr_progress' in manifest:
+        validate_pr_progress(session, manifest, seen, fresh and not offline, offline)
+        expected.add(manifest['pr_progress']['artifact'])
     validate_patch_sets(session, manifest, expected)
     contract_binding = contract_binding_from_inputs(session, manifest['inputs'])
     expected_inputs = set(STANDARD_INPUTS)
@@ -6716,6 +6970,8 @@ def validate_results(session, manifest, manifest_hash, seats=None, verdicts=None
         result_data = json.loads(result_raw)
         if attempt.incomplete_summary(result_data):
             raise ValueError('incomplete proof: ' + seat)
+        if attempt.semantic_rejection(session, manifest['label'], seat) is not None:
+            raise ValueError('semantic rejection: ' + seat)
         assignment = manifest['assignments'][seat]
         # An agent seat produces no read audit by construction (Claude Code subagents ignore the
         # hook frontmatter the enforced transcript depends on). Its result, exit status and
@@ -6822,6 +7078,7 @@ def prior_coverage(session, repo, base_tree, reference=None, seen=None):
         if digest(raw) != head['sha256']:
             raise ValueError('receipt hash mismatch')
         receipt = json.loads(raw)
+        validate_receipt_lineage(session, name, raw)
         if not isinstance(receipt, dict) or not isinstance(receipt.get('manifest'), str) or Path(receipt['manifest']).name != receipt['manifest']:
             raise ValueError('invalid receipt manifest')
         manifest, mh = validated_manifest(session / receipt['manifest'], fresh=False, seen=seen)
@@ -6990,7 +7247,8 @@ def prepare(args):
 
 
 def _prepare_locked(args, session):
-    validate_pinned_pr_checkout(scope(session))
+    progress = prepare_pr_progress(args, session)
+    validate_pinned_pr_checkout(scope(session), progress)
     repo = Repository(session)
     roster = read_json(session / 'roster.json')
     validate_live_roster_adapters(roster)
@@ -7035,7 +7293,7 @@ def _prepare_locked(args, session):
     chunk_mode, source_context_enabled = evidence_modes(os.environ, parent_manifest)
     source_head = args.head
     pinned_pr_number = repo.scope.get('REV_PR_NUMBER')
-    pinned_pr_head = repo.scope.get('REV_PR_HEAD')
+    pinned_pr_head = progress['head'] if progress else repo.scope.get('REV_PR_HEAD')
     if (pinned_pr_number and args.head is not None
             and args.head != pinned_pr_head):
         raise ValueError(
@@ -7415,6 +7673,10 @@ def _prepare_locked(args, session):
     if args.phase == 'plan':
         artifacts[prefix + '-plan.md'] = plan_raw
         artifacts[prefix + '-plan-closure.patch'] = closure_raw
+    if progress is not None:
+        if snapshot != progress['snapshot_tree']:
+            raise ValueError('PR progression source differs from declared snapshot')
+        artifacts[prefix + '-pr-progress.json'] = encoded(progress)
     if numeric is not None:
         artifacts[numeric['panel']] = numeric_raw
     words = {'full': len(full.split()), 'semantic': len(semantic.split()), 'delta': len(delta.split()),
@@ -7442,6 +7704,9 @@ def _prepare_locked(args, session):
                 'task_capacity': task_capacity,
                 'word_counts': words, 'inputs': inputs,
                 'artifacts': {name: {'sha256': digest(raw), 'words': len(raw.split())} for name, raw in artifacts.items()}}
+    if progress is not None:
+        manifest['pr_progress'] = {'artifact': prefix + '-pr-progress.json',
+                                   'sha256': digest(encoded(progress))}
     if args.phase == 'plan':
         manifest['plan'] = data['plan']
     if numeric is not None:
@@ -7458,23 +7723,47 @@ def _prepare_locked(args, session):
     receipt_path = session / (prefix + '-coverage.receipt.json')
     if receipt_path.exists() and (not manifest_path.exists() or manifest_path.read_bytes() != encoded(manifest)):
         raise ValueError('cannot replace an already receipted manifest')
+    frozen = progress is not None
+    if manifest_path.exists():
+        old = json.loads(attempt_module().private_bytes(manifest_path))
+        frozen = frozen or 'pr_progress' in old
+    for path in session.glob('r*-pr-progress.json'):
+        prior = json.loads(attempt_module().private_bytes(path)).get('prior', '')
+        frozen = frozen or prior.split(':', 1)[0] == args.label
+    if frozen and manifest_path.exists() and attempt_module().private_bytes(manifest_path) != encoded(manifest):
+        raise ValueError('cannot overwrite an immutable PR progression generation')
+    if progress is not None:
+        observed = pr_progress_observation(session, progress['prior'], progress['live_head'])
+        if any(progress[key] != value for key, value in observed.items()):
+            raise ValueError('PR progression changed during preparation')
+    writer = publish_pr_generation if frozen else publish
     prepare_stage('publish')
     for name, raw in artifacts.items():
         if numeric is not None and name == numeric['panel']:
             continue
-        publish(session / name, raw)
+        writer(session / name, raw)
     if numeric is not None and attempt_module().private_bytes(session / numeric['panel']) != numeric_raw:
         raise ValueError('numeric panel changed during preparation')
-    publish(manifest_path, encoded(manifest))
+    writer(manifest_path, encoded(manifest))
     discard_prepare_diagnostic(session, args.label)
     print(manifest_path)
+
+
+def source_snapshot_entries(manifest, seats):
+    context = manifest['source_context']
+    if context['enabled'] or not any(
+            context['seats'].get(seat, {}).get('source_read_required') for seat in seats):
+        return None
+    repository = Repository(Path(manifest['session']))
+    return repository.entries(manifest['snapshot_tree'])
 
 
 def render(args):
     manifest, mh = validated_manifest(
         args.manifest, fresh=not args.offline, offline=args.offline,
         replay_plan_searches=False)
-    render_seat(manifest, mh, args.seat, args.plan_source)
+    snapshot_entries = source_snapshot_entries(manifest, [args.seat])
+    render_seat(manifest, mh, args.seat, args.plan_source, snapshot_entries)
 
 
 def render_panel(args):
@@ -7491,17 +7780,18 @@ def render_panel(args):
         raise ValueError('evidence manifest phase is ' + str(manifest['phase']) + ', not ' + args.phase)
     if manifest['phase'] == 'numeric' and args.seats != manifest['numeric']['launched_seats']:
         raise ValueError('numeric render must include its exact ordered launched seats')
+    snapshot_entries = source_snapshot_entries(manifest, args.seats)
     for seat in args.seats:
         if not SAFE_NAME.fullmatch(seat):
             raise ValueError('invalid panel seat: ' + seat)
         fragment = io.StringIO()
         with redirect_stdout(fragment):
-            render_seat(manifest, mh, seat, args.plan_source)
+            render_seat(manifest, mh, seat, args.plan_source, snapshot_entries)
         (output / seat).write_bytes(fragment.getvalue().encode(sys.stdout.encoding, sys.stdout.errors))
     print(manifest['phase'])
 
 
-def render_seat(manifest, mh, seat, plan_source):
+def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
     assignment = manifest['assignments'].get(seat)
     if assignment is None:
         raise ValueError('seat not assigned')
@@ -7513,10 +7803,30 @@ def render_seat(manifest, mh, seat, plan_source):
     elif not plan_source or Path(plan_source).resolve() != expected_plan:
         raise ValueError('plan evidence requires its immutable plan snapshot')
     print('Evidence manifest SHA-256: ' + mh)
+    if 'pr_progress' in manifest:
+        binding = manifest['pr_progress']
+        record = json.loads(attempt_module().private_bytes(Path(manifest['session']) / binding['artifact']))
+        print('Explicit controller-owned PR progression: ' + json.dumps(
+            dict(binding, head=record['head'], live_head=record['live_head'],
+                 snapshot_tree=record['snapshot_tree'], prior=record['prior'], reason=record['reason']), sort_keys=True))
     print('Assigned scope: ' + assignment['scope'])
     print('Assigned risk bundle: ' + assignment['bundle'])
     capacity = (manifest.get('task_capacity', {}).get('seats', {}).get(seat)
                 if isinstance(manifest.get('task_capacity'), dict) else None)
+    context = manifest['source_context']['seats'][seat]
+    source_target = (capacity.get('repository_source_target')
+                     if isinstance(capacity, dict) else None)
+    expansion_limit = repository_expansion_call_limit_for_seat(
+        context['source_read_required'], source_target)
+    refutation_reserve = (manifest.get('task_capacity', {}).get(
+        'repository_refutation_call_reserve', REPOSITORY_REFUTATION_CALL_RESERVE)
+        if isinstance(manifest.get('task_capacity'), dict)
+        else REPOSITORY_REFUTATION_CALL_RESERVE)
+    mandatory_limit = expansion_limit - refutation_reserve
+    print('Repository expansion-call budget: ' + str(expansion_limit)
+          + ' total; finish required reads by call ' + str(mandatory_limit)
+          + ' and reserve calls ' + str(mandatory_limit + 1) + '-'
+          + str(expansion_limit) + ' for refutation.')
     if isinstance(capacity, dict):
         limit = capacity.get('provider_turn_limit')
         limit_text = (str(limit) if isinstance(limit, int)
@@ -7533,7 +7843,6 @@ def render_seat(manifest, mh, seat, plan_source):
               + str(capacity['repository_refutation_turns']) + ' turns; final result '
               + str(capacity['final_result_turns']) + ' turn; provider hard limit ' + limit_text)
     patch_mode = assignment['patch_read_mode']
-    context = manifest['source_context']['seats'][seat]
     if (manifest['schema_version'] == 4 and manifest['phase'] == 'plan'
             and seat != manifest['mechanical_owner']):
         primary = None
@@ -7586,7 +7895,7 @@ def render_seat(manifest, mh, seat, plan_source):
                 body = (Path(manifest['session']) / proof['artifact']).read_text()
                 print('Prepared cluster sibling search: ' + cluster['id'] + ' '
                       + proof['artifact'] + ' SHA-256 ' + proof['sha256'])
-                print('Prepared cluster search output: '
+                print('Prepared cluster search output: ' + cluster['id'] + ' '
                       + json.dumps(body, ensure_ascii=True, separators=(',', ':')))
             for row in cluster['paths']:
                 location = row['path']
@@ -7685,7 +7994,7 @@ def render_seat(manifest, mh, seat, plan_source):
         print('Source read required: ' + str(context['source_read_required']).lower())
     else:
         print('Post-patch evidence order: read the evidence index before original source.')
-        print('Source read required: true')
+        print('Source read required: ' + str(context['source_read_required']).lower())
     print('Evidence navigation index: '
           + str(Path(manifest['session']) / f"r{manifest['label']}-evidence.md"))
     omitted_ranges = context['omitted_source_ranges'] if manifest['source_context']['enabled'] else []
@@ -7705,6 +8014,20 @@ def render_seat(manifest, mh, seat, plan_source):
         print('No eligible current snapshot source target: assigned semantic source ranges '
               + 'are historical-only or absent from the frozen snapshot; '
               + 'every listed historical packet and source segment remains required.')
+    elif not manifest['source_context']['enabled'] and context['source_read_required']:
+        if snapshot_entries is None:
+            snapshot_entries = source_snapshot_entries(manifest, [seat])
+        component_ids = set(context['components'])
+        boundary_paths = sorted({
+            path for component in manifest['components']
+            if component['id'] in component_ids for path in component['boundary']
+            if path in snapshot_entries and snapshot_entries[path][0] in ('100644', '100755')
+        })
+        if not boundary_paths:
+            raise ValueError('required source read has no readable current-snapshot component boundary: ' + seat)
+        print('Required post-index original-source boundary: ' + boundary_paths[0])
+        print('Read one bounded window from this assigned boundary after the evidence index; '
+              + 'read additional paths only for a concrete unresolved question.')
     print('Mechanical owner: ' + str(manifest['mechanical_owner']))
     if context['shards']:
         print('Prepared source-context packet lines are exact source bytes from the frozen repository '
@@ -7845,6 +8168,13 @@ def verify_panel_selection(session, label, replacement_values=None, fresh=True, 
             used_chain_labels.update(chain_labels)
             hashes, generation = result_generation(session, child, child_hash,
                                                    executor)
+            for _, ancestor, _ in lineage:
+                binding = ancestor['parent_assignment']
+                parent = read_json(session / binding['manifest'])
+                record = attempt_module().semantic_rejection(session, parent['label'], binding['seat'])
+                if record is not None:
+                    path = attempt_module().semantic_rejection_path(session, parent['label'], binding['seat'])
+                    hashes[path.name] = digest(attempt_module().private_bytes(path))
             children[seat] = lineage
         overlap = set(results) & set(hashes)
         if overlap:
@@ -7916,6 +8246,97 @@ def coverage_receipt_data(session, manifest, mh, results, generations, replaceme
     return data
 
 
+def rejected_receipt_generations(session, receipt, rejection_names=None):
+    attempt = attempt_module()
+    rejected = []
+    generations = receipt.get('selected_generations')
+    label = re.fullmatch(r'r(.+)-evidence\.manifest\.json', receipt.get('manifest', ''))
+    if label is None:
+        raise ValueError('invalid rejected receipt manifest')
+    for seat in receipt['assignments']:
+        selected = generations.get(seat) if isinstance(generations, dict) else None
+        panel = selected['label'] if selected else label.group(1)
+        executor = selected['seat'] if selected else seat
+        rejection_name = attempt.semantic_rejection_path(session, panel, executor).name
+        if rejection_names is not None and rejection_name not in rejection_names:
+            continue
+        record = attempt.semantic_rejection(session, panel, executor)
+        if record is None:
+            continue
+        generation = record['generation']
+        if selected is not None and generation != selected:
+            raise ValueError('semantic rejection does not bind the sealed generation')
+        if selected is None and (generation['manifest'] != receipt['manifest']
+                                 or generation['manifest_sha256'] != receipt['manifest_sha256']):
+            raise ValueError('semantic rejection does not bind the sealed manifest')
+        stem = f'r{panel}-{executor}'
+        for suffix, key in (('.json', 'result_sha256'), ('.prompt.md', 'prompt_sha256'),
+                            ('.exit', 'exit_sha256'), ('.stream.ndjson', 'stream_sha256'),
+                            ('.read-audit.json', 'audit_sha256')):
+            if generation.get(key) != receipt['results'].get(stem + suffix):
+                raise ValueError('semantic rejection does not bind the sealed artifacts')
+        rejected.append(attempt.semantic_rejection_path(session, panel, executor).name)
+    return rejected
+
+
+def validate_receipt_lineage(session, name, raw, seen=None):
+    receipt = json.loads(raw)
+    match = re.fullmatch(r'r([A-Za-z0-9][A-Za-z0-9._-]*)-evidence\.manifest\.json',
+                        receipt.get('manifest', ''))
+    if match is None or Path(name).name != name:
+        raise ValueError('invalid coverage receipt manifest')
+    label = match.group(1)
+    canonical = f'r{label}-coverage.receipt.json'
+    previous = receipt.get('supersedes')
+    if previous is None:
+        if name != canonical:
+            raise ValueError('coverage successor has no predecessor')
+        return
+    if name != f'r{label}-coverage.receipt-{digest(raw)}.json':
+        raise ValueError('invalid content-addressed coverage successor')
+    visited = set(seen or ())
+    if name in visited:
+        raise ValueError('cyclic coverage successor')
+    visited.add(name)
+    if (not isinstance(previous, dict) or set(previous) != {'receipt', 'sha256', 'rejections'}
+            or not isinstance(previous['receipt'], str)
+            or Path(previous['receipt']).name != previous['receipt']):
+        raise ValueError('invalid coverage predecessor binding')
+    old_raw = attempt_module().private_bytes(session / previous['receipt'])
+    if digest(old_raw) != previous['sha256']:
+        raise ValueError('coverage predecessor hash mismatch')
+    old = json.loads(old_raw)
+    if any(receipt.get(key) != old.get(key) for key in (
+            'manifest', 'manifest_sha256', 'snapshot_tree', 'base_tree', 'phase', 'assignments')):
+        raise ValueError('coverage successor changes its root panel identity')
+    validate_receipt_lineage(session, previous['receipt'], old_raw, visited)
+    bindings = previous['rejections']
+    if (not isinstance(bindings, dict) or not bindings
+            or any(not isinstance(name, str) or not isinstance(value, str)
+                   or not re.fullmatch(r'[0-9a-f]{64}', value) for name, value in bindings.items())):
+        raise ValueError('invalid coverage successor rejection bindings')
+    rejected = rejected_receipt_generations(session, old, bindings)
+    expected = {name: digest(attempt_module().private_bytes(session / name)) for name in rejected}
+    if previous['rejections'] != expected:
+        raise ValueError('coverage successor rejection provenance changed')
+
+
+def receipt_path_for_label(session, label):
+    paths = [session / f'r{label}-coverage.receipt.json']
+    paths.extend(session.glob(f'r{label}-coverage.receipt-*.json'))
+    predecessors = set()
+    for path in paths:
+        raw = attempt_module().private_bytes(path)
+        validate_receipt_lineage(session, path.name, raw)
+        previous = json.loads(raw).get('supersedes')
+        if previous is not None:
+            predecessors.add(previous['receipt'])
+    leaves = [path for path in paths if path.name not in predecessors]
+    if len(leaves) != 1:
+        raise ValueError('ambiguous coverage successor history')
+    return leaves[0]
+
+
 def current_coverage_data(session):
     status = {'eligible': False, 'reason': None}
     try:
@@ -7935,8 +8356,9 @@ def current_coverage_data(session):
             raise ValueError('invalid coverage receipt schema')
         name = data.get('manifest')
         match = re.fullmatch(r'r([A-Za-z0-9][A-Za-z0-9._-]*)-evidence\.manifest\.json', name or '')
-        if not match or path.name != f'r{match.group(1)}-coverage.receipt.json':
+        if not match:
             raise ValueError('invalid coverage receipt manifest')
+        validate_receipt_lineage(session, path.name, raw)
         manifest_path = session / name
         metadata = manifest_path.lstat()
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
@@ -7953,6 +8375,8 @@ def current_coverage_data(session):
         if manifest.get('unenforced_seats') or verdicts:
             raise ValueError('verification reuse requires enforced CLI generations')
         expected = coverage_receipt_data(session, manifest, mh, results, generations, canonical, verdicts)
+        if 'supersedes' in data:
+            expected['supersedes'] = data['supersedes']
         if encoded(data) != encoded(expected):
             raise ValueError('coverage receipt metadata or results changed')
         selected = generations or {seat: result_generation(session, manifest, mh, seat)[1]
@@ -7984,8 +8408,43 @@ def current_coverage(args):
     print(json.dumps(current_coverage_data(Path(args.session).resolve()), sort_keys=True))
 
 
+def reject_result(args):
+    session = Path(args.session).resolve()
+    with session_input_lock(session):
+        manifest, mh = validated_manifest(session / f'r{args.label}-evidence.manifest.json')
+        if args.seat not in manifest['assignments']:
+            raise ValueError('rejected seat is absent from panel')
+        attempt = attempt_module()
+        existing = attempt.semantic_rejection(session, args.label, args.seat)
+        if existing is None:
+            _, generation = result_generation(session, manifest, mh, args.seat)
+        else:
+            generation = existing['generation']
+        if any(generation[key] != value for key, value in (
+                ('manifest_sha256', args.manifest_sha256), ('prompt_sha256', args.prompt_sha256),
+                ('result_sha256', args.result_sha256))):
+            raise ValueError('semantic rejection identity mismatch')
+        record = {'schema_version': 1, 'label': args.label, 'seat': args.seat,
+                  'generation': generation, 'obligation': args.obligation,
+                  'evidence': args.evidence, 'reason': args.reason}
+        stem = session / f'r{args.label}-{args.seat}'
+        prompt = attempt.private_bytes(Path(str(stem) + '.prompt.md')).decode('utf-8')
+        result = json.loads(attempt.private_bytes(Path(str(stem) + '.json')))
+        if (any(not value.strip() for value in (args.obligation, args.evidence, args.reason))
+                or args.obligation not in prompt or args.evidence not in result['summary']):
+            raise ValueError('semantic rejection must quote its prompt obligation and result evidence')
+        attempt.publish_semantic_rejection(session, args.label, args.seat, encoded(record))
+        attempt.semantic_rejection(session, args.label, args.seat)
+        print(attempt.semantic_rejection_path(session, args.label, args.seat))
+
+
 def receipt(args):
     session = Path(args.session).resolve()
+    with session_input_lock(session):
+        receipt_locked(args, session)
+
+
+def receipt_locked(args, session):
     verdicts = {}
     manifest, mh, results, generations, replacements = verify_panel_selection(
         session, args.label, args.replacement, verdicts=verdicts)
@@ -7994,13 +8453,33 @@ def receipt(args):
     data = coverage_receipt_data(session, manifest, mh, results, generations, replacements, verdicts)
     path = session / f'r{args.label}-coverage.receipt.json'; raw = encoded(data)
     head = current_coverage_head(session) if manifest['phase'] != 'numeric' else None
-    created = not path.exists()
+    if path.exists() or path.is_symlink():
+        path = receipt_path_for_label(session, args.label)
+        previous_raw = attempt_module().private_bytes(path)
+        previous = json.loads(previous_raw)
+        if previous.get('supersedes') is not None:
+            data['supersedes'] = previous['supersedes']
+            raw = encoded(data)
+        if previous_raw != raw:
+            rejected = rejected_receipt_generations(session, previous)
+            if not rejected:
+                raise ValueError('coverage receipt is immutable')
+            data['supersedes'] = {'receipt': path.name, 'sha256': digest(previous_raw),
+                                  'rejections': {name: digest(attempt_module().private_bytes(session / name))
+                                                 for name in rejected}}
+            raw = encoded(data)
+            path = session / f'r{args.label}-coverage.receipt-{digest(raw)}.json'
+            validate_receipt_lineage(session, path.name, raw)
+    created = not path.exists() and not path.is_symlink()
     if not created:
-        if path.read_bytes() != raw:
+        if attempt_module().private_bytes(path) != raw:
             raise ValueError('coverage receipt is immutable')
     else:
         publish(path, raw)
-    if manifest['phase'] != 'numeric' and (created or head is None):
+    predecessor = data.get('supersedes') or manifest['predecessor']
+    predecessor_head = ({key: predecessor[key] for key in ('receipt', 'sha256')}
+                        if isinstance(predecessor, dict) else None)
+    if manifest['phase'] != 'numeric' and (created or head == predecessor_head):
         publish(session / 'coverage-head.json', encoded({'receipt': path.name, 'sha256': digest(raw)}))
     print(path)
 
@@ -8017,7 +8496,7 @@ def first_receipt_tree(session):
 def review_origin(args):
     """Count the round's chosen citations that land on lines the review itself changed."""
     session = Path(args.session).resolve()
-    receipt = read_json(session / f'r{args.label}-coverage.receipt.json')
+    receipt = read_json(receipt_path_for_label(session, args.label))
     manifest, mh = validated_manifest(session / receipt['manifest'], fresh=False,
                                       replay_plan_searches=False)
     if receipt.get('manifest_sha256') != mh or receipt.get('snapshot_tree') != manifest['snapshot_tree']:
@@ -8061,8 +8540,18 @@ def main():
     prep.add_argument('--full-seat')
     prep.add_argument('--plan'); prep.add_argument('--plan-sha256')
     prep.add_argument('--parent-assignment')
+    for name in ('from', 'head', 'live-head', 'tree', 'reason'):
+        prep.add_argument('--pr-progress-' + name)
+    prep.add_argument('--pr-progress-path', action='append', default=[])
+    inspect = commands.add_parser('pr-progress-inspect')
+    inspect.add_argument('session'); inspect.add_argument('--from', dest='prior', required=True)
+    inspect.add_argument('--live-head', required=True)
     prep.add_argument('--numeric-round', type=int); prep.add_argument('--numeric-min-rounds', type=int)
     prep.add_argument('--numeric-panel')
+    reject = commands.add_parser('reject-result')
+    reject.add_argument('session'); reject.add_argument('label'); reject.add_argument('seat')
+    for name in ('manifest-sha256', 'prompt-sha256', 'result-sha256', 'obligation', 'evidence', 'reason'):
+        reject.add_argument('--' + name, required=True)
     rend = commands.add_parser('render'); rend.add_argument('manifest'); rend.add_argument('seat')
     rend.add_argument('--offline', action='store_true')
     rend.add_argument('--plan-source')
@@ -8085,9 +8574,10 @@ def main():
         if hasattr(args, 'label') and not SAFE_NAME.fullmatch(args.label):
             raise ValueError('invalid label')
         with plan_search_signal_handlers():
-            {'prepare': prepare, 'render': render, 'render-panel': render_panel,
+            {'prepare': prepare, 'pr-progress-inspect': inspect_pr_progress, 'render': render, 'render-panel': render_panel,
              'verify': verify, 'same-source': same_source,
              'verify-panel': verify_panel, 'receipt': receipt, 'current-coverage': current_coverage,
+             'reject-result': reject_result,
              'review-origin': review_origin}[args.command](args)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError, RecursionError) as error:
         if getattr(args, 'command', None) == 'prepare':

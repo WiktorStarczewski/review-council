@@ -192,21 +192,60 @@ JSON
     "$C/rcap-codex-sol.log" '^persistent provider-call cap reached for this seat generation$'
   assert_grep "cap refusal writes a fresh exit" "$C/rcap-codex-sol.exit" '^7$'
 
-  local A="$T/seat-archive-failure" archive_path="$T/archive-path"
+  local A="$T/seat-archive-failure" archive_path="$T/archive-path" real_python
   seat_roster "$A"; echo "review the diff" > "$A/p.md"
   printf 'prior stream\n' > "$A/rarchive-codex-sol.stream.ndjson"
   mkdir -p "$archive_path"
-  cat > "$archive_path/mv" <<'SH'
-#!/bin/sh
-exit 1
+  real_python=$(command -v python3)
+  cat > "$archive_path/python3" <<'SH'
+#!/bin/bash
+if [ "$1" = "$ATTEMPT_HELPER" ] && [ "$2" = reserve ]; then
+  "$REAL_PYTHON" - "$@" <<'PY'
+import os
+import runpy
+import sys
+
+helper, *args = sys.argv[1:]
+replace = os.replace
+def reject_stream_archive(source, destination):
+    target = str(destination)
+    if (os.environ.get('FAIL_REPLACE') == 'archive'
+            and target.endswith('.stream.attempt1.ndjson')):
+        raise OSError('injected transcript archival failure')
+    if (os.environ.get('FAIL_REPLACE') == 'attempt-write'
+            and '/attempts/' in target and target.endswith('.json')):
+        raise OSError('injected attempt state write failure')
+    return replace(source, destination)
+os.replace = reject_stream_archive
+sys.argv = [helper, *args]
+runpy.run_path(helper, run_name='__main__')
+PY
+  exit $?
+fi
+exec "$REAL_PYTHON" "$@"
 SH
-  chmod +x "$archive_path/mv"
+  chmod +x "$archive_path/python3"
   : > "$T/archive-calls"
-  PATH="$archive_path:$PATH" SHIM_MODE=ok SHIM_CALLS_FILE="$T/archive-calls" \
+  PATH="$archive_path:$PATH" REAL_PYTHON="$real_python" FAIL_REPLACE=archive \
+    ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" SHIM_MODE=ok SHIM_CALLS_FILE="$T/archive-calls" \
     "$SCRIPTS/rev-seat.sh" codex-sol "$A" archive "$A/p.md" >/dev/null 2>&1
   assert_eq "failed transcript archival exits before provider launch" "$?" 1
   assert_eq "failed transcript archival consumes no provider call" \
     "$(wc -l < "$T/archive-calls" | tr -d ' ')" 0
+  assert_eq "failed transcript archival leaves no empty attempt record" \
+    "$(find "$A/attempts" -type f -name '*.json' -print | wc -l | tr -d ' ')" 0
+  PATH="$archive_path:$PATH" REAL_PYTHON="$real_python" FAIL_REPLACE=attempt-write \
+    ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" SHIM_MODE=ok SHIM_CALLS_FILE="$T/archive-calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$A" archive "$A/p.md" >/dev/null 2>&1
+  assert_eq "failed reservation state write exits before provider launch" "$?" 1
+  assert_eq "failed reservation state write consumes no provider call" \
+    "$(wc -l < "$T/archive-calls" | tr -d ' ')" 0
+  assert_grep "failed reservation state write restores the prior transcript" \
+    "$A/rarchive-codex-sol.stream.ndjson" '^prior stream$'
+  assert_eq "failed reservation state write removes its archived copy" \
+    "$(find "$A" -maxdepth 1 -name 'rarchive-codex-sol.stream.attempt*.ndjson' -print | wc -l | tr -d ' ')" 0
+  assert_eq "failed reservation state write leaves no empty attempt record" \
+    "$(find "$A/attempts" -type f -name '*.json' -print | wc -l | tr -d ' ')" 0
   for call in 1 2 3 4; do
     SHIM_MODE=ok SHIM_CALLS_FILE="$T/archive-calls" \
       "$SCRIPTS/rev-seat.sh" codex-sol "$A" archive "$A/p.md" >/dev/null
@@ -225,7 +264,8 @@ SH
   assert_eq "corrupt persistent attempt state fails closed" "$?" 1
   assert_eq "corrupt attempt state launches no replacement provider" \
     "$(wc -l < "$T/corrupt-calls" | tr -d ' ')" 1
-  assert_grep "corrupt attempt state writes a fresh exit" "$D/rcorrupt-codex-sol.exit" '^1$'
+  assert_grep "corrupt attempt state preserves the prior completion exit" \
+    "$D/rcorrupt-codex-sol.exit" '^0$'
 
   local W="$T/seat-reserve-window"; seat_roster "$W"; echo "review the diff" > "$W/p.md"
   echo 0 > "$W/rblocked-codex-sol.exit"
@@ -252,10 +292,10 @@ SH
   done
   if [ ! -e "$T/reserve.ready" ]; then
     fail "reserve test reaches the blocked reservation" "wrapper exited before reservation"
-  elif [ ! -e "$W/rblocked-codex-sol.exit" ]; then
-    ok "same-label stale exit is clear while reservation is pending"
+  elif grep -qx '0' "$W/rblocked-codex-sol.exit"; then
+    ok "the prior exit remains until a reservation succeeds"
   else
-    fail "same-label stale exit is clear while reservation is pending" "old exit remained observable"
+    fail "the prior exit remains until a reservation succeeds" "the old exit was removed or changed"
   fi
   : > "$T/reserve.release"
   wait "$reserve_pid"; reserve_rc=$?
@@ -517,6 +557,97 @@ PY
     "$S/r1-codex-sol.json" '"severity": ?"P1"'
   assert_grep "the failed result remains available in the retained diagnostic" \
     "$S/failed-result.json" 'INCOMPLETE PROOF'
+
+  python3 - "$S" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+records = [json.loads(path.read_text()) for path in (Path(sys.argv[1]) / 'attempts').glob('*.json')]
+assert (len(records) == 1 and records[0]['calls'] == 3
+        and records[0]['launches'] == [0, 1, 0]
+        and records[0]['completed_calls'] == 3
+        and records[0]['active_launch'] is None), records
+PY
+  assert_eq "retry records the interrupted launch before its successor" "$?" 0
+
+  local A="$T/seat-active-launch" active_calls="$T/active-launch-calls"
+  seat_roster "$A"; echo "review the diff" > "$A/p.md"
+  : > "$active_calls"
+  python3 - "$SCRIPTS/lib/rev-attempt.py" "$A" "$A/p.md" <<'PY'
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location('rev_attempt', sys.argv[1])
+attempt = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(attempt)
+session, prompt = Path(sys.argv[2]), Path(sys.argv[3])
+path, identity = attempt.record_path(session, '1', 'codex-sol', prompt)
+path.parent.mkdir(mode=0o700, exist_ok=True)
+record = dict(identity, calls=1, launches=[], lifecycle_version=2,
+              completed_calls=0, active_launch='a' * 32, last_launch=None)
+path.write_text(json.dumps(record) + '\n')
+path.chmod(0o600)
+PY
+  echo 0 > "$A/r1-codex-sol.exit"
+  printf '{"summary":"prior completion"}\n' > "$A/r1-codex-sol.json"
+  cp "$A/r1-codex-sol.json" "$T/active-launch-prior.json"
+  local reserve_bin="$T/active-reserve-bin" real_python active_pid active_rc i=0
+  local reserve_ready="$T/active-reserve.ready" reserve_release="$T/active-reserve.release"
+  local active_raw="$A/r1-codex-sol.stream.ndjson"
+  printf 'active provider stream\n' > "$active_raw"
+  cp "$active_raw" "$T/active-launch-prior-stream.ndjson"
+  real_python=$(command -v python3); mkdir -p "$reserve_bin"
+  cat > "$reserve_bin/python3" <<'SH'
+#!/bin/bash
+if [ "$1" = "$ATTEMPT_HELPER" ] && [ "$2" = reserve ]; then
+  : > "$RESERVE_READY"
+  while [ ! -e "$RESERVE_RELEASE" ]; do sleep 0.02; done
+  exit 1
+fi
+exec "$REAL_PYTHON" "$@"
+SH
+  chmod +x "$reserve_bin/python3"
+  env PATH="$reserve_bin:$PATH" REAL_PYTHON="$real_python" \
+    ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" \
+    RESERVE_READY="$reserve_ready" RESERVE_RELEASE="$reserve_release" \
+    SHIM_MODE=ok SHIM_CALLS_FILE="$active_calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$A" 1 "$A/p.md" > "$T/active-reserve.out" 2>&1 &
+  active_pid=$!
+  while [ ! -e "$reserve_ready" ] && kill -0 "$active_pid" 2>/dev/null && [ "$i" -lt 100 ]; do
+    sleep 0.02; i=$((i + 1))
+  done
+  if [ ! -e "$reserve_ready" ]; then
+    fail "a competing wrapper reaches its reservation" "wrapper exited before reserve"
+  else
+    assert_exit "a competing wrapper leaves the active transcript in place" 0 \
+      cmp -s "$T/active-launch-prior-stream.ndjson" "$active_raw"
+  fi
+  : > "$reserve_release"
+  wait "$active_pid"; active_rc=$?
+  assert_eq "a competing wrapper cannot take an active reservation" "$active_rc" 1
+  assert_eq "active reservation refusals launch no provider" \
+    "$(wc -l < "$active_calls" | tr -d ' ')" 0
+  assert_exit "a competing wrapper preserves the active transcript" 0 \
+    cmp -s "$T/active-launch-prior-stream.ndjson" "$active_raw"
+  assert_grep "a competing wrapper preserves the prior exit" \
+    "$A/r1-codex-sol.exit" '^0$'
+  assert_exit "a competing wrapper preserves the prior result" 0 \
+    cmp -s "$T/active-launch-prior.json" "$A/r1-codex-sol.json"
+  python3 - "$A" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+records = [json.loads(path.read_text()) for path in (Path(sys.argv[1]) / 'attempts').glob('*.json')]
+assert (len(records) == 1 and records[0]['calls'] == 1
+        and records[0]['launches'] == []
+        and records[0]['completed_calls'] == 0
+        and records[0]['active_launch'] == 'a' * 32), records
+PY
+  assert_eq "active reservation state remains unchanged" "$?" 0
   seat_env_reset "$_path"
 }
 test_seat_process_group_cancellation_preserves_partial_stream() {

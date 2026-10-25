@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+- Recover token-bound terminal completion records before a permitted exact reviewer retry.
+
+- Bind prepared plan search output to each assigned cluster so identical search results remain valid, while retaining unambiguous historical prompt bindings.
+- Add explicit controller-owned PR generation progression with immutable source and predecessor bindings.
+
+## 0.8.8
+
+- Reject unfinished mandatory review generations with immutable evidence bindings, one-seat recovery and preserved receipt history.
+- Retry publication advances the coverage head when it still names the successor's predecessor, while preserving a head already moved to a newer panel.
+
+## 0.8.7
+
+- Give source-required seats without prepared context four extra calls while keeping required reads within 16 calls and preserving the four-call refutation reserve; render their assigned source boundary and separate complete Codex patch-chunk reads from line-window guidance.
+
+## 0.8.6
+
+- Keep the navigation index within its 16 KiB byte limit while retaining complete omission metadata and limitations.
+
 ## 0.8.5
 
 - Give Codex reviewers safe fixed-string search guidance so malformed mixed-quote commands do not invalidate otherwise complete read audits.
