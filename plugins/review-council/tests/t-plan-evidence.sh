@@ -222,10 +222,10 @@ PY
         "$lens" \
         plan --plan "$S/r1p-plan.md" --evidence "$manifest") || return
       assert_grep "$seat prompt contains the complete plan" "$prompt" '## C-01 - keep service results stable$'
-      assert_grep "$seat plan prompt has a required source segment" "$prompt" \
-        '^Required source segment [0-9]+/[0-9]+:'
-      assert_grep "$seat plan prompt orders the index after packets and required segments" "$prompt" \
-        '^[0-9]+\. Read the complete evidence navigation index after all listed source-context packets and required source segments, before opening or searching original repository source: .*/r1p-evidence\.md$'
+      assert_grep "$seat plan prompt lists its assigned cluster source obligations" "$prompt" \
+        '^Required cluster source: '
+      assert_grep "$seat plan prompt orders the index after source-context packets" "$prompt" \
+        '^[0-9]+\. Read the complete evidence navigation index after all listed source-context packets, before opening or searching original repository source: .*/r1p-evidence\.md$'
       assert_exit "$seat prompt does not advertise a denied plan path" 0 \
         python3 - "$prompt" "$S/r1p-plan.md" <<'PY'
 from pathlib import Path
