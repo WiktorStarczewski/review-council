@@ -1160,3 +1160,12 @@ Release 0.8.9 is published at signed tag `review-council--v0.8.9`, targeting mer
 The historical #1830 Luna plan audit on 0.8.4 was valid but used 62 tool calls, including 39 source-read calls and 23 required source segments. 0.8.9 improves repeated preparation work, not reviewer proof-read turns. The proposed follow-up allows two separate, ordered Codex proof-read calls in one turn while preserving per-path byte checks and all existing output caps. Compound shell batching remains disabled because joined output could be credited to the wrong source after a source mutation was restored.
 
 Design: `docs/superpowers/specs/2026-10-25-codex-proof-read-pairing-design.md`. The user approved this design. Implementation plan: `docs/superpowers/plans/2026-10-25-codex-proof-read-pairing.md`; it tests real Codex turn boundaries, preserves packet limits, and keeps oversized one-line source segments alone.
+
+- [x] Add the ordered-read, malformed-turn, packet-limit, byte-cap, and oversized-segment regressions.
+- [x] Prove the intended failures on exact head `c5c61dde1407c673e66f6fc0a2cbc2f5c2f4144e` in Ubuntu and macOS CI run `40235826237`.
+- [x] Implement Codex turn grouping, paired proof-read auditing, and accurate capacity estimates.
+- [x] Update generated and installed discovery instructions and Codex prompt contract tests.
+- [ ] Complete independent internal review and fix actionable P0-P2 findings.
+- [ ] Pass exact-head Ubuntu, macOS, proof-preparation, and Cursor package CI.
+- [ ] Squash-merge and publish signed Review Council 0.8.10; verify Claude, Codex, and Cursor installs.
+- [ ] Run the matched #1830 Luna comparison after merge and update issue #77 with the eligible result.

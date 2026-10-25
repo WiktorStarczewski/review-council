@@ -99,7 +99,7 @@ offsets are contiguous, and concatenating the chunks without delimiters must rep
 the canonical patch exactly. Reviewers read every chunk once, in rendered order and in
 full, before source-context packets or source expansion. Chunk reads prove change
 discovery only; they never establish source citation evidence.
-The 32 KiB per-tool and ordinary per-turn output limits still apply. Claude adapters may use two ordered proof reads in one turn across patch chunks, required source segments, and the evidence index under a 60 KiB combined cap; other adapters read one. Source-context packets and repository reads retain the ordinary 32 KiB turn cap. Repository expansion begins in a later turn. Chunk mode is used only when it saves at least
+The 32 KiB per-tool and ordinary per-turn output limits still apply. Claude and Codex adapters may use two ordered proof reads in one turn across patch chunks, required source segments, and the evidence index under a 60 KiB combined cap. Codex pairing requires a completed explicit turn boundary; calls without one are audited separately. Source-context packets and repository reads retain the ordinary 32 KiB turn cap. Repository expansion begins in a later turn. Chunk mode is used only when it saves at least
 10 percent against 240-line windows. Invalid UTF-8, NUL, an older manifest without a
 chunk set, or `REV_PATCH_CHUNKS=0` keeps window mode.
 
@@ -115,11 +115,12 @@ An oversized mandatory range remains one parent proof but is delivered through
 manifest-hashed, session-local source artifacts as ordered, gapless segments of at
 most 240 lines and normally at most 16 KiB predicted visible output. A one-line
 segment may extend to the 32 KiB per-tool ceiling when that line cannot be split.
+Read that segment alone when its predicted visible size exceeds 16 KiB.
 The renderer uses each adapter's
 native full-file action: shell `cat` for Codex, `Read` for Claude, and `read_file` for
-Gemini. Claude may read two listed source segments per turn; Codex and Gemini read
-one. Every segment must be read once in order before the parent range
-earns a receipt.
+Gemini. Claude may read two listed source segments per turn. Codex may read two only
+inside a completed explicit turn; Gemini reads one. Every segment must be read once
+in order before the parent range earns a receipt.
 
 Evidence preparation applies to adaptive code panels and accepted-fix plan panels,
 whether or not their roster contains a `cursor-sdk` row.

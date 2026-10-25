@@ -28,7 +28,8 @@ def load_evidence():
 
 
 class SourceFixture:
-    def __init__(self, directory, mode, oversized_lines=180, oversized_line_bytes=None):
+    def __init__(self, directory, mode, oversized_lines=180, oversized_line_bytes=None,
+                 compact_segment_lines=None):
         self.root = directory / 'repo'
         self.session = directory / 'session'
         self.root.mkdir(parents=True)
@@ -43,7 +44,13 @@ class SourceFixture:
         if mode != 'current':
             self.historical_source = self.declarations('retired', 110, 'old')
             if mode == 'deleted':
-                if oversized_line_bytes is None:
+                if compact_segment_lines is not None:
+                    self.oversized_source = (
+                        'def retired_oversized():\n'
+                        + ''.join(f'    value_{index:03d} = "' + 'y' * 16 + '"\n'
+                                  for index in range(compact_segment_lines))
+                        + f'    return value_{compact_segment_lines - 1:03d}\n')
+                elif oversized_line_bytes is None:
                     self.oversized_source = ('def retired_oversized():\n' + ''.join(
                         f'    value_{index:03d} = "historical-{index:03d}-{"y" * 96}"\n'
                         for index in range(oversized_lines))
@@ -300,10 +307,11 @@ class RequiredSourceProofTests(unittest.TestCase):
         self.assertEqual(audit['tool_turns'], audit['tool_calls'])
 
     def test_codex_rejects_three_proof_reads_in_one_turn(self):
-        fixture = self.fixture('deleted', oversized_lines=420)
-        segment_count = sum(len(row['segments'])
-                            for row in fixture.context['required_source_ranges'])
-        self.assertGreaterEqual(segment_count, 3)
+        fixture = self.fixture('deleted', compact_segment_lines=600)
+        segments = [segment for row in fixture.context['required_source_ranges']
+                    for segment in row['segments']]
+        self.assertEqual(len(segments), 3)
+        self.assertLess(sum(segment['predicted_visible_bytes'] for segment in segments), 32 * 1024)
         rc, audit = fixture.audit(group_required_segments=3)
         self.assertEqual(rc, 2)
         self.assertIn('evidence-proof-batch-too-large',

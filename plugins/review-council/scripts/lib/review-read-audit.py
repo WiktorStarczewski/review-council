@@ -2592,7 +2592,8 @@ def assess(args, blocked):
         prompt_lines = prompt.read_text().splitlines()
     except OSError:
         prompt_lines = []
-    adapter_read_batch_limit = _load_evidence_module().read_batch_limit(args.adapter)
+    evidence_module = _load_evidence_module()
+    adapter_read_batch_limit = evidence_module.read_batch_limit(args.adapter)
     authorized, complete_paths = prompt_permissions(prompt, root, session)
     dependency = Path(args.deps).resolve() if args.deps else None
     roots = allowed_roots(root, session, args.deps)
@@ -2609,6 +2610,10 @@ def assess(args, blocked):
     turns = {}
     implicit_turn = 0
     implicit_output_seen = False
+    codex_turn_sequence = 0
+    codex_active_turn = None
+    codex_turn_calls = {}
+    codex_completed_turns = set()
     sdk_transcript = CursorSDKTranscript() if args.adapter == 'cursor-sdk' else None
     try:
         with open(args.raw, encoding='utf-8') as stream:
@@ -2620,6 +2625,15 @@ def assess(args, blocked):
                 except json.JSONDecodeError:
                     failures.append(violation('malformed-transcript', args.adapter))
                     continue
+                if args.adapter == 'codex':
+                    event_type = event.get('type')
+                    if event_type == 'turn.started':
+                        codex_turn_sequence += 1
+                        codex_active_turn = 'codex-explicit-' + str(codex_turn_sequence)
+                        codex_turn_calls[codex_active_turn] = []
+                    elif event_type == 'turn.completed' and codex_active_turn is not None:
+                        codex_completed_turns.add(codex_active_turn)
+                        codex_active_turn = None
                 if sdk_transcript is not None:
                     try:
                         sdk_transcript.observe(event)
@@ -2649,7 +2663,12 @@ def assess(args, blocked):
                                          or event.get('turn_id') or event.get('turnId'))
                     if args.adapter in ('claude', 'agent') and not explicit_turn:
                         explicit_turn = (event.get('message') or {}).get('id')
-                    if explicit_turn:
+                    if args.adapter == 'codex' and codex_active_turn is not None:
+                        turn = codex_active_turn
+                    elif args.adapter == 'codex':
+                        implicit_turn += 1
+                        turn = 'codex-implicit-' + str(implicit_turn)
+                    elif explicit_turn:
                         turn = str(explicit_turn)
                     elif args.adapter in ('codex', 'grok', 'gemini', 'cursor-sdk'):
                         if implicit_output_seen:
@@ -2660,6 +2679,8 @@ def assess(args, blocked):
                         turn = f'event-{line_number}'
                     calls[call_id] = (name, data, turn)
                     turns.setdefault(turn, []).append(call_id)
+                    if args.adapter == 'codex' and turn == codex_active_turn:
+                        codex_turn_calls[turn].append(call_id)
                 for call_id, success, value, non_execution in event_outputs:
                     if not isinstance(call_id, str) or not call_id:
                         failures.append(violation('missing-tool-call-id', args.adapter))
@@ -2679,6 +2700,16 @@ def assess(args, blocked):
         failures.append(violation('malformed-transcript', args.adapter))
     except OSError:
         failures.append(violation('missing-transcript', args.adapter))
+    if args.adapter == 'codex':
+        for turn, call_ids in codex_turn_calls.items():
+            if turn in codex_completed_turns:
+                continue
+            for index, call_id in enumerate(call_ids):
+                name, data, _ = calls[call_id]
+                calls[call_id] = (name, data, f'{turn}-incomplete-{index}')
+        turns = {}
+        for call_id, (_, _, turn) in calls.items():
+            turns.setdefault(turn, []).append(call_id)
     if sdk_transcript is not None:
         try:
             sdk_transcript.finish()
@@ -2914,6 +2945,7 @@ def assess(args, blocked):
     exact_patch_chunk_calls = set()
     exact_evidence_index_calls = set()
     required_segment_calls = []
+    oversized_required_segment_calls = set()
     # Byte-proved ordered reads, credited or not: the pacing counts are taken over these.
     paced_chunk_calls = []
     paced_packet_calls = set()
@@ -3157,6 +3189,8 @@ def assess(args, blocked):
                     if duplicate:
                         failures.append(violation('duplicate-required-source-segment', name))
                         continue
+                    if evidence_module.source_segment_requires_standalone_turn(segment):
+                        oversized_required_segment_calls.add(call_id)
                     paced_segment_calls.append((call_id, turn))
                     if call_id in blocked:
                         continue
@@ -3236,6 +3270,11 @@ def assess(args, blocked):
                                if call_id in ordered_proof_calls]
                 if len(proof_reads) > adapter_read_batch_limit:
                     failures.append(violation('evidence-proof-batch-too-large', args.adapter))
+                if (len(turns[turn]) > 1
+                        and any(call_id in oversized_required_segment_calls
+                                for call_id in proof_reads)):
+                    failures.append(violation(
+                        'oversized-required-source-segment-batched', args.adapter))
             required_source_range_proofs.sort(key=lambda row: (
                 row['path'], row['line_start'], row['line_end'], row['blob_tree'],
                 row['blob_oid'], row['content_sha256']))
@@ -3379,7 +3418,10 @@ def assess(args, blocked):
             unique.append(item)
     advisories = []
     if manifest is not None:
-        fatal = [item for item in unique if item.get('code') not in ADVISORY_CODES]
+        fatal = [item for item in unique
+                 if item.get('code') not in ADVISORY_CODES
+                 or (args.adapter == 'codex'
+                     and item.get('code') == 'evidence-proof-batch-too-large')]
         if not fatal:
             advisories = unique
             unique = []

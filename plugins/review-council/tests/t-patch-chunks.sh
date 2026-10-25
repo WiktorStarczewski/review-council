@@ -392,8 +392,8 @@ PY
       'reading only consecutive chunks in exact order and in full'
     assert_nogrep "chunk prompt does not reapply line-window limits to complete artifacts" "$prompt" \
       'at most 160 lines for each assigned-patch window'
-    assert_grep "Codex keeps one patch chunk per turn" "$prompt" \
-      '^Patch chunk batch limit: 1$'
+    assert_grep "Codex permits two patch chunks per completed turn" "$prompt" \
+      '^Patch chunk batch limit: 2$'
     assert_grep "Codex chunk prompt gives an exact shell recipe" "$prompt" \
       '^First assigned-patch action: run cat -- '
     assert_nogrep "Codex chunk prompt never requests a native read tool" "$prompt" \
@@ -630,6 +630,7 @@ manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2])
 root = pathlib.Path(sys.argv[3]); mode = sys.argv[4]; session = pathlib.Path(sys.argv[1]).parent
 assignment = manifest['assignments']['sol']
 chunks = list(manifest['patch_sets'][assignment['patch_set']]['chunks'])
+turn_limit = 3 if mode == 'too-many' else 2
 if mode == 'reorder':
     chunks[0], chunks[1] = chunks[1], chunks[0]
 elif mode == 'missing':
@@ -655,6 +656,8 @@ if mode == 'packet-first':
 if mode == 'search-first':
     command('search-first', "rg -n 'value_1' . | head -80", 'src/large.py:2:value_0001 = 0001\n')
 for position, row in enumerate(chunks, 1):
+    if (position - 1) % turn_limit == 0:
+        events.append({'type':'turn.started'})
     path = session / row['artifact']; content = path.read_text()
     if mode == 'replace' and position == 1:
         content = ('X' if content[:1] != 'X' else 'Y') + content[1:]
@@ -665,6 +668,8 @@ for position, row in enumerate(chunks, 1):
                 content.splitlines(keepends=True)[0])
     else:
         command('chunk-' + str(position), 'cat -- ' + shlex.quote(str(path)), content)
+    if position % turn_limit == 0 or position == len(chunks):
+        events.append({'type':'turn.completed'})
 if mode in ('duplicate', 'duplicate-truncate', 'duplicate-replace'):
     row = chunks[0]; path = session / row['artifact']
     duplicate = path.read_text()
@@ -743,18 +748,12 @@ assert all(row['path'] not in chunk_artifacts for row in a['source_ranges'])
 PY
     assert_eq "chunk proof counters are internally consistent" "$?" 0
 
-    python3 - "$S/r24-sol.stream.ndjson" <<'PY'
-import json, pathlib, sys
-path = pathlib.Path(sys.argv[1])
-events = [json.loads(line) for line in path.read_text().splitlines()]
-events[:4] = [events[0], events[2], events[1], events[3]]
-path.write_text(''.join(json.dumps(event) + '\n' for event in events))
-PY
+    write_transcript too-many
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
       --raw "$S/r24-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
       --out "$S/r24-sol.read-audit.json" >/dev/null 2>&1
-    assert_eq "concurrent Codex patch reads above its batch limit are rejected" "$?" 2
-    assert_grep "concurrent Codex patch reads have a stable batch violation" \
+    assert_eq "three Codex patch reads in one explicit turn exceed its batch limit" "$?" 2
+    assert_grep "oversized Codex patch turns have a stable batch violation" \
       "$S/r24-sol.read-audit.json" '"code":"patch-chunk-batch-too-large"'
 
     local mode code

@@ -1293,14 +1293,16 @@ segments = required['segments']
 if not complete:
     segments = segments[:-1]
 def turn(*calls):
+    events.append({'type':'turn.started'})
     for call_id, command_text, _ in calls:
         events.append({'type':'item.started','item':{'id':call_id,'type':'command_execution','command':command_text}})
     for call_id, command_text, output in calls:
         events.append({'type':'item.completed','item':{'id':call_id,'type':'command_execution','command':command_text,
                                                        'aggregated_output':output,'exit_code':0}})
+    events.append({'type':'turn.completed'})
 if mode in ('sibling', 'paced', 'paced-altered', 'paced-oversized'):
     # Severity: the first segment shares its turn with an oversized prompt read, or the first two
-    # segments share one turn past the Codex batch limit of one, with or without that read.
+    # segments share one turn, with or without that read.
     first, second = segments[0], segments[1]
     calls = [('source-' + str(row['index']), "cat '" + str(session / row['artifact']) + "'",
               (session / row['artifact']).read_text()) for row in (first, second)]
@@ -1379,8 +1381,12 @@ PY
       "$S/r9-sol.read-audit.json" '"required_source_range_proofs":\[\{"blob_oid":"[0-9a-f]+"'
     assert_grep "SHA-256 required source proof retains a 64-digit blob" \
       "$S/r9-sol.read-audit.json" '"required_source_range_proofs":\[\{"blob_oid":"[0-9a-f]{64}"'
-    assert_grep "Codex keeps one required source segment per turn" "$prompt" \
-      '^Required source segment batch limit: 1$'
+    assert_grep "Codex permits two required source segments per completed turn" "$prompt" \
+      '^Required source segment batch limit: 2$'
+    assert_grep "Codex prompt requires explicit turns for ordered proof pairing" "$prompt" \
+      '^Codex ordered proof reads: up to 2 consecutive patch chunks, required source segments, or evidence-index reads in a completed explicit model turn\.'
+    assert_grep "Codex prompt keeps oversized single-line segments alone" "$prompt" \
+      '^A required source segment over 16 KiB because it is one line must be read alone\.$'
     assert_grep "Codex reads required source through a session artifact" "$prompt" \
       '^Required source segment [0-9]+/[0-9]+: run cat -- .*-source-segment-[0-9]{3}-[0-9]{3}\.txt '
     assert_nogrep "Codex prompt exposes no detached Git repository command" "$prompt" \
@@ -1396,9 +1402,9 @@ PY
         "$(severity_verdict "$S/r9-sol.read-audit.json")" "$(printf '%s\n' ${severity_want//;/ })"
     done <<'CASES'
 sibling|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,tool-output-too-large@command_execution,tool-turn-output-too-large@codex;advisories=-
-paced|valid;violations=-;advisories=evidence-proof-batch-too-large@codex,required-source-segment-batch-too-large@codex
+paced|valid;violations=-;advisories=-
 paced-altered|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,required-source-output-mismatch@command_execution;advisories=-
-paced-oversized|invalid;violations=evidence-proof-batch-too-large@codex,missing-required-source-range@codex,missing-required-source-segment@codex,required-source-segment-batch-too-large@codex,tool-output-too-large@command_execution,tool-turn-output-too-large@codex;advisories=-
+paced-oversized|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,tool-output-too-large@command_execution,tool-turn-output-too-large@codex;advisories=-
 CASES
 
     write_required_transcript live-window

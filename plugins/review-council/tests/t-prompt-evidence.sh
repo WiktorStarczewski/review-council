@@ -309,7 +309,7 @@ import runpy, sys
 
 read_batch_limit = runpy.run_path(sys.argv[1])['read_batch_limit']
 assert read_batch_limit('claude') == 2
-assert read_batch_limit('codex') == 1
+assert read_batch_limit('codex') == 2
 assert read_batch_limit('gemini') == 1
 assert runpy.run_path(sys.argv[1])['SOURCE_PACKET_BATCH_LIMIT'] == 1
 PY
