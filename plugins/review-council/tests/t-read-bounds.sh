@@ -118,18 +118,24 @@ test_plan_prompt_hooks_reuse_prepared_search_proofs() {
   ( local R="$T/plan-hook-root" S="$T/plan-hook-session"
     unset REV_RG
     mkrepo "$R"; mkdir -p "$R/src" "$R/tests" "$S"
-    cat > "$R/src/service.ts" <<'EOF'
-export function runService() { return 1; }
-EOF
+    python3 - "$R/src/service.ts" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.write_text('export function runService() { return 1; }\n' + ''.join(
+    f'export const planPadding_{index:03d} = 0;\n' for index in range(240)))
+PY
     cat > "$R/tests/service.test.ts" <<'EOF'
 import { runService } from "../src/service";
 test("service", () => runService());
 EOF
     git -C "$R" add . && git -C "$R" commit -qm "plan base"
     local base; base=$(git -C "$R" rev-parse HEAD)
-    cat > "$R/src/service.ts" <<'EOF'
-export function runService() { return 2; }
-EOF
+    python3 - "$R/src/service.ts" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+path.write_text('export function runService() { return 2; }\n' + ''.join(
+    f'export const planPadding_{index:03d} = 1;\n' for index in range(240)))
+PY
     printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
       "$base" "$R" > "$S/scope.env"
     printf '%s\n' src/service.ts > "$S/files.txt"
