@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Bind prepared plan search output to each assigned cluster so identical search results remain valid, while retaining unambiguous historical prompt bindings.
+
 ## 0.8.8
 
 - Reject unfinished mandatory review generations with immutable evidence bindings, one-seat recovery and preserved receipt history.

@@ -7621,7 +7621,7 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
                 body = (Path(manifest['session']) / proof['artifact']).read_text()
                 print('Prepared cluster sibling search: ' + cluster['id'] + ' '
                       + proof['artifact'] + ' SHA-256 ' + proof['sha256'])
-                print('Prepared cluster search output: '
+                print('Prepared cluster search output: ' + cluster['id'] + ' '
                       + json.dumps(body, ensure_ascii=True, separators=(',', ':')))
             for row in cluster['paths']:
                 location = row['path']
