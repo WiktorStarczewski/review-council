@@ -5,7 +5,8 @@
 - [x] Diagnose the current Luna source-read budget and evidence-order failures.
 - [x] Add prompt regressions and confirm the expected failure in CI on a test-only commit.
 - [x] Make the evidence index an explicit ordered read and treat opened source-context ranges as source proof.
-- [ ] Complete one independent normal internal review, fix P0-P2 findings, and pass required CI on the exact final head.
+- [x] Complete an independent normal internal review and follow-up re-review with no actionable P0-P2 findings.
+- [ ] Pass required CI on the exact final head.
 - [ ] Squash-merge, publish signed 0.8.4, reinstall each host, and verify installed identity.
 - [ ] Monitor fresh Luna results and keep issue #77 open until audit failures meet the under-5% target.
 
@@ -15,9 +16,11 @@ PR #79 merged as `383218599c6efc4cb812821740fc77e9ca67d9f3`. Required PR-head CI
 
 Merge-triggered main gate `40142430721` passed on `383218599c6efc4cb812821740fc77e9ca67d9f3` on Ubuntu and macOS, with proof preparation also passing.
 
-One independent normal internal review of the 0.8.4 candidate found no actionable P0-P2 findings. It confirmed packet ranges count as proof only after exact packet reads, while uncovered sites, required source reads, and the existing call and output limits remain enforced.
+An independent normal internal review and follow-up re-review found no actionable P0-P2 findings. The follow-up confirmed packet ranges count as proof only after exact packet reads, while uncovered sites, required source reads, and the existing call and output limits remain enforced.
 
 Expected-red run `40142951169` on test-only commit `3207ae860e2ae37b295e1fc113f0087411a7cd9f` failed only the two new prompt assertions for each of four seats on Ubuntu and macOS. Each platform passed 5,098 assertions and failed 8; proof preparation passed.
+
+Candidate run `40144222587` on `7ee84f6b5ac0c236e36a06335d04514886756e9e` exposed four existing cost-mode assertions that require source-context-disabled prompts to omit packet guidance. Each platform passed 5,102 assertions and failed 4; proof preparation passed. Prompt and footer wording now depend on the prepared packet and segment list.
 
 # Luna seat repository-root fix
 
