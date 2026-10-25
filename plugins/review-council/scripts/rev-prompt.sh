@@ -638,6 +638,7 @@ EOC
       if [ "$ADAPTER" = codex ]; then
         cat <<'EOC'
 For Codex source reads, use one path and one contiguous range per call; use a separate call for every other path or range. Safe examples: `sed -n '40,75p' 'src/file.ts'` and `rg -n -F 'symbolName' 'src/path' | head -80`. Do not combine source files or ranges with `&&` or `;`.
+For shell searches, prefer simple fixed-string patterns such as `rg -n -F 'aria-checked' src | head -80`; avoid mixing single- and double-quoted fragments. If a pattern needs both quote types, search a stable literal such as the attribute name with `-F`. An unmatched quote invalidates the read audit, even if a later query succeeds.
 EOC
       fi
     fi
