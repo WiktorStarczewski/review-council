@@ -87,7 +87,7 @@ def phase_bundles(phase):
 
 
 def read_batch_limit(adapter):
-    return 2 if adapter == 'claude' else 1
+    return 2 if adapter in ('claude', 'codex') else 1
 
 
 def read_line_limit(adapter):
@@ -456,6 +456,30 @@ def partition_source_segments(lines, line_start, line_end):
             'content_sha256': digest(raw),
         })
     return segments
+
+
+def source_segment_requires_standalone_turn(segment):
+    return (segment['line_start'] == segment['line_end']
+            and segment['predicted_visible_bytes'] > SOURCE_SEGMENT_VISIBLE_LIMIT)
+
+
+def source_segment_turn_count(required_source_ranges, batch_limit):
+    segments = [segment for required in required_source_ranges
+                for segment in required['segments']]
+    if batch_limit <= 1:
+        return len(segments)
+    turns = 0
+    paired = False
+    for segment in segments:
+        if source_segment_requires_standalone_turn(segment):
+            turns += int(paired) + 1
+            paired = False
+        elif paired:
+            turns += 1
+            paired = False
+        else:
+            paired = True
+    return turns + int(paired)
 
 
 def patch_sets_for(scopes, patch_bodies, prefix, setting):
@@ -5221,9 +5245,11 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
                                     if direct_calls > MANDATORY_REPOSITORY_READ_LIMIT else [])
             else:
                 proof_partitions = []
-        patch_turns = (patch_calls + batch - 1) // batch
-        segment_turns = (segment_calls + batch - 1) // batch
-        direct_turns = (direct_calls + batch - 1) // batch
+        patch_batch = batch if patch_set['read_mode'] == 'chunks' else 1
+        patch_turns = (patch_calls + patch_batch - 1) // patch_batch
+        segment_turns = source_segment_turn_count(packet['required_source_ranges'], batch)
+        direct_batch = 2 if assignment['adapter'] == 'claude' else 1
+        direct_turns = (direct_calls + direct_batch - 1) // direct_batch
         projected = (patch_turns + packet_calls + segment_turns + direct_turns
                      + 1 + REPOSITORY_REFUTATION_CALL_RESERVE
                      + 1 + PROVIDER_TURN_RESERVE)
@@ -7987,7 +8013,8 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
         first = str(Path(manifest['session']) / patch_set['chunks'][0]['artifact'])
         if assignment['adapter'] == 'codex':
             first_action = ('run ' + shlex.join(['cat', '--', first])
-                            + '; then read one listed chunk per command in exact order.')
+                            + '. Continue in exact order, with up to two separate cat commands '
+                            + 'in one completed explicit model turn. Each command reads one chunk.')
         else:
             tool = read_tool_name(assignment['adapter'])
             first_action = ('use ' + tool + ' to read ' + str(batch_limit)
@@ -8016,6 +8043,11 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
         print('First assigned-patch action: ' + first_action
               + ' Do not read the evidence index, source context, or original source until '
               + 'the assigned patch is complete.')
+    if assignment['adapter'] == 'codex':
+        print('Codex ordered proof reads: up to 2 consecutive patch chunks, required source '
+              + 'segments, or evidence-index reads in a completed explicit model turn. Issue '
+              + 'each read through its own native command in exact order.')
+        print('A required source segment over 16 KiB because it is one line must be read alone.')
     print('Source context enabled: ' + str(manifest['source_context']['enabled']).lower())
     if manifest['source_context']['enabled']:
         print('Post-patch evidence order: read every listed source-context packet and required '

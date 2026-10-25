@@ -28,7 +28,8 @@ def load_evidence():
 
 
 class SourceFixture:
-    def __init__(self, directory, mode):
+    def __init__(self, directory, mode, oversized_lines=180, oversized_line_bytes=None,
+                 compact_segment_lines=None):
         self.root = directory / 'repo'
         self.session = directory / 'session'
         self.root.mkdir(parents=True)
@@ -43,9 +44,23 @@ class SourceFixture:
         if mode != 'current':
             self.historical_source = self.declarations('retired', 110, 'old')
             if mode == 'deleted':
-                self.oversized_source = ('def retired_oversized():\n' + ''.join(
-                    f'    value_{index:03d} = "historical-{index:03d}-{"y" * 96}"\n'
-                    for index in range(180)) + '    return value_179\n')
+                if compact_segment_lines is not None:
+                    self.oversized_source = (
+                        'def retired_oversized():\n'
+                        + ''.join(f'    value_{index:03d} = "' + 'y' * 16 + '"\n'
+                                  for index in range(compact_segment_lines))
+                        + f'    return value_{compact_segment_lines - 1:03d}\n')
+                elif oversized_line_bytes is None:
+                    self.oversized_source = ('def retired_oversized():\n' + ''.join(
+                        f'    value_{index:03d} = "historical-{index:03d}-{"y" * 96}"\n'
+                        for index in range(oversized_lines))
+                        + f'    return value_{oversized_lines - 1:03d}\n')
+                else:
+                    self.oversized_source = (
+                        'def retired_oversized():\n'
+                        + '    value_first = "' + 'y' * oversized_line_bytes + '"\n'
+                        + '    value_second = "' + 'z' * oversized_line_bytes + '"\n'
+                        + '    return value_second\n')
                 self.historical_source += self.oversized_source
             (self.root / 'aa_retired.py').write_text(self.historical_source)
         if mode in ('mixed', 'plan', 'current'):
@@ -121,7 +136,12 @@ class SourceFixture:
         return {'path': path, 'line_start': int(start), 'line_end': int(end),
                 'blob_tree': tree, 'blob_oid': oid, 'content_sha256': digest}
 
-    def audit(self, source=None, result=None, omitted_artifacts=()):
+    def audit(self, source=None, result=None, omitted_artifacts=(), *,
+              group_patch_chunks=0, group_required_segments=0, codex_turn_boundaries=True,
+              codex_turn_complete=True, codex_outputs_after_turn_complete=False,
+              reverse_grouped_segments=False, repeat_first_grouped_segment=False,
+              group_evidence_index=False, group_final_segment_with_index=False,
+              repeat_first_packet=False):
         events = []
 
         def read(command, output):
@@ -135,11 +155,41 @@ class SourceFixture:
             if path.name not in omitted_artifacts:
                 read(shlex.join(['cat', '--', str(path)]), path.read_text())
 
+        def read_in_codex_turn(paths):
+            if codex_turn_boundaries:
+                events.append({'type': 'turn.started'})
+            if codex_outputs_after_turn_complete:
+                pending = []
+                for path in paths:
+                    if path.name in omitted_artifacts:
+                        continue
+                    call = 'read-' + str(len(events))
+                    item = {'id': call, 'type': 'command_execution',
+                            'command': shlex.join(['cat', '--', str(path)])}
+                    events.append({'type': 'item.started', 'item': item})
+                    pending.append((item, path.read_text()))
+                if codex_turn_boundaries and codex_turn_complete:
+                    events.append({'type': 'turn.completed'})
+                for item, output in pending:
+                    events.append({'type': 'item.completed', 'item': dict(
+                        item, aggregated_output=output, exit_code=0)})
+                return
+            for path in paths:
+                read_artifact(path)
+            if codex_turn_boundaries and codex_turn_complete:
+                events.append({'type': 'turn.completed'})
+
         assignment = self.manifest['assignments'][self.seat]
         patch_set = self.manifest['patch_sets'][assignment['patch_set']]
         if patch_set['read_mode'] == 'chunks':
-            for chunk in patch_set['chunks']:
-                read_artifact(self.session / chunk['artifact'])
+            chunk_paths = [self.session / chunk['artifact'] for chunk in patch_set['chunks']]
+            if group_patch_chunks:
+                read_in_codex_turn(chunk_paths[:group_patch_chunks])
+                for path in chunk_paths[group_patch_chunks:]:
+                    read_artifact(path)
+            else:
+                for path in chunk_paths:
+                    read_artifact(path)
         else:
             patch = Path(assignment['patch'])
             patch_lines = patch.read_text().splitlines(keepends=True)
@@ -149,13 +199,39 @@ class SourceFixture:
                 end = min(len(patch_lines), start + read_limit - 1)
                 command = shlex.join(['sed', '-n', f'{start},{end}p', str(patch)])
                 read(command, ''.join(patch_lines[offset:end]))
-        for shard in self.context['shards']:
-            read_artifact(self.session / shard['artifact'])
-        for required in self.context['required_source_ranges']:
-            for segment in required['segments']:
-                read_artifact(self.session / segment['artifact'])
         index = self.session / f'r{self.label}-evidence.md'
-        read_artifact(index)
+        packet_paths = [self.session / shard['artifact'] for shard in self.context['shards']]
+        if repeat_first_packet and packet_paths:
+            read_in_codex_turn([packet_paths[0], packet_paths[0]])
+            for path in packet_paths[1:]:
+                read_artifact(path)
+        else:
+            for path in packet_paths:
+                read_artifact(path)
+        segment_paths = [self.session / segment['artifact']
+                         for required in self.context['required_source_ranges']
+                         for segment in required['segments']]
+        if group_final_segment_with_index:
+            for path in segment_paths[:-1]:
+                read_artifact(path)
+            read_in_codex_turn([segment_paths[-1], index])
+            group_evidence_index = True
+        elif group_required_segments:
+            grouped = segment_paths[:group_required_segments]
+            if reverse_grouped_segments:
+                grouped.reverse()
+            if repeat_first_grouped_segment and grouped:
+                grouped.insert(1, grouped[0])
+            if group_evidence_index:
+                grouped.append(index)
+            read_in_codex_turn(grouped)
+            for path in segment_paths[group_required_segments:]:
+                read_artifact(path)
+        else:
+            for path in segment_paths:
+                read_artifact(path)
+        if not group_evidence_index:
+            read_artifact(index)
         if source is not None:
             row, tree, output = source
             window = f"{row['line_start']},{row['line_end']}p"
@@ -199,8 +275,126 @@ class RequiredSourceProofTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
 
-    def fixture(self, mode):
-        return SourceFixture(self.directory, mode)
+    def fixture(self, mode, **kwargs):
+        return SourceFixture(self.directory, mode, **kwargs)
+
+    def test_codex_pairs_two_assigned_patch_chunks_inside_an_explicit_turn(self):
+        fixture = self.fixture('current')
+        assignment = fixture.manifest['assignments'][fixture.seat]
+        chunks = fixture.manifest['patch_sets'][assignment['patch_set']]['chunks']
+        self.assertGreater(len(chunks), 1)
+        target = fixture.target()
+        source = (target, None, fixture.current_bytes(target))
+        rc, audit = fixture.audit(source=source, group_patch_chunks=2)
+        self.assertEqual((rc, audit['violations']), (0, []))
+        self.assertEqual(audit['patch_proof_calls'], len(chunks))
+        self.assertEqual(audit['patch_proof_turns'], len(chunks) - 1)
+        self.assertIn('Codex ordered proof reads: up to 2', fixture.prompt.read_text())
+
+    def test_codex_pairs_final_required_segment_with_the_evidence_index(self):
+        fixture = self.fixture('deleted')
+        segment_count = sum(len(row['segments'])
+                            for row in fixture.context['required_source_ranges'])
+        self.assertGreaterEqual(segment_count, 2)
+        rc, audit = fixture.audit(group_final_segment_with_index=True)
+        self.assertEqual((rc, audit['violations']), (0, []))
+        self.assertEqual(audit['tool_turns'], audit['tool_calls'] - 1)
+
+    def test_codex_pairs_two_required_segments_inside_an_explicit_turn(self):
+        fixture = self.fixture('deleted')
+        segment_count = sum(len(row['segments'])
+                            for row in fixture.context['required_source_ranges'])
+        self.assertEqual(segment_count, 2)
+        rc, audit = fixture.audit(group_required_segments=2)
+        self.assertEqual((rc, audit['violations']), (0, []))
+        self.assertEqual(audit['source_read_calls'], 2)
+        self.assertEqual(audit['tool_turns'], audit['tool_calls'] - 1)
+
+    def test_codex_reads_without_turn_boundaries_remain_unpaired(self):
+        fixture = self.fixture('deleted')
+        rc, audit = fixture.audit(
+            group_required_segments=2, codex_turn_boundaries=False)
+        self.assertEqual((rc, audit['violations']), (0, []))
+        self.assertEqual(audit['tool_turns'], audit['tool_calls'])
+
+    def test_codex_reads_in_an_unclosed_turn_remain_unpaired(self):
+        fixture = self.fixture('deleted')
+        rc, audit = fixture.audit(
+            group_required_segments=2, codex_turn_complete=False)
+        self.assertEqual((rc, audit['violations']), (0, []))
+        self.assertEqual(audit['tool_turns'], audit['tool_calls'])
+
+    def test_codex_outputs_after_turn_completion_remain_unpaired(self):
+        fixture = self.fixture('deleted')
+        rc, audit = fixture.audit(
+            group_required_segments=2, codex_outputs_after_turn_complete=True)
+        self.assertEqual((rc, audit['violations']), (0, []))
+        self.assertEqual(audit['tool_turns'], audit['tool_calls'])
+
+    def test_codex_rejects_three_proof_reads_in_one_turn(self):
+        fixture = self.fixture('deleted', compact_segment_lines=600)
+        segments = [segment for row in fixture.context['required_source_ranges']
+                    for segment in row['segments']]
+        self.assertEqual(len(segments), 3)
+        self.assertLess(sum(segment['predicted_visible_bytes'] for segment in segments), 32 * 1024)
+        rc, audit = fixture.audit(group_required_segments=3)
+        self.assertEqual(rc, 2)
+        self.assertIn('evidence-proof-batch-too-large',
+                      [row['code'] for row in audit['violations']])
+
+    def test_codex_rejects_reordered_required_segments_in_a_paired_turn(self):
+        fixture = self.fixture('deleted')
+        rc, audit = fixture.audit(
+            group_required_segments=2, reverse_grouped_segments=True)
+        self.assertEqual(rc, 2)
+        self.assertIn('reordered-required-source-segments',
+                      [row['code'] for row in audit['violations']])
+
+    def test_codex_rejects_repeated_required_segment_in_a_paired_turn(self):
+        fixture = self.fixture('deleted')
+        rc, audit = fixture.audit(
+            group_required_segments=1, repeat_first_grouped_segment=True)
+        self.assertEqual(rc, 2)
+        self.assertIn('duplicate-required-source-segment',
+                      [row['code'] for row in audit['violations']])
+
+    def test_codex_rejects_two_source_context_packet_reads_in_one_turn(self):
+        fixture = self.fixture('deleted')
+        rc, audit = fixture.audit(repeat_first_packet=True)
+        self.assertEqual(rc, 2)
+        self.assertIn('source-packet-batch-too-large',
+                      [row['code'] for row in audit['violations']])
+
+    def test_codex_reads_an_oversized_one_line_segment_alone(self):
+        fixture = self.fixture('deleted', oversized_line_bytes=20_000)
+        segments = [segment for row in fixture.context['required_source_ranges']
+                    for segment in row['segments']]
+        self.assertTrue(any(
+            segment['line_start'] == segment['line_end']
+            and segment['predicted_visible_bytes'] > 16 * 1024
+            for segment in segments))
+        rc, audit = fixture.audit(group_required_segments=2)
+        self.assertEqual(rc, 2)
+        self.assertIn('oversized-required-source-segment-batched',
+                      [row['code'] for row in audit['violations']])
+
+    def test_prepared_capacity_counts_oversized_single_line_segments_alone(self):
+        fixture = self.fixture('deleted', oversized_line_bytes=20_000)
+        segments = [segment for row in fixture.context['required_source_ranges']
+                    for segment in row['segments']]
+        capacity = fixture.manifest['task_capacity']['seats'][fixture.seat]
+        self.assertEqual(len(segments), 4)
+        self.assertEqual(capacity['source_segment_calls'], 4)
+        self.assertEqual(capacity['source_segment_turns'], 4)
+
+    def test_codex_rejects_missing_segment_even_when_its_neighbor_is_paired(self):
+        fixture = self.fixture('deleted')
+        first_segment = fixture.context['required_source_ranges'][0]['segments'][0]['artifact']
+        rc, audit = fixture.audit(
+            omitted_artifacts=(first_segment,), group_required_segments=2)
+        self.assertEqual(rc, 2)
+        self.assertIn('missing-required-source-segment',
+                      [row['code'] for row in audit['violations']])
 
     def assert_current_target(self, fixture):
         target = fixture.target()

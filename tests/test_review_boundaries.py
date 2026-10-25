@@ -40,6 +40,19 @@ class ReviewBoundaryTests(unittest.TestCase):
             [(999999, 12)])
         self.assertEqual(call('Read', {'path': 'other.txt'}, patch, root, 12), [])
 
+    def test_codex_ordered_proof_reads_use_the_two_read_batch_limit(self):
+        self.assertEqual(self.evidence.read_batch_limit('codex'), 2)
+        self.assertEqual(self.evidence.read_batch_limit('claude'), 2)
+        self.assertEqual(self.evidence.read_batch_limit('cursor-sdk'), 1)
+
+    def test_ordered_proof_turn_limit_rejects_output_over_60_kib(self):
+        calls = ['read-1', 'read-2']
+        proof_calls = set(calls)
+        self.assertTrue(self.audit.ordered_proof_turn_exempt(
+            2, calls, proof_calls, 60 * 1024))
+        self.assertFalse(self.audit.ordered_proof_turn_exempt(
+            2, calls, proof_calls, 60 * 1024 + 1))
+
     def test_context_read_outside_a_path_scope_is_audited(self):
         allowed = self.evidence.source_range_path_allowed
         context = {'path': 'src/app/defaults.tsx', 'line_start': 1, 'line_end': 20, 'origin': 'tool'}

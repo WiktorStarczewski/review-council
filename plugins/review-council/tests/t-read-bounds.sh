@@ -1293,14 +1293,16 @@ segments = required['segments']
 if not complete:
     segments = segments[:-1]
 def turn(*calls):
+    events.append({'type':'turn.started'})
     for call_id, command_text, _ in calls:
         events.append({'type':'item.started','item':{'id':call_id,'type':'command_execution','command':command_text}})
     for call_id, command_text, output in calls:
         events.append({'type':'item.completed','item':{'id':call_id,'type':'command_execution','command':command_text,
                                                        'aggregated_output':output,'exit_code':0}})
+    events.append({'type':'turn.completed'})
 if mode in ('sibling', 'paced', 'paced-altered', 'paced-oversized'):
     # Severity: the first segment shares its turn with an oversized prompt read, or the first two
-    # segments share one turn past the Codex batch limit of one, with or without that read.
+    # segments share one turn, with or without that read.
     first, second = segments[0], segments[1]
     calls = [('source-' + str(row['index']), "cat '" + str(session / row['artifact']) + "'",
               (session / row['artifact']).read_text()) for row in (first, second)]
@@ -1379,8 +1381,12 @@ PY
       "$S/r9-sol.read-audit.json" '"required_source_range_proofs":\[\{"blob_oid":"[0-9a-f]+"'
     assert_grep "SHA-256 required source proof retains a 64-digit blob" \
       "$S/r9-sol.read-audit.json" '"required_source_range_proofs":\[\{"blob_oid":"[0-9a-f]{64}"'
-    assert_grep "Codex keeps one required source segment per turn" "$prompt" \
-      '^Required source segment batch limit: 1$'
+    assert_grep "Codex permits two required source segments per completed turn" "$prompt" \
+      '^Required source segment batch limit: 2$'
+    assert_grep "Codex prompt requires explicit turns for ordered proof pairing" "$prompt" \
+      '^Codex ordered proof reads: up to 2 consecutive patch chunks, required source segments, or evidence-index reads in a completed explicit model turn\.'
+    assert_grep "Codex prompt keeps oversized single-line segments alone" "$prompt" \
+      '^A required source segment over 16 KiB because it is one line must be read alone\.$'
     assert_grep "Codex reads required source through a session artifact" "$prompt" \
       '^Required source segment [0-9]+/[0-9]+: run cat -- .*-source-segment-[0-9]{3}-[0-9]{3}\.txt '
     assert_nogrep "Codex prompt exposes no detached Git repository command" "$prompt" \
@@ -1396,9 +1402,9 @@ PY
         "$(severity_verdict "$S/r9-sol.read-audit.json")" "$(printf '%s\n' ${severity_want//;/ })"
     done <<'CASES'
 sibling|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,tool-output-too-large@command_execution,tool-turn-output-too-large@codex;advisories=-
-paced|valid;violations=-;advisories=evidence-proof-batch-too-large@codex,required-source-segment-batch-too-large@codex
+paced|valid;violations=-;advisories=-
 paced-altered|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,required-source-output-mismatch@command_execution;advisories=-
-paced-oversized|invalid;violations=evidence-proof-batch-too-large@codex,missing-required-source-range@codex,missing-required-source-segment@codex,required-source-segment-batch-too-large@codex,tool-output-too-large@command_execution,tool-turn-output-too-large@codex;advisories=-
+paced-oversized|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,tool-output-too-large@command_execution,tool-turn-output-too-large@codex;advisories=-
 CASES
 
     write_required_transcript live-window
@@ -1501,11 +1507,9 @@ PY
         --out "$S/r9-sol.read-audit.json" >/dev/null 2>&1
       local audit_rc=$?
       if [ "$mode" = duplicate ]; then
-        assert_eq "duplicate completed required source read is advisory" "$audit_rc" 0
-        assert_grep "duplicate completed required source read has a stable advisory" \
-          "$S/r9-sol.read-audit.json" '"advisories":\[{"code":"duplicate-required-source-segment"'
-        assert_nogrep "duplicate completed required source read is not a violation" \
-          "$S/r9-sol.read-audit.json" '"violations":\[{"code":"duplicate-required-source-segment"'
+        assert_eq "duplicate completed Codex source read is rejected" "$audit_rc" 2
+        assert_grep "duplicate completed Codex source read has a stable violation" \
+          "$S/r9-sol.read-audit.json" '"code":"duplicate-required-source-segment"'
         continue
       fi
       assert_eq "$mode required source artifact is rejected" "$audit_rc" 2
@@ -3435,6 +3439,8 @@ turns.extend(spec.get('tail', []))
 events = []
 for turn in turns:
     built = [build(call) for call in turn]
+    if adapter == 'codex':
+        events.append({'type': 'turn.started'})
     for identity, name, data, _ in built:
         if adapter == 'codex':
             events.append({'type': 'item.started', 'item': {'id': identity, 'type': 'command_execution', 'command': data['command']}})
@@ -3445,6 +3451,8 @@ for turn in turns:
             events.append({'type': 'item.completed', 'item': {'id': identity, 'type': 'command_execution', 'command': data['command'], 'aggregated_output': output, 'exit_code': 0}})
         else:
             events.append({'type': 'tool_result', 'tool_id': identity, 'status': 'success', 'output': output})
+    if adapter == 'codex':
+        events.append({'type': 'turn.completed'})
 with open(session / f'r{label}-sol.stream.ndjson', 'w') as stream:
     stream.write(''.join(json.dumps(event) + '\n' for event in events))
 PY
@@ -3600,25 +3608,24 @@ test_audit_severity_pacing_keeps_credit() {
     severity_findings "$S" 33
     local clean='[{"sed":["src/wide.rs",1,20]}]'
     severity_transcript "$S" 33 codex "{\"batch_chunks\":[1,2],\"tail\":[$clean]}"
-    assert_eq "an over-limit batch of exact chunks keeps its credit" \
+    assert_eq "two exact Codex patch chunks stay within the batch limit" \
       "$(severity_audit "$R" "$S" 33 codex)" \
-      "$(severity_expect valid - "evidence-proof-batch-too-large@codex,patch-chunk-batch-too-large@codex")"
+      "$(severity_expect valid - -)"
     severity_transcript "$S" 33 codex "{\"batch_chunks\":[1,2],\"alter_chunk\":2,\"tail\":[$clean]}"
     assert_eq "the same batch with an altered chunk is incomplete" \
       "$(severity_audit "$R" "$S" 33 codex)" \
       "$(severity_expect invalid "assigned-patch-output-mismatch@command_execution,missing-assigned-patch-chunk@codex" -)"
 
-    # Pacing is counted over byte-proved reads, so an oversized turn that voids their credit
-    # still reports how many proof reads it batched.
+    # An oversized read in a shared turn must also revoke otherwise valid proof reads.
     local size='tool-output-too-large@command_execution,tool-turn-output-too-large@codex'
     severity_transcript "$S" 33 codex "{\"batch_chunks\":[1,2],\"sibling\":\"chunk-1\",\"tail\":[$clean]}"
-    assert_eq "an oversized chunk batch keeps its chunk pacing count" \
+    assert_eq "an oversized sibling revokes paired chunk proof" \
       "$(severity_audit "$R" "$S" 33 codex)" \
-      "$(severity_expect invalid "evidence-proof-batch-too-large@codex,missing-assigned-patch-chunk@codex,patch-chunk-batch-too-large@codex,$size" -)"
+      "$(severity_expect invalid "missing-assigned-patch-chunk@codex,$size" -)"
     severity_transcript "$S" 33 codex "{\"join\":[\"chunk-3\",\"index\"],\"sibling\":\"chunk-3\",\"tail\":[$clean]}"
-    assert_eq "an oversized chunk and index turn keeps its proof pacing count" \
+    assert_eq "an oversized sibling revokes paired chunk and index proof" \
       "$(severity_audit "$R" "$S" 33 codex)" \
-      "$(severity_expect invalid "evidence-proof-batch-too-large@codex,missing-assigned-patch-chunk@codex,missing-evidence-index@codex,$size" -)"
+      "$(severity_expect invalid "missing-assigned-patch-chunk@codex,missing-evidence-index@codex,$size" -)"
     severity_findings "$S" 32
     severity_transcript "$S" 32 codex "{\"repeat\":\"packet-1\",\"sibling\":\"packet-1\",\"tail\":[$clean]}"
     assert_eq "an oversized packet batch keeps its packet pacing count" \
@@ -3778,6 +3785,7 @@ FATAL = {
     'missing-tool-call-id', 'missing-tool-output', 'duplicate-tool-call', 'duplicate-tool-output',
     'orphan-tool-output', 'invalid-tool-call-shape', 'invalid-hook-payload', 'no-recognized-review-tools',
     'cursor-sdk-delivery-mismatch', 'cursor-sdk-reader-binding', 'cursor-sdk-transport-proof',
+    'oversized-required-source-segment-batched',
     # binding
     'missing-prompt', 'invalid-prompt-artifact-set', 'invalid-evidence-manifest-declaration',
     'invalid-assignment-prompt-binding', 'invalid-plan-prompt-binding', 'invalid-plan-evidence',
