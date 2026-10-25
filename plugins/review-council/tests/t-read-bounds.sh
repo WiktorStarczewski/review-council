@@ -114,7 +114,7 @@ PY
   )
 }
 
-test_plan_prompt_hooks_reuse_prepared_search_proofs() {
+test_plan_non_shell_hooks_skip_search_binding_validation() {
   ( local R="$T/plan-hook-root" S="$T/plan-hook-session"
     unset REV_RG
     mkrepo "$R"; mkdir -p "$R/src" "$R/tests" "$S"
@@ -145,7 +145,7 @@ Sites: src/service.ts:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --n
 Test: tests/service.test.ts:1
 Prediction: reverting the fix fails the service test because the entry returns the changed helper result.
 EOF
-    local plan_hash manifest prompt real_rg
+    local plan_hash manifest prompt
     plan_hash=$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$S/fix-plan.md") || return
     manifest=$(REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 \
       python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 1hook --phase plan \
@@ -154,20 +154,10 @@ EOF
     "$SCRIPTS/rev-prompt.sh" "$S" 1hook sol plan-completeness plan \
       --plan "$S/r1hook-plan.md" --evidence "$manifest" >/dev/null || return
     prompt="$S/r1hook-sol.prompt.md"
-    real_rg=$(command -v rg) || return
-    cat > "$S/count-rg" <<'SH'
-#!/bin/sh
-: >> "$REV_RG_CALLS"
-exec "$REV_RG_REAL" "$@"
-SH
-    chmod +x "$S/count-rg"
-
     local source_read='{"tool_name":"Read","tool_input":{"file_path":"src/service.ts","offset":1,"limit":1}}'
-    REV_RG="$S/count-rg" REV_RG_REAL="$real_rg" REV_RG_CALLS="$S/replayed-search" \
-      read_bound_hook "$R" "$S" "$source_read" "$prompt"
+    read_bound_hook "$R" "$S" "$source_read" "$prompt"
     assert_eq "plan pre-hook allows a bounded source read" "$?" 0
-    python3 - <<'PY' | REV_RG="$S/count-rg" REV_RG_REAL="$real_rg" REV_RG_CALLS="$S/replayed-search" \
-      post_bound_hook --root "$R" --session "$S" --prompt "$prompt" \
+    python3 - <<'PY' | post_bound_hook --root "$R" --session "$S" --prompt "$prompt" \
       >/dev/null 2> "$S/post-hook.err"
 import json
 print(json.dumps({'tool_name':'Read',
@@ -175,8 +165,40 @@ print(json.dumps({'tool_name':'Read',
                   'tool_response':'export function runService() { return 2; }'}))
 PY
     assert_eq "plan post-hook allows the bounded source read" "$?" 0
-    assert_eq "plan hooks reuse prepared searches without running ripgrep" \
-      "$(if [ -e "$S/replayed-search" ]; then echo called; else echo untouched; fi)" untouched
+    python3 - "$SCRIPTS/lib/review-read-audit.py" "$R" "$S" "$prompt" <<'PY'
+import argparse, importlib.util, io, json, sys
+spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
+audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
+calls = []
+original = audit.prompt_plan_search_commands
+def counted(*args):
+    calls.append(True)
+    return original(*args)
+audit.prompt_plan_search_commands = counted
+args = argparse.Namespace(root=sys.argv[2], session=sys.argv[3], prompt=sys.argv[4], deps=None)
+read = {'tool_name':'Read',
+        'tool_input':{'file_path':'src/service.ts','offset':1,'limit':1}}
+events = [
+    ('pre-read', audit.hook, read),
+    ('post-read', audit.post_hook, dict(read, tool_response='export function runService() { return 2; }')),
+]
+shell = {'tool_name':'Bash','tool_input':{'command':'git diff HEAD'}}
+events.extend((('pre-shell', audit.hook, shell),
+               ('post-shell', audit.post_hook, dict(shell, tool_response=''))))
+old_stdout, old_stderr = sys.stdout, sys.stderr
+try:
+    sys.stdout = io.StringIO(); sys.stderr = io.StringIO()
+    for label, handler, event in events:
+        calls.clear()
+        audit.sys.stdin = io.StringIO(json.dumps(event))
+        handler(args)
+        expected = 0 if label in ('pre-read', 'post-read') else 1
+        if len(calls) != expected:
+            raise SystemExit(f'{label} derived plan search commands {len(calls)} times; expected {expected}')
+finally:
+    sys.stdout, sys.stderr = old_stdout, old_stderr
+PY
+    assert_eq "only shell hooks derive plan search commands" "$?" 0
 
     local artifact
     artifact=$(python3 - "$manifest" <<'PY'
