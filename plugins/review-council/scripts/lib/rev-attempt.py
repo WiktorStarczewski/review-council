@@ -278,7 +278,12 @@ def recover_completion(session, panel, seat, prompt):
     descriptor, _ = open_private(path)
     with os.fdopen(descriptor, 'r+', encoding='utf-8') as stream:
         fcntl.flock(stream, fcntl.LOCK_EX)
-        current = json.load(stream)
+        try:
+            current = json.load(stream)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(current, dict):
+            return
         intent = current.get('terminal_intent')
         if intent is None:
             return
