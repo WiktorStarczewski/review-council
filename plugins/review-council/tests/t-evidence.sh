@@ -3619,6 +3619,47 @@ def semantic_rejection_replaces_a_previously_sealed_child():
         (session / 'coverage-head.json').write_bytes(before_head)
         forged_path.unlink()
 
+def semantic_rejection_replaces_a_different_original_sibling():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        incomplete_proof_panel(session, call, prepare, 'The assertion check is unfinished.', phase='verification')
+        call('receipt', session, '6')
+        original = (session / 'r6-coverage.receipt.json').read_bytes()
+        reject_semantic_generation(session, call)
+        prepare('6x', 'repair', '--assignment', 'terra=' + bundles[0], '--parent-assignment', '6:sol')
+        (session / 'r6x-terra.prompt.md').write_text(call('render', session / 'r6x-evidence.manifest.json', 'terra'))
+        (session / 'r6x-terra.json').write_text('{"summary":"verified","findings":[]}')
+        (session / 'r6x-terra.exit').write_text('0\n')
+        write_agent_audit(session, '6x', 'terra')
+        first_path = Path(call('receipt', session, '6', '--replacement', 'sol=6x').strip())
+        first_raw = first_path.read_bytes()
+        reject_semantic_generation(session, call, '6', 'terra', evidence='parent')
+        assert json.loads(call('current-coverage', session))['eligible'] is False
+        try:
+            module.validate_receipt_lineage(session, first_path.name, first_raw)
+        except ValueError as error:
+            raise AssertionError('later sibling rejection must preserve the historical successor edge') from error
+        (session / 'escalation.json').write_text(json.dumps({
+            'version': 1, 'seat': 'escalate-sol', 'family': 'sol', 'lab': 'openai',
+            'adapter': 'codex', 'model': 'gpt-5.6-sol', 'effort': 'high', 'extra': False}))
+        prepare('6y', 'repair', '--assignment', 'escalate-sol=' + bundles[1], '--parent-assignment', '6:terra')
+        (session / 'r6y-escalate-sol.prompt.md').write_text(
+            call('render', session / 'r6y-evidence.manifest.json', 'escalate-sol'))
+        (session / 'r6y-escalate-sol.json').write_text('{"summary":"verified","findings":[]}')
+        (session / 'r6y-escalate-sol.exit').write_text('0\n')
+        write_agent_audit(session, '6y', 'escalate-sol')
+        second_path = Path(call('receipt', session, '6', '--replacement', 'sol=6x',
+                                '--replacement', 'terra=6y').strip())
+        second = json.loads(second_path.read_text())
+        assert second['supersedes']['receipt'] == first_path.name
+        assert set(second['supersedes']['rejections']) == {'r6-terra.semantic-rejection.json'}
+        coverage = json.loads(call('current-coverage', session))
+        assert coverage['eligible'] is True, coverage
+        assert coverage['selected_generations']['sol']['label'] == '6x'
+        assert coverage['selected_generations']['terra']['label'] == '6y'
+        call('review-origin', session, '6')
+        assert (session / 'r6-coverage.receipt.json').read_bytes() == original
+        assert first_path.read_bytes() == first_raw
+
 def semantic_rejection_refuses_redirected_and_stale_records():
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
         incomplete_proof_panel(session, call, prepare, 'The assertion check is unfinished.')
@@ -4556,6 +4597,7 @@ cases = (
     semantic_rejection_revokes_sealed_coverage,
     semantic_rejection_checks_identity_and_preserves_siblings,
     semantic_rejection_replaces_a_previously_sealed_child,
+    semantic_rejection_replaces_a_different_original_sibling,
     semantic_rejection_refuses_redirected_and_stale_records,
     hardlinked_incomplete_proof_cannot_verify, hardlinked_incomplete_proof_cannot_seal,
     symlinked_incomplete_proof_cannot_verify, symlinked_incomplete_proof_cannot_seal,
@@ -4573,6 +4615,7 @@ groups = {
     'semantic_rejection': (semantic_rejection_revokes_sealed_coverage,
         semantic_rejection_checks_identity_and_preserves_siblings,
         semantic_rejection_replaces_a_previously_sealed_child,
+        semantic_rejection_replaces_a_different_original_sibling,
         semantic_rejection_refuses_redirected_and_stale_records),
     'structure': (
         storage_redirects, quoted_paths, changed_symbols, empty_patch_needs_no_fake_read,
