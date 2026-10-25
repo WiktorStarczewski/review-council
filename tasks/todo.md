@@ -1138,7 +1138,13 @@ Operational acceptance: complete Bread snapshot5b9ce74207af51bba5831a318bf48e28f
 - [x] Confirm the stale skipped-plan regression with expected-red CI run `40200399044`.
 - [x] Trace #1841 preparation time to repeated predecessor source-context validation; observed 42 replays for each Luna seat and 13 for Sonnet.
 - [x] Finish the registered-plan skip fix and independent review.
-- [ ] Push PR #90, pass exact-head CI, and squash-merge.
-- [ ] Design hash-bound reuse for unchanged historical evidence validation while retaining full checks after any input change.
-- [ ] Implement and measure the approved speed change, then release it.
+- [x] Push PR #90, pass exact-head CI, and squash-merge as `e2df2f54`; exact-head run `40205729814` and Cursor package run `40205729829` passed.
+- [x] Confirm post-merge main verification and Cursor package runs `40207680238` and `40207680225` passed at `e2df2f54`.
+- [x] Design per-prepare canonical reconstruction memo and obtain user approval; design `2d5cdd6b`, plan `0028777`.
+- [x] Add the shared-predecessor regression and capture the intentional exact-head CI failure.
+- [ ] Implement the process-local memo and pass exact-head CI.
+- [ ] Complete an independent normal review, merge, and release signed 0.8.9.
+- [ ] Run the matched #1830 Luna comparison after merge and update issue #77 with the eligible result.
 - [ ] Continue monitoring #1830 and #1841 to terminal reviewer results.
+
+Active: native execution of the approved per-prepare source-context memo plan. Task 1 is complete: exact-head run `40212015323` at SHA `97f672a42e8b0e88d0fa1d672e07b6823c011d2b` confirmed the intended shared-predecessor assertion fails on Ubuntu and macOS, with proof preparation passing; Cursor package run `40212015321` passed at the same SHA. The verifier logs confirm one failing assertion, `rseed` reconstructed twice, and all other shell, Python, and marketplace checks passed. Task 2 implementation is committed locally as `6c3b9c7`, with green candidate CI pending. The independent review's P1 cache-hit initialization bug is fixed, and its follow-up found no remaining P0-P2 issues. Task 3 release metadata is updated locally; the candidate will be pushed after review so CI runs on the final release head.

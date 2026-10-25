@@ -368,6 +368,7 @@ t-prompt-cost.sh::test_prompt_cost_structured_baseline	2	normal
 t-prompt-cost.sh::test_prompt_cost_structured_baseline_invalid	5	normal
 t-seat.sh::test_seat_codex_instructions_required	1	normal
 t-evidence.sh::test_evidence_current_coverage	40	normal
+t-evidence.sh::test_evidence_source_context_memo	8	normal
 t-read-bounds.sh::test_native_source_batch_redistribution_retirement	3	normal
 t-seat.sh::test_seat_hardlinked_incomplete_proof_refuses_a_relaunch	1	normal
 t-seat.sh::test_seat_incomplete_proof_refuses_a_changed_prompt_relaunch	1	normal
