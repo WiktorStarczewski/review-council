@@ -129,8 +129,14 @@ test_prompt_evidence_contract() {
       esac
       case "$seat" in
         sol|terra)
-          assert_grep "$seat prompt gives safe fixed-string recovery guidance for shell quote errors" "$prompt" \
-            '^For shell searches, prefer simple fixed-string patterns.*unmatched quote.*retry with separate fixed-string searches before continuing\.$'
+          assert_grep "$seat prompt prefers simple fixed-string shell searches" "$prompt" \
+            '^For shell searches, prefer simple fixed-string patterns such as .*rg -n -F.*'
+          assert_grep "$seat prompt avoids mixed shell quote fragments" "$prompt" \
+            'avoid mixing single- and double-quoted fragments'
+          assert_grep "$seat prompt gives a stable literal for mixed quote searches" "$prompt" \
+            'If a pattern needs both quote types, search a stable literal such as the attribute name with -F\.'
+          assert_grep "$seat prompt says later searches cannot repair an unmatched quote" "$prompt" \
+            'An unmatched quote invalidates the read audit, even if a later query succeeds\.'
           ;;
       esac
       assert_grep "$seat prompt forbids all pre-patch artifact reads" "$prompt" \

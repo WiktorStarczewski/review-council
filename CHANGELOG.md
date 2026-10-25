@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.5
+
+- Give Codex reviewers safe fixed-string search guidance so malformed mixed-quote commands do not invalidate otherwise complete read audits.
+
 ## 0.8.4
 
 - Put evidence-index reads in the required order and use prepared source-context packet lines as proof for covered plan sites, avoiding redundant post-index reads.
