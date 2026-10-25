@@ -82,6 +82,16 @@ test_state_fix_gate() {
   assert_grep "refusal keeps the triage phase" "$S/state.json" '"phase": "triage"'
   printf '# Findings ledger\n\n  Plan panel r3p - SKIPPED: indented\n> Plan panel r3p - SKIPPED: quoted\nPlan panel r13p - SKIPPED: other round\nPlan panel r3p - SKIPPED:   \n' > "$S/findings.md"
   state_gate_refuses "skip line must start the line, match the round, and carry a reason" "$S" 3 phase=fix
+
+  S="$T/gate-skip-no-manifest"
+  "$ST" "$S" round=3 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
+  printf 'Plan panel r3p - SKIPPED: no prepared plan manifest\n' > "$S/findings.md"
+  state_gate_refuses "skip line without a current manifest" "$S" 3 phase=fix
+
+  S="$T/gate-refused"
+  "$ST" "$S" phase=plan round=3p 'seats=["codex-sol"]' >/dev/null
+  state_write_plan_manifest "$S" 3p current codex-sol
+  "$ST" "$S" phase=triage round=3 >/dev/null
   printf 'Plan panel r3p - SKIPPED: every accepted fix is a one-line P2\n' >> "$S/findings.md"
   assert_exit "recorded skip line allows fix" 0 "$ST" "$S" phase=fix
   assert_grep "allowed fix is written" "$S/state.json" '"phase": "fix"'
@@ -132,7 +142,10 @@ test_state_fix_gate() {
   assert_exit "every plan seat returned allows fix" 0 "$ST" "$S" phase=fix
 
   S="$T/gate-round-labels"
-  "$ST" "$S" round=7x phase=triage open.P2=1 >/dev/null
+  "$ST" "$S" round=7 phase=triage open.P2=1 >/dev/null
+  "$ST" "$S" phase=plan round=7p 'seats=["codex-sol"]' >/dev/null
+  state_write_plan_manifest "$S" 7p current codex-sol
+  "$ST" "$S" round=7x phase=triage >/dev/null
   printf 'Plan panel r7p - SKIPPED: plan review unavailable with an Agent seat\n' > "$S/findings.md"
   assert_exit "a repair label resolves to its code round" 0 "$ST" "$S" phase=fix
   "$ST" "$S" phase=triage >/dev/null
