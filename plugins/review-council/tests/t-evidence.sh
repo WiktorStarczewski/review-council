@@ -1084,9 +1084,12 @@ def bounded_navigation_markdown():
                                        indent=2) + '\n').encode()
             assert hashlib.sha256(encoded_rows).hexdigest() in text
             start = text.index(labels[section] + ':\n') + len(labels[section]) + 2
-            end = text.index('\nOmitted: ', start)
-            included = sum(line.startswith('- ') for line in text[start:end].splitlines())
-            omitted = re.search(r'^Omitted: (\d+);', text[end + 1:], re.M)
+            section_lines = text[start:].splitlines()
+            footer_index = next((index for index, line in enumerate(section_lines)
+                                 if line.startswith('Omitted: ')), None)
+            assert footer_index is not None, section
+            included = sum(line.startswith('- ') for line in section_lines[:footer_index])
+            omitted = re.match(r'^Omitted: (\d+);', section_lines[footer_index])
             assert omitted and included + int(omitted.group(1)) == len(data[section]), section
 
         empty = {section: [] for section in sections}
