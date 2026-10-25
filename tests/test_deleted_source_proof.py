@@ -131,8 +131,10 @@ class SourceFixture:
 
     def audit(self, source=None, result=None, omitted_artifacts=(), *,
               group_patch_chunks=0, group_required_segments=0, codex_turn_boundaries=True,
+              codex_turn_complete=True,
               reverse_grouped_segments=False, repeat_first_grouped_segment=False,
-              group_evidence_index=False, group_first_packets=False):
+              group_evidence_index=False, group_final_segment_with_index=False,
+              group_first_packets=False):
         events = []
 
         def read(command, output):
@@ -151,7 +153,7 @@ class SourceFixture:
                 events.append({'type': 'turn.started'})
             for path in paths:
                 read_artifact(path)
-            if codex_turn_boundaries:
+            if codex_turn_boundaries and codex_turn_complete:
                 events.append({'type': 'turn.completed'})
 
         assignment = self.manifest['assignments'][self.seat]
@@ -186,7 +188,12 @@ class SourceFixture:
         segment_paths = [self.session / segment['artifact']
                          for required in self.context['required_source_ranges']
                          for segment in required['segments']]
-        if group_required_segments:
+        if group_final_segment_with_index:
+            for path in segment_paths[:-1]:
+                read_artifact(path)
+            read_in_codex_turn([segment_paths[-1], index])
+            group_evidence_index = True
+        elif group_required_segments:
             grouped = segment_paths[:group_required_segments]
             if reverse_grouped_segments:
                 grouped.reverse()
@@ -260,12 +267,11 @@ class RequiredSourceProofTests(unittest.TestCase):
         self.assertIn('Codex ordered proof reads: up to 2', fixture.prompt.read_text())
 
     def test_codex_pairs_final_required_segment_with_the_evidence_index(self):
-        fixture = self.fixture('deleted', oversized_lines=80)
+        fixture = self.fixture('deleted')
         segment_count = sum(len(row['segments'])
                             for row in fixture.context['required_source_ranges'])
-        self.assertEqual(segment_count, 1)
-        rc, audit = fixture.audit(
-            group_required_segments=1, group_evidence_index=True)
+        self.assertGreaterEqual(segment_count, 2)
+        rc, audit = fixture.audit(group_final_segment_with_index=True)
         self.assertEqual((rc, audit['violations']), (0, []))
         self.assertEqual(audit['tool_turns'], audit['tool_calls'] - 1)
 
@@ -283,6 +289,13 @@ class RequiredSourceProofTests(unittest.TestCase):
         fixture = self.fixture('deleted')
         rc, audit = fixture.audit(
             group_required_segments=2, codex_turn_boundaries=False)
+        self.assertEqual((rc, audit['violations']), (0, []))
+        self.assertEqual(audit['tool_turns'], audit['tool_calls'])
+
+    def test_codex_reads_in_an_unclosed_turn_remain_unpaired(self):
+        fixture = self.fixture('deleted')
+        rc, audit = fixture.audit(
+            group_required_segments=2, codex_turn_complete=False)
         self.assertEqual((rc, audit['violations']), (0, []))
         self.assertEqual(audit['tool_turns'], audit['tool_calls'])
 
@@ -331,6 +344,15 @@ class RequiredSourceProofTests(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn('oversized-required-source-segment-batched',
                       [row['code'] for row in audit['violations']])
+
+    def test_prepared_capacity_counts_oversized_single_line_segments_alone(self):
+        fixture = self.fixture('deleted', oversized_line_bytes=20_000)
+        segments = [segment for row in fixture.context['required_source_ranges']
+                    for segment in row['segments']]
+        capacity = fixture.manifest['task_capacity']['seats'][fixture.seat]
+        self.assertEqual(len(segments), 4)
+        self.assertEqual(capacity['source_segment_calls'], 4)
+        self.assertEqual(capacity['source_segment_turns'], 4)
 
     def test_codex_rejects_missing_segment_even_when_its_neighbor_is_paired(self):
         fixture = self.fixture('deleted')

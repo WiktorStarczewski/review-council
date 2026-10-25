@@ -22,10 +22,11 @@
 
 ## Review Focus
 
-- Missing Codex turn boundaries must not merge otherwise separate reads; cover with an audit test that checks unchanged turn counts.
+- Missing or truncated Codex turn boundaries must not merge otherwise separate reads; cover absent-boundary and unclosed-turn audit cases.
 - Reordered, repeated, or missing exact artifacts must remain invalid; cover with paired source-segment transcript cases.
 - Three or more proof reads in one Codex turn must fail; cover with three distinct required segments in one turn.
 - A one-line segment over the normal 16 KiB segment target must not be paired even when the total is under 60 KiB; cover with one oversized segment and a neighboring segment.
+- Capacity estimates must count oversized one-line segments as standalone turns instead of halving every segment count; cover with the prepared manifest for the oversized-line fixture.
 - Per-call output over 32 KiB or combined output over 60 KiB must fail; cover the aggregate guard directly and retain the auditor's per-call regression.
 
 ---
@@ -42,9 +43,9 @@
 - Consumes: existing Codex `item.started` / `item.completed` events and enclosing `turn.started` / `turn.completed` events; existing manifest-bound patch chunks and required source segments.
 - Produces: `read_batch_limit('codex') == 2`; paired proof reads share an audit turn only when enclosed by the same explicit Codex turn; `read_batch_limit` does not affect `source_context.packet_batch_limit`.
 
-- [ ] **Step 1: Write regressions first.** Add tests for paired patch chunks and required segments, a final segment paired with the evidence index, no-boundary fallback, reordered, repeated, and missing reads, three distinct reads in one turn, packet batching still rejected, oversized one-line segment solitude, and the 60 KiB aggregate cap.
+- [ ] **Step 1: Write regressions first.** Add tests for paired patch chunks and required segments, a final segment paired with the evidence index, absent and unclosed turn boundaries, reordered, repeated, and missing reads, three distinct reads in one turn, packet batching still rejected, oversized one-line segment solitude, the capacity estimate for standalone segments, and the 60 KiB aggregate cap.
 - [ ] **Step 2: Verify the expected failures in CI.** Push the tests-only commit through a draft PR and wait for the full verify job on that exact head; the new turn-grouping, batch-limit, packet-limit, and oversized-segment assertions must fail for the intended reasons.
-- [ ] **Step 3: Implement turn grouping and the Codex limit.** Track explicit Codex turn boundaries without relaxing the implicit fallback; allow two eligible proof calls, preserve packet and expansion limits, and reject any pair containing an oversized one-line required segment.
+- [ ] **Step 3: Implement turn grouping and the Codex limit.** Track explicit Codex turn boundaries without relaxing the implicit fallback; allow two eligible proof calls, preserve packet and expansion limits, reject any pair containing an oversized one-line required segment, and keep prepared capacity estimates accurate for standalone segments.
 - [ ] **Step 4: Update rendered and installed discovery instructions.** Tell Codex it may issue up to two consecutive eligible proof reads as separate native commands in one model turn; keep source-context packet instructions at one packet per turn.
 - [ ] **Step 5: Run full verification and review the diff.** The full exact-head verify job, proof-preparation job, and Cursor package job pass; `git diff --check` passes; existing compound-read and mutation-restoration regressions remain unchanged and passing in CI.
 - [ ] **Step 6: Commit the reviewed implementation.** Use a descriptive commit without tool attribution.
