@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.7
+
+- Give source-required seats without prepared context four extra calls while keeping required reads within 16 calls and preserving the four-call refutation reserve; render their assigned source boundary and separate complete Codex patch-chunk reads from line-window guidance.
+
 ## 0.8.6
 
 - Keep the navigation index within its 16 KiB byte limit while retaining complete omission metadata and limitations.

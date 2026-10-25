@@ -3799,7 +3799,7 @@ PY
 test_audit_severity_global_advisories_revoke_nothing() {
   ( local R="$T/severity-global-root" S="$T/severity-global-session" tail="" start
     severity_fixture "$R" "$S" || return
-    for start in $(seq 1 10 170); do
+    for start in $(seq 1 10 201); do
       tail="$tail${tail:+,}[{\"sed\":[\"src/wide.rs\",$start,$((start + 9))]}]"
     done
     severity_findings "$S" 31 src/wide.rs 165 168
