@@ -192,21 +192,60 @@ JSON
     "$C/rcap-codex-sol.log" '^persistent provider-call cap reached for this seat generation$'
   assert_grep "cap refusal writes a fresh exit" "$C/rcap-codex-sol.exit" '^7$'
 
-  local A="$T/seat-archive-failure" archive_path="$T/archive-path"
+  local A="$T/seat-archive-failure" archive_path="$T/archive-path" real_python
   seat_roster "$A"; echo "review the diff" > "$A/p.md"
   printf 'prior stream\n' > "$A/rarchive-codex-sol.stream.ndjson"
   mkdir -p "$archive_path"
-  cat > "$archive_path/mv" <<'SH'
-#!/bin/sh
-exit 1
+  real_python=$(command -v python3)
+  cat > "$archive_path/python3" <<'SH'
+#!/bin/bash
+if [ "$1" = "$ATTEMPT_HELPER" ] && [ "$2" = reserve ]; then
+  "$REAL_PYTHON" - "$@" <<'PY'
+import os
+import runpy
+import sys
+
+helper, *args = sys.argv[1:]
+replace = os.replace
+def reject_stream_archive(source, destination):
+    target = str(destination)
+    if (os.environ.get('FAIL_REPLACE') == 'archive'
+            and target.endswith('.stream.attempt1.ndjson')):
+        raise OSError('injected transcript archival failure')
+    if (os.environ.get('FAIL_REPLACE') == 'attempt-write'
+            and '/attempts/' in target and target.endswith('.json')):
+        raise OSError('injected attempt state write failure')
+    return replace(source, destination)
+os.replace = reject_stream_archive
+sys.argv = [helper, *args]
+runpy.run_path(helper, run_name='__main__')
+PY
+  exit $?
+fi
+exec "$REAL_PYTHON" "$@"
 SH
-  chmod +x "$archive_path/mv"
+  chmod +x "$archive_path/python3"
   : > "$T/archive-calls"
-  PATH="$archive_path:$PATH" SHIM_MODE=ok SHIM_CALLS_FILE="$T/archive-calls" \
+  PATH="$archive_path:$PATH" REAL_PYTHON="$real_python" FAIL_REPLACE=archive \
+    ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" SHIM_MODE=ok SHIM_CALLS_FILE="$T/archive-calls" \
     "$SCRIPTS/rev-seat.sh" codex-sol "$A" archive "$A/p.md" >/dev/null 2>&1
   assert_eq "failed transcript archival exits before provider launch" "$?" 1
   assert_eq "failed transcript archival consumes no provider call" \
     "$(wc -l < "$T/archive-calls" | tr -d ' ')" 0
+  assert_eq "failed transcript archival leaves no empty attempt record" \
+    "$(find "$A/attempts" -type f -name '*.json' -print | wc -l | tr -d ' ')" 0
+  PATH="$archive_path:$PATH" REAL_PYTHON="$real_python" FAIL_REPLACE=attempt-write \
+    ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" SHIM_MODE=ok SHIM_CALLS_FILE="$T/archive-calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$A" archive "$A/p.md" >/dev/null 2>&1
+  assert_eq "failed reservation state write exits before provider launch" "$?" 1
+  assert_eq "failed reservation state write consumes no provider call" \
+    "$(wc -l < "$T/archive-calls" | tr -d ' ')" 0
+  assert_grep "failed reservation state write restores the prior transcript" \
+    "$A/rarchive-codex-sol.stream.ndjson" '^prior stream$'
+  assert_eq "failed reservation state write removes its archived copy" \
+    "$(find "$A" -maxdepth 1 -name 'rarchive-codex-sol.stream.attempt*.ndjson' -print | wc -l | tr -d ' ')" 0
+  assert_eq "failed reservation state write leaves no empty attempt record" \
+    "$(find "$A/attempts" -type f -name '*.json' -print | wc -l | tr -d ' ')" 0
   for call in 1 2 3 4; do
     SHIM_MODE=ok SHIM_CALLS_FILE="$T/archive-calls" \
       "$SCRIPTS/rev-seat.sh" codex-sol "$A" archive "$A/p.md" >/dev/null

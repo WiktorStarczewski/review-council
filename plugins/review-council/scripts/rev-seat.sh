@@ -147,23 +147,6 @@ classify_failure() {  # after a non-zero rc or missing output: 3 auth, 4 cap, 2 
     *) if [ ! -s "$OUT" ]; then echo 2; else echo 1; fi;;
   esac
 }
-archive_raw() {
-  ARCHIVED_RAW=""
-  [ -s "$RAW" ] || return 0
-  local n=1 archived
-  while :; do
-    archived="${RAW%.ndjson}.attempt${n}.ndjson"
-    [ -e "$archived" ] || break
-    n=$((n+1))
-  done
-  mv "$RAW" "$archived" || return 1
-  ARCHIVED_RAW=$archived
-}
-restore_raw() {
-  [ -n "${ARCHIVED_RAW:-}" ] || return 0
-  mv "$ARCHIVED_RAW" "$RAW" || return 1
-  ARCHIVED_RAW=""
-}
 has_tool_call() {
   case "$ADAPTER" in
     codex) grep -q '^exec: ' "$LOG";;
@@ -212,11 +195,9 @@ fi
 attempt=0
 while :; do
   attempt=$((attempt+1))
-  archive_raw || { echo "cannot archive prior stream before attempt $attempt" >> "$LOG"; finish 1; }
   reserve_error=$(python3 "$HERE/lib/rev-attempt.py" reserve "$SESSION" "$ROUND" "$SEAT" "$PROMPT" "$LAUNCH_TOKEN" 2>&1)
   reserve_rc=$?
   if [ "$reserve_rc" -ne 0 ]; then
-    restore_raw || { echo "cannot restore prior stream after reservation refusal" >> "$LOG"; finish 1; }
     [ -z "$reserve_error" ] || printf 'rev-seat: %s\n' "$reserve_error" >&2
     [ -z "$reserve_error" ] || printf '%s\n' "$reserve_error" >> "$LOG"
     if [ "$reserve_rc" -eq 7 ]; then
