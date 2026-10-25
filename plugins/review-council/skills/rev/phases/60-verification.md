@@ -146,3 +146,5 @@ for provider tokens, cost, elapsed time, and finding yield.
 Prompt warnings above 1,800
 code words or 3,000 plan words require removing repeated context, not truncating
 evidence.
+
+For explicit PR progression, commit all final fixes before preparing the final verification generation. Its declared local HEAD and clean tree must be the exact published HEAD and tree. Earlier dirty plan/fix evidence remains historical; a later commit, even with the same tree, requires fresh final verification rather than rebinding the old record. See [PR progression](../../../docs/pr-progress.md).

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add explicit controller-owned PR generation progression with immutable source and predecessor bindings.
+
 ## 0.8.8
 
 - Reject unfinished mandatory review generations with immutable evidence bindings, one-seat recovery and preserved receipt history.

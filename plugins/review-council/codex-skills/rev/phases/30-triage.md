@@ -153,3 +153,7 @@ explicit remaining-coverage notes, not just counts. When `status_tick` is true, 
 `python3 "$PLUGIN/scripts/rev-context.py" "$S" --watch` in an attached execution.
 It runs until a terminal phase, emits narrated live status, and keeps the ten-minute
 cadence fixed across state changes. Relay scheduled events only while the tick is enabled.
+
+For an initialized PR scope, later review-owned commits or dirty fixes require the explicit [PR progression declaration](../../../docs/pr-progress.md) on the next prepare. Keep original scope and evidence immutable; never bypass the pinned guard or infer ownership from ancestry.
+
+For explicit PR progression, commit all final fixes before preparing final verification. The declared local HEAD and clean tree must be the exact published HEAD and tree. A later commit, even with the same tree, requires fresh final verification rather than rebinding an old record.
