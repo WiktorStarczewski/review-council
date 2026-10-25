@@ -555,11 +555,44 @@ PY
   echo 0 > "$A/r1-codex-sol.exit"
   printf '{"summary":"prior completion"}\n' > "$A/r1-codex-sol.json"
   cp "$A/r1-codex-sol.json" "$T/active-launch-prior.json"
-  SHIM_MODE=ok SHIM_CALLS_FILE="$active_calls" \
-    "$SCRIPTS/rev-seat.sh" codex-sol "$A" 1 "$A/p.md" >/dev/null 2>&1
-  assert_eq "a competing wrapper cannot take an active reservation" "$?" 1
+  local reserve_bin="$T/active-reserve-bin" real_python active_pid active_rc i=0
+  local reserve_ready="$T/active-reserve.ready" reserve_release="$T/active-reserve.release"
+  local active_raw="$A/r1-codex-sol.stream.ndjson"
+  printf 'active provider stream\n' > "$active_raw"
+  cp "$active_raw" "$T/active-launch-prior-stream.ndjson"
+  real_python=$(command -v python3); mkdir -p "$reserve_bin"
+  cat > "$reserve_bin/python3" <<'SH'
+#!/bin/bash
+if [ "$1" = "$ATTEMPT_HELPER" ] && [ "$2" = reserve ]; then
+  : > "$RESERVE_READY"
+  while [ ! -e "$RESERVE_RELEASE" ]; do sleep 0.02; done
+  exit 1
+fi
+exec "$REAL_PYTHON" "$@"
+SH
+  chmod +x "$reserve_bin/python3"
+  env PATH="$reserve_bin:$PATH" REAL_PYTHON="$real_python" \
+    ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" \
+    RESERVE_READY="$reserve_ready" RESERVE_RELEASE="$reserve_release" \
+    SHIM_MODE=ok SHIM_CALLS_FILE="$active_calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$A" 1 "$A/p.md" > "$T/active-reserve.out" 2>&1 &
+  active_pid=$!
+  while [ ! -e "$reserve_ready" ] && kill -0 "$active_pid" 2>/dev/null && [ "$i" -lt 100 ]; do
+    sleep 0.02; i=$((i + 1))
+  done
+  if [ ! -e "$reserve_ready" ]; then
+    fail "a competing wrapper reaches its reservation" "wrapper exited before reserve"
+  else
+    assert_exit "a competing wrapper leaves the active transcript in place" 0 \
+      cmp -s "$T/active-launch-prior-stream.ndjson" "$active_raw"
+  fi
+  : > "$reserve_release"
+  wait "$active_pid"; active_rc=$?
+  assert_eq "a competing wrapper cannot take an active reservation" "$active_rc" 1
   assert_eq "active reservation refusals launch no provider" \
     "$(wc -l < "$active_calls" | tr -d ' ')" 0
+  assert_exit "a competing wrapper preserves the active transcript" 0 \
+    cmp -s "$T/active-launch-prior-stream.ndjson" "$active_raw"
   assert_grep "a competing wrapper preserves the prior exit" \
     "$A/r1-codex-sol.exit" '^0$'
   assert_exit "a competing wrapper preserves the prior result" 0 \
