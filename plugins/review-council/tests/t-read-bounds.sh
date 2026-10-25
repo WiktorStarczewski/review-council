@@ -2888,6 +2888,19 @@ elif mode == 'minified-search':
     for first, last in ((1, 40), (41, 80)):
         pinned('base-read-' + str(first),
                f"git show {{REV}}:src/asset.rs | sed -n '{first},{last}p'", base)
+elif mode in ('scoped-expansion-20', 'scoped-expansion-21'):
+    boundaries = sorted({
+        path for component in manifest['components']
+        if component['id'] in manifest['source_context']['seats'][seat]['components']
+        for path in component['boundary']
+    })
+    boundary = next(path for path in boundaries if (root / path).is_file())
+    source = f"sed -n '1,40p' {shlex.quote(boundary)}"
+    command('required-boundary', source, run(source))
+    search_count = 19 if mode == 'scoped-expansion-20' else 20
+    for index in range(search_count):
+        search = "rg -n -F 'V0' src | head -80"
+        command('scoped-search-' + str(index), search, run(search))
 with open(out, 'w') as stream:
     for event in events:
         stream.write(json.dumps(event) + '\n')
@@ -2981,6 +2994,42 @@ test_codex_line_bounded_minified_search_is_an_advisory() {
     assert_eq "the byte ceilings are advisories, and the base read adds no range" "$summary" \
       "$(printf '%s\n' - 'advisories=tool-output-too-large tool-turn-output-too-large' \
         'ranges=src/asset.rs:1-40 src/asset.rs:41-45 src/types.ts:1-5')"
+  )
+}
+
+test_no_context_source_budget_keeps_a_four_call_refutation_reserve() {
+  ( local R="$T/scoped-budget-root" S="$T/scoped-budget-session" label=23 seat base mode
+    pinned_read_fixture "$R" "$S" "$label" || return
+    seat=$(cat "$S/fixture.seat"); base=$(cat "$S/fixture.base")
+    printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r$label-$seat.json"
+    for mode in scoped-expansion-20 scoped-expansion-21; do
+      pinned_read_transcript "$(cat "$S/fixture.manifest")" \
+        "$S/r$label-$seat.stream.ndjson" "$R" "$base" "$mode"
+      pinned_read_audit "$R" "$S" "$label" "$seat"
+      assert_eq "$mode transcript remains auditable" "$?" 0
+      python3 - "$S/r$label-$seat.read-audit.json" "$(cat "$S/fixture.manifest")" "$mode" "$seat" <<'PY'
+import json, sys
+audit, manifest = (json.load(open(path)) for path in sys.argv[1:3])
+mode = sys.argv[3]
+seat = sys.argv[4]
+context = manifest['source_context']['seats'][seat]
+capacity = manifest['task_capacity']['seats'][seat]
+boundaries = {
+    path for component in manifest['components']
+    if component['id'] in context['components'] for path in component['boundary']
+}
+assert context['source_read_required'] is True
+assert capacity['repository_source_target'] is None
+assert audit['status'] == 'valid'
+assert not audit['violations']
+codes = {row['code'] for row in audit['advisories']}
+expected = {'repository-expansion-call-limit'} if mode == 'scoped-expansion-21' else set()
+assert codes == expected, (codes, expected)
+assert any(row['origin'] == 'tool' and row['path'] in boundaries
+           for row in audit['source_ranges'])
+PY
+      assert_eq "$mode enforces the scoped proof budget against the assigned boundary" "$?" 0
+    done
   )
 }
 

@@ -378,8 +378,20 @@ SH
       '^Source context packet: '
     assert_grep "paired baseline requires direct source reads" "$disabled_prompt" \
       '^Source read required: true$'
+    assert_grep "paired baseline names its required assigned source boundary" "$disabled_prompt" \
+      '^Required post-index original-source boundary: .+$'
+    assert_grep "paired baseline renders the narrow no-context expansion budget" "$disabled_prompt" \
+      'Use at most 20 repository tool calls; finish required reads by call 16 and reserve calls 17-20 for refutation'
     assert_grep "paired baseline keeps component-scoped assigned patch" "$disabled_prompt" \
       '^Read the entire assigned patch in bounded windows of at most 160 lines, ending at line [0-9]+: '
+    python3 - "$SCRIPTS/lib/review_limits.py" <<'PY'
+import runpy, sys
+limit = runpy.run_path(sys.argv[1])['repository_expansion_call_limit_for_seat']
+assert limit(True, None) == 20
+assert limit(False, None) == 16
+assert limit(True, {'path': 'src/asset.rs'}) == 16
+PY
+    assert_eq "only source-required seats without a prepared target receive four extra calls" "$?" 0
 
     local default_manifest
     default_manifest=$(python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 13 \
