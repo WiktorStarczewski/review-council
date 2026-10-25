@@ -1165,7 +1165,9 @@ Design: `docs/superpowers/specs/2026-10-25-codex-proof-read-pairing-design.md`. 
 - [x] Prove the intended failures on exact head `c5c61dde1407c673e66f6fc0a2cbc2f5c2f4144e` in Ubuntu and macOS CI run `40235826237`.
 - [x] Implement Codex turn grouping, paired proof-read auditing, and accurate capacity estimates.
 - [x] Update generated and installed discovery instructions and Codex prompt contract tests.
-- [ ] Complete independent internal review and fix actionable P0-P2 findings.
+- [x] Complete independent internal review and fix actionable P0-P2 findings.
 - [ ] Pass exact-head Ubuntu, macOS, proof-preparation, and Cursor package CI.
 - [ ] Squash-merge and publish signed Review Council 0.8.10; verify Claude, Codex, and Cursor installs.
 - [ ] Run the matched #1830 Luna comparison after merge and update issue #77 with the eligible result.
+
+Normal review found a P2 where Codex output events after `turn.completed` could still earn pair credit. Re-review confirmed the same-turn output check and the final release candidate, with no actionable P0-P2 findings. Expected-red run `40239050569` on test-only SHA `0d6e1e04f1b1bfb5aa0c1b9d52cd9880cb34a95e` passed proof preparation and Cursor packaging, while Ubuntu and macOS exposed that regression plus stale packet, duplicate-read, turn-boundary, and capacity expectations. Those failures are recorded as input to the current exact-head candidate; no green result is claimed yet.

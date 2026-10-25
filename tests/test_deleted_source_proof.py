@@ -141,7 +141,7 @@ class SourceFixture:
               codex_turn_complete=True, codex_outputs_after_turn_complete=False,
               reverse_grouped_segments=False, repeat_first_grouped_segment=False,
               group_evidence_index=False, group_final_segment_with_index=False,
-              group_first_packets=False):
+              repeat_first_packet=False):
         events = []
 
         def read(command, output):
@@ -201,9 +201,9 @@ class SourceFixture:
                 read(command, ''.join(patch_lines[offset:end]))
         index = self.session / f'r{self.label}-evidence.md'
         packet_paths = [self.session / shard['artifact'] for shard in self.context['shards']]
-        if group_first_packets and len(packet_paths) > 1:
-            read_in_codex_turn(packet_paths[:2])
-            for path in packet_paths[2:]:
+        if repeat_first_packet and packet_paths:
+            read_in_codex_turn([packet_paths[0], packet_paths[0]])
+            for path in packet_paths[1:]:
                 read_artifact(path)
         else:
             for path in packet_paths:
@@ -283,7 +283,9 @@ class RequiredSourceProofTests(unittest.TestCase):
         assignment = fixture.manifest['assignments'][fixture.seat]
         chunks = fixture.manifest['patch_sets'][assignment['patch_set']]['chunks']
         self.assertGreater(len(chunks), 1)
-        rc, audit = fixture.audit(group_patch_chunks=2)
+        target = fixture.target()
+        source = (target, None, fixture.current_bytes(target))
+        rc, audit = fixture.audit(source=source, group_patch_chunks=2)
         self.assertEqual((rc, audit['violations']), (0, []))
         self.assertEqual(audit['patch_proof_calls'], len(chunks))
         self.assertEqual(audit['patch_proof_turns'], len(chunks) - 1)
@@ -356,9 +358,9 @@ class RequiredSourceProofTests(unittest.TestCase):
         self.assertIn('duplicate-required-source-segment',
                       [row['code'] for row in audit['violations']])
 
-    def test_codex_rejects_pairing_source_context_packets(self):
+    def test_codex_rejects_two_source_context_packet_reads_in_one_turn(self):
         fixture = self.fixture('deleted')
-        rc, audit = fixture.audit(group_first_packets=True)
+        rc, audit = fixture.audit(repeat_first_packet=True)
         self.assertEqual(rc, 2)
         self.assertIn('source-packet-batch-too-large',
                       [row['code'] for row in audit['violations']])

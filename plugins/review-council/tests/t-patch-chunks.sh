@@ -89,8 +89,8 @@ context = {'seats': {'opus': {
     'source_read_required':False}}}
 window_sets = {'p01': {'read_mode':'windows', 'chunks':[]}}
 capacity = module.compile_task_capacity(assignment, window_sets, context)
-assert capacity['seats']['opus']['patch_proof_turns'] == 158
-assert capacity['seats']['opus']['projected_turns'] == 166
+assert capacity['seats']['opus']['patch_proof_turns'] == 315
+assert capacity['seats']['opus']['projected_turns'] == 323
 assert module.task_capacity_errors(capacity) == ['task exceeds provider turn capacity: opus']
 chunk_sets = {'p01': {'read_mode':'chunks', 'chunks':[{}] * 300}}
 capacity = module.compile_task_capacity(assignment, chunk_sets, context)
@@ -405,8 +405,8 @@ PY
     terra_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 terra "$terra_bundle" chunks --evidence "$manifest") || return
     opus_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 opus "$opus_bundle" chunks --evidence "$manifest") || return
     sonnet_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 sonnet "$sonnet_bundle" chunks --evidence "$manifest") || return
-    assert_grep "Terra keeps one patch chunk per turn" "$terra_prompt" \
-      '^Patch chunk batch limit: 1$'
+    assert_grep "Terra batches two consecutive patch chunks" "$terra_prompt" \
+      '^Patch chunk batch limit: 2$'
     assert_grep "Opus batches two consecutive patch chunks" "$opus_prompt" \
       '^Patch chunk batch limit: 2$'
     assert_grep "Terra chunk prompt gives an exact shell recipe" "$terra_prompt" \

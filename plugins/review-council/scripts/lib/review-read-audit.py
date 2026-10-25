@@ -2614,6 +2614,7 @@ def assess(args, blocked):
     codex_active_turn = None
     codex_turn_calls = {}
     codex_completed_turns = set()
+    codex_output_turns = {}
     sdk_transcript = CursorSDKTranscript() if args.adapter == 'cursor-sdk' else None
     try:
         with open(args.raw, encoding='utf-8') as stream:
@@ -2691,6 +2692,8 @@ def assess(args, blocked):
                     if call_id in outputs:
                         failures.append(violation('duplicate-tool-output', args.adapter))
                         continue
+                    if args.adapter == 'codex':
+                        codex_output_turns[call_id] = codex_active_turn
                     outputs[call_id] = {'success': success, 'value': value,
                                         'bytes': output_bytes(value),
                                         'non_execution': non_execution}
@@ -2702,11 +2705,16 @@ def assess(args, blocked):
         failures.append(violation('missing-transcript', args.adapter))
     if args.adapter == 'codex':
         for turn, call_ids in codex_turn_calls.items():
-            if turn in codex_completed_turns:
-                continue
             for index, call_id in enumerate(call_ids):
-                name, data, _ = calls[call_id]
-                calls[call_id] = (name, data, f'{turn}-incomplete-{index}')
+                output = outputs.get(call_id)
+                paired_output = (
+                    turn in codex_completed_turns
+                    and codex_output_turns.get(call_id) == turn
+                    and output is not None and output['success']
+                    and output['non_execution'] is not True)
+                if not paired_output:
+                    name, data, _ = calls[call_id]
+                    calls[call_id] = (name, data, f'{turn}-unpaired-{index}')
         turns = {}
         for call_id, (_, _, turn) in calls.items():
             turns.setdefault(turn, []).append(call_id)
@@ -3418,10 +3426,13 @@ def assess(args, blocked):
             unique.append(item)
     advisories = []
     if manifest is not None:
+        codex_fatal = {
+            'duplicate-required-source-segment', 'evidence-proof-batch-too-large',
+            'source-packet-batch-too-large',
+        }
         fatal = [item for item in unique
                  if item.get('code') not in ADVISORY_CODES
-                 or (args.adapter == 'codex'
-                     and item.get('code') == 'evidence-proof-batch-too-large')]
+                 or (args.adapter == 'codex' and item.get('code') in codex_fatal)]
         if not fatal:
             advisories = unique
             unique = []
