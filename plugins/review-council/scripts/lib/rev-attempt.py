@@ -253,7 +253,10 @@ def open_private(path):
 
 def main():
     command = sys.argv[1] if len(sys.argv) > 1 else None
-    if (command, len(sys.argv)) not in (('check', 6), ('reserve', 6), ('record', 7)):
+    if (command, len(sys.argv)) not in (('check', 6), ('reserve', 6), ('reserve', 7), ('record', 7), ('record', 8)):
+        return 1
+    token = sys.argv[-1] if (command, len(sys.argv)) in (('reserve', 7), ('record', 8)) else None
+    if token is not None and (len(token) != 32 or not set(token) <= set('0123456789abcdef')):
         return 1
     session = Path(sys.argv[2]).resolve()
     panel, seat = sys.argv[3], sys.argv[4]
@@ -309,14 +312,41 @@ def main():
             calls = current.get('calls')
             if type(calls) is not int or calls < 0:
                 return 1
+            if 'lifecycle_version' in current and (type(current['lifecycle_version']) is not int
+                                                    or current['lifecycle_version'] != 2):
+                return 1
+            bound = current.get('lifecycle_version') == 2
+            if token is not None:
+                if not bound:
+                    if calls or current.get('launches'):
+                        print('legacy attempt cannot acquire an inferred completion watermark', file=sys.stderr)
+                        return 1
+                    current.update(lifecycle_version=2, completed_calls=0, active_launch=None, last_launch=None)
+                completed = current.get('completed_calls')
+                active = current.get('active_launch')
+                if type(completed) is not int or not 0 <= completed <= calls:
+                    return 1
+                if command == 'record':
+                    if active != token or completed == calls:
+                        return 1
+                elif (active is not None and active != token) or current.get('last_launch') == token:
+                    return 1
+                elif active is None and completed != calls:
+                    return 1
+            elif bound:
+                return 1
             if command == 'record':
                 if sys.argv[6] not in ('0', '1', '2', '3', '4', '7'):
                     return 1
                 current['launches'] = [*current.get('launches', []), int(sys.argv[6])]
+                if token is not None:
+                    current.update(completed_calls=calls, active_launch=None, last_launch=token)
             elif calls >= 4:
                 return 7
             else:
                 current['calls'] = calls + 1
+                if token is not None:
+                    current['active_launch'] = token
             stream.seek(0)
             stream.truncate()
             json.dump(current, stream, sort_keys=True, separators=(',', ':'))
