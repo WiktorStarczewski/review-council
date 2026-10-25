@@ -22,6 +22,8 @@ Expected-red run `40142951169` on test-only commit `3207ae860e2ae37b295e1fc113f0
 
 Candidate run `40144222587` on `7ee84f6b5ac0c236e36a06335d04514886756e9e` exposed four existing cost-mode assertions that require source-context-disabled prompts to omit packet guidance. Each platform passed 5,102 assertions and failed 4; proof preparation passed. Prompt and footer wording now depend on the prepared packet and segment list.
 
+Final candidate run `40145281389` on `3da7ae1ce7e2bd115320e02fa4863814651043e3` failed the same prompt assertion four times per platform. The risk-phase fixture has source-context packets but no required source segments, so its expected index wording must mention packets only. The plan-phase fixture now checks the combined packet-and-segment order used for the issue's plan reviews. Proof preparation and Cursor packaging passed; corrected exact-head CI remains pending.
+
 # Luna seat repository-root fix
 
 - [x] Confirm that `rev-seat.sh` ignores the reviewed session's frozen `REV_ROOT`.
