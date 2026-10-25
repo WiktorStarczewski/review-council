@@ -299,7 +299,11 @@ def plan_skipped(label):
     if not os.path.isfile(ledger):
         return False
     with open(ledger, encoding='utf-8', errors='replace') as f:
-        return any(line.startswith(prefix) and line[len(prefix):].strip() for line in f)
+        recorded = any(line.startswith(prefix) and line[len(prefix):].strip() for line in f)
+    manifest = plan_manifest(label)
+    current_sha = current_plan_sha()
+    return (recorded and manifest is not None and current_sha is not None
+            and manifest['plan'].get('sha256') == current_sha)
 
 
 if {'open.P0', 'open.P1', 'open.P2'} <= assigned:

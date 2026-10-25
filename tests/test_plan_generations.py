@@ -62,6 +62,7 @@ class PlanGenerationTests(unittest.TestCase):
 
     def test_numbered_root_registers_and_its_own_replacement_allows_fix(self):
         self.success('phase=triage', 'round=3', 'open.P0=0', 'open.P1=1', 'open.P2=0')
+        self.success('phase=plan', 'round=3p2', 'seats=' + json.dumps(SEATS))
         manifest = self.prepare('3p2')
         frozen = manifest.read_bytes()
         state = self.success('phase=plan', 'round=3p2', 'seats=' + json.dumps(SEATS))
@@ -104,8 +105,8 @@ class PlanGenerationTests(unittest.TestCase):
 
     def test_skipped_plan_label_cannot_be_reprepared_with_changed_plan(self):
         self.success('phase=triage', 'round=3', 'open.P0=0', 'open.P1=1', 'open.P2=0')
-        manifest = self.prepare('3p2')
         self.success('phase=plan', 'round=3p2', 'seats=' + json.dumps(SEATS))
+        manifest = self.prepare('3p2')
         original_manifest = manifest.read_bytes()
         (self.session / 'findings.md').write_text(
             'Plan panel r3p2 - SKIPPED: plan generation was deferred\n')
@@ -134,6 +135,15 @@ class PlanGenerationTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0,
                             'a skipped label must not be rebound to changed plan bytes')
         self.assertEqual(manifest.read_bytes(), original_manifest)
+        manifest.unlink()
+        result = subprocess.run([
+            sys.executable, str(SCRIPTS / 'rev-evidence.py'), 'prepare', str(self.session),
+            '3p2', '--phase', 'plan', '--plan', str(plan_path), '--plan-sha256', plan_sha,
+            '--full-seat', SEATS[0], *assignments], env=self.fixture.env,
+            text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0,
+                            'a skipped label cannot be restored after deleting its manifest')
+        self.assertFalse(manifest.exists())
 
     def test_numbered_parent_binding_and_invalid_suffixes_fail_without_mutation(self):
         self.success('phase=triage', 'round=3', 'open.P0=0', 'open.P1=1', 'open.P2=0')

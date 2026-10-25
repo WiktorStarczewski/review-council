@@ -7325,6 +7325,33 @@ def _prepare_locked(args, session):
         plan_raw = plan_source.read_bytes()
         if digest(plan_raw) != args.plan_sha256:
             raise ValueError('stale plan hash')
+        state_path = session / 'state.json'
+        try:
+            state_metadata = state_path.lstat()
+        except FileNotFoundError:
+            registered_plans = {}
+        else:
+            if (stat.S_ISLNK(state_metadata.st_mode) or not stat.S_ISREG(state_metadata.st_mode)
+                    or state_metadata.st_nlink != 1):
+                raise ValueError('invalid plan generation state')
+            state = read_json(state_path)
+            registered_plans = state.get('plans', {}) if isinstance(state, dict) else None
+            if not isinstance(registered_plans, dict):
+                raise ValueError('invalid registered plan generations')
+        manifest_path = session / f'r{args.label}-evidence.manifest.json'
+        if args.label in registered_plans and os.path.lexists(manifest_path):
+            raise ValueError('plan generation label is already registered; use a fresh label')
+        if args.label in registered_plans:
+            skip_prefix = f'Plan panel r{args.label} - SKIPPED:'
+            try:
+                prior_skip = any(
+                    line.startswith(skip_prefix) and line[len(skip_prefix):].strip()
+                    for line in (session / 'findings.md').read_text(
+                        encoding='utf-8', errors='replace').splitlines())
+            except FileNotFoundError:
+                prior_skip = False
+            if prior_skip:
+                raise ValueError('skipped plan generation label is immutable; use a fresh label')
         if plan_declares_ripgrep(plan_raw):
             ripgrep_executable(os.environ)
     else:
