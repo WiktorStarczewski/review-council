@@ -341,5 +341,85 @@ class PrProgressTests(unittest.TestCase):
             self.prepare('legacy-ambiguous', **values)
 
 
+    def test_reservation_waits_until_progression_publication_finishes(self):
+        import subprocess
+        import time
+        from test_deleted_source_proof import SCRIPTS
+        values = self.advance()
+        directory = self.fixture.root.parent
+        ready = directory / 'prepare-at-publication'
+        release = directory / 'release-publication'
+        reserving = directory / 'reserve-at-lock'
+        arguments = directory / 'prepare-arguments.json'
+        arguments.write_text(json.dumps(vars(self.arguments('publication-race', **values))))
+        prompt = self.fixture.session / 'rinitial-sol.prompt.md'
+        prompt.write_text('Canonical publication concurrency fixture.\n')
+        preparation_code = """
+import argparse, importlib.util, json, sys, time
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('race_prepare', sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+ready, release = Path(sys.argv[3]), Path(sys.argv[4])
+original = module.prepare_stage
+def stage(name):
+    original(name)
+    if name == 'publish':
+        ready.write_text('final idle scan finished')
+        deadline = time.monotonic() + 30
+        while not release.exists():
+            if time.monotonic() > deadline:
+                raise RuntimeError('publication barrier timed out')
+            time.sleep(0.01)
+module.prepare_stage = stage
+module.prepare(argparse.Namespace(**json.loads(Path(sys.argv[2]).read_text())))
+"""
+        reservation_code = """
+import fcntl, importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('race_reserve', sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+ready = Path(sys.argv[4]); original = fcntl.flock
+def lock(descriptor, operation):
+    if not ready.exists():
+        ready.write_text('reservation reached its first lock')
+    return original(descriptor, operation)
+fcntl.flock = lock
+sys.argv = ['rev-attempt.py', 'reserve', sys.argv[2], 'initial', 'sol', sys.argv[3], 'a' * 32]
+raise SystemExit(module.main())
+"""
+        preparation = subprocess.Popen(['python3', '-c', preparation_code,
+            str(SCRIPTS / 'rev-evidence.py'), str(arguments), str(ready), str(release)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        reservation = None
+        def wait_for(path, process):
+            deadline = time.monotonic() + 20
+            while not path.exists():
+                if process.poll() is not None:
+                    self.fail('concurrency fixture exited before its barrier: ' + repr(process.communicate()))
+                if time.monotonic() > deadline:
+                    self.fail('concurrency fixture did not reach its barrier')
+                time.sleep(0.01)
+        try:
+            wait_for(ready, preparation)
+            reservation = subprocess.Popen(['python3', '-c', reservation_code,
+                str(SCRIPTS / 'lib/rev-attempt.py'), str(self.fixture.session), str(prompt), str(reserving)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            wait_for(reserving, reservation)
+            try:
+                result = reservation.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+            else:
+                self.fail('reservation must wait until progression publication finishes; completed with ' + str(result))
+        finally:
+            release.write_text('publish now')
+            output, error = preparation.communicate(timeout=30)
+            if reservation is not None:
+                reserve_output, reserve_error = reservation.communicate(timeout=30)
+        self.assertEqual(preparation.returncode, 0, error)
+        self.assertEqual(reservation.returncode, 0, reserve_error)
+        self.assertTrue((self.fixture.session / 'rpublication-race-evidence.manifest.json').exists())
+
+
 if __name__ == '__main__':
     unittest.main()
