@@ -9,6 +9,10 @@
 - Bind prepared plan search output to each assigned cluster so identical search results remain valid, while retaining unambiguous historical prompt bindings.
 - Add explicit controller-owned PR generation progression with immutable source and predecessor bindings.
 
+## 0.8.9
+
+- Memoize canonical source-context reconstruction within a prepare pass while rechecking source bytes and validation inputs on every visit.
+
 ## 0.8.8
 
 - Reject unfinished mandatory review generations with immutable evidence bindings, one-seat recovery and preserved receipt history.
