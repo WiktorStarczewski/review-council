@@ -412,6 +412,14 @@ If receipt fails, stop before another reviewer launch. The failed receipt establ
 
 ### Fan out
 
+Before accepting a result, check that its mandatory semantic obligations were
+completed even when its read audit is valid. For an omission explicitly left
+unfinished in its summary, follow `$PLUGIN/docs/semantic-rejection.md` and
+`rev-evidence.py reject-result`. The immutable generation-bound rejection preserves
+the original exit/result/audit, revokes any coverage selecting that generation,
+and permits the ordinary one-seat replacement chain. Never fabricate a failure
+marker or rerun the full panel for it.
+
 Read-only **code** still uses the normal code prompt. PR descriptions are not
 included by default: let reviewers question the design before seeing its rationale.
 

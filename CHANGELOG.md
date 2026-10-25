@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Reject unfinished mandatory review generations with immutable evidence bindings, one-seat recovery and preserved receipt history.
+
 ## 0.8.6
 
 - Keep the navigation index within its 16 KiB byte limit while retaining complete omission metadata and limitations.

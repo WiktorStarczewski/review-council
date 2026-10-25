@@ -3462,7 +3462,7 @@ def replacement_chain_reaches_opus():
         assert all(selected[seat]['label'] == 'chain' for seat in root_seats[1:])
         call('receipt', session, 'chain', '--replacement', root_seats[0] + '=chainx3')
 
-def incomplete_proof_panel(session, call, prepare, summary='INCOMPLETE PROOF: assigned source remains unread'):
+def incomplete_proof_panel(session, call, prepare, summary='INCOMPLETE PROOF: assigned source remains unread', phase='risk'):
     """A risk panel whose sol seat exits 0 with `summary` and a valid read audit."""
     roster = {'seats': [{'seat': seat, 'extra': False,
                          'adapter': 'codex' if seat == 'sol' else 'claude',
@@ -3472,7 +3472,7 @@ def incomplete_proof_panel(session, call, prepare, summary='INCOMPLETE PROOF: as
                         for seat in seats]}
     (session / 'roster.json').write_text(json.dumps(roster))
     path = session / 'r6-evidence.manifest.json'
-    for seat in prepare('6', 'risk', *assign)['assignments']:
+    for seat in prepare('6', phase, *assign)['assignments']:
         (session / f'r6-{seat}.prompt.md').write_text(call('render', path, seat))
         (session / f'r6-{seat}.json').write_text(json.dumps(
             {'summary': summary if seat == 'sol' else 'parent', 'findings': []}))
@@ -3513,6 +3513,131 @@ def semantic_rejection_revokes_sealed_coverage():
         call('receipt', session, 'semantic', good=False, error='semantic rejection')
         assert all((session / name).read_bytes() and module.digest((session / name).read_bytes()) == digest
                    for name, digest in hashes.items()), 'semantic rejection preserves observed provider artifacts'
+
+def reject_semantic_generation(session, call, label='6', seat='sol', **overrides):
+    manifest_path = session / f'r{label}-evidence.manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    _, generation = module.result_generation(session, manifest, module.digest(manifest_path.read_bytes()), seat)
+    values = {'manifest-sha256': generation['manifest_sha256'],
+              'prompt-sha256': generation['prompt_sha256'], 'result-sha256': generation['result_sha256'],
+              'obligation': 'Read the entire assigned patch', 'evidence': 'unfinished',
+              'reason': 'The returned summary explicitly leaves its mandatory check unfinished.'}
+    values.update(overrides)
+    arguments = [part for name, value in values.items() for part in ('--' + name, value)]
+    return call('reject-result', session, label, seat, *arguments)
+
+def semantic_rejection_checks_identity_and_preserves_siblings():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        incomplete_proof_panel(session, call, prepare, 'The assertion check is unfinished.', phase='verification')
+        call('receipt', session, '6')
+        original = {p.name: p.read_bytes() for p in session.glob('r6-*') if p.is_file()}
+        for key in ('manifest-sha256', 'prompt-sha256', 'result-sha256'):
+            try:
+                reject_semantic_generation(session, call, **{key: '0' * 64})
+            except AssertionError as error:
+                assert 'semantic rejection identity mismatch' in str(error), error
+            else:
+                raise AssertionError('a forged expected ' + key + ' was accepted')
+        assert json.loads(call('current-coverage', session))['eligible'] is True
+        path = Path(reject_semantic_generation(session, call).strip())
+        record = json.loads(path.read_text())
+        raw = path.read_bytes()
+        assert record['generation']['exit_sha256'] == module.digest(b'0\n')
+        assert all((session / name).read_bytes() == data for name, data in original.items())
+        assert reserve_launch(session, '6', 'sol', session / 'r6-sol.prompt.md').returncode == 2
+        assert reserve_launch(session, '6', 'terra', session / 'r6-terra.prompt.md').returncode == 0
+        (session / 'state.json').write_text(json.dumps({'round': '6', 'phase': 'collect', 'seats': ['sol', 'terra']}))
+        status = subprocess.check_output([str(script.parent / 'rev-status.sh'), str(session)], text=True)
+        assert 'sol: semantic rejection' in status and 'terra: done' in status, status
+        values = [part for key, value in (
+            ('manifest-sha256', record['generation']['manifest_sha256']),
+            ('prompt-sha256', record['generation']['prompt_sha256']),
+            ('result-sha256', record['generation']['result_sha256']),
+            ('obligation', record['obligation']), ('evidence', record['evidence']), ('reason', record['reason']))
+            for part in ('--' + key, value)]
+        call('reject-result', session, '6', 'sol', *values)
+        assert path.read_bytes() == raw, 'an identical rejection is idempotent'
+        call('reject-result', session, '6', 'sol', *values[:-1], 'another reason',
+             good=False, error='semantic rejection is immutable')
+        prepare('unrelated', 'verification', *assign)
+        finish('unrelated')
+        assert json.loads(call('current-coverage', session))['eligible'] is True, 'unrelated coverage stays eligible'
+
+def semantic_rejection_replaces_a_previously_sealed_child():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        incomplete_proof_panel(session, call, prepare, 'The assertion check is unfinished.', phase='verification')
+        call('receipt', session, '6')
+        original = (session / 'r6-coverage.receipt.json').read_bytes()
+        sibling = (session / 'r6-terra.json').read_bytes()
+        reject_semantic_generation(session, call)
+        prepare('6x', 'repair', '--assignment', 'terra=' + bundles[0], '--parent-assignment', '6:sol')
+        (session / 'r6x-terra.prompt.md').write_text(call('render', session / 'r6x-evidence.manifest.json', 'terra'))
+        (session / 'r6x-terra.json').write_text('{"summary":"A mandatory check remains unfinished.","findings":[]}')
+        (session / 'r6x-terra.exit').write_text('0\n')
+        write_agent_audit(session, '6x', 'terra')
+        first_path = Path(call('receipt', session, '6', '--replacement', 'sol=6x').strip())
+        first_raw = first_path.read_bytes()
+        first = json.loads(first_raw)
+        assert first['supersedes']['sha256'] == module.digest(original)
+        assert first['supersedes']['receipt'] == 'r6-coverage.receipt.json'
+        assert json.loads(call('current-coverage', session))['eligible'] is True
+        reject_semantic_generation(session, call, '6x', 'terra')
+        assert json.loads(call('current-coverage', session))['eligible'] is False
+        (session / 'escalation.json').write_text(json.dumps({
+            'version': 1, 'seat': 'escalate-sol', 'family': 'sol', 'lab': 'openai',
+            'adapter': 'codex', 'model': 'gpt-5.6-sol', 'effort': 'high', 'extra': False}))
+        prepare('6x2', 'repair', '--assignment', 'escalate-sol=' + bundles[0], '--parent-assignment', '6x:terra')
+        (session / 'r6x2-escalate-sol.prompt.md').write_text(
+            call('render', session / 'r6x2-evidence.manifest.json', 'escalate-sol'))
+        (session / 'r6x2-escalate-sol.json').write_text('{"summary":"verified","findings":[]}')
+        (session / 'r6x2-escalate-sol.exit').write_text('0\n')
+        write_agent_audit(session, '6x2', 'escalate-sol')
+        second_path = Path(call('receipt', session, '6', '--replacement', 'sol=6x2').strip())
+        second = json.loads(second_path.read_text())
+        assert second['supersedes']['receipt'] == first_path.name
+        assert second['supersedes']['sha256'] == module.digest(first_raw)
+        assert 'r6x-terra.semantic-rejection.json' in second['supersedes']['rejections']
+        coverage = json.loads(call('current-coverage', session))
+        assert coverage['eligible'] is True, coverage
+        assert coverage['selected_generations']['sol']['label'] == '6x2'
+        assert coverage['selected_generations']['terra']['label'] == '6'
+        assert (session / 'r6-coverage.receipt.json').read_bytes() == original
+        assert first_path.read_bytes() == first_raw
+        assert (session / 'r6-terra.json').read_bytes() == sibling
+        assert call('receipt', session, '6', '--replacement', 'sol=6x2').strip() == str(second_path)
+        call('verify-panel', session, '6', '--replacement', 'sol=6x', good=False, error='semantic rejection')
+        call('review-origin', session, '6')
+        before_head = (session / 'coverage-head.json').read_bytes()
+        forged = dict(second)
+        forged['supersedes'] = dict(second['supersedes'], sha256='0' * 64)
+        forged_raw = module.encoded(forged)
+        forged_path = session / ('r6-coverage.receipt-' + module.digest(forged_raw) + '.json')
+        forged_path.write_bytes(forged_raw)
+        (session / 'coverage-head.json').write_bytes(module.encoded(
+            {'receipt': forged_path.name, 'sha256': module.digest(forged_raw)}))
+        assert json.loads(call('current-coverage', session))['eligible'] is False
+        (session / 'coverage-head.json').write_bytes(before_head)
+        forged_path.unlink()
+
+def semantic_rejection_refuses_redirected_and_stale_records():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        incomplete_proof_panel(session, call, prepare, 'The assertion check is unfinished.')
+        path = Path(reject_semantic_generation(session, call).strip())
+        raw = path.read_bytes()
+        for field in ('manifest_sha256', 'prompt_sha256', 'result_sha256', 'audit_sha256'):
+            bad = json.loads(raw); bad['generation'][field] = '0' * 64
+            path.write_bytes(module.encoded(bad))
+            call('prepare', session, '6x', '--phase', 'repair', '--assignment', 'terra=' + bundles[0],
+                 '--parent-assignment', '6:sol', good=False, error='stale semantic rejection binding')
+            path.write_bytes(raw)
+        target = session / 'retained-rejection.json'
+        path.rename(target)
+        path.symlink_to(target.name)
+        assert reserve_launch(session, '6', 'sol', session / 'r6-sol.prompt.md').returncode != 0
+        path.unlink()
+        os.link(target, path)
+        assert reserve_launch(session, '6', 'sol', session / 'r6-sol.prompt.md').returncode != 0
+        assert target.read_bytes() == raw
 
 def linked_incomplete_proof_is_rejected(command, link_kind):
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
@@ -4429,6 +4554,9 @@ cases = (
     replacement_chain_reaches_opus,
     incomplete_proof_is_never_a_valid_result, incomplete_proof_is_replaced_at_once,
     semantic_rejection_revokes_sealed_coverage,
+    semantic_rejection_checks_identity_and_preserves_siblings,
+    semantic_rejection_replaces_a_previously_sealed_child,
+    semantic_rejection_refuses_redirected_and_stale_records,
     hardlinked_incomplete_proof_cannot_verify, hardlinked_incomplete_proof_cannot_seal,
     symlinked_incomplete_proof_cannot_verify, symlinked_incomplete_proof_cannot_seal,
     incomplete_proof_latches_only_its_label_and_seat, incomplete_proof_from_a_failed_launch_keeps_its_retry,
@@ -4442,7 +4570,10 @@ cases = (
     current_coverage_receipts, current_coverage_replacements_and_refs,
 )
 groups = {
-    'semantic_rejection': (semantic_rejection_revokes_sealed_coverage,),
+    'semantic_rejection': (semantic_rejection_revokes_sealed_coverage,
+        semantic_rejection_checks_identity_and_preserves_siblings,
+        semantic_rejection_replaces_a_previously_sealed_child,
+        semantic_rejection_refuses_redirected_and_stale_records),
     'structure': (
         storage_redirects, quoted_paths, changed_symbols, empty_patch_needs_no_fake_read,
         conservative_mechanical_classification, bounded_navigation_markdown,
