@@ -271,6 +271,43 @@ def write_attempt(path, current):
             os.unlink(temporary)
 
 
+def archive_stream(session, panel, seat):
+    raw = session / f'r{panel}-{seat}.stream.ndjson'
+    try:
+        if raw.stat().st_size == 0:
+            return None
+    except FileNotFoundError:
+        return None
+    n = 1
+    while True:
+        archived = session / f'r{panel}-{seat}.stream.attempt{n}.ndjson'
+        if not os.path.lexists(archived):
+            os.replace(raw, archived)
+            return archived
+        n += 1
+
+
+def restore_stream(archived, raw):
+    if archived is None:
+        return
+    if os.path.lexists(raw):
+        raise OSError('cannot restore prior provider stream because its path is occupied')
+    os.replace(archived, raw)
+
+
+def discard_new_attempt(path, stream, created):
+    if not created:
+        return
+    opened = os.fstat(stream.fileno())
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return
+    if (stat.S_ISREG(current.st_mode) and current.st_nlink == 1 and current.st_size == 0
+            and (current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino)):
+        path.unlink()
+
+
 def recover_completion(session, panel, seat, prompt):
     path, identity = record_path(session, panel, seat, prompt)
     if not path.exists():
@@ -278,7 +315,12 @@ def recover_completion(session, panel, seat, prompt):
     descriptor, _ = open_private(path)
     with os.fdopen(descriptor, 'r+', encoding='utf-8') as stream:
         fcntl.flock(stream, fcntl.LOCK_EX)
-        current = json.load(stream)
+        try:
+            current = json.load(stream)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(current, dict):
+            return
         intent = current.get('terminal_intent')
         if intent is None:
             return
@@ -411,10 +453,29 @@ def _main_locked(session, command, token):
             elif calls >= 4:
                 return 7
             else:
+                archived_stream = None
+                if command == 'reserve':
+                    try:
+                        archived_stream = archive_stream(session, panel, seat)
+                    except OSError:
+                        discard_new_attempt(path, stream, created)
+                        raise
                 current['calls'] = calls + 1
                 if token is not None:
                     current['active_launch'] = token
-            write_attempt(path, current)
+            try:
+                write_attempt(path, current)
+            except OSError as error:
+                restore_error = None
+                if command == 'reserve':
+                    try:
+                        restore_stream(archived_stream, session / f'r{panel}-{seat}.stream.ndjson')
+                    except OSError as failure:
+                        restore_error = failure
+                discard_new_attempt(path, stream, created)
+                if restore_error is not None:
+                    raise OSError(f'{error}; {restore_error}') from error
+                raise error
         if command == 'record' and sys.argv[6] == '0':
             remember_incomplete_proof(session, panel, seat, Path(sys.argv[5]))
         return 0
