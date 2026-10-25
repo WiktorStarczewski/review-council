@@ -55,3 +55,5 @@ original filename. A changed predecessor, rejection or selected generation inval
 Record the observed omission, original result, rejection, replacement outcome and
 receipt lineage in the findings ledger and completion report. Mechanical sealing
 alone never proves semantic completion.
+
+Each historical successor validates the rejection records it explicitly binds. A later rejection of another predecessor selection does not change that historical edge. Current eligibility still checks every currently selected generation, and the next successor records the newly rejected selections.

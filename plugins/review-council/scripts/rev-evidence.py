@@ -7933,7 +7933,7 @@ def coverage_receipt_data(session, manifest, mh, results, generations, replaceme
     return data
 
 
-def rejected_receipt_generations(session, receipt):
+def rejected_receipt_generations(session, receipt, rejection_names=None):
     attempt = attempt_module()
     rejected = []
     generations = receipt.get('selected_generations')
@@ -7944,6 +7944,9 @@ def rejected_receipt_generations(session, receipt):
         selected = generations.get(seat) if isinstance(generations, dict) else None
         panel = selected['label'] if selected else label.group(1)
         executor = selected['seat'] if selected else seat
+        rejection_name = attempt.semantic_rejection_path(session, panel, executor).name
+        if rejection_names is not None and rejection_name not in rejection_names:
+            continue
         record = attempt.semantic_rejection(session, panel, executor)
         if record is None:
             continue
@@ -7994,9 +7997,12 @@ def validate_receipt_lineage(session, name, raw, seen=None):
             'manifest', 'manifest_sha256', 'snapshot_tree', 'base_tree', 'phase', 'assignments')):
         raise ValueError('coverage successor changes its root panel identity')
     validate_receipt_lineage(session, previous['receipt'], old_raw, visited)
-    rejected = rejected_receipt_generations(session, old)
-    if not rejected:
-        raise ValueError('coverage predecessor has no rejected selected generation')
+    bindings = previous['rejections']
+    if (not isinstance(bindings, dict) or not bindings
+            or any(not isinstance(name, str) or not isinstance(value, str)
+                   or not re.fullmatch(r'[0-9a-f]{64}', value) for name, value in bindings.items())):
+        raise ValueError('invalid coverage successor rejection bindings')
+    rejected = rejected_receipt_generations(session, old, bindings)
     expected = {name: digest(attempt_module().private_bytes(session / name)) for name in rejected}
     if previous['rejections'] != expected:
         raise ValueError('coverage successor rejection provenance changed')

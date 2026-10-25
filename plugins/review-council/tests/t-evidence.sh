@@ -3652,6 +3652,19 @@ def semantic_rejection_replaces_a_different_original_sibling():
         second = json.loads(second_path.read_text())
         assert second['supersedes']['receipt'] == first_path.name
         assert set(second['supersedes']['rejections']) == {'r6-terra.semantic-rejection.json'}
+        valid_binding = second['supersedes']['rejections']
+        root_rejection = 'r6-sol.semantic-rejection.json'
+        for invalid in ({}, {'r6-terra.semantic-rejection.json': '0' * 64},
+                        dict(valid_binding, **{root_rejection: module.digest((session / root_rejection).read_bytes())})):
+            forged = dict(second, supersedes=dict(second['supersedes'], rejections=invalid))
+            forged_raw = module.encoded(forged)
+            forged_name = 'r6-coverage.receipt-' + module.digest(forged_raw) + '.json'
+            try:
+                module.validate_receipt_lineage(session, forged_name, forged_raw)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('each historical edge requires authentic rejections of its own selected generations')
         coverage = json.loads(call('current-coverage', session))
         assert coverage['eligible'] is True, coverage
         assert coverage['selected_generations']['sol']['label'] == '6x'
