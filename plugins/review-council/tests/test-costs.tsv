@@ -189,6 +189,7 @@ t-read-bounds.sh::test_search_helpers_reuse_declared_command_set	3	normal
 t-read-bounds.sh::test_specialist_required_range_uses_session_artifacts	3	normal
 t-read-bounds.sh::test_codex_line_bounded_minified_search_is_an_advisory	3	normal
 t-read-bounds.sh::test_codex_snapshot_tree_reads_are_audited_source	3	normal
+t-read-bounds.sh::test_no_context_source_budget_keeps_a_four_call_refutation_reserve	3	normal
 t-read-bounds.sh::test_shell_comments_are_inert_to_the_read_audit	3	normal
 t-rev-reviewer.sh::test_rev_reviewer	1	normal
 t-ripgrep.sh::test_plan_prepare_reports_missing_ripgrep	2	normal

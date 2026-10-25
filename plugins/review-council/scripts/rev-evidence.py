@@ -31,7 +31,8 @@ from review_limits import (CLAUDE_MAX_TURNS, MANDATORY_REPOSITORY_READ_LIMIT,
                            CODEX_READ_LINES, CODEX_SOURCE_READ_LINES,
                            PROVIDER_TURN_RESERVE, READ_LINES,
                            REPOSITORY_EXPANSION_CALL_LIMIT,
-                           REPOSITORY_REFUTATION_CALL_RESERVE)
+                           REPOSITORY_REFUTATION_CALL_RESERVE,
+                           repository_expansion_call_limit_for_seat)
 from session_inputs import session_input_lock, validate_standard_inputs
 from roster import cursor_sdk_identity, validate_cursor_sdk_qualification
 from workhorse import (CHAIN as WORKHORSE_CHAIN, ORDER as WORKHORSE_ORDER, SEAT,
@@ -7477,11 +7478,21 @@ def _prepare_locked(args, session):
     print(manifest_path)
 
 
+def source_snapshot_entries(manifest, seats):
+    context = manifest['source_context']
+    if context['enabled'] or not any(
+            context['seats'].get(seat, {}).get('source_read_required') for seat in seats):
+        return None
+    repository = Repository(Path(manifest['session']))
+    return repository.entries(manifest['snapshot_tree'])
+
+
 def render(args):
     manifest, mh = validated_manifest(
         args.manifest, fresh=not args.offline, offline=args.offline,
         replay_plan_searches=False)
-    render_seat(manifest, mh, args.seat, args.plan_source)
+    snapshot_entries = source_snapshot_entries(manifest, [args.seat])
+    render_seat(manifest, mh, args.seat, args.plan_source, snapshot_entries)
 
 
 def render_panel(args):
@@ -7498,17 +7509,18 @@ def render_panel(args):
         raise ValueError('evidence manifest phase is ' + str(manifest['phase']) + ', not ' + args.phase)
     if manifest['phase'] == 'numeric' and args.seats != manifest['numeric']['launched_seats']:
         raise ValueError('numeric render must include its exact ordered launched seats')
+    snapshot_entries = source_snapshot_entries(manifest, args.seats)
     for seat in args.seats:
         if not SAFE_NAME.fullmatch(seat):
             raise ValueError('invalid panel seat: ' + seat)
         fragment = io.StringIO()
         with redirect_stdout(fragment):
-            render_seat(manifest, mh, seat, args.plan_source)
+            render_seat(manifest, mh, seat, args.plan_source, snapshot_entries)
         (output / seat).write_bytes(fragment.getvalue().encode(sys.stdout.encoding, sys.stdout.errors))
     print(manifest['phase'])
 
 
-def render_seat(manifest, mh, seat, plan_source):
+def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
     assignment = manifest['assignments'].get(seat)
     if assignment is None:
         raise ValueError('seat not assigned')
@@ -7524,6 +7536,20 @@ def render_seat(manifest, mh, seat, plan_source):
     print('Assigned risk bundle: ' + assignment['bundle'])
     capacity = (manifest.get('task_capacity', {}).get('seats', {}).get(seat)
                 if isinstance(manifest.get('task_capacity'), dict) else None)
+    context = manifest['source_context']['seats'][seat]
+    source_target = (capacity.get('repository_source_target')
+                     if isinstance(capacity, dict) else None)
+    expansion_limit = repository_expansion_call_limit_for_seat(
+        context['source_read_required'], source_target)
+    refutation_reserve = (manifest.get('task_capacity', {}).get(
+        'repository_refutation_call_reserve', REPOSITORY_REFUTATION_CALL_RESERVE)
+        if isinstance(manifest.get('task_capacity'), dict)
+        else REPOSITORY_REFUTATION_CALL_RESERVE)
+    mandatory_limit = expansion_limit - refutation_reserve
+    print('Repository expansion-call budget: ' + str(expansion_limit)
+          + ' total; finish required reads by call ' + str(mandatory_limit)
+          + ' and reserve calls ' + str(mandatory_limit + 1) + '-'
+          + str(expansion_limit) + ' for refutation.')
     if isinstance(capacity, dict):
         limit = capacity.get('provider_turn_limit')
         limit_text = (str(limit) if isinstance(limit, int)
@@ -7540,7 +7566,6 @@ def render_seat(manifest, mh, seat, plan_source):
               + str(capacity['repository_refutation_turns']) + ' turns; final result '
               + str(capacity['final_result_turns']) + ' turn; provider hard limit ' + limit_text)
     patch_mode = assignment['patch_read_mode']
-    context = manifest['source_context']['seats'][seat]
     if (manifest['schema_version'] == 4 and manifest['phase'] == 'plan'
             and seat != manifest['mechanical_owner']):
         primary = None
@@ -7692,7 +7717,7 @@ def render_seat(manifest, mh, seat, plan_source):
         print('Source read required: ' + str(context['source_read_required']).lower())
     else:
         print('Post-patch evidence order: read the evidence index before original source.')
-        print('Source read required: true')
+        print('Source read required: ' + str(context['source_read_required']).lower())
     print('Evidence navigation index: '
           + str(Path(manifest['session']) / f"r{manifest['label']}-evidence.md"))
     omitted_ranges = context['omitted_source_ranges'] if manifest['source_context']['enabled'] else []
@@ -7712,6 +7737,20 @@ def render_seat(manifest, mh, seat, plan_source):
         print('No eligible current snapshot source target: assigned semantic source ranges '
               + 'are historical-only or absent from the frozen snapshot; '
               + 'every listed historical packet and source segment remains required.')
+    elif not manifest['source_context']['enabled'] and context['source_read_required']:
+        if snapshot_entries is None:
+            snapshot_entries = source_snapshot_entries(manifest, [seat])
+        component_ids = set(context['components'])
+        boundary_paths = sorted({
+            path for component in manifest['components']
+            if component['id'] in component_ids for path in component['boundary']
+            if path in snapshot_entries and snapshot_entries[path][0] in ('100644', '100755')
+        })
+        if not boundary_paths:
+            raise ValueError('required source read has no readable current-snapshot component boundary: ' + seat)
+        print('Required post-index original-source boundary: ' + boundary_paths[0])
+        print('Read one bounded window from this assigned boundary after the evidence index; '
+              + 'read additional paths only for a concrete unresolved question.')
     print('Mechanical owner: ' + str(manifest['mechanical_owner']))
     if context['shards']:
         print('Prepared source-context packet lines are exact source bytes from the frozen repository '
