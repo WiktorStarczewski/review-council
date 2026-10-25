@@ -72,7 +72,14 @@ class PrProgressPublisherTests(unittest.TestCase):
                                     env=fixture.env, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             fixture.prompt = Path(result.stdout.strip())
-            code, audit = fixture.audit()
+            target = case.module.repository_source_target(fixture.context, manifest['snapshot_tree'])
+            source = None
+            if target is not None:
+                window = f"{target['line_start']},{target['line_end']}p"
+                output = subprocess.check_output(
+                    ['sed', '-n', window, target['path']], cwd=fixture.root).decode('utf-8')
+                source = (target, None, output)
+            code, audit = fixture.audit(source=source)
             self.assertEqual(code, 0, audit)
             (fixture.session / f'rcertified-{seat}.exit').write_text('0\n')
         with contextlib.redirect_stdout(io.StringIO()):
