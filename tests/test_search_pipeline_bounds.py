@@ -119,7 +119,7 @@ class SearchPipelineBoundsTests(unittest.TestCase):
         cases = [
             ('Read', read, None),
             ('Grep', search, None),
-            ('Read', {**read, 'limit': 41}, 'unbounded-read'),
+            ('Read', {**read, 'limit': self.audit.READ_LINES + 1}, 'unbounded-read'),
             ('Read', {'file_path': read['file_path'], 'limit': 40}, 'unbounded-read'),
             ('Read', {**read, 'file_path': str(self.directory / 'outside.txt')},
              'path-outside-scope'),
