@@ -64,6 +64,7 @@ Environment variables take precedence over the config file, which takes preceden
 | `REVIEW_COUNCIL_CATALOG_REFRESH_TIMEOUT` | `roster.sh` | Seconds for one `codex debug models` refresh when the shared cache's `client_version` differs. Default 30. |
 | `REVIEW_COUNCIL_CONTRACT_VERSION_TIMEOUT_SECONDS` | `rev-contract-check.py` | Per-provider CLI version timeout. Defaults to 5 seconds. |
 | `REVIEW_COUNCIL_CONTRACT_VERSION_OUTPUT_BYTES` | `rev-contract-check.py` | Output cap for each provider CLI version command. Defaults to 64 KiB. |
+| `REVIEW_COUNCIL_CONTRACT_WORKERS` | `rev-contract-check.py` | Concurrent contract replay groups, from 1 to 4. Defaults to 4. Does not reduce the required test set or extend its shared deadline. Receipts bind the selected limit. |
 | `REV_ACTIVE` | the loop | Set to `1` automatically inside every seat's environment once a review starts; a nested `/review-council:rev` refuses to start while it's set. Not meant to be set by hand. |
 | `REV_STACK_LEG` | `stack.sh` | Set to `1` automatically inside each stack leg so it skips the top-level push and so a leg can never itself launch a stack. Not meant to be set by hand. |
 | `REV_SOURCE_CONTEXT` | `rev-evidence.py` | `1` enables literal source-context packets and required-source segments. This is the host default. Set `0` only for a labeled baseline measurement. |

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Skip shell-only plan evidence reconstruction for native hooks and bound contract replay concurrency to its selected worker limit.
 - Recover token-bound terminal completion records before a permitted exact reviewer retry.
 
 - Bind prepared plan search output to each assigned cluster so identical search results remain valid, while retaining unambiguous historical prompt bindings.
