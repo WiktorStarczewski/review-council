@@ -152,7 +152,7 @@ EOF
       --plan "$S/fix-plan.md" --plan-sha256 "$plan_hash" --full-seat sol \
       --assignment sol=plan-completeness) || return
     "$SCRIPTS/rev-prompt.sh" "$S" 1hook sol plan-completeness plan \
-      --plan "$S/fix-plan.md" --evidence "$manifest" >/dev/null || return
+      --plan "$S/r1hook-plan.md" --evidence "$manifest" >/dev/null || return
     prompt="$S/r1hook-sol.prompt.md"
     real_rg=$(command -v rg) || return
     cat > "$S/count-rg" <<'SH'
