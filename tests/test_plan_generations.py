@@ -1,6 +1,8 @@
 """Fresh plan generations retain their own root assignment and replacement chain."""
+import hashlib
 import json
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -99,6 +101,33 @@ class PlanGenerationTests(unittest.TestCase):
         self.success('phase=fix', 'round=3')
         self.success('phase=plan', 'round=3p3', 'seats=' + json.dumps(SEATS))
         self.assertEqual(self.state('phase=fix', 'round=3p2').returncode, 2)
+
+    def test_skipped_plan_label_cannot_be_reprepared_with_changed_plan(self):
+        self.success('phase=triage', 'round=3', 'open.P0=0', 'open.P1=1', 'open.P2=0')
+        manifest = self.prepare('3p2')
+        self.success('phase=plan', 'round=3p2', 'seats=' + json.dumps(SEATS))
+        original_manifest = manifest.read_bytes()
+        (self.session / 'findings.md').write_text(
+            'Plan panel r3p2 - SKIPPED: plan generation was deferred\n')
+        plan_path = self.session / 'fix-plan.md'
+        original_plan = plan_path.read_text()
+        updated_plan = original_plan.replace(
+            'Keep active behavior after retirement.',
+            'Keep active behavior stable after retirement.')
+        self.assertNotEqual(updated_plan, original_plan)
+        plan_path.write_text(updated_plan)
+        plan_sha = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+        assignments = []
+        for seat, bundle in zip(SEATS, BUNDLES):
+            assignments += ['--assignment', seat + '=' + bundle]
+        result = subprocess.run([
+            sys.executable, str(SCRIPTS / 'rev-evidence.py'), 'prepare', str(self.session),
+            '3p2', '--phase', 'plan', '--plan', str(plan_path), '--plan-sha256', plan_sha,
+            '--full-seat', SEATS[0], *assignments], env=self.fixture.env,
+            text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0,
+                            'a skipped label must not be rebound to changed plan bytes')
+        self.assertEqual(manifest.read_bytes(), original_manifest)
 
     def test_numbered_parent_binding_and_invalid_suffixes_fail_without_mutation(self):
         self.success('phase=triage', 'round=3', 'open.P0=0', 'open.P1=1', 'open.P2=0')
