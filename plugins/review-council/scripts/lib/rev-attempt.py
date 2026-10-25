@@ -256,11 +256,58 @@ def open_private(path):
     return descriptor, created
 
 
+def write_attempt(path, current):
+    # The session and panel locks serialize writers across atomic inode replacement.
+    descriptor, temporary = tempfile.mkstemp(prefix='.attempt-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+            json.dump(current, stream, sort_keys=True, separators=(',', ':'))
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def recover_completion(session, panel, seat, prompt):
+    path, identity = record_path(session, panel, seat, prompt)
+    if not path.exists():
+        return
+    descriptor, _ = open_private(path)
+    with os.fdopen(descriptor, 'r+', encoding='utf-8') as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX)
+        current = json.load(stream)
+        intent = current.get('terminal_intent')
+        if intent is None:
+            return
+        calls = current.get('calls')
+        if (any(current.get(key) != value for key, value in identity.items())
+                or current.get('lifecycle_version') != 2
+                or not isinstance(intent, dict) or set(intent) != {'token', 'calls', 'exit'}
+                or type(calls) is not int or calls < 1
+                or type(current.get('completed_calls')) is not int
+                or not 0 <= current['completed_calls'] < calls
+                or type(intent['calls']) is not int or intent['calls'] != calls
+                or type(intent['exit']) is not int or intent['exit'] not in (0, 1, 2, 3, 4, 7)
+                or not isinstance(intent['token'], str) or len(intent['token']) != 32
+                or not set(intent['token']) <= set('0123456789abcdef')
+                or intent['token'] != current.get('active_launch')):
+            raise ValueError('unbound terminal completion intent')
+        current['launches'] = [*current.get('launches', []), intent['exit']]
+        current.update(completed_calls=calls, active_launch=None, last_launch=intent['token'])
+        del current['terminal_intent']
+        write_attempt(path, current)
+    if intent['exit'] == 0:
+        remember_incomplete_proof(session, panel, seat, prompt)
+
+
 def main():
     command = sys.argv[1] if len(sys.argv) > 1 else None
-    if (command, len(sys.argv)) not in (('check', 6), ('reserve', 6), ('reserve', 7), ('record', 7), ('record', 8)):
+    if (command, len(sys.argv)) not in (('check', 6), ('reserve', 6), ('reserve', 7), ('record', 7), ('record', 8), ('complete', 8)):
         return 1
-    token = sys.argv[-1] if (command, len(sys.argv)) in (('reserve', 7), ('record', 8)) else None
+    token = sys.argv[-1] if (command, len(sys.argv)) in (('reserve', 7), ('record', 8), ('complete', 8)) else None
     if token is not None and (len(token) != 32 or not set(token) <= set('0123456789abcdef')):
         return 1
     session = Path(sys.argv[2]).resolve()
@@ -287,6 +334,8 @@ def _main_locked(session, command, token):
         return 1
     with os.fdopen(panel_descriptor, 'r+', encoding='utf-8') as panel_lock:
         fcntl.flock(panel_lock, fcntl.LOCK_EX)
+        if command in ('check', 'reserve'):
+            recover_completion(session, panel, seat, Path(sys.argv[5]))
         if command in ('check', 'reserve') and semantic_rejection(session, panel, seat) is not None:
             print(f'{seat} under label {panel} has a semantic rejection; replace the assignment '
                   'on another eligible seat, never relaunch it', file=sys.stderr)
@@ -303,7 +352,7 @@ def _main_locked(session, command, token):
         if command == 'check':
             return 0
         path, identity = record_path(session, panel, seat, Path(sys.argv[5]))
-        if command == 'record' and not path.exists():
+        if command in ('record', 'complete') and not path.exists():
             return 1
         try:
             descriptor, created = open_private(path)
@@ -315,7 +364,7 @@ def _main_locked(session, command, token):
             try:
                 current = json.load(stream)
             except (json.JSONDecodeError, ValueError):
-                if not created or command == 'record':
+                if not created or command in ('record', 'complete'):
                     return 1
                 current = dict(identity, calls=0)
             if any(current.get(field) != value for field, value in identity.items()):
@@ -337,7 +386,7 @@ def _main_locked(session, command, token):
                 active = current.get('active_launch')
                 if type(completed) is not int or not 0 <= completed <= calls:
                     return 1
-                if command == 'record':
+                if command in ('record', 'complete'):
                     if active != token or completed == calls:
                         return 1
                 elif (active is not None and active != token) or current.get('last_launch') == token:
@@ -346,24 +395,26 @@ def _main_locked(session, command, token):
                     return 1
             elif bound:
                 return 1
-            if command == 'record':
+            if command in ('record', 'complete'):
                 if sys.argv[6] not in ('0', '1', '2', '3', '4', '7'):
                     return 1
-                current['launches'] = [*current.get('launches', []), int(sys.argv[6])]
-                if token is not None:
-                    current.update(completed_calls=calls, active_launch=None, last_launch=token)
+                intent = dict(token=token, calls=calls, exit=int(sys.argv[6]))
+                if current.get('terminal_intent') not in (None, intent):
+                    return 1
+                if command == 'complete':
+                    current['terminal_intent'] = intent
+                else:
+                    current['launches'] = [*current.get('launches', []), int(sys.argv[6])]
+                    if token is not None:
+                        current.update(completed_calls=calls, active_launch=None, last_launch=token)
+                    current.pop('terminal_intent', None)
             elif calls >= 4:
                 return 7
             else:
                 current['calls'] = calls + 1
                 if token is not None:
                     current['active_launch'] = token
-            stream.seek(0)
-            stream.truncate()
-            json.dump(current, stream, sort_keys=True, separators=(',', ':'))
-            stream.write('\n')
-            stream.flush()
-            os.fsync(stream.fileno())
+            write_attempt(path, current)
         if command == 'record' and sys.argv[6] == '0':
             remember_incomplete_proof(session, panel, seat, Path(sys.argv[5]))
         return 0
