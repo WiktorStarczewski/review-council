@@ -3494,6 +3494,26 @@ def incomplete_proof_is_never_a_valid_result():
             call(command, session, '6', good=False, error='incomplete proof: sol')
         assert not (session / 'r6-coverage.receipt.json').exists(), 'an incomplete proof seals nothing'
 
+def semantic_rejection_revokes_sealed_coverage():
+    with fixture(adapter='codex') as (root, session, git, write, call, prepare, finish):
+        manifest = prepare('semantic', 'verification', *assign)
+        finish('semantic')
+        before = json.loads(call('current-coverage', session))
+        assert before['eligible'] is True, before
+        stem = 'rsemantic-sol'
+        hashes, generation = module.result_generation(
+            session, manifest, module.digest((session / 'rsemantic-evidence.manifest.json').read_bytes()), 'sol')
+        record = {'schema_version': 1, 'label': 'semantic', 'seat': 'sol',
+                  'generation': generation, 'obligation': 'Read the entire assigned patch',
+                  'evidence': 'verified', 'reason': 'The mandatory assertion review was left unfinished.'}
+        (session / (stem + '.semantic-rejection.json')).write_bytes(module.encoded(record))
+        after = json.loads(call('current-coverage', session))
+        assert after['eligible'] is False, 'a semantically rejected selected generation cannot remain reusable'
+        assert 'semantic rejection' in after['reason'], after
+        call('receipt', session, 'semantic', good=False, error='semantic rejection')
+        assert all((session / name).read_bytes() and module.digest((session / name).read_bytes()) == digest
+                   for name, digest in hashes.items()), 'semantic rejection preserves observed provider artifacts'
+
 def linked_incomplete_proof_is_rejected(command, link_kind):
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
         incomplete_proof_panel(session, call, prepare, 'Every assigned range was read')
@@ -4408,6 +4428,7 @@ cases = (
     nested_walks_reuse_cached_audits, replacement_runs_on_another_seat,
     replacement_chain_reaches_opus,
     incomplete_proof_is_never_a_valid_result, incomplete_proof_is_replaced_at_once,
+    semantic_rejection_revokes_sealed_coverage,
     hardlinked_incomplete_proof_cannot_verify, hardlinked_incomplete_proof_cannot_seal,
     symlinked_incomplete_proof_cannot_verify, symlinked_incomplete_proof_cannot_seal,
     incomplete_proof_latches_only_its_label_and_seat, incomplete_proof_from_a_failed_launch_keeps_its_retry,
@@ -4421,6 +4442,7 @@ cases = (
     current_coverage_receipts, current_coverage_replacements_and_refs,
 )
 groups = {
+    'semantic_rejection': (semantic_rejection_revokes_sealed_coverage,),
     'structure': (
         storage_redirects, quoted_paths, changed_symbols, empty_patch_needs_no_fake_read,
         conservative_mechanical_classification, bounded_navigation_markdown,
@@ -4535,6 +4557,10 @@ test_evidence_hardening_replacement() {
 
 test_evidence_current_coverage() {
   REV_EVIDENCE_GROUP=current_coverage evidence_hardening
+}
+
+test_evidence_semantic_rejection() {
+  REV_EVIDENCE_GROUP=semantic_rejection evidence_hardening
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
