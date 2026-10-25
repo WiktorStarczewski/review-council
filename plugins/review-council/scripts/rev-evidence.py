@@ -5374,6 +5374,7 @@ def validate_source_context_snapshot(repo, session, manifest, canonical_changes=
     blob_lines = {}
     validate_source_context_bytes(repo, session, manifest, entries_by_tree, blob_lines)
     if context['enabled']:
+        clusters = manifest.get('plan', {}).get('clusters')
         key = (_source_context_reconstruction_key(
             repo, session, manifest, manifest_sha256, canonical_changes, canonical_delta)
             if manifest_sha256 is not None else None)
@@ -5418,7 +5419,6 @@ def validate_source_context_snapshot(repo, session, manifest, canonical_changes=
                 row['seat']: manifest['assignments'][row['seat']]
                 for row in roster['seats']
                 if row.get('seat') in manifest['assignments']}
-            clusters = manifest.get('plan', {}).get('clusters')
             inputs = source_context_inputs(
                 repo, manifest['snapshot_tree'], manifest['base_tree'], canonical_facts,
                 manifest['components'], clusters, entries_by_tree, blob_lines)
