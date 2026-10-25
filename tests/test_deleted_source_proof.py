@@ -138,7 +138,7 @@ class SourceFixture:
 
     def audit(self, source=None, result=None, omitted_artifacts=(), *,
               group_patch_chunks=0, group_required_segments=0, codex_turn_boundaries=True,
-              codex_turn_complete=True,
+              codex_turn_complete=True, codex_outputs_after_turn_complete=False,
               reverse_grouped_segments=False, repeat_first_grouped_segment=False,
               group_evidence_index=False, group_final_segment_with_index=False,
               group_first_packets=False):
@@ -158,6 +158,22 @@ class SourceFixture:
         def read_in_codex_turn(paths):
             if codex_turn_boundaries:
                 events.append({'type': 'turn.started'})
+            if codex_outputs_after_turn_complete:
+                pending = []
+                for path in paths:
+                    if path.name in omitted_artifacts:
+                        continue
+                    call = 'read-' + str(len(events))
+                    item = {'id': call, 'type': 'command_execution',
+                            'command': shlex.join(['cat', '--', str(path)])}
+                    events.append({'type': 'item.started', 'item': item})
+                    pending.append((item, path.read_text()))
+                if codex_turn_boundaries and codex_turn_complete:
+                    events.append({'type': 'turn.completed'})
+                for item, output in pending:
+                    events.append({'type': 'item.completed', 'item': dict(
+                        item, aggregated_output=output, exit_code=0)})
+                return
             for path in paths:
                 read_artifact(path)
             if codex_turn_boundaries and codex_turn_complete:
@@ -303,6 +319,13 @@ class RequiredSourceProofTests(unittest.TestCase):
         fixture = self.fixture('deleted')
         rc, audit = fixture.audit(
             group_required_segments=2, codex_turn_complete=False)
+        self.assertEqual((rc, audit['violations']), (0, []))
+        self.assertEqual(audit['tool_turns'], audit['tool_calls'])
+
+    def test_codex_outputs_after_turn_completion_remain_unpaired(self):
+        fixture = self.fixture('deleted')
+        rc, audit = fixture.audit(
+            group_required_segments=2, codex_outputs_after_turn_complete=True)
         self.assertEqual((rc, audit['violations']), (0, []))
         self.assertEqual(audit['tool_turns'], audit['tool_calls'])
 
