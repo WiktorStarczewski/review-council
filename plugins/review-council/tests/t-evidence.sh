@@ -1061,6 +1061,54 @@ def bounded_navigation_markdown():
         assert huge.encode() not in packet
         assert b'complete list SHA-256:' in packet and b'Omitted:' in packet
 
+        sections = ('symbols', 'call_sites', 'related_tests', 'unresolved_imports', 'gates', 'instructions')
+        data = {section: [{'path': f'file{index}.ts', 'detail': 'x' * 900}
+                          for index in range(12)] for section in sections}
+        data['limitations'] = [f'limitation{index}: ' + ('é' * 70 if index == 0 else 'y' * 70)
+                               for index in range(7)]
+        try:
+            packet = module.markdown(data, Path('complete-facts.json'))
+        except ValueError as error:
+            raise AssertionError(
+                f'fixed navigation metadata must be reserved before optional rows: {error}') from error
+        text = packet.decode()
+        assert len(packet) <= 16384
+        assert text.count('Omitted:') == len(sections)
+        assert all(limitation in text for limitation in data['limitations'])
+        labels = {section: ('Unresolved or aliased import proof obligations'
+                            if section == 'unresolved_imports'
+                            else section.replace('_', ' ').title())
+                  for section in sections}
+        for section in sections:
+            encoded_rows = (json.dumps(data[section], sort_keys=True, ensure_ascii=True,
+                                       indent=2) + '\n').encode()
+            assert hashlib.sha256(encoded_rows).hexdigest() in text
+            start = text.index(labels[section] + ':\n') + len(labels[section]) + 2
+            end = text.index('\nOmitted: ', start)
+            included = sum(line.startswith('- ') for line in text[start:end].splitlines())
+            omitted = re.search(r'^Omitted: (\d+);', text[end + 1:], re.M)
+            assert omitted and included + int(omitted.group(1)) == len(data[section]), section
+
+        empty = {section: [] for section in sections}
+        empty['limitations'] = ['preserve ✓']
+        empty_packet = module.markdown(empty, Path('complete-facts.json'))
+        empty_text = empty_packet.decode()
+        assert len(empty_packet) <= 16384
+        assert empty_text.count('Omitted: 0;') == len(sections)
+        encoded_empty = (json.dumps([], sort_keys=True, ensure_ascii=True, indent=2) + '\n').encode()
+        empty_rows_hash = hashlib.sha256(encoded_empty).hexdigest()
+        assert empty_text.count(empty_rows_hash) == len(sections)
+        assert 'preserve ✓' in empty_text
+
+        too_large = {section: [] for section in sections}
+        too_large['limitations'] = ['x' * 16384]
+        try:
+            module.markdown(too_large, Path('complete-facts.json'))
+        except ValueError as error:
+            assert str(error) == 'navigation packet exceeds byte limit'
+        else:
+            raise AssertionError('fixed navigation metadata above the packet limit must fail closed')
+
 def opaque_transitions():
     for reverse in (False, True):
         with fixture() as (root, session, git, write, call, prepare, finish):
