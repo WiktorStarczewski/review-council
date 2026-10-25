@@ -129,6 +129,8 @@ finish() {  # <code> - validate on 0, record, print the one-line summary, exit
   echo "$code" > "$EXITF"
   # A launch that reserved a call records its exit, so an exhausted exact retry is on record.
   if [ "$RESERVED" = 1 ]; then
+    python3 "$HERE/lib/rev-attempt.py" complete "$SESSION" "$ROUND" "$SEAT" "$PROMPT" "$code" "$LAUNCH_TOKEN" >>"$LOG" 2>&1 \
+      || echo "cannot persist this launch's terminal intent" >> "$LOG"
     python3 "$HERE/lib/rev-attempt.py" record "$SESSION" "$ROUND" "$SEAT" "$PROMPT" "$code" "$LAUNCH_TOKEN" >>"$LOG" 2>&1 \
       || echo "cannot record this launch's exit" >> "$LOG"
   fi

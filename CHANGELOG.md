@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Register numbered fresh plan generations and bind replacement children to their exact root, with the newest generation required by the fix gate.
+- Recover token-bound terminal completion records before a permitted exact reviewer retry.
 
 - Bind prepared plan search output to each assigned cluster so identical search results remain valid, while retaining unambiguous historical prompt bindings.
 - Add explicit controller-owned PR generation progression with immutable source and predecessor bindings.
