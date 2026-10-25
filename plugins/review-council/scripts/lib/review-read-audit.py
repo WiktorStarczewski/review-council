@@ -17,7 +17,7 @@ LIB_DIR = Path(__file__).resolve().parent
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
 from review_limits import (CODEX_READ_LINES, CODEX_SOURCE_READ_LINES, READ_LINES,
-                           REPOSITORY_EXPANSION_CALL_LIMIT)
+                           repository_expansion_call_limit_for_seat)
 SEARCH_RESULTS = 80
 SEARCH_RESULT_SENTINEL = SEARCH_RESULTS + 1
 OUTPUT_BYTES = 32 * 1024
@@ -3206,7 +3206,11 @@ def assess(args, blocked):
                 call_id for call_id, (name, data, _) in calls.items()
                 if repository_expansion_call(name, data, root, session)
             ]
-            if len(expansion_calls) > REPOSITORY_EXPANSION_CALL_LIMIT:
+            seat_capacity = manifest.get('task_capacity', {}).get('seats', {}).get(seat, {})
+            expansion_limit = repository_expansion_call_limit_for_seat(
+                context['source_read_required'],
+                seat_capacity.get('repository_source_target'))
+            if len(expansion_calls) > expansion_limit:
                 failures.append(violation('repository-expansion-call-limit', args.adapter))
             ordered_proof_calls = ({call_id for call_id, _ in paced_chunk_calls}
                                    | {call_id for call_id, _ in paced_segment_calls}
