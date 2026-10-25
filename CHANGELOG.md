@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Bind prepared plan search output to each assigned cluster so identical search results remain valid, while retaining unambiguous historical prompt bindings.
 - Add explicit controller-owned PR generation progression with immutable source and predecessor bindings.
 
 ## 0.8.8
