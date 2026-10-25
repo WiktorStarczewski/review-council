@@ -2484,7 +2484,8 @@ def hook(args):
             if args.prompt else (None, None)
         dependency = Path(args.deps).resolve() if args.deps else None
         roots = allowed_roots(root, session, args.deps)
-        plan_search_commands = prompt_plan_search_commands(args.prompt, root, session)
+        plan_search_commands = prompt_plan_search_commands(args.prompt, root, session) \
+            if name.lower() in SHELL_TOOLS else set()
         failures = validate_call(
             name, data, roots, root, session, authorized, complete, {}, dependency,
             plan_search_commands=plan_search_commands)
@@ -2517,7 +2518,8 @@ def post_hook(args):
         authorized, complete = prompt_permissions(args.prompt, root, session) \
             if args.prompt else (None, None)
         dependency = Path(args.deps).resolve() if args.deps else None
-        plan_search_commands = prompt_plan_search_commands(args.prompt, root, session)
+        plan_search_commands = prompt_plan_search_commands(args.prompt, root, session) \
+            if name.lower() in SHELL_TOOLS else set()
         failures = validate_call(
             name, data, allowed_roots(root, session, args.deps), root, session,
             authorized, complete, {}, dependency,
