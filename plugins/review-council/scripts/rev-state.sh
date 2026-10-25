@@ -2,8 +2,8 @@
 # rev-state.sh <session-dir> key=value...
 # Merge keys into <session>/state.json (created if absent). Dotted keys nest: open.P1=1.
 # Values that parse as JSON are stored typed (1, true, null, ["a"], {"x":1}); otherwise as strings.
-# phase=plan round=<N>p (or <N>px[2...]) seats=[...] also records plans.<label>. A replacement
-# includes plan_replacement_for=<N>p:<failed-seat>, binding that child to one original assignment.
+# phase=plan round=<N>p[2...] (or <root>x[2...]) seats=[...] records plans.<label>.
+# plan_replacement_for=<root>:<failed-seat> binds a child to one exact root assignment.
 # phase=fix exits 2 with state unchanged while open P0+P1+P2 > 0 unless every plan assignment passed.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -188,10 +188,37 @@ def plan_completed(label):
     return True
 
 
+def parse_plan_label(label):
+    match = (re.fullmatch(r'([0-9]+)p([2-9]|[1-9][0-9]+)?(?:x([0-9]*))?', label)
+             if isinstance(label, str) else None)
+    if match is None:
+        return None
+    code, generation, child = match.groups()
+    if child not in (None, '') and int(child) < 2:
+        return None
+    return {'code': int(code), 'generation': int(generation or '1'),
+            'root': label.split('x', 1)[0], 'child': child}
+
+
 def valid_plan_label(label):
-    match = re.fullmatch(r'([0-9]+)p(?:x([0-9]*))?', label) if isinstance(label, str) else None
-    suffix = match.group(2) if match else None
-    return match is not None and (suffix is None or suffix == '' or int(suffix) >= 2)
+    return parse_plan_label(label) is not None
+
+
+def latest_plan_root(number):
+    roots = []
+    plans = state.get('plans')
+    for label in plans if isinstance(plans, dict) else ():
+        parsed = parse_plan_label(label)
+        if parsed is not None and parsed['child'] is None and parsed['code'] == number:
+            roots.append((parsed['generation'], label))
+    if not roots:
+        return f'{number}p'
+    newest = max(generation for generation, _ in roots)
+    selected = [label for generation, label in roots if generation == newest]
+    if len(selected) != 1:
+        refuse(f'refusing phase=fix: ambiguous plan roots for round {number}: '
+               + ', '.join(sorted(selected)))
+    return selected[0]
 
 
 def plan_gate_complete(label):
@@ -214,7 +241,8 @@ def plan_gate_complete(label):
     if not isinstance(replacements, dict):
         return False
     def successful_child(child):
-        if (not valid_plan_label(child) or not child.startswith(label + 'x')
+        parsed = parse_plan_label(child)
+        if (parsed is None or parsed['child'] is None or parsed['root'] != label
                 or not isinstance(plans.get(child), list) or len(plans[child]) != 1
                 or not plan_completed(child)):
             return False
@@ -282,10 +310,13 @@ if 'plan_replacement_for' in assigned and (
         'phase' not in assigned or phase != 'plan' or not {'round', 'seats'} <= assigned):
     refuse("'plan_replacement_for' requires phase=plan with round and seats")
 if 'plan_replacement_for' in assigned and not valid_plan_label(state.get('round')):
-    refuse("'plan_replacement_for' requires a valid <N>px[2...] round label")
+    refuse("'plan_replacement_for' requires a valid <N>p[2...]x[2...] round label")
 if 'phase' in assigned and phase == 'plan' and {'round', 'seats'} <= assigned:
     label, seats = state.get('round'), state.get('seats')
-    if valid_plan_label(label):
+    parsed = parse_plan_label(label)
+    if parsed is None and re.match(r'[0-9]+p', str(label)):
+        refuse(f'refusing phase=plan round={label}: invalid plan generation or replacement label')
+    if parsed is not None:
         if (not isinstance(seats, list) or not seats
                 or not all(isinstance(seat, str) and re.fullmatch(SEAT_NAME, seat) for seat in seats)):
             refuse(f"refusing phase=plan round={label}: seats must be a JSON array of seat names, "
@@ -293,13 +324,12 @@ if 'phase' in assigned and phase == 'plan' and {'round', 'seats'} <= assigned:
         plans = state.setdefault('plans', {})
         if not isinstance(plans, dict):
             print("rev-state: 'plans' is not an object", file=sys.stderr); sys.exit(1)
-        root = re.fullmatch(r'([0-9]+)p(?:x(?:[0-9]*)?)?', label)
-        parent_label = root.group(1) + 'p' if root else None
+        parent_label = parsed['root']
         if parent_label != label:
-            binding = re.fullmatch(r'([0-9]+)p:(' + SEAT_NAME + r')', plan_replacement_for or '')
-            if not binding or binding.group(1) + 'p' != parent_label:
+            binding = re.fullmatch(r'([^:]+):(' + SEAT_NAME + r')', plan_replacement_for or '')
+            if not binding or binding.group(1) != parent_label:
                 refuse(f"refusing phase=plan round={label}: replacement labels require "
-                       "plan_replacement_for='<N>p:<failed-seat>'")
+                       f"plan_replacement_for='{parent_label}:<failed-seat>'")
             failed_seat = binding.group(2)
             parent_seats = plans.get(parent_label)
             if (not isinstance(parent_seats, list) or failed_seat not in parent_seats
@@ -339,9 +369,12 @@ if 'phase' in assigned and phase == 'fix':
         refuse("refusing phase=fix: open.P0/P1/P2 have not been written since the last seat "
                "exit, so the counts are last round's - re-run triage and set "
                "open.P0=<n> open.P1=<n> open.P2=<n>")
-    code_round = re.fullmatch(r'([0-9]+)(?:p(?:x[0-9]*)?|x[0-9]*)?', str(state.get('round')))
-    if code_round and receipt_file(f'r{int(code_round.group(1))}-coverage.receipt.json'):
-        number = str(int(code_round.group(1)))
+    plan_round = parse_plan_label(state.get('round'))
+    code_round = re.fullmatch(r'([0-9]+)(?:x[0-9]*)?', str(state.get('round')))
+    code_number = (plan_round['code'] if plan_round is not None
+                   else int(code_round.group(1)) if code_round else None)
+    if code_number is not None and receipt_file(f'r{code_number}-coverage.receipt.json'):
+        number = str(code_number)
         command = [sys.executable, os.environ['REV_STATE_EVIDENCE'], 'review-origin', session, number]
         if isinstance(state.get('review_base_tree'), str):
             command += ['--base-tree', state['review_base_tree']]
@@ -362,13 +395,12 @@ if 'phase' in assigned and phase == 'fix':
                "changed. Apply the standing decision: revert the cited review changes and defer "
                f"the originating findings, then record review_origin_ack={tripped[-1]}")
     if total > 0:
-        match = code_round
-        if not match:
+        if code_number is None:
             refuse(f"refusing phase=fix: cannot determine the code round from round={state.get('round')!r}; "
                    "set round=<N> before phase=fix")
-        label = f'{int(match.group(1))}p'
+        label = latest_plan_root(code_number)
         if not plan_gate_complete(label) and not plan_skipped(label):
-            refuse(f"refusing phase=fix for round {int(match.group(1))}: {total} open P0-P2 findings need "
+            refuse(f"refusing phase=fix for round {code_number}: {total} open P0-P2 findings need "
                    f"the plan gate - complete plan panel r{label}, or bind a successful one-seat "
                    f"replacement to each failed or stale assignment with "
                    f"plan_replacement_for={label}:<failed-seat> (phase=plan round=<label>x[2...] "

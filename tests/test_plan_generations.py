@@ -82,5 +82,76 @@ class PlanGenerationTests(unittest.TestCase):
             self.assertEqual((self.session / name).read_bytes(), raw)
 
 
+    def test_newest_registered_generation_blocks_older_completion_and_skip(self):
+        self.success('phase=triage', 'round=3', 'open.P0=0', 'open.P1=1', 'open.P2=0')
+        self.prepare('3p')
+        self.success('phase=plan', 'round=3p', 'seats=' + json.dumps(SEATS))
+        self.complete('3p')
+        self.success('phase=fix')
+        (self.session / 'findings.md').write_text('Plan panel r3p - SKIPPED: historical exception\n')
+        self.prepare('3p2')
+        self.success('phase=plan', 'round=3p2', 'seats=' + json.dumps(SEATS))
+        for round_label in ('3', '3p', '3p2'):
+            result = self.state('phase=fix', 'round=' + round_label)
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn('r3p2', result.stderr)
+        self.complete('3p2')
+        self.success('phase=fix', 'round=3')
+        self.success('phase=plan', 'round=3p3', 'seats=' + json.dumps(SEATS))
+        self.assertEqual(self.state('phase=fix', 'round=3p2').returncode, 2)
+
+    def test_numbered_parent_binding_and_invalid_suffixes_fail_without_mutation(self):
+        self.success('phase=triage', 'round=3', 'open.P0=0', 'open.P1=1', 'open.P2=0')
+        self.prepare('3p2')
+        self.success('phase=plan', 'round=3p2', 'seats=' + json.dumps(SEATS))
+        (self.session / 'r3p2-sol.audit-invalid.json').write_text('{}\n')
+        state_file = self.session / 'state.json'
+        before = state_file.read_bytes()
+        for label, binding in (
+                ('3p1', None), ('3p02', None), ('3p0', None),
+                ('3p2x1', '3p2:sol'), ('3p2x0', '3p2:sol'),
+                ('3p2x', '3p:sol'), ('3p2x2', '3p2x:sol'),
+                ('3p2x-fake', '3p2:sol'), ('3p2x', '3p2:second')):
+            args = ['phase=plan', 'round=' + label, 'seats=["fourth"]']
+            if binding is not None:
+                args += ['plan_replacement_for=' + binding]
+            with self.subTest(label=label, binding=binding):
+                result = self.state(*args)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(state_file.read_bytes(), before)
+        self.success('phase=plan', 'round=3p2x02', 'seats=["fourth"]',
+                     'plan_replacement_for=3p2:sol')
+
+    def test_foreign_generation_child_cannot_complete_a_failed_assignment(self):
+        self.success('phase=triage', 'round=3', 'open.P0=0', 'open.P1=1', 'open.P2=0')
+        self.prepare('3p2')
+        self.success('phase=plan', 'round=3p2', 'seats=' + json.dumps(SEATS))
+        self.complete('3p2', SEATS[1:])
+        (self.session / 'r3p2-sol.audit-invalid.json').write_text('{}\n')
+        self.prepare('3p3x', ('fourth',))
+        self.complete('3p3x', ('fourth',))
+        self.success('plans.3p3x=["fourth"]', 'plan_replacements.3p2.sol=["3p3x"]')
+        self.assertEqual(self.state('phase=fix').returncode, 2)
+
+
+
+    def test_legacy_zero_padded_forms_remain_exact_and_alias_collision_refuses(self):
+        self.success('phase=triage', 'round=3', 'open.P0=0', 'open.P1=1', 'open.P2=0')
+        self.prepare('03p')
+        self.success('phase=plan', 'round=03p', 'seats=' + json.dumps(SEATS))
+        self.complete('03p', SEATS[1:])
+        (self.session / 'r03p-sol.audit-invalid.json').write_text('{}\n')
+        self.success('phase=plan', 'round=03px02', 'seats=["fourth"]',
+                     'plan_replacement_for=03p:sol')
+        self.prepare('03px02', ('fourth',))
+        self.complete('03px02', ('fourth',))
+        self.success('phase=fix', 'round=3')
+        self.success('phase=plan', 'round=3p', 'seats=' + json.dumps(SEATS))
+        result = self.state('phase=fix', 'round=3')
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('ambiguous', result.stderr)
+
+
+
 if __name__ == '__main__':
     unittest.main()
