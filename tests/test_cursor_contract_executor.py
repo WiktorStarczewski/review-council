@@ -2,10 +2,13 @@
 
 import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import stat
+import sys
 import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 
@@ -85,6 +88,93 @@ class CursorContractExecutorTests(unittest.TestCase):
         self.assertEqual(plugin, output)
         self.assertEqual(runner, output / 'tests/run-tests.sh')
         self.assertEqual(identity['policy'], 'checker-owned')
+
+
+class ContractWorkerBoundsTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='contract-worker-bounds-')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.checker = module(REPO / 'plugins/review-council/scripts/rev-contract-check.py')
+        self.runner = self.root / 'runner'
+        self.runner.write_text('#!' + sys.executable + '\n' + textwrap.dedent('''\
+            import fcntl, json, os, sys, time
+            name = sys.argv[1]
+            def record(kind):
+                with open(os.environ['CONTRACT_TRACE'], 'a') as stream:
+                    fcntl.flock(stream, fcntl.LOCK_EX)
+                    stream.write(json.dumps([kind, name]) + '\\n')
+                    stream.flush()
+            record('start')
+            if os.environ['CONTRACT_MODE'] == 'timeout':
+                time.sleep(30)
+            if os.environ['CONTRACT_MODE'] == 'fail' and name == 'provider_envelope_replay':
+                raise SystemExit(7)
+            time.sleep(0.15)
+            print(name, flush=True)
+            record('end')
+        '''))
+        self.runner.chmod(0o755)
+
+    def run_contracts(self, workers, mode='success'):
+        trace = self.root / ('trace-' + str(workers) + '-' + mode)
+        environment = dict(os.environ, CONTRACT_TRACE=str(trace), CONTRACT_MODE=mode)
+        with patch.dict(os.environ, {'REVIEW_COUNCIL_CONTRACT_WORKERS': str(workers)},
+                        clear=True):
+            policy = self.checker.execution_policy()
+        policy.update(shared_deadline_seconds=1 if mode == 'timeout' else 10,
+                      term_grace_seconds=1)
+        launched = []
+        launch = self.checker.launch_group
+        def observe_launch(command, *args, **kwargs):
+            launched.append(command[-1])
+            return launch(command, *args, **kwargs)
+        with patch.object(self.checker, 'launch_group', side_effect=observe_launch):
+            outputs, failure = self.checker.run_contracts(
+                self.runner, self.root, environment, policy)
+        self.assertEqual(self.checker._ACTIVE_GROUPS, {})
+        events = [json.loads(line) for line in trace.read_text().splitlines()]
+        return outputs, failure, launched, events
+
+    def test_worker_cap_preserves_all_groups_and_output_order(self):
+        for workers in (1, 2, 4):
+            with self.subTest(workers=workers):
+                outputs, failure, launched, events = self.run_contracts(workers)
+                self.assertIsNone(failure)
+                self.assertEqual(launched, list(self.checker.CONTRACT_TESTS))
+                self.assertEqual(outputs, [(name + '\n').encode()
+                                           for name in self.checker.CONTRACT_TESTS])
+                self.assertCountEqual([name for kind, name in events if kind == 'start'],
+                                      self.checker.CONTRACT_TESTS)
+                active, peak = 0, 0
+                for kind, _ in events:
+                    active += 1 if kind == 'start' else -1
+                    peak = max(peak, active)
+                self.assertEqual(active, 0)
+                self.assertLessEqual(peak, workers)
+
+    def test_failure_does_not_launch_queued_groups(self):
+        outputs, failure, launched, _ = self.run_contracts(1, 'fail')
+        self.assertIsNone(outputs)
+        self.assertIn('provider_envelope_replay (exit 7)', failure[0])
+        self.assertEqual(launched, ['provider_envelope_replay'])
+
+    def test_shared_deadline_includes_queued_groups(self):
+        outputs, failure, launched, _ = self.run_contracts(1, 'timeout')
+        self.assertIsNone(outputs)
+        self.assertIn('shared deadline exceeded', failure[0])
+        for name in self.checker.CONTRACT_TESTS:
+            self.assertIn(name, failure[0])
+        self.assertEqual(launched, ['provider_envelope_replay'])
+
+    def test_worker_policy_defaults_to_four_and_rejects_invalid_caps(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(self.checker.execution_policy().get('max_workers'), 4)
+        for invalid in ('0', '5', '-1', 'two', '2.0', ''):
+            with self.subTest(invalid=invalid), patch.dict(os.environ, {
+                    'REVIEW_COUNCIL_CONTRACT_WORKERS': invalid}, clear=True):
+                with self.assertRaisesRegex(ValueError, 'REVIEW_COUNCIL_CONTRACT_WORKERS'):
+                    self.checker.execution_policy()
 
 
 if __name__ == '__main__':

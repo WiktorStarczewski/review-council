@@ -620,7 +620,7 @@ module.subprocess.Popen = interrupted_launch
 signum = getattr(signal, 'SIG' + sys.argv[4])
 signal.signal(signum, module.cancellation_signal)
 policy = {'shared_deadline_seconds': 60, 'output_bytes': 4096,
-          'diagnostic_bytes': 256, 'term_grace_seconds': 1}
+          'diagnostic_bytes': 256, 'term_grace_seconds': 1, 'max_workers': 4}
 module.run_contracts(pathlib.Path(sys.argv[2]), pathlib.Path(sys.argv[2]).parent,
                      dict(os.environ), policy)
 PY
@@ -950,24 +950,26 @@ printf '%s\n' "$1" >> "$CONTRACT_CALLS"
 SH
     chmod +x "$runner"; : > "$calls"
     policy_receipt() {
-      local label=$1 deadline=$2 output=$3 diagnostic=$4 grace=$5
+      local label=$1 deadline=$2 output=$3 diagnostic=$4 grace=$5 workers=${6:-4}
       REVIEW_COUNCIL_CONTRACT_RUNNER="$runner" CONTRACT_CALLS="$calls" \
         REVIEW_COUNCIL_CONTRACT_PROVIDER_VERSIONS='{"claude":"1","codex":"1"}' \
         REVIEW_COUNCIL_CONTRACT_DEADLINE_SECONDS="$deadline" \
         REVIEW_COUNCIL_CONTRACT_OUTPUT_BYTES="$output" \
         REVIEW_COUNCIL_CONTRACT_DIAGNOSTIC_BYTES="$diagnostic" \
         REVIEW_COUNCIL_CONTRACT_TERM_GRACE_SECONDS="$grace" \
+        REVIEW_COUNCIL_CONTRACT_WORKERS="$workers" \
         REVIEW_COUNCIL_CACHE_DIR="$T/provider-policy-cache" \
         python3 "$SCRIPTS/rev-contract-check.py" --root "$R" --base "$base" \
           --session "$S/$label" --roster "$S/roster.json"
     }
-    local baseline deadline output diagnostic grace
+    local baseline deadline output diagnostic grace workers
     baseline=$(policy_receipt baseline 10 4096 256 1) || return
     deadline=$(policy_receipt deadline 11 4096 256 1) || return
     output=$(policy_receipt output 10 8192 256 1) || return
     diagnostic=$(policy_receipt diagnostic 10 4096 512 1) || return
     grace=$(policy_receipt grace 10 4096 256 2) || return
-    python3 - "$baseline" "$deadline" "$output" "$diagnostic" "$grace" <<'PY'
+    workers=$(policy_receipt workers 10 4096 256 1 2) || return
+    python3 - "$baseline" "$deadline" "$output" "$diagnostic" "$grace" "$workers" <<'PY'
 import json, pathlib, sys
 paths = [pathlib.Path(path) for path in sys.argv[1:]]
 assert len({path.name for path in paths}) == len(paths)
@@ -977,11 +979,23 @@ assert policy == {
     'output_bytes': 4096,
     'shared_deadline_seconds': 10,
     'term_grace_seconds': 1,
+    'max_workers': 4,
 }
 PY
     assert_eq "every resolved execution policy value changes the receipt identity" "$?" 0
     assert_eq "every execution policy identity runs every contract group" \
-      "$(wc -l < "$calls" | tr -d ' ')" 20
+      "$(wc -l < "$calls" | tr -d ' ')" 24
+    assert_exit "verify-only cannot reuse a receipt under another worker cap" 2 env \
+      REVIEW_COUNCIL_CONTRACT_RUNNER="$runner" \
+      REVIEW_COUNCIL_CONTRACT_PROVIDER_VERSIONS='{"claude":"1","codex":"1"}' \
+      REVIEW_COUNCIL_CONTRACT_DEADLINE_SECONDS=10 \
+      REVIEW_COUNCIL_CONTRACT_OUTPUT_BYTES=4096 \
+      REVIEW_COUNCIL_CONTRACT_DIAGNOSTIC_BYTES=256 \
+      REVIEW_COUNCIL_CONTRACT_TERM_GRACE_SECONDS=1 \
+      REVIEW_COUNCIL_CONTRACT_WORKERS=2 \
+      REVIEW_COUNCIL_CACHE_DIR="$T/provider-policy-cache" \
+      python3 "$SCRIPTS/rev-contract-check.py" --root "$R" --base "$base" \
+        --session "$S/baseline" --roster "$S/roster.json" --verify-only
     assert_exit "verify-only cannot reuse a receipt under another deadline" 2 env \
       REVIEW_COUNCIL_CONTRACT_RUNNER="$runner" \
       REVIEW_COUNCIL_CONTRACT_PROVIDER_VERSIONS='{"claude":"1","codex":"1"}' \
