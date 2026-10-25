@@ -167,6 +167,18 @@ class ContractWorkerBoundsTests(unittest.TestCase):
             self.assertIn(name, failure[0])
         self.assertEqual(launched, ['provider_envelope_replay'])
 
+    def test_cancelled_replay_does_not_launch_any_groups(self):
+        self.checker._CANCELLED.set()
+        with patch.dict(os.environ, {'REVIEW_COUNCIL_CONTRACT_WORKERS': '2'}, clear=True):
+            policy = self.checker.execution_policy()
+        with patch.object(self.checker, 'launch_group', wraps=self.checker.launch_group) as launch:
+            outputs, failure = self.checker.run_contracts(
+                self.runner, self.root, dict(os.environ), policy)
+        self.assertIsNone(outputs)
+        self.assertIn('cancelled', failure[0])
+        self.assertEqual(launch.call_count, 0)
+        self.assertEqual(self.checker._ACTIVE_GROUPS, {})
+
     def test_worker_policy_defaults_to_four_and_rejects_invalid_caps(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(self.checker.execution_policy().get('max_workers'), 4)
