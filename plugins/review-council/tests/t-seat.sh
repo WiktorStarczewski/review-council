@@ -253,10 +253,10 @@ SH
   done
   if [ ! -e "$T/reserve.ready" ]; then
     fail "reserve test reaches the blocked reservation" "wrapper exited before reservation"
-  elif [ ! -e "$W/rblocked-codex-sol.exit" ]; then
-    ok "same-label stale exit is clear while reservation is pending"
+  elif grep -qx '0' "$W/rblocked-codex-sol.exit"; then
+    ok "the prior exit remains until a reservation succeeds"
   else
-    fail "same-label stale exit is clear while reservation is pending" "old exit remained observable"
+    fail "the prior exit remains until a reservation succeeds" "the old exit was removed or changed"
   fi
   : > "$T/reserve.release"
   wait "$reserve_pid"; reserve_rc=$?
@@ -552,13 +552,18 @@ record = dict(identity, calls=1, launches=[], lifecycle_version=2,
 path.write_text(json.dumps(record) + '\n')
 path.chmod(0o600)
 PY
+  echo 0 > "$A/r1-codex-sol.exit"
+  printf '{"summary":"prior completion"}\n' > "$A/r1-codex-sol.json"
+  cp "$A/r1-codex-sol.json" "$T/active-launch-prior.json"
   SHIM_MODE=ok SHIM_CALLS_FILE="$active_calls" \
     "$SCRIPTS/rev-seat.sh" codex-sol "$A" 1 "$A/p.md" >/dev/null 2>&1
   assert_eq "a competing wrapper cannot take an active reservation" "$?" 1
   assert_eq "active reservation refusals launch no provider" \
     "$(wc -l < "$active_calls" | tr -d ' ')" 0
-  assert_exit "a competing wrapper publishes no completion exit" 1 \
-    test -e "$A/r1-codex-sol.exit"
+  assert_grep "a competing wrapper preserves the prior exit" \
+    "$A/r1-codex-sol.exit" '^0$'
+  assert_exit "a competing wrapper preserves the prior result" 0 \
+    cmp -s "$T/active-launch-prior.json" "$A/r1-codex-sol.json"
   python3 - "$A" <<'PY'
 import json
 from pathlib import Path
