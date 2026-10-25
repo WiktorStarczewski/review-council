@@ -12,6 +12,12 @@
 - [x] Complete independent internal review and resolve its actionable P2 finding.
 - [x] Pass expected-red and all required current-head CI checks.
 - [x] Squash-merge PR #83, publish signed release 0.8.7, reinstall all hosts, and verify installed identity.
+- [x] Release 0.8.9 with per-prepare source-context reconstruction memoization.
+- [x] Trace historical #1830 proof-read turn counts and inspect the retired compound-batch failure.
+- [x] Draft the separate-read pairing design and receive a clear builder check.
+- [x] Get approval of the pairing design before writing its implementation plan.
+- [ ] Implement only the approved scope with red-before-green tests, normal review, exact-head CI, and release.
+- [ ] Run the matched post-merge #1830 Luna replay and update the eligible post-0.8.9 failure rate.
 - [ ] Monitor fresh post-release first-attempt Luna results until the failure rate is below 5%; keep issue #77 open until then.
 
 The 0.8.3 fix resolves a confirmed launch-root mismatch. It did not resolve the Luna proof-budget failures. In `r3p`, the three locale ranges named by the incomplete result were already present in required source-context packets, but the reviewer spent its limited post-index calls reopening other source. In `r2-codex-luna-3`, the reviewer read repository source before the evidence index. The prompt's numbered required-read sequence omitted the index.
@@ -1142,9 +1148,15 @@ Operational acceptance: complete Bread snapshot5b9ce74207af51bba5831a318bf48e28f
 - [x] Confirm post-merge main verification and Cursor package runs `40207680238` and `40207680225` passed at `e2df2f54`.
 - [x] Design per-prepare canonical reconstruction memo and obtain user approval; design `2d5cdd6b`, plan `0028777`.
 - [x] Add the shared-predecessor regression and capture the intentional exact-head CI failure.
-- [ ] Implement the process-local memo and pass exact-head CI.
-- [ ] Complete an independent normal review, merge, and release signed 0.8.9.
+- [x] Implement the process-local memo and pass exact-head CI.
+- [x] Complete an independent normal review, merge, and release signed 0.8.9.
 - [ ] Run the matched #1830 Luna comparison after merge and update issue #77 with the eligible result.
 - [ ] Continue monitoring #1830 and #1841 to terminal reviewer results.
 
-Active: native execution of the approved per-prepare source-context memo plan. Task 1 is complete: exact-head run `40212015323` at SHA `97f672a42e8b0e88d0fa1d672e07b6823c011d2b` confirmed the intended shared-predecessor assertion fails on Ubuntu and macOS, with proof preparation passing; Cursor package run `40212015321` passed at the same SHA. The verifier logs confirm one failing assertion, `rseed` reconstructed twice, and all other shell, Python, and marketplace checks passed. Task 2 implementation is committed locally as `6c3b9c7`, with green candidate CI pending. The independent review's P1 cache-hit initialization bug is fixed, and its follow-up found no remaining P0-P2 issues. Task 3 release metadata is updated locally; the candidate will be pushed after review so CI runs on the final release head.
+Release 0.8.9 is published at signed tag `review-council--v0.8.9`, targeting merge commit `9795a4e9bdd812fbcda8f23872523115ec74737b`. PR #91 passed its independent normal review and exact-head CI before merge. The matched #1830 Luna comparison remains pending its merge and final Sol scope identity; issue #77 remains open because there is no eligible post-0.8.9 Luna sample yet.
+
+## #77 Codex proof-read pairing candidate
+
+The historical #1830 Luna plan audit on 0.8.4 was valid but used 62 tool calls, including 39 source-read calls and 23 required source segments. 0.8.9 improves repeated preparation work, not reviewer proof-read turns. The proposed follow-up allows two separate, ordered Codex proof-read calls in one turn while preserving per-path byte checks and all existing output caps. Compound shell batching remains disabled because joined output could be credited to the wrong source after a source mutation was restored.
+
+Design: `docs/superpowers/specs/2026-10-25-codex-proof-read-pairing-design.md`. The user approved this design. Implementation plan: `docs/superpowers/plans/2026-10-25-codex-proof-read-pairing.md`; it tests real Codex turn boundaries, preserves packet limits, and keeps oversized one-line source segments alone.
