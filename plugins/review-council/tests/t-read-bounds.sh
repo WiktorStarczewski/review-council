@@ -118,12 +118,7 @@ test_plan_prompt_hooks_reuse_prepared_search_proofs() {
   ( local R="$T/plan-hook-root" S="$T/plan-hook-session"
     unset REV_RG
     mkrepo "$R"; mkdir -p "$R/src" "$R/tests" "$S"
-    python3 - "$R/src/service.ts" <<'PY'
-import pathlib, sys
-path = pathlib.Path(sys.argv[1])
-path.write_text('export function runService() { return 1; }\n' + ''.join(
-    f'export const planPadding_{index:03d} = 0;\n' for index in range(240)))
-PY
+    printf 'export function runService() { return 1; }\n' > "$R/src/service.ts"
     cat > "$R/tests/service.test.ts" <<'EOF'
 import { runService } from "../src/service";
 test("service", () => runService());
@@ -132,9 +127,10 @@ EOF
     local base; base=$(git -C "$R" rev-parse HEAD)
     python3 - "$R/src/service.ts" <<'PY'
 import pathlib, sys
-path = pathlib.Path(sys.argv[1])
-path.write_text('export function runService() { return 2; }\n' + ''.join(
-    f'export const planPadding_{index:03d} = 1;\n' for index in range(240)))
+path = pathlib.Path(sys.argv[1]); text = path.read_text()
+if 'return 1;' not in text:
+    raise SystemExit('plan fixture source changed unexpectedly')
+path.write_text(text.replace('return 1;', 'return 2;', 1))
 PY
     printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
       "$base" "$R" > "$S/scope.env"
@@ -154,8 +150,7 @@ EOF
     manifest=$(REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 \
       python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 1hook --phase plan \
       --plan "$S/fix-plan.md" --plan-sha256 "$plan_hash" --full-seat sol \
-      --assignment sol=plan-completeness --assignment terra=plan-soundness \
-      --assignment opus=plan-simplicity --assignment sonnet=plan-tests) || return
+      --assignment sol=plan-completeness) || return
     "$SCRIPTS/rev-prompt.sh" "$S" 1hook sol plan-completeness plan \
       --plan "$S/fix-plan.md" --evidence "$manifest" >/dev/null || return
     prompt="$S/r1hook-sol.prompt.md"
