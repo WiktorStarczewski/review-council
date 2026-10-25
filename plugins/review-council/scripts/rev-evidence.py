@@ -70,6 +70,7 @@ DIFF = ['diff', '--no-ext-diff', '--no-textconv', '--no-renames',
         '--unified=3', '--binary', '--src-prefix=a/', '--dst-prefix=b/']
 OVERSIZED_BLOB = object()
 ACTIVE_PLAN_SEARCHES = set()
+SOURCE_CONTEXT_RECONSTRUCTION_MEMO: dict[tuple[str, ...], dict] = {}
 
 
 def is_replacement_label(parent_label, child_label):
@@ -307,6 +308,20 @@ def encoded(value):
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def _source_context_reconstruction_key(repo, session, manifest, manifest_sha256,
+                                       canonical_changes, canonical_delta) -> tuple[str, ...]:
+    session = Path(session).resolve()
+    manifest_path = (session / f"r{manifest['label']}-evidence.manifest.json").resolve()
+    changes_sha256 = digest(encoded(canonical_changes)) if canonical_changes is not None else 'none'
+    delta_sha256 = digest(encoded(canonical_delta)) if canonical_delta is not None else 'none'
+    predecessor_sha256 = (digest(encoded(manifest.get('predecessor')))
+                          if manifest.get('predecessor') is not None else 'none')
+    return (str(session), str(manifest_path), manifest_sha256, str(Path(repo.root).resolve()),
+            manifest['base_tree'], manifest['snapshot_tree'], manifest['phase'],
+            'enabled' if manifest['source_context']['enabled'] else 'disabled',
+            changes_sha256, delta_sha256, predecessor_sha256)
 
 
 def patch_display_lines(raw):
@@ -5353,54 +5368,66 @@ def validate_source_context_bytes(repo, session, manifest, entries_by_tree=None,
 
 
 def validate_source_context_snapshot(repo, session, manifest, canonical_changes=None,
-                                     canonical_delta=None):
+                                     canonical_delta=None, manifest_sha256=None):
     context = manifest['source_context']
     entries_by_tree = {}
     blob_lines = {}
     validate_source_context_bytes(repo, session, manifest, entries_by_tree, blob_lines)
     if context['enabled']:
-        if canonical_changes is None:
-            _, hunks, categories, _ = repo.changes(manifest['base_tree'], manifest['snapshot_tree'])
-        else:
-            hunks, categories = canonical_changes
-        context_hunks = hunks
-        if (manifest['phase'] == 'verification' and not manifest['fallback_reason']
-                and verification_specialist_mode(
-                    manifest['assignments'], manifest['mechanical_owner']) == 'delta'):
-            if canonical_delta is None:
-                prior = prior_coverage(session, repo, manifest['base_tree'], manifest['predecessor'])
-                if prior['status'] != 'valid':
-                    raise ValueError('invalid source context predecessor: ' + str(prior['reason']))
-                _, delta_hunks, delta_categories, _ = repo.changes(
-                    prior['coverage']['snapshot_tree'], manifest['snapshot_tree'])
+        key = (_source_context_reconstruction_key(
+            repo, session, manifest, manifest_sha256, canonical_changes, canonical_delta)
+            if manifest_sha256 is not None else None)
+        cached = SOURCE_CONTEXT_RECONSTRUCTION_MEMO.get(key) if key is not None else None
+        if cached is None:
+            if canonical_changes is None:
+                _, hunks, categories, _ = repo.changes(
+                    manifest['base_tree'], manifest['snapshot_tree'])
             else:
-                delta_hunks, delta_categories = canonical_delta
-            context_hunks = source_context_hunks(hunks, delta_hunks, delta_categories)
+                hunks, categories = canonical_changes
+            context_hunks = hunks
+            if (manifest['phase'] == 'verification' and not manifest['fallback_reason']
+                    and verification_specialist_mode(
+                        manifest['assignments'], manifest['mechanical_owner']) == 'delta'):
+                if canonical_delta is None:
+                    prior = prior_coverage(
+                        session, repo, manifest['base_tree'], manifest['predecessor'])
+                    if prior['status'] != 'valid':
+                        raise ValueError('invalid source context predecessor: ' + str(prior['reason']))
+                    _, delta_hunks, delta_categories, _ = repo.changes(
+                        prior['coverage']['snapshot_tree'], manifest['snapshot_tree'])
+                else:
+                    delta_hunks, delta_categories = canonical_delta
+                context_hunks = source_context_hunks(hunks, delta_hunks, delta_categories)
+            expected_hunks = context_hunks if context_hunks != hunks else None
+        else:
+            expected_hunks = cached['source_context_hunks']
         recorded = read_json(session / f"r{manifest['label']}-evidence.json")
-        expected = context_hunks if context_hunks != hunks else None
-        if recorded.get('source_context_hunks') != expected:
+        if recorded.get('source_context_hunks') != expected_hunks:
             raise ValueError('source context hunks do not match the actual snapshot delta')
-        canonical_facts = facts(repo, manifest['snapshot_tree'], hunks, categories,
-                                manifest['base_tree'], entries_by_tree)
-        canonical_facts['hunks'] = hunks
-        if expected is not None:
-            canonical_facts['source_context_hunks'] = expected
-        canonical_facts = source_context_evidence(
-            repo, manifest['snapshot_tree'], canonical_facts, entries_by_tree)
-        roster = read_json(session / 'roster.json')
-        roster = with_manifest_workhorse(session, roster, manifest)
-        ordered_assignments = {
-            row['seat']: manifest['assignments'][row['seat']]
-            for row in roster['seats']
-            if row.get('seat') in manifest['assignments']}
-        clusters = manifest.get('plan', {}).get('clusters')
-        inputs = source_context_inputs(
-            repo, manifest['snapshot_tree'], manifest['base_tree'], canonical_facts,
-            manifest['components'], clusters, entries_by_tree, blob_lines)
-        canonical = plan_source_context(
-            manifest['snapshot_tree'], manifest['base_tree'], canonical_facts,
-            manifest['components'], ordered_assignments, manifest['mechanical_owner'],
-            'r' + manifest['label'], inputs, True, clusters)
+        if cached is None:
+            canonical_facts = facts(repo, manifest['snapshot_tree'], hunks, categories,
+                                    manifest['base_tree'], entries_by_tree)
+            canonical_facts['hunks'] = hunks
+            if expected_hunks is not None:
+                canonical_facts['source_context_hunks'] = expected_hunks
+            canonical_facts = source_context_evidence(
+                repo, manifest['snapshot_tree'], canonical_facts, entries_by_tree)
+            roster = read_json(session / 'roster.json')
+            roster = with_manifest_workhorse(session, roster, manifest)
+            ordered_assignments = {
+                row['seat']: manifest['assignments'][row['seat']]
+                for row in roster['seats']
+                if row.get('seat') in manifest['assignments']}
+            clusters = manifest.get('plan', {}).get('clusters')
+            inputs = source_context_inputs(
+                repo, manifest['snapshot_tree'], manifest['base_tree'], canonical_facts,
+                manifest['components'], clusters, entries_by_tree, blob_lines)
+            canonical = plan_source_context(
+                manifest['snapshot_tree'], manifest['base_tree'], canonical_facts,
+                manifest['components'], ordered_assignments, manifest['mechanical_owner'],
+                'r' + manifest['label'], inputs, True, clusters)
+        else:
+            canonical = cached['canonical']
         identity_keys = ('path', 'blob_tree', 'blob_oid', 'blob_mode', 'line_start',
                          'line_end', 'content_sha256')
 
@@ -5422,6 +5449,11 @@ def validate_source_context_snapshot(repo, session, manifest, canonical_changes=
                 raise ValueError('source context target does not match canonical snapshot: ' + seat)
             if packet['source_read_required'] is not expected['source_read_required']:
                 raise ValueError('invalid source context read requirement: ' + seat)
+        if cached is None and key is not None:
+            SOURCE_CONTEXT_RECONSTRUCTION_MEMO[key] = {
+                'canonical': canonical,
+                'source_context_hunks': expected_hunks,
+            }
 
 
 def generation_stem(manifest, generations, seat):
@@ -6166,6 +6198,7 @@ def validated_manifest(path, fresh=True, seen=None, offline=False, replay_plan_s
 
 def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
     path = Path(path).resolve(); raw = path.read_bytes(); manifest = read_json(path)
+    manifest_sha256 = digest(raw)
     session = path.parent
     seen = set() if seen is None else set(seen)
     if str(path) in seen:
@@ -6542,8 +6575,9 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
     if not offline:
         if not fresh:
             repo = Repository(session)
-        validate_source_context_snapshot(repo, session, manifest, canonical_changes, canonical_delta)
-    return manifest, digest(raw)
+        validate_source_context_snapshot(
+            repo, session, manifest, canonical_changes, canonical_delta, manifest_sha256)
+    return manifest, manifest_sha256
 
 
 def validate_panel_coverage(manifest):
@@ -7229,6 +7263,7 @@ def write_prepare_diagnostic(args, error):
 
 
 def prepare(args):
+    SOURCE_CONTEXT_RECONSTRUCTION_MEMO.clear()
     PREPARE_PROGRESS['active'] = True
     PREPARE_PROGRESS['stage'] = 'start'
     PREPARE_PROGRESS['timed_out'] = False

@@ -1272,14 +1272,17 @@ def source_context_memo_validation_guards():
             return original(*args, **kwargs)
 
         module.plan_source_context = count_child
+        child_manifest_hash = module.digest(
+            (session / 'rverify-evidence.manifest.json').read_bytes())
         try:
             module.validate_source_context_snapshot(
-                repo, session, child, (hunks, categories), (delta_hunks, delta_categories))
+                repo, session, child, (hunks, categories), (delta_hunks, delta_categories),
+                child_manifest_hash)
             changed_delta = list(delta_hunks)
             changed_delta[0] = dict(changed_delta[0], sha256='0' * 64)
             module.validate_source_context_snapshot(
                 repo, session, child, (hunks, categories),
-                (changed_delta, delta_categories))
+                (changed_delta, delta_categories), child_manifest_hash)
         finally:
             module.plan_source_context = original
         assert calls.get('rverify') == 2, calls
@@ -1293,6 +1296,12 @@ def source_context_memo_validation_guards():
             key = key_builder(repo, session.resolve(), manifest, manifest_hash, changes, delta)
             assert key == key_builder(
                 repo, session.resolve(), manifest, manifest_hash, changes, delta)
+            assert key != key_builder(
+                repo, session.resolve(), manifest, '0' * 64, changes, delta)
+            changed_predecessor = dict(
+                manifest, predecessor={'receipt': 'other-coverage.json', 'sha256': '0' * 64})
+            assert key != key_builder(
+                repo, session.resolve(), changed_predecessor, manifest_hash, changes, delta)
             other_session = session.parent / 'other-session'
             assert key != key_builder(
                 repo, other_session, manifest, manifest_hash, changes, delta)
