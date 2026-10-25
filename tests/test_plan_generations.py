@@ -109,6 +109,7 @@ class PlanGenerationTests(unittest.TestCase):
         original_manifest = manifest.read_bytes()
         (self.session / 'findings.md').write_text(
             'Plan panel r3p2 - SKIPPED: plan generation was deferred\n')
+        self.success('phase=fix')
         plan_path = self.session / 'fix-plan.md'
         original_plan = plan_path.read_text()
         updated_plan = original_plan.replace(
@@ -116,6 +117,11 @@ class PlanGenerationTests(unittest.TestCase):
             'Keep active behavior stable after retirement.')
         self.assertNotEqual(updated_plan, original_plan)
         plan_path.write_text(updated_plan)
+        state_path = self.session / 'state.json'
+        original_state = state_path.read_bytes()
+        stale_skip = self.state('phase=fix')
+        self.assertEqual(stale_skip.returncode, 2, stale_skip.stderr)
+        self.assertEqual(state_path.read_bytes(), original_state)
         plan_sha = hashlib.sha256(plan_path.read_bytes()).hexdigest()
         assignments = []
         for seat, bundle in zip(SEATS, BUNDLES):
