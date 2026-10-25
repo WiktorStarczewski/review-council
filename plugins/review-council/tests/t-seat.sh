@@ -225,7 +225,8 @@ SH
   assert_eq "corrupt persistent attempt state fails closed" "$?" 1
   assert_eq "corrupt attempt state launches no replacement provider" \
     "$(wc -l < "$T/corrupt-calls" | tr -d ' ')" 1
-  assert_grep "corrupt attempt state writes a fresh exit" "$D/rcorrupt-codex-sol.exit" '^1$'
+  assert_grep "corrupt attempt state preserves the prior completion exit" \
+    "$D/rcorrupt-codex-sol.exit" '^0$'
 
   local W="$T/seat-reserve-window"; seat_roster "$W"; echo "review the diff" > "$W/p.md"
   echo 0 > "$W/rblocked-codex-sol.exit"
@@ -517,6 +518,59 @@ PY
     "$S/r1-codex-sol.json" '"severity": ?"P1"'
   assert_grep "the failed result remains available in the retained diagnostic" \
     "$S/failed-result.json" 'INCOMPLETE PROOF'
+
+  python3 - "$S" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+records = [json.loads(path.read_text()) for path in (Path(sys.argv[1]) / 'attempts').glob('*.json')]
+assert (len(records) == 1 and records[0]['calls'] == 3
+        and records[0]['launches'] == [0, 1, 0]
+        and records[0]['completed_calls'] == 3
+        and records[0]['active_launch'] is None), records
+PY
+  assert_eq "retry records the interrupted launch before its successor" "$?" 0
+
+  local A="$T/seat-active-launch" active_calls="$T/active-launch-calls"
+  seat_roster "$A"; echo "review the diff" > "$A/p.md"
+  : > "$active_calls"
+  python3 - "$SCRIPTS/lib/rev-attempt.py" "$A" "$A/p.md" <<'PY'
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location('rev_attempt', sys.argv[1])
+attempt = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(attempt)
+session, prompt = Path(sys.argv[2]), Path(sys.argv[3])
+path, identity = attempt.record_path(session, '1', 'codex-sol', prompt)
+path.parent.mkdir(mode=0o700, exist_ok=True)
+record = dict(identity, calls=1, launches=[], lifecycle_version=2,
+              completed_calls=0, active_launch='a' * 32, last_launch=None)
+path.write_text(json.dumps(record) + '\n')
+path.chmod(0o600)
+PY
+  SHIM_MODE=ok SHIM_CALLS_FILE="$active_calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$A" 1 "$A/p.md" >/dev/null 2>&1
+  assert_eq "a competing wrapper cannot take an active reservation" "$?" 1
+  assert_eq "active reservation refusals launch no provider" \
+    "$(wc -l < "$active_calls" | tr -d ' ')" 0
+  assert_exit "a competing wrapper publishes no completion exit" 1 \
+    test -e "$A/r1-codex-sol.exit"
+  python3 - "$A" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+records = [json.loads(path.read_text()) for path in (Path(sys.argv[1]) / 'attempts').glob('*.json')]
+assert (len(records) == 1 and records[0]['calls'] == 1
+        and records[0]['launches'] == []
+        and records[0]['completed_calls'] == 0
+        and records[0]['active_launch'] == 'a' * 32), records
+PY
+  assert_eq "active reservation state remains unchanged" "$?" 0
   seat_env_reset "$_path"
 }
 test_seat_process_group_cancellation_preserves_partial_stream() {
