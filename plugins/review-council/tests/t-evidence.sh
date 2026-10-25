@@ -3619,6 +3619,52 @@ def semantic_rejection_replaces_a_previously_sealed_child():
         (session / 'coverage-head.json').write_bytes(before_head)
         forged_path.unlink()
 
+def semantic_rejection_retry_promotes_existing_successor():
+    from types import SimpleNamespace
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        incomplete_proof_panel(session, call, prepare, 'The assertion check is unfinished.', phase='verification')
+        original_path = Path(call('receipt', session, '6').strip())
+        original_raw = original_path.read_bytes()
+        reject_semantic_generation(session, call)
+        prepare('6x', 'repair', '--assignment', 'terra=' + bundles[0], '--parent-assignment', '6:sol')
+        (session / 'r6x-terra.prompt.md').write_text(call('render', session / 'r6x-evidence.manifest.json', 'terra'))
+        (session / 'r6x-terra.json').write_text('{"summary":"verified","findings":[]}')
+        (session / 'r6x-terra.exit').write_text('0\n')
+        write_agent_audit(session, '6x', 'terra')
+        args = SimpleNamespace(session=str(session), label='6', replacement=['sol=6x'])
+        publish = module.publish
+        def interrupt_before_head(path, raw):
+            if path.name == 'coverage-head.json':
+                raise OSError('simulated stop before advancing coverage head')
+            publish(path, raw)
+        module.publish = interrupt_before_head
+        try:
+            try:
+                module.receipt(args)
+            except OSError as error:
+                assert str(error) == 'simulated stop before advancing coverage head'
+            else:
+                raise AssertionError('the simulated head publication stop did not occur')
+        finally:
+            module.publish = publish
+        successor = module.receipt_path_for_label(session, '6')
+        head_path = session / 'coverage-head.json'
+        original_head = {'receipt': original_path.name, 'sha256': module.digest(original_raw)}
+        assert json.loads(head_path.read_bytes()) == original_head
+        assert json.loads(call('current-coverage', session))['eligible'] is False
+        module.receipt(args)
+        successor_raw = successor.read_bytes()
+        successor_head = {'receipt': successor.name, 'sha256': module.digest(successor_raw)}
+        assert json.loads(head_path.read_bytes()) == successor_head
+        assert json.loads(call('current-coverage', session))['eligible'] is True
+        prepare('later', 'verification', *assign)
+        finish('later')
+        call('receipt', session, 'later')
+        later_head = head_path.read_bytes()
+        assert json.loads(later_head)['receipt'] == 'rlater-coverage.receipt.json'
+        module.receipt(args)
+        assert head_path.read_bytes() == later_head
+
 def semantic_rejection_replaces_a_different_original_sibling():
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
         incomplete_proof_panel(session, call, prepare, 'The assertion check is unfinished.', phase='verification')
@@ -4610,6 +4656,7 @@ cases = (
     semantic_rejection_revokes_sealed_coverage,
     semantic_rejection_checks_identity_and_preserves_siblings,
     semantic_rejection_replaces_a_previously_sealed_child,
+    semantic_rejection_retry_promotes_existing_successor,
     semantic_rejection_replaces_a_different_original_sibling,
     semantic_rejection_refuses_redirected_and_stale_records,
     hardlinked_incomplete_proof_cannot_verify, hardlinked_incomplete_proof_cannot_seal,
@@ -4628,6 +4675,7 @@ groups = {
     'semantic_rejection': (semantic_rejection_revokes_sealed_coverage,
         semantic_rejection_checks_identity_and_preserves_siblings,
         semantic_rejection_replaces_a_previously_sealed_child,
+        semantic_rejection_retry_promotes_existing_successor,
         semantic_rejection_replaces_a_different_original_sibling,
         semantic_rejection_refuses_redirected_and_stale_records),
     'structure': (
