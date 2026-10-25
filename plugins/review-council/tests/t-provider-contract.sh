@@ -409,20 +409,22 @@ else
 fi
 SH
     chmod +x "$B/bin/codex"
-    local child="$B/child.pid" started elapsed value i=0
-    started=$(date +%s)
-    value=$(PATH="$B/bin:/usr/bin:/bin" VERSION_MODE=timeout VERSION_CHILD_PID="$child" \
+    local child="$B/child.pid" measurement elapsed value i=0
+    measurement=$(PATH="$B/bin:/usr/bin:/bin" VERSION_MODE=timeout VERSION_CHILD_PID="$child" \
       REVIEW_COUNCIL_CONTRACT_VERSION_TIMEOUT_SECONDS=1 \
       python3 - "$SCRIPTS/rev-contract-check.py" <<'PY'
-import importlib.util, sys
+import importlib.util, sys, time
 spec = importlib.util.spec_from_file_location('contract', sys.argv[1])
 module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+started = time.monotonic()
 print(module.one_version('codex')[1])
+print(f'{time.monotonic() - started:.3f}')
 PY
     )
+    value=$(printf '%s\n' "$measurement" | sed -n '1p')
     assert_eq "a timed-out provider version is unavailable" "$value" unavailable
-    elapsed=$(( $(date +%s) - started ))
-    [ "$elapsed" -le 4 ] && ok "provider version timeout is bounded" \
+    elapsed=$(printf '%s\n' "$measurement" | sed -n '2p')
+    awk -v elapsed="$elapsed" 'BEGIN { exit !(elapsed <= 4) }' && ok "provider version timeout is bounded" \
       || fail "provider version timeout is bounded" "elapsed ${elapsed}s"
     while [ ! -s "$child" ] && [ "$i" -lt 20 ]; do sleep 0.05; i=$((i + 1)); done
     if [ -s "$child" ]; then

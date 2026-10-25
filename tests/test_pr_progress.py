@@ -320,6 +320,38 @@ class PrProgressTests(unittest.TestCase):
         self.assertEqual(self.attempt_call('record', second, 0).returncode, 0)
         self.prepare('completed-second', **values)
 
+    def test_durable_completion_recovers_a_failed_record_before_retry(self):
+        first, second = 'a' * 32, 'b' * 32
+        self.assertEqual(self.attempt_call('reserve', first).returncode, 0)
+        self.assertEqual(self.attempt_call('complete', first, 1).returncode, 0)
+        path, pending = self.lifecycle_record()
+        self.assertEqual(pending['launches'] if 'launches' in pending else [], [])
+        self.assertEqual(pending['active_launch'], first)
+        self.assertEqual(self.attempt_call('check').returncode, 0)
+        _, recovered = self.lifecycle_record()
+        self.assertEqual((recovered['calls'], recovered['launches'], recovered['completed_calls']), (1, [1], 1))
+        self.assertEqual(self.attempt_call('reserve', second).returncode, 0)
+        reserved = path.read_bytes()
+        self.assertNotEqual(self.attempt_call('complete', first, 0).returncode, 0)
+        self.assertEqual(path.read_bytes(), reserved)
+        self.assertEqual(self.attempt_call('record', second, 0).returncode, 0)
+
+    def test_missing_completion_cannot_be_inferred_from_a_raw_exit(self):
+        self.assertEqual(self.attempt_call('reserve', 'a' * 32).returncode, 0)
+        (self.fixture.session / 'rinitial-sol.exit').write_text('1\n')
+        path, _ = self.lifecycle_record()
+        original = path.read_bytes()
+        self.assertNotEqual(self.attempt_call('reserve', 'b' * 32).returncode, 0)
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_recovered_completed_incomplete_proof_remains_terminal(self):
+        self.assertEqual(self.attempt_call('reserve', 'a' * 32).returncode, 0)
+        (self.fixture.session / 'rinitial-sol.json').write_text(json.dumps(dict(
+            summary='INCOMPLETE PROOF: mandatory source unread', findings=[])))
+        self.assertEqual(self.attempt_call('complete', 'a' * 32, 0).returncode, 0)
+        self.assertEqual(self.attempt_call('check').returncode, 2)
+        self.assertEqual(self.attempt_call('reserve', 'b' * 32).returncode, 2)
+
     def test_legacy_managed_terminal_requires_matching_exit_and_unambiguous_counts(self):
         values = self.advance()
         self.assertEqual(self.attempt_call('reserve').returncode, 0)
