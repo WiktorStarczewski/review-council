@@ -10,6 +10,11 @@ import stat
 import sys
 import tempfile
 
+LIB_DIR = Path(__file__).resolve().parent
+if str(LIB_DIR) not in sys.path:
+    sys.path.insert(0, str(LIB_DIR))
+from session_inputs import session_input_lock
+
 TERMINAL_EXITS = ('1', '2')
 
 
@@ -259,6 +264,12 @@ def main():
     if token is not None and (len(token) != 32 or not set(token) <= set('0123456789abcdef')):
         return 1
     session = Path(sys.argv[2]).resolve()
+    # Preparation holds this lock through its final idle scan and generation publication.
+    with session_input_lock(session):
+        return _main_locked(session, command, token)
+
+
+def _main_locked(session, command, token):
     panel, seat = sys.argv[3], sys.argv[4]
     safe = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-')
     if not panel or not seat or not set(panel) <= safe or not set(seat) <= safe:
@@ -361,6 +372,6 @@ def main():
 if __name__ == '__main__':
     try:
         sys.exit(main())
-    except (OSError, ValueError, RecursionError) as error:
+    except (OSError, ValueError, RecursionError, RuntimeError) as error:
         print('attempt state: ' + str(error), file=sys.stderr)
         sys.exit(1)

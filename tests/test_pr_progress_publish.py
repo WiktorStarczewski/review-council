@@ -54,7 +54,10 @@ class PrProgressPublisherTests(unittest.TestCase):
         fixture.git('commit', '-qm', 'local final fix')
         head = fixture.git('rev-parse', 'HEAD')
         values['pr_progress_head'] = head
-        manifest = case.prepare('certified', phase='verification', full_seat='fourth', **values)
+        assignments = [seat + '=' + bundle for seat, bundle in zip(
+            ('sol', 'second', 'third', 'fourth'), case.module.BUNDLES)]
+        manifest = case.prepare('certified', phase='verification', full_seat='fourth',
+                                assignment=assignments, **values)
         fixture.label = 'certified'
         fixture.phase = 'verification'
         fixture.manifest_path = fixture.session / 'rcertified-evidence.manifest.json'
