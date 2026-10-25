@@ -1070,7 +1070,7 @@ def bounded_navigation_markdown():
             packet = module.markdown(data, Path('complete-facts.json'))
         except ValueError as error:
             raise AssertionError(
-                f'fixed navigation metadata must be reserved before optional rows: {error}') from error
+                f'optional rows must fit with complete navigation metadata: {error}') from error
         text = packet.decode()
         assert len(packet) <= 16384
         assert text.count('Omitted:') == len(sections)

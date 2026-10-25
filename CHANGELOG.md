@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.6
+
+- Keep the navigation index within its 16 KiB byte limit while retaining complete omission metadata and limitations.
+
 ## 0.8.5
 
 - Give Codex reviewers safe fixed-string search guidance so malformed mixed-quote commands do not invalidate otherwise complete read audits.

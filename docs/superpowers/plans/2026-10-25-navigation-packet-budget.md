@@ -4,7 +4,7 @@
 
 **Goal:** Keep generated navigation packets within the 16,384-byte limit while retaining every omission record and limitation.
 
-**Architecture:** The renderer reserves the exact fixed metadata size before admitting optional navigation rows. It keeps the full deterministic facts JSON as the source of complete evidence and only omits rows from the navigation view, with their existing count and hash records intact.
+**Architecture:** The renderer builds the complete packet, including fixed metadata, for each candidate optional navigation row and accepts the row only when the encoded packet stays within the limit. It keeps the full deterministic facts JSON as the source of complete evidence and only omits rows from the navigation view, with their existing count and hash records intact.
 
 **Tech Stack:** Python 3 standard library, Bash regression harness, GitHub Actions.
 
@@ -35,16 +35,16 @@
 
 - [x] Add the six-section synthetic case with twelve 900-byte rows per section and seven retained limitation lines, including multibyte text.
 - [x] Assert the packet byte bound, retained limitations and digests, accurate omitted counts, empty-section metadata, and fail-closed behavior when fixed metadata alone exceeds the limit.
-- [ ] Run the test-only commit in GitHub Actions and confirm it fails at `navigation packet exceeds byte limit` on the exact source SHA.
+- [x] Run the test-only commit in GitHub Actions and confirm it fails at `navigation packet exceeds byte limit` on the exact source SHA.
 
-### Task 2: Reserve fixed metadata before optional rows
+### Task 2: Rebuild the complete packet for optional rows
 
 **Files:**
 - Modify: `plugins/review-council/scripts/rev-evidence.py`, `markdown`
 - Test: the synthetic case from Task 1
 
-- [ ] Compute the encoded size of the fixed header, section labels, worst-case omission records, and limitations before admitting rows.
-- [ ] Admit each row only when its encoded bytes and newline fit in the remaining packet budget.
+- [ ] Build the packet with all fixed metadata and no optional rows; fail closed if that packet alone exceeds the limit.
+- [ ] Add each optional row to its section and accept it only when rebuilding the complete packet, with updated omission counts, stays within the byte limit.
 - [ ] Keep the existing omission count and digest for each section, then run the exact-head CI gate and package validation.
 
 ### Task 3: Review and release
@@ -55,3 +55,7 @@
 - [ ] Get one independent normal internal review and resolve actionable P0-P2 findings.
 - [ ] Pass current-head CI, squash-merge, publish a signed release, and install it on Claude, Codex, and Cursor.
 - [ ] Verify installed file and mode identity, then rerun the blocked 0.8.5 preparation with the new runtime before counting any Luna result.
+
+## Rulings
+
+- Ruling: Recompute the complete packet for each candidate row instead of using a precomputed metadata reserve. This keeps accounting coupled to actual rendered bytes and updated omission counts; the cost if wrong is repeated serialization across at most 72 candidates.
