@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import stat
 import sys
+import tempfile
 
 TERMINAL_EXITS = ('1', '2')
 
@@ -53,6 +54,83 @@ def hard_audit_failure(audit: Path) -> bool:
 def incomplete_summary(document) -> bool:
     return (isinstance(document, dict) and isinstance(document.get('summary'), str)
             and document['summary'].startswith('INCOMPLETE PROOF'))
+
+
+def semantic_rejection_path(session, panel, seat):
+    return session / f'r{panel}-{seat}.semantic-rejection.json'
+
+
+def semantic_rejection(session, panel, seat):
+    path = semantic_rejection_path(session, panel, seat)
+    try:
+        record = json.loads(private_bytes(path))
+    except FileNotFoundError:
+        return None
+    if (not isinstance(record, dict) or set(record) != {
+            'schema_version', 'label', 'seat', 'generation', 'obligation', 'evidence', 'reason'}
+            or type(record['schema_version']) is not int or record['schema_version'] != 1
+            or record['label'] != panel or record['seat'] != seat
+            or any(not isinstance(record[key], str) or not record[key].strip()
+                   for key in ('obligation', 'evidence', 'reason'))):
+        raise ValueError('invalid semantic rejection: ' + seat)
+    generation = record['generation']
+    stem = f'r{panel}-{seat}'
+    manifest_name = f'r{panel}-evidence.manifest.json'
+    if (not isinstance(generation, dict) or generation.get('label') != panel
+            or generation.get('seat') != seat or generation.get('manifest') != manifest_name):
+        raise ValueError('invalid semantic rejection generation: ' + seat)
+    manifest = json.loads(private_bytes(session / manifest_name))
+    if (not isinstance(manifest, dict) or not isinstance(manifest.get('assignments'), dict)
+            or not isinstance(manifest.get('inputs'), dict)
+            or not isinstance(manifest.get('unenforced_seats', []), list)):
+        raise ValueError('invalid semantic rejection manifest: ' + seat)
+    assignment = manifest['assignments'].get(seat)
+    enforced = seat not in manifest.get('unenforced_seats', [])
+    if (not isinstance(assignment, dict) or generation.get('enforced') is not enforced
+            or generation.get('adapter') != assignment.get('adapter')):
+        raise ValueError('invalid semantic rejection assignment: ' + seat)
+    bindings = {'manifest_sha256': manifest_name, 'prompt_sha256': stem + '.prompt.md',
+                'result_sha256': stem + '.json', 'exit_sha256': stem + '.exit',
+                'stream_sha256': stem + '.stream.ndjson', 'audit_sha256': stem + '.read-audit.json'}
+    for key, name in bindings.items():
+        expected = generation.get(key)
+        if key in ('stream_sha256', 'audit_sha256') and expected is None and not enforced:
+            continue
+        if (not isinstance(expected, str) or len(expected) != 64
+                or not set(expected) <= set('0123456789abcdef')
+                or hashlib.sha256(private_bytes(session / name)).hexdigest() != expected):
+            raise ValueError('stale semantic rejection binding: ' + seat + ' ' + key)
+    encoded_assignment = (json.dumps(assignment, sort_keys=True, ensure_ascii=True, indent=2) + '\n').encode()
+    if (manifest.get('session') != str(session.resolve()) or manifest.get('label') != panel
+            or assignment is None or generation.get('snapshot_tree') != manifest.get('snapshot_tree')
+            or generation.get('roster_sha256') != manifest.get('inputs', {}).get('roster.json')
+            or generation.get('assignment_sha256') != hashlib.sha256(encoded_assignment).hexdigest()
+            or private_bytes(session / (stem + '.exit')).strip() != b'0'):
+        raise ValueError('invalid semantic rejection identity: ' + seat)
+    prompt = private_bytes(session / (stem + '.prompt.md')).decode('utf-8')
+    result = json.loads(private_bytes(session / (stem + '.json')))
+    if (not isinstance(result, dict) or not isinstance(result.get('summary'), str)
+            or record['obligation'] not in prompt or record['evidence'] not in result['summary']
+            or prompt.splitlines().count('Evidence manifest SHA-256: ' + generation['manifest_sha256']) != 1):
+        raise ValueError('unbound semantic rejection evidence: ' + seat)
+    return record
+
+
+def publish_semantic_rejection(session, panel, seat, raw):
+    path = semantic_rejection_path(session, panel, seat)
+    descriptor, temporary = tempfile.mkstemp(prefix='.semantic-rejection-', dir=session)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            if private_bytes(path) != raw:
+                raise ValueError('semantic rejection is immutable: ' + seat)
+    finally:
+        os.unlink(temporary)
 
 
 def incomplete_proof(result: Path) -> bool:
@@ -144,7 +222,8 @@ def ended_by_incomplete_proof(session: Path, panel: str, seat: str, prompt: Path
 def terminal_failure(session: Path, panel: str, seat: str, prompt: Path) -> bool:
     """The assignment failed for good: a hard audit, a completed launch's incomplete proof, or its one
     exact retry also exited 1 or 2."""
-    if latched(session, panel, seat) or ended_by_incomplete_proof(session, panel, seat, prompt):
+    if (semantic_rejection(session, panel, seat) is not None
+            or latched(session, panel, seat) or ended_by_incomplete_proof(session, panel, seat, prompt)):
         return True
     exit_path = session / f'r{panel}-{seat}.exit'
     try:
@@ -194,6 +273,10 @@ def main():
         return 1
     with os.fdopen(panel_descriptor, 'r+', encoding='utf-8') as panel_lock:
         fcntl.flock(panel_lock, fcntl.LOCK_EX)
+        if command in ('check', 'reserve') and semantic_rejection(session, panel, seat) is not None:
+            print(f'{seat} under label {panel} has a semantic rejection; replace the assignment '
+                  'on another eligible seat, never relaunch it', file=sys.stderr)
+            return 2
         if command in ('check', 'reserve') and latched(session, panel, seat):
             print(f'{seat} under label {panel} failed a hard evidence audit; replace the assignment '
                   'on another eligible seat, never relaunch it', file=sys.stderr)

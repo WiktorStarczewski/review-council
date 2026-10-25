@@ -376,3 +376,4 @@ t-seat.sh::test_seat_zero_tool_retry_completed_incomplete_proof_is_terminal	1	no
 t-proof-budget.sh::test_code_proof_budget_promotes_exact_caller_segments	8	normal
 t-proof-budget.sh::test_edited_tests_exceeding_proof_budget_are_refused	8	normal
 t-proof-budget.sh::test_unsplittable_source_line_stays_launchable	8	normal
+t-evidence.sh::test_evidence_semantic_rejection	35	normal

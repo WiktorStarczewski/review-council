@@ -23,6 +23,15 @@ ARTIFACTS = {
 }
 VALIDATOR = runpy.run_path(str(Path(__file__).parent / 'lib/validate-findings.py'))
 SCHEMA = json.loads(Path(VALIDATOR['SCHEMA']).read_text())
+ATTEMPT = runpy.run_path(str(Path(__file__).parent / 'lib/rev-attempt.py'))
+
+
+def semantic_rejection_state(session, panel, seat):
+    try:
+        rejected = ATTEMPT['semantic_rejection'](Path(session).resolve(), str(panel), seat)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError):
+        return 'invalid semantic rejection'
+    return 'semantic rejection' if rejected is not None else None
 
 
 def read_file(path, optional=False):
@@ -116,8 +125,11 @@ def briefing(session):
         base = session / f'r{round_label}-{seat}'
         entry = {'seat': seat, **identities.get(seat, {})}
         raw_exit = read_file(Path(f'{base}.exit'), optional=True)
+        semantic = semantic_rejection_state(session, round_label, seat)
         if seat in dropped:
             status = 'dropped'
+        elif semantic is not None:
+            status = semantic
         elif read_file(Path(f'{base}.audit-invalid.json'), optional=True) is not None:
             status = 'audit-invalid'
         elif raw_exit is not None:

@@ -6724,6 +6724,8 @@ def validate_results(session, manifest, manifest_hash, seats=None, verdicts=None
         result_data = json.loads(result_raw)
         if attempt.incomplete_summary(result_data):
             raise ValueError('incomplete proof: ' + seat)
+        if attempt.semantic_rejection(session, manifest['label'], seat) is not None:
+            raise ValueError('semantic rejection: ' + seat)
         assignment = manifest['assignments'][seat]
         # An agent seat produces no read audit by construction (Claude Code subagents ignore the
         # hook frontmatter the enforced transcript depends on). Its result, exit status and
@@ -6830,6 +6832,7 @@ def prior_coverage(session, repo, base_tree, reference=None, seen=None):
         if digest(raw) != head['sha256']:
             raise ValueError('receipt hash mismatch')
         receipt = json.loads(raw)
+        validate_receipt_lineage(session, name, raw)
         if not isinstance(receipt, dict) or not isinstance(receipt.get('manifest'), str) or Path(receipt['manifest']).name != receipt['manifest']:
             raise ValueError('invalid receipt manifest')
         manifest, mh = validated_manifest(session / receipt['manifest'], fresh=False, seen=seen)
@@ -7891,6 +7894,13 @@ def verify_panel_selection(session, label, replacement_values=None, fresh=True, 
             used_chain_labels.update(chain_labels)
             hashes, generation = result_generation(session, child, child_hash,
                                                    executor)
+            for _, ancestor, _ in lineage:
+                binding = ancestor['parent_assignment']
+                parent = read_json(session / binding['manifest'])
+                record = attempt_module().semantic_rejection(session, parent['label'], binding['seat'])
+                if record is not None:
+                    path = attempt_module().semantic_rejection_path(session, parent['label'], binding['seat'])
+                    hashes[path.name] = digest(attempt_module().private_bytes(path))
             children[seat] = lineage
         overlap = set(results) & set(hashes)
         if overlap:
@@ -7962,6 +7972,97 @@ def coverage_receipt_data(session, manifest, mh, results, generations, replaceme
     return data
 
 
+def rejected_receipt_generations(session, receipt, rejection_names=None):
+    attempt = attempt_module()
+    rejected = []
+    generations = receipt.get('selected_generations')
+    label = re.fullmatch(r'r(.+)-evidence\.manifest\.json', receipt.get('manifest', ''))
+    if label is None:
+        raise ValueError('invalid rejected receipt manifest')
+    for seat in receipt['assignments']:
+        selected = generations.get(seat) if isinstance(generations, dict) else None
+        panel = selected['label'] if selected else label.group(1)
+        executor = selected['seat'] if selected else seat
+        rejection_name = attempt.semantic_rejection_path(session, panel, executor).name
+        if rejection_names is not None and rejection_name not in rejection_names:
+            continue
+        record = attempt.semantic_rejection(session, panel, executor)
+        if record is None:
+            continue
+        generation = record['generation']
+        if selected is not None and generation != selected:
+            raise ValueError('semantic rejection does not bind the sealed generation')
+        if selected is None and (generation['manifest'] != receipt['manifest']
+                                 or generation['manifest_sha256'] != receipt['manifest_sha256']):
+            raise ValueError('semantic rejection does not bind the sealed manifest')
+        stem = f'r{panel}-{executor}'
+        for suffix, key in (('.json', 'result_sha256'), ('.prompt.md', 'prompt_sha256'),
+                            ('.exit', 'exit_sha256'), ('.stream.ndjson', 'stream_sha256'),
+                            ('.read-audit.json', 'audit_sha256')):
+            if generation.get(key) != receipt['results'].get(stem + suffix):
+                raise ValueError('semantic rejection does not bind the sealed artifacts')
+        rejected.append(attempt.semantic_rejection_path(session, panel, executor).name)
+    return rejected
+
+
+def validate_receipt_lineage(session, name, raw, seen=None):
+    receipt = json.loads(raw)
+    match = re.fullmatch(r'r([A-Za-z0-9][A-Za-z0-9._-]*)-evidence\.manifest\.json',
+                        receipt.get('manifest', ''))
+    if match is None or Path(name).name != name:
+        raise ValueError('invalid coverage receipt manifest')
+    label = match.group(1)
+    canonical = f'r{label}-coverage.receipt.json'
+    previous = receipt.get('supersedes')
+    if previous is None:
+        if name != canonical:
+            raise ValueError('coverage successor has no predecessor')
+        return
+    if name != f'r{label}-coverage.receipt-{digest(raw)}.json':
+        raise ValueError('invalid content-addressed coverage successor')
+    visited = set(seen or ())
+    if name in visited:
+        raise ValueError('cyclic coverage successor')
+    visited.add(name)
+    if (not isinstance(previous, dict) or set(previous) != {'receipt', 'sha256', 'rejections'}
+            or not isinstance(previous['receipt'], str)
+            or Path(previous['receipt']).name != previous['receipt']):
+        raise ValueError('invalid coverage predecessor binding')
+    old_raw = attempt_module().private_bytes(session / previous['receipt'])
+    if digest(old_raw) != previous['sha256']:
+        raise ValueError('coverage predecessor hash mismatch')
+    old = json.loads(old_raw)
+    if any(receipt.get(key) != old.get(key) for key in (
+            'manifest', 'manifest_sha256', 'snapshot_tree', 'base_tree', 'phase', 'assignments')):
+        raise ValueError('coverage successor changes its root panel identity')
+    validate_receipt_lineage(session, previous['receipt'], old_raw, visited)
+    bindings = previous['rejections']
+    if (not isinstance(bindings, dict) or not bindings
+            or any(not isinstance(name, str) or not isinstance(value, str)
+                   or not re.fullmatch(r'[0-9a-f]{64}', value) for name, value in bindings.items())):
+        raise ValueError('invalid coverage successor rejection bindings')
+    rejected = rejected_receipt_generations(session, old, bindings)
+    expected = {name: digest(attempt_module().private_bytes(session / name)) for name in rejected}
+    if previous['rejections'] != expected:
+        raise ValueError('coverage successor rejection provenance changed')
+
+
+def receipt_path_for_label(session, label):
+    paths = [session / f'r{label}-coverage.receipt.json']
+    paths.extend(session.glob(f'r{label}-coverage.receipt-*.json'))
+    predecessors = set()
+    for path in paths:
+        raw = attempt_module().private_bytes(path)
+        validate_receipt_lineage(session, path.name, raw)
+        previous = json.loads(raw).get('supersedes')
+        if previous is not None:
+            predecessors.add(previous['receipt'])
+    leaves = [path for path in paths if path.name not in predecessors]
+    if len(leaves) != 1:
+        raise ValueError('ambiguous coverage successor history')
+    return leaves[0]
+
+
 def current_coverage_data(session):
     status = {'eligible': False, 'reason': None}
     try:
@@ -7981,8 +8082,9 @@ def current_coverage_data(session):
             raise ValueError('invalid coverage receipt schema')
         name = data.get('manifest')
         match = re.fullmatch(r'r([A-Za-z0-9][A-Za-z0-9._-]*)-evidence\.manifest\.json', name or '')
-        if not match or path.name != f'r{match.group(1)}-coverage.receipt.json':
+        if not match:
             raise ValueError('invalid coverage receipt manifest')
+        validate_receipt_lineage(session, path.name, raw)
         manifest_path = session / name
         metadata = manifest_path.lstat()
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
@@ -7999,6 +8101,8 @@ def current_coverage_data(session):
         if manifest.get('unenforced_seats') or verdicts:
             raise ValueError('verification reuse requires enforced CLI generations')
         expected = coverage_receipt_data(session, manifest, mh, results, generations, canonical, verdicts)
+        if 'supersedes' in data:
+            expected['supersedes'] = data['supersedes']
         if encoded(data) != encoded(expected):
             raise ValueError('coverage receipt metadata or results changed')
         selected = generations or {seat: result_generation(session, manifest, mh, seat)[1]
@@ -8030,8 +8134,43 @@ def current_coverage(args):
     print(json.dumps(current_coverage_data(Path(args.session).resolve()), sort_keys=True))
 
 
+def reject_result(args):
+    session = Path(args.session).resolve()
+    with session_input_lock(session):
+        manifest, mh = validated_manifest(session / f'r{args.label}-evidence.manifest.json')
+        if args.seat not in manifest['assignments']:
+            raise ValueError('rejected seat is absent from panel')
+        attempt = attempt_module()
+        existing = attempt.semantic_rejection(session, args.label, args.seat)
+        if existing is None:
+            _, generation = result_generation(session, manifest, mh, args.seat)
+        else:
+            generation = existing['generation']
+        if any(generation[key] != value for key, value in (
+                ('manifest_sha256', args.manifest_sha256), ('prompt_sha256', args.prompt_sha256),
+                ('result_sha256', args.result_sha256))):
+            raise ValueError('semantic rejection identity mismatch')
+        record = {'schema_version': 1, 'label': args.label, 'seat': args.seat,
+                  'generation': generation, 'obligation': args.obligation,
+                  'evidence': args.evidence, 'reason': args.reason}
+        stem = session / f'r{args.label}-{args.seat}'
+        prompt = attempt.private_bytes(Path(str(stem) + '.prompt.md')).decode('utf-8')
+        result = json.loads(attempt.private_bytes(Path(str(stem) + '.json')))
+        if (any(not value.strip() for value in (args.obligation, args.evidence, args.reason))
+                or args.obligation not in prompt or args.evidence not in result['summary']):
+            raise ValueError('semantic rejection must quote its prompt obligation and result evidence')
+        attempt.publish_semantic_rejection(session, args.label, args.seat, encoded(record))
+        attempt.semantic_rejection(session, args.label, args.seat)
+        print(attempt.semantic_rejection_path(session, args.label, args.seat))
+
+
 def receipt(args):
     session = Path(args.session).resolve()
+    with session_input_lock(session):
+        receipt_locked(args, session)
+
+
+def receipt_locked(args, session):
     verdicts = {}
     manifest, mh, results, generations, replacements = verify_panel_selection(
         session, args.label, args.replacement, verdicts=verdicts)
@@ -8040,13 +8179,33 @@ def receipt(args):
     data = coverage_receipt_data(session, manifest, mh, results, generations, replacements, verdicts)
     path = session / f'r{args.label}-coverage.receipt.json'; raw = encoded(data)
     head = current_coverage_head(session) if manifest['phase'] != 'numeric' else None
-    created = not path.exists()
+    if path.exists() or path.is_symlink():
+        path = receipt_path_for_label(session, args.label)
+        previous_raw = attempt_module().private_bytes(path)
+        previous = json.loads(previous_raw)
+        if previous.get('supersedes') is not None:
+            data['supersedes'] = previous['supersedes']
+            raw = encoded(data)
+        if previous_raw != raw:
+            rejected = rejected_receipt_generations(session, previous)
+            if not rejected:
+                raise ValueError('coverage receipt is immutable')
+            data['supersedes'] = {'receipt': path.name, 'sha256': digest(previous_raw),
+                                  'rejections': {name: digest(attempt_module().private_bytes(session / name))
+                                                 for name in rejected}}
+            raw = encoded(data)
+            path = session / f'r{args.label}-coverage.receipt-{digest(raw)}.json'
+            validate_receipt_lineage(session, path.name, raw)
+    created = not path.exists() and not path.is_symlink()
     if not created:
-        if path.read_bytes() != raw:
+        if attempt_module().private_bytes(path) != raw:
             raise ValueError('coverage receipt is immutable')
     else:
         publish(path, raw)
-    if manifest['phase'] != 'numeric' and (created or head is None):
+    predecessor = data.get('supersedes') or manifest['predecessor']
+    predecessor_head = ({key: predecessor[key] for key in ('receipt', 'sha256')}
+                        if isinstance(predecessor, dict) else None)
+    if manifest['phase'] != 'numeric' and (created or head == predecessor_head):
         publish(session / 'coverage-head.json', encoded({'receipt': path.name, 'sha256': digest(raw)}))
     print(path)
 
@@ -8063,7 +8222,7 @@ def first_receipt_tree(session):
 def review_origin(args):
     """Count the round's chosen citations that land on lines the review itself changed."""
     session = Path(args.session).resolve()
-    receipt = read_json(session / f'r{args.label}-coverage.receipt.json')
+    receipt = read_json(receipt_path_for_label(session, args.label))
     manifest, mh = validated_manifest(session / receipt['manifest'], fresh=False,
                                       replay_plan_searches=False)
     if receipt.get('manifest_sha256') != mh or receipt.get('snapshot_tree') != manifest['snapshot_tree']:
@@ -8109,6 +8268,10 @@ def main():
     prep.add_argument('--parent-assignment')
     prep.add_argument('--numeric-round', type=int); prep.add_argument('--numeric-min-rounds', type=int)
     prep.add_argument('--numeric-panel')
+    reject = commands.add_parser('reject-result')
+    reject.add_argument('session'); reject.add_argument('label'); reject.add_argument('seat')
+    for name in ('manifest-sha256', 'prompt-sha256', 'result-sha256', 'obligation', 'evidence', 'reason'):
+        reject.add_argument('--' + name, required=True)
     rend = commands.add_parser('render'); rend.add_argument('manifest'); rend.add_argument('seat')
     rend.add_argument('--offline', action='store_true')
     rend.add_argument('--plan-source')
@@ -8134,6 +8297,7 @@ def main():
             {'prepare': prepare, 'render': render, 'render-panel': render_panel,
              'verify': verify, 'same-source': same_source,
              'verify-panel': verify_panel, 'receipt': receipt, 'current-coverage': current_coverage,
+             'reject-result': reject_result,
              'review-origin': review_origin}[args.command](args)
     except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError, RecursionError) as error:
         if getattr(args, 'command', None) == 'prepare':
