@@ -12,7 +12,7 @@ import stat
 import sys
 
 OUTPUT_BYTES = 32 * 1024
-PROOF_TURN_BYTES = 60 * 1024
+PROOF_TURN_BYTES = OUTPUT_BYTES
 SOURCE_SEGMENT_VISIBLE_LIMIT = 16 * 1024
 
 
@@ -436,7 +436,7 @@ def prepared_stages(prompt, seat, model, stage_dir):
         stages.extend([{'kind': 'patch chunks', 'files': group}
                        for group in grouped(verified_chunks, patch_limit,
                                             lambda item: item['visible'])])
-    elif patch_mode == 'full':
+    elif patch_mode in ('full', 'windows'):
         patch_path = direct_path(assignment.get('patch'), session)
         raw = artifact_bytes(session, artifacts, patch_path.name,
                              assignment.get('patch_sha256'), assignment.get('patch_bytes'),

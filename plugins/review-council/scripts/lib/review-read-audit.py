@@ -2760,10 +2760,6 @@ def assess(args, blocked):
                     if not isinstance(name, str) or not name or not isinstance(data, dict):
                         failures.append(violation('invalid-tool-call-shape', args.adapter))
                         continue
-                    if call_id in calls:
-                        if calls[call_id][:2] != (name, data):
-                            failures.append(violation('duplicate-tool-call', args.adapter))
-                        continue
                     explicit_turn = event.get('turn_id') or event.get('turnId') or event.get('message_id')
                     if sdk_transcript is not None:
                         explicit_turn = (event.get('step_id') or event.get('stepId')
@@ -2784,26 +2780,36 @@ def assess(args, blocked):
                         turn = 'implicit-' + str(implicit_turn)
                     else:
                         turn = f'event-{line_number}'
-                    calls[call_id] = (name, data, turn)
-                    turns.setdefault(turn, []).append(call_id)
+                    call_key = ((turn, call_id)
+                                if args.adapter == 'codex' and turn == codex_active_turn
+                                else call_id)
+                    if call_key in calls:
+                        if calls[call_key][:2] != (name, data):
+                            failures.append(violation('duplicate-tool-call', args.adapter))
+                        continue
+                    calls[call_key] = (name, data, turn)
+                    turns.setdefault(turn, []).append(call_key)
                     if args.adapter == 'codex' and turn == codex_active_turn:
-                        codex_turn_calls[turn].append(call_id)
+                        codex_turn_calls[turn].append(call_key)
                 for call_id, success, value, non_execution in event_outputs:
                     if not isinstance(call_id, str) or not call_id:
                         failures.append(violation('missing-tool-call-id', args.adapter))
                         continue
-                    if call_id not in calls:
+                    call_key = ((codex_active_turn, call_id)
+                                if args.adapter == 'codex' and codex_active_turn is not None
+                                else call_id)
+                    if call_key not in calls:
                         failures.append(violation('orphan-tool-output', args.adapter))
                         continue
-                    if call_id in outputs:
+                    if call_key in outputs:
                         failures.append(violation('duplicate-tool-output', args.adapter))
                         continue
                     if args.adapter == 'codex':
-                        codex_output_turns[call_id] = codex_active_turn
-                    outputs[call_id] = {'success': success, 'value': value,
-                                        'bytes': output_bytes(value),
-                                        'non_execution': non_execution}
-                    if calls[call_id][2].startswith('implicit-'):
+                        codex_output_turns[call_key] = codex_active_turn
+                    outputs[call_key] = {'success': success, 'value': value,
+                                         'bytes': output_bytes(value),
+                                         'non_execution': non_execution}
+                    if calls[call_key][2].startswith('implicit-'):
                         implicit_output_seen = True
     except UnicodeError:
         failures.append(violation('malformed-transcript', args.adapter))

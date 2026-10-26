@@ -104,6 +104,60 @@ PY
   assert_eq "prepared evidence batches stay within the validated turn output ceiling" "$?" 0
 }
 
+test_seat_codex_prepares_window_mode_patch_reads() {
+  python3 - "$SCRIPTS/lib/codex-proof-stages.py" "$T" <<'PY'
+import hashlib
+import importlib.util
+import json
+import re
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location('codex_proof_stages', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+session = (Path(sys.argv[2]) / 'codex-window-mode').resolve()
+session.mkdir()
+patch = session / 'r1-full.patch'
+raw = ''.join(f'patch line {line}\n' for line in range(1, 186)).encode()
+patch.write_bytes(raw)
+index = session / 'r1-evidence.md'
+index.write_text('evidence index\n', encoding='utf-8')
+artifacts = {
+    path.name: {'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+    for path in (patch, index)
+}
+manifest = {
+    'label': '1', 'session': str(session), 'artifacts': artifacts,
+    'assignments': {'codex-luna': {
+        'adapter': 'codex', 'model': 'gpt-6.1-luna',
+        'patch': str(patch), 'patch_sha256': artifacts[patch.name]['sha256'],
+        'patch_bytes': len(raw), 'patch_lines': 185, 'patch_read_mode': 'windows',
+    }},
+    'source_context': {'seats': {'codex-luna': {'shards': [], 'required_source_ranges': []}}},
+}
+manifest_raw = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode() + b'\n'
+(session / 'r1-evidence.manifest.json').write_bytes(manifest_raw)
+prompt = session / 'r1-codex-luna.prompt.md'
+prompt.write_text('\n'.join([
+    'Evidence manifest SHA-256: ' + hashlib.sha256(manifest_raw).hexdigest(),
+    'Assigned patch read mode: windows',
+    f'Read the entire assigned patch in bounded windows of at most 160 lines, ending at line 185: {patch}',
+    f'Evidence navigation index: {index}',
+]) + '\n', encoding='utf-8')
+stages = module.prepared_stages(prompt, 'codex-luna', 'gpt-6.1-luna', session / 'stages')
+windows = [stage for stage in stages if stage['kind'] == 'patch window']
+ranges = []
+for stage in windows:
+    match = re.search(r'sed -n (\d+),(\d+)p', stage['files'][0]['command'])
+    assert match, stage
+    ranges.append(tuple(map(int, match.groups())))
+assert ranges == [(1, 160), (161, 185)], ranges
+assert stages[-1]['kind'] == 'evidence navigation index', stages
+PY
+  assert_eq "window-mode assigned patches are staged as bounded ordered reads" "$?" 0
+}
+
 test_seat_codex_stages_prepared_evidence() {
   local _path="$PATH"; seat_env
   local S="$T/seat-codex-stages" calls
