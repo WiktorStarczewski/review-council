@@ -375,28 +375,30 @@ PY
 test_profile_retry_streams() {
   ( seat_env; local S="$T/profile-retries"; seat_roster "$S"
     printf '%s\n' 'use at most 4 repository tool calls before stopping this assignment.' 'review' > "$S/p.md"
+    cp "$S/p.md" "$S/r1-codex-terra.prompt.md"
+    cp "$S/p.md" "$S/r2-codex-terra.prompt.md"
     rm -f "$T/args.codex-calls"
-    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-terra "$S" 1 "$S/p.md" >/dev/null
-    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-terra "$S" 1 "$S/p.md" >/dev/null
+    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-terra "$S" 1 "$S/r1-codex-terra.prompt.md" >/dev/null
+    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-terra "$S" 1 "$S/r1-codex-terra.prompt.md" >/dev/null
     assert_eq "relaunch keeps one archived Terra attempt" "$(find "$S" -maxdepth 1 -name 'r1-codex-terra.stream.*.ndjson' | wc -l | tr -d ' ')" 1
     "$SCRIPTS/rev-profile.py" --json "$S" > "$S/internal.json"
     python3 - "$S/internal.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 assert d['totals']['calls'] == 4, d
-assert d['totals']['processed_tokens'] == 4400, d
+assert d['totals']['processed_tokens'] == 2200, d
 PY
     assert_eq "Terra relaunch contributes both metered attempts" "$?" 0
 
-    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-terra "$S" 2 "$S/p.md" >/dev/null
-    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-terra "$S" 2 "$S/p.md" >/dev/null
+    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-terra "$S" 2 "$S/r2-codex-terra.prompt.md" >/dev/null
+    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-terra "$S" 2 "$S/r2-codex-terra.prompt.md" >/dev/null
     assert_eq "same-label relaunch keeps one archived attempt" "$(find "$S" -maxdepth 1 -name 'r2-codex-terra.stream.*.ndjson' | wc -l | tr -d ' ')" 1
     "$SCRIPTS/rev-profile.py" --json "$S" > "$S/outer.json"
     python3 - "$S/outer.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))
 assert d['totals']['calls'] == 8, d
-assert d['totals']['processed_tokens'] == 8800, d
+assert d['totals']['processed_tokens'] == 4400, d
 PY
     assert_eq "same-label relaunch contributes both metered attempts" "$?" 0
   )

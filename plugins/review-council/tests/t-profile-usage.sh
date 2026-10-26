@@ -102,8 +102,8 @@ import json, sys
 d = json.load(open(sys.argv[1])); s = d['sessions'][0]
 assert s['usage']['input_tokens'] == 17 and s['usage']['output_tokens'] == 9, s
 assert s['usage']['processed_tokens'] == 26, s
-assert s['calls'] == {'completed':1, 'metered':2, 'unmetered':0}, s
-assert s['providers']['agent']['metered_calls'] == 2, s
+assert s['calls'] == {'completed':1, 'metered':3, 'unmetered':0}, s
+assert s['providers']['agent']['metered_calls'] == 3, s
 assert s['providers']['agent']['completed_calls'] == 1, s
 assert s['usage']['cost_usd_unknown_calls'] == 2, s
 assert s['invalid_usage'] == [], s
