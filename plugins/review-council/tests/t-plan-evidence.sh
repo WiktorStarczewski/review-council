@@ -2159,8 +2159,11 @@ for seat, assignment in manifest['assignments'].items():
                 merged.append((start, end))
         line_limit = module.read_line_limit(assignment['adapter'])
         count += sum((end - start + line_limit) // line_limit for start, end in merged)
-    assert count <= 12, (seat, count)
-    assert capacity['seats'][seat]['mandatory_repository_reads'] == count
+    seat_capacity = capacity['seats'][seat]
+    mandatory_limit = seat_capacity.get(
+        'mandatory_repository_read_limit', capacity['mandatory_repository_read_limit'])
+    assert count <= mandatory_limit, (seat, count, mandatory_limit)
+    assert seat_capacity['mandatory_repository_reads'] == count
     line_limit = module.read_line_limit(assignment['adapter'])
     assert all(end - start + 1 <= line_limit for row in context['mandatory_source_windows']
                for start, end in [(row['line_start'], row['line_end'])]), seat
@@ -2240,7 +2243,7 @@ test_plan_capacity_refusal_keeps_a_diagnostic() {
 from pathlib import Path
 import sys
 root = Path(sys.argv[1])
-for index in range(13):
+for index in range(17):
     (root / 'src' / f'site{index:02d}.py').write_text(f'capacity_marker_{index:02d} = 1\n')
 PY
     git -C "$R" add . && git -C "$R" commit -qm "capacity refusal base"
@@ -2258,9 +2261,9 @@ PY
     python3 - "$S/fix-plan.md" <<'PY'
 from pathlib import Path
 import sys
-sites = ', '.join(f'src/site{index:02d}.py:1' for index in range(13))
+sites = ', '.join(f'src/site{index:02d}.py:1' for index in range(17))
 Path(sys.argv[1]).write_text(
-    '## C-01 - thirteen mandatory reads\n'
+    '## C-01 - seventeen mandatory reads\n'
     'Findings: F-001\n'
     'Rule: Keep every capacity marker visible.\n'
     f"Sites: {sites} (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'capacity_marker_' .)\n"
@@ -2274,9 +2277,9 @@ PY
       --assignment sol=plan-completeness --assignment terra=plan-soundness \
       --assignment opus=plan-simplicity --assignment sonnet=plan-tests \
       > "$T/plan-capacity-refusal.out" 2> "$T/plan-capacity-refusal.err"
-    assert_eq "thirteen uncovered plan reads are refused" "$?" 2
+    assert_eq "seventeen uncovered plan reads exceed the Sol budget" "$?" 2
     assert_grep "the refusal names the limit, count, and absent target" \
-      "$T/plan-capacity-refusal.err" 'limit=12 count=13 target=none'
+      "$T/plan-capacity-refusal.err" 'limit=16 count=17 target=none'
     assert_grep "preparation names the capacity stage" \
       "$T/plan-capacity-refusal.err" 'evidence: stage capacity'
     assert_eq "a refused prepare publishes no manifest" \
@@ -2291,13 +2294,13 @@ assert diagnostic['certifying'] is False
 assert diagnostic['label'] == 'overflow' and diagnostic['phase'] == 'plan'
 assert diagnostic['timed_out'] is False
 assert diagnostic['stage']
-assert 'limit=12' in diagnostic['error'] and 'count=13' in diagnostic['error']
+assert 'limit=16' in diagnostic['error'] and 'count=17' in diagnostic['error']
 assert 'target=none' in diagnostic['error']
 assert diagnostic['refusals']
 row = diagnostic['refusals'][0]
-assert row['limit'] == 12 and row['count'] == 13 and row['target'] is None
-assert len(row['windows']) == 13
-assert {window['path'] for window in row['windows']} == {f'src/site{index:02d}.py' for index in range(13)}
+assert row['limit'] == 16 and row['count'] == 17 and row['target'] is None
+assert len(row['windows']) == 17
+assert {window['path'] for window in row['windows']} == {f'src/site{index:02d}.py' for index in range(17)}
 PY
     assert_eq "the refusal diagnostic keeps the windows and is not certifying" "$?" 0
     python3 "$SCRIPTS/rev-evidence.py" verify "$S/prepare-diagnostic-overflow.json" \

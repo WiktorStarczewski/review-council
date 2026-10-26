@@ -6,6 +6,10 @@
 - Register numbered fresh plan generations and bind replacement children to their exact root, with the newest generation required by the fix gate.
 - Recover token-bound terminal completion records before a permitted exact reviewer retry.
 
+## 0.8.11
+
+- Give Luna model seats six times the aggregate repository-read budget while preserving source scope, proof order, per-read bounds, and response-size limits.
+
 ## 0.8.10
 
 - Let Codex make up to two separate, ordered proof reads in one completed turn while retaining independent artifact checks, the single-packet limit, and existing size caps.
@@ -13,10 +17,6 @@
 
 - Bind prepared plan search output to each assigned cluster so identical search results remain valid, while retaining unambiguous historical prompt bindings.
 - Add explicit controller-owned PR generation progression with immutable source and predecessor bindings.
-
-## 0.8.11
-
-- Give Luna model seats six times the aggregate repository-read budget while preserving source scope, proof order, per-read bounds, and response-size limits.
 
 ## 0.8.9
 
