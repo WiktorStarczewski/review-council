@@ -30,6 +30,59 @@ PY
   )
 }
 
+test_profile_usage_deltas_cumulative_codex_turns() {
+  ( local S="$T/profile-usage-codex-turns"; mkdir -p "$S"
+    printf '%s\n' '{"seats":[{"seat":"codex-luna","adapter":"codex"}]}' > "$S/roster.json"
+    cat > "$S/r1-codex-luna.stream.ndjson" <<'JSON'
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":1,"cached_input_tokens":4,"cache_write_input_tokens":0,"reasoning_output_tokens":0}}
+{"type":"turn.completed","usage":{"input_tokens":true,"output_tokens":1,"cached_input_tokens":4,"cache_write_input_tokens":0,"reasoning_output_tokens":0}}
+{"type":"turn.completed","usage":{"input_tokens":30,"output_tokens":3,"cache_write_input_tokens":0,"reasoning_output_tokens":0}}
+{"type":"turn.completed","usage":{"input_tokens":40,"output_tokens":4,"cached_input_tokens":8,"cache_write_input_tokens":0,"reasoning_output_tokens":0}}
+{"type":"turn.completed","usage":{"input_tokens":40,"output_tokens":4,"cached_input_tokens":8,"cache_write_input_tokens":0,"reasoning_output_tokens":0}}
+{"type":"turn.completed","usage":{"input_tokens":60,"output_tokens":6,"cached_input_tokens":12,"cache_write_input_tokens":0,"reasoning_output_tokens":0}}
+{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":1,"cached_input_tokens":1,"cache_write_input_tokens":0,"reasoning_output_tokens":0}}
+{"type":"turn.completed","usage":{"input_tokens":15,"output_tokens":3,"cached_input_tokens":2,"cache_write_input_tokens":0,"reasoning_output_tokens":0}}
+JSON
+    printf '%s\n' '{"summary":"reviewed","findings":[]}' > "$S/r1-codex-luna.json"
+    printf '0\n' > "$S/r1-codex-luna.exit"
+    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile.json"
+    python3 - "$S/profile.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); s = d['sessions'][0]
+u = s['providers']['codex']
+assert u['calls'] == 8 and u['input_tokens'] == 70 and u['output_tokens'] == 8, u
+assert u['cached_input_tokens'] == 13 and u['processed_tokens'] == 78, u
+assert u['uncached_input_tokens'] == 37, u
+assert u['uncached_input_unknown_calls'] == 3, u
+assert u['cost_usd'] == 0 and u['cost_usd_unknown_calls'] == 8 and u['cost_usd_known_calls'] == 0, u
+assert u['unidentified_terminal_calls'] == 8, u
+assert len(s['invalid_usage']) == 3, s
+PY
+    assert_eq "cumulative snapshots preserve old counters and disclose optional gaps" "$?" 0
+  )
+}
+
+test_profile_usage_accepts_legacy_codex_counter_snapshots() {
+  ( local S="$T/profile-usage-codex-legacy"; mkdir -p "$S"
+    printf '%s\n' '{"seats":[{"seat":"codex-luna","adapter":"codex"}]}' > "$S/roster.json"
+    cat > "$S/r1-codex-luna.stream.ndjson" <<'JSON'
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":1}}
+{"type":"turn.completed","usage":{"input_tokens":20,"output_tokens":2}}
+JSON
+    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile.json"
+    python3 - "$S/profile.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); s = d['sessions'][0]; u = s['providers']['codex']
+assert u['calls'] == 2 and u['input_tokens'] == 20 and u['output_tokens'] == 2, u
+assert u['processed_tokens'] == 22 and u['uncached_input_tokens'] == 0, u
+assert u['uncached_input_unknown_calls'] == 2, u
+assert u['cached_input_tokens'] == 0 and u['cache_write_input_tokens'] == 0, u
+assert len(s['invalid_usage']) == 0, s
+PY
+    assert_eq "historical Codex snapshots retain input/output totals without optional counters" "$?" 0
+  )
+}
+
 test_profile_usage_deduplicates_native_messages() {
   ( local S="$T/profile-usage-native"; mkdir -p "$S"
     printf '%s\n' '{"seats":[{"seat":"opus","adapter":"agent"}]}' > "$S/roster.json"
@@ -49,8 +102,8 @@ import json, sys
 d = json.load(open(sys.argv[1])); s = d['sessions'][0]
 assert s['usage']['input_tokens'] == 17 and s['usage']['output_tokens'] == 9, s
 assert s['usage']['processed_tokens'] == 26, s
-assert s['calls'] == {'completed':1, 'metered':2, 'unmetered':0}, s
-assert s['providers']['agent']['metered_calls'] == 2, s
+assert s['calls'] == {'completed':1, 'metered':3, 'unmetered':0}, s
+assert s['providers']['agent']['metered_calls'] == 3, s
 assert s['providers']['agent']['completed_calls'] == 1, s
 assert s['usage']['cost_usd_unknown_calls'] == 2, s
 assert s['invalid_usage'] == [], s

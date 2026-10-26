@@ -9,7 +9,12 @@ seat_timeout() {  # seat_timeout <secs> <cmd...> - hard cap, so a runaway seat c
   if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 124; fi
   wait "$pid"; return $?
 }
-seat_env_reset() { PATH="$1"; unset SHIM_FIXTURE_DIR SHIM_ARGS_FILE SHIM_CHILD_PID_FILE REV_REPO SHIM_MODE; }
+seat_env_reset() { PATH="$1"; unset SHIM_FIXTURE_DIR SHIM_ARGS_FILE SHIM_ARGS_DIR SHIM_CALLS_FILE SHIM_CHILD_PID_FILE SHIM_STAGE_DIR SHIM_EVIDENCE_INDEX SHIM_UNPREPARED_TARGET REV_REPO SHIM_MODE; }
+seat_codex_prompt() {
+  printf '%s\n' \
+    'use at most 4 repository tool calls before stopping this assignment.' \
+    'review the diff' > "$1"
+}
 seat_roster() {  # seat_roster <session-dir> - the roster.json rev-preflight.sh leaves in the session dir.
   # Written by hand on purpose: these tests exercise rev-seat.sh's dispatch, not roster.sh's detection.
   mkdir -p "$1"
@@ -58,17 +63,396 @@ test_seat_codex_instructions_required() {
   )
 }
 
+test_seat_codex_stages_prepared_evidence() {
+  local _path="$PATH"; seat_env
+  local S="$T/seat-codex-stages" calls
+  mkdir -p "$S/calls"
+  : > "$S/calls.log"
+  python3 - "$S" <<'PY'
+import hashlib
+import json
+import shlex
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve(strict=True)
+repository_root = root.parent
+target_source = b'line\n'
+(repository_root / 'src').mkdir(exist_ok=True)
+(repository_root / 'src/three.ts').write_bytes(target_source)
+target_sha256 = hashlib.sha256(target_source).hexdigest()
+contents = {
+    'r1-full.patch': b'patch one\npatch two\n',
+    'r1-patch-p01-001.txt': b'patch one\n',
+    'r1-patch-p01-002.txt': b'patch two\n',
+    'r1-codex-luna-source-context-1.json': b'{"packet":1}\n',
+    'r1-codex-luna-source-context-2.json': b'{"packet":2}\n',
+    'r1-codex-luna-source-segment-001-001.txt': b'segment one\n',
+    'r1-codex-luna-source-segment-001-002.txt': b'x' * (16 * 1024),
+    'r1-codex-luna-source-segment-002-001.txt': b'segment three\n',
+    'r1-evidence.md': b'evidence index\n',
+}
+for name, content in contents.items():
+    (root / name).write_bytes(content)
+
+def digest(name):
+    return hashlib.sha256(contents[name]).hexdigest()
+
+def segment(label, name):
+    size = len(contents[name])
+    path = root / name
+    command = shlex.join(['cat', '--', str(path)])
+    visible = size + 8
+    return (f'Required source segment {label}: run {command} raw bytes {size} '
+            f'visible bytes {visible} content SHA-256 {digest(name)}')
+
+lines = [
+    'Review this prepared assignment after all listed evidence is read.',
+    'use at most 4 repository tool calls before stopping this assignment.',
+    'Required post-index original-source target: src/three.ts:1-1 tree '
+    + 'a' * 40 + ' blob ' + 'b' * 40 + ' content SHA-256 '
+    + target_sha256 + ' reasons []',
+    f'Canonical assigned patch: {root}/r1-full.patch SHA-256 {digest("r1-full.patch")} bytes {len(contents["r1-full.patch"])}',
+    'Patch chunk batch limit: 2',
+]
+for index, name in enumerate(('r1-patch-p01-001.txt', 'r1-patch-p01-002.txt'), 1):
+    size = len(contents[name])
+    start = 0 if index == 1 else len(contents['r1-patch-p01-001.txt'])
+    lines.append(f'Assigned patch chunk {index}/2: {root}/{name} bytes {start}-{start + size} SHA-256 {digest(name)}')
+lines.extend([
+    'Source context packet batch limit: 1',
+    f'Source context packet: {root}/r1-codex-luna-source-context-1.json',
+    f'Source context packet: {root}/r1-codex-luna-source-context-2.json',
+    segment('1/2', 'r1-codex-luna-source-segment-001-001.txt'),
+    segment('2/2', 'r1-codex-luna-source-segment-001-002.txt'),
+    'Required source segment batch limit: 2',
+    segment('1/1', 'r1-codex-luna-source-segment-002-001.txt'),
+    'Required source segment batch limit: 2',
+    f'Evidence navigation index: {root}/r1-evidence.md',
+])
+artifacts = {
+    name: {'sha256': digest(name), 'words': len(contents[name].split())}
+    for name in contents
+}
+manifest = {
+    'schema_version': 2,
+    'label': '1',
+    'session': str(root.resolve()),
+    'artifacts': artifacts,
+    'assignments': {
+        'codex-luna': {
+            'adapter': 'codex', 'model': 'gpt-6.1-luna',
+            'patch': str(root / 'r1-full.patch'),
+            'patch_sha256': digest('r1-full.patch'),
+            'patch_bytes': len(contents['r1-full.patch']), 'patch_lines': 2,
+            'patch_read_mode': 'chunks', 'patch_set': 'p01',
+        },
+    },
+    'patch_sets': {
+        'p01': {
+            'read_mode': 'chunks', 'patch_sha256': digest('r1-full.patch'),
+            'patch_bytes': len(contents['r1-full.patch']), 'patch_lines': 2,
+            'chunks': [
+                {'artifact': 'r1-patch-p01-001.txt', 'index': 1,
+                 'byte_start': 0, 'byte_end': len(contents['r1-patch-p01-001.txt']),
+                 'bytes': len(contents['r1-patch-p01-001.txt']),
+                 'sha256': digest('r1-patch-p01-001.txt'),
+                 'predicted_visible_bytes': len(contents['r1-patch-p01-001.txt'])},
+                {'artifact': 'r1-patch-p01-002.txt', 'index': 2,
+                 'byte_start': len(contents['r1-patch-p01-001.txt']),
+                 'byte_end': len(contents['r1-full.patch']),
+                 'bytes': len(contents['r1-patch-p01-002.txt']),
+                 'sha256': digest('r1-patch-p01-002.txt'),
+                 'predicted_visible_bytes': len(contents['r1-patch-p01-002.txt'])},
+            ],
+        },
+    },
+    'source_context': {
+        'packet_batch_limit': 1,
+        'seats': {
+            'codex-luna': {
+                'shards': [
+                    {'artifact': 'r1-codex-luna-source-context-1.json',
+                     'bytes': len(contents['r1-codex-luna-source-context-1.json'])},
+                    {'artifact': 'r1-codex-luna-source-context-2.json',
+                     'bytes': len(contents['r1-codex-luna-source-context-2.json'])},
+                ],
+                'required_source_ranges': [
+                    {'segments': [
+                        {'artifact': 'r1-codex-luna-source-segment-001-001.txt',
+                         'index': 1, 'line_start': 1, 'line_end': 1,
+                         'raw_bytes': len(contents['r1-codex-luna-source-segment-001-001.txt']),
+                         'predicted_visible_bytes': len(contents['r1-codex-luna-source-segment-001-001.txt']) + 8,
+                         'content_sha256': digest('r1-codex-luna-source-segment-001-001.txt')},
+                        {'artifact': 'r1-codex-luna-source-segment-001-002.txt',
+                         'index': 2, 'line_start': 2, 'line_end': 2,
+                         'raw_bytes': len(contents['r1-codex-luna-source-segment-001-002.txt']),
+                         'predicted_visible_bytes': len(contents['r1-codex-luna-source-segment-001-002.txt']) + 8,
+                         'content_sha256': digest('r1-codex-luna-source-segment-001-002.txt')},
+                    ]},
+                    {'segments': [
+                        {'artifact': 'r1-codex-luna-source-segment-002-001.txt',
+                         'index': 1, 'line_start': 1, 'line_end': 1,
+                         'raw_bytes': len(contents['r1-codex-luna-source-segment-002-001.txt']),
+                         'predicted_visible_bytes': len(contents['r1-codex-luna-source-segment-002-001.txt']) + 8,
+                         'content_sha256': digest('r1-codex-luna-source-segment-002-001.txt')},
+                    ]},
+                ],
+            },
+        },
+    },
+}
+manifest_raw = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode() + b'\n'
+(root / 'r1-evidence.manifest.json').write_bytes(manifest_raw)
+lines[0:0] = [f'Evidence manifest SHA-256: {hashlib.sha256(manifest_raw).hexdigest()}']
+(root / 'r1-codex-luna.prompt.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+PY
+  SHIM_MODE=staged SHIM_ARGS_FILE="$S/last-args" SHIM_STAGE_DIR="$S/calls" \
+    SHIM_CALLS_FILE="$S/calls.log" SEAT=codex-luna MODEL=gpt-6.1-luna EFFORT=xhigh \
+    MODE=prompt ROOT="$T" PROMPT="$S/r1-codex-luna.prompt.md" SCHEMA="$SHIM_FIXTURE_DIR/findings.schema.json" \
+    OUT="$S/result.json" LOG="$S/adapter.log" RAW="$S/raw.ndjson" BASE=abc \
+    bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
+  local adapter_rc=$?
+  if [ "$adapter_rc" -ne 0 ]; then
+    printf 'staged Codex adapter stderr:\n' >&2
+    sed -n '1,40p' "$S/err" >&2
+    printf 'staged Codex adapter stdout:\n' >&2
+    sed -n '1,40p' "$S/out" >&2
+    printf 'staged Codex adapter log:\n' >&2
+    sed -n '1,40p' "$S/adapter.log" >&2
+  fi
+  assert_eq "staged Codex proof exits successfully" "$adapter_rc" 0
+  calls=$(wc -l < "$S/calls.log" | tr -d ' ')
+  assert_eq "Codex uses separate resumable turns for prepared proof, source review, and findings" "$calls" 13
+  if [ "$calls" = 13 ]; then
+    python3 - "$S" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1]).resolve(strict=True)
+expected = [
+    ['r1-patch-p01-001.txt', 'r1-patch-p01-002.txt'],
+    ['r1-codex-luna-source-context-1.json'],
+    ['r1-codex-luna-source-context-2.json'],
+    ['r1-codex-luna-source-segment-001-001.txt'],
+    ['r1-codex-luna-source-segment-001-002.txt'],
+    ['r1-codex-luna-source-segment-002-001.txt'],
+    ['r1-evidence.md'],
+]
+for index, names in enumerate(expected, 1):
+    prompt = (root / 'calls' / f'call-{index}.stdin').read_text(encoding='utf-8')
+    actual = [line.removeprefix('Read exactly: cat -- ')
+              for line in prompt.splitlines() if line.startswith('Read exactly: cat -- ')]
+    wanted = [str(root / name) for name in names]
+    assert actual == wanted, (index, actual, wanted)
+    args = (root / 'calls' / f'call-{index}.args').read_text(encoding='utf-8').splitlines()
+    assert '--ephemeral' not in args, (index, args)
+    assert '--output-schema' not in args, (index, args)
+    assert 'read-only' in args or 'sandbox_mode="read-only"' in args, (index, args)
+    if index == 1:
+        assert args[0] == 'exec', args
+        root_arg = args[args.index('-C') + 1]
+        assert Path(root_arg).resolve(strict=True) == root.parent, args
+    else:
+        assert args[0] == 'exec' and args[1] == 'resume', args
+        assert 'fixture-thread' in args, args
+        assert 'sandbox_mode="read-only"' in args, args
+
+first_review_args = (root / 'calls' / 'call-8.args').read_text(encoding='utf-8').splitlines()
+first_review_prompt = (root / 'calls' / 'call-8.stdin').read_text(encoding='utf-8')
+next_review_args = (root / 'calls' / 'call-9.args').read_text(encoding='utf-8').splitlines()
+next_review_prompt = (root / 'calls' / 'call-9.stdin').read_text(encoding='utf-8')
+required_review_args = (root / 'calls' / 'call-10.args').read_text(encoding='utf-8').splitlines()
+ready_review_args = (root / 'calls' / 'call-12.args').read_text(encoding='utf-8').splitlines()
+final_args = (root / 'calls' / 'call-13.args').read_text(encoding='utf-8').splitlines()
+final_prompt = (root / 'calls' / 'call-13.stdin').read_text(encoding='utf-8')
+for args in (first_review_args, next_review_args, required_review_args, ready_review_args, final_args):
+    assert args[0:2] == ['exec', 'resume'], args
+    assert 'fixture-thread' in args, args
+    assert 'sandbox_mode="read-only"' in args, args
+assert 'Review this prepared assignment' in first_review_prompt, first_review_prompt
+assert 'already been read in earlier explicit turns' in first_review_prompt, first_review_prompt
+assert 'Next evidence question:' in next_review_prompt and 'src/two.ts' in next_review_prompt, next_review_prompt
+required_review_prompt = (root / 'calls' / 'call-10.stdin').read_text(encoding='utf-8')
+assert 'Next evidence question:' in required_review_prompt and 'src/three.ts' in required_review_prompt, required_review_prompt
+assert 'Return the final findings JSON' in final_prompt, final_prompt
+for args, expected_schema in (
+        (first_review_args, 'review-turn.schema.json'),
+        (next_review_args, 'review-turn.schema.json'),
+        (required_review_args, 'review-turn.schema.json'),
+        (ready_review_args, 'review-turn.schema.json'),
+        (final_args, 'findings.schema.json')):
+    schema_index = args.index('--output-schema')
+    assert Path(args[schema_index + 1]).name == expected_schema, args
+
+events = [json.loads(line) for line in (root / 'raw.ndjson').read_text().splitlines()]
+assert sum(event.get('type') == 'turn.started' for event in events) == 13
+assert sum(event.get('type') == 'turn.completed' for event in events) == 13
+threads = [event.get('thread_id') for event in events if event.get('type') == 'thread.started']
+assert threads and set(threads) == {'fixture-thread'}, threads
+assert sum(event.get('type') == 'item.started'
+           and event.get('item', {}).get('type') == 'command_execution' for event in events) == 12
+PY
+    assert_eq "proof artifacts are staged in order with the final schema only on resume" "$?" 0
+    assert_grep "staging keeps the exact findings output" "$S/result.json" '"findings": ?\['
+  fi
+  seat_env_reset "$_path"
+}
+
+test_seat_codex_resumes_unprepared_reviews() {
+  local _path="$PATH"; seat_env
+  local S="$T/seat-codex-unprepared" W="$T/seat-codex-unprepared-wrong" calls
+  mkdir -p "$S" "$W" "$T/src"
+  : > "$S/calls.log"
+  printf 'first source\n' > "$T/src/first.ts"
+  printf 'required source\n' > "$T/src/required.ts"
+  printf 'evidence index\n' > "$S/r1-evidence.md"
+  python3 - "$S" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+session = Path(sys.argv[1]).resolve()
+target = b'required source\n'
+prompt = (session / 'review.prompt.md')
+prompt.write_text(
+    'Review this unprepared assignment.\n'
+    'use at most 4 repository tool calls before stopping this assignment.\n'
+    f'Evidence navigation index: {session / "r1-evidence.md"}\n'
+    'Required post-index original-source target: src/required.ts:1-1 tree '
+    + 'a' * 40 + ' blob ' + 'b' * 40 + ' content SHA-256 '
+    + hashlib.sha256(target).hexdigest() + ' reasons []\n', encoding='utf-8')
+PY
+  assert_eq "no-manifest target fixture is constructed" "$?" 0
+  SHIM_MODE=resumable-no-manifest SHIM_EVIDENCE_INDEX="$S/r1-evidence.md" \
+    SHIM_CALLS_FILE="$S/calls.log" SHIM_STAGE_DIR="$S/calls" \
+    SEAT=codex-luna MODEL=gpt-6.1-luna EFFORT=xhigh MODE=prompt ROOT="$T" \
+    PROMPT="$S/review.prompt.md" SCHEMA="$SHIM_FIXTURE_DIR/findings.schema.json" \
+    OUT="$S/result.json" LOG="$S/adapter.log" RAW="$S/raw.ndjson" BASE=abc \
+    bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
+  local adapter_rc=$?
+  if [ "$adapter_rc" -ne 0 ]; then
+    printf 'no-manifest Codex adapter stderr:\n' >&2
+    sed -n '1,40p' "$S/err" >&2
+    printf 'no-manifest Codex adapter log:\n' >&2
+    tail -n 40 "$S/adapter.log" >&2
+    printf 'no-manifest Codex adapter stream:\n' >&2
+    tail -n 60 "$S/raw.ndjson" >&2
+  fi
+  assert_eq "no-manifest Codex review exits successfully" "$adapter_rc" 0
+  calls=$(wc -l < "$S/calls.log" | tr -d ' ')
+  assert_eq "no-manifest Codex review uses bounded resumable turns" "$calls" 3
+  assert_grep "no-manifest review starts with the review-turn schema" \
+    "$S/calls/call-1.args" 'review-turn\.schema\.json'
+  assert_nogrep "no-manifest review avoids one-shot ephemeral execution" \
+    "$S/calls/call-1.args" '^--ephemeral$'
+  if [ "$calls" = 3 ]; then
+    python3 - "$S" "$SHIM_FIXTURE_DIR/findings.schema.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+expected_findings_schema = Path(sys.argv[2]).resolve()
+first_args = (root / 'calls' / 'call-1.args').read_text().splitlines()
+first_prompt = (root / 'calls' / 'call-1.stdin').read_text()
+next_args = (root / 'calls' / 'call-2.args').read_text().splitlines()
+next_prompt = (root / 'calls' / 'call-2.stdin').read_text()
+final_args = (root / 'calls' / 'call-3.args').read_text().splitlines()
+final_prompt = (root / 'calls' / 'call-3.stdin').read_text()
+
+def schema_path(args):
+    assert '--output-schema' in args, args
+    path = Path(args[args.index('--output-schema') + 1])
+    assert path.is_absolute(), args
+    return path
+
+assert first_args[0] == 'exec' and 'resume' not in first_args, first_args
+first_schema = schema_path(first_args)
+next_schema = schema_path(next_args)
+final_schema = schema_path(final_args)
+assert first_schema.name == 'review-turn.schema.json', first_args
+assert next_schema.name == 'review-turn.schema.json', next_args
+assert first_schema.parent == next_schema.parent, (first_args, next_args)
+assert first_schema.parent.name.startswith('review-council-codex-stages.'), first_args
+assert first_args[first_args.index('-s') + 1] == 'read-only', first_args
+assert first_args[first_args.index('-C') + 1] == str(root.parent), first_args
+assert next_args[:2] == ['exec', 'resume'] and 'fixture-thread' in next_args, next_args
+assert final_args[:2] == ['exec', 'resume'] and 'fixture-thread' in final_args, final_args
+assert final_schema.resolve() == expected_findings_schema, final_args
+for args in (first_args, next_args, final_args):
+    assert '--ephemeral' not in args, args
+assert 'sandbox_mode="read-only"' in next_args, next_args
+assert 'sandbox_mode="read-only"' in final_args, final_args
+assert 'Review this unprepared assignment.' in first_prompt, first_prompt
+assert 'Evidence navigation index:' in first_prompt, first_prompt
+assert 'no prepared evidence was read in an earlier turn' in first_prompt, first_prompt
+assert 'already been read in earlier explicit turns' not in first_prompt, first_prompt
+assert 'Next evidence question:' in next_prompt and 'src/required.ts:1-1' in next_prompt, next_prompt
+assert 'Return the final findings JSON' in final_prompt, final_prompt
+events = [json.loads(line) for line in (root / 'raw.ndjson').read_text().splitlines()]
+assert sum(event.get('type') == 'turn.started' for event in events) == 3
+assert sum(event.get('type') == 'turn.completed' for event in events) == 3
+assert sum(event.get('type') == 'item.started'
+           and event.get('item', {}).get('type') == 'command_execution' for event in events) == 2
+PY
+    assert_eq "no-manifest review preserves source checks and finalizes tool-free" "$?" 0
+  fi
+  assert_grep "no-manifest review keeps findings schema" "$S/result.json" '"findings": ?\['
+
+  : > "$W/calls.log"
+  cp "$S/r1-evidence.md" "$W/r1-evidence.md"
+  sed "s|$S/r1-evidence.md|$W/r1-evidence.md|" "$S/review.prompt.md" > "$W/review.prompt.md"
+  SHIM_MODE=resumable-no-manifest SHIM_UNPREPARED_TARGET=wrong \
+    SHIM_EVIDENCE_INDEX="$W/r1-evidence.md" SHIM_CALLS_FILE="$W/calls.log" \
+    SHIM_STAGE_DIR="$W/calls" SEAT=codex-luna MODEL=gpt-6.1-luna EFFORT=xhigh \
+    MODE=prompt ROOT="$T" PROMPT="$W/review.prompt.md" \
+    SCHEMA="$SHIM_FIXTURE_DIR/findings.schema.json" OUT="$W/result.json" \
+    LOG="$W/adapter.log" RAW="$W/raw.ndjson" BASE=abc \
+    bash "$SCRIPTS/seats.d/codex.sh" > "$W/out" 2> "$W/err"
+  local wrong_rc=$?
+  if [ "$wrong_rc" -ne 0 ]; then
+    printf 'wrong-target Codex adapter stderr:\n' >&2
+    sed -n '1,40p' "$W/err" >&2
+    printf 'wrong-target Codex adapter log:\n' >&2
+    tail -n 40 "$W/adapter.log" >&2
+    printf 'wrong-target Codex adapter stream:\n' >&2
+    tail -n 60 "$W/raw.ndjson" >&2
+  fi
+  assert_eq "unrelated repository reads do not satisfy the required target" "$wrong_rc" 0
+  calls=$(wc -l < "$W/calls.log" | tr -d ' ')
+  assert_eq "wrong target triggers one more bounded review turn" "$calls" 4
+  if [ "$calls" = 4 ]; then
+    python3 - "$W" <<'PY'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+required_turn = (root / 'calls' / 'call-3.stdin').read_text(encoding='utf-8')
+assert 'Next evidence question:' in required_turn, required_turn
+assert 'exact required original-source target' in required_turn, required_turn
+assert 'src/required.ts:1-1' in required_turn, required_turn
+PY
+    assert_eq "adapter names the exact unmet target after an unrelated read" "$?" 0
+  fi
+  seat_env_reset "$_path"
+}
+
 test_seat_codex() {
   local _path="$PATH"; seat_env
-  local S="$T/seat-codex"; seat_roster "$S"; echo "review the diff" > "$S/p.md"; : > "$T/args.env"
-  SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" > "$T/out.txt"; local rc=$?
+  local S="$T/seat-codex"; seat_roster "$S"; seat_codex_prompt "$S/p.md"; : > "$T/args.env"
+  mkdir -p "$S/calls"; : > "$S/calls.log"
+  SHIM_MODE=ok SHIM_CALLS_FILE="$S/calls.log" SHIM_STAGE_DIR="$S/calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" > "$T/out.txt"; local rc=$?
   assert_eq "codex ok exit" "$rc" 0
   assert_grep "prints summary line" "$T/out.txt" '^seat=codex-sol round=1 exit=0 findings=1$'
   assert_grep "writes .exit" "$S/r1-codex-sol.exit" '^0$'
   assert_grep "json copied" "$S/r1-codex-sol.json" '"severity": ?"P1"'
   assert_grep "log has exec line" "$S/r1-codex-sol.log" '^exec: .*git diff abc123'
   assert_grep "log has done line" "$S/r1-codex-sol.log" '^done: exit=0'
-  assert_grep "prompt via stdin" "$T/args.stdin" 'review the diff'
+  assert_grep "review prompt via stdin" "$S/calls/call-1.stdin" 'review the diff'
+  assert_grep "findings prompt via stdin" "$T/args.stdin" 'Return the final findings JSON'
   assert_grep "model comes from the roster" "$T/args" '^gpt-5.6-sol$'
   assert_grep "effort comes from the roster" "$T/args" '^model_reasoning_effort=max$'
   assert_grep "prompt review uses compact reviewer instructions" "$T/args" '^model_instructions_file=.*scripts/lib/reviewer-instructions.md$'
@@ -76,8 +460,8 @@ test_seat_codex() {
   assert_grep "seat carries REV_ACTIVE=1" "$T/args.env" '^REV_ACTIVE=1$'
   assert_nogrep "no seat runs unguarded" "$T/args.env" '^REV_ACTIVE=unset$'
   assert_grep "seat records its cwd" "$T/args.env" '^cwd=/'
-  assert_grep "codex gets the repo root with -C" "$T/args" "^$T$"
-  assert_grep "read-only sandbox" "$T/args" '^read-only$'
+  assert_grep "codex gets the repo root with -C" "$S/calls/call-1.args" "^$T$"
+  assert_grep "read-only sandbox" "$T/args" '^(read-only|sandbox_mode="read-only")$'
   assert_grep "schema passed" "$T/args" 'findings.schema.json$'
   assert_nogrep "no write flags" "$T/args" 'danger|workspace-write|--approve'
   SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-terra "$S" 2 "$S/p.md" >/dev/null
@@ -109,7 +493,7 @@ SH
   : > "$T/codex-notools-calls"
   SHIM_MODE=notools SHIM_CALLS_FILE="$T/codex-notools-calls" "$SCRIPTS/rev-seat.sh" codex-sol "$S" 6n "$S/p.md" > "$T/codex-notools.out" 2>&1
   assert_eq "Codex no-tool review exits unusable" "$?" 2
-  assert_eq "Codex no-tool review retries once" "$(wc -l < "$T/codex-notools-calls" | tr -d ' ')" 2
+  assert_eq "Codex no-tool review retries once" "$(wc -l < "$T/codex-notools-calls" | tr -d ' ')" 4
   assert_grep "Codex no-tool log explains the rejection" "$S/r6n-codex-sol.log" 'answered without a single tool call \(attempt 2\)'
   assert_exit "codex-review needs --base" 1 env SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-review "$S" 7 "$S/p.md"
   SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-review "$S" 7 "$S/p.md" --base abc123 >/dev/null
@@ -166,13 +550,13 @@ JSON
   assert_exit "an effort-less Codex roster entry cannot launch" 1 env \
     SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$E" 1 "$E/p.md"
 
-  local C="$T/seat-call-cap"; seat_roster "$C"; echo "review the diff" > "$C/p.md"
+  local C="$T/seat-call-cap"; seat_roster "$C"; seat_codex_prompt "$C/p.md"
   : > "$T/capped-calls"
   local call
   for call in 1 2 3 4; do
     SHIM_MODE=ok SHIM_CALLS_FILE="$T/capped-calls" \
       "$SCRIPTS/rev-seat.sh" codex-sol "$C" cap "$C/p.md" >/dev/null
-    assert_eq "provider call $call stays within the persistent cap" "$?" 0
+    assert_eq "adapter launch $call stays within the persistent cap" "$?" 0
   done
   printf '%s\n' '{"prior":"audit"}' > "$C/rcap-codex-sol.read-audit.json"
   local artifact
@@ -181,19 +565,19 @@ JSON
   done
   SHIM_MODE=ok SHIM_CALLS_FILE="$T/capped-calls" \
     "$SCRIPTS/rev-seat.sh" codex-sol "$C" cap "$C/p.md" >/dev/null 2>&1
-  assert_eq "fifth provider call is rejected before launch" "$?" 7
-  assert_eq "persistent cap permits exactly four provider processes" \
-    "$(wc -l < "$T/capped-calls" | tr -d ' ')" 4
+  assert_eq "fifth adapter launch is rejected before launch" "$?" 7
+  assert_eq "four capped review launches each use a bounded turn and a findings turn" \
+    "$(wc -l < "$T/capped-calls" | tr -d ' ')" 8
   for artifact in json read-audit.json stream.ndjson; do
     assert_exit "cap refusal preserves prior $artifact" 0 \
       cmp -s "$C/before-cap.$artifact" "$C/rcap-codex-sol.$artifact"
   done
   assert_grep "cap refusal persists its diagnostic in the seat log" \
-    "$C/rcap-codex-sol.log" '^persistent provider-call cap reached for this seat generation$'
+    "$C/rcap-codex-sol.log" '^persistent adapter-launch cap reached for this seat generation$'
   assert_grep "cap refusal writes a fresh exit" "$C/rcap-codex-sol.exit" '^7$'
 
   local A="$T/seat-archive-failure" archive_path="$T/archive-path" real_python
-  seat_roster "$A"; echo "review the diff" > "$A/p.md"
+  seat_roster "$A"; seat_codex_prompt "$A/p.md"
   printf 'prior stream\n' > "$A/rarchive-codex-sol.stream.ndjson"
   mkdir -p "$archive_path"
   real_python=$(command -v python3)
@@ -251,10 +635,10 @@ SH
       "$SCRIPTS/rev-seat.sh" codex-sol "$A" archive "$A/p.md" >/dev/null
     assert_eq "archive recovery retains provider call $call" "$?" 0
   done
-  assert_eq "archive recovery retains all four provider launches" \
-    "$(wc -l < "$T/archive-calls" | tr -d ' ')" 4
+  assert_eq "archive recovery retains all four review launches and their bounded turns" \
+    "$(wc -l < "$T/archive-calls" | tr -d ' ')" 8
 
-  local D="$T/seat-corrupt-cap"; seat_roster "$D"; echo "review the diff" > "$D/p.md"
+  local D="$T/seat-corrupt-cap"; seat_roster "$D"; seat_codex_prompt "$D/p.md"
   : > "$T/corrupt-calls"
   SHIM_MODE=ok SHIM_CALLS_FILE="$T/corrupt-calls" \
     "$SCRIPTS/rev-seat.sh" codex-sol "$D" corrupt "$D/p.md" >/dev/null
@@ -262,12 +646,12 @@ SH
   SHIM_MODE=ok SHIM_CALLS_FILE="$T/corrupt-calls" \
     "$SCRIPTS/rev-seat.sh" codex-sol "$D" corrupt "$D/p.md" >/dev/null 2>&1
   assert_eq "corrupt persistent attempt state fails closed" "$?" 1
-  assert_eq "corrupt attempt state launches no replacement provider" \
-    "$(wc -l < "$T/corrupt-calls" | tr -d ' ')" 1
+  assert_eq "corrupt attempt state launches no replacement provider turn" \
+    "$(wc -l < "$T/corrupt-calls" | tr -d ' ')" 2
   assert_grep "corrupt attempt state preserves the prior completion exit" \
     "$D/rcorrupt-codex-sol.exit" '^0$'
 
-  local W="$T/seat-reserve-window"; seat_roster "$W"; echo "review the diff" > "$W/p.md"
+  local W="$T/seat-reserve-window"; seat_roster "$W"; seat_codex_prompt "$W/p.md"
   echo 0 > "$W/rblocked-codex-sol.exit"
   local python_bin="$T/reserve-python-bin" real_python reserve_pid reserve_rc i=0
   real_python=$(command -v python3)
@@ -302,22 +686,36 @@ SH
   assert_eq "blocked cap refusal exits with reserve status" "$reserve_rc" 7
   assert_grep "blocked cap refusal publishes a fresh exit" "$W/rblocked-codex-sol.exit" '^7$'
   assert_grep "blocked cap refusal persists its diagnostic" \
-    "$W/rblocked-codex-sol.log" '^persistent provider-call cap reached for this seat generation$'
+    "$W/rblocked-codex-sol.log" '^persistent adapter-launch cap reached for this seat generation$'
   seat_env_reset "$_path"
 }
 test_seat_zero_tool_incomplete_proof_keeps_its_retry() {
   local _path="$PATH"; seat_env
   local S="$T/seat-zero-tool-proof" bin="$T/seat-zero-tool-bin" label
-  seat_roster "$S"; echo "review the diff" > "$S/p.md"; mkdir -p "$bin"
+  seat_roster "$S"; seat_codex_prompt "$S/p.md"; mkdir -p "$bin"
   cat > "$bin/codex" <<'SH'
 #!/bin/bash
-printf '%s\n' call >> "$ZERO_TOOL_CALLS"
-[ "$(wc -l < "$ZERO_TOOL_CALLS" | tr -d ' ')" = 1 ] || exec "$SHIM_CODEX" "$@"
-out=""; prev=""
-for a in "$@"; do [ "$prev" = "-o" ] && out=$a; prev=$a; done
-cat > /dev/null
-echo '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"INCOMPLETE PROOF"}}'
-printf '%s\n' '{"summary":"INCOMPLETE PROOF: no assigned source was read","findings":[]}' > "$out"
+out=""; prev=""; schema=""
+for a in "$@"; do
+  [ "$prev" != "-o" ] || out=$a
+  [ "$prev" != "--output-schema" ] || schema=${a##*/}
+  prev=$a
+done
+if [ "$(wc -l < "$ZERO_TOOL_CALLS" | tr -d ' ')" -lt 2 ]; then
+  printf '%s\n' call >> "$ZERO_TOOL_CALLS"
+  cat > /dev/null
+  if [ "$schema" = review-turn.schema.json ]; then
+    printf '%s\n' '{"type":"thread.started","thread_id":"fixture-thread"}' '{"type":"turn.started"}' '{"type":"turn.completed"}'
+    printf '%s\n' '{"status":"ready","next_step":""}' > "$out"
+  else
+    printf '%s\n' '{"type":"thread.started","thread_id":"fixture-thread"}' '{"type":"turn.started"}' \
+      '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"INCOMPLETE PROOF"}}' \
+      '{"type":"turn.completed"}'
+    printf '%s\n' '{"summary":"INCOMPLETE PROOF: no assigned source was read","findings":[]}' > "$out"
+  fi
+  exit 0
+fi
+exec "$SHIM_CODEX" "$@"
 SH
   chmod +x "$bin/codex"
   SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" 2 "$S/p.md" >/dev/null 2>&1
@@ -331,7 +729,7 @@ SH
     PATH="$bin:$PATH" ZERO_TOOL_CALLS="$T/zero-tool-calls" SHIM_CODEX="$SHIMS/codex" SHIM_MODE=ok \
       "$SCRIPTS/rev-seat.sh" codex-sol "$S" "$label" "$S/p.md" >/dev/null 2>&1
     assert_eq "label $label: a zero-tool INCOMPLETE PROOF answer still gets its retry" "$?" 0
-    assert_eq "label $label: the answer and its retry are two provider calls" \
+    assert_eq "label $label: the initial incomplete review has two bounded Codex turns" \
       "$(wc -l < "$T/zero-tool-calls" | tr -d ' ')" 2
     assert_grep "label $label: the tool-using retry is the seat's result" \
       "$S/r$label-codex-sol.json" '"severity": ?"P1"'
@@ -341,32 +739,39 @@ SH
   seat_env_reset "$_path"
 }
 seat_incomplete_relaunch_case() {
-  local variant=$1 expected_calls=1 legacy=0 refusals=1 refusal relaunch_rc
+  local variant=$1 expected_calls=2 legacy=0 refusals=1 refusal relaunch_rc
   local _path="$PATH"; seat_env
   local S="$T/seat-incomplete-$variant" bin="$T/seat-incomplete-$variant-bin"
   local calls="$T/incomplete-$variant-calls" artifact
-  seat_roster "$S"; echo "review the diff" > "$S/p.md"; mkdir -p "$bin"
+  seat_roster "$S"; seat_codex_prompt "$S/p.md"; mkdir -p "$bin"
   cat > "$bin/codex" <<'SH'
 #!/bin/bash
-out=""; prev=""
-for a in "$@"; do [ "$prev" = "-o" ] && out=$a; prev=$a; done
-if [ "${INCOMPLETE_MODE:-}" = zero-tool ] && [ ! -s "$SHIM_CALLS_FILE" ]; then
+out=""; prev=""; schema=""
+for a in "$@"; do
+  [ "$prev" != "-o" ] || out=$a
+  [ "$prev" != "--output-schema" ] || schema=${a##*/}
+  prev=$a
+done
+if [ "${INCOMPLETE_MODE:-}" = zero-tool ] && [ ! -s "$SHIM_CALLS_FILE" ] \
+    && [ "$schema" = review-turn.schema.json ]; then
   printf '%s\n' call >> "$SHIM_CALLS_FILE"
   cat > /dev/null
-  echo '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"INCOMPLETE PROOF"}}'
-  printf '%s\n' '{"summary":"INCOMPLETE PROOF: no assigned source was read","findings":[]}' > "$out"
+  printf '%s\n' '{"type":"thread.started","thread_id":"fixture-thread"}' '{"type":"turn.started"}' '{"type":"turn.completed"}'
+  printf '%s\n' '{"status":"ready","next_step":""}' > "$out"
   exit 0
 fi
 "$SHIM_CODEX" "$@" || exit
-printf '%s\n' '{"summary":"INCOMPLETE PROOF: the tool budget ran out with source unread","findings":[]}' > "$out"
+if [ "$schema" = findings.schema.json ]; then
+  printf '%s\n' '{"summary":"INCOMPLETE PROOF: the tool budget ran out with source unread","findings":[]}' > "$out"
+fi
 SH
   chmod +x "$bin/codex"
   : > "$calls"
-  [ "$variant" != zero-tool ] || expected_calls=2
+  [ "$variant" != zero-tool ] || expected_calls=4
   PATH="$bin:$PATH" SHIM_CODEX="$SHIMS/codex" INCOMPLETE_MODE="$variant" SHIM_MODE=ok SHIM_CALLS_FILE="$calls" \
     "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null 2>&1
   assert_eq "$variant: a tool-using incomplete launch exits 0" "$?" 0
-  assert_eq "$variant: only the initial launch and any internal retry call the provider" \
+  assert_eq "$variant: bounded review and findings turns are recorded for each launch" \
     "$(wc -l < "$calls" | tr -d ' ')" "$expected_calls"
   case "$variant" in
     legacy-*)
@@ -486,8 +891,8 @@ PY
   SHIM_MODE=ok SHIM_CALLS_FILE="$calls" \
     "$SCRIPTS/rev-seat.sh" codex-sol "$S" 2 "$S/p.md" >/dev/null 2>&1
   assert_eq "$variant: the same seat under the next label still launches" "$?" 0
-  assert_eq "$variant: only the sibling and later label spend new calls" \
-    "$(wc -l < "$calls" | tr -d ' ')" "$((expected_calls + 2))"
+  assert_eq "$variant: the sibling and later label each use their bounded review turns" \
+    "$(wc -l < "$calls" | tr -d ' ')" "$((expected_calls + 4))"
   seat_env_reset "$_path"
 }
 test_seat_incomplete_proof_refuses_a_relaunch() {
@@ -511,7 +916,7 @@ test_seat_unrecorded_failed_incomplete_proof_keeps_its_exact_retry() {
   local _path="$PATH"; seat_env
   local S="$T/seat-unrecorded-failure" bin="$T/unrecorded-failure-bin" real_python
   local calls="$T/unrecorded-failure-calls"
-  seat_roster "$S"; echo "review the diff" > "$S/p.md"; mkdir -p "$bin"
+  seat_roster "$S"; seat_codex_prompt "$S/p.md"; mkdir -p "$bin"
   : > "$calls"
   SHIM_MODE=ok SHIM_CALLS_FILE="$calls" \
     "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null 2>&1
@@ -524,11 +929,18 @@ exec "$REAL_PYTHON" "$@"
 SH
   cat > "$bin/codex" <<'SH'
 #!/bin/bash
-out=""; prev=""
-for a in "$@"; do [ "$prev" = "-o" ] && out=$a; prev=$a; done
+out=""; prev=""; schema=""
+for a in "$@"; do
+  [ "$prev" != "-o" ] || out=$a
+  [ "$prev" != "--output-schema" ] || schema=${a##*/}
+  prev=$a
+done
 "$SHIM_CODEX" "$@" || exit
-printf '%s\n' '{"summary":"INCOMPLETE PROOF: the failed launch left source unread","findings":[]}' > "$out"
-exit 1
+if [ "$schema" = findings.schema.json ]; then
+  printf '%s\n' '{"summary":"INCOMPLETE PROOF: the failed launch left source unread","findings":[]}' > "$out"
+  exit 1
+fi
+exit 0
 SH
   chmod +x "$bin/python3" "$bin/codex"
   PATH="$bin:$PATH" REAL_PYTHON="$real_python" ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" \
@@ -551,8 +963,8 @@ PY
   SHIM_MODE=ok SHIM_CALLS_FILE="$calls" \
     "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null 2>&1
   assert_eq "the current failed incomplete launch keeps its real wrapper retry" "$?" 0
-  assert_eq "exactly one provider call is spent on the permitted retry" \
-    "$(wc -l < "$calls" | tr -d ' ')" 3
+  assert_eq "the permitted retry uses its bounded review and findings turns" \
+    "$(wc -l < "$calls" | tr -d ' ')" 6
   assert_grep "the retry's complete result replaces the failed incomplete result" \
     "$S/r1-codex-sol.json" '"severity": ?"P1"'
   assert_grep "the failed result remains available in the retained diagnostic" \
@@ -572,7 +984,7 @@ PY
   assert_eq "retry records the interrupted launch before its successor" "$?" 0
 
   local A="$T/seat-active-launch" active_calls="$T/active-launch-calls"
-  seat_roster "$A"; echo "review the diff" > "$A/p.md"
+  seat_roster "$A"; seat_codex_prompt "$A/p.md"
   : > "$active_calls"
   python3 - "$SCRIPTS/lib/rev-attempt.py" "$A" "$A/p.md" <<'PY'
 import importlib.util
@@ -652,7 +1064,7 @@ PY
 }
 test_seat_process_group_cancellation_preserves_partial_stream() {
   local _path="$PATH"; seat_env
-  local S="$T/seat-cancel"; seat_roster "$S"; echo "review the diff" > "$S/p.md"
+  local S="$T/seat-cancel"; seat_roster "$S"; seat_codex_prompt "$S/p.md"
   local child_file="$T/seat-cancel-child.pid" leader pgid child i=0
   set -m
   SHIM_MODE=hang_with_child SHIM_CHILD_PID_FILE="$child_file" \
@@ -694,7 +1106,7 @@ test_seat_scope_env_selects_root_outside_repository() {
   local R="$T/scope-root'quoted" S="$T/seat-scope-root" CALLER="$T/caller"
   mkrepo "$R"
   seat_roster "$S"
-  echo "review the diff" > "$S/p.md"
+  seat_codex_prompt "$S/p.md"
   python3 - "$S/scope.env" "$R" <<'PY'
 import shlex
 import sys
@@ -710,11 +1122,15 @@ PY
     env -u REV_REPO SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md"
   ) > "$T/scope-root.out"
   assert_eq "scope-root seat exits successfully outside the repository" "$?" 0
-  assert_grep "Codex receives the frozen scope root" "$T/args" "^$R$"
-  assert_nogrep "Codex does not receive the caller's unrelated directory" "$T/args" "^$CALLER$"
+  assert_eq "the review and findings turns run from the frozen scope root" \
+    "$(grep -Fx -c "cwd=$R" "$T/args.env" | tr -d ' ')" 2
+  assert_eq "Codex does not run from the caller's unrelated directory" \
+    "$(grep -Fx -c "cwd=$CALLER" "$T/args.env" | tr -d ' ')" 0
   env REV_REPO="$CALLER" SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" 2 "$S/p.md" > "$T/scope-override.out"
   assert_eq "scope root overrides a stale REV_REPO" "$?" 0
-  assert_grep "a stale override still launches from the frozen root" "$T/args" "^$R$"
-  assert_nogrep "a stale override cannot redirect the provider" "$T/args" "^$CALLER$"
+  assert_eq "the stale override still uses the frozen scope root" \
+    "$(grep -Fx -c "cwd=$R" "$T/args.env" | tr -d ' ')" 4
+  assert_eq "the stale override cannot redirect the provider" \
+    "$(grep -Fx -c "cwd=$CALLER" "$T/args.env" | tr -d ' ')" 0
   seat_env_reset "$_path"
 }

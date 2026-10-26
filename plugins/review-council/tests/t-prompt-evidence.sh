@@ -402,6 +402,32 @@ assert ('Required post-index original-source boundary: a.txt\n'
         in rendered.getvalue()), rendered.getvalue()
 PY
     assert_eq "required source boundary skips paths absent from the frozen snapshot" "$?" 0
+    python3 - "$SCRIPTS/rev-evidence.py" "$manifest" <<'PY'
+import contextlib
+import copy
+import io
+import json
+import runpy
+import sys
+
+module = runpy.run_path(sys.argv[1])
+with open(sys.argv[2], encoding='utf-8') as stream:
+    manifest = json.load(stream)
+manifest = copy.deepcopy(manifest)
+manifest['assignments']['sol']['model'] = 'gpt-6.1-luna'
+capacity = manifest['task_capacity']
+capacity['schema_version'] = 1
+capacity['seats']['sol']['repository_refutation_turns'] = 4
+for row in capacity['seats'].values():
+    row.pop('repository_expansion_call_limit', None)
+    row.pop('repository_refutation_call_reserve', None)
+    row.pop('mandatory_repository_read_limit', None)
+rendered = io.StringIO()
+with contextlib.redirect_stdout(rendered):
+    module['render_seat'](manifest, 'a' * 64, 'sol', None)
+assert 'refutation reserve 24 turns' in rendered.getvalue(), rendered.getvalue()
+PY
+    assert_eq "legacy schema-1 Luna estimate shows its normalized refutation reserve" "$?" 0
     assert_grep "paired baseline renders the narrow no-context expansion budget" "$disabled_prompt" \
       'use at most 20 repository tool calls.*Finish required reads by call 16.*reserve calls 17-20 for refutation'
     assert_grep "paired baseline keeps component-scoped assigned patch" "$disabled_prompt" \
@@ -412,8 +438,12 @@ limit = runpy.run_path(sys.argv[1])['repository_expansion_call_limit_for_seat']
 assert limit(True, None) == 20
 assert limit(False, None) == 16
 assert limit(True, {'path': 'src/asset.rs'}) == 16
+assert limit(True, None, 'gpt-6.1-luna') == 120
+assert limit(False, None, 'gpt-6.1-luna') == 96
+assert limit(True, {'path': 'src/asset.rs'}, 'gpt-6.1-luna') == 96
+assert limit(True, None, 'gpt-6.1-sol') == 20
 PY
-    assert_eq "only source-required seats without a prepared target receive four extra calls" "$?" 0
+    assert_eq "Luna receives six times the aggregate repository-call budget by model" "$?" 0
 
     local default_manifest
     default_manifest=$(python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 13 \
@@ -462,6 +492,10 @@ PY
       "^Assigned patch line count: $legacy_patch_lines$"
     assert_grep "legacy Codex prompt makes a portable patch read the first evidence action" "$legacy" \
       "^First evidence action: run portable bounded sed windows over .* from line 1 through line $legacy_patch_lines, then stop\\.$"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex","model":"gpt-6.1-luna"}]}' > "$S/roster.json"
+    legacy_luna=$("$SCRIPTS/rev-prompt.sh" "$S" 8 sol regression numeric) || return
+    assert_grep "manifest-free Luna prompt uses the sixfold repository-call budget" "$legacy_luna" \
+      'use at most 96 repository tool calls.*Finish required reads by call 72.*reserve calls 73-96 for refutation'
     local legacy_agent
     printf '%s\n' '{"seats":[{"seat":"opus","adapter":"agent"}]}' > "$S/roster.json"
     legacy_agent=$("$SCRIPTS/rev-prompt.sh" "$S" 8 opus regression numeric) || return

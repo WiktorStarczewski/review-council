@@ -599,7 +599,8 @@ validates against `findings.schema.json`, it matches an immutable prompt generat
 audit passes, and the panel receipt selects it. Transport failures (unknown stream shapes,
 zero-tool answers, missing or malformed output, stale or mismatched hashes) never certify;
 read order, call counts and duplicate reads are advisories. A seat generation gets at most
-four provider calls.
+four reserved adapter launches. A Codex launch may contain multiple bounded resumable turns;
+profile usage counts each metered turn separately.
 
 | Failure | Recovery |
 | --- | --- |
@@ -695,7 +696,10 @@ python3 plugins/review-council/scripts/rev-profile.py /tmp/rev-<epoch>
 
 It separates completed, metered and unmetered calls, token categories, known and unknown
 cost, prompt and scope words, patch-proof reads and finding yield, and marks a mixed roster as
-a measurement boundary ([cost accounting](docs/cost-accounting.md)).
+a measurement boundary ([cost accounting](docs/cost-accounting.md)). Codex turn counters are
+derived from cumulative thread snapshots; resets or malformed snapshots are disclosed, and
+dollar cost stays unknown unless the stream defines it per turn. Missing cache counters keep
+Codex input/output totals, while uncached input is reported as unknown instead of inferred.
 [Reusable benchmarks](eval/COST_BENCHMARKS.md) compare plugin versions on cost, time and
 review quality with provider-free checks and a bounded reviewer lane.
 
@@ -808,7 +812,7 @@ Seat runs (`rev-seat.sh`) return 0-4 and 7; roster builds and preflight return 5
 | 4 | provider-global | quota, rate or capacity | stop, or use explicit quota fallback |
 | 5 | roster availability | possible roster not currently available | keep the session and retry when availability changes |
 | 6 | roster configuration | malformed or impossible exact configuration | fix the configuration first |
-| 7 | local attempt budget | the seat generation used all four calls | stop the panel without substitution or replacement; keep valid siblings; never quota |
+| 7 | local attempt budget | the seat generation used all four reserved adapter launches | stop the panel without substitution or replacement; keep valid siblings; never quota |
 
 The run also fails closed when the source changed after freeze; on a prompt, manifest,
 transcript or result hash mismatch; on incomplete patch, packet, segment, search or citation

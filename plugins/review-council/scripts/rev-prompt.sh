@@ -330,7 +330,10 @@ if [ -n "$EVIDENCE" ]; then
   require_regular "$INSTRUCTIONS" "repository instruction snapshot"
   check_read "$INSTRUCTIONS" "repository instruction snapshot"
 fi
-COMPILED_MODES=$(python3 - "$HERE/lib/review_limits.py" "$EVIDENCE" "${SEATS[@]}" <<'PY'
+ROSTER_PATH=""
+[ ! -f "$S/roster.json" ] || ROSTER_PATH="$S/roster.json"
+COMPILED_MODES=$(PYTHONPATH="$HERE/lib${PYTHONPATH:+:$PYTHONPATH}" \
+  python3 - "$HERE/lib/review_limits.py" "$EVIDENCE" "$ROSTER_PATH" "${SEATS[@]}" <<'PY'
 import json
 import runpy
 import sys
@@ -343,19 +346,32 @@ manifest = None
 if sys.argv[2]:
     with open(sys.argv[2], encoding='utf-8') as stream:
         manifest = json.load(stream)
-for seat in sys.argv[3:]:
+roster_path = sys.argv[3]
+if roster_path:
+    from workhorse import lookup_launch
+for seat in sys.argv[4:]:
     mode, packets, segments = 'windows', False, False
-    call_limit = limits['REPOSITORY_EXPANSION_CALL_LIMIT']
-    mandatory_limit = limits['MANDATORY_REPOSITORY_READ_LIMIT']
+    assignment = manifest['assignments'][seat] if manifest else {}
+    model = assignment.get('model')
+    if not manifest and roster_path:
+        model = lookup_launch(roster_path, seat).get('model')
+    call_limit = limits['repository_expansion_call_limit_for_seat'](False, None, model)
+    reserve = limits['repository_refutation_call_reserve_for_model'](model)
+    mandatory_limit = call_limit - reserve
     if manifest:
-        mode = manifest['assignments'][seat]['patch_read_mode']
+        mode = assignment['patch_read_mode']
         context = manifest['source_context']['seats'][seat]
         packets = bool(context['shards'])
         segments = any(row['segments'] for row in context['required_source_ranges'])
         capacity = manifest.get('task_capacity', {}).get('seats', {}).get(seat, {})
         call_limit = limits['repository_expansion_call_limit_for_seat'](
-            context['source_read_required'], capacity.get('repository_source_target'))
-        mandatory_limit = call_limit - limits['REPOSITORY_REFUTATION_CALL_RESERVE']
+            context['source_read_required'], capacity.get('repository_source_target'),
+            assignment.get('model'))
+        reserve = limits['repository_refutation_call_reserve_for_model'](
+            assignment.get('model'))
+        call_limit = capacity.get('repository_expansion_call_limit', call_limit)
+        reserve = capacity.get('repository_refutation_call_reserve', reserve)
+        mandatory_limit = call_limit - reserve
     print('mode', mode, int(packets), int(segments), call_limit, mandatory_limit)
 PY
 ) || die "cannot compile prompt limits and evidence modes"

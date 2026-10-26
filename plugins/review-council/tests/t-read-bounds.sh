@@ -1445,6 +1445,8 @@ PY
       --evidence "$claude_manifest") || return
     assert_grep "Claude may batch two required source segments" "$claude_prompt" \
       '^Required source segment batch limit: 2$'
+    assert_grep "Claude prompt schedules each pair in one assistant message" "$claude_prompt" \
+      '^Claude source read batching: issue each pair of consecutive required source segment reads in one assistant message, in listed order; wait for both results before continuing\. Read a final singleton or an oversized single-line segment alone\.$'
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r9c-sol.json"
     python3 - "$claude_manifest" "$S/r9c-sol.stream.ndjson" <<'PY'
 import json, pathlib, sys
@@ -2588,11 +2590,12 @@ JSON
 test_narrow_seat_refuses_invalid_audit() {
   ( seat_env; local S="$T/narrow-refusal"; seat_roster "$S"
     cat > "$S/p.md" <<'EOF'
-Evidence manifest SHA-256: 0000000000000000000000000000000000000000000000000000000000000000
+Evidence manifest SHA-256: 000000000000000000000000000000000000000000000000000000000000000
 Assigned scope: semantic
+use at most 4 repository tool calls before stopping this assignment.
 EOF
     SHIM_MODE=unbounded SHIM_CALLS_FILE="$T/narrow-refusal.calls" \
-      "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" > "$T/narrow-refusal.out" 2>&1
+      "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" --base fixture > "$T/narrow-refusal.out" 2>&1
     assert_eq "invalid narrowed seat exits as unusable" "$?" 2
     assert_exit "invalid narrowed seat removes findings" 1 test -e "$S/r1-codex-sol.json"
     assert_exit "invalid narrowed seat preserves findings for diagnosis" 0 \
@@ -2602,26 +2605,31 @@ EOF
     assert_grep "seat log names the replacement rule" "$S/r1-codex-sol.log" \
       'replace this assignment on another eligible seat; never relaunch this seat under this label'
     assert_nogrep "seat log does not request an audit retry" "$S/r1-codex-sol.log" 'retry|rerun'
-    local invalid_hash audit_hash
+    local invalid_hash audit_hash calls_before_latch calls_before_sibling calls_after_sibling
     invalid_hash=$(shasum -a 256 "$S/r1-codex-sol.audit-invalid.json" | awk '{print $1}')
     audit_hash=$(shasum -a 256 "$S/r1-codex-sol.read-audit.json" | awk '{print $1}')
+    calls_before_latch=$(wc -l < "$T/narrow-refusal.calls" | tr -d ' ')
     SHIM_MODE=ok SHIM_CALLS_FILE="$T/narrow-refusal.calls" \
-      "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" > "$T/narrow-relaunch.out" 2>&1
+      "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" --base fixture > "$T/narrow-relaunch.out" 2>&1
     assert_eq "hard-audit marker refuses a same-generation relaunch" "$?" 2
-    assert_eq "hard-audit relaunch refusal makes no second provider call" \
-      "$(wc -l < "$T/narrow-refusal.calls" | tr -d ' ')" 1
+    assert_eq "hard-audit relaunch refusal makes no provider call" \
+      "$(wc -l < "$T/narrow-refusal.calls" | tr -d ' ')" "$calls_before_latch"
     assert_eq "hard-audit relaunch refusal preserves the diagnostic result" \
       "$(shasum -a 256 "$S/r1-codex-sol.audit-invalid.json" | awk '{print $1}')" "$invalid_hash"
     assert_eq "hard-audit relaunch refusal preserves the invalid audit" \
       "$(shasum -a 256 "$S/r1-codex-sol.read-audit.json" | awk '{print $1}')" "$audit_hash"
     assert_grep "hard-audit relaunch refusal names the latched label and seat" \
       "$T/narrow-relaunch.out" 'codex-sol under label 1 failed a hard evidence audit'
+    calls_before_sibling=$(wc -l < "$T/narrow-refusal.calls" | tr -d ' ')
     SHIM_MODE=ok SHIM_CALLS_FILE="$T/narrow-refusal.calls" \
-      "$SCRIPTS/rev-seat.sh" codex-terra "$S" 1 "$S/p.md" > "$T/sibling-relaunch.out" 2>&1
+      "$SCRIPTS/rev-seat.sh" codex-terra "$S" 1 "$S/p.md" --base fixture > "$T/sibling-relaunch.out" 2>&1
     assert_nogrep "the latch does not refuse a sibling under the same label" \
       "$T/sibling-relaunch.out" 'failed a hard evidence audit'
-    assert_eq "the sibling makes its own provider call" \
-      "$(wc -l < "$T/narrow-refusal.calls" | tr -d ' ')" 2
+    calls_after_sibling=$(wc -l < "$T/narrow-refusal.calls" | tr -d ' ')
+    [ "$calls_after_sibling" -gt "$calls_before_sibling" ] \
+      && ok "the sibling makes its own bounded Codex turns" \
+      || fail "the sibling makes its own bounded Codex turns" \
+        "expected more than $calls_before_sibling calls, got $calls_after_sibling"
   )
 }
 
@@ -2693,6 +2701,7 @@ test_evidence_audit_failure_modes() {
     cat > "$S/malformed-evidence.md" <<'EOF'
 Evidence manifest SHA-256: 000000000000000000000000000000000000000000000000000000000000000
 Assigned scope: semantic
+use at most 4 repository tool calls before stopping this assignment.
 EOF
     SHIM_MODE=unbounded "$SCRIPTS/rev-seat.sh" codex-sol "$S" malformed \
       "$S/malformed-evidence.md" > "$T/malformed-evidence.out" 2>&1
@@ -2711,10 +2720,11 @@ EOF
 
     S="$T/audit-failure-full"; seat_roster "$S"
     cat > "$S/full-evidence.md" <<'EOF'
-Evidence manifest SHA-256: 0000000000000000000000000000000000000000000000000000000000000000
+Evidence manifest SHA-256: 000000000000000000000000000000000000000000000000000000000000000
 Assigned scope: full
+use at most 4 repository tool calls before stopping this assignment.
 EOF
-    SHIM_MODE=unbounded "$SCRIPTS/rev-seat.sh" codex-sol "$S" full "$S/full-evidence.md" \
+    SHIM_MODE=unbounded "$SCRIPTS/rev-seat.sh" codex-sol "$S" full "$S/full-evidence.md" --base fixture \
       > "$T/full-evidence.out" 2>&1
     assert_eq "invalid full-scope evidence seat exits as unusable" "$?" 2
     assert_exit "invalid full-scope evidence seat removes findings" 1 test -e "$S/rfull-codex-sol.json"
@@ -2728,7 +2738,7 @@ EOF
       "$S/rfull-codex-sol.log" 'retry|rerun'
 
     S="$T/audit-failure-legacy"; seat_roster "$S"
-    printf 'Assigned scope: full\n' > "$S/legacy.md"
+    printf 'Assigned scope: full\nuse at most 4 repository tool calls before stopping this assignment.\n' > "$S/legacy.md"
     SHIM_MODE=unbounded "$SCRIPTS/rev-seat.sh" codex-sol "$S" legacy "$S/legacy.md" \
       > "$T/legacy.out" 2>&1
     assert_eq "invalid legacy audit remains advisory" "$?" 0
@@ -2762,7 +2772,7 @@ SH
     for audit_mode in missing malformed inconsistent; do
       local audit_label="metadata-$audit_mode"
       S="$T/audit-failure-$audit_label"; seat_roster "$S"
-      printf 'Assigned scope: full\n' > "$S/legacy.md"
+      printf 'Assigned scope: full\nuse at most 4 repository tool calls before stopping this assignment.\n' > "$S/legacy.md"
       PATH="$audit_python:$real_python" REAL_PYTHON_PATH="$real_python" \
         AUDIT_SCRIPT="$SCRIPTS/lib/review-read-audit.py" AUDIT_SHIM_MODE="$audit_mode" \
         SHIM_MODE=unbounded "$SCRIPTS/rev-seat.sh" codex-sol "$S" "$audit_label" \
@@ -2791,7 +2801,8 @@ SH
 }
 
 test_adapter_isolation_and_cache_flags() {
-  ( seat_env; local S="$T/read-adapters"; seat_roster "$S"; printf 'full prompt\n' > "$S/p.md"
+  ( seat_env; local S="$T/read-adapters"; seat_roster "$S"
+    printf '%s\n' 'use at most 4 repository tool calls before stopping this assignment.' 'full prompt' > "$S/p.md"
     mkdir -p "$T/codex-state"; printf '{}\n' > "$T/codex-state/auth.json"
     CODEX_HOME="$T/codex-state" SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null
     assert_grep "Codex ignores user config" "$T/args" '^--ignore-user-config$'
@@ -2866,7 +2877,7 @@ PY
 # every call; the second ran a line-bounded search over a minified bundle (about 1 MB returned)
 # beside a bounded `git show <base commit>:<path>` read.
 pinned_read_fixture() {
-  local R=$1 S=$2 label=$3
+  local R=$1 S=$2 label=$3 model=${4:-}
   mkrepo "$R"; mkdir -p "$R/src" "$S"
   python3 - "$R" <<'PY' || return
 import sys
@@ -2889,6 +2900,17 @@ PY
     "$base" "$R" > "$S/scope.env"
   printf 'src/asset.rs\n' > "$S/files.txt"; : > "$S/untracked.txt"
   printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+  if [ -n "$model" ]; then
+    python3 - "$S/roster.json" "$model" <<'PY'
+import json, sys
+path, model = sys.argv[1:]
+roster = json.load(open(path))
+for row in roster['seats']:
+    if row.get('adapter') == 'codex':
+        row['model'] = model
+open(path, 'w').write(json.dumps(roster) + '\n')
+PY
+  fi
   local manifest seat bundle
   manifest=$(REV_SOURCE_CONTEXT=0 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" "$label" --phase discovery) || return
   seat=$(python3 - "$manifest" <<'PY'
@@ -2901,6 +2923,49 @@ for seat, context in doc['source_context']['seats'].items():
 PY
 ) || return
   [ -n "$seat" ] || { fail "pinned-read fixture assigns a codex seat a required source read"; return 1; }
+  if [ -n "$model" ]; then
+    local assigned_model
+    assigned_model=$(python3 - "$manifest" "$seat" <<'PY'
+import json, sys
+manifest, seat = sys.argv[1:]
+print(json.load(open(manifest))['assignments'][seat].get('model') or '')
+PY
+) || return
+    assert_eq "prepared assignment preserves its roster model" "$assigned_model" "$model"
+    python3 - "$SCRIPTS/rev-evidence.py" "$manifest" "$seat" <<'PY'
+import json, runpy, sys
+from pathlib import Path
+
+module = runpy.run_path(sys.argv[1])
+manifest_path = Path(sys.argv[2])
+seat = sys.argv[3]
+manifest_raw = manifest_path.read_bytes()
+manifest = json.loads(manifest_raw)
+evidence_path = manifest_path.parent / f"r{manifest['label']}-evidence.json"
+evidence_raw = evidence_path.read_bytes()
+evidence = json.loads(evidence_raw)
+manifest['assignments'][seat]['model'] = 'gpt-6.1-sol'
+evidence['assignments'][seat]['model'] = 'gpt-6.1-sol'
+evidence_raw_changed = module['encoded'](evidence)
+evidence_path.write_bytes(evidence_raw_changed)
+manifest['artifacts'][evidence_path.name] = {
+    'sha256': module['digest'](evidence_raw_changed),
+    'words': len(evidence_raw_changed.split()),
+}
+manifest_path.write_bytes(module['encoded'](manifest))
+try:
+    try:
+        module['validated_manifest'](manifest_path, fresh=False)
+    except ValueError as error:
+        assert str(error) == 'assignment model mismatch', str(error)
+    else:
+        raise AssertionError('manifest accepted a model that differs from the pinned roster')
+finally:
+    evidence_path.write_bytes(evidence_raw)
+    manifest_path.write_bytes(manifest_raw)
+PY
+    assert_eq "manifest rejects a budget model that differs from its roster" "$?" 0
+  fi
   bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"][sys.argv[2]]["bundle"])' "$manifest" "$seat") || return
   "$SCRIPTS/rev-prompt.sh" "$S" "$label" "$seat" "$bundle" pinned-read --evidence "$manifest" > "$S/fixture.prompt" || return
   printf '%s\n' "$manifest" > "$S/fixture.manifest"; printf '%s\n' "$seat" > "$S/fixture.seat"
@@ -3003,7 +3068,7 @@ elif mode == 'minified-search':
     for first, last in ((1, 40), (41, 80)):
         pinned('base-read-' + str(first),
                f"git show {{REV}}:src/asset.rs | sed -n '{first},{last}p'", base)
-elif mode in ('scoped-expansion-20', 'scoped-expansion-21'):
+elif mode.startswith('scoped-expansion-'):
     boundaries = sorted({
         path for component in manifest['components']
         if component['id'] in manifest['source_context']['seats'][seat]['components']
@@ -3012,7 +3077,8 @@ elif mode in ('scoped-expansion-20', 'scoped-expansion-21'):
     boundary = next(path for path in boundaries if (root / path).is_file())
     source = f"sed -n '1,40p' {shlex.quote(boundary)}"
     command('required-boundary', source, run(source))
-    search_count = 19 if mode == 'scoped-expansion-20' else 20
+    total_calls = int(mode.rsplit('-', 1)[1])
+    search_count = total_calls - 1
     for index in range(search_count):
         search = "rg -n -F 'V0' src | head -80"
         command('scoped-search-' + str(index), search, run(search))
@@ -3027,6 +3093,170 @@ pinned_read_audit() {
   python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
     --raw "$S/r$label-$seat.stream.ndjson" --prompt "$(cat "$S/fixture.prompt")" --root "$R" \
     --session "$S" --out "$S/r$label-$seat.read-audit.json" >/dev/null 2>&1
+}
+
+test_legacy_repository_call_budget_uses_roster_model() {
+  ( local R="$T/legacy-budget-root" S="$T/legacy-budget-session"
+    mkrepo "$R"; mkdir -p "$R/src" "$S"
+    printf 'pub const V0: u32 = 0;\n' > "$R/src/asset.rs"
+    printf 'pub const V1: u32 = 1;\n' > "$R/src/other.rs"
+    python3 - "$SCRIPTS/lib/review-read-audit.py" "$R" "$S" <<'PY'
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+audit, root, session = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+command = "sed -n '1,1p' src/asset.rs"
+output = subprocess.run(['/bin/sh', '-c', command], cwd=root, check=True,
+                        capture_output=True, text=True).stdout
+
+def assess(seat, calls):
+    (session / 'roster.json').write_text(json.dumps({
+        'seats': [
+            {'seat': 'luna', 'adapter': 'codex', 'model': 'gpt-6.1-luna'},
+            {'seat': 'sol', 'adapter': 'codex', 'model': 'gpt-6.1-sol'},
+        ],
+    }) + '\n')
+    prompt = session / f'r27-{seat}.prompt.md'
+    prompt.write_text('Assigned scope: full\n')
+    result = session / f'r27-{seat}.json'
+    result.write_text(json.dumps({'summary': 'checked', 'findings': []}) + '\n')
+    raw = session / f'r27-{seat}.stream.ndjson'
+    events = [{'type': 'turn.started'}]
+    for index in range(calls):
+        call_id = 'read-' + str(index)
+        item = {'id': call_id, 'type': 'command_execution', 'command': command,
+                'aggregated_output': '', 'exit_code': None, 'status': 'in_progress'}
+        events.append({'type': 'item.started', 'item': item})
+        events.append({'type': 'item.completed', 'item': {
+            **item, 'aggregated_output': output, 'exit_code': 0, 'status': 'completed',
+        }})
+    events.append({'type': 'turn.completed'})
+    raw.write_text(''.join(json.dumps(event) + '\n' for event in events))
+    out = session / f'r27-{seat}.read-audit.json'
+    proc = subprocess.run([
+        sys.executable, str(audit), 'audit', '--adapter', 'codex',
+        '--raw', str(raw), '--prompt', str(prompt), '--root', str(root),
+        '--session', str(session), '--seat', seat, '--out', str(out),
+    ], capture_output=True, text=True)
+    return proc.returncode, json.loads(out.read_text())
+
+for seat, limit in (('luna', 96), ('sol', 16)):
+    code, audit_doc = assess(seat, limit)
+    assert code == 0 and not audit_doc['violations'], (seat, code, audit_doc['violations'])
+    code, audit_doc = assess(seat, limit + 1)
+    assert code == 2 and {row['code'] for row in audit_doc['violations']} == {
+        'repository-expansion-call-limit'}, (seat, code, audit_doc['violations'])
+    assert audit_doc['evidence_scoped'] is False
+PY
+    assert_eq "manifest-free audits apply the roster model repository-call budget" "$?" 0
+
+    python3 - "$SCRIPTS/lib/review-read-audit.py" "$R" "$S" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+audit, root, session = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+target = root / 'src/long.rs'
+target.write_text(''.join(f'line-{number:03d}\n' for number in range(1, 251)))
+target_bytes = target.read_bytes()
+target_sha = hashlib.sha256(target_bytes).hexdigest()
+index = session / 'r27-evidence.md'
+index.write_text('Evidence index\n', encoding='utf-8')
+prompt = session / 'r27-luna.prompt.md'
+prompt.write_text(
+    'Assigned scope: full\n'
+    f'Evidence navigation index: {index}\n'
+    'Required post-index original-source target: src/long.rs:1-250 tree '
+    + 'a' * 40 + ' blob ' + 'b' * 40 + ' content SHA-256 '
+    + target_sha + ' reasons []\n', encoding='utf-8')
+(session / 'roster.json').write_text(json.dumps({
+    'seats': [{'seat': 'luna', 'adapter': 'codex', 'model': 'gpt-6.1-luna'}],
+}) + '\n')
+(session / 'r27-luna.json').write_text(
+    json.dumps({'summary': 'checked', 'findings': []}) + '\n')
+
+def call(command, output):
+    item = {'id': command, 'type': 'command_execution', 'command': command,
+            'aggregated_output': '', 'exit_code': None, 'status': 'in_progress'}
+    return [
+        {'type': 'item.started', 'item': item},
+        {'type': 'item.completed', 'item': {
+            **item, 'aggregated_output': output, 'exit_code': 0, 'status': 'completed',
+        }},
+    ]
+
+def run(source, same_turn=False):
+    raw = session / 'r27-luna.stream.ndjson'
+    events = [{'type': 'turn.started'}]
+    index_command = 'cat -- ' + str(index)
+    events.extend(call(index_command, index.read_text(encoding='utf-8')))
+    if not same_turn:
+        events.append({'type': 'turn.completed'})
+    if source == 'long':
+        source_ranges = ((1, 200), (201, 250))
+    elif source == 'long-first':
+        source_ranges = ((1, 200),)
+    else:
+        source_ranges = ((1, 1),)
+    for start, end in source_ranges:
+        if not same_turn:
+            events.append({'type': 'turn.started'})
+        if source.startswith('long'):
+            source_command = f"sed -n '{start},{end}p' src/long.rs"
+        else:
+            source_command = "sed -n '1,1p' src/" + source + '.rs'
+        source_output = subprocess.run(
+            ['/bin/sh', '-c', source_command], cwd=root, check=True,
+            capture_output=True, text=True).stdout
+        events.extend(call(source_command, source_output))
+        if not same_turn:
+            events.append({'type': 'turn.completed'})
+    if same_turn:
+        events.append({'type': 'turn.completed'})
+    raw.write_text(''.join(json.dumps(event) + '\n' for event in events))
+    out = session / 'r27-luna.read-audit.json'
+    proc = subprocess.run([
+        sys.executable, str(audit), 'audit', '--adapter', 'codex',
+        '--raw', str(raw), '--prompt', str(prompt), '--root', str(root),
+        '--session', str(session), '--seat', 'luna', '--out', str(out),
+    ], capture_output=True, text=True)
+    return proc.returncode, json.loads(out.read_text())
+
+code, result = run('other')
+assert code == 2 and {row['code'] for row in result['violations']} == {
+    'missing-required-source-read'}, result
+code, result = run('long', same_turn=True)
+assert code == 2 and {row['code'] for row in result['violations']} == {
+    'missing-required-source-read'}, result
+code, result = run('long-first')
+assert code == 2 and {row['code'] for row in result['violations']} == {
+    'missing-required-source-read'}, result
+helper = audit.with_name('codex-proof-stages.py')
+proof = subprocess.run([
+    sys.executable, str(helper), '--post-index-target-read-count',
+    str(session / 'r27-luna.stream.ndjson'), '--prompt', str(prompt),
+    '--root', str(root), '--session', str(session),
+], capture_output=True, text=True)
+assert proof.returncode == 0 and proof.stdout.strip() == '0\t1', proof
+code, result = run('long')
+assert code == 0 and not result['violations'], result
+assert result['post_index_source_ranges'] == [
+    {'path': 'src/long.rs', 'line_start': 1, 'line_end': 200, 'origin': 'tool'},
+    {'path': 'src/long.rs', 'line_start': 201, 'line_end': 250, 'origin': 'tool'},
+], result['post_index_source_ranges']
+proof = subprocess.run([
+    sys.executable, str(helper), '--post-index-target-read-count',
+    str(session / 'r27-luna.stream.ndjson'), '--prompt', str(prompt),
+    '--root', str(root), '--session', str(session),
+], capture_output=True, text=True)
+assert proof.returncode == 0 and proof.stdout.strip() == '1\t1', proof
+PY
+    assert_eq "manifest-free audits require complete multi-window post-index source proof" "$?" 0
+  )
 }
 
 # Prints the sorted violation codes, the advisories, then the tool-origin source ranges.
@@ -3144,6 +3374,61 @@ assert any(row['origin'] == 'tool' and row['path'] in boundaries
            for row in audit['source_ranges'])
 PY
       assert_eq "$mode enforces the scoped proof budget against the assigned boundary" "$?" 0
+    done
+
+    local LR="$T/scoped-budget-luna-root" LS="$T/scoped-budget-luna-session" luna_seat
+    pinned_read_fixture "$LR" "$LS" "$label" gpt-6.1-luna || return
+    luna_seat=$(cat "$LS/fixture.seat"); base=$(cat "$LS/fixture.base")
+    printf '%s\n' '{"summary":"checked","findings":[]}' > "$LS/r$label-$luna_seat.json"
+    python3 - "$SCRIPTS/lib/review_limits.py" "$LS/fixture.manifest" "$luna_seat" \
+      "$LS/fixture.prompt" <<'PY'
+import re
+import runpy
+import sys
+from pathlib import Path
+
+limits_path, manifest_path, seat, prompt_path = sys.argv[1:]
+limits = runpy.run_path(limits_path)
+manifest_file = Path(Path(manifest_path).read_text().strip())
+manifest = __import__('json').loads(manifest_file.read_text())
+assignment = manifest['assignments'][seat]
+context = manifest['source_context']['seats'][seat]
+capacity = manifest['task_capacity']['seats'][seat]
+model = assignment['model']
+expected_total = limits['repository_expansion_call_limit_for_seat'](
+    context['source_read_required'], capacity['repository_source_target'], model)
+expected_reserve = limits['repository_refutation_call_reserve_for_model'](model)
+assert expected_total == limits['REPOSITORY_EXPANSION_CALL_LIMIT'] * 6 + (
+    expected_reserve if context['source_read_required']
+    and capacity['repository_source_target'] is None else 0), expected_total
+assert capacity['repository_expansion_call_limit'] == expected_total, capacity
+assert capacity['repository_refutation_call_reserve'] == expected_reserve, capacity
+mandatory = expected_total - expected_reserve
+prompt_file = Path(Path(prompt_path).read_text().strip())
+prompt = prompt_file.read_text()
+budget_lines = [line for line in prompt.splitlines()
+                if 'Repository expansion-call budget:' in line]
+expected_line = (f'Repository expansion-call budget: {expected_total} total; '
+                 f'finish required reads by call {mandatory} and reserve calls '
+                 f'{mandatory + 1}-{expected_total} for refutation.')
+assert expected_line in budget_lines, (expected_line, budget_lines)
+PY
+    assert_eq "Luna prompt publishes the sixfold total and reserved-call budget" "$?" 0
+    for mode in scoped-expansion-120 scoped-expansion-121; do
+      pinned_read_transcript "$(cat "$LS/fixture.manifest")" \
+        "$LS/r$label-$luna_seat.stream.ndjson" "$LR" "$base" "$mode"
+      pinned_read_audit "$LR" "$LS" "$label" "$luna_seat"
+      assert_eq "Luna $mode transcript remains auditable" "$?" 0
+      python3 - "$LS/r$label-$luna_seat.read-audit.json" "$mode" <<'PY'
+import json, sys
+audit = json.load(open(sys.argv[1]))
+mode = sys.argv[2]
+codes = {row['code'] for row in audit['advisories']}
+expected = {'repository-expansion-call-limit'} if mode == 'scoped-expansion-121' else set()
+assert audit['status'] == 'valid' and not audit['violations'], audit
+assert codes == expected, (codes, expected)
+PY
+      assert_eq "Luna keeps the sixfold cap without relaxing proof validity" "$?" 0
     done
   )
 }

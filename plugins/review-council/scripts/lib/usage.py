@@ -15,10 +15,15 @@ SDK_USAGE_FIELDS = {
     "costUsd": "cost_usd",
 }
 USAGE_FIELDS = (
-    "input_tokens", "uncached_input_tokens", "output_tokens", "reasoning_output_tokens",
+    "input_tokens", "uncached_input_tokens", "uncached_input_unknown_calls",
+    "output_tokens", "reasoning_output_tokens",
     "processed_tokens", "cached_input_tokens", "cache_write_input_tokens",
     "cache_read_input_tokens", "cache_write_5m_input_tokens", "cache_write_1h_input_tokens",
     "cost_usd", "cost_usd_known_calls", "cost_usd_unknown_calls", "unidentified_terminal_calls",
+)
+CODEX_REQUIRED_COUNTER_FIELDS = ("input_tokens", "output_tokens")
+CODEX_OPTIONAL_COUNTER_FIELDS = (
+    "cached_input_tokens", "cache_write_input_tokens", "reasoning_output_tokens",
 )
 
 
@@ -45,7 +50,7 @@ def empty_usage():
 
 
 def add_usage(target, usage):
-    target["calls"] += 1
+    target["calls"] += usage.get("calls", 1)
     for key in USAGE_FIELDS:
         target[key] += usage[key]
 
@@ -122,6 +127,7 @@ def record_usage(record, adapter=None):
     cost = next((value for value in costs if value is not None), None)
     return {
         "provider": provider, "input_tokens": inputs, "uncached_input_tokens": uncached,
+        "uncached_input_unknown_calls": 0,
         "output_tokens": output, "reasoning_output_tokens": reasoning,
         "processed_tokens": inputs + output, "cached_input_tokens": cached,
         "cache_write_input_tokens": write, "cache_read_input_tokens": read,
@@ -132,8 +138,87 @@ def record_usage(record, adapter=None):
     }
 
 
+def codex_cumulative_delta(record, previous):
+    """Convert exec's cumulative thread snapshot into a validated turn delta."""
+    usage = record.get("usage")
+    if not isinstance(usage, dict):
+        raise ValueError("invalid usage object")
+    if not set(CODEX_REQUIRED_COUNTER_FIELDS) <= usage.keys():
+        raise ValueError("Codex cumulative usage is missing input or output counters")
+
+    current = {key: number(usage[key], integer=True) for key in CODEX_REQUIRED_COUNTER_FIELDS}
+    warnings = []
+    uncached_unknown = False
+    invalid_optional = set()
+    for key in CODEX_OPTIONAL_COUNTER_FIELDS:
+        previous_value = previous.get(key) if previous is not None else None
+        if key not in usage:
+            current[key] = previous_value
+            if key in {"cached_input_tokens", "cache_write_input_tokens"}:
+                uncached_unknown = True
+            if previous_value is not None:
+                warnings.append("Codex cumulative usage omitted optional counter: " + key)
+            continue
+        try:
+            current[key] = number(usage[key], integer=True)
+        except ValueError:
+            current[key] = previous_value
+            invalid_optional.add(key)
+            warnings.append("Codex cumulative usage has invalid optional counter: " + key)
+            if key in {"cached_input_tokens", "cache_write_input_tokens"}:
+                uncached_unknown = True
+
+    if previous is not None and any(
+            current[key] < previous[key] for key in CODEX_REQUIRED_COUNTER_FIELDS):
+        rebased = dict(current)
+        for key in CODEX_OPTIONAL_COUNTER_FIELDS:
+            if key not in usage:
+                rebased[key] = None
+        return None, rebased, "Codex cumulative usage counter reset; turn usage is unknown"
+
+    delta = {}
+    for key in CODEX_REQUIRED_COUNTER_FIELDS:
+        delta[key] = current[key] - (previous[key] if previous is not None else 0)
+    for key in CODEX_OPTIONAL_COUNTER_FIELDS:
+        value = current[key]
+        prior = previous.get(key) if previous is not None else None
+        if value is None:
+            delta[key] = 0
+        elif previous is None:
+            delta[key] = value
+        elif prior is None:
+            delta[key] = 0
+            warnings.append("Codex cumulative usage cannot derive optional counter baseline: " + key)
+            if key in {"cached_input_tokens", "cache_write_input_tokens"}:
+                uncached_unknown = True
+        elif value < prior:
+            delta[key] = 0
+            warnings.append("Codex cumulative usage optional counter reset: " + key)
+            if key in {"cached_input_tokens", "cache_write_input_tokens"}:
+                uncached_unknown = True
+        else:
+            delta[key] = value - prior
+
+    clean_usage = {key: value for key, value in usage.items()
+                   if key not in {"cost_usd", "total_cost_usd"}}
+    for key in CODEX_OPTIONAL_COUNTER_FIELDS:
+        if key not in clean_usage or key in invalid_optional:
+            clean_usage[key] = current[key] if current[key] is not None else 0
+    # Codex exec maps ThreadTokenUsage.total into every turn.completed event.
+    record_usage({"type": "turn.completed", "usage": clean_usage}, "codex")
+    try:
+        parsed = record_usage({"type": "turn.completed", "usage": delta}, "codex")
+    except (TypeError, ValueError) as error:
+        return None, current, "Codex cumulative usage delta is invalid: " + str(error)
+    if uncached_unknown:
+        parsed["uncached_input_tokens"] = 0
+        parsed["uncached_input_unknown_calls"] = 1
+    return parsed, current, "; ".join(dict.fromkeys(warnings)) or None
+
+
 def read_stream(path, adapter=None):
     terminal = None
+    codex_turns = []
     messages = {}
     identities = set()
     invalid = []
@@ -151,6 +236,8 @@ def read_stream(path, adapter=None):
                     continue
                 if record.get("type") in TERMINAL_TYPES:
                     terminal = record
+                    if record.get("type") == "turn.completed" and adapter in (None, "codex"):
+                        codex_turns.append((line_no, record))
                 if record.get("type") != "assistant":
                     continue
                 message = record.get("message")
@@ -176,16 +263,63 @@ def read_stream(path, adapter=None):
     except OSError:
         invalid.append({"stream": path.name, "reason": "unreadable usage stream"})
     item = None
-    if terminal is not None:
-        try:
-            parsed = record_usage(terminal, adapter)
-            sdk_reported = (adapter == "cursor-sdk" and isinstance(terminal.get("usage"), dict)
-                            and any(key in terminal["usage"]
-                                    for key in (*SDK_USAGE_FIELDS, *SDK_USAGE_FIELDS.values())))
-            if parsed["processed_tokens"] or parsed["cost_usd_known_calls"] or sdk_reported:
-                item = parsed
-        except (TypeError, ValueError) as error:
-            invalid.append({"stream": path.name, "reason": str(error)})
+    terminal_rows = codex_turns or ([(None, terminal)] if terminal is not None else [])
+    if codex_turns:
+        total = empty_usage()
+        previous = None
+        for line_no, record in codex_turns:
+            usage = record.get("usage")
+            has_cost = (isinstance(usage, dict)
+                        and any(key in usage for key in ("cost_usd", "total_cost_usd")))
+            if has_cost or any(key in record for key in ("cost_usd", "total_cost_usd")):
+                invalid.append({"stream": path.name, "line": line_no,
+                                "reason": "Codex exec cost scope is not defined per turn"})
+            try:
+                parsed, current, error = codex_cumulative_delta(record, previous)
+                if current is not None:
+                    previous = current
+                if error:
+                    invalid.append({"stream": path.name, "line": line_no, "reason": error})
+                if parsed is None:
+                    unknown = empty_usage()
+                    unknown["calls"] = 1
+                    unknown["cost_usd_unknown_calls"] = 1
+                    unknown["uncached_input_unknown_calls"] = 1
+                    add_usage(total, unknown)
+                else:
+                    add_usage(total, parsed)
+            except (TypeError, ValueError) as error:
+                invalid.append({"stream": path.name, "line": line_no, "reason": str(error)})
+                unknown = empty_usage()
+                unknown["calls"] = 1
+                unknown["cost_usd_unknown_calls"] = 1
+                unknown["uncached_input_unknown_calls"] = 1
+                add_usage(total, unknown)
+            if not identities:
+                total["unidentified_terminal_calls"] += 1
+        if total["calls"]:
+            total["provider"] = "codex"
+            item = total
+    elif terminal_rows:
+        total = empty_usage()
+        provider = None
+        for line_no, record in terminal_rows:
+            try:
+                parsed = record_usage(record, adapter)
+                sdk_reported = (adapter == "cursor-sdk" and isinstance(record.get("usage"), dict)
+                                and any(key in record["usage"]
+                                        for key in (*SDK_USAGE_FIELDS, *SDK_USAGE_FIELDS.values())))
+                if parsed["processed_tokens"] or parsed["cost_usd_known_calls"] or sdk_reported:
+                    provider = parsed["provider"]
+                    add_usage(total, parsed)
+            except (TypeError, ValueError) as error:
+                entry = {"stream": path.name, "reason": str(error)}
+                if line_no is not None:
+                    entry["line"] = line_no
+                invalid.append(entry)
+        if total["calls"]:
+            total["provider"] = provider
+            item = total
     return item, messages, identities, invalid
 
 
@@ -201,7 +335,7 @@ def reviewer_streams(streams):
     for path, (item, _, identities, _) in parsed.items():
         if item is None:
             continue
-        item["unidentified_terminal_calls"] = int(not identities)
+        item["unidentified_terminal_calls"] = item.get("calls", 1) if not identities else 0
         if identities:
             identity = frozenset(identities)
             previous = terminal_owners.get(identity)

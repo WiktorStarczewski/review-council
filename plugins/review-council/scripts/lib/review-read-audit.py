@@ -1913,6 +1913,16 @@ def delivered_matches_bytes(adapter, name, output, expected, start):
     return any(candidate.encode() == expected for candidate in candidates)
 
 
+def delivered_matches_source_ranges(adapter, name, output, ranges, root, cache=None):
+    if not ranges:
+        return False
+    expected = b''.join(line_range_bytes(
+        Path(root) / row['path'], row['line_start'], row['line_end'], cache)
+                         for row in ranges)
+    return delivered_matches_bytes(adapter, name, output, expected,
+                                   ranges[0]['line_start'])
+
+
 def manifest_blob(repository, row, cache):
     tree = row['blob_tree']
     oid = row['blob_oid']
@@ -1955,6 +1965,82 @@ def regular_file_bytes(path, *, single_link=False):
             return stream.read()
     finally:
         os.close(directory)
+
+
+def parse_required_post_index_source_target(prompt_lines):
+    prefix = 'Required post-index original-source target: '
+    rows = [line[len(prefix):] for line in prompt_lines if line.startswith(prefix)]
+    if not rows:
+        return None
+    if len(rows) != 1:
+        raise ValueError('review prompt has multiple required post-index source targets')
+    match = re.fullmatch(
+        r'(.+):([1-9][0-9]*)-([1-9][0-9]*) tree ([0-9a-f]{40}|[0-9a-f]{64}) '
+        r'blob ([0-9a-f]{40}|[0-9a-f]{64}) content SHA-256 ([0-9a-f]{64}) reasons (.+)',
+        rows[0])
+    if match is None:
+        raise ValueError('required post-index source target is malformed')
+    path, start, end, tree, blob, content_sha256, reasons = match.groups()
+    relative = Path(path)
+    if (relative.is_absolute() or '\\' in path or relative.as_posix() != path
+            or not path or any(part in ('', '.', '..') for part in relative.parts)):
+        raise ValueError('required post-index source target path is not repository-relative')
+    try:
+        reasons = json.loads(reasons)
+    except json.JSONDecodeError as error:
+        raise ValueError('required post-index source target reasons are malformed') from error
+    if not isinstance(reasons, list) or any(not isinstance(item, str) for item in reasons):
+        raise ValueError('required post-index source target reasons are malformed')
+    return {
+        'path': path,
+        'line_start': int(start),
+        'line_end': int(end),
+        'blob_tree': tree,
+        'blob_oid': blob,
+        'content_sha256': content_sha256,
+        'reasons': reasons,
+    }
+
+
+def validate_required_post_index_source_target(target, root):
+    if target is None:
+        return None
+    root = Path(root).resolve()
+    path = root / target['path']
+    if not inside(resolved(path, root), [root]):
+        raise ValueError('required post-index source target escapes the repository')
+    raw = regular_file_bytes(path.absolute())
+    lines = split_lf_lines(raw)
+    start, end = target['line_start'], target['line_end']
+    if end < start or end > len(lines):
+        raise ValueError('required post-index source target range is unavailable')
+    content = byte_range_lines(lines, start, end)
+    if hashlib.sha256(content).hexdigest() != target['content_sha256']:
+        raise ValueError('required post-index source target content changed')
+    return target
+
+
+def required_evidence_index_path(prompt_lines, session):
+    prefix = 'Evidence navigation index: '
+    rows = [line[len(prefix):] for line in prompt_lines if line.startswith(prefix)]
+    if len(rows) != 1:
+        raise ValueError('required source target must name one evidence navigation index')
+    session = Path(session).resolve()
+    index = resolved(rows[0], session)
+    if (index.parent != session or not re.fullmatch(r'r[0-9A-Za-z._-]+-evidence\.md',
+                                                    index.name)):
+        raise ValueError('evidence navigation index is outside the review session')
+    regular_file_bytes(index)
+    return index
+
+
+def evidence_index_call_matches(adapter, name, data, output, path, root):
+    if path not in paths_opened_by_call(name, data, root):
+        return False
+    total_lines = file_line_count(path)
+    complete = (complete_packet_read(name, data, path, root)
+                or bounded_complete_index_read(name, data, path, root, total_lines))
+    return complete and delivered_matches(adapter, name, output, path, 1, total_lines)
 
 
 class CouncilReaderContext:
@@ -2568,6 +2654,26 @@ def post_hook(args):
     return 0
 
 
+def roster_model_for_seat(session, seat=None):
+    roster_path = session / 'roster.json'
+    try:
+        with roster_path.open(encoding='utf-8') as stream:
+            roster = json.load(stream)
+        seats = roster.get('seats')
+        if not isinstance(seats, list):
+            return None
+        if seat is None:
+            if len(seats) != 1:
+                return None
+            seat = seats[0].get('seat')
+        if not isinstance(seat, str) or not seat:
+            return None
+        from workhorse import lookup_launch
+        return lookup_launch(str(roster_path), seat).get('model')
+    except (AttributeError, ImportError, KeyError, OSError, TypeError, ValueError):
+        return None
+
+
 def audit(args):
     # A call raising any violation but a pacing count earns no credit. Credit granted before its
     # violation surfaced (an oversized turn is judged last) is revoked by assessing again. Only
@@ -2969,9 +3075,16 @@ def assess(args, blocked):
     plan_citation_ranges = []
     plan_finding_citations = 0
     manifest_blob_cache = {}
+    budget_model = None
+    budget_source_required = False
+    budget_source_target = None
     if manifest is not None:
         try:
             context = manifest['source_context']['seats'][seat]
+            budget_model = manifest['assignments'][seat].get('model')
+            budget_source_required = context['source_read_required']
+            seat_capacity = manifest.get('task_capacity', {}).get('seats', {}).get(seat, {})
+            budget_source_target = seat_capacity.get('repository_source_target')
             required_source_ranges = context.get('required_source_ranges', [])
             required_source_role = context.get('role')
             required_segment_paths = {
@@ -3260,16 +3373,6 @@ def assess(args, blocked):
                 calls, outputs, order_patch_calls, order_packet_paths, order_segment_paths,
                 evidence_index, root, session,
                 verified_call_ranges))
-            expansion_calls = [
-                call_id for call_id, (name, data, _) in calls.items()
-                if repository_expansion_call(name, data, root, session)
-            ]
-            seat_capacity = manifest.get('task_capacity', {}).get('seats', {}).get(seat, {})
-            expansion_limit = repository_expansion_call_limit_for_seat(
-                context['source_read_required'],
-                seat_capacity.get('repository_source_target'))
-            if len(expansion_calls) > expansion_limit:
-                failures.append(violation('repository-expansion-call-limit', args.adapter))
             ordered_proof_calls = ({call_id for call_id, _ in paced_chunk_calls}
                                    | {call_id for call_id, _ in paced_segment_calls}
                                    | paced_index_calls)
@@ -3311,6 +3414,44 @@ def assess(args, blocked):
                 post_index_source_ranges))
         except (KeyError, OSError, TypeError, ValueError):
             failures.append(violation('invalid-source-context', args.adapter))
+
+    if manifest is None:
+        try:
+            target = validate_required_post_index_source_target(
+                parse_required_post_index_source_target(prompt_lines), root)
+            if target is not None:
+                evidence_index = required_evidence_index_path(prompt_lines, session)
+                index_calls = {
+                    call_id for call_id, (name, data, _) in calls.items()
+                    if (call_id in outputs and outputs[call_id]['success']
+                        and evidence_index_call_matches(
+                            args.adapter, name, data, outputs[call_id]['value'],
+                            evidence_index, root))
+                }
+                if not index_calls:
+                    failures.append(violation('missing-evidence-index', args.adapter))
+                call_positions = {call_id: position for position, call_id in enumerate(calls)}
+                index_position = min((call_positions[call_id] for call_id in index_calls),
+                                     default=None)
+                index_turn = (calls[next(call_id for call_id in index_calls
+                                         if call_positions[call_id] == index_position)][2]
+                              if index_position is not None else None)
+                post_index_source_ranges = [
+                    {key: row[key] for key in ('path', 'line_start', 'line_end', 'origin')}
+                    for call_id, ranges in verified_call_ranges.items()
+                    if index_position is not None
+                    and call_positions[call_id] > index_position
+                    and calls[call_id][2] != index_turn
+                    for row in ranges]
+                post_index_source_ranges = sorted(
+                    {tuple(row.items()): row for row in post_index_source_ranges}.values(),
+                    key=lambda row: (row['path'], row['line_start'], row['line_end'],
+                                     row['origin']))
+                if not _load_evidence_module().source_target_covered(
+                        target, post_index_source_ranges):
+                    failures.append(violation('missing-required-source-read', args.adapter))
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            failures.append(violation('missing-required-source-read', args.adapter))
 
     for turn, size in turn_sizes.items():
         if size <= OUTPUT_BYTES:
@@ -3394,6 +3535,16 @@ def assess(args, blocked):
                         'ranges': relevant})
         except (KeyError, TypeError, ValueError):
             failures.append(violation('invalid-plan-evidence', args.adapter))
+    if manifest is None:
+        budget_model = roster_model_for_seat(session, getattr(args, 'seat', None))
+    expansion_calls = [
+        call_id for call_id, (name, data, _) in calls.items()
+        if repository_expansion_call(name, data, root, session)
+    ]
+    expansion_limit = repository_expansion_call_limit_for_seat(
+        budget_source_required, budget_source_target, budget_model)
+    if len(expansion_calls) > expansion_limit:
+        failures.append(violation('repository-expansion-call-limit', args.adapter))
     result_path = None
     result = None
     result_hash = None
@@ -3521,6 +3672,7 @@ def main():
     audits.add_argument('--prompt', required=True)
     audits.add_argument('--root', required=True)
     audits.add_argument('--session', required=True)
+    audits.add_argument('--seat')
     audits.add_argument('--deps')
     audits.add_argument('--out', required=True)
     args = parser.parse_args()
