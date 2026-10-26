@@ -1284,6 +1284,157 @@ module.pr_progress_idle(Path(sys.argv[1]))
 PY
     assert_eq "PR progression accepts a completed signal-exit launch" "$?" 0
   fi
+
+  S="$T/seat-reserve-precommit-group-signal"; seat_roster "$S"; seat_codex_prompt "$S/p.md"
+  python_bin="$T/reserve-precommit-python"; seat_write_signal_gate "$python_bin"
+  local site_dir="$T/reserve-precommit-site"
+  mkdir -p "$site_dir"
+  cat > "$site_dir/sitecustomize.py" <<'PY'
+import json
+import os
+import time
+from pathlib import Path
+
+original_dump = json.dump
+original_replace = os.replace
+
+def gated_dump(value, stream, *args, **kwargs):
+    ready = os.environ.get('SIGNAL_GATE_READY')
+    release = os.environ.get('SIGNAL_GATE_RELEASE')
+    if (isinstance(value, dict) and value.get('calls') == 1
+            and isinstance(value.get('active_launch'), str)
+            and os.environ.get('SIGNAL_GATE_POINT') != 'after-publication'
+            and ready and release and not os.path.exists(ready)):
+        with open(ready, 'w', encoding='utf-8'):
+            pass
+        while not os.path.exists(release):
+            time.sleep(0.02)
+    return original_dump(value, stream, *args, **kwargs)
+
+def gated_replace(source, destination, *args, **kwargs):
+    result = original_replace(source, destination, *args, **kwargs)
+    ready = os.environ.get('SIGNAL_GATE_READY')
+    release = os.environ.get('SIGNAL_GATE_RELEASE')
+    if (os.environ.get('SIGNAL_GATE_POINT') == 'after-publication'
+            and Path(source).name.startswith('.attempt-')
+            and Path(destination).suffix == '.json'
+            and ready and release and not os.path.exists(ready)):
+        with open(ready, 'w', encoding='utf-8'):
+            pass
+        while not os.path.exists(release):
+            time.sleep(0.02)
+    return result
+
+json.dump = gated_dump
+os.replace = gated_replace
+PY
+  : > "$T/reserve-precommit-calls"
+  env PATH="$python_bin:$PATH" REAL_PYTHON="$real_python" PYTHONPATH="$site_dir" \
+    SIGNAL_ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" SIGNAL_GATE_OPERATION=reserve \
+    SIGNAL_GATE_READY="$T/reserve-precommit.ready" SIGNAL_GATE_RELEASE="$T/reserve-precommit.release" \
+    SHIM_MODE=ok SHIM_CALLS_FILE="$T/reserve-precommit-calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" reserve-precommit "$S/p.md" \
+    > "$T/reserve-precommit.out" 2>&1 &
+  pid=$!; i=0
+  while [ ! -e "$T/reserve-precommit.ready" ] && kill -0 "$pid" 2>/dev/null && [ "$i" -lt 500 ]; do
+    sleep 0.02; i=$((i + 1))
+  done
+  if [ ! -e "$T/reserve-precommit.ready" ]; then
+    fail "first reservation can be interrupted before publication" "reservation write was not gated"
+    : > "$T/reserve-precommit.release"
+    kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  else
+    pgid=$(ps -o pgid= -p "$pid" | tr -d ' ')
+    assert_eq "prepublication cancellation test owns an isolated process group" "$pgid" "$pid"
+    kill -TERM "-$pgid" 2>/dev/null || true
+    : > "$T/reserve-precommit.release"
+    wait "$pid" 2>/dev/null; rc=$?
+    assert_eq "group cancellation interrupts the first reservation" "$rc" 143
+    local records; records=$(python3 - "$S/attempts" <<'PY'
+from pathlib import Path
+import sys
+print(len(list(Path(sys.argv[1]).glob('*.json'))))
+PY
+    )
+    assert_eq "a cancelled first reservation publishes no partial attempt record" "$records" 0
+    env PATH="$python_bin:$PATH" REAL_PYTHON="$real_python" SHIM_MODE=ok \
+      SHIM_CALLS_FILE="$T/reserve-precommit-calls" \
+      "$SCRIPTS/rev-seat.sh" codex-sol "$S" reserve-precommit "$S/p.md" \
+      > "$T/reserve-precommit-retry.out" 2>&1
+    rc=$?
+    assert_eq "same-label reservation succeeds after prepublication cancellation" "$rc" 0
+  fi
+
+  S="$T/seat-reserve-publication-signal"; seat_roster "$S"; seat_codex_prompt "$S/p.md"
+  : > "$T/reserve-publication-calls"
+  env PATH="$python_bin:$PATH" REAL_PYTHON="$real_python" PYTHONPATH="$site_dir" \
+    SIGNAL_ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" SIGNAL_GATE_OPERATION=reserve \
+    SIGNAL_GATE_POINT=after-publication SIGNAL_GATE_READY="$T/reserve-publication.ready" \
+    SIGNAL_GATE_RELEASE="$T/reserve-publication.release" SHIM_MODE=ok \
+    SHIM_CALLS_FILE="$T/reserve-publication-calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" reserve-publication "$S/p.md" \
+    > "$T/reserve-publication.out" 2>&1 &
+  pid=$!; i=0
+  while [ ! -e "$T/reserve-publication.ready" ] && kill -0 "$pid" 2>/dev/null && [ "$i" -lt 500 ]; do
+    sleep 0.02; i=$((i + 1))
+  done
+  if [ ! -e "$T/reserve-publication.ready" ]; then
+    fail "first reservation publishes atomically before returning" "rename window was not gated"
+    : > "$T/reserve-publication.release"
+    kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  else
+    pgid=$(ps -o pgid= -p "$pid" | tr -d ' ')
+    assert_eq "publication cancellation test owns an isolated process group" "$pgid" "$pid"
+    kill -TERM "-$pgid" 2>/dev/null || true
+    : > "$T/reserve-publication.release"
+    wait "$pid" 2>/dev/null; rc=$?
+    assert_eq "cancellation after atomic publication closes its reservation" "$rc" 143
+    python3 - "$S" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+paths = list((Path(sys.argv[1]) / 'attempts').glob('*.json'))
+records = [json.loads(path.read_text()) for path in paths]
+assert (len(records) == 1 and paths[0].stat().st_nlink == 1
+        and records[0].get('active_launch') is None
+        and records[0].get('completed_calls') == records[0].get('calls')
+        and records[0].get('launches') == [143]
+        and records[0].get('terminal_intent') is None), records
+PY
+    assert_eq "post-publication cancellation leaves a complete single-link record" "$?" 0
+    env PATH="$python_bin:$PATH" REAL_PYTHON="$real_python" SHIM_MODE=ok \
+      SHIM_CALLS_FILE="$T/reserve-publication-calls" \
+      "$SCRIPTS/rev-seat.sh" codex-sol "$S" reserve-publication "$S/p.md" \
+      > "$T/reserve-publication-retry.out" 2>&1
+    rc=$?
+    assert_eq "same-label reservation succeeds after publication cancellation" "$rc" 0
+  fi
+
+  local A="$T/pr-progress-active-agent"; mkdir -p "$A"
+  printf 'agent\nagent-task-123\n' > "$A/r1-opus.started"
+  python3 - "$A" "$SCRIPTS/rev-evidence.py" <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location('review_council_progress_test', sys.argv[2])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+session = Path(sys.argv[1])
+try:
+    module.pr_progress_idle(session)
+except ValueError as error:
+    assert 'unresolved provider launch' in str(error), error
+else:
+    raise AssertionError('active Agent launch was treated as idle')
+(session / 'r1-opus.exit').write_text('143\n', encoding='utf-8')
+module.pr_progress_idle(session)
+PY
+  assert_eq "PR progression waits for an Agent launch result" "$?" 0
   set +m
   seat_env_reset "$_path"
 }

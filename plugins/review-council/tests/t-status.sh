@@ -131,6 +131,41 @@ statuses = {seat['seat']: seat['status'] for seat in json.load(open(sys.argv[1])
 assert statuses == {'opus': 'running', 'opus-2': 'interrupted', 'opus-3': 'interrupted'}, statuses
 PY
   assert_eq "the briefing uses the same Agent launch evidence" "$?" 0
+
+  python3 - "$S" "$SCRIPTS/rev-context.py" <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location('rev_context_snapshot_test', sys.argv[2])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+marker = Path(sys.argv[1]) / 'snapshot.started'
+replacement = marker.with_name('replacement.started')
+marker.write_text('agent\n\n', encoding='utf-8')
+replacement.write_text('agent\nagent-task-456\n', encoding='utf-8')
+os.utime(marker, (100, 100))
+os.utime(replacement, (200, 200))
+real_open = os.open
+
+def replace_after_open(path, flags, *args, **kwargs):
+    descriptor = real_open(path, flags, *args, **kwargs)
+    if Path(path) == marker:
+        os.replace(replacement, marker)
+    return descriptor
+
+os.open = replace_after_open
+try:
+    state, started = module.launch_state_with_mtime(marker)
+finally:
+    os.open = real_open
+assert state == 'interrupted', state
+assert started == 100, started
+assert module.launch_state(marker) == 'running'
+assert marker.stat().st_mtime == 200
+PY
+  assert_eq "launch status and duration use one marker snapshot" "$?" 0
 }
 
 test_status_rejects_incomplete_or_invalid_results() {
