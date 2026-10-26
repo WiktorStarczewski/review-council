@@ -86,7 +86,7 @@ test_seat_codex_instructions_required() {
   )
 }
 
-test_seat_codex_prepared_proof_batches_respect_output_ceiling() {
+test_seat_codex_prepared_proof_batches_respect_per_read_and_turn_limits() {
   python3 - "$SCRIPTS/lib/codex-proof-stages.py" <<'PY'
 import importlib.util
 import sys
@@ -94,14 +94,21 @@ import sys
 spec = importlib.util.spec_from_file_location('codex_proof_stages', sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
+assert module.PROOF_TURN_BYTES == module.read_audit_module().PATCH_TURN_OUTPUT_BYTES
 chunks = ['patch chunk 1', 'patch chunk 2']
 visible_bytes = {chunk: 24_500 for chunk in chunks}
 stages = module.grouped(chunks, 2, lambda chunk: visible_bytes[chunk])
-assert stages == [[chunks[0]], [chunks[1]]], stages
-assert all(sum(visible_bytes[chunk] for chunk in stage) <= module.OUTPUT_BYTES
+assert stages == [chunks], stages
+assert all(visible_bytes[chunk] <= module.OUTPUT_BYTES for chunk in chunks)
+assert all(sum(visible_bytes[chunk] for chunk in stage) <= module.PROOF_TURN_BYTES
            for stage in stages), stages
+over_limit = ['large patch chunk 1', 'large patch chunk 2']
+over_limit_bytes = {chunk: 31 * 1024 for chunk in over_limit}
+over_limit_stages = module.grouped(
+    over_limit, 2, lambda chunk: over_limit_bytes[chunk])
+assert over_limit_stages == [[over_limit[0]], [over_limit[1]]], over_limit_stages
 PY
-  assert_eq "prepared evidence batches stay within the validated turn output ceiling" "$?" 0
+  assert_eq "prepared proof reads keep per-call and paired-turn byte limits" "$?" 0
 }
 
 test_seat_codex_prepares_window_mode_patch_reads() {

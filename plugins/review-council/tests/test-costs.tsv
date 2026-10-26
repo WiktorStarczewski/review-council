@@ -248,7 +248,7 @@ t-scopeenv.sh::test_scopeenv	1	normal
 t-seat-claude.sh::test_seat_claude_cli_scrubs_parent_session	1	normal
 t-seat.sh::test_seat_codex	1	normal
 t-seat.sh::test_seat_codex_resumes_unprepared_reviews	2	normal
-t-seat.sh::test_seat_codex_prepared_proof_batches_respect_output_ceiling	1	normal
+t-seat.sh::test_seat_codex_prepared_proof_batches_respect_per_read_and_turn_limits	1	normal
 t-seat.sh::test_seat_codex_prepares_window_mode_patch_reads	1	normal
 t-seat.sh::test_seat_codex_stages_prepared_evidence	1	normal
 t-seat.sh::test_seat_incomplete_proof_refuses_a_relaunch	1	normal
