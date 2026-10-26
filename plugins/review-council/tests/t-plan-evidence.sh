@@ -2335,7 +2335,7 @@ assert [(row['path'], row['line_start'], row['line_end'], row['resolution']) for
     ('src/nested value.ts', 1, 2, 'direct'),
     ('src/über value.ts', 3, 3, 'direct'),
     ('tests/unique.test.ts', 4, 4, 'basename'),
-    ('README.md', 1, 1, 'basename'),
+    ('README.md', 1, 1, 'direct'),
     ('src/uber value.ts', 5, 6, 'direct'),
 ], rows
 root_paths = module.plan_field_paths('./package.json:89, package.json:90', entries)
