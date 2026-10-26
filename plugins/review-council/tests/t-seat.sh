@@ -200,7 +200,16 @@ PY
     MODE=prompt ROOT="$T" PROMPT="$S/r1-codex-luna.prompt.md" SCHEMA="$SHIM_FIXTURE_DIR/findings.schema.json" \
     OUT="$S/result.json" LOG="$S/adapter.log" RAW="$S/raw.ndjson" BASE=abc \
     bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
-  assert_eq "staged Codex proof exits successfully" "$?" 0
+  local adapter_rc=$?
+  if [ "$adapter_rc" -ne 0 ]; then
+    printf 'staged Codex adapter stderr:\n' >&2
+    sed -n '1,40p' "$S/err" >&2
+    printf 'staged Codex adapter stdout:\n' >&2
+    sed -n '1,40p' "$S/out" >&2
+    printf 'staged Codex adapter log:\n' >&2
+    sed -n '1,40p' "$S/adapter.log" >&2
+  fi
+  assert_eq "staged Codex proof exits successfully" "$adapter_rc" 0
   calls=$(wc -l < "$S/calls.log" | tr -d ' ')
   assert_eq "Codex uses separate resumable turns for prepared proof, source review, and findings" "$calls" 13
   if [ "$calls" = 13 ]; then

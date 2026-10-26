@@ -3307,7 +3307,8 @@ assert expected_total == limits['REPOSITORY_EXPANSION_CALL_LIMIT'] * 6 + (
 assert capacity['repository_expansion_call_limit'] == expected_total, capacity
 assert capacity['repository_refutation_call_reserve'] == expected_reserve, capacity
 mandatory = expected_total - expected_reserve
-prompt = Path(prompt_path).read_text()
+prompt_file = Path(Path(prompt_path).read_text().strip())
+prompt = prompt_file.read_text()
 budget_lines = [line for line in prompt.splitlines() if 'repository tool calls' in line]
 pattern = (rf'use at most {expected_total} repository tool calls\. '
            rf'Start no new evidence path after call {mandatory}; '
