@@ -47,6 +47,12 @@ copy_writable_tree() {
 seat_env() {
   export PATH="$SHIMS:$PATH" SHIM_FIXTURE_DIR="$FX" SHIM_ARGS_FILE="$T/args" REV_REPO="$T"
 }
+rc_write_live_launch_marker() {
+  local target=$1 pid=${BASHPID:-$$} started
+  started=$(LC_ALL=C ps -p "$pid" -o lstart= 2>/dev/null) || return 1
+  [ -n "${started//[[:space:]]/}" ] || return 1
+  printf 'cli\n%s\n%s\n' "$pid" "$started" > "$target"
+}
 mkrepo() {
   export GIT_CONFIG_GLOBAL="$T/gitconfig" GIT_CONFIG_NOSYSTEM=1
   [ -f "$T/gitconfig" ] || printf '[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n[init]\n\tdefaultBranch = main\n' > "$T/gitconfig"

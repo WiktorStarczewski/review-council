@@ -8,10 +8,10 @@ test_status() {
   cp "$FX/findings-valid.json" "$S/r2-codex-sol.json"; echo 0 > "$S/r2-codex-sol.exit"; : > "$S/r2-codex-sol.prompt.md"
   rc_touch_ago 540 "$S/r2-codex-sol.prompt.md"; rc_touch_ago 120 "$S/r2-codex-sol.exit"
   # sonnet: running, last action from the log
-  : > "$S/r2-sonnet.prompt.md"; rc_touch_ago 840 "$S/r2-sonnet.prompt.md"
+  : > "$S/r2-sonnet.prompt.md"; rc_write_live_launch_marker "$S/r2-sonnet.started"; rc_touch_ago 840 "$S/r2-sonnet.started"
   printf 'tool_call shell: git diff abc --stat\ntext: thinking\ntool_call shell: rg "retry" src/api\n' > "$S/r2-sonnet.log"
   # opus: running, transcript present
-  : > "$S/r2-opus.prompt.md"; rc_touch_ago 300 "$S/r2-opus.prompt.md"
+  : > "$S/r2-opus.prompt.md"; rc_write_live_launch_marker "$S/r2-opus.started"; rc_touch_ago 300 "$S/r2-opus.started"
   printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{}}]}}\n{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Grep","input":{}}]}}\n' > "$T/opus.jsonl"
   "$SCRIPTS/rev-state.sh" "$S" "opus_transcript=$T/opus.jsonl" >/dev/null
   local line; line=$("$SCRIPTS/rev-status.sh" "$S"); echo "    $line"
@@ -33,7 +33,7 @@ test_status() {
     'seats=["terra","sonnet"]' open.P0=0 open.P1=0 open.P2=0 fixed=0 >/dev/null
   : > "$Q/r1-terra.prompt.md"
   : > "$Q/r1-sonnet.prompt.md"; rc_touch_ago 900 "$Q/r1-sonnet.prompt.md"
-  : > "$Q/r1-sonnet.started"; rc_touch_ago 180 "$Q/r1-sonnet.started"
+  rc_write_live_launch_marker "$Q/r1-sonnet.started"; rc_touch_ago 180 "$Q/r1-sonnet.started"
   line=$("$SCRIPTS/rev-status.sh" "$Q"); printf '%s\n' "$line" > "$T/prompt-only-line"
   assert_grep "a prepared prompt without launch evidence stays pending" "$T/prompt-only-line" 'terra: pending'
   assert_nogrep "a prompt alone is not narrated as an active review" "$T/prompt-only-line" 'terra: running|terra is still reviewing'
@@ -84,6 +84,32 @@ JSON
   assert_grep "session can opt out of default progress ticks" "$T/brief.json" '"status_tick": false'
 }
 
+test_status_detects_dead_cli_launches() {
+  local S="$T/status-dead-launch"; mkdir -p "$S"
+  "$SCRIPTS/rev-state.sh" "$S" round=1 min_rounds=1 phase=collect \
+    'seats=["codex-sol"]' open.P0=0 open.P1=0 open.P2=0 fixed=0 >/dev/null
+  sleep 30 &
+  local dead_pid=$! dead_started
+  dead_started=$(LC_ALL=C ps -p "$dead_pid" -o lstart= 2>/dev/null)
+  kill -KILL "$dead_pid" 2>/dev/null || true
+  wait "$dead_pid" 2>/dev/null || true
+  printf 'cli\n%s\n%s\n' "$dead_pid" "$dead_started" > "$S/r1-codex-sol.started"
+
+  local line; line=$("$SCRIPTS/rev-status.sh" "$S"); echo "    $line"; echo "$line" > "$T/dead-launch-line"
+  assert_grep "a force-terminated seat is reported as interrupted" "$T/dead-launch-line" \
+    'codex-sol: interrupted'
+  assert_nogrep "a dead launch marker is not narrated as active" "$T/dead-launch-line" \
+    'codex-sol: running|codex-sol is still reviewing'
+  python3 "$SCRIPTS/rev-context.py" "$S" --json > "$T/dead-launch-context.json"
+  local context_status
+  context_status=$(python3 - "$T/dead-launch-context.json" <<'PY'
+import json, sys
+print(json.load(open(sys.argv[1]))['seats'][0]['status'])
+PY
+  )
+  assert_eq "the session briefing also identifies a dead launch" "$context_status" interrupted
+}
+
 test_status_rejects_incomplete_or_invalid_results() {
   local S="$T/status-proof"; mkdir -p "$S"
   "$SCRIPTS/rev-state.sh" "$S" round=1 min_rounds=1 phase=collect \
@@ -108,8 +134,8 @@ test_status_agent_transcripts() {
   local S="$T/status-agent-transcripts"; mkdir -p "$S"
   "$SCRIPTS/rev-state.sh" "$S" round=4 min_rounds=4 phase=collect \
     'seats=["opus","opus-2"]' open.P0=0 open.P1=0 open.P2=0 fixed=2 >/dev/null
-  : > "$S/r4-opus.prompt.md"; rc_touch_ago 360 "$S/r4-opus.prompt.md"
-  : > "$S/r4-opus-2.prompt.md"; rc_touch_ago 420 "$S/r4-opus-2.prompt.md"
+  : > "$S/r4-opus.prompt.md"; rc_write_live_launch_marker "$S/r4-opus.started"; rc_touch_ago 360 "$S/r4-opus.started"
+  : > "$S/r4-opus-2.prompt.md"; rc_write_live_launch_marker "$S/r4-opus-2.started"; rc_touch_ago 420 "$S/r4-opus-2.started"
   printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{}}]}}\n' > "$T/opus-mapped.jsonl"
   printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Glob","input":{}}]}}\n' > "$T/opus-2-mapped.jsonl"
   printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"LegacyIgnored","input":{}}]}}\n' > "$T/opus-legacy-shadow.jsonl"
@@ -128,7 +154,7 @@ test_status_source_fallthrough() {
   local S="$T/status-fallthrough"; mkdir -p "$S"
   "$SCRIPTS/rev-state.sh" "$S" round=6 min_rounds=adaptive phase=collect \
     'seats=["opus"]' open.P0=0 open.P1=0 open.P2=0 fixed=2 >/dev/null
-  : > "$S/r6-opus.prompt.md"; rc_touch_ago 180 "$S/r6-opus.prompt.md"
+  : > "$S/r6-opus.prompt.md"; rc_write_live_launch_marker "$S/r6-opus.started"; rc_touch_ago 180 "$S/r6-opus.started"
   printf 'tool_call shell: rg "cli-fallback" src\n' > "$S/r6-opus.log"
   printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"LegacyRead","input":{}}]}}\n' \
     > "$T/status-legacy-valid.jsonl"
@@ -176,7 +202,7 @@ test_status_source_fallthrough() {
 
   "$SCRIPTS/rev-state.sh" "$S" 'seats=["opus-2"]' \
     "agent_transcripts={\"opus-2\":\"$T/status-actionless.jsonl\"}" >/dev/null
-  : > "$S/r6-opus-2.prompt.md"; rc_touch_ago 180 "$S/r6-opus-2.prompt.md"
+  : > "$S/r6-opus-2.prompt.md"; rc_write_live_launch_marker "$S/r6-opus-2.started"; rc_touch_ago 180 "$S/r6-opus-2.started"
   printf 'tool_call shell: rg "non-opus-fallback" tests\n' > "$S/r6-opus-2.log"
   line=$("$SCRIPTS/rev-status.sh" "$S"); printf '%s\n' "$line" > "$T/status-fallthrough-line"
   assert_grep "non-Opus actionless mapping falls through to CLI" "$T/status-fallthrough-line" \
@@ -187,8 +213,8 @@ test_status_unmapped_opus_cli_logs() {
   local S="$T/status-opus-cli"; mkdir -p "$S"
   "$SCRIPTS/rev-state.sh" "$S" round=5 min_rounds=5 phase=collect \
     'seats=["opus","opus-2"]' open.P0=0 open.P1=0 open.P2=1 fixed=3 >/dev/null
-  : > "$S/r5-opus.prompt.md"; rc_touch_ago 480 "$S/r5-opus.prompt.md"
-  : > "$S/r5-opus-2.prompt.md"; rc_touch_ago 540 "$S/r5-opus-2.prompt.md"
+  : > "$S/r5-opus.prompt.md"; rc_write_live_launch_marker "$S/r5-opus.started"; rc_touch_ago 480 "$S/r5-opus.started"
+  : > "$S/r5-opus-2.prompt.md"; rc_write_live_launch_marker "$S/r5-opus-2.started"; rc_touch_ago 540 "$S/r5-opus-2.started"
   printf 'tool_call shell: rg "first-opus-action" src\n' > "$S/r5-opus.log"
   printf 'tool_call shell: rg "second-opus-action" tests\n' > "$S/r5-opus-2.log"
 
@@ -202,7 +228,7 @@ test_status_repair_label() {
   local S="$T/status-repair"; mkdir -p "$S"
   "$SCRIPTS/rev-state.sh" "$S" round=3x min_rounds=adaptive phase=repair \
     'seats=["opus-2"]' open.P0=0 open.P1=0 open.P2=0 fixed=4 >/dev/null
-  : > "$S/r3x-opus-2.prompt.md"; rc_touch_ago 180 "$S/r3x-opus-2.prompt.md"
+  : > "$S/r3x-opus-2.prompt.md"; rc_write_live_launch_marker "$S/r3x-opus-2.started"; rc_touch_ago 180 "$S/r3x-opus-2.started"
   printf 'tool_call shell: rg "missing-bundle" src\n' > "$S/r3x-opus-2.log"
 
   local line; line=$("$SCRIPTS/rev-status.sh" "$S"); echo "    $line"; echo "$line" > "$T/repair-line"
@@ -237,7 +263,7 @@ test_status_overflow() {
     open.P0=2 open.P1=3 open.P2=4 fixed=9 >/dev/null
   local seat
   for seat in codex-sol codex-terra gemini opus sonnet; do
-    : > "$S/r3-$seat.prompt.md"; rc_touch_ago 660 "$S/r3-$seat.prompt.md"
+    : > "$S/r3-$seat.prompt.md"; rc_write_live_launch_marker "$S/r3-$seat.started"; rc_touch_ago 660 "$S/r3-$seat.started"
     printf 'tool_call shell: rg "retry|timeout|backoff" src/api/handlers --stats\n' > "$S/r3-$seat.log"
   done
   local line; line=$("$SCRIPTS/rev-status.sh" "$S"); echo "    $line"
@@ -254,7 +280,8 @@ test_status_overflow() {
     open.P0=1 open.P1=2 open.P2=3 fixed=5 >/dev/null
   for seat in alpha bravo charlie delta echo foxtrot golf hotel; do
     : > "$W/r3-reviewer-seat-$seat.prompt.md"
-    rc_touch_ago 420 "$W/r3-reviewer-seat-$seat.prompt.md"
+    rc_write_live_launch_marker "$W/r3-reviewer-seat-$seat.started"
+    rc_touch_ago 420 "$W/r3-reviewer-seat-$seat.started"
     printf 'tool_call shell: rg "retry|timeout|backoff" src/api/handlers --stats\n' > "$W/r3-reviewer-seat-$seat.log"
   done
   line=$("$SCRIPTS/rev-status.sh" "$W"); echo "    $line"; echo "$line" > "$T/hline"

@@ -61,9 +61,16 @@ test_seat_codex_instructions_required() {
 test_seat_codex() {
   local _path="$PATH"; seat_env
   local S="$T/seat-codex"; seat_roster "$S"; echo "review the diff" > "$S/p.md"; : > "$T/args.env"
+  printf 'stale marker\n' > "$S/r1-codex-sol.started"
   SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" > "$T/out.txt"; local rc=$?
   assert_eq "codex ok exit" "$rc" 0
   assert_exit "codex launch records a start marker" 0 test -f "$S/r1-codex-sol.started"
+  assert_eq "launch marker records pid and process start identity" \
+    "$(wc -l < "$S/r1-codex-sol.started" | tr -d ' ')" 3
+  assert_grep "launch marker identifies a CLI launch" "$S/r1-codex-sol.started" '^cli$'
+  assert_grep "launch marker stores the wrapper pid" "$S/r1-codex-sol.started" '^[0-9]+$'
+  assert_grep "launch marker stores the process start time" "$S/r1-codex-sol.started" \
+    '^[A-Z][a-z]{2} [A-Z][a-z]{2} [ 0-9][0-9] [0-9:]{8} [0-9]{4}$'
   assert_grep "prints summary line" "$T/out.txt" '^seat=codex-sol round=1 exit=0 findings=1$'
   assert_grep "writes .exit" "$S/r1-codex-sol.exit" '^0$'
   assert_grep "json copied" "$S/r1-codex-sol.json" '"severity": ?"P1"'
@@ -270,6 +277,7 @@ SH
 
   local W="$T/seat-reserve-window"; seat_roster "$W"; echo "review the diff" > "$W/p.md"
   echo 0 > "$W/rblocked-codex-sol.exit"
+  printf 'prior launch\n' > "$W/rblocked-codex-sol.started"
   local python_bin="$T/reserve-python-bin" real_python reserve_pid reserve_rc i=0
   real_python=$(command -v python3)
   mkdir -p "$python_bin"
@@ -298,8 +306,8 @@ SH
   else
     fail "the prior exit remains until a reservation succeeds" "the old exit was removed or changed"
   fi
-  assert_eq "a blocked reservation has no launch marker" \
-    "$([ -e "$W/rblocked-codex-sol.started" ] && echo present || echo absent)" absent
+  assert_eq "a blocked reservation preserves prior launch evidence" \
+    "$(cat "$W/rblocked-codex-sol.started")" "prior launch"
   : > "$T/reserve.release"
   wait "$reserve_pid"; reserve_rc=$?
   assert_eq "blocked cap refusal exits with reserve status" "$reserve_rc" 7
@@ -689,6 +697,10 @@ test_seat_process_group_cancellation_preserves_partial_stream() {
   fi
   assert_grep "cancellation retains the partial provider stream" \
     "$S/rkill-codex-sol.stream.ndjson" '"type":"item.started"'
+  assert_grep "cancellation records a terminal exit" "$S/rkill-codex-sol.exit" '^143$'
+  local status_line; status_line=$("$SCRIPTS/rev-status.sh" "$S")
+  assert_grep "cancelled seat is no longer reported as running" \
+    <(printf '%s\n' "$status_line") 'codex-sol: failed exit=143'
   seat_env_reset "$_path"
 }
 
