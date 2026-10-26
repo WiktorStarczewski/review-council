@@ -1110,6 +1110,18 @@ test_seat_process_group_cancellation_preserves_partial_stream() {
   assert_grep "cancellation retains the partial provider stream" \
     "$S/rkill-codex-sol.stream.ndjson" '"type":"item.started"'
   assert_grep "cancellation records a terminal exit" "$S/rkill-codex-sol.exit" '^143$'
+  python3 - "$S" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+records = [json.loads(path.read_text()) for path in (Path(sys.argv[1]) / 'attempts').glob('*.json')]
+assert (len(records) == 1 and records[0].get('active_launch') is None
+        and records[0].get('completed_calls') == records[0].get('calls')
+        and records[0].get('launches') == [143]
+        and records[0].get('terminal_intent') is None), records
+PY
+  assert_eq "cancellation closes its reserved attempt as exit 143" "$?" 0
   local status_line; status_line=$("$SCRIPTS/rev-status.sh" "$S")
   assert_grep "cancelled seat is no longer reported as running" \
     <(printf '%s\n' "$status_line") 'codex-sol: failed exit=143'

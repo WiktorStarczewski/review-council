@@ -165,6 +165,7 @@ t-read-bounds.sh::test_adapter_isolation_and_cache_flags	3	normal
 t-read-bounds.sh::test_assigned_patch_chunk_coverage	3	normal
 t-read-bounds.sh::test_claude_hook_line_counts_and_nonexecuted_exploration	3	normal
 t-read-bounds.sh::test_claude_terminal_hook_responses	3	normal
+t-read-bounds.sh::test_codex_command_ids_are_scoped_to_explicit_turns	3	normal
 t-read-bounds.sh::test_codex_multirange_source_batch_contract	3	normal
 t-read-bounds.sh::test_disabled_context_requires_component_boundary	3	normal
 t-read-bounds.sh::test_evidence_audit_failure_modes	3	normal
@@ -263,6 +264,7 @@ t-state.sh::test_state	1	normal
 t-state.sh::test_state_fix_gate	1	normal
 t-status.sh::test_status	1	normal
 t-status.sh::test_status_detects_dead_cli_launches	1	normal
+t-status.sh::test_status_requires_an_agent_task_id	1	normal
 t-status.sh::test_status_rejects_incomplete_or_invalid_results	1	normal
 t-status.sh::test_status_agent_transcripts	1	normal
 t-status.sh::test_status_overflow	1	normal

@@ -110,6 +110,29 @@ PY
   assert_eq "the session briefing also identifies a dead launch" "$context_status" interrupted
 }
 
+test_status_requires_an_agent_task_id() {
+  local S="$T/status-agent-launch"; mkdir -p "$S"
+  "$SCRIPTS/rev-state.sh" "$S" round=1 min_rounds=1 phase=collect \
+    'seats=["opus","opus-2","opus-3"]' open.P0=0 open.P1=0 open.P2=0 fixed=0 >/dev/null
+  printf 'agent\nagent-task-123\n' > "$S/r1-opus.started"
+  printf 'agent\n\n' > "$S/r1-opus-2.started"
+  : > "$S/r1-opus-3.started"
+
+  local line; line=$("$SCRIPTS/rev-status.sh" "$S"); echo "    $line"; echo "$line" > "$T/agent-launch-line"
+  assert_grep "a stored Agent task ID identifies a launched seat" "$T/agent-launch-line" 'opus: running 0m'
+  assert_grep "an empty Agent task ID is interrupted" "$T/agent-launch-line" 'opus-2: interrupted'
+  assert_grep "an empty launch marker is interrupted" "$T/agent-launch-line" 'opus-3: interrupted'
+  python3 "$SCRIPTS/rev-context.py" "$S" --json > "$T/agent-launch-context.json"
+  python3 - "$T/agent-launch-context.json" <<'PY'
+import json
+import sys
+
+statuses = {seat['seat']: seat['status'] for seat in json.load(open(sys.argv[1]))['seats']}
+assert statuses == {'opus': 'running', 'opus-2': 'interrupted', 'opus-3': 'interrupted'}, statuses
+PY
+  assert_eq "the briefing uses the same Agent launch evidence" "$?" 0
+}
+
 test_status_rejects_incomplete_or_invalid_results() {
   local S="$T/status-proof"; mkdir -p "$S"
   "$SCRIPTS/rev-state.sh" "$S" round=1 min_rounds=1 phase=collect \
