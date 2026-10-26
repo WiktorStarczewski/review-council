@@ -97,9 +97,9 @@ test_status_detects_dead_cli_launches() {
 
   local line; line=$("$SCRIPTS/rev-status.sh" "$S"); echo "    $line"; echo "$line" > "$T/dead-launch-line"
   assert_grep "a force-terminated seat is reported as interrupted" "$T/dead-launch-line" \
-    'codex-sol: interrupted'
+    'sol: interrupted'
   assert_nogrep "a dead launch marker is not narrated as active" "$T/dead-launch-line" \
-    'codex-sol: running|codex-sol is still reviewing'
+    'sol: running|sol is still reviewing'
   python3 "$SCRIPTS/rev-context.py" "$S" --json > "$T/dead-launch-context.json"
   local context_status
   context_status=$(python3 - "$T/dead-launch-context.json" <<'PY'

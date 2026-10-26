@@ -1148,7 +1148,7 @@ PY
   assert_eq "cancellation closes its reserved attempt as exit 143" "$?" 0
   local status_line; status_line=$("$SCRIPTS/rev-status.sh" "$S")
   assert_grep "cancelled seat is no longer reported as running" \
-    <(printf '%s\n' "$status_line") 'codex-sol: failed exit=143'
+    <(printf '%s\n' "$status_line") 'sol: failed exit=143'
   seat_env_reset "$_path"
 }
 test_seat_signals_close_attempt_lifecycle() {
@@ -1231,7 +1231,8 @@ PY
     assert_eq "reservation token closes after a catchable signal" "$?" 0
   fi
 
-  S="$T/seat-reserve-group-signal"; seat_roster "$S"; seat_codex_prompt "$S/p.md"
+  S="$T/seat-reserve-group-signal"; seat_roster "$S"
+  seat_codex_prompt "$S/rreserve-group-codex-sol.prompt.md"
   python_bin="$T/reserve-group-signal-python"; seat_write_signal_gate "$python_bin"
   : > "$T/reserve-group-signal-calls"
   set -m
@@ -1239,7 +1240,7 @@ PY
     SIGNAL_ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" SIGNAL_GATE_OPERATION=reserve \
     SIGNAL_GATE_READY="$T/reserve-group-signal.ready" SIGNAL_GATE_RELEASE="$T/reserve-group-signal.release" \
     SHIM_MODE=ok SHIM_CALLS_FILE="$T/reserve-group-signal-calls" \
-    "$SCRIPTS/rev-seat.sh" codex-sol "$S" reserve-group "$S/p.md" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" reserve-group "$S/rreserve-group-codex-sol.prompt.md" \
     > "$T/reserve-group-signal.out" 2>&1 &
   pid=$!; i=0
   while [ ! -e "$T/reserve-group-signal.ready" ] && kill -0 "$pid" 2>/dev/null && [ "$i" -lt 250 ]; do
