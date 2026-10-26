@@ -10,6 +10,8 @@
 
 - Give Luna model seats six times the aggregate repository-read budget while preserving source scope, proof order, per-read bounds, and response-size limits.
 - Run Codex custom reviews through bounded resumable turns with or without prepared evidence, and verify the exact required post-index source range before findings can be finalized.
+- Difference Codex's cumulative thread-usage snapshots across resumed turns and disclose resets instead of double-counting earlier work.
+- Preserve legacy Codex input/output usage while marking uncached input unknown when cache counters are absent.
 
 ## 0.8.10
 

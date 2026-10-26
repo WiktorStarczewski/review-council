@@ -2589,18 +2589,10 @@ JSON
 
 test_narrow_seat_refuses_invalid_audit() {
   ( seat_env; local S="$T/narrow-refusal"; seat_roster "$S"
-    python3 - "$S/roster.json" <<'PY'
-import json, sys
-path = sys.argv[1]
-roster = json.load(open(path))
-for row in roster['seats']:
-    if row['seat'] in ('codex-sol', 'codex-terra'):
-        row['mode'] = 'review'
-open(path, 'w').write(json.dumps(roster) + '\n')
-PY
     cat > "$S/p.md" <<'EOF'
-Evidence manifest SHA-256: 0000000000000000000000000000000000000000000000000000000000000000
+Evidence manifest SHA-256: 000000000000000000000000000000000000000000000000000000000000000
 Assigned scope: semantic
+use at most 4 repository tool calls before stopping this assignment.
 EOF
     SHIM_MODE=unbounded SHIM_CALLS_FILE="$T/narrow-refusal.calls" \
       "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" --base fixture > "$T/narrow-refusal.out" 2>&1
@@ -2613,26 +2605,31 @@ EOF
     assert_grep "seat log names the replacement rule" "$S/r1-codex-sol.log" \
       'replace this assignment on another eligible seat; never relaunch this seat under this label'
     assert_nogrep "seat log does not request an audit retry" "$S/r1-codex-sol.log" 'retry|rerun'
-    local invalid_hash audit_hash
+    local invalid_hash audit_hash calls_before_latch calls_before_sibling calls_after_sibling
     invalid_hash=$(shasum -a 256 "$S/r1-codex-sol.audit-invalid.json" | awk '{print $1}')
     audit_hash=$(shasum -a 256 "$S/r1-codex-sol.read-audit.json" | awk '{print $1}')
+    calls_before_latch=$(wc -l < "$T/narrow-refusal.calls" | tr -d ' ')
     SHIM_MODE=ok SHIM_CALLS_FILE="$T/narrow-refusal.calls" \
       "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" --base fixture > "$T/narrow-relaunch.out" 2>&1
     assert_eq "hard-audit marker refuses a same-generation relaunch" "$?" 2
-    assert_eq "hard-audit relaunch refusal makes no second provider call" \
-      "$(wc -l < "$T/narrow-refusal.calls" | tr -d ' ')" 1
+    assert_eq "hard-audit relaunch refusal makes no provider call" \
+      "$(wc -l < "$T/narrow-refusal.calls" | tr -d ' ')" "$calls_before_latch"
     assert_eq "hard-audit relaunch refusal preserves the diagnostic result" \
       "$(shasum -a 256 "$S/r1-codex-sol.audit-invalid.json" | awk '{print $1}')" "$invalid_hash"
     assert_eq "hard-audit relaunch refusal preserves the invalid audit" \
       "$(shasum -a 256 "$S/r1-codex-sol.read-audit.json" | awk '{print $1}')" "$audit_hash"
     assert_grep "hard-audit relaunch refusal names the latched label and seat" \
       "$T/narrow-relaunch.out" 'codex-sol under label 1 failed a hard evidence audit'
+    calls_before_sibling=$(wc -l < "$T/narrow-refusal.calls" | tr -d ' ')
     SHIM_MODE=ok SHIM_CALLS_FILE="$T/narrow-refusal.calls" \
       "$SCRIPTS/rev-seat.sh" codex-terra "$S" 1 "$S/p.md" --base fixture > "$T/sibling-relaunch.out" 2>&1
     assert_nogrep "the latch does not refuse a sibling under the same label" \
       "$T/sibling-relaunch.out" 'failed a hard evidence audit'
-    assert_eq "the sibling makes its own provider call" \
-      "$(wc -l < "$T/narrow-refusal.calls" | tr -d ' ')" 2
+    calls_after_sibling=$(wc -l < "$T/narrow-refusal.calls" | tr -d ' ')
+    [ "$calls_after_sibling" -gt "$calls_before_sibling" ] \
+      && ok "the sibling makes its own bounded Codex turns" \
+      || fail "the sibling makes its own bounded Codex turns" \
+        "expected more than $calls_before_sibling calls, got $calls_after_sibling"
   )
 }
 
@@ -2722,17 +2719,8 @@ EOF
       "$S/rmalformed-codex-sol.log" 'legacy review; result retained as advisory'
 
     S="$T/audit-failure-full"; seat_roster "$S"
-    python3 - "$S/roster.json" <<'PY'
-import json, sys
-path = sys.argv[1]
-roster = json.load(open(path))
-for row in roster['seats']:
-    if row['seat'] == 'codex-sol':
-        row['mode'] = 'review'
-open(path, 'w').write(json.dumps(roster) + '\n')
-PY
     cat > "$S/full-evidence.md" <<'EOF'
-Evidence manifest SHA-256: 0000000000000000000000000000000000000000000000000000000000000000
+Evidence manifest SHA-256: 000000000000000000000000000000000000000000000000000000000000000
 Assigned scope: full
 use at most 4 repository tool calls before stopping this assignment.
 EOF

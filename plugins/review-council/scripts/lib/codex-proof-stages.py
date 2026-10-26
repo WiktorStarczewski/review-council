@@ -147,6 +147,18 @@ def required_post_index_read(prompt):
         raise StageError(str(error)) from error
 
 
+def required_post_index_target_description(prompt):
+    audit = read_audit_module()
+    try:
+        target = audit.parse_required_post_index_source_target(
+            Path(prompt).read_text(encoding='utf-8').splitlines())
+    except (OSError, UnicodeError, ValueError) as error:
+        raise StageError(str(error)) from error
+    if target is None:
+        return ''
+    return f"{target['path']}:{target['line_start']}-{target['line_end']}"
+
+
 def codex_call_rows(path):
     calls = {}
     turn = None
@@ -209,6 +221,8 @@ def codex_call_rows(path):
 
 def post_index_target_read_count(path, prompt, root, session):
     audit = read_audit_module()
+    root = Path(root).resolve()
+    session = Path(session).resolve()
     try:
         prompt_lines = Path(prompt).read_text(encoding='utf-8').splitlines()
         target = audit.parse_required_post_index_source_target(prompt_lines)
@@ -235,10 +249,10 @@ def post_index_target_read_count(path, prompt, root, session):
                 or call['order'] <= index_call['order']:
             continue
         ranges, _ = audit.shell_source_ranges(
-            call['command'], Path(root), session=Path(session),
+            call['command'], root, session=session,
             line_limit=audit.CODEX_SOURCE_READ_LINES)
         if not audit.delivered_matches_source_ranges(
-                'codex', 'command_execution', call['output'], ranges, Path(root)):
+                'codex', 'command_execution', call['output'], ranges, root):
             continue
         post_index_ranges.extend(ranges)
         if audit._load_evidence_module().source_target_covered(
@@ -554,6 +568,7 @@ def main():
     parser.add_argument('--review-budget')
     parser.add_argument('--stage-read-count')
     parser.add_argument('--required-post-index-read')
+    parser.add_argument('--required-post-index-target')
     parser.add_argument('--review-status')
     parser.add_argument('--turn-stats')
     parser.add_argument('--post-index-target-read-count')
@@ -577,6 +592,13 @@ def main():
     if args.required_post_index_read:
         try:
             print('1' if required_post_index_read(args.required_post_index_read) else '0')
+        except (OSError, UnicodeError, StageError) as error:
+            print('codex proof staging: ' + str(error), file=sys.stderr)
+            return 1
+        return 0
+    if args.required_post_index_target:
+        try:
+            print(required_post_index_target_description(args.required_post_index_target))
         except (OSError, UnicodeError, StageError) as error:
             print('codex proof staging: ' + str(error), file=sys.stderr)
             return 1

@@ -1000,8 +1000,9 @@ def main():
 
 
 def usage_detail(usage):
-    return "uncached_input=%d reasoning_output=%d cache_write_5m_input=%d cache_write_1h_input=%d reported_cost_usd=%.2f cost_known=%d cost_unknown=%d terminal_identity_unknown=%d" % (
-        usage["uncached_input_tokens"], usage["reasoning_output_tokens"],
+    return "uncached_input=%d uncached_input_unknown_calls=%d reasoning_output=%d cache_write_5m_input=%d cache_write_1h_input=%d reported_cost_usd=%.2f cost_known=%d cost_unknown=%d terminal_identity_unknown=%d" % (
+        usage["uncached_input_tokens"], usage["uncached_input_unknown_calls"],
+        usage["reasoning_output_tokens"],
         usage["cache_write_5m_input_tokens"], usage["cache_write_1h_input_tokens"],
         usage["cost_usd"], usage["cost_usd_known_calls"], usage["cost_usd_unknown_calls"],
         usage["unidentified_terminal_calls"])

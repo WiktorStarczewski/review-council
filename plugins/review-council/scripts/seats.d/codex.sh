@@ -153,6 +153,8 @@ EOF
     esac
     MAX_REVIEW_TURNS=$((REVIEW_READ_BUDGET + 1))
     REQUIRED_POST_INDEX=$(python3 "$STAGES_HELPER" --required-post-index-read "$PROMPT") || exit 1
+    REQUIRED_POST_INDEX_TARGET=$(python3 "$STAGES_HELPER" \
+      --required-post-index-target "$PROMPT") || exit 1
     REVIEW_READS=0
     REVIEW_TARGET_READS=0
     REVIEW_READY=0
@@ -240,9 +242,9 @@ EOF
           fi
           if [ "$REQUIRED_POST_INDEX" = 1 ] && [ "$REVIEW_TARGET_READS" -eq 0 ]; then
             if [ "$REVIEW_INDEX_READS" -eq 0 ]; then
-              NEXT_STEP='Read the complete evidence navigation index named in the original assignment in a separate turn, then read the exact required original-source target in a later turn before finalizing.'
+              NEXT_STEP="Read the complete evidence navigation index named in the original assignment, then read the exact required original-source target $REQUIRED_POST_INDEX_TARGET in a later turn before finalizing."
             else
-              NEXT_STEP='Read the exact required original-source target in a later explicit turn before finalizing.'
+              NEXT_STEP="Read the exact required original-source target $REQUIRED_POST_INDEX_TARGET in a later explicit turn before finalizing."
             fi
           else
             REVIEW_READY=1

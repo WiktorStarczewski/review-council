@@ -201,8 +201,8 @@ while :; do
     [ -z "$reserve_error" ] || printf 'rev-seat: %s\n' "$reserve_error" >&2
     [ -z "$reserve_error" ] || printf '%s\n' "$reserve_error" >> "$LOG"
     if [ "$reserve_rc" -eq 7 ]; then
-      echo "persistent provider-call cap reached for this seat generation" >> "$LOG"
-      echo "rev-seat: persistent provider-call cap reached for this seat generation" >&2
+      echo "persistent adapter-launch cap reached for this seat generation" >> "$LOG"
+      echo "rev-seat: persistent adapter-launch cap reached for this seat generation" >&2
       PUBLISH_UNRESERVED_EXIT=1
     fi
     finish "$reserve_rc"

@@ -251,7 +251,9 @@ for index, names in enumerate(expected, 1):
     assert '--output-schema' not in args, (index, args)
     assert 'read-only' in args or 'sandbox_mode="read-only"' in args, (index, args)
     if index == 1:
-        assert args[0] == 'exec' and str(root.parent) in args, args
+        assert args[0] == 'exec', args
+        root_arg = args[args.index('-C') + 1]
+        assert Path(root_arg).resolve(strict=True) == root.parent, args
     else:
         assert args[0] == 'exec' and args[1] == 'resume', args
         assert 'fixture-thread' in args, args
@@ -269,17 +271,20 @@ for args in (first_review_args, next_review_args, required_review_args, ready_re
     assert args[0:2] == ['exec', 'resume'], args
     assert 'fixture-thread' in args, args
     assert 'sandbox_mode="read-only"' in args, args
-assert '--output-schema' in first_review_args and 'review-turn.schema.json' in first_review_args, first_review_args
-assert '--output-schema' in next_review_args and 'review-turn.schema.json' in next_review_args, next_review_args
-assert '--output-schema' in required_review_args and 'review-turn.schema.json' in required_review_args, required_review_args
-assert '--output-schema' in ready_review_args and 'review-turn.schema.json' in ready_review_args, ready_review_args
-assert '--output-schema' in final_args and 'findings.schema.json' in final_args, final_args
 assert 'Review this prepared assignment' in first_review_prompt, first_review_prompt
 assert 'already been read in earlier explicit turns' in first_review_prompt, first_review_prompt
 assert 'Next evidence question:' in next_review_prompt and 'src/two.ts' in next_review_prompt, next_review_prompt
 required_review_prompt = (root / 'calls' / 'call-10.stdin').read_text(encoding='utf-8')
 assert 'Next evidence question:' in required_review_prompt and 'src/three.ts' in required_review_prompt, required_review_prompt
 assert 'Return the final findings JSON' in final_prompt, final_prompt
+for args, expected_schema in (
+        (first_review_args, 'review-turn.schema.json'),
+        (next_review_args, 'review-turn.schema.json'),
+        (required_review_args, 'review-turn.schema.json'),
+        (ready_review_args, 'review-turn.schema.json'),
+        (final_args, 'findings.schema.json')):
+    schema_index = args.index('--output-schema')
+    assert Path(args[schema_index + 1]).name == expected_schema, args
 
 events = [json.loads(line) for line in (root / 'raw.ndjson').read_text().splitlines()]
 assert sum(event.get('type') == 'turn.started' for event in events) == 13
@@ -894,11 +899,18 @@ exec "$REAL_PYTHON" "$@"
 SH
   cat > "$bin/codex" <<'SH'
 #!/bin/bash
-out=""; prev=""
-for a in "$@"; do [ "$prev" = "-o" ] && out=$a; prev=$a; done
+out=""; prev=""; schema=""
+for a in "$@"; do
+  [ "$prev" != "-o" ] || out=$a
+  [ "$prev" != "--output-schema" ] || schema=${a##*/}
+  prev=$a
+done
 "$SHIM_CODEX" "$@" || exit
-printf '%s\n' '{"summary":"INCOMPLETE PROOF: the failed launch left source unread","findings":[]}' > "$out"
-exit 1
+if [ "$schema" = findings.schema.json ]; then
+  printf '%s\n' '{"summary":"INCOMPLETE PROOF: the failed launch left source unread","findings":[]}' > "$out"
+  exit 1
+fi
+exit 0
 SH
   chmod +x "$bin/python3" "$bin/codex"
   PATH="$bin:$PATH" REAL_PYTHON="$real_python" ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" \
@@ -1080,11 +1092,15 @@ PY
     env -u REV_REPO SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md"
   ) > "$T/scope-root.out"
   assert_eq "scope-root seat exits successfully outside the repository" "$?" 0
-  assert_grep "Codex receives the frozen scope root" "$T/args" "^$R$"
-  assert_nogrep "Codex does not receive the caller's unrelated directory" "$T/args" "^$CALLER$"
+  assert_eq "the review and findings turns run from the frozen scope root" \
+    "$(grep -Fx -c "cwd=$R" "$T/args.env" | tr -d ' ')" 2
+  assert_eq "Codex does not run from the caller's unrelated directory" \
+    "$(grep -Fx -c "cwd=$CALLER" "$T/args.env" | tr -d ' ')" 0
   env REV_REPO="$CALLER" SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" 2 "$S/p.md" > "$T/scope-override.out"
   assert_eq "scope root overrides a stale REV_REPO" "$?" 0
-  assert_grep "a stale override still launches from the frozen root" "$T/args" "^$R$"
-  assert_nogrep "a stale override cannot redirect the provider" "$T/args" "^$CALLER$"
+  assert_eq "the stale override still uses the frozen scope root" \
+    "$(grep -Fx -c "cwd=$R" "$T/args.env" | tr -d ' ')" 4
+  assert_eq "the stale override cannot redirect the provider" \
+    "$(grep -Fx -c "cwd=$CALLER" "$T/args.env" | tr -d ' ')" 0
   seat_env_reset "$_path"
 }
