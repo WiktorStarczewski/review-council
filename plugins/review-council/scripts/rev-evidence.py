@@ -3564,7 +3564,14 @@ def plan_path_resolution(token, entries):
 def plan_field_paths(text, entries):
     """Resolve every path-like token in a plan field against the pinned tree."""
     entries = set(entries)
-    for escape in re.finditer(r'(?<!\S)\S*?(?<![\w@.-])(?:/|\.\.?/)\S*', text):
+    quoted_paths = list(re.finditer(r'`([^`\n]+)`(?::(\d+)(?:-(\d+))?)?', text))
+    escape_text = list(text)
+    for quoted in quoted_paths:
+        start, end = quoted.span()
+        escape_text[start:end] = ['\n' if char == '\n' else ' '
+                               for char in text[start:end]]
+    escape_text = ''.join(escape_text)
+    for escape in re.finditer(r'(?<!\S)\S*?(?<![\w@.-])(?:/|\.\.?/)\S*', escape_text):
         token = escape.group(0).rstrip(',;)]}')
         root_relative = token[2:] if token.startswith('./') else ''
         root_relative = re.sub(r':\d+(?:-\d+)?$', '', root_relative)
@@ -3573,7 +3580,7 @@ def plan_field_paths(text, entries):
     candidates = []
     protected = []
 
-    for quoted in re.finditer(r'`([^`\n]+)`(?::(\d+)(?:-(\d+))?)?', text):
+    for quoted in quoted_paths:
         protected.append(quoted.span())
         token = quoted.group(1)
         line_start = int(quoted.group(2)) if quoted.group(2) else None
