@@ -402,6 +402,32 @@ assert ('Required post-index original-source boundary: a.txt\n'
         in rendered.getvalue()), rendered.getvalue()
 PY
     assert_eq "required source boundary skips paths absent from the frozen snapshot" "$?" 0
+    python3 - "$SCRIPTS/rev-evidence.py" "$manifest" <<'PY'
+import contextlib
+import copy
+import io
+import json
+import runpy
+import sys
+
+module = runpy.run_path(sys.argv[1])
+with open(sys.argv[2], encoding='utf-8') as stream:
+    manifest = json.load(stream)
+manifest = copy.deepcopy(manifest)
+manifest['assignments']['sol']['model'] = 'gpt-6.1-luna'
+capacity = manifest['task_capacity']
+capacity['schema_version'] = 1
+capacity['seats']['sol']['repository_refutation_turns'] = 4
+for row in capacity['seats'].values():
+    row.pop('repository_expansion_call_limit', None)
+    row.pop('repository_refutation_call_reserve', None)
+    row.pop('mandatory_repository_read_limit', None)
+rendered = io.StringIO()
+with contextlib.redirect_stdout(rendered):
+    module['render_seat'](manifest, 'a' * 64, 'sol', None)
+assert 'refutation reserve 24 turns' in rendered.getvalue(), rendered.getvalue()
+PY
+    assert_eq "legacy schema-1 Luna estimate shows its normalized refutation reserve" "$?" 0
     assert_grep "paired baseline renders the narrow no-context expansion budget" "$disabled_prompt" \
       'use at most 20 repository tool calls.*Finish required reads by call 16.*reserve calls 17-20 for refutation'
     assert_grep "paired baseline keeps component-scoped assigned patch" "$disabled_prompt" \
