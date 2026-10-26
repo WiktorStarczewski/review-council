@@ -2894,7 +2894,9 @@ PY
 import json, sys
 path, model = sys.argv[1:]
 roster = json.load(open(path))
-roster['seats'][0]['model'] = model
+for row in roster['seats']:
+    if row.get('adapter') == 'codex':
+        row['model'] = model
 open(path, 'w').write(json.dumps(roster) + '\n')
 PY
   fi
@@ -2910,6 +2912,16 @@ for seat, context in doc['source_context']['seats'].items():
 PY
 ) || return
   [ -n "$seat" ] || { fail "pinned-read fixture assigns a codex seat a required source read"; return 1; }
+  if [ -n "$model" ]; then
+    local assigned_model
+    assigned_model=$(python3 - "$manifest" "$seat" <<'PY'
+import json, sys
+manifest, seat = sys.argv[1:]
+print(json.load(open(manifest))['assignments'][seat].get('model') or '')
+PY
+) || return
+    assert_eq "prepared assignment preserves its roster model" "$assigned_model" "$model"
+  fi
   bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"][sys.argv[2]]["bundle"])' "$manifest" "$seat") || return
   "$SCRIPTS/rev-prompt.sh" "$S" "$label" "$seat" "$bundle" pinned-read --evidence "$manifest" > "$S/fixture.prompt" || return
   printf '%s\n' "$manifest" > "$S/fixture.manifest"; printf '%s\n' "$seat" > "$S/fixture.seat"
@@ -3054,9 +3066,12 @@ command = "sed -n '1,1p' src/asset.rs"
 output = subprocess.run(['/bin/sh', '-c', command], cwd=root, check=True,
                         capture_output=True, text=True).stdout
 
-def assess(seat, model, calls):
+def assess(seat, calls):
     (session / 'roster.json').write_text(json.dumps({
-        'seats': [{'seat': seat, 'adapter': 'codex', 'model': model}],
+        'seats': [
+            {'seat': 'luna', 'adapter': 'codex', 'model': 'gpt-6.1-luna'},
+            {'seat': 'sol', 'adapter': 'codex', 'model': 'gpt-6.1-sol'},
+        ],
     }) + '\n')
     prompt = session / f'r27-{seat}.prompt.md'
     prompt.write_text('Assigned scope: full\n')
@@ -3078,15 +3093,14 @@ def assess(seat, model, calls):
     proc = subprocess.run([
         sys.executable, str(audit), 'audit', '--adapter', 'codex',
         '--raw', str(raw), '--prompt', str(prompt), '--root', str(root),
-        '--session', str(session), '--out', str(out),
+        '--session', str(session), '--seat', seat, '--out', str(out),
     ], capture_output=True, text=True)
     return proc.returncode, json.loads(out.read_text())
 
-for seat, model, limit in (
-        ('sol', 'gpt-6.1-luna', 96), ('terra', 'gpt-6.1-sol', 16)):
-    code, audit_doc = assess(seat, model, limit)
+for seat, limit in (('luna', 96), ('sol', 16)):
+    code, audit_doc = assess(seat, limit)
     assert code == 0 and not audit_doc['violations'], (seat, code, audit_doc['violations'])
-    code, audit_doc = assess(seat, model, limit + 1)
+    code, audit_doc = assess(seat, limit + 1)
     assert code == 2 and {row['code'] for row in audit_doc['violations']} == {
         'repository-expansion-call-limit'}, (seat, code, audit_doc['violations'])
     assert audit_doc['evidence_scoped'] is False

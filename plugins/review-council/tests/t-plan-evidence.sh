@@ -2225,8 +2225,9 @@ assert plan_capacity['seats']['luna']['mandatory_repository_read_limit'] == 72
 assert plan_capacity['seats']['sol']['mandatory_repository_read_limit'] == 12
 assert module.capacity_refusal_rows(plan_capacity) == [{
     'seat':'sol', 'limit':12, 'count':13, 'target':None,
-    'windows':[{'path':f'src/sol{index}.py','line_start':1,'line_end':1}
-               for index in range(13)]}]
+    'windows':sorted([
+        {'path':f'src/sol{index}.py','line_start':1,'line_end':1}
+        for index in range(13)], key=lambda row:row['path'])}]
 PY
     assert_eq "mandatory plan reads compile under the reserved repository-call budget" "$?" 0
     assert_eq "successful prepare removes a stale capacity diagnostic" \
