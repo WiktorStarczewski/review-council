@@ -1173,3 +1173,13 @@ Design: `docs/superpowers/specs/2026-10-25-codex-proof-read-pairing-design.md`. 
 Normal review found a P2 where Codex output events after `turn.completed` could still earn pair credit. Re-review confirmed the same-turn output check and the final release candidate, with no actionable P0-P2 findings. Expected-red run `40239050569` on test-only SHA `0d6e1e04f1b1bfb5aa0c1b9d52cd9880cb34a95e` passed proof preparation and Cursor packaging, while Ubuntu and macOS exposed that regression plus stale packet, duplicate-read, turn-boundary, and capacity expectations. Those failures are recorded as input to the current exact-head candidate; no green result is claimed yet.
 
 Candidate run `40241061688` on `c30dbeff64ee38bf58ab47413f0b84d5af1b4ce4` passed proof preparation and Cursor packaging. Ubuntu and macOS each passed 5,155 shell assertions and failed four in two stale fixtures: the oversized-sibling plan case lacked explicit Codex turn boundaries, and the host skill assertion expected Claude-only wording. Ubuntu's 582 Python tests passed. Both fixture corrections were re-reviewed clean and committed as `83585e5`; exact-head CI is pending.
+
+## Prompt-only seats must remain pending
+
+- [ ] Add a regression proving CLI launch markers appear only after a successful reservation.
+- [ ] Prove the marker regression fails on exact source in Ubuntu and macOS CI.
+- [ ] Write launch markers for CLI and Agent seats, and use them for active status and elapsed time.
+- [ ] Complete independent normal review and exact-head Ubuntu, macOS, proof-preparation, and package checks.
+- [ ] Integrate after the 0.8.11 release and publish the next signed release.
+
+Run `40292882622` on test head `e9746c8` confirms the prompt-only state and duration regressions on both operating systems. Each verifier passed 5,158 assertions and failed the four expected assertions across `t-cost-session.sh` and `t-status.sh`; proof preparation passed. The separate launch-marker writer regression is now being added before implementation.

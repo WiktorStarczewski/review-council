@@ -63,6 +63,7 @@ test_seat_codex() {
   local S="$T/seat-codex"; seat_roster "$S"; echo "review the diff" > "$S/p.md"; : > "$T/args.env"
   SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" > "$T/out.txt"; local rc=$?
   assert_eq "codex ok exit" "$rc" 0
+  assert_exit "codex launch records a start marker" 0 test -f "$S/r1-codex-sol.started"
   assert_grep "prints summary line" "$T/out.txt" '^seat=codex-sol round=1 exit=0 findings=1$'
   assert_grep "writes .exit" "$S/r1-codex-sol.exit" '^0$'
   assert_grep "json copied" "$S/r1-codex-sol.json" '"severity": ?"P1"'
@@ -297,6 +298,8 @@ SH
   else
     fail "the prior exit remains until a reservation succeeds" "the old exit was removed or changed"
   fi
+  assert_eq "a blocked reservation has no launch marker" \
+    "$([ -e "$W/rblocked-codex-sol.started" ] && echo present || echo absent)" absent
   : > "$T/reserve.release"
   wait "$reserve_pid"; reserve_rc=$?
   assert_eq "blocked cap refusal exits with reserve status" "$reserve_rc" 7
