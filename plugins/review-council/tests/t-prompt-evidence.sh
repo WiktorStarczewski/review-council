@@ -412,8 +412,12 @@ limit = runpy.run_path(sys.argv[1])['repository_expansion_call_limit_for_seat']
 assert limit(True, None) == 20
 assert limit(False, None) == 16
 assert limit(True, {'path': 'src/asset.rs'}) == 16
+assert limit(True, None, 'gpt-6.1-luna') == 120
+assert limit(False, None, 'gpt-6.1-luna') == 96
+assert limit(True, {'path': 'src/asset.rs'}, 'gpt-6.1-luna') == 96
+assert limit(True, None, 'gpt-6.1-sol') == 20
 PY
-    assert_eq "only source-required seats without a prepared target receive four extra calls" "$?" 0
+    assert_eq "Luna receives six times the aggregate repository-call budget by model" "$?" 0
 
     local default_manifest
     default_manifest=$(python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 13 \

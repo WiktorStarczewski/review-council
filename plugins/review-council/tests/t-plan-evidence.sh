@@ -2178,15 +2178,52 @@ context = {'seats': {
     'claude': {'shards':[], 'required_source_ranges':[], 'source_read_required':False},
 }}
 assignments = {
-    'luna': {'adapter':'codex', 'patch_set':'p', 'patch_lines':160},
-    'claude': {'adapter':'claude', 'patch_set':'p', 'patch_lines':240},
+    'luna': {'adapter':'codex', 'model':'gpt-6.1-luna', 'patch_set':'p', 'patch_lines':160},
+    'claude': {'adapter':'claude', 'model':'claude-sonnet', 'patch_set':'p', 'patch_lines':240},
 }
 compiled = module.compile_task_capacity(assignments, patch_sets, context)
 assert compiled['seats']['luna']['patch_proof_calls'] == 1
 assert compiled['seats']['claude']['patch_proof_calls'] == 1
+assert compiled['seats']['luna']['repository_expansion_call_limit'] == 96
+assert compiled['seats']['luna']['repository_refutation_call_reserve'] == 24
+assert compiled['seats']['luna']['mandatory_repository_read_limit'] == 72
+assert compiled['seats']['claude']['repository_expansion_call_limit'] == 16
+assert compiled['seats']['claude']['repository_refutation_call_reserve'] == 4
+assert compiled['seats']['claude']['mandatory_repository_read_limit'] == 12
 assert module.merge_repository_windows([('src/a.rs', 1, 121)], 40) == [
     ('src/a.rs', 1, 40), ('src/a.rs', 41, 80),
     ('src/a.rs', 81, 120), ('src/a.rs', 121, 121)]
+
+plan_clusters = [
+    {'id': 'luna-cluster', 'paths': [
+        {'path': f'src/luna{index}.py', 'line_start': 1, 'line_end': 1}
+        for index in range(13)]},
+    {'id': 'sol-cluster', 'paths': [
+        {'path': f'src/sol{index}.py', 'line_start': 1, 'line_end': 1}
+        for index in range(13)]},
+]
+plan_assignments = {
+    'luna': {'adapter':'codex', 'model':'gpt-6.1-luna', 'patch_set':'p',
+             'patch_lines':160, 'plan_clusters':['luna-cluster']},
+    'sol': {'adapter':'codex', 'model':'gpt-6.1-sol', 'patch_set':'p',
+            'patch_lines':160, 'plan_clusters':['sol-cluster']},
+}
+plan_context = {'snapshot_tree':'a' * 40, 'seats': {
+    'luna': {'shards':[], 'required_source_ranges':[],
+             'omitted_source_ranges':[], 'source_read_required':False},
+    'sol': {'shards':[], 'required_source_ranges':[],
+            'omitted_source_ranges':[], 'source_read_required':False},
+}}
+plan_capacity = module.compile_task_capacity(
+    plan_assignments, patch_sets, plan_context, plan_clusters)
+assert plan_capacity['seats']['luna']['mandatory_repository_reads'] == 13
+assert plan_capacity['seats']['sol']['mandatory_repository_reads'] == 13
+assert plan_capacity['seats']['luna']['mandatory_repository_read_limit'] == 72
+assert plan_capacity['seats']['sol']['mandatory_repository_read_limit'] == 12
+assert module.capacity_refusal_rows(plan_capacity) == [{
+    'seat':'sol', 'limit':12, 'count':13, 'target':None,
+    'windows':[{'path':f'src/sol{index}.py','line_start':1,'line_end':1}
+               for index in range(13)]}]
 PY
     assert_eq "mandatory plan reads compile under the reserved repository-call budget" "$?" 0
     assert_eq "successful prepare removes a stale capacity diagnostic" \

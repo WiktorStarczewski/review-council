@@ -2866,7 +2866,7 @@ PY
 # every call; the second ran a line-bounded search over a minified bundle (about 1 MB returned)
 # beside a bounded `git show <base commit>:<path>` read.
 pinned_read_fixture() {
-  local R=$1 S=$2 label=$3
+  local R=$1 S=$2 label=$3 model=${4:-}
   mkrepo "$R"; mkdir -p "$R/src" "$S"
   python3 - "$R" <<'PY' || return
 import sys
@@ -2889,6 +2889,15 @@ PY
     "$base" "$R" > "$S/scope.env"
   printf 'src/asset.rs\n' > "$S/files.txt"; : > "$S/untracked.txt"
   printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+  if [ -n "$model" ]; then
+    python3 - "$S/roster.json" "$model" <<'PY'
+import json, sys
+path, model = sys.argv[1:]
+roster = json.load(open(path))
+roster['seats'][0]['model'] = model
+open(path, 'w').write(json.dumps(roster) + '\n')
+PY
+  fi
   local manifest seat bundle
   manifest=$(REV_SOURCE_CONTEXT=0 python3 "$SCRIPTS/rev-evidence.py" prepare "$S" "$label" --phase discovery) || return
   seat=$(python3 - "$manifest" <<'PY'
@@ -3003,7 +3012,7 @@ elif mode == 'minified-search':
     for first, last in ((1, 40), (41, 80)):
         pinned('base-read-' + str(first),
                f"git show {{REV}}:src/asset.rs | sed -n '{first},{last}p'", base)
-elif mode in ('scoped-expansion-20', 'scoped-expansion-21'):
+elif mode.startswith('scoped-expansion-'):
     boundaries = sorted({
         path for component in manifest['components']
         if component['id'] in manifest['source_context']['seats'][seat]['components']
@@ -3012,7 +3021,8 @@ elif mode in ('scoped-expansion-20', 'scoped-expansion-21'):
     boundary = next(path for path in boundaries if (root / path).is_file())
     source = f"sed -n '1,40p' {shlex.quote(boundary)}"
     command('required-boundary', source, run(source))
-    search_count = 19 if mode == 'scoped-expansion-20' else 20
+    total_calls = int(mode.rsplit('-', 1)[1])
+    search_count = total_calls - 1
     for index in range(search_count):
         search = "rg -n -F 'V0' src | head -80"
         command('scoped-search-' + str(index), search, run(search))
@@ -3144,6 +3154,29 @@ assert any(row['origin'] == 'tool' and row['path'] in boundaries
            for row in audit['source_ranges'])
 PY
       assert_eq "$mode enforces the scoped proof budget against the assigned boundary" "$?" 0
+    done
+
+    local LR="$T/scoped-budget-luna-root" LS="$T/scoped-budget-luna-session" luna_seat
+    pinned_read_fixture "$LR" "$LS" "$label" gpt-6.1-luna || return
+    luna_seat=$(cat "$LS/fixture.seat"); base=$(cat "$LS/fixture.base")
+    printf '%s\n' '{"summary":"checked","findings":[]}' > "$LS/r$label-$luna_seat.json"
+    assert_grep "Luna prompt publishes the sixfold total and reserved-call budget" \
+      "$LS/fixture.prompt" 'use at most 120 repository tool calls.*Finish required reads by call 96.*reserve calls 97-120 for refutation'
+    for mode in scoped-expansion-120 scoped-expansion-121; do
+      pinned_read_transcript "$(cat "$LS/fixture.manifest")" \
+        "$LS/r$label-$luna_seat.stream.ndjson" "$LR" "$base" "$mode"
+      pinned_read_audit "$LR" "$LS" "$label" "$luna_seat"
+      assert_eq "Luna $mode transcript remains auditable" "$?" 0
+      python3 - "$LS/r$label-$luna_seat.read-audit.json" "$mode" <<'PY'
+import json, sys
+audit = json.load(open(sys.argv[1]))
+mode = sys.argv[2]
+codes = {row['code'] for row in audit['advisories']}
+expected = {'repository-expansion-call-limit'} if mode == 'scoped-expansion-121' else set()
+assert audit['status'] == 'valid' and not audit['violations'], audit
+assert codes == expected, (codes, expected)
+PY
+      assert_eq "Luna keeps the sixfold cap without relaxing proof validity" "$?" 0
     done
   )
 }
