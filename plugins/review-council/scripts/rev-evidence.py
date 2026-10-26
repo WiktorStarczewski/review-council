@@ -719,6 +719,34 @@ def pr_progress_ancestry(repo, prior, head, live_head):
 def pr_progress_idle(session):
     attempt_api = attempt_module()
     terminal = set()
+    for marker in session.glob('r*.started'):
+        stem = marker.name.removesuffix('.started')
+        if not SAFE_NAME.fullmatch(stem) or '-' not in stem[1:]:
+            raise ValueError('invalid PR progression launch marker')
+        marker_raw = attempt_api.private_bytes(marker)
+        try:
+            exit_raw = attempt_api.private_bytes(session / (stem + '.exit'))
+        except FileNotFoundError:
+            raise ValueError('PR progression found an unresolved provider launch: ' + stem) from None
+        try:
+            exit_code = exit_raw.strip().decode('ascii')
+        except UnicodeError:
+            raise ValueError('invalid PR progression launch exit: ' + stem) from None
+        if exit_code not in attempt_api.RECORDED_EXITS:
+            raise ValueError('invalid PR progression launch exit: ' + stem)
+        try:
+            rows = marker_raw.decode('utf-8').splitlines()
+        except UnicodeError:
+            raise ValueError('invalid PR progression launch marker') from None
+        if rows and rows[0] == 'agent':
+            task_id = rows[1] if len(rows) == 2 else ''
+            if (not task_id or len(task_id) > 512
+                    or any(ord(character) < 32 or ord(character) == 127 for character in task_id)):
+                raise ValueError('invalid PR progression Agent task marker')
+            terminal.add(stem)
+        elif (len(rows) != 3 or rows[0] != 'cli'
+              or not re.fullmatch(r'[1-9][0-9]*', rows[1]) or not rows[2].strip()):
+            raise ValueError('invalid PR progression launch marker')
     directory = session / 'attempts'
     if directory.is_symlink():
         raise ValueError('redirected PR progression attempt directory')
@@ -737,7 +765,8 @@ def pr_progress_idle(session):
         calls = attempt.get('calls')
         launches = attempt.get('launches', [])
         if (type(calls) is not int or calls < 0 or not isinstance(launches, list)
-                or any(type(code) is not int or code not in (0, 1, 2, 3, 4, 7) for code in launches)
+                or any(type(code) is not int or str(code) not in attempt_api.RECORDED_EXITS
+                       for code in launches)
                 or len(launches) > calls):
             raise ValueError('invalid PR progression launch lifecycle')
         completed = attempt.get('completed_calls')

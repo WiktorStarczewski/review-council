@@ -196,11 +196,12 @@ def codex_call_rows(path):
                 if not isinstance(call_id, str) or not call_id \
                         or not isinstance(command, str):
                     raise StageError('Codex review turn has an invalid command event')
-                call = calls.get(call_id)
+                identity = (turn, call_id)
+                call = calls.get(identity)
                 if call is None:
                     order += 1
                     call = {'command': command, 'turn': turn, 'order': order}
-                    calls[call_id] = call
+                    calls[identity] = call
                 elif call['command'] != command or call['turn'] != turn:
                     raise StageError('Codex review turn changed a command identity')
                 if event_type == 'item.completed':
@@ -435,7 +436,7 @@ def prepared_stages(prompt, seat, model, stage_dir):
         stages.extend([{'kind': 'patch chunks', 'files': group}
                        for group in grouped(verified_chunks, patch_limit,
                                             lambda item: item['visible'])])
-    elif patch_mode == 'full':
+    elif patch_mode in ('full', 'windows'):
         patch_path = direct_path(assignment.get('patch'), session)
         raw = artifact_bytes(session, artifacts, patch_path.name,
                              assignment.get('patch_sha256'), assignment.get('patch_bytes'),

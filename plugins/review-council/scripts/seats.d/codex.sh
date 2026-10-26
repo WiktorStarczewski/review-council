@@ -177,13 +177,13 @@ EOF
         fi
         cat >> "$REVIEW_PROMPT" <<'EOF'
 
-Keep post-index repository investigation within bounded explicit turns. In each turn, use no more than two separate repository read commands and keep their combined output at or below 32 KiB. If more evidence is needed after this turn, return status "continue" with one concrete next evidence question in next_step. If the evidence is sufficient to finish, return status "ready" with an empty next_step. Do not return findings in these bounded turns.
+Keep post-index repository investigation within bounded explicit turns. Each explicit turn permits at most two command_execution calls total, of any kind, and no more than 32 KiB of combined output. The assignment's aggregate in-scope repository-read allowance applies across the full review and all explicit turns; it does not reset at a turn boundary. If more evidence is needed after this turn, return status "continue" with one concrete next evidence question in next_step. If the evidence is sufficient to finish, return status "ready" with an empty next_step. Do not return findings in these bounded turns.
 EOF
       elif [ "$REVIEW_READS" -ge "$REVIEW_READ_BUDGET" ]; then
         NO_MORE_READS=1
         {
           cat <<'EOF'
-The repository expansion-call budget is exhausted. Do not use tools. Review the evidence and reasoning already in this conversation. Return status "ready" with an empty next_step if you can finish; otherwise return status "continue" and name the unfinished evidence obligation. Do not return findings yet.
+The assignment's aggregate in-scope repository-read allowance is exhausted across all explicit turns. Do not use tools. Review the evidence and reasoning already in this conversation. Return status "ready" with an empty next_step if you can finish; otherwise return status "continue" and name the unfinished evidence obligation. Do not return findings yet.
 
 Unfinished evidence question:
 EOF
@@ -192,7 +192,7 @@ EOF
       else
         {
           cat <<'EOF'
-Continue the same assigned review using the prepared evidence and prior review reasoning in this conversation. Do not reread prepared artifacts. Keep this explicit turn to at most two separate repository read commands and at most 32 KiB combined output. If more evidence is needed, return status "continue" and one concrete next evidence question in next_step. If ready to finish, return status "ready" with an empty next_step. Do not return findings yet.
+Continue the same assigned review using the prepared evidence and prior review reasoning in this conversation. Do not reread prepared artifacts. This explicit turn permits at most two command_execution calls total, of any kind, and at most 32 KiB of combined output. The assignment's aggregate in-scope repository-read allowance applies across the full review and all explicit turns; it does not reset at a turn boundary. If more evidence is needed, return status "continue" and one concrete next evidence question in next_step. If ready to finish, return status "ready" with an empty next_step. Do not return findings yet.
 
 Next evidence question:
 EOF
@@ -262,7 +262,7 @@ EOF
     else
       {
         cat <<'EOF'
-Finalize the review now. The bounded post-index review turns or repository read budget are exhausted. Do not use tools or reread prepared evidence. If evidence is insufficient to finish any required check, return an empty findings array and a summary beginning `INCOMPLETE PROOF:` that names the unfinished obligations.
+Finalize the review now. The bounded post-index turn limit or assignment-wide repository-read allowance is exhausted. Do not use tools or reread prepared evidence. If evidence is insufficient to finish any required check, return an empty findings array and a summary beginning `INCOMPLETE PROOF:` that names the unfinished obligations.
 
 Last evidence question:
 EOF

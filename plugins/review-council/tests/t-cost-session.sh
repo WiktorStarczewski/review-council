@@ -1,18 +1,22 @@
 test_cost_session_brief_keeps_incomplete_results_visible() {
   local S="$T/cost-session"; mkdir -p "$S"
-  printf '%s\n' '{"phase":"collect","round":"2p","min_rounds":"adaptive","seats":["terra","opus"],"open":{"P1":1},"fixed":2}' > "$S/state.json"
-  printf '%s\n' '{"seats":[{"seat":"terra","adapter":"codex","model":"gpt-5.6-terra","effort":"max"},{"seat":"opus","adapter":"claude","model":"opus","effort":"max"}]}' > "$S/roster.json"
+  printf '%s\n' '{"phase":"fan-out","round":"2p","min_rounds":"adaptive","seats":["terra","opus","sonnet"],"open":{"P1":1},"fixed":2}' > "$S/state.json"
+  printf '%s\n' '{"seats":[{"seat":"terra","adapter":"codex","model":"gpt-5.6-terra","effort":"max"},{"seat":"opus","adapter":"claude","model":"opus","effort":"max"},{"seat":"sonnet","adapter":"claude","model":"sonnet","effort":"max"}]}' > "$S/roster.json"
   printf '0\n' > "$S/r2p-terra.exit"
   printf '%s\n' '{"summary":"INCOMPLETE PROOF: missing source","findings":[]}' > "$S/r2p-terra.json"
   : > "$S/r2p-opus.prompt.md"
+  : > "$S/r2p-sonnet.prompt.md"
+  rc_write_live_launch_marker "$S/r2p-sonnet.started"
+  printf 'tool_call shell: rg "started" src\n' > "$S/r2p-sonnet.log"
   python3 "$SCRIPTS/rev-context.py" "$S" --json > "$T/cost-session.json"
   python3 - "$T/cost-session.json" <<'PY'
 import json, sys
 value = json.load(open(sys.argv[1]))
 assert value['round'] == '2p'
-assert value['phase'] == 'collect'
+assert value['phase'] == 'fan-out'
 assert value['seats'][0]['status'] == 'incomplete-proof', value
-assert value['seats'][1]['status'] == 'running', value
+assert value['seats'][1]['status'] == 'pending', value
+assert value['seats'][2]['status'] == 'running', value
 assert value['seats'][0]['model'] == 'gpt-5.6-terra'
 assert value['open'] == {'P1': 1}
 assert value['certification'] == 'not evaluated'
@@ -129,7 +133,7 @@ PY
 
 test_cost_session_watch_uses_narrated_live_status() {
   python3 - "$SCRIPTS/rev-context.py" "$T/cost-watch-narrated" <<'PY'
-import contextlib, importlib.util, io, json, subprocess, sys
+import contextlib, importlib.util, io, json, os, subprocess, sys
 from pathlib import Path
 from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('cost_context_narrated', sys.argv[1])
@@ -139,6 +143,10 @@ session = Path(sys.argv[2]); session.mkdir()
     'phase':'collect','round':'1','min_rounds':1,'seats':['opus'],
     'open':{'P1':1},'fixed':0}))
 (session/'r1-opus.prompt.md').write_text('review prompt\n')
+pid = os.getpid()
+started = subprocess.run(['ps', '-p', str(pid), '-o', 'lstart='], capture_output=True,
+                         text=True, check=True, env={**os.environ, 'LC_ALL':'C'}).stdout.strip()
+(session/'r1-opus.started').write_text(f'cli\n{pid}\n{started}\n')
 log = session/'r1-opus.log'
 log.write_text('tool_call shell: rg "pair" src/pair.ts\n')
 state = json.loads((session/'state.json').read_text())
@@ -156,6 +164,9 @@ def sleep(seconds):
         state['phase'] = 'done'
         (session/'state.json').write_text(json.dumps(state))
 def run_status(args, **kwargs):
+    if args and isinstance(args, (list, tuple)) and args[0] == 'ps':
+        assert list(args) == ['ps', '-p', str(pid), '-o', 'lstart='], args
+        return subprocess.CompletedProcess(args, 0, started + '\n', '')
     if state['phase'] == 'done':
         status = 'Council is in done; live finding: pair validation is skipped'
     else:

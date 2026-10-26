@@ -124,6 +124,7 @@ valid_reports = {}
 for seat in seats:
     base = os.path.join(S, f"r{rnd}-{seat}")
     js, ex, lg, pr = base + '.json', base + '.exit', base + '.log', base + '.prompt.md'
+    launch = mtime(base + '.started')
     name = SHORT.get(seat, seat)
     sdk_identity_valid = False
     if seat in sdk_seats:
@@ -152,16 +153,17 @@ for seat in seats:
                 seats_out.append((f"{name}: incomplete proof", '')); continue
             if seat in sdk_seats and (not sdk_identity_valid or not profile.is_completed_sdk_result(Path(js), seat)):
                 seats_out.append((f"{name}: invalid SDK proof", '')); continue
-            dur = minutes(started, mtime(ex)) if started else 0
+            dur = minutes(launch or started, mtime(ex)) if launch or started else 0
             valid_reports[seat] = report
             seats_out.append((f"{name}: done {len(report['findings'])}f {dur}m", ''))
         else:
             seats_out.append((f"{name}: failed exit={code}", ''))
         continue
-    if started is None:
-        seats_out.append((f"{name}: pending", '')); continue
+    launch_state, launch_started = context_tools['launch_state_with_mtime'](Path(base + '.started'))
+    if launch_state != 'running':
+        seats_out.append((f"{name}: {launch_state}", '')); continue
     act = seat_action(seat, lg)
-    seats_out.append((f"{name}: running {minutes(started, now)}m", act))
+    seats_out.append((f"{name}: running {minutes(launch_started, now)}m", act))
 
 o = st.get('open') or {}
 header = f"r{rnd}/{mn} {phase} | "
@@ -198,7 +200,8 @@ running = [(prefix, action) for prefix, action in seats_out if ': running ' in p
 pending = sum(': pending' in prefix for prefix, _ in seats_out)
 failed = sum(any(marker in prefix for marker in (
     ': failed ', ': invalid SDK proof', ': missing result', ': invalid result',
-    ': incomplete proof', ': semantic rejection', ': invalid semantic rejection')) for prefix, _ in seats_out)
+    ': incomplete proof', ': interrupted', ': semantic rejection',
+    ': invalid semantic rejection')) for prefix, _ in seats_out)
 dropped_count = sum(': dropped' in prefix for prefix, _ in seats_out)
 open_count = sum(counts.values())
 story = [f"Council is in {phase}, round {rnd} of {mn}: {done} of {len(seats_out)} review seats have returned results."]

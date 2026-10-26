@@ -15,6 +15,24 @@ seat_codex_prompt() {
     'use at most 4 repository tool calls before stopping this assignment.' \
     'review the diff' > "$1"
 }
+seat_write_signal_gate() {
+  local bin=$1
+  mkdir -p "$bin"
+  cat > "$bin/python3" <<'SH'
+#!/bin/bash
+if [ "$1" = "$SIGNAL_ATTEMPT_HELPER" ] && [ "$2" = "$SIGNAL_GATE_OPERATION" ]; then
+  "$REAL_PYTHON" "$@"
+  gate_rc=$?
+  if [ "$gate_rc" -eq 0 ] && { [ "$2" = reserve ] || [ "$7" = 0 ]; }; then
+    : > "$SIGNAL_GATE_READY"
+    while [ ! -e "$SIGNAL_GATE_RELEASE" ]; do sleep 0.02; done
+  fi
+  exit "$gate_rc"
+fi
+exec "$REAL_PYTHON" "$@"
+SH
+  chmod +x "$bin/python3"
+}
 seat_roster() {  # seat_roster <session-dir> - the roster.json rev-preflight.sh leaves in the session dir.
   # Written by hand on purpose: these tests exercise rev-seat.sh's dispatch, not roster.sh's detection.
   mkdir -p "$1"
@@ -44,6 +62,11 @@ JSON
 test_seat_codex_instructions_required() {
   ( seat_env
     local COPY="$T/instruction-plugin" S="$T/instruction-seat" variant
+    assert_grep "reviewer instructions use narrow search paths and terms" \
+      "$SK/scripts/lib/reviewer-instructions.md" 'narrowest known path and specific symbols or literals'
+    assert_grep "reviewer instructions split sibling-file searches" \
+      "$SK/scripts/lib/reviewer-instructions.md" \
+      'Search sibling files or identifiers in separate bounded calls; do not combine multi-file `rg` calls with `head`\.'
     copy_writable_tree "$SK" "$COPY"
     mkdir -p "$S"
     printf 'review\n' > "$S/p.md"
@@ -61,6 +84,85 @@ test_seat_codex_instructions_required() {
       assert_grep "$variant instructions name the local failure" "$S/err" 'missing reviewer instructions'
     done
   )
+}
+
+test_seat_codex_prepared_proof_batches_respect_per_read_and_turn_limits() {
+  python3 - "$SCRIPTS/lib/codex-proof-stages.py" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location('codex_proof_stages', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert module.PROOF_TURN_BYTES == module.read_audit_module().PATCH_TURN_OUTPUT_BYTES
+chunks = ['patch chunk 1', 'patch chunk 2']
+visible_bytes = {chunk: 24_500 for chunk in chunks}
+stages = module.grouped(chunks, 2, lambda chunk: visible_bytes[chunk])
+assert stages == [chunks], stages
+assert all(visible_bytes[chunk] <= module.OUTPUT_BYTES for chunk in chunks)
+assert all(sum(visible_bytes[chunk] for chunk in stage) <= module.PROOF_TURN_BYTES
+           for stage in stages), stages
+over_limit = ['large patch chunk 1', 'large patch chunk 2']
+over_limit_bytes = {chunk: 31 * 1024 for chunk in over_limit}
+over_limit_stages = module.grouped(
+    over_limit, 2, lambda chunk: over_limit_bytes[chunk])
+assert over_limit_stages == [[over_limit[0]], [over_limit[1]]], over_limit_stages
+PY
+  assert_eq "prepared proof reads keep per-call and paired-turn byte limits" "$?" 0
+}
+
+test_seat_codex_prepares_window_mode_patch_reads() {
+  python3 - "$SCRIPTS/lib/codex-proof-stages.py" "$T" <<'PY'
+import hashlib
+import importlib.util
+import json
+import re
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location('codex_proof_stages', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+session = (Path(sys.argv[2]) / 'codex-window-mode').resolve()
+session.mkdir()
+patch = session / 'r1-full.patch'
+raw = ''.join(f'patch line {line}\n' for line in range(1, 186)).encode()
+patch.write_bytes(raw)
+index = session / 'r1-evidence.md'
+index.write_text('evidence index\n', encoding='utf-8')
+artifacts = {
+    path.name: {'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+    for path in (patch, index)
+}
+manifest = {
+    'label': '1', 'session': str(session), 'artifacts': artifacts,
+    'assignments': {'codex-luna': {
+        'adapter': 'codex', 'model': 'gpt-6.1-luna',
+        'patch': str(patch), 'patch_sha256': artifacts[patch.name]['sha256'],
+        'patch_bytes': len(raw), 'patch_lines': 185, 'patch_read_mode': 'windows',
+    }},
+    'source_context': {'seats': {'codex-luna': {'shards': [], 'required_source_ranges': []}}},
+}
+manifest_raw = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode() + b'\n'
+(session / 'r1-evidence.manifest.json').write_bytes(manifest_raw)
+prompt = session / 'r1-codex-luna.prompt.md'
+prompt.write_text('\n'.join([
+    'Evidence manifest SHA-256: ' + hashlib.sha256(manifest_raw).hexdigest(),
+    'Assigned patch read mode: windows',
+    f'Read the entire assigned patch in bounded windows of at most 160 lines, ending at line 185: {patch}',
+    f'Evidence navigation index: {index}',
+]) + '\n', encoding='utf-8')
+stages = module.prepared_stages(prompt, 'codex-luna', 'gpt-6.1-luna', session / 'stages')
+windows = [stage for stage in stages if stage['kind'] == 'patch window']
+ranges = []
+for stage in windows:
+    match = re.search(r'sed -n (\d+),(\d+)p', stage['files'][0]['command'])
+    assert match, stage
+    ranges.append(tuple(map(int, match.groups())))
+assert ranges == [(1, 160), (161, 185)], ranges
+assert stages[-1]['kind'] == 'evidence navigation index', stages
+PY
+  assert_eq "window-mode assigned patches are staged as bounded ordered reads" "$?" 0
 }
 
 test_seat_codex_stages_prepared_evidence() {
@@ -273,6 +375,7 @@ for args in (first_review_args, next_review_args, required_review_args, ready_re
     assert 'sandbox_mode="read-only"' in args, args
 assert 'Review this prepared assignment' in first_review_prompt, first_review_prompt
 assert 'already been read in earlier explicit turns' in first_review_prompt, first_review_prompt
+assert 'at most two command_execution calls total' in first_review_prompt, first_review_prompt
 assert 'Next evidence question:' in next_review_prompt and 'src/two.ts' in next_review_prompt, next_review_prompt
 required_review_prompt = (root / 'calls' / 'call-10.stdin').read_text(encoding='utf-8')
 assert 'Next evidence question:' in required_review_prompt and 'src/three.ts' in required_review_prompt, required_review_prompt
@@ -442,10 +545,18 @@ PY
 test_seat_codex() {
   local _path="$PATH"; seat_env
   local S="$T/seat-codex"; seat_roster "$S"; seat_codex_prompt "$S/p.md"; : > "$T/args.env"
+  printf 'stale marker\n' > "$S/r1-codex-sol.started"
   mkdir -p "$S/calls"; : > "$S/calls.log"
   SHIM_MODE=ok SHIM_CALLS_FILE="$S/calls.log" SHIM_STAGE_DIR="$S/calls" \
     "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" > "$T/out.txt"; local rc=$?
   assert_eq "codex ok exit" "$rc" 0
+  assert_exit "codex launch records a start marker" 0 test -f "$S/r1-codex-sol.started"
+  assert_eq "launch marker records pid and process start identity" \
+    "$(wc -l < "$S/r1-codex-sol.started" | tr -d ' ')" 3
+  assert_grep "launch marker identifies a CLI launch" "$S/r1-codex-sol.started" '^cli$'
+  assert_grep "launch marker stores the wrapper pid" "$S/r1-codex-sol.started" '^[0-9]+$'
+  assert_grep "launch marker stores the process start time" "$S/r1-codex-sol.started" \
+    '^[A-Z][a-z]{2} [A-Z][a-z]{2} [ 0-9][0-9] [0-9:]{8} [0-9]{4}$'
   assert_grep "prints summary line" "$T/out.txt" '^seat=codex-sol round=1 exit=0 findings=1$'
   assert_grep "writes .exit" "$S/r1-codex-sol.exit" '^0$'
   assert_grep "json copied" "$S/r1-codex-sol.json" '"severity": ?"P1"'
@@ -653,6 +764,7 @@ SH
 
   local W="$T/seat-reserve-window"; seat_roster "$W"; seat_codex_prompt "$W/p.md"
   echo 0 > "$W/rblocked-codex-sol.exit"
+  printf 'prior launch\n' > "$W/rblocked-codex-sol.started"
   local python_bin="$T/reserve-python-bin" real_python reserve_pid reserve_rc i=0
   real_python=$(command -v python3)
   mkdir -p "$python_bin"
@@ -681,6 +793,8 @@ SH
   else
     fail "the prior exit remains until a reservation succeeds" "the old exit was removed or changed"
   fi
+  assert_eq "a blocked reservation preserves prior launch evidence" \
+    "$(cat "$W/rblocked-codex-sol.started")" "prior launch"
   : > "$T/reserve.release"
   wait "$reserve_pid"; reserve_rc=$?
   assert_eq "blocked cap refusal exits with reserve status" "$reserve_rc" 7
@@ -1064,11 +1178,15 @@ PY
 }
 test_seat_process_group_cancellation_preserves_partial_stream() {
   local _path="$PATH"; seat_env
-  local S="$T/seat-cancel"; seat_roster "$S"; seat_codex_prompt "$S/p.md"
+  local S="$T/seat-cancel"; seat_roster "$S"
+  seat_codex_prompt "$S/r1-codex-sol.prompt.md"
+  "$SCRIPTS/rev-state.sh" "$S" round=1 min_rounds=1 phase=collect \
+    'seats=["codex-sol"]' open.P0=0 open.P1=0 open.P2=0 fixed=0 >/dev/null
   local child_file="$T/seat-cancel-child.pid" leader pgid child i=0
   set -m
   SHIM_MODE=hang_with_child SHIM_CHILD_PID_FILE="$child_file" \
-    "$SCRIPTS/rev-seat.sh" codex-sol "$S" kill "$S/p.md" > "$T/seat-cancel.out" 2>&1 &
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/r1-codex-sol.prompt.md" \
+    > "$T/seat-cancel.out" 2>&1 &
   leader=$!
   while [ ! -s "$child_file" ] && kill -0 "$leader" 2>/dev/null && [ "$i" -lt 100 ]; do
     sleep 0.1; i=$((i + 1))
@@ -1097,7 +1215,312 @@ test_seat_process_group_cancellation_preserves_partial_stream() {
     ok "cancellation reaches the provider descendant"
   fi
   assert_grep "cancellation retains the partial provider stream" \
-    "$S/rkill-codex-sol.stream.ndjson" '"type":"item.started"'
+    "$S/r1-codex-sol.stream.ndjson" '"type":"item.started"'
+  assert_grep "cancellation records a terminal exit" "$S/r1-codex-sol.exit" '^143$'
+  python3 - "$S" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+records = [json.loads(path.read_text()) for path in (Path(sys.argv[1]) / 'attempts').glob('*.json')]
+assert (len(records) == 1 and records[0].get('active_launch') is None
+        and records[0].get('completed_calls') == records[0].get('calls')
+        and records[0].get('launches') == [143]
+        and records[0].get('terminal_intent') is None), records
+PY
+  assert_eq "cancellation closes its reserved attempt as exit 143" "$?" 0
+  local status_line; status_line=$("$SCRIPTS/rev-status.sh" "$S")
+  assert_grep "cancelled seat is no longer reported as running" \
+    <(printf '%s\n' "$status_line") 'sol: failed exit=143'
+  seat_env_reset "$_path"
+}
+test_seat_signals_close_attempt_lifecycle() {
+  local _path="$PATH"; seat_env
+  local real_python python_bin pid pgid rc i S="$T/seat-complete-signal"
+  seat_roster "$S"; seat_codex_prompt "$S/p.md"
+  real_python=$(PATH="$_path" command -v python3)
+  python_bin="$T/complete-signal-python"; seat_write_signal_gate "$python_bin"
+  env PATH="$python_bin:$PATH" REAL_PYTHON="$real_python" \
+    SIGNAL_ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" SIGNAL_GATE_OPERATION=complete \
+    SIGNAL_GATE_READY="$T/complete.ready" SIGNAL_GATE_RELEASE="$T/complete.release" \
+    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" complete "$S/p.md" \
+    > "$T/complete-signal.out" 2>&1 &
+  pid=$!; i=0
+  while [ ! -e "$T/complete.ready" ] && kill -0 "$pid" 2>/dev/null && [ "$i" -lt 250 ]; do
+    sleep 0.02; i=$((i + 1))
+  done
+  if [ ! -e "$T/complete.ready" ]; then
+    fail "completion test reaches the persisted success intent" "wrapper exited before completion was gated"
+    : > "$T/complete.release"
+    kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  else
+    kill -TERM "$pid" 2>/dev/null || true
+    : > "$T/complete.release"
+    wait "$pid"; rc=$?
+    assert_eq "a signal after success intent preserves the successful exit" "$rc" 0
+    assert_grep "completion keeps its successful exit" "$S/rcomplete-codex-sol.exit" '^0$'
+    python3 - "$S" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+records = [json.loads(path.read_text()) for path in (Path(sys.argv[1]) / 'attempts').glob('*.json')]
+assert (len(records) == 1 and records[0].get('active_launch') is None
+        and records[0].get('completed_calls') == records[0].get('calls')
+        and records[0].get('launches') == [0]
+        and records[0].get('terminal_intent') is None), records
+PY
+    assert_eq "success intent is recorded once after a catchable signal" "$?" 0
+  fi
+
+  S="$T/seat-reserve-signal"; seat_roster "$S"; seat_codex_prompt "$S/p.md"
+  python_bin="$T/reserve-signal-python"; seat_write_signal_gate "$python_bin"
+  : > "$T/reserve-signal-calls"
+  env PATH="$python_bin:$PATH" REAL_PYTHON="$real_python" \
+    SIGNAL_ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" SIGNAL_GATE_OPERATION=reserve \
+    SIGNAL_GATE_READY="$T/reserve-signal.ready" SIGNAL_GATE_RELEASE="$T/reserve-signal.release" \
+    SHIM_MODE=ok SHIM_CALLS_FILE="$T/reserve-signal-calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" reserve "$S/p.md" \
+    > "$T/reserve-signal.out" 2>&1 &
+  pid=$!; i=0
+  while [ ! -e "$T/reserve-signal.ready" ] && kill -0 "$pid" 2>/dev/null && [ "$i" -lt 250 ]; do
+    sleep 0.02; i=$((i + 1))
+  done
+  if [ ! -e "$T/reserve-signal.ready" ]; then
+    fail "reserve test reaches the persisted launch token" "wrapper exited before reservation was gated"
+    : > "$T/reserve-signal.release"
+    kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  else
+    kill -TERM "$pid" 2>/dev/null || true
+    : > "$T/reserve-signal.release"
+    wait "$pid"; rc=$?
+    assert_eq "a signal after reservation records cancellation" "$rc" 143
+    assert_grep "a signalled reservation publishes its exit" "$S/rreserve-codex-sol.exit" '^143$'
+    assert_eq "a signalled reservation never launches the provider" \
+      "$(wc -l < "$T/reserve-signal-calls" | tr -d ' ')" 0
+    python3 - "$S" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+records = [json.loads(path.read_text()) for path in (Path(sys.argv[1]) / 'attempts').glob('*.json')]
+assert (len(records) == 1 and records[0].get('active_launch') is None
+        and records[0].get('completed_calls') == records[0].get('calls')
+        and records[0].get('launches') == [143]
+        and records[0].get('terminal_intent') is None), records
+PY
+    assert_eq "reservation token closes after a catchable signal" "$?" 0
+  fi
+
+  S="$T/seat-reserve-group-signal"; seat_roster "$S"
+  seat_codex_prompt "$S/rreserve-group-codex-sol.prompt.md"
+  python_bin="$T/reserve-group-signal-python"; seat_write_signal_gate "$python_bin"
+  : > "$T/reserve-group-signal-calls"
+  set -m
+  env PATH="$python_bin:$PATH" REAL_PYTHON="$real_python" \
+    SIGNAL_ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" SIGNAL_GATE_OPERATION=reserve \
+    SIGNAL_GATE_READY="$T/reserve-group-signal.ready" SIGNAL_GATE_RELEASE="$T/reserve-group-signal.release" \
+    SHIM_MODE=ok SHIM_CALLS_FILE="$T/reserve-group-signal-calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" reserve-group "$S/rreserve-group-codex-sol.prompt.md" \
+    > "$T/reserve-group-signal.out" 2>&1 &
+  pid=$!; i=0
+  while [ ! -e "$T/reserve-group-signal.ready" ] && kill -0 "$pid" 2>/dev/null && [ "$i" -lt 250 ]; do
+    sleep 0.02; i=$((i + 1))
+  done
+  if [ ! -e "$T/reserve-group-signal.ready" ]; then
+    fail "group cancellation test reaches the persisted launch token" "wrapper exited before reservation was gated"
+    : > "$T/reserve-group-signal.release"
+    kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  else
+    pgid=$(ps -o pgid= -p "$pid" | tr -d ' ')
+    assert_eq "reservation test owns an isolated process group" "$pgid" "$pid"
+    kill -TERM "-$pgid" 2>/dev/null || true
+    wait "$pid"; rc=$?
+    assert_eq "group cancellation preserves the wrapper signal exit" "$rc" 143
+    assert_grep "group cancellation publishes its reserved exit" "$S/rreserve-group-codex-sol.exit" '^143$'
+    assert_eq "group cancellation never launches the provider" \
+      "$(wc -l < "$T/reserve-group-signal-calls" | tr -d ' ')" 0
+    python3 - "$S" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+records = [json.loads(path.read_text()) for path in (Path(sys.argv[1]) / 'attempts').glob('*.json')]
+assert (len(records) == 1 and records[0].get('active_launch') is None
+        and records[0].get('completed_calls') == records[0].get('calls')
+        and records[0].get('launches') == [143]
+        and records[0].get('terminal_intent') is None), records
+PY
+    assert_eq "group cancellation closes its persisted reservation" "$?" 0
+    python3 - "$S" "$SCRIPTS/rev-evidence.py" <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location('review_council_evidence_test', sys.argv[2])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+module.pr_progress_idle(Path(sys.argv[1]))
+PY
+    assert_eq "PR progression accepts a completed signal-exit launch" "$?" 0
+  fi
+
+  S="$T/seat-reserve-precommit-group-signal"; seat_roster "$S"; seat_codex_prompt "$S/p.md"
+  python_bin="$T/reserve-precommit-python"; seat_write_signal_gate "$python_bin"
+  local site_dir="$T/reserve-precommit-site"
+  mkdir -p "$site_dir"
+  cat > "$site_dir/sitecustomize.py" <<'PY'
+import json
+import os
+import time
+from pathlib import Path
+
+original_dump = json.dump
+original_replace = os.replace
+
+def gated_dump(value, stream, *args, **kwargs):
+    ready = os.environ.get('SIGNAL_GATE_READY')
+    release = os.environ.get('SIGNAL_GATE_RELEASE')
+    if (isinstance(value, dict) and value.get('calls') == 1
+            and isinstance(value.get('active_launch'), str)
+            and os.environ.get('SIGNAL_GATE_POINT') != 'after-publication'
+            and ready and release and not os.path.exists(ready)):
+        with open(ready, 'w', encoding='utf-8'):
+            pass
+        while not os.path.exists(release):
+            time.sleep(0.02)
+    return original_dump(value, stream, *args, **kwargs)
+
+def gated_replace(source, destination, *args, **kwargs):
+    result = original_replace(source, destination, *args, **kwargs)
+    ready = os.environ.get('SIGNAL_GATE_READY')
+    release = os.environ.get('SIGNAL_GATE_RELEASE')
+    if (os.environ.get('SIGNAL_GATE_POINT') == 'after-publication'
+            and Path(source).name.startswith('.attempt-')
+            and Path(destination).suffix == '.json'
+            and ready and release and not os.path.exists(ready)):
+        with open(ready, 'w', encoding='utf-8'):
+            pass
+        while not os.path.exists(release):
+            time.sleep(0.02)
+    return result
+
+json.dump = gated_dump
+os.replace = gated_replace
+PY
+  : > "$T/reserve-precommit-calls"
+  env PATH="$python_bin:$PATH" REAL_PYTHON="$real_python" PYTHONPATH="$site_dir" \
+    SIGNAL_ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" SIGNAL_GATE_OPERATION=reserve \
+    SIGNAL_GATE_READY="$T/reserve-precommit.ready" SIGNAL_GATE_RELEASE="$T/reserve-precommit.release" \
+    SHIM_MODE=ok SHIM_CALLS_FILE="$T/reserve-precommit-calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" reserve-precommit "$S/p.md" \
+    > "$T/reserve-precommit.out" 2>&1 &
+  pid=$!; i=0
+  while [ ! -e "$T/reserve-precommit.ready" ] && kill -0 "$pid" 2>/dev/null && [ "$i" -lt 500 ]; do
+    sleep 0.02; i=$((i + 1))
+  done
+  if [ ! -e "$T/reserve-precommit.ready" ]; then
+    fail "first reservation can be interrupted before publication" "reservation write was not gated"
+    : > "$T/reserve-precommit.release"
+    kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  else
+    pgid=$(ps -o pgid= -p "$pid" | tr -d ' ')
+    assert_eq "prepublication cancellation test owns an isolated process group" "$pgid" "$pid"
+    kill -TERM "-$pgid" 2>/dev/null || true
+    : > "$T/reserve-precommit.release"
+    wait "$pid" 2>/dev/null; rc=$?
+    assert_eq "group cancellation interrupts the first reservation" "$rc" 143
+    local records; records=$(python3 - "$S/attempts" <<'PY'
+from pathlib import Path
+import sys
+print(len(list(Path(sys.argv[1]).glob('*.json'))))
+PY
+    )
+    assert_eq "a cancelled first reservation publishes no partial attempt record" "$records" 0
+    env PATH="$python_bin:$PATH" REAL_PYTHON="$real_python" SHIM_MODE=ok \
+      SHIM_CALLS_FILE="$T/reserve-precommit-calls" \
+      "$SCRIPTS/rev-seat.sh" codex-sol "$S" reserve-precommit "$S/p.md" \
+      > "$T/reserve-precommit-retry.out" 2>&1
+    rc=$?
+    assert_eq "same-label reservation succeeds after prepublication cancellation" "$rc" 0
+  fi
+
+  S="$T/seat-reserve-publication-signal"; seat_roster "$S"; seat_codex_prompt "$S/p.md"
+  : > "$T/reserve-publication-calls"
+  env PATH="$python_bin:$PATH" REAL_PYTHON="$real_python" PYTHONPATH="$site_dir" \
+    SIGNAL_ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" SIGNAL_GATE_OPERATION=reserve \
+    SIGNAL_GATE_POINT=after-publication SIGNAL_GATE_READY="$T/reserve-publication.ready" \
+    SIGNAL_GATE_RELEASE="$T/reserve-publication.release" SHIM_MODE=ok \
+    SHIM_CALLS_FILE="$T/reserve-publication-calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" reserve-publication "$S/p.md" \
+    > "$T/reserve-publication.out" 2>&1 &
+  pid=$!; i=0
+  while [ ! -e "$T/reserve-publication.ready" ] && kill -0 "$pid" 2>/dev/null && [ "$i" -lt 500 ]; do
+    sleep 0.02; i=$((i + 1))
+  done
+  if [ ! -e "$T/reserve-publication.ready" ]; then
+    fail "first reservation publishes atomically before returning" "rename window was not gated"
+    : > "$T/reserve-publication.release"
+    kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  else
+    pgid=$(ps -o pgid= -p "$pid" | tr -d ' ')
+    assert_eq "publication cancellation test owns an isolated process group" "$pgid" "$pid"
+    kill -TERM "-$pgid" 2>/dev/null || true
+    : > "$T/reserve-publication.release"
+    wait "$pid" 2>/dev/null; rc=$?
+    assert_eq "cancellation after atomic publication closes its reservation" "$rc" 143
+    python3 - "$S" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+paths = list((Path(sys.argv[1]) / 'attempts').glob('*.json'))
+records = [json.loads(path.read_text()) for path in paths]
+assert (len(records) == 1 and paths[0].stat().st_nlink == 1
+        and records[0].get('active_launch') is None
+        and records[0].get('completed_calls') == records[0].get('calls')
+        and records[0].get('launches') == [143]
+        and records[0].get('terminal_intent') is None), records
+PY
+    assert_eq "post-publication cancellation leaves a complete single-link record" "$?" 0
+    env PATH="$python_bin:$PATH" REAL_PYTHON="$real_python" SHIM_MODE=ok \
+      SHIM_CALLS_FILE="$T/reserve-publication-calls" \
+      "$SCRIPTS/rev-seat.sh" codex-sol "$S" reserve-publication "$S/p.md" \
+      > "$T/reserve-publication-retry.out" 2>&1
+    rc=$?
+    assert_eq "same-label reservation succeeds after publication cancellation" "$rc" 0
+  fi
+
+  local A="$T/pr-progress-active-agent"; mkdir -p "$A"
+  printf 'agent\nagent-task-123\n' > "$A/r1-opus.started"
+  python3 - "$A" "$SCRIPTS/rev-evidence.py" <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location('review_council_progress_test', sys.argv[2])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+session = Path(sys.argv[1])
+try:
+    module.pr_progress_idle(session)
+except ValueError as error:
+    assert 'unresolved provider launch' in str(error), error
+else:
+    raise AssertionError('active Agent launch was treated as idle')
+(session / 'r1-opus.exit').write_text('143\n', encoding='utf-8')
+(session / 'r1-opus.stream.ndjson').write_text('{"type":"agent transcript"}\n', encoding='utf-8')
+module.pr_progress_idle(session)
+PY
+  assert_eq "PR progression waits for an Agent launch and accepts its terminal transcript" "$?" 0
+  set +m
   seat_env_reset "$_path"
 }
 

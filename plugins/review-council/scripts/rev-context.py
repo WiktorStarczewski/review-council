@@ -34,6 +34,32 @@ def semantic_rejection_state(session, panel, seat):
     return 'semantic rejection' if rejected is not None else None
 
 
+def read_file_with_mtime(path, optional=False):
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        if optional:
+            return None, None
+        raise ValueError(f'missing {path.name}') from None
+    except OSError:
+        raise ValueError(f'cannot safely read {path.name}') from None
+    with os.fdopen(fd, 'rb') as stream:
+        before = os.fstat(stream.fileno())
+        if not stat.S_ISREG(before.st_mode):
+            raise ValueError(f'{path.name} must be a regular file')
+        raw = stream.read(1024 * 1024 + 1)
+        after = os.fstat(stream.fileno())
+    if len(raw) > 1024 * 1024:
+        raise ValueError(f'{path.name} exceeds the briefing read limit')
+    identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
+    if identity(before) != identity(after):
+        raise ValueError(f'{path.name} changed while being read')
+    try:
+        return raw.decode('utf-8'), after.st_mtime
+    except UnicodeError:
+        raise ValueError(f'{path.name} must contain UTF-8') from None
+
+
 def read_file(path, optional=False):
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -53,6 +79,37 @@ def read_file(path, optional=False):
         return raw.decode('utf-8')
     except UnicodeError:
         raise ValueError(f'{path.name} must contain UTF-8') from None
+
+
+def launch_state_with_mtime(path):
+    try:
+        marker, started = read_file_with_mtime(path, optional=True)
+    except ValueError:
+        return 'interrupted', None
+    if marker is None:
+        return 'pending', None
+    rows = marker.splitlines()
+    if rows and rows[0] == 'agent':
+        task_id = rows[1] if len(rows) == 2 else ''
+        state = ('running' if task_id and len(task_id) <= 512
+                 and all(ord(character) >= 32 and ord(character) != 127
+                         for character in task_id) else 'interrupted')
+        return state, started
+    if len(rows) != 3 or rows[0] != 'cli' or not re.fullmatch(r'[1-9][0-9]*', rows[1]):
+        return 'interrupted', started
+    try:
+        process = subprocess.run(['ps', '-p', rows[1], '-o', 'lstart='],
+                                 capture_output=True, text=True, errors='replace', timeout=2,
+                                 env={**os.environ, 'LC_ALL': 'C'})
+    except (OSError, subprocess.SubprocessError):
+        return 'interrupted', started
+    state = ('running' if process.returncode == 0
+             and process.stdout.strip() == rows[2].strip() else 'interrupted')
+    return state, started
+
+
+def launch_state(path):
+    return launch_state_with_mtime(path)[0]
 
 
 def pairs_unique(pairs):
@@ -147,7 +204,7 @@ def briefing(session):
                     status = 'incomplete-proof' if result['summary'].startswith('INCOMPLETE PROOF') else 'ready-for-collection'
                     entry['findings'] = len(result['findings'])
         else:
-            status = 'running' if read_file(Path(f'{base}.prompt.md'), optional=True) is not None else 'pending'
+            status = launch_state(Path(f'{base}.started'))
         entry['status'] = status
         summaries.append(entry)
     opened = state.get('open', {})

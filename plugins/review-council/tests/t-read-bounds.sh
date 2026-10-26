@@ -3632,7 +3632,7 @@ counter = [0]
 def lines_of(path, start, end):
     return ''.join(pathlib.Path(path).read_text().splitlines(keepends=True)[start - 1:end])
 def build(call):
-    counter[0] += 1; identity = f'c{counter[0]}'
+    counter[0] += 1; identity = call.get('id', f'c{counter[0]}')
     if 'oversized' in call:
         if adapter == 'codex':
             return identity, 'command_execution', {'command': 'cat -- ' + shlex.quote(str(prompt))}, 'z' * (33 * 1024) + '\n'
@@ -4230,5 +4230,64 @@ a clean batch with a sibling-result operand|sed -n '1,20p' src/wide.rs; sed -n '
 an overlapping batch with a sibling-result operand|sed -n '1,20p' src/lines.txt; sed -n '1,1p' @S@/r31-terra.json; sed -n '10,30p' src/lines.txt
 an oversized batch with a sibling-prompt operand|sed -n '1,200p' src/lines.txt; sed -n '1,41p' @S@/r31-terra.prompt.md
 CASES
+  )
+}
+
+test_codex_command_ids_are_scoped_to_explicit_turns() {
+  python3 - "$SCRIPTS/lib/codex-proof-stages.py" "$T/reused-command-id.ndjson" <<'PY'
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location('codex_proof_stages', sys.argv[1])
+stages = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(stages)
+path = Path(sys.argv[2])
+
+def call(command, output):
+    item = {'id': 'item_2', 'type': 'command_execution', 'command': command}
+    return [
+        {'type': 'item.started', 'item': item},
+        {'type': 'item.completed', 'item': {
+            **item, 'aggregated_output': output, 'exit_code': 0,
+        }},
+    ]
+
+events = []
+for command, output in (('sed -n 1,2p src/a.ts', 'a\n'),
+                        ('sed -n 1,2p src/b.ts', 'b\n')):
+    events.append({'type': 'turn.started'})
+    events.extend(call(command, output))
+    events.append({'type': 'turn.completed'})
+path.write_text(''.join(json.dumps(event) + '\n' for event in events))
+rows = sorted(stages.codex_call_rows(path).values(), key=lambda row: row['order'])
+assert [(row['turn'], row['command']) for row in rows] == [
+    (1, 'sed -n 1,2p src/a.ts'), (2, 'sed -n 1,2p src/b.ts'),
+], rows
+
+events = [{'type': 'turn.started'}]
+events.extend(call('sed -n 1,2p src/a.ts', 'a\n'))
+events.extend(call('sed -n 1,2p src/b.ts', 'b\n'))
+events.append({'type': 'turn.completed'})
+path.write_text(''.join(json.dumps(event) + '\n' for event in events))
+try:
+    stages.codex_call_rows(path)
+except stages.StageError as error:
+    assert str(error) == 'Codex review turn changed a command identity', error
+else:
+    raise AssertionError('a command ID changed identity within one explicit turn')
+PY
+  assert_eq "Codex command IDs may restart on later explicit turns" "$?" 0
+}
+
+test_audit_codex_command_ids_restart_per_explicit_turn() {
+  ( local R="$T/reused-codex-id-root" S="$T/reused-codex-id-session"
+    severity_fixture "$R" "$S" || return
+    severity_findings "$S" 31 || return
+    severity_transcript "$S" 31 codex '{"tail":[[{"id":"item_2","cmd":"sed -n 1,2p src/wide.rs","out_lines":["src/wide.rs",1,2]}],[{"id":"item_2","cmd":"sed -n 3,4p src/wide.rs","out_lines":["src/wide.rs",3,4]}]]}'
+    assert_eq "Codex IDs reused on later turns do not invalidate valid reads" \
+      "$(severity_audit "$R" "$S" 31 codex)" \
+      "$(severity_expect valid - -)"
   )
 }

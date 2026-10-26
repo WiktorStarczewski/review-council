@@ -2721,6 +2721,7 @@ def assess(args, blocked):
     codex_turn_calls = {}
     codex_completed_turns = set()
     codex_output_turns = {}
+    codex_call_keys_by_id = {}
     sdk_transcript = CursorSDKTranscript() if args.adapter == 'cursor-sdk' else None
     try:
         with open(args.raw, encoding='utf-8') as stream:
@@ -2760,10 +2761,26 @@ def assess(args, blocked):
                     if not isinstance(name, str) or not name or not isinstance(data, dict):
                         failures.append(violation('invalid-tool-call-shape', args.adapter))
                         continue
-                    if call_id in calls:
-                        if calls[call_id][:2] != (name, data):
-                            failures.append(violation('duplicate-tool-call', args.adapter))
-                        continue
+                    if args.adapter == 'codex' and event.get('type') == 'item.completed':
+                        prior_call_keys = codex_call_keys_by_id.get(call_id, [])
+                        current_call_key = (codex_active_turn, call_id)
+                        matched_call_key = None
+                        if codex_active_turn is not None and current_call_key in calls:
+                            matched_call_key = current_call_key
+                        elif codex_active_turn is None and prior_call_keys:
+                            pending_call_keys = [key for key in prior_call_keys
+                                                 if key not in outputs]
+                            if len(pending_call_keys) == 1:
+                                matched_call_key = pending_call_keys[0]
+                            elif not pending_call_keys and len(prior_call_keys) == 1:
+                                matched_call_key = prior_call_keys[0]
+                            else:
+                                failures.append(violation('duplicate-tool-call', args.adapter))
+                                continue
+                        if matched_call_key is not None:
+                            if calls[matched_call_key][:2] != (name, data):
+                                failures.append(violation('duplicate-tool-call', args.adapter))
+                            continue
                     explicit_turn = event.get('turn_id') or event.get('turnId') or event.get('message_id')
                     if sdk_transcript is not None:
                         explicit_turn = (event.get('step_id') or event.get('stepId')
@@ -2784,26 +2801,48 @@ def assess(args, blocked):
                         turn = 'implicit-' + str(implicit_turn)
                     else:
                         turn = f'event-{line_number}'
-                    calls[call_id] = (name, data, turn)
-                    turns.setdefault(turn, []).append(call_id)
+                    call_key = ((turn, call_id)
+                                if args.adapter == 'codex' and turn == codex_active_turn
+                                else call_id)
+                    if call_key in calls:
+                        if calls[call_key][:2] != (name, data):
+                            failures.append(violation('duplicate-tool-call', args.adapter))
+                        continue
+                    calls[call_key] = (name, data, turn)
+                    turns.setdefault(turn, []).append(call_key)
+                    if args.adapter == 'codex':
+                        codex_call_keys_by_id.setdefault(call_id, []).append(call_key)
                     if args.adapter == 'codex' and turn == codex_active_turn:
-                        codex_turn_calls[turn].append(call_id)
+                        codex_turn_calls[turn].append(call_key)
                 for call_id, success, value, non_execution in event_outputs:
                     if not isinstance(call_id, str) or not call_id:
                         failures.append(violation('missing-tool-call-id', args.adapter))
                         continue
-                    if call_id not in calls:
+                    if args.adapter == 'codex' and codex_active_turn is not None:
+                        call_key = (codex_active_turn, call_id)
+                    elif args.adapter == 'codex':
+                        prior_call_keys = codex_call_keys_by_id.get(call_id, [])
+                        pending_call_keys = [key for key in prior_call_keys if key not in outputs]
+                        if len(pending_call_keys) == 1:
+                            call_key = pending_call_keys[0]
+                        elif not pending_call_keys and len(prior_call_keys) == 1:
+                            call_key = prior_call_keys[0]
+                        else:
+                            call_key = call_id
+                    else:
+                        call_key = call_id
+                    if call_key not in calls:
                         failures.append(violation('orphan-tool-output', args.adapter))
                         continue
-                    if call_id in outputs:
+                    if call_key in outputs:
                         failures.append(violation('duplicate-tool-output', args.adapter))
                         continue
                     if args.adapter == 'codex':
-                        codex_output_turns[call_id] = codex_active_turn
-                    outputs[call_id] = {'success': success, 'value': value,
-                                        'bytes': output_bytes(value),
-                                        'non_execution': non_execution}
-                    if calls[call_id][2].startswith('implicit-'):
+                        codex_output_turns[call_key] = codex_active_turn
+                    outputs[call_key] = {'success': success, 'value': value,
+                                         'bytes': output_bytes(value),
+                                         'non_execution': non_execution}
+                    if calls[call_key][2].startswith('implicit-'):
                         implicit_output_seen = True
     except UnicodeError:
         failures.append(violation('malformed-transcript', args.adapter))
