@@ -115,7 +115,7 @@ lines.extend([
     segment('2/2', 'r1-codex-luna-source-segment-001-002.txt'),
     'Required source segment batch limit: 2',
     segment('1/1', 'r1-codex-luna-source-segment-002-001.txt'),
-    'Required source segment batch limit: 1',
+    'Required source segment batch limit: 2',
     f'Evidence navigation index: {root}/r1-evidence.md',
 ])
 artifacts = {

@@ -1445,6 +1445,8 @@ PY
       --evidence "$claude_manifest") || return
     assert_grep "Claude may batch two required source segments" "$claude_prompt" \
       '^Required source segment batch limit: 2$'
+    assert_grep "Claude prompt schedules each pair in one assistant message" "$claude_prompt" \
+      '^Claude source read batching: issue each pair of consecutive required source segment reads in one assistant message, in listed order; wait for both results before continuing\. Read a final singleton or an oversized single-line segment alone\.$'
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r9c-sol.json"
     python3 - "$claude_manifest" "$S/r9c-sol.stream.ndjson" <<'PY'
 import json, pathlib, sys
@@ -2587,12 +2589,21 @@ JSON
 
 test_narrow_seat_refuses_invalid_audit() {
   ( seat_env; local S="$T/narrow-refusal"; seat_roster "$S"
+    python3 - "$S/roster.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+roster = json.load(open(path))
+for row in roster['seats']:
+    if row['seat'] in ('codex-sol', 'codex-terra'):
+        row['mode'] = 'review'
+open(path, 'w').write(json.dumps(roster) + '\n')
+PY
     cat > "$S/p.md" <<'EOF'
 Evidence manifest SHA-256: 0000000000000000000000000000000000000000000000000000000000000000
 Assigned scope: semantic
 EOF
     SHIM_MODE=unbounded SHIM_CALLS_FILE="$T/narrow-refusal.calls" \
-      "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" > "$T/narrow-refusal.out" 2>&1
+      "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" --base fixture > "$T/narrow-refusal.out" 2>&1
     assert_eq "invalid narrowed seat exits as unusable" "$?" 2
     assert_exit "invalid narrowed seat removes findings" 1 test -e "$S/r1-codex-sol.json"
     assert_exit "invalid narrowed seat preserves findings for diagnosis" 0 \
@@ -2606,7 +2617,7 @@ EOF
     invalid_hash=$(shasum -a 256 "$S/r1-codex-sol.audit-invalid.json" | awk '{print $1}')
     audit_hash=$(shasum -a 256 "$S/r1-codex-sol.read-audit.json" | awk '{print $1}')
     SHIM_MODE=ok SHIM_CALLS_FILE="$T/narrow-refusal.calls" \
-      "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" > "$T/narrow-relaunch.out" 2>&1
+      "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" --base fixture > "$T/narrow-relaunch.out" 2>&1
     assert_eq "hard-audit marker refuses a same-generation relaunch" "$?" 2
     assert_eq "hard-audit relaunch refusal makes no second provider call" \
       "$(wc -l < "$T/narrow-refusal.calls" | tr -d ' ')" 1
@@ -2617,7 +2628,7 @@ EOF
     assert_grep "hard-audit relaunch refusal names the latched label and seat" \
       "$T/narrow-relaunch.out" 'codex-sol under label 1 failed a hard evidence audit'
     SHIM_MODE=ok SHIM_CALLS_FILE="$T/narrow-refusal.calls" \
-      "$SCRIPTS/rev-seat.sh" codex-terra "$S" 1 "$S/p.md" > "$T/sibling-relaunch.out" 2>&1
+      "$SCRIPTS/rev-seat.sh" codex-terra "$S" 1 "$S/p.md" --base fixture > "$T/sibling-relaunch.out" 2>&1
     assert_nogrep "the latch does not refuse a sibling under the same label" \
       "$T/sibling-relaunch.out" 'failed a hard evidence audit'
     assert_eq "the sibling makes its own provider call" \
@@ -2710,11 +2721,20 @@ EOF
       "$S/rmalformed-codex-sol.log" 'legacy review; result retained as advisory'
 
     S="$T/audit-failure-full"; seat_roster "$S"
+    python3 - "$S/roster.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+roster = json.load(open(path))
+for row in roster['seats']:
+    if row['seat'] == 'codex-sol':
+        row['mode'] = 'review'
+open(path, 'w').write(json.dumps(roster) + '\n')
+PY
     cat > "$S/full-evidence.md" <<'EOF'
 Evidence manifest SHA-256: 0000000000000000000000000000000000000000000000000000000000000000
 Assigned scope: full
 EOF
-    SHIM_MODE=unbounded "$SCRIPTS/rev-seat.sh" codex-sol "$S" full "$S/full-evidence.md" \
+    SHIM_MODE=unbounded "$SCRIPTS/rev-seat.sh" codex-sol "$S" full "$S/full-evidence.md" --base fixture \
       > "$T/full-evidence.out" 2>&1
     assert_eq "invalid full-scope evidence seat exits as unusable" "$?" 2
     assert_exit "invalid full-scope evidence seat removes findings" 1 test -e "$S/rfull-codex-sol.json"
@@ -3272,7 +3292,8 @@ from pathlib import Path
 
 limits_path, manifest_path, seat, prompt_path = sys.argv[1:]
 limits = runpy.run_path(limits_path)
-manifest = __import__('json').loads(Path(manifest_path).read_text())
+manifest_file = Path(Path(manifest_path).read_text().strip())
+manifest = __import__('json').loads(manifest_file.read_text())
 assignment = manifest['assignments'][seat]
 context = manifest['source_context']['seats'][seat]
 capacity = manifest['task_capacity']['seats'][seat]
