@@ -2761,6 +2761,12 @@ def assess(args, blocked):
                     if not isinstance(name, str) or not name or not isinstance(data, dict):
                         failures.append(violation('invalid-tool-call-shape', args.adapter))
                         continue
+                    if args.adapter == 'codex' and event.get('type') == 'item.completed':
+                        prior_call_keys = codex_call_keys_by_id.get(call_id, [])
+                        current_call_key = (codex_active_turn, call_id)
+                        if prior_call_keys and (codex_active_turn is None
+                                                or current_call_key in calls):
+                            continue
                     explicit_turn = event.get('turn_id') or event.get('turnId') or event.get('message_id')
                     if sdk_transcript is not None:
                         explicit_turn = (event.get('step_id') or event.get('stepId')
