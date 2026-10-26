@@ -332,6 +332,14 @@ PY
     OUT="$S/result.json" LOG="$S/adapter.log" RAW="$S/raw.ndjson" BASE=abc \
     bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
   local adapter_rc=$?
+  if [ "$adapter_rc" -ne 0 ]; then
+    printf 'no-manifest Codex adapter stderr:\n' >&2
+    sed -n '1,40p' "$S/err" >&2
+    printf 'no-manifest Codex adapter log:\n' >&2
+    tail -n 40 "$S/adapter.log" >&2
+    printf 'no-manifest Codex adapter stream:\n' >&2
+    tail -n 60 "$S/raw.ndjson" >&2
+  fi
   assert_eq "no-manifest Codex review exits successfully" "$adapter_rc" 0
   calls=$(wc -l < "$S/calls.log" | tr -d ' ')
   assert_eq "no-manifest Codex review uses bounded resumable turns" "$calls" 3
@@ -390,7 +398,16 @@ PY
     SCHEMA="$SHIM_FIXTURE_DIR/findings.schema.json" OUT="$W/result.json" \
     LOG="$W/adapter.log" RAW="$W/raw.ndjson" BASE=abc \
     bash "$SCRIPTS/seats.d/codex.sh" > "$W/out" 2> "$W/err"
-  assert_eq "unrelated repository reads do not satisfy the required target" "$?" 0
+  local wrong_rc=$?
+  if [ "$wrong_rc" -ne 0 ]; then
+    printf 'wrong-target Codex adapter stderr:\n' >&2
+    sed -n '1,40p' "$W/err" >&2
+    printf 'wrong-target Codex adapter log:\n' >&2
+    tail -n 40 "$W/adapter.log" >&2
+    printf 'wrong-target Codex adapter stream:\n' >&2
+    tail -n 60 "$W/raw.ndjson" >&2
+  fi
+  assert_eq "unrelated repository reads do not satisfy the required target" "$wrong_rc" 0
   calls=$(wc -l < "$W/calls.log" | tr -d ' ')
   assert_eq "wrong target triggers one more bounded review turn" "$calls" 4
   if [ "$calls" = 4 ]; then

@@ -164,18 +164,30 @@ case "${SHIM_MODE:-ok}" in
         if [ -n "$CALL_NUMBER" ] && [ -n "${SHIM_STAGE_DIR:-}" ]; then
       python3 - "$SHIM_STAGE_DIR/call-$CALL_NUMBER.stdin" "$CALL_NUMBER" <<'PY'
 import json
+import os
+import shlex
 import sys
+from pathlib import Path
 
 prompt = open(sys.argv[1], encoding='utf-8').read()
 call_number = sys.argv[2]
+session = Path(os.environ['SHIM_STAGE_DIR']).resolve().parent
+root = Path(os.environ['ROOT']).resolve()
 for index, line in enumerate(prompt.splitlines(), 1):
     if line.startswith('Read exactly: '):
         command = line[len('Read exactly: '):]
+        words = shlex.split(command)
+        if len(words) != 3 or words[:2] != ['cat', '--']:
+            raise SystemExit(f'unexpected staged read command: {command}')
+        target = Path(words[2]).resolve(strict=True)
+        if not any(target == base or base in target.parents for base in (root, session)):
+            raise SystemExit(f'staged read escaped the test roots: {target}')
+        output = target.read_text(encoding='utf-8')
         print(json.dumps({'type': 'item.started', 'item': {
             'id': f'stage-{call_number}-{index}', 'type': 'command_execution', 'command': command}}))
         print(json.dumps({'type': 'item.completed', 'item': {
             'id': f'stage-{call_number}-{index}', 'type': 'command_execution', 'command': command,
-            'aggregated_output': 'fixture output\n', 'exit_code': 0}}))
+            'aggregated_output': output, 'exit_code': 0}}))
 PY
         fi
         printf '%s\n' '{"type":"item.completed","item":{"id":"stage-answer","type":"agent_message","text":"READ_STAGE_COMPLETE"}}'
