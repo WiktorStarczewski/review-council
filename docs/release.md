@@ -14,7 +14,7 @@ Review Council `rev` or `stack` for this repository.
 Verify the latest signed stable release before using it as the candidate base:
 
 ```bash
-git verify-tag review-council--v0.8.11
+git verify-tag review-council--v0.8.12
 ```
 
 Run the complete deterministic candidate gate in CI for the exact candidate commit on
@@ -37,14 +37,14 @@ the pull request.
 From a clean checkout of the merged commit, publish the signed release:
 
 ```bash
-git tag -s review-council--v0.8.12 -m "review-council 0.8.12" "$MERGE_COMMIT"
-git push origin review-council--v0.8.12
-git verify-tag review-council--v0.8.12
-gh release create review-council--v0.8.12 --verify-tag \
-  --title "review-council 0.8.12" --generate-notes
+git tag -s review-council--v0.8.13 -m "review-council 0.8.13" "$MERGE_COMMIT"
+git push origin review-council--v0.8.13
+git verify-tag review-council--v0.8.13
+gh release create review-council--v0.8.13 --verify-tag \
+  --title "review-council 0.8.13" --generate-notes
 ```
 
 Reinstall `review-council@review-council` for Claude and Codex, and run
 `install-cursor.sh` for Cursor. In fresh sessions on each host, require `rev` and
-`stack` at version `0.8.12`, and compare installed file and mode identity with the
+`stack` at version `0.8.13`, and compare installed file and mode identity with the
 released tag.

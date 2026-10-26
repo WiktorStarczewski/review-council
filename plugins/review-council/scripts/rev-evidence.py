@@ -3548,6 +3548,8 @@ def plan_location_suffix(text, end):
 
 
 def plan_path_resolution(token, entries):
+    if token.startswith('./') and token[2:] in entries:
+        return token[2:], 'direct'
     if token in entries:
         return token, 'direct'
     if '/' in token:
@@ -3561,10 +3563,13 @@ def plan_path_resolution(token, entries):
 
 def plan_field_paths(text, entries):
     """Resolve every path-like token in a plan field against the pinned tree."""
-    escape = re.search(r'(?<!\S)\S*?(?<![\w@.-])(?:/|\.\.?/)\S*', text)
-    if escape:
-        raise ValueError(f'path escape "{escape.group(0)}"')
     entries = set(entries)
+    for escape in re.finditer(r'(?<!\S)\S*?(?<![\w@.-])(?:/|\.\.?/)\S*', text):
+        token = escape.group(0).rstrip(',;)]}')
+        root_relative = token[2:] if token.startswith('./') else ''
+        root_relative = re.sub(r':\d+(?:-\d+)?$', '', root_relative)
+        if not root_relative or root_relative not in entries:
+            raise ValueError(f'path escape "{escape.group(0)}"')
     candidates = []
     protected = []
 
@@ -3590,6 +3595,24 @@ def plan_field_paths(text, entries):
                            line_start, line_end))
 
     occupied = list(protected)
+    root_relative = re.compile(
+        r'(?<![\w@.-])(\./(?:[\w@.-]+/)*[\w@.-]+)'
+        r'(?::(\d+)(?:-(\d+))?)?')
+    for match in root_relative.finditer(text):
+        start, end = match.span()
+        if any(left <= start < right or left < end <= right
+               for left, right in occupied):
+            continue
+        if not plan_path_boundary(text, start, end):
+            continue
+        token = match.group(1)
+        path, resolution = plan_path_resolution(token, entries)
+        line_start = int(match.group(2)) if match.group(2) else None
+        line_end = int(match.group(3)) if match.group(3) else line_start
+        validate_plan_range(line_start, line_end, location=text[start:end])
+        candidates.append((start, end, token, path, resolution, line_start, line_end))
+        occupied.append((start, end))
+
     for token in sorted((path for path in entries if '/' in path),
                         key=lambda value: (-len(value), value)):
         start = 0
@@ -3622,10 +3645,14 @@ def plan_field_paths(text, entries):
                         for left, right in occupied)
                     and plan_path_boundary(text, start, end)):
                 paths = sorted(basename_paths[token])
-                if len(paths) != 1:
+                if token in entries:
+                    path, resolution = token, 'direct'
+                elif len(paths) != 1:
                     raise ValueError(f'ambiguous basename in pinned snapshot "{token}"')
+                else:
+                    path, resolution = paths[0], 'basename'
                 validate_plan_range(line_start, line_end, location=text[start:end])
-                candidates.append((start, end, token, paths[0], 'basename',
+                candidates.append((start, end, token, path, resolution,
                                    line_start, line_end))
                 occupied.append((start, end))
             start = path_end

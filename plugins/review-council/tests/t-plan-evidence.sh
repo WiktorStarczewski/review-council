@@ -2357,6 +2357,9 @@ bad_fields = {
     'reversed direct': 'src/value.ts:3-2',
     'reversed shorthand': 'src/value.ts:1, :3-2',
     'path escape': '../src/value.ts:1',
+    'root-relative parent escape': './../src/value.ts:1',
+    'in-path parent escape': 'src/../src/value.ts:1',
+    'root path followed by escape': './package.json:89, ../src/value.ts:1',
     'ambiguous basename': 'shared.test.ts:1',
 }
 for name, field in bad_fields.items():

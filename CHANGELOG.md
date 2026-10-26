@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.8.13
+
+- Accept validated root-relative plan locations and prefer exact root paths when nested files share their basename, while preserving path traversal and ambiguous-basename refusals.
+
 ## 0.8.12
 
 - Keep reviewer seats pending until launch evidence exists, report dead CLI launches as interrupted, and close reservations after catchable cancellation.
