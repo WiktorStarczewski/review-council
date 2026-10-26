@@ -9,7 +9,7 @@ seat_timeout() {  # seat_timeout <secs> <cmd...> - hard cap, so a runaway seat c
   if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 124; fi
   wait "$pid"; return $?
 }
-seat_env_reset() { PATH="$1"; unset SHIM_FIXTURE_DIR SHIM_ARGS_FILE SHIM_CHILD_PID_FILE REV_REPO SHIM_MODE; }
+seat_env_reset() { PATH="$1"; unset SHIM_FIXTURE_DIR SHIM_ARGS_FILE SHIM_ARGS_DIR SHIM_CALLS_FILE SHIM_CHILD_PID_FILE SHIM_STAGE_DIR REV_REPO SHIM_MODE; }
 seat_roster() {  # seat_roster <session-dir> - the roster.json rev-preflight.sh leaves in the session dir.
   # Written by hand on purpose: these tests exercise rev-seat.sh's dispatch, not roster.sh's detection.
   mkdir -p "$1"
@@ -56,6 +56,125 @@ test_seat_codex_instructions_required() {
       assert_grep "$variant instructions name the local failure" "$S/err" 'missing reviewer instructions'
     done
   )
+}
+
+test_seat_codex_stages_prepared_evidence() {
+  local _path="$PATH"; seat_env
+  local S="$T/seat-codex-stages" calls
+  mkdir -p "$S/calls"
+  : > "$S/calls.log"
+  python3 - "$S" <<'PY'
+import hashlib
+import json
+import shlex
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+contents = {
+    'r1-full.patch': b'full patch bytes\n',
+    'r1-patch-p01-001.txt': b'patch one\n',
+    'r1-patch-p01-002.txt': b'patch two\n',
+    'r1-codex-luna-source-context-1.json': b'{"packet":1}\n',
+    'r1-codex-luna-source-context-2.json': b'{"packet":2}\n',
+    'r1-codex-luna-source-segment-001-001.txt': b'segment one\n',
+    'r1-codex-luna-source-segment-001-002.txt': b'segment two\n',
+    'r1-codex-luna-source-segment-002-001.txt': b'segment three\n',
+    'r1-evidence.md': b'evidence index\n',
+}
+for name, content in contents.items():
+    (root / name).write_bytes(content)
+
+def digest(name):
+    return hashlib.sha256(contents[name]).hexdigest()
+
+def segment(label, name):
+    size = len(contents[name])
+    path = root / name
+    command = shlex.join(['cat', '--', str(path)])
+    return (f'Required source segment {label}: run {command} raw bytes {size} '
+            f'visible bytes {size} content SHA-256 {digest(name)}')
+
+lines = [
+    'Review this prepared assignment after all listed evidence is read.',
+    f'Canonical assigned patch: {root}/r1-full.patch SHA-256 {digest("r1-full.patch")} bytes {len(contents["r1-full.patch"])}',
+    'Patch chunk batch limit: 2',
+]
+for index, name in enumerate(('r1-patch-p01-001.txt', 'r1-patch-p01-002.txt'), 1):
+    size = len(contents[name])
+    start = 0 if index == 1 else len(contents['r1-patch-p01-001.txt'])
+    lines.append(f'Assigned patch chunk {index}/2: {root}/{name} bytes {start}-{start + size} SHA-256 {digest(name)}')
+lines.extend([
+    f'Source context packet: {root}/r1-codex-luna-source-context-1.json',
+    f'Source context packet: {root}/r1-codex-luna-source-context-2.json',
+    segment('1/2', 'r1-codex-luna-source-segment-001-001.txt'),
+    segment('2/2', 'r1-codex-luna-source-segment-001-002.txt'),
+    'Required source segment batch limit: 2',
+    segment('1/1', 'r1-codex-luna-source-segment-002-001.txt'),
+    'Required source segment batch limit: 1',
+    f'Evidence navigation index: {root}/r1-evidence.md',
+])
+(root / 'prompt.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+PY
+  SHIM_MODE=staged SHIM_ARGS_FILE="$S/last-args" SHIM_STAGE_DIR="$S/calls" \
+    SHIM_CALLS_FILE="$S/calls.log" SEAT=codex-luna MODEL=gpt-6.1-luna EFFORT=xhigh \
+    MODE=prompt ROOT="$T" PROMPT="$S/prompt.md" SCHEMA="$SHIM_FIXTURE_DIR/findings.schema.json" \
+    OUT="$S/result.json" LOG="$S/adapter.log" RAW="$S/raw.ndjson" BASE=abc \
+    bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
+  assert_eq "staged Codex proof exits successfully" "$?" 0
+  calls=$(wc -l < "$S/calls.log" | tr -d ' ')
+  assert_eq "Codex uses separate resumable turns for the prepared evidence" "$calls" 7
+  if [ "$calls" = 7 ]; then
+    python3 - "$S" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+expected = [
+    ['r1-patch-p01-001.txt', 'r1-patch-p01-002.txt'],
+    ['r1-codex-luna-source-context-1.json'],
+    ['r1-codex-luna-source-context-2.json'],
+    ['r1-codex-luna-source-segment-001-001.txt', 'r1-codex-luna-source-segment-001-002.txt'],
+    ['r1-codex-luna-source-segment-002-001.txt'],
+    ['r1-evidence.md'],
+]
+for index, names in enumerate(expected, 1):
+    prompt = (root / 'calls' / f'call-{index}.stdin').read_text(encoding='utf-8')
+    actual = [line.removeprefix('Read exactly: cat -- ')
+              for line in prompt.splitlines() if line.startswith('Read exactly: cat -- ')]
+    wanted = [str(root / name) for name in names]
+    assert actual == wanted, (index, actual, wanted)
+    args = (root / 'calls' / f'call-{index}.args').read_text(encoding='utf-8').splitlines()
+    assert '--ephemeral' not in args, (index, args)
+    assert '--output-schema' not in args, (index, args)
+    assert 'read-only' in args, (index, args)
+    if index == 1:
+        assert args[0] == 'exec' and str(root.parent) in args, args
+    else:
+        assert args[0] == 'exec' and args[1] == 'resume', args
+        assert 'fixture-thread' in args, args
+
+final_args = (root / 'calls' / 'call-7.args').read_text(encoding='utf-8').splitlines()
+final_prompt = (root / 'calls' / 'call-7.stdin').read_text(encoding='utf-8')
+assert final_args[0:2] == ['exec', 'resume'], final_args
+assert 'fixture-thread' in final_args, final_args
+assert '--output-schema' in final_args and 'findings.schema.json' in final_args, final_args
+assert 'Review this prepared assignment' in final_prompt, final_prompt
+assert 'already been read in earlier explicit turns' in final_prompt, final_prompt
+
+events = [json.loads(line) for line in (root / 'raw.ndjson').read_text().splitlines()]
+assert sum(event.get('type') == 'turn.started' for event in events) == 7
+assert sum(event.get('type') == 'turn.completed' for event in events) == 7
+threads = [event.get('thread_id') for event in events if event.get('type') == 'thread.started']
+assert threads == ['fixture-thread'] * 7, threads
+assert sum(event.get('type') == 'item.started'
+           and event.get('item', {}).get('type') == 'command_execution' for event in events) == 8
+PY
+    assert_eq "proof artifacts are staged in order with the final schema only on resume" "$?" 0
+    assert_grep "staging keeps the exact findings output" "$S/result.json" '"findings": ?\['
+  fi
+  seat_env_reset "$_path"
 }
 
 test_seat_codex() {

@@ -5,6 +5,14 @@
 [ -n "${SHIM_ARGS_FILE:-}" ] && printf '%s\n' "$@" > "$SHIM_ARGS_FILE"
 [ -z "${SHIM_ARGS_DIR:-}" ] || printf '%s\n' "$@" > "$SHIM_ARGS_DIR/$$.args"
 [ -z "${SHIM_CALLS_FILE:-}" ] || printf '%s\n' call >> "$SHIM_CALLS_FILE"
+CALL_NUMBER=""
+if [ -n "${SHIM_CALLS_FILE:-}" ]; then
+  CALL_NUMBER=$(wc -l < "$SHIM_CALLS_FILE" | tr -d ' ')
+  if [ -n "${SHIM_STAGE_DIR:-}" ]; then
+    mkdir -p "$SHIM_STAGE_DIR"
+    printf '%s\n' "$@" > "$SHIM_STAGE_DIR/call-$CALL_NUMBER.args"
+  fi
+fi
 [ -n "${SHIM_ARGS_FILE:-}" ] && printf 'REV_ACTIVE=%s\nNO_PUSH=%s\nNO_SQUASH=%s\ncwd=%s\nHOME=%s\nCODEX_HOME=%s\nCODEX_AUTH_LINK=%s\n' \
   "${REV_ACTIVE:-unset}" "${NO_PUSH:-unset}" "${NO_SQUASH:-unset}" "$PWD" "$HOME" "${CODEX_HOME:-unset}" \
   "$([ -L "${CODEX_HOME:-/missing}/auth.json" ] && echo yes || echo no)" >> "$SHIM_ARGS_FILE.env"
@@ -16,6 +24,9 @@ fi
 OUT=""; prev=""
 for a in "$@"; do [ "$prev" = "-o" ] && OUT=$a; prev=$a; done
 STDIN=$(cat); [ -n "${SHIM_ARGS_FILE:-}" ] && printf '%s' "$STDIN" > "$SHIM_ARGS_FILE.stdin"
+if [ -n "$CALL_NUMBER" ] && [ -n "${SHIM_STAGE_DIR:-}" ]; then
+  printf '%s' "$STDIN" > "$SHIM_STAGE_DIR/call-$CALL_NUMBER.stdin"
+fi
 fixture_output() {
   cp "$1" "$OUT" && chmod u+w "$OUT"
 }
@@ -35,6 +46,32 @@ case "${SHIM_MODE:-ok}" in
   unbounded)  echo '{"type":"item.started","item":{"id":"bad","type":"command_execution","command":"cat src/x.ts"}}'; echo '{"type":"item.completed","item":{"id":"bad","type":"command_execution","command":"cat src/x.ts","aggregated_output":"source\n","exit_code":0}}'; fixture_output "$SHIM_FIXTURE_DIR/findings-valid.json"; exit 0;;
   native)     cat "$SHIM_FIXTURE_DIR/codex-stream.ndjson"; fixture_output "$SHIM_FIXTURE_DIR/codex-review-native.txt"; exit 0;;
   native_bad) cat "$SHIM_FIXTURE_DIR/codex-stream.ndjson"; fixture_output "$SHIM_FIXTURE_DIR/codex-review-native-bad.txt"; exit 0;;
+  staged)
+    printf '%s\n' '{"type":"thread.started","thread_id":"fixture-thread"}' '{"type":"turn.started"}'
+    if [ -n "$CALL_NUMBER" ] && [ -n "${SHIM_STAGE_DIR:-}" ]; then
+      python3 - "$SHIM_STAGE_DIR/call-$CALL_NUMBER.stdin" <<'PY'
+import json
+import sys
+
+prompt = open(sys.argv[1], encoding='utf-8').read()
+for index, line in enumerate(prompt.splitlines(), 1):
+    if line.startswith('Read exactly: '):
+        command = line[len('Read exactly: '):]
+        print(json.dumps({'type': 'item.started', 'item': {
+            'id': f'stage-{index}', 'type': 'command_execution', 'command': command}}))
+        print(json.dumps({'type': 'item.completed', 'item': {
+            'id': f'stage-{index}', 'type': 'command_execution', 'command': command,
+            'aggregated_output': 'fixture output\n', 'exit_code': 0}}))
+PY
+    fi
+    printf '%s\n' '{"type":"item.completed","item":{"id":"stage-answer","type":"agent_message","text":"READ_STAGE_COMPLETE"}}' '{"type":"turn.completed"}'
+    if [ -n "$OUT" ]; then
+      schema=0
+      for a in "$@"; do [ "$a" != --output-schema ] || schema=1; done
+      [ "$schema" = 0 ] || fixture_output "$SHIM_FIXTURE_DIR/findings-valid.json"
+    fi
+    exit 0
+    ;;
   # a failing run whose MODEL OUTPUT merely quotes a 401 (agent_message → `text:` in the log): must NOT read as auth
   noise401)   echo '{"type":"item.completed","item":{"id":"i9","type":"agent_message","text":"the endpoint answers 401 Unauthorized on expiry"}}'; echo '{"type":"turn.completed"}'; exit 1;;
   noise401exec) echo '{"type":"item.started","item":{"id":"i9","type":"command_execution","command":"rg -n \"401 unauthorized\" src"}}'; echo '{"type":"item.completed","item":{"id":"i9","type":"command_execution","command":"rg -n \"401 unauthorized\" src","exit_code":1}}'; echo '{"type":"turn.completed"}'; exit 1;;
