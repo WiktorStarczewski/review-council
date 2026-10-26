@@ -77,39 +77,48 @@ else
   case "$STAGE_COUNT" in
     ''|*[!0-9]*) echo "codex adapter: invalid proof stage count" >&2; exit 1;;
   esac
-  if [ "$STAGE_COUNT" -gt 0 ]; then
-    run_codex_turn() {
-      local input=$1 resume=$2 schema=${3:-} output=${4:-} rc
-      TURN_RAW="$STAGE_DIR/current-turn.ndjson"
-      : > "$TURN_RAW"
-      if [ "$resume" = 0 ]; then
-        ( cd "$ROOT" && CODEX_HOME="$PRIVATE_HOME" codex exec --ignore-user-config \
-            -s read-only -C "$ROOT" -m "$MODEL" \
-            -c model_reasoning_effort="$EFFORT" -c project_doc_max_bytes=0 \
-            -c model_instructions_file="$INSTRUCTIONS" \
-            --json $GITCHECK - < "$input" ) 2>>"$LOG" \
-          | tee "$TURN_RAW" | tee -a "$RAW" \
-          | python3 -u "$SUMMARY" codex "$OUT" >> "$LOG"
-      elif [ -n "$schema" ]; then
-        ( cd "$ROOT" && CODEX_HOME="$PRIVATE_HOME" codex exec resume \
-            --ignore-user-config -m "$MODEL" -c model_reasoning_effort="$EFFORT" \
-            -c project_doc_max_bytes=0 -c model_instructions_file="$INSTRUCTIONS" \
-            -c 'sandbox_mode="read-only"' --json --output-schema "$schema" \
-            -o "$output" $GITCHECK "$THREAD_ID" - < "$input" ) 2>>"$LOG" \
-          | tee "$TURN_RAW" | tee -a "$RAW" \
-          | python3 -u "$SUMMARY" codex "$output" >> "$LOG"
-      else
-        ( cd "$ROOT" && CODEX_HOME="$PRIVATE_HOME" codex exec resume \
-            --ignore-user-config -m "$MODEL" -c model_reasoning_effort="$EFFORT" \
-            -c project_doc_max_bytes=0 -c model_instructions_file="$INSTRUCTIONS" \
-            -c 'sandbox_mode="read-only"' --json $GITCHECK "$THREAD_ID" - < "$input" ) \
-          2>>"$LOG" | tee "$TURN_RAW" | tee -a "$RAW" \
-          | python3 -u "$SUMMARY" codex "$OUT" >> "$LOG"
-      fi
-      rc=${PIPESTATUS[0]}
-      return "$rc"
-    }
+  run_codex_turn() {
+    local input=$1 resume=$2 schema=${3:-} output=${4:-} rc
+    TURN_RAW="$STAGE_DIR/current-turn.ndjson"
+    : > "$TURN_RAW"
+    if [ "$resume" = 0 ] && [ -n "$schema" ]; then
+      ( cd "$ROOT" && CODEX_HOME="$PRIVATE_HOME" codex exec --ignore-user-config \
+        -s read-only -C "$ROOT" -m "$MODEL" \
+        -c model_reasoning_effort="$EFFORT" -c project_doc_max_bytes=0 \
+        -c model_instructions_file="$INSTRUCTIONS" \
+        --json --output-schema "$schema" -o "$output" $GITCHECK - < "$input" ) \
+        2>>"$LOG" | tee "$TURN_RAW" | tee -a "$RAW" \
+        | python3 -u "$SUMMARY" codex "$output" >> "$LOG"
+    elif [ "$resume" = 0 ]; then
+      ( cd "$ROOT" && CODEX_HOME="$PRIVATE_HOME" codex exec --ignore-user-config \
+        -s read-only -C "$ROOT" -m "$MODEL" \
+        -c model_reasoning_effort="$EFFORT" -c project_doc_max_bytes=0 \
+        -c model_instructions_file="$INSTRUCTIONS" \
+        --json $GITCHECK - < "$input" ) 2>>"$LOG" \
+        | tee "$TURN_RAW" | tee -a "$RAW" \
+        | python3 -u "$SUMMARY" codex "$OUT" >> "$LOG"
+    elif [ -n "$schema" ]; then
+      ( cd "$ROOT" && CODEX_HOME="$PRIVATE_HOME" codex exec resume \
+        --ignore-user-config -m "$MODEL" -c model_reasoning_effort="$EFFORT" \
+        -c project_doc_max_bytes=0 -c model_instructions_file="$INSTRUCTIONS" \
+        -c 'sandbox_mode="read-only"' --json --output-schema "$schema" \
+        -o "$output" $GITCHECK "$THREAD_ID" - < "$input" ) 2>>"$LOG" \
+        | tee "$TURN_RAW" | tee -a "$RAW" \
+        | python3 -u "$SUMMARY" codex "$output" >> "$LOG"
+    else
+      ( cd "$ROOT" && CODEX_HOME="$PRIVATE_HOME" codex exec resume \
+        --ignore-user-config -m "$MODEL" -c model_reasoning_effort="$EFFORT" \
+        -c project_doc_max_bytes=0 -c model_instructions_file="$INSTRUCTIONS" \
+        -c 'sandbox_mode="read-only"' --json $GITCHECK "$THREAD_ID" - < "$input" ) \
+        2>>"$LOG" | tee "$TURN_RAW" | tee -a "$RAW" \
+        | python3 -u "$SUMMARY" codex "$OUT" >> "$LOG"
+    fi
+    rc=${PIPESTATUS[0]}
+    return "$rc"
+  }
 
+  THREAD_ID=""
+  if [ "$STAGE_COUNT" -gt 0 ]; then
     for ((stage=1; stage<=STAGE_COUNT; stage++)); do
       printf -v stage_name 'stage-%04d.prompt' "$stage"
       STAGE_PROMPT="$STAGE_DIR/$stage_name"
@@ -133,6 +142,7 @@ else
         fi
       fi
     done
+  fi
 
     cat > "$STAGE_DIR/review-turn.schema.json" <<'EOF'
 {"type":"object","required":["status","next_step"],"properties":{"status":{"type":"string","enum":["continue","ready"]},"next_step":{"type":"string"}},"additionalProperties":false}
@@ -144,6 +154,7 @@ EOF
     MAX_REVIEW_TURNS=$((REVIEW_READ_BUDGET + 1))
     REQUIRED_POST_INDEX=$(python3 "$STAGES_HELPER" --required-post-index-read "$PROMPT") || exit 1
     REVIEW_READS=0
+    REVIEW_TARGET_READS=0
     REVIEW_READY=0
     NEXT_STEP=""
     for ((review_turn=1; review_turn<=MAX_REVIEW_TURNS; review_turn++)); do
@@ -151,9 +162,18 @@ EOF
       NO_MORE_READS=0
       if [ "$review_turn" = 1 ]; then
         cat "$PROMPT" > "$REVIEW_PROMPT" || exit 1
-        cat >> "$REVIEW_PROMPT" <<'EOF'
+        if [ "$STAGE_COUNT" -gt 0 ]; then
+          cat >> "$REVIEW_PROMPT" <<'EOF'
 
 All prepared patch chunks, source-context packets, required source segments, and the evidence navigation index listed above have already been read in earlier explicit turns. Do not reread those prepared artifacts. Continue the assigned review using their contents already present in this conversation.
+EOF
+        else
+          cat >> "$REVIEW_PROMPT" <<'EOF'
+
+This is the first explicit review turn; no prepared evidence was read in an earlier turn. Follow the original assignment's read order and source scope.
+EOF
+        fi
+        cat >> "$REVIEW_PROMPT" <<'EOF'
 
 Keep post-index repository investigation within bounded explicit turns. In each turn, use no more than two separate repository read commands and keep their combined output at or below 32 KiB. If more evidence is needed after this turn, return status "continue" with one concrete next evidence question in next_step. If the evidence is sufficient to finish, return status "ready" with an empty next_step. Do not return findings in these bounded turns.
 EOF
@@ -179,10 +199,16 @@ EOF
       fi
       TURN_OUT="$STAGE_DIR/review-turn.json"
       rm -f "$TURN_OUT"
-      run_codex_turn "$REVIEW_PROMPT" 1 "$STAGE_DIR/review-turn.schema.json" \
+      REVIEW_RESUME=1
+      if [ "$review_turn" = 1 ] && [ "$STAGE_COUNT" -eq 0 ]; then
+        REVIEW_RESUME=0
+      fi
+      run_codex_turn "$REVIEW_PROMPT" "$REVIEW_RESUME" "$STAGE_DIR/review-turn.schema.json" \
         "$TURN_OUT" || exit $?
       RESUMED_THREAD_ID=$(python3 "$STAGES_HELPER" --thread-id-stream "$RAW") || exit 1
-      if [ "$RESUMED_THREAD_ID" != "$THREAD_ID" ]; then
+      if [ -z "$THREAD_ID" ]; then
+        THREAD_ID=$RESUMED_THREAD_ID
+      elif [ "$RESUMED_THREAD_ID" != "$THREAD_ID" ]; then
         echo "codex adapter: source review resumed a different thread" >&2
         exit 1
       fi
@@ -202,8 +228,22 @@ EOF
       REVIEW_STATE=$(python3 "$STAGES_HELPER" --review-status "$TURN_OUT") || exit 1
       case "$REVIEW_STATE" in
         ready)
-          if [ "$REQUIRED_POST_INDEX" = 1 ] && [ "$REVIEW_READS" -eq 0 ]; then
-            NEXT_STEP='Read the required post-index original-source target named in the assignment before finalizing.'
+          if [ "$REQUIRED_POST_INDEX" = 1 ]; then
+            REVIEW_TARGET_PROOF=$(python3 "$STAGES_HELPER" \
+              --post-index-target-read-count "$RAW" --prompt "$PROMPT" \
+              --root "$AUDIT_ROOT" --session "$SESSION_DIR") || exit 1
+            IFS=$'\t' read -r REVIEW_TARGET_READS REVIEW_INDEX_READS \
+              <<< "$REVIEW_TARGET_PROOF"
+            case "$REVIEW_TARGET_READS:$REVIEW_INDEX_READS" in
+              ''|*[!0-9:]*|:*|*:) echo "codex adapter: invalid post-index source proof state" >&2; exit 1;;
+            esac
+          fi
+          if [ "$REQUIRED_POST_INDEX" = 1 ] && [ "$REVIEW_TARGET_READS" -eq 0 ]; then
+            if [ "$REVIEW_INDEX_READS" -eq 0 ]; then
+              NEXT_STEP='Read the complete evidence navigation index named in the original assignment in a separate turn, then read the exact required original-source target in a later turn before finalizing.'
+            else
+              NEXT_STEP='Read the exact required original-source target in a later explicit turn before finalizing.'
+            fi
           else
             REVIEW_READY=1
             break
@@ -246,13 +286,5 @@ EOF
       exit 1
     fi
     rc=0
-  else
-    CODEX_HOME="$PRIVATE_HOME" codex exec --ephemeral --ignore-user-config -s read-only -C "$ROOT" \
-        -m "$MODEL" -c model_reasoning_effort="$EFFORT" -c project_doc_max_bytes=0 \
-        -c model_instructions_file="$INSTRUCTIONS" \
-        --json --output-schema "$SCHEMA" -o "$OUT" $GITCHECK - < "$PROMPT" 2>>"$LOG" \
-      | tee "$RAW" | python3 -u "$SUMMARY" codex "$OUT" >> "$LOG"
-    rc=${PIPESTATUS[0]}
-  fi
 fi
 exit "$rc"

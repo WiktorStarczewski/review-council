@@ -9,7 +9,7 @@ seat_timeout() {  # seat_timeout <secs> <cmd...> - hard cap, so a runaway seat c
   if kill -0 "$pid" 2>/dev/null; then kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null; return 124; fi
   wait "$pid"; return $?
 }
-seat_env_reset() { PATH="$1"; unset SHIM_FIXTURE_DIR SHIM_ARGS_FILE SHIM_ARGS_DIR SHIM_CALLS_FILE SHIM_CHILD_PID_FILE SHIM_STAGE_DIR REV_REPO SHIM_MODE; }
+seat_env_reset() { PATH="$1"; unset SHIM_FIXTURE_DIR SHIM_ARGS_FILE SHIM_ARGS_DIR SHIM_CALLS_FILE SHIM_CHILD_PID_FILE SHIM_STAGE_DIR SHIM_EVIDENCE_INDEX SHIM_UNPREPARED_TARGET REV_REPO SHIM_MODE; }
 seat_roster() {  # seat_roster <session-dir> - the roster.json rev-preflight.sh leaves in the session dir.
   # Written by hand on purpose: these tests exercise rev-seat.sh's dispatch, not roster.sh's detection.
   mkdir -p "$1"
@@ -70,7 +70,12 @@ import shlex
 import sys
 from pathlib import Path
 
-root = Path(sys.argv[1])
+root = Path(sys.argv[1]).resolve(strict=True)
+repository_root = root.parent
+target_source = b'line\n'
+(repository_root / 'src').mkdir(exist_ok=True)
+(repository_root / 'src/three.ts').write_bytes(target_source)
+target_sha256 = hashlib.sha256(target_source).hexdigest()
 contents = {
     'r1-full.patch': b'patch one\npatch two\n',
     'r1-patch-p01-001.txt': b'patch one\n',
@@ -99,7 +104,9 @@ def segment(label, name):
 lines = [
     'Review this prepared assignment after all listed evidence is read.',
     'use at most 4 repository tool calls before stopping this assignment.',
-    'Required post-index original-source target: src/three.ts:1-1 tree fixture blob fixture content SHA-256 fixture reasons []',
+    'Required post-index original-source target: src/three.ts:1-1 tree '
+    + 'a' * 40 + ' blob ' + 'b' * 40 + ' content SHA-256 '
+    + target_sha256 + ' reasons []',
     f'Canonical assigned patch: {root}/r1-full.patch SHA-256 {digest("r1-full.patch")} bytes {len(contents["r1-full.patch"])}',
     'Patch chunk batch limit: 2',
 ]
@@ -285,17 +292,31 @@ PY
 
 test_seat_codex_resumes_unprepared_reviews() {
   local _path="$PATH"; seat_env
-  local S="$T/seat-codex-unprepared" calls
-  mkdir -p "$S" "$T/src"
+  local S="$T/seat-codex-unprepared" W="$T/seat-codex-unprepared-wrong" calls
+  mkdir -p "$S" "$W" "$T/src"
   : > "$S/calls.log"
   printf 'first source\n' > "$T/src/first.ts"
   printf 'required source\n' > "$T/src/required.ts"
-  cat > "$S/review.prompt.md" <<'PROMPT'
-Review this unprepared assignment.
-use at most 4 repository tool calls before stopping this assignment.
-Required post-index original-source target: src/required.ts:1-1 tree fixture blob fixture content SHA-256 fixture reasons []
-PROMPT
-  SHIM_MODE=resumable-no-manifest SHIM_CALLS_FILE="$S/calls.log" SHIM_STAGE_DIR="$S/calls" \
+  printf 'evidence index\n' > "$S/r1-evidence.md"
+  python3 - "$S" <<'PY'
+import hashlib
+import sys
+from pathlib import Path
+
+session = Path(sys.argv[1]).resolve()
+target = b'required source\n'
+prompt = (session / 'review.prompt.md')
+prompt.write_text(
+    'Review this unprepared assignment.\n'
+    'use at most 4 repository tool calls before stopping this assignment.\n'
+    f'Evidence navigation index: {session / "r1-evidence.md"}\n'
+    'Required post-index original-source target: src/required.ts:1-1 tree '
+    + 'a' * 40 + ' blob ' + 'b' * 40 + ' content SHA-256 '
+    + hashlib.sha256(target).hexdigest() + ' reasons []\n', encoding='utf-8')
+PY
+  assert_eq "no-manifest target fixture is constructed" "$?" 0
+  SHIM_MODE=resumable-no-manifest SHIM_EVIDENCE_INDEX="$S/r1-evidence.md" \
+    SHIM_CALLS_FILE="$S/calls.log" SHIM_STAGE_DIR="$S/calls" \
     SEAT=codex-luna MODEL=gpt-6.1-luna EFFORT=xhigh MODE=prompt ROOT="$T" \
     PROMPT="$S/review.prompt.md" SCHEMA="$SHIM_FIXTURE_DIR/findings.schema.json" \
     OUT="$S/result.json" LOG="$S/adapter.log" RAW="$S/raw.ndjson" BASE=abc \
@@ -323,11 +344,18 @@ final_args = (root / 'calls' / 'call-3.args').read_text().splitlines()
 final_prompt = (root / 'calls' / 'call-3.stdin').read_text()
 assert first_args[0] == 'exec' and 'resume' not in first_args, first_args
 assert '--output-schema' in first_args and 'review-turn.schema.json' in first_args, first_args
+assert first_args[first_args.index('-s') + 1] == 'read-only', first_args
+assert first_args[first_args.index('-C') + 1] == str(root.parent), first_args
 assert next_args[:2] == ['exec', 'resume'] and 'fixture-thread' in next_args, next_args
 assert '--output-schema' in next_args and 'review-turn.schema.json' in next_args, next_args
 assert final_args[:2] == ['exec', 'resume'] and 'fixture-thread' in final_args, final_args
 assert '--output-schema' in final_args and 'findings.schema.json' in final_args, final_args
+for args in (first_args, next_args, final_args):
+    assert '--ephemeral' not in args, args
+assert 'sandbox_mode="read-only"' in next_args, next_args
+assert 'sandbox_mode="read-only"' in final_args, final_args
 assert 'Review this unprepared assignment.' in first_prompt, first_prompt
+assert 'Evidence navigation index:' in first_prompt, first_prompt
 assert 'no prepared evidence was read in an earlier turn' in first_prompt, first_prompt
 assert 'already been read in earlier explicit turns' not in first_prompt, first_prompt
 assert 'Next evidence question:' in next_prompt and 'src/required.ts:1-1' in next_prompt, next_prompt
@@ -341,6 +369,33 @@ PY
     assert_eq "no-manifest review preserves source checks and finalizes tool-free" "$?" 0
   fi
   assert_grep "no-manifest review keeps findings schema" "$S/result.json" '"findings": ?\['
+
+  : > "$W/calls.log"
+  cp "$S/r1-evidence.md" "$W/r1-evidence.md"
+  sed "s|$S/r1-evidence.md|$W/r1-evidence.md|" "$S/review.prompt.md" > "$W/review.prompt.md"
+  SHIM_MODE=resumable-no-manifest SHIM_UNPREPARED_TARGET=wrong \
+    SHIM_EVIDENCE_INDEX="$W/r1-evidence.md" SHIM_CALLS_FILE="$W/calls.log" \
+    SHIM_STAGE_DIR="$W/calls" SEAT=codex-luna MODEL=gpt-6.1-luna EFFORT=xhigh \
+    MODE=prompt ROOT="$T" PROMPT="$W/review.prompt.md" \
+    SCHEMA="$SHIM_FIXTURE_DIR/findings.schema.json" OUT="$W/result.json" \
+    LOG="$W/adapter.log" RAW="$W/raw.ndjson" BASE=abc \
+    bash "$SCRIPTS/seats.d/codex.sh" > "$W/out" 2> "$W/err"
+  assert_eq "unrelated repository reads do not satisfy the required target" "$?" 0
+  calls=$(wc -l < "$W/calls.log" | tr -d ' ')
+  assert_eq "wrong target triggers one more bounded review turn" "$calls" 4
+  if [ "$calls" = 4 ]; then
+    python3 - "$W" <<'PY'
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+required_turn = (root / 'calls' / 'call-3.stdin').read_text(encoding='utf-8')
+assert 'Next evidence question:' in required_turn, required_turn
+assert 'exact required original-source target' in required_turn, required_turn
+assert 'src/required.ts:1-1' in required_turn, required_turn
+PY
+    assert_eq "adapter names the exact unmet target after an unrelated read" "$?" 0
+  fi
   seat_env_reset "$_path"
 }
 

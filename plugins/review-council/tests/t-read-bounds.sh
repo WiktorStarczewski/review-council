@@ -3108,6 +3108,7 @@ test_legacy_repository_call_budget_uses_roster_model() {
   ( local R="$T/legacy-budget-root" S="$T/legacy-budget-session"
     mkrepo "$R"; mkdir -p "$R/src" "$S"
     printf 'pub const V0: u32 = 0;\n' > "$R/src/asset.rs"
+    printf 'pub const V1: u32 = 1;\n' > "$R/src/other.rs"
     python3 - "$SCRIPTS/lib/review-read-audit.py" "$R" "$S" <<'PY'
 import json
 from pathlib import Path
@@ -3159,6 +3160,111 @@ for seat, limit in (('luna', 96), ('sol', 16)):
     assert audit_doc['evidence_scoped'] is False
 PY
     assert_eq "manifest-free audits apply the roster model repository-call budget" "$?" 0
+
+    python3 - "$SCRIPTS/lib/review-read-audit.py" "$R" "$S" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+audit, root, session = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+target = root / 'src/long.rs'
+target.write_text(''.join(f'line-{number:03d}\n' for number in range(1, 251)))
+target_bytes = target.read_bytes()
+target_sha = hashlib.sha256(target_bytes).hexdigest()
+index = session / 'r27-evidence.md'
+index.write_text('Evidence index\n', encoding='utf-8')
+prompt = session / 'r27-luna.prompt.md'
+prompt.write_text(
+    'Assigned scope: full\n'
+    f'Evidence navigation index: {index}\n'
+    'Required post-index original-source target: src/long.rs:1-250 tree '
+    + 'a' * 40 + ' blob ' + 'b' * 40 + ' content SHA-256 '
+    + target_sha + ' reasons []\n', encoding='utf-8')
+(session / 'roster.json').write_text(json.dumps({
+    'seats': [{'seat': 'luna', 'adapter': 'codex', 'model': 'gpt-6.1-luna'}],
+}) + '\n')
+(session / 'r27-luna.json').write_text(
+    json.dumps({'summary': 'checked', 'findings': []}) + '\n')
+
+def call(command, output):
+    item = {'id': command, 'type': 'command_execution', 'command': command,
+            'aggregated_output': '', 'exit_code': None, 'status': 'in_progress'}
+    return [
+        {'type': 'item.started', 'item': item},
+        {'type': 'item.completed', 'item': {
+            **item, 'aggregated_output': output, 'exit_code': 0, 'status': 'completed',
+        }},
+    ]
+
+def run(source, same_turn=False):
+    raw = session / 'r27-luna.stream.ndjson'
+    events = [{'type': 'turn.started'}]
+    index_command = 'cat -- ' + str(index)
+    events.extend(call(index_command, index.read_text(encoding='utf-8')))
+    if not same_turn:
+        events.append({'type': 'turn.completed'})
+    if source == 'long':
+        source_ranges = ((1, 200), (201, 250))
+    elif source == 'long-first':
+        source_ranges = ((1, 200),)
+    else:
+        source_ranges = ((1, 1),)
+    for start, end in source_ranges:
+        if not same_turn:
+            events.append({'type': 'turn.started'})
+        if source.startswith('long'):
+            source_command = f"sed -n '{start},{end}p' src/long.rs"
+        else:
+            source_command = "sed -n '1,1p' src/" + source + '.rs'
+        source_output = subprocess.run(
+            ['/bin/sh', '-c', source_command], cwd=root, check=True,
+            capture_output=True, text=True).stdout
+        events.extend(call(source_command, source_output))
+        if not same_turn:
+            events.append({'type': 'turn.completed'})
+    if same_turn:
+        events.append({'type': 'turn.completed'})
+    raw.write_text(''.join(json.dumps(event) + '\n' for event in events))
+    out = session / 'r27-luna.read-audit.json'
+    proc = subprocess.run([
+        sys.executable, str(audit), 'audit', '--adapter', 'codex',
+        '--raw', str(raw), '--prompt', str(prompt), '--root', str(root),
+        '--session', str(session), '--seat', 'luna', '--out', str(out),
+    ], capture_output=True, text=True)
+    return proc.returncode, json.loads(out.read_text())
+
+code, result = run('other')
+assert code == 2 and {row['code'] for row in result['violations']} == {
+    'missing-required-source-read'}, result
+code, result = run('long', same_turn=True)
+assert code == 2 and {row['code'] for row in result['violations']} == {
+    'missing-required-source-read'}, result
+code, result = run('long-first')
+assert code == 2 and {row['code'] for row in result['violations']} == {
+    'missing-required-source-read'}, result
+helper = audit.with_name('codex-proof-stages.py')
+proof = subprocess.run([
+    sys.executable, str(helper), '--post-index-target-read-count',
+    str(session / 'r27-luna.stream.ndjson'), '--prompt', str(prompt),
+    '--root', str(root), '--session', str(session),
+], capture_output=True, text=True)
+assert proof.returncode == 0 and proof.stdout.strip() == '0\t1', proof
+code, result = run('long')
+assert code == 0 and not result['violations'], result
+assert result['post_index_source_ranges'] == [
+    {'path': 'src/long.rs', 'line_start': 1, 'line_end': 200, 'origin': 'tool'},
+    {'path': 'src/long.rs', 'line_start': 201, 'line_end': 250, 'origin': 'tool'},
+], result['post_index_source_ranges']
+proof = subprocess.run([
+    sys.executable, str(helper), '--post-index-target-read-count',
+    str(session / 'r27-luna.stream.ndjson'), '--prompt', str(prompt),
+    '--root', str(root), '--session', str(session),
+], capture_output=True, text=True)
+assert proof.returncode == 0 and proof.stdout.strip() == '1\t1', proof
+PY
+    assert_eq "manifest-free audits require complete multi-window post-index source proof" "$?" 0
   )
 }
 

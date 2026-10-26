@@ -9,6 +9,7 @@
 ## 0.8.11
 
 - Give Luna model seats six times the aggregate repository-read budget while preserving source scope, proof order, per-read bounds, and response-size limits.
+- Run Codex custom reviews through bounded resumable turns with or without prepared evidence, and verify the exact required post-index source range before findings can be finalized.
 
 ## 0.8.10
 

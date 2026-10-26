@@ -128,12 +128,123 @@ def stage_read_count(prompt):
     return count
 
 
+def read_audit_module():
+    audit_path = Path(__file__).with_name('review-read-audit.py')
+    spec = importlib.util.spec_from_file_location('review_read_audit_for_codex_staging', audit_path)
+    if spec is None or spec.loader is None:
+        raise StageError('review read auditor is unavailable')
+    audit = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(audit)
+    return audit
+
+
 def required_post_index_read(prompt):
-    rows = [line for line in Path(prompt).read_text(encoding='utf-8').splitlines()
-            if line.startswith('Required post-index original-source target: ')]
-    if len(rows) > 1:
-        raise StageError('review prompt has multiple required post-index source targets')
-    return bool(rows)
+    audit = read_audit_module()
+    try:
+        return audit.parse_required_post_index_source_target(
+            Path(prompt).read_text(encoding='utf-8').splitlines()) is not None
+    except (OSError, UnicodeError, ValueError) as error:
+        raise StageError(str(error)) from error
+
+
+def codex_call_rows(path):
+    calls = {}
+    turn = None
+    turn_sequence = 0
+    completed_turns = set()
+    order = 0
+    try:
+        with open(path, encoding='utf-8') as source:
+            for line in source:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                event_type = event.get('type')
+                if event_type == 'turn.started':
+                    if turn is not None:
+                        raise StageError('Codex review stream nested explicit turns')
+                    turn_sequence += 1
+                    turn = turn_sequence
+                elif event_type == 'turn.completed':
+                    if turn is None:
+                        raise StageError('Codex review stream completed an inactive turn')
+                    completed_turns.add(turn)
+                    turn = None
+                item = event.get('item') or {}
+                if (event_type not in ('item.started', 'item.completed')
+                        or item.get('type') != 'command_execution'):
+                    continue
+                if turn is None:
+                    raise StageError('Codex review command fell outside its explicit turn')
+                call_id = item.get('id')
+                command = item.get('command')
+                if not isinstance(call_id, str) or not call_id \
+                        or not isinstance(command, str):
+                    raise StageError('Codex review turn has an invalid command event')
+                call = calls.get(call_id)
+                if call is None:
+                    order += 1
+                    call = {'command': command, 'turn': turn, 'order': order}
+                    calls[call_id] = call
+                elif call['command'] != command or call['turn'] != turn:
+                    raise StageError('Codex review turn changed a command identity')
+                if event_type == 'item.completed':
+                    if 'output' in call:
+                        raise StageError('Codex review turn repeated a command output')
+                    if 'aggregated_output' not in item and 'output' not in item:
+                        raise StageError('Codex review turn omitted a command output')
+                    call['output'] = item.get('aggregated_output', item.get('output'))
+                    call['success'] = item.get('exit_code') == 0
+    except OSError as error:
+        raise StageError('Codex review stream is unavailable') from error
+    if turn is not None or any(
+            'output' not in call or call['turn'] not in completed_turns
+            for call in calls.values()):
+        raise StageError('Codex review stream has incomplete explicit turn or command boundaries')
+    return calls
+
+
+def post_index_target_read_count(path, prompt, root, session):
+    audit = read_audit_module()
+    try:
+        prompt_lines = Path(prompt).read_text(encoding='utf-8').splitlines()
+        target = audit.parse_required_post_index_source_target(prompt_lines)
+        if target is None:
+            return 0, 0
+        audit.validate_required_post_index_source_target(target, root)
+        index = audit.required_evidence_index_path(prompt_lines, session)
+        calls = codex_call_rows(path)
+    except (OSError, UnicodeError, ValueError) as error:
+        raise StageError(str(error)) from error
+    ordered = sorted(calls.items(), key=lambda row: row[1]['order'])
+    index_reads = [
+        (call_id, call) for call_id, call in ordered
+        if call['success'] and audit.evidence_index_call_matches(
+            'codex', 'command_execution', {'command': call['command']},
+            call['output'], index, root)
+    ]
+    if not index_reads:
+        return 0, 0
+    _, index_call = index_reads[0]
+    post_index_ranges = []
+    for _, call in ordered:
+        if not call['success'] or call['turn'] <= index_call['turn'] \
+                or call['order'] <= index_call['order']:
+            continue
+        ranges, _ = audit.shell_source_ranges(
+            call['command'], Path(root), session=Path(session),
+            line_limit=audit.CODEX_SOURCE_READ_LINES)
+        if not audit.delivered_matches_source_ranges(
+                'codex', 'command_execution', call['output'], ranges, Path(root)):
+            continue
+        post_index_ranges.extend(ranges)
+        if audit._load_evidence_module().source_target_covered(
+                target, post_index_ranges):
+            return 1, 1
+    return 0, 1
 
 
 def review_status(path):
@@ -174,12 +285,7 @@ def turn_stats(path, root, session):
                        for item in value)
         return len(json.dumps(value, sort_keys=True, separators=(',', ':')).encode())
 
-    audit_path = Path(__file__).with_name('review-read-audit.py')
-    spec = importlib.util.spec_from_file_location('review_read_audit_for_codex_staging', audit_path)
-    if spec is None or spec.loader is None:
-        raise StageError('review read auditor is unavailable')
-    audit = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(audit)
+    audit = read_audit_module()
 
     try:
         with open(path, encoding='utf-8') as source:
@@ -450,6 +556,7 @@ def main():
     parser.add_argument('--required-post-index-read')
     parser.add_argument('--review-status')
     parser.add_argument('--turn-stats')
+    parser.add_argument('--post-index-target-read-count')
     parser.add_argument('--root')
     parser.add_argument('--session')
     args = parser.parse_args()
@@ -477,7 +584,7 @@ def main():
     if args.review_status:
         try:
             status, next_step = review_status(args.review_status)
-            print(status + '\t' + next_step)
+            print(status if status == 'ready' else status + '\t' + next_step)
         except StageError as error:
             print('codex proof staging: ' + str(error), file=sys.stderr)
             return 1
@@ -489,6 +596,17 @@ def main():
             calls, output_bytes, expansions = turn_stats(
                 args.turn_stats, args.root, args.session)
             print(f'{calls}\t{output_bytes}\t{expansions}')
+        except (OSError, UnicodeError, StageError) as error:
+            print('codex proof staging: ' + str(error), file=sys.stderr)
+            return 1
+        return 0
+    if args.post_index_target_read_count:
+        try:
+            if not args.prompt or not args.root or not args.session:
+                raise StageError('post-index target proof requires the prompt and review roots')
+            target_read, index_read = post_index_target_read_count(
+                args.post_index_target_read_count, args.prompt, args.root, args.session)
+            print(f'{target_read}\t{index_read}')
         except (OSError, UnicodeError, StageError) as error:
             print('codex proof staging: ' + str(error), file=sys.stderr)
             return 1

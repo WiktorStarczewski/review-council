@@ -191,7 +191,7 @@ t-read-bounds.sh::test_specialist_required_range_uses_session_artifacts	3	normal
 t-read-bounds.sh::test_codex_line_bounded_minified_search_is_an_advisory	3	normal
 t-read-bounds.sh::test_codex_snapshot_tree_reads_are_audited_source	3	normal
 t-read-bounds.sh::test_no_context_source_budget_keeps_a_four_call_refutation_reserve	3	normal
-t-read-bounds.sh::test_legacy_repository_call_budget_uses_roster_model	3	normal
+t-read-bounds.sh::test_legacy_repository_call_budget_uses_roster_model	6	normal
 t-read-bounds.sh::test_shell_comments_are_inert_to_the_read_audit	3	normal
 t-rev-reviewer.sh::test_rev_reviewer	1	normal
 t-ripgrep.sh::test_plan_prepare_reports_missing_ripgrep	2	normal
@@ -245,7 +245,7 @@ t-runner.sh::test_runner_writable_fixture_copies_from_frozen_sources	1	normal
 t-scopeenv.sh::test_scopeenv	1	normal
 t-seat-claude.sh::test_seat_claude_cli_scrubs_parent_session	1	normal
 t-seat.sh::test_seat_codex	1	normal
-t-seat.sh::test_seat_codex_resumes_unprepared_reviews	1	normal
+t-seat.sh::test_seat_codex_resumes_unprepared_reviews	2	normal
 t-seat.sh::test_seat_codex_stages_prepared_evidence	1	normal
 t-seat.sh::test_seat_incomplete_proof_refuses_a_relaunch	1	normal
 t-seat.sh::test_seat_process_group_cancellation_preserves_partial_stream	4	exclusive

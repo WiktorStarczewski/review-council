@@ -297,3 +297,4 @@ one reviewer even when the general code-review workflow defaults to a Council pa
 - When naming automated checks to keep, verify whether each is a dedicated job or an assertion inside a broad suite. State the exact job and runtime; do not imply a slow full-suite gate is a fast focused check.
 - When a user says another session owns a release, stop this session's release monitors and return to its scoped work instead of asking release-gate questions here.
 - Treat Luna budget exhaustion separately from provider failures and hard proof violations. Scale aggregate in-scope read and investigation budgets for Luna while retaining scope, ordering, per-response, and output-byte limits.
+- For a standing request to monitor parallel Council reviews and repair Review Council, keep a live watcher for each active session and continue authorized repository fixes during those waits; a status report does not close the task.
