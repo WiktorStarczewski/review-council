@@ -1387,7 +1387,7 @@ assert clusters[0]['search_pattern'] == r'src/(value|fake)\.ts'
 assert clusters[0]['search_contract'] == {
     'engine':'rg', 'domain':'rg-complete-worktree', 'pattern':r'src/(value|fake)\.ts'}
 assert [(row['path'], row['resolution']) for row in clusters[0]['paths']] == [
-    ('Makefile', 'basename'), ('Makefile', 'basename'),
+    ('Makefile', 'direct'), ('Makefile', 'direct'),
     ('tests/value.test.ts', 'direct'), ('src/value.ts', 'direct')]
 assert [(row['line_start'], row['line_end']) for row in clusters[0]['paths']] == [
     (1, 2), (4, 5), (1, 3), (1, 1)]
@@ -2310,7 +2310,7 @@ PY
   )
 }
 
-test_plan_location_domain() {
+test_evidence_semantic_rejection_plan_location_domain() {
   python3 - "$SCRIPTS/rev-evidence.py" <<'PY'
 import importlib.util, sys
 
@@ -2319,6 +2319,7 @@ module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 entries = {
     'README.md', 'src/value.ts', 'src/value.ts.generated',
     'src/nested value.ts', 'src/uber value.ts', 'src/über value.ts',
+    'package.json', 'apps/web/package.json',
     'tests/unique.test.ts', 'one/shared.test.ts', 'two/shared.test.ts',
 }
 raw = b'''## C-01 - canonical locations
@@ -2334,9 +2335,20 @@ assert [(row['path'], row['line_start'], row['line_end'], row['resolution']) for
     ('src/nested value.ts', 1, 2, 'direct'),
     ('src/über value.ts', 3, 3, 'direct'),
     ('tests/unique.test.ts', 4, 4, 'basename'),
-    ('README.md', 1, 1, 'basename'),
+    ('README.md', 1, 1, 'direct'),
     ('src/uber value.ts', 5, 6, 'direct'),
 ], rows
+root_paths = module.plan_field_paths('./package.json:89, package.json:90', entries)
+assert [(row['path'], row['line_start'], row['resolution']) for row in root_paths] == [
+    ('package.json', 89, 'direct'),
+    ('package.json', 90, 'direct'),
+], root_paths
+quoted_root_paths = module.plan_field_paths(
+    '`./package.json:91`, `./src/nested value.ts:92`', entries)
+assert [(row['path'], row['line_start'], row['resolution']) for row in quoted_root_paths] == [
+    ('package.json', 91, 'direct'),
+    ('src/nested value.ts', 92, 'direct'),
+], quoted_root_paths
 try:
     module.plan_field_paths('prefixsrc/value.ts.generated.extra', entries)
 except ValueError as error:
@@ -2351,6 +2363,10 @@ bad_fields = {
     'reversed direct': 'src/value.ts:3-2',
     'reversed shorthand': 'src/value.ts:1, :3-2',
     'path escape': '../src/value.ts:1',
+    'root-relative parent escape': './../src/value.ts:1',
+    'in-path parent escape': 'src/../src/value.ts:1',
+    'quoted parent escape': '`../src/value.ts:1`',
+    'root path followed by escape': './package.json:89, ../src/value.ts:1',
     'ambiguous basename': 'shared.test.ts:1',
 }
 for name, field in bad_fields.items():
