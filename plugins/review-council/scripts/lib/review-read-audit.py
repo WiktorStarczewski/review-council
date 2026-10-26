@@ -2764,8 +2764,22 @@ def assess(args, blocked):
                     if args.adapter == 'codex' and event.get('type') == 'item.completed':
                         prior_call_keys = codex_call_keys_by_id.get(call_id, [])
                         current_call_key = (codex_active_turn, call_id)
-                        if prior_call_keys and (codex_active_turn is None
-                                                or current_call_key in calls):
+                        matched_call_key = None
+                        if codex_active_turn is not None and current_call_key in calls:
+                            matched_call_key = current_call_key
+                        elif codex_active_turn is None and prior_call_keys:
+                            pending_call_keys = [key for key in prior_call_keys
+                                                 if key not in outputs]
+                            if len(pending_call_keys) == 1:
+                                matched_call_key = pending_call_keys[0]
+                            elif not pending_call_keys and len(prior_call_keys) == 1:
+                                matched_call_key = prior_call_keys[0]
+                            else:
+                                failures.append(violation('duplicate-tool-call', args.adapter))
+                                continue
+                        if matched_call_key is not None:
+                            if calls[matched_call_key][:2] != (name, data):
+                                failures.append(violation('duplicate-tool-call', args.adapter))
                             continue
                     explicit_turn = event.get('turn_id') or event.get('turnId') or event.get('message_id')
                     if sdk_transcript is not None:
