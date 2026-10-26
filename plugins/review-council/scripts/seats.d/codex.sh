@@ -78,10 +78,10 @@ else
     ''|*[!0-9]*) echo "codex adapter: invalid proof stage count" >&2; exit 1;;
   esac
   run_codex_turn() {
-    local input=$1 resume=$2 schema=${3:-} output=${4:-} rc
+    local input=$1 schema=${2:-} output=${3:-} rc
     TURN_RAW="$STAGE_DIR/current-turn.ndjson"
     : > "$TURN_RAW"
-    if [ "$resume" = 0 ] && [ -n "$schema" ]; then
+    if [ -z "$THREAD_ID" ] && [ -n "$schema" ]; then
       ( cd "$ROOT" && CODEX_HOME="$PRIVATE_HOME" codex exec --ignore-user-config \
         -s read-only -C "$ROOT" -m "$MODEL" \
         -c model_reasoning_effort="$EFFORT" -c project_doc_max_bytes=0 \
@@ -89,7 +89,7 @@ else
         --json --output-schema "$schema" -o "$output" $GITCHECK - < "$input" ) \
         2>>"$LOG" | tee "$TURN_RAW" | tee -a "$RAW" \
         | python3 -u "$SUMMARY" codex "$output" >> "$LOG"
-    elif [ "$resume" = 0 ]; then
+    elif [ -z "$THREAD_ID" ]; then
       ( cd "$ROOT" && CODEX_HOME="$PRIVATE_HOME" codex exec --ignore-user-config \
         -s read-only -C "$ROOT" -m "$MODEL" \
         -c model_reasoning_effort="$EFFORT" -c project_doc_max_bytes=0 \
@@ -123,7 +123,7 @@ else
       printf -v stage_name 'stage-%04d.prompt' "$stage"
       STAGE_PROMPT="$STAGE_DIR/$stage_name"
       EXPECTED_STAGE_READS=$(python3 "$STAGES_HELPER" --stage-read-count "$STAGE_PROMPT") || exit 1
-      run_codex_turn "$STAGE_PROMPT" "$((stage == 1 ? 0 : 1))" || exit $?
+      run_codex_turn "$STAGE_PROMPT" || exit $?
       STAGE_STATS=$(python3 "$STAGES_HELPER" --turn-stats "$TURN_RAW" \
         --root "$AUDIT_ROOT" --session "$SESSION_DIR") || exit 1
       IFS=$'\t' read -r STAGE_READS STAGE_BYTES STAGE_EXPANSION_READS <<< "$STAGE_STATS"
@@ -201,11 +201,7 @@ EOF
       fi
       TURN_OUT="$STAGE_DIR/review-turn.json"
       rm -f "$TURN_OUT"
-      REVIEW_RESUME=1
-      if [ "$review_turn" = 1 ] && [ "$STAGE_COUNT" -eq 0 ]; then
-        REVIEW_RESUME=0
-      fi
-      run_codex_turn "$REVIEW_PROMPT" "$REVIEW_RESUME" "$STAGE_DIR/review-turn.schema.json" \
+      run_codex_turn "$REVIEW_PROMPT" "$STAGE_DIR/review-turn.schema.json" \
         "$TURN_OUT" || exit $?
       RESUMED_THREAD_ID=$(python3 "$STAGES_HELPER" --thread-id-stream "$RAW") || exit 1
       if [ -z "$THREAD_ID" ]; then
@@ -273,7 +269,7 @@ EOF
         printf '%s\n' "$NEXT_STEP"
       } > "$FINAL_PROMPT"
     fi
-    run_codex_turn "$FINAL_PROMPT" 1 "$SCHEMA" "$OUT" || exit $?
+    run_codex_turn "$FINAL_PROMPT" "$SCHEMA" "$OUT" || exit $?
     RESUMED_THREAD_ID=$(python3 "$STAGES_HELPER" --thread-id-stream "$RAW") || exit 1
     if [ "$RESUMED_THREAD_ID" != "$THREAD_ID" ]; then
       echo "codex adapter: findings resumed a different thread" >&2

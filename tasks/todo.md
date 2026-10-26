@@ -35,6 +35,8 @@ The 0.8.3 fix resolves a confirmed launch-root mismatch. It did not resolve the 
 
 For 0.8.11, the selected Luna allowance is six times the standard per-seat aggregate repository-read budget. Keep per-response byte ceilings and proof validity rules unchanged; the larger allowance is for more ordered, in-scope reads.
 
+Exact-head verifier run `40292649184` on `a9f500dc` failed the same no-manifest continuation assertion on Ubuntu and macOS: each platform passed 5,187 checks and failed one, because the second recorded invocation was a fresh `exec` instead of `exec resume`. The adapter now uses its established thread ID as the sole fresh-versus-resume signal. Independent normal review is clean; fresh exact-head CI is still required.
+
 The four-call reservation in `rev-attempt.py` limits adapter launches for one seat generation, not provider turns inside a resumable Codex launch. Codex JSONL exposes cumulative thread token totals on completed turns, so profile usage must difference validated snapshots, disclose resets or malformed snapshots, and leave dollar cost unknown when the stream does not define its scope.
 
 The active #1877 review provides a concrete 0.8.9 budget sample: Luna-2 was instructed to stop required reads at call 12 and use at most 16 repository calls, while its prepared workload named 35 required source segments. Its audit recorded 44 source-read calls and both `repository-expansion-call-limit` and `path-outside-scope`; 0.8.9 classifies the budget code as advisory, while the scope violation is fatal and explains exit 2. The larger budget addresses the overage and wasted follow-up, but preserves rejection of out-of-scope reads.
