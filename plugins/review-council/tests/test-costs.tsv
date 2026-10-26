@@ -163,6 +163,7 @@ t-provider-contract.sh::test_provider_envelope_replay	1	normal
 t-provider-contract.sh::test_provider_envelope_replay_narrow_advisory	1	normal
 t-read-bounds.sh::test_adapter_isolation_and_cache_flags	3	normal
 t-read-bounds.sh::test_assigned_patch_chunk_coverage	3	normal
+t-read-bounds.sh::test_audit_codex_command_ids_restart_per_explicit_turn	1	normal
 t-read-bounds.sh::test_claude_hook_line_counts_and_nonexecuted_exploration	3	normal
 t-read-bounds.sh::test_claude_terminal_hook_responses	3	normal
 t-read-bounds.sh::test_codex_command_ids_are_scoped_to_explicit_turns	3	normal

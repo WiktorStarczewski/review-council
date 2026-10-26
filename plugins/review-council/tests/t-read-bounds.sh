@@ -3632,7 +3632,7 @@ counter = [0]
 def lines_of(path, start, end):
     return ''.join(pathlib.Path(path).read_text().splitlines(keepends=True)[start - 1:end])
 def build(call):
-    counter[0] += 1; identity = f'c{counter[0]}'
+    counter[0] += 1; identity = call.get('id', f'c{counter[0]}')
     if 'oversized' in call:
         if adapter == 'codex':
             return identity, 'command_execution', {'command': 'cat -- ' + shlex.quote(str(prompt))}, 'z' * (33 * 1024) + '\n'
@@ -4279,4 +4279,15 @@ else:
     raise AssertionError('a command ID changed identity within one explicit turn')
 PY
   assert_eq "Codex command IDs may restart on later explicit turns" "$?" 0
+}
+
+test_audit_codex_command_ids_restart_per_explicit_turn() {
+  ( local R="$T/reused-codex-id-root" S="$T/reused-codex-id-session"
+    severity_fixture "$R" "$S" || return
+    severity_findings "$S" 31 || return
+    severity_transcript "$S" 31 codex '{"tail":[[{"id":"item_2","cmd":"sed -n 1,2p src/wide.rs","out_lines":["src/wide.rs",1,2]}],[{"id":"item_2","cmd":"sed -n 3,4p src/wide.rs","out_lines":["src/wide.rs",3,4]}]]}'
+    assert_eq "Codex IDs reused on later turns do not invalidate valid reads" \
+      "$(severity_audit "$R" "$S" 31 codex)" \
+      "$(severity_expect valid - -)"
+  )
 }
