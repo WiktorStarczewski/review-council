@@ -1,3 +1,14 @@
+## Luna per-turn command budget follow-up
+
+- [x] Trace the matched #1830 failures to the Codex per-turn two-command ceiling; aggregate read budgets were not exhausted.
+- [x] Add a regression proving a Luna turn can use the observed five calls while Sol remains capped at two; CI confirmed the pre-fix behavior, alongside stale prompt assertions and one separate macOS stack timing failure.
+- [x] Implement a model-specific six-call Luna turn cap with the existing byte, scope, ordering, read-budget, proof, and four-attempt limits unchanged.
+- [x] Correct exact-head CI assertions to match the numeric limits generated for Luna and Sol; independent normal review found no issue.
+- [x] Pass implementation exact-head CI and package validation on head `b27b4bf` in run `40390452887`.
+- [x] Bump all plugin manifests, changelog, and release instructions to 0.8.14; independent normal review found no issue.
+- [ ] Pass final exact-head CI, squash-merge, and publish the signed 0.8.14 release.
+- [ ] Replay a large scope on released Luna and compare first-attempt validity and runtime to the preserved Sol evidence.
+
 # Issue #77: Luna reviewer proof reliability
 
 - [x] Fix the reviewer launch root and publish signed 0.8.3.

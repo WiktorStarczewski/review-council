@@ -151,6 +151,11 @@ EOF
     case "$REVIEW_READ_BUDGET" in
       ''|*[!0-9]*) echo "codex adapter: invalid review read budget" >&2; exit 1;;
     esac
+    REVIEW_TURN_CALL_LIMIT=$(python3 "$STAGES_HELPER" \
+      --review-turn-call-limit "$MODEL") || exit 1
+    case "$REVIEW_TURN_CALL_LIMIT" in
+      ''|*[!0-9]*) echo "codex adapter: invalid review turn call limit" >&2; exit 1;;
+    esac
     MAX_REVIEW_TURNS=$((REVIEW_READ_BUDGET + 1))
     REQUIRED_POST_INDEX=$(python3 "$STAGES_HELPER" --required-post-index-read "$PROMPT") || exit 1
     REQUIRED_POST_INDEX_TARGET=$(python3 "$STAGES_HELPER" \
@@ -175,9 +180,9 @@ EOF
 This is the first explicit review turn; no prepared evidence was read in an earlier turn. Follow the original assignment's read order and source scope.
 EOF
         fi
-        cat >> "$REVIEW_PROMPT" <<'EOF'
+        cat >> "$REVIEW_PROMPT" <<EOF
 
-Keep post-index repository investigation within bounded explicit turns. Each explicit turn permits at most two command_execution calls total, of any kind, and no more than 32 KiB of combined output. The assignment's aggregate in-scope repository-read allowance applies across the full review and all explicit turns; it does not reset at a turn boundary. If more evidence is needed after this turn, return status "continue" with one concrete next evidence question in next_step. If the evidence is sufficient to finish, return status "ready" with an empty next_step. Do not return findings in these bounded turns.
+Keep post-index repository investigation within bounded explicit turns. Each explicit turn permits at most ${REVIEW_TURN_CALL_LIMIT} command_execution calls total, of any kind, and no more than 32 KiB of combined output. The assignment's aggregate in-scope repository-read allowance applies across the full review and all explicit turns; it does not reset at a turn boundary. If more evidence is needed after this turn, return status "continue" with one concrete next evidence question in next_step. If the evidence is sufficient to finish, return status "ready" with an empty next_step. Do not return findings in these bounded turns.
 EOF
       elif [ "$REVIEW_READS" -ge "$REVIEW_READ_BUDGET" ]; then
         NO_MORE_READS=1
@@ -191,8 +196,8 @@ EOF
         } > "$REVIEW_PROMPT"
       else
         {
-          cat <<'EOF'
-Continue the same assigned review using the prepared evidence and prior review reasoning in this conversation. Do not reread prepared artifacts. This explicit turn permits at most two command_execution calls total, of any kind, and at most 32 KiB of combined output. The assignment's aggregate in-scope repository-read allowance applies across the full review and all explicit turns; it does not reset at a turn boundary. If more evidence is needed, return status "continue" and one concrete next evidence question in next_step. If ready to finish, return status "ready" with an empty next_step. Do not return findings yet.
+          cat <<EOF
+Continue the same assigned review using the prepared evidence and prior review reasoning in this conversation. Do not reread prepared artifacts. This explicit turn permits at most ${REVIEW_TURN_CALL_LIMIT} command_execution calls total, of any kind, and at most 32 KiB of combined output. The assignment's aggregate in-scope repository-read allowance applies across the full review and all explicit turns; it does not reset at a turn boundary. If more evidence is needed, return status "continue" and one concrete next evidence question in next_step. If ready to finish, return status "ready" with an empty next_step. Do not return findings yet.
 
 Next evidence question:
 EOF
@@ -216,7 +221,11 @@ EOF
       case "$TURN_CALLS:$TURN_BYTES:$TURN_READS" in
         *[!0-9:]*|:*) echo "codex adapter: invalid review turn metrics" >&2; exit 1;;
       esac
-      if [ "$TURN_CALLS" -gt 2 ] || [ "$TURN_BYTES" -gt 32768 ] \
+      if [ "$TURN_CALLS" -gt "$REVIEW_TURN_CALL_LIMIT" ]; then
+        echo "codex adapter: review turn exceeded its command-call budget" >&2
+        exit 1
+      fi
+      if [ "$TURN_BYTES" -gt 32768 ] \
           || [ "$((REVIEW_READS + TURN_READS))" -gt "$REVIEW_READ_BUDGET" ] \
           || { [ "$NO_MORE_READS" = 1 ] && [ "$TURN_CALLS" -ne 0 ]; }; then
         echo "codex adapter: review turn exceeded its read or output budget" >&2

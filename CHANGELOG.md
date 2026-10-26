@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.8.14
+
+- Allow Luna Codex review turns to use up to six command executions while keeping other models at two and preserving aggregate read, output, scope, ordering, proof, and seat-attempt limits.
+
 ## 0.8.13
 
 - Accept validated root-relative plan locations and prefer exact root paths when nested files share their basename, while preserving path traversal and ambiguous-basename refusals.
