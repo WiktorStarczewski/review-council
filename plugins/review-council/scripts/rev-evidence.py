@@ -8127,6 +8127,9 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
                       + ' content SHA-256 ' + segment['content_sha256'])
             print('Required source segment batch limit: '
                   + str(read_batch_limit(assignment['adapter'])))
+        if (assignment['adapter'] == 'claude'
+                and any(row.get('segments') for row in context['required_source_ranges'])):
+            print('Claude source read batching: issue each pair of consecutive required source segment reads in one assistant message, in listed order; wait for both results before continuing. Read a final singleton or an oversized single-line segment alone.')
         print('Source read required: ' + str(context['source_read_required']).lower())
     else:
         print('Post-patch evidence order: read the evidence index before original source.')

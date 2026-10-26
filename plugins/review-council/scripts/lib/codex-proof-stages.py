@@ -301,7 +301,8 @@ def prepared_stages(prompt, seat, model, stage_dir):
                 raise StageError('assigned patch chunk differs from the canonical patch')
             path = direct_path(str(session / name), session, name)
             expected_lines.append((index, len(chunks), str(path), cursor, end, row['sha256']))
-            verified_chunks.append({'path': path, 'visible': row.get('predicted_visible_bytes', len(raw))})
+            verified_chunks.append({'path': path, 'command': command_file(path),
+                                    'visible': row.get('predicted_visible_bytes', len(raw))})
             cursor = end
         observed_lines = [(int(m.group(1)), int(m.group(2)), m.group(3), int(m.group(4)),
                            int(m.group(5)), m.group(6)) for m in chunk_lines]
