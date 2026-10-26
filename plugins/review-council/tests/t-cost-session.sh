@@ -1,18 +1,22 @@
 test_cost_session_brief_keeps_incomplete_results_visible() {
   local S="$T/cost-session"; mkdir -p "$S"
-  printf '%s\n' '{"phase":"collect","round":"2p","min_rounds":"adaptive","seats":["terra","opus"],"open":{"P1":1},"fixed":2}' > "$S/state.json"
-  printf '%s\n' '{"seats":[{"seat":"terra","adapter":"codex","model":"gpt-5.6-terra","effort":"max"},{"seat":"opus","adapter":"claude","model":"opus","effort":"max"}]}' > "$S/roster.json"
+  printf '%s\n' '{"phase":"fan-out","round":"2p","min_rounds":"adaptive","seats":["terra","opus","sonnet"],"open":{"P1":1},"fixed":2}' > "$S/state.json"
+  printf '%s\n' '{"seats":[{"seat":"terra","adapter":"codex","model":"gpt-5.6-terra","effort":"max"},{"seat":"opus","adapter":"claude","model":"opus","effort":"max"},{"seat":"sonnet","adapter":"claude","model":"sonnet","effort":"max"}]}' > "$S/roster.json"
   printf '0\n' > "$S/r2p-terra.exit"
   printf '%s\n' '{"summary":"INCOMPLETE PROOF: missing source","findings":[]}' > "$S/r2p-terra.json"
   : > "$S/r2p-opus.prompt.md"
+  : > "$S/r2p-sonnet.prompt.md"
+  : > "$S/r2p-sonnet.started"
+  printf 'tool_call shell: rg "started" src\n' > "$S/r2p-sonnet.log"
   python3 "$SCRIPTS/rev-context.py" "$S" --json > "$T/cost-session.json"
   python3 - "$T/cost-session.json" <<'PY'
 import json, sys
 value = json.load(open(sys.argv[1]))
 assert value['round'] == '2p'
-assert value['phase'] == 'collect'
+assert value['phase'] == 'fan-out'
 assert value['seats'][0]['status'] == 'incomplete-proof', value
-assert value['seats'][1]['status'] == 'running', value
+assert value['seats'][1]['status'] == 'pending', value
+assert value['seats'][2]['status'] == 'running', value
 assert value['seats'][0]['model'] == 'gpt-5.6-terra'
 assert value['open'] == {'P1': 1}
 assert value['certification'] == 'not evaluated'

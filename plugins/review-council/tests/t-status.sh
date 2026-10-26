@@ -28,6 +28,16 @@ test_status() {
   assert_grep "sonnet running with last action" "$T/line" 'sonnet: running 14m ← rg "retry" src/api'
   assert_grep "opus last tool from legacy transcript" "$T/line" 'opus: running 5m ← Grep'
   assert_grep "totals" "$T/line" 'open P0:0 P1:1 P2:3 fixed 4$'
+  local Q="$T/status-prompt-only"; mkdir -p "$Q"
+  "$SCRIPTS/rev-state.sh" "$Q" round=1 min_rounds=1 phase=fan-out \
+    'seats=["terra","sonnet"]' open.P0=0 open.P1=0 open.P2=0 fixed=0 >/dev/null
+  : > "$Q/r1-terra.prompt.md"
+  : > "$Q/r1-sonnet.prompt.md"; rc_touch_ago 900 "$Q/r1-sonnet.prompt.md"
+  : > "$Q/r1-sonnet.started"; rc_touch_ago 180 "$Q/r1-sonnet.started"
+  line=$("$SCRIPTS/rev-status.sh" "$Q"); printf '%s\n' "$line" > "$T/prompt-only-line"
+  assert_grep "a prepared prompt without launch evidence stays pending" "$T/prompt-only-line" 'terra: pending'
+  assert_nogrep "a prompt alone is not narrated as an active review" "$T/prompt-only-line" 'terra: running|terra is still reviewing'
+  assert_grep "a launch marker starts the running duration" "$T/prompt-only-line" 'sonnet: running 3m'
   echo 4 > "$S/r2-sonnet.exit"; echo "$("$SCRIPTS/rev-status.sh" "$S")" > "$T/line"
   assert_grep "failed seat" "$T/line" 'sonnet: failed exit=4'
   assert_exit "missing session → 1" 1 "$SCRIPTS/rev-status.sh" "$T/nope"
