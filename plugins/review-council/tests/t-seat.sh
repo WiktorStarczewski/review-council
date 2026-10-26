@@ -44,6 +44,11 @@ JSON
 test_seat_codex_instructions_required() {
   ( seat_env
     local COPY="$T/instruction-plugin" S="$T/instruction-seat" variant
+    assert_grep "reviewer instructions use narrow search paths and terms" \
+      "$SK/scripts/lib/reviewer-instructions.md" 'narrowest known path and specific symbols or literals'
+    assert_grep "reviewer instructions split sibling-file searches" \
+      "$SK/scripts/lib/reviewer-instructions.md" \
+      'Search sibling files or identifiers in separate bounded calls; do not combine multi-file `rg` calls with `head`\.'
     copy_writable_tree "$SK" "$COPY"
     mkdir -p "$S"
     printf 'review\n' > "$S/p.md"
