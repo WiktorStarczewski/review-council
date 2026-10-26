@@ -3596,11 +3596,12 @@ def replacement_accepts_only_a_recorded_owned_provider_cancellation():
             'terra': ('codex', 'gpt-5.6-sol', 'high'),
             'opus': ('codex', 'gpt-5.6-luna', 'high'),
             'sonnet': ('agent', 'sonnet', 'high'),
+            'unassigned': ('codex', 'gpt-5.6-luna', 'high'),
         }
         roster = {'seats': [
-            {'seat': seat, 'extra': False, 'adapter': chain_identities[seat][0],
+            {'seat': seat, 'extra': seat == 'unassigned', 'adapter': chain_identities[seat][0],
              'model': chain_identities[seat][1], 'effort': chain_identities[seat][2]}
-            for seat in seats]}
+            for seat in chain_identities]}
         (session / 'roster.json').write_text(json.dumps(roster))
         parent = prepare('10', 'risk', *assign, '--full-seat', 'sonnet')
         trigger_prompt = session / 'r10-opus.prompt.md'
@@ -3615,6 +3616,11 @@ def replacement_accepts_only_a_recorded_owned_provider_cancellation():
         (session / 'r10-terra.exit').write_text('130\n')
         started = 'cli\n33828\nMon Oct 26 21:41:50 2026\n'
         (session / 'r10-terra.started').write_text(started)
+        unassigned_prompt = session / 'r10-unassigned.prompt.md'
+        unassigned_prompt.write_text('unassigned trigger\n')
+        assert reserve_launch_bound(session, '10', 'unassigned', unassigned_prompt, '6' * 32).returncode == 0
+        assert record_launch_bound(session, '10', 'unassigned', unassigned_prompt, '3', '6' * 32).returncode == 0
+        (session / 'r10-unassigned.exit').write_text('3\n')
         child_args = ('--assignment', 'sol=' + parent['assignments']['terra']['bundle'],
                       '--parent-assignment', '10:terra')
         call('prepare', session, '10x', '--phase', 'repair', *child_args, good=False,
@@ -3635,7 +3641,16 @@ def replacement_accepts_only_a_recorded_owned_provider_cancellation():
         child = prepare('10x', 'repair', *child_args)
         assert child['parent_assignment']['seat'] == 'terra'
         assert list(child['assignments']) == ['sol']
+        recovery['trigger_seat'] = 'unassigned'
+        (session / 'r10-provider-recovery.json').write_text(json.dumps(recovery))
+        call('prepare', session, '10x2', '--phase', 'repair', *child_args, good=False,
+             error='parent assignment has no recorded terminal failure')
+        recovery['trigger_seat'] = '../../etc/passwd'
+        (session / 'r10-provider-recovery.json').write_text(json.dumps(recovery))
+        call('prepare', session, '10x3', '--phase', 'repair', *child_args, good=False,
+             error='parent assignment has no recorded terminal failure')
         recovery['started_identity'] = 'cli\n99999\nchanged start identity\n'
+        recovery['trigger_seat'] = 'opus'
         (session / 'r10-provider-recovery.json').write_text(json.dumps(recovery))
         call('prepare', session, '10x2', '--phase', 'repair', *child_args, good=False,
              error='parent assignment has no recorded terminal failure')

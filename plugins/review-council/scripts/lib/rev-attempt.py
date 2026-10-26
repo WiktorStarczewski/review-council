@@ -268,6 +268,19 @@ def roster_adapter(session: Path, seat: str):
     return adapter if adapter in ('codex', 'claude', 'gemini') else None
 
 
+def panel_assignments(session: Path, panel: str):
+    try:
+        manifest = json.loads(private_bytes(session / f'r{panel}-evidence.manifest.json'))
+    except (OSError, ValueError, json.JSONDecodeError, RecursionError):
+        return None
+    if not isinstance(manifest, dict) or manifest.get('label') != panel:
+        return None
+    assignments = manifest.get('assignments')
+    if not isinstance(assignments, dict):
+        return None
+    return assignments
+
+
 def recovery_record(session: Path, panel: str, seat: str):
     current_path = session / f'r{panel}-{seat}.provider-recovery.json'
     try:
@@ -279,11 +292,15 @@ def recovery_record(session: Path, panel: str, seat: str):
     legacy_path = session / f'r{panel}-provider-recovery.json'
     try:
         return json.loads(private_bytes(legacy_path)), legacy_path
-    except (OSError, ValueError, json.JSONDecodeError):
+    except (OSError, ValueError, json.JSONDecodeError, RecursionError):
         return None, legacy_path
 
 
 def provider_cancellation(session: Path, panel: str, seat: str, cancelled: dict) -> bool:
+    safe = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-')
+    if (not isinstance(panel, str) or not panel or not isinstance(seat, str) or not seat
+            or not set(panel) <= safe or not set(seat) <= safe):
+        return False
     record, path = recovery_record(session, panel, seat)
     if not isinstance(record, dict):
         return False
@@ -291,6 +308,13 @@ def provider_cancellation(session: Path, panel: str, seat: str, cancelled: dict)
     cancelled_seat = record.get('cancelled_seat', record.get('cancelled_sibling'))
     trigger_exit = record.get('trigger_exit')
     cancellation_exit = record.get('cancellation_result')
+    if (not isinstance(trigger_seat, str) or not trigger_seat or not isinstance(panel, str)
+            or not isinstance(seat, str) or not set(trigger_seat) <= safe
+            or not set(panel) <= safe or not set(seat) <= safe):
+        return False
+    assignments = panel_assignments(session, panel)
+    if assignments is None or trigger_seat not in assignments or seat not in assignments:
+        return False
     started = session / f'r{panel}-{seat}.started'
     try:
         started_identity = private_bytes(started).decode('utf-8')
@@ -353,7 +377,7 @@ def terminal_failure(session: Path, panel: str, seat: str, prompt: Path) -> bool
         current = json.loads(private_bytes(path)) if safe_regular(path) else None
         launches = current.get('launches') if isinstance(current, dict) else None
         final = private_bytes(exit_path).strip().decode('ascii')
-    except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+    except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         return False
     return (isinstance(launches, list) and len(launches) >= 2
             and all(str(code) in TERMINAL_EXITS for code in launches[-2:])
@@ -363,7 +387,9 @@ def terminal_failure(session: Path, panel: str, seat: str, prompt: Path) -> bool
 def record_provider_cancellation(session: Path, panel: str, trigger_seat: str,
                                  cancelled_seat: str, execution_handle: str):
     safe = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-')
-    if (not panel or not trigger_seat or not cancelled_seat
+    if (not all(isinstance(value, str) for value in
+                (panel, trigger_seat, cancelled_seat, execution_handle))
+            or not panel or not trigger_seat or not cancelled_seat
             or any(not value or not set(value) <= safe
                    for value in (panel, trigger_seat, cancelled_seat))
             or trigger_seat == cancelled_seat or not execution_handle.strip()):
@@ -381,6 +407,10 @@ def record_provider_cancellation(session: Path, panel: str, trigger_seat: str,
         return 1
     with os.fdopen(panel_descriptor, 'r+', encoding='utf-8') as panel_lock:
         fcntl.flock(panel_lock, fcntl.LOCK_EX)
+        assignments = panel_assignments(session, panel)
+        if (assignments is None or trigger_seat not in assignments
+                or cancelled_seat not in assignments):
+            return 1
         trigger_prompt = session / f'r{panel}-{trigger_seat}.prompt.md'
         cancelled_prompt = session / f'r{panel}-{cancelled_seat}.prompt.md'
         trigger = completed_attempt(session, panel, trigger_seat, trigger_prompt)
