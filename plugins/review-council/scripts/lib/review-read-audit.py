@@ -2721,6 +2721,7 @@ def assess(args, blocked):
     codex_turn_calls = {}
     codex_completed_turns = set()
     codex_output_turns = {}
+    codex_call_keys_by_id = {}
     sdk_transcript = CursorSDKTranscript() if args.adapter == 'cursor-sdk' else None
     try:
         with open(args.raw, encoding='utf-8') as stream:
@@ -2789,15 +2790,27 @@ def assess(args, blocked):
                         continue
                     calls[call_key] = (name, data, turn)
                     turns.setdefault(turn, []).append(call_key)
+                    if args.adapter == 'codex':
+                        codex_call_keys_by_id.setdefault(call_id, []).append(call_key)
                     if args.adapter == 'codex' and turn == codex_active_turn:
                         codex_turn_calls[turn].append(call_key)
                 for call_id, success, value, non_execution in event_outputs:
                     if not isinstance(call_id, str) or not call_id:
                         failures.append(violation('missing-tool-call-id', args.adapter))
                         continue
-                    call_key = ((codex_active_turn, call_id)
-                                if args.adapter == 'codex' and codex_active_turn is not None
-                                else call_id)
+                    if args.adapter == 'codex' and codex_active_turn is not None:
+                        call_key = (codex_active_turn, call_id)
+                    elif args.adapter == 'codex':
+                        prior_call_keys = codex_call_keys_by_id.get(call_id, [])
+                        pending_call_keys = [key for key in prior_call_keys if key not in outputs]
+                        if len(pending_call_keys) == 1:
+                            call_key = pending_call_keys[0]
+                        elif not pending_call_keys and len(prior_call_keys) == 1:
+                            call_key = prior_call_keys[0]
+                        else:
+                            call_key = call_id
+                    else:
+                        call_key = call_id
                     if call_key not in calls:
                         failures.append(violation('orphan-tool-output', args.adapter))
                         continue
