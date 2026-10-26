@@ -348,26 +348,39 @@ PY
   assert_nogrep "no-manifest review avoids one-shot ephemeral execution" \
     "$S/calls/call-1.args" '^--ephemeral$'
   if [ "$calls" = 3 ]; then
-    python3 - "$S" <<'PY'
+    python3 - "$S" "$SHIM_FIXTURE_DIR/findings.schema.json" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 root = Path(sys.argv[1])
+expected_findings_schema = Path(sys.argv[2]).resolve()
 first_args = (root / 'calls' / 'call-1.args').read_text().splitlines()
 first_prompt = (root / 'calls' / 'call-1.stdin').read_text()
 next_args = (root / 'calls' / 'call-2.args').read_text().splitlines()
 next_prompt = (root / 'calls' / 'call-2.stdin').read_text()
 final_args = (root / 'calls' / 'call-3.args').read_text().splitlines()
 final_prompt = (root / 'calls' / 'call-3.stdin').read_text()
+
+def schema_path(args):
+    assert '--output-schema' in args, args
+    path = Path(args[args.index('--output-schema') + 1])
+    assert path.is_absolute(), args
+    return path
+
 assert first_args[0] == 'exec' and 'resume' not in first_args, first_args
-assert '--output-schema' in first_args and 'review-turn.schema.json' in first_args, first_args
+first_schema = schema_path(first_args)
+next_schema = schema_path(next_args)
+final_schema = schema_path(final_args)
+assert first_schema.name == 'review-turn.schema.json', first_args
+assert next_schema.name == 'review-turn.schema.json', next_args
+assert first_schema.parent == next_schema.parent, (first_args, next_args)
+assert first_schema.parent.name.startswith('review-council-codex-stages.'), first_args
 assert first_args[first_args.index('-s') + 1] == 'read-only', first_args
 assert first_args[first_args.index('-C') + 1] == str(root.parent), first_args
 assert next_args[:2] == ['exec', 'resume'] and 'fixture-thread' in next_args, next_args
-assert '--output-schema' in next_args and 'review-turn.schema.json' in next_args, next_args
 assert final_args[:2] == ['exec', 'resume'] and 'fixture-thread' in final_args, final_args
-assert '--output-schema' in final_args and 'findings.schema.json' in final_args, final_args
+assert final_schema.resolve() == expected_findings_schema, final_args
 for args in (first_args, next_args, final_args):
     assert '--ephemeral' not in args, args
 assert 'sandbox_mode="read-only"' in next_args, next_args

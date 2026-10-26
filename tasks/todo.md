@@ -31,6 +31,8 @@
 
 The expected-red CI run 40280999224 is terminal on Ubuntu and macOS. It exposed the intended usage-snapshot and exact post-index target failures, plus fixture assumptions that counted Codex turns as provider launches, relied on `/tmp` string identity, and selected native review mode while expecting a custom-prompt audit. Those fixtures are being corrected alongside the local production fixes before the next exact-head CI run.
 
+PR #93 exact-head run `40296296699` at `09eaa4d` passed proof preparation and failed one Ubuntu assertion (5,187 passed): the no-manifest fixture compared an absolute temporary `--output-schema` path with a bare filename. The adapter command is correct; the fixture now verifies absolute review-schema paths under the generated staging directory and binds the final schema to the expected fixture. The package run passed and macOS was still running when this failure was recorded.
+
 The 0.8.3 fix resolves a confirmed launch-root mismatch. It did not resolve the Luna proof-budget failures. In `r3p`, the three locale ranges named by the incomplete result were already present in required source-context packets, but the reviewer spent its limited post-index calls reopening other source. In `r2-codex-luna-3`, the reviewer read repository source before the evidence index. The prompt's numbered required-read sequence omitted the index.
 
 For 0.8.11, the selected Luna allowance is six times the standard per-seat aggregate repository-read budget. Keep per-response byte ceilings and proof validity rules unchanged; the larger allowance is for more ordered, in-scope reads.
