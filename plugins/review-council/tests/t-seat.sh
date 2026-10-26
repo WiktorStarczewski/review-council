@@ -283,6 +283,67 @@ PY
   seat_env_reset "$_path"
 }
 
+test_seat_codex_resumes_unprepared_reviews() {
+  local _path="$PATH"; seat_env
+  local S="$T/seat-codex-unprepared" calls
+  mkdir -p "$S" "$T/src"
+  : > "$S/calls.log"
+  printf 'first source\n' > "$T/src/first.ts"
+  printf 'required source\n' > "$T/src/required.ts"
+  cat > "$S/review.prompt.md" <<'PROMPT'
+Review this unprepared assignment.
+use at most 4 repository tool calls before stopping this assignment.
+Required post-index original-source target: src/required.ts:1-1 tree fixture blob fixture content SHA-256 fixture reasons []
+PROMPT
+  SHIM_MODE=resumable-no-manifest SHIM_CALLS_FILE="$S/calls.log" SHIM_STAGE_DIR="$S/calls" \
+    SEAT=codex-luna MODEL=gpt-6.1-luna EFFORT=xhigh MODE=prompt ROOT="$T" \
+    PROMPT="$S/review.prompt.md" SCHEMA="$SHIM_FIXTURE_DIR/findings.schema.json" \
+    OUT="$S/result.json" LOG="$S/adapter.log" RAW="$S/raw.ndjson" BASE=abc \
+    bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
+  local adapter_rc=$?
+  assert_eq "no-manifest Codex review exits successfully" "$adapter_rc" 0
+  calls=$(wc -l < "$S/calls.log" | tr -d ' ')
+  assert_eq "no-manifest Codex review uses bounded resumable turns" "$calls" 3
+  assert_grep "no-manifest review starts with the review-turn schema" \
+    "$S/calls/call-1.args" 'review-turn\.schema\.json'
+  assert_nogrep "no-manifest review avoids one-shot ephemeral execution" \
+    "$S/calls/call-1.args" '^--ephemeral$'
+  if [ "$calls" = 3 ]; then
+    python3 - "$S" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+first_args = (root / 'calls' / 'call-1.args').read_text().splitlines()
+first_prompt = (root / 'calls' / 'call-1.stdin').read_text()
+next_args = (root / 'calls' / 'call-2.args').read_text().splitlines()
+next_prompt = (root / 'calls' / 'call-2.stdin').read_text()
+final_args = (root / 'calls' / 'call-3.args').read_text().splitlines()
+final_prompt = (root / 'calls' / 'call-3.stdin').read_text()
+assert first_args[0] == 'exec' and 'resume' not in first_args, first_args
+assert '--output-schema' in first_args and 'review-turn.schema.json' in first_args, first_args
+assert next_args[:2] == ['exec', 'resume'] and 'fixture-thread' in next_args, next_args
+assert '--output-schema' in next_args and 'review-turn.schema.json' in next_args, next_args
+assert final_args[:2] == ['exec', 'resume'] and 'fixture-thread' in final_args, final_args
+assert '--output-schema' in final_args and 'findings.schema.json' in final_args, final_args
+assert 'Review this unprepared assignment.' in first_prompt, first_prompt
+assert 'no prepared evidence was read in an earlier turn' in first_prompt, first_prompt
+assert 'already been read in earlier explicit turns' not in first_prompt, first_prompt
+assert 'Next evidence question:' in next_prompt and 'src/required.ts:1-1' in next_prompt, next_prompt
+assert 'Return the final findings JSON' in final_prompt, final_prompt
+events = [json.loads(line) for line in (root / 'raw.ndjson').read_text().splitlines()]
+assert sum(event.get('type') == 'turn.started' for event in events) == 3
+assert sum(event.get('type') == 'turn.completed' for event in events) == 3
+assert sum(event.get('type') == 'item.started'
+           and event.get('item', {}).get('type') == 'command_execution' for event in events) == 2
+PY
+    assert_eq "no-manifest review preserves source checks and finalizes tool-free" "$?" 0
+  fi
+  assert_grep "no-manifest review keeps findings schema" "$S/result.json" '"findings": ?\['
+  seat_env_reset "$_path"
+}
+
 test_seat_codex() {
   local _path="$PATH"; seat_env
   local S="$T/seat-codex"; seat_roster "$S"; echo "review the diff" > "$S/p.md"; : > "$T/args.env"

@@ -3309,11 +3309,12 @@ assert capacity['repository_refutation_call_reserve'] == expected_reserve, capac
 mandatory = expected_total - expected_reserve
 prompt_file = Path(Path(prompt_path).read_text().strip())
 prompt = prompt_file.read_text()
-budget_lines = [line for line in prompt.splitlines() if 'repository tool calls' in line]
-pattern = (rf'use at most {expected_total} repository tool calls\. '
-           rf'Start no new evidence path after call {mandatory}; '
-           r'use the remaining calls only to refute or cite candidates, then return the required JSON\.')
-assert re.search(pattern, prompt), (pattern, budget_lines)
+budget_lines = [line for line in prompt.splitlines()
+                if 'Repository expansion-call budget:' in line]
+expected_line = (f'Repository expansion-call budget: {expected_total} total; '
+                 f'finish required reads by call {mandatory} and reserve calls '
+                 f'{mandatory + 1}-{expected_total} for refutation.')
+assert expected_line in budget_lines, (expected_line, budget_lines)
 PY
     assert_eq "Luna prompt publishes the sixfold total and reserved-call budget" "$?" 0
     for mode in scoped-expansion-120 scoped-expansion-121; do

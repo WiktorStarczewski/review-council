@@ -46,6 +46,38 @@ case "${SHIM_MODE:-ok}" in
   unbounded)  echo '{"type":"item.started","item":{"id":"bad","type":"command_execution","command":"cat src/x.ts"}}'; echo '{"type":"item.completed","item":{"id":"bad","type":"command_execution","command":"cat src/x.ts","aggregated_output":"source\n","exit_code":0}}'; fixture_output "$SHIM_FIXTURE_DIR/findings-valid.json"; exit 0;;
   native)     cat "$SHIM_FIXTURE_DIR/codex-stream.ndjson"; fixture_output "$SHIM_FIXTURE_DIR/codex-review-native.txt"; exit 0;;
   native_bad) cat "$SHIM_FIXTURE_DIR/codex-stream.ndjson"; fixture_output "$SHIM_FIXTURE_DIR/codex-review-native-bad.txt"; exit 0;;
+  resumable-no-manifest)
+    printf '%s\n' '{"type":"thread.started","thread_id":"fixture-thread"}' '{"type":"turn.started"}'
+    TURN_SCHEMA=""; want_schema=0
+    for a in "$@"; do
+      if [ "$want_schema" = 1 ]; then TURN_SCHEMA=$a; want_schema=0
+      elif [ "$a" = --output-schema ]; then want_schema=1
+      fi
+    done
+    case "${TURN_SCHEMA##*/}:$CALL_NUMBER" in
+      review-turn.schema.json:1)
+        printf '%s\n' \
+          '{"type":"item.started","item":{"id":"unprepared-a","type":"command_execution","command":"sed -n 1p src/first.ts"}}' \
+          '{"type":"item.completed","item":{"id":"unprepared-a","type":"command_execution","command":"sed -n 1p src/first.ts","aggregated_output":"first:1\\n","exit_code":0}}'
+        printf '%s\n' '{"status":"continue","next_step":"Read src/required.ts:1-1 to complete the required source check."}' > "$OUT"
+        ;;
+      review-turn.schema.json:2)
+        printf '%s\n' \
+          '{"type":"item.started","item":{"id":"unprepared-b","type":"command_execution","command":"sed -n 1p src/required.ts"}}' \
+          '{"type":"item.completed","item":{"id":"unprepared-b","type":"command_execution","command":"sed -n 1p src/required.ts","aggregated_output":"required:1\\n","exit_code":0}}'
+        printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT"
+        ;;
+      findings.schema.json:*) fixture_output "$SHIM_FIXTURE_DIR/findings-valid.json";;
+      :1)
+        printf '%s\n' '{"type":"turn.started"}' '{"type":"item.completed","item":{"id":"one-shot","type":"agent_message","text":"done"}}' '{"type":"turn.completed"}'
+        fixture_output "$SHIM_FIXTURE_DIR/findings-valid.json"
+        exit 0
+        ;;
+      *) echo "unexpected no-manifest call $CALL_NUMBER with schema $TURN_SCHEMA" >&2; exit 1;;
+    esac
+    printf '%s\n' '{"type":"turn.completed"}'
+    exit 0
+    ;;
   staged)
     printf '%s\n' '{"type":"thread.started","thread_id":"fixture-thread"}'
     printf '%s\n' '{"type":"turn.started"}'
