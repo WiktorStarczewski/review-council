@@ -32,7 +32,9 @@ from review_limits import (CLAUDE_MAX_TURNS, MANDATORY_REPOSITORY_READ_LIMIT,
                            PROVIDER_TURN_RESERVE, READ_LINES,
                            REPOSITORY_EXPANSION_CALL_LIMIT,
                            REPOSITORY_REFUTATION_CALL_RESERVE,
-                           repository_expansion_call_limit_for_seat)
+                           mandatory_repository_read_limit_for_seat,
+                           repository_expansion_call_limit_for_seat,
+                           repository_refutation_call_reserve_for_model)
 from session_inputs import session_input_lock, validate_standard_inputs
 from roster import cursor_sdk_identity, validate_cursor_sdk_qualification
 from workhorse import (CHAIN as WORKHORSE_CHAIN, ORDER as WORKHORSE_ORDER, SEAT,
@@ -4499,7 +4501,9 @@ def grouped_plan_source_promotions(assignment, plan_clusters, delivered, omitted
 
     while True:
         windows, source_target, covered = view(selected)
-        if len(windows) <= MANDATORY_REPOSITORY_READ_LIMIT:
+        mandatory_limit = mandatory_repository_read_limit_for_seat(
+            count_target, source_target, assignment.get('model'))
+        if len(windows) <= mandatory_limit:
             return sorted(selected)
         missing = uncovered_plan_ranges(assignment, plan_clusters, covered)
         direct = merge_repository_windows(missing, read_line_limit(assignment['adapter']))
@@ -4563,7 +4567,7 @@ def grouped_plan_source_promotions(assignment, plan_clusters, delivered, omitted
                                     source_target['line_end'], tuple(sorted(group))))
         if not choices:
             raise CapacityRefusal(
-                MANDATORY_REPOSITORY_READ_LIMIT, len(windows),
+                mandatory_limit, len(windows),
                 repository_target_brief(source_target), repository_window_rows(windows))
         selected.update(min(choices)[-1])
 
@@ -5187,7 +5191,7 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
 
 
 def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
-                          evidence=None, components=None):
+                          evidence=None, components=None, model_budgets=True):
     seats = {}
     for seat, assignment in assignments.items():
         patch_set = patch_sets[assignment['patch_set']]
@@ -5203,9 +5207,11 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
         delivered += packet['required_source_ranges']
         window_row_list = []
         target_value = None
+        repository_target = None
         if plan_clusters is not None:
             target = (repository_source_target(packet, context['snapshot_tree'])
                       if packet.get('source_read_required') and context.get('snapshot_tree') else None)
+            repository_target = target
             direct_windows = plan_capacity_windows(assignment, plan_clusters, delivered, target)
             direct_calls = len(direct_windows)
             window_row_list = repository_window_rows(direct_windows)
@@ -5213,6 +5219,7 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
         elif packet.get('source_read_required'):
             target = (repository_source_target(packet, context['snapshot_tree'])
                       if context.get('snapshot_tree') else None)
+            repository_target = target
             direct_calls = ((target['line_end'] - target['line_start'] + line_limit) // line_limit
                             if target is not None else 1)
             if target is not None:
@@ -5225,6 +5232,17 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
             target_value = repository_target_brief(target)
         else:
             direct_calls = 0
+        if model_budgets:
+            expansion_limit = repository_expansion_call_limit_for_seat(
+                packet.get('source_read_required', False), repository_target,
+                assignment.get('model'))
+            refutation_reserve = repository_refutation_call_reserve_for_model(
+                assignment.get('model'))
+            mandatory_limit = expansion_limit - refutation_reserve
+        else:
+            expansion_limit = REPOSITORY_EXPANSION_CALL_LIMIT
+            refutation_reserve = REPOSITORY_REFUTATION_CALL_RESERVE
+            mandatory_limit = MANDATORY_REPOSITORY_READ_LIMIT
         proof_partitions = None
         unrepresentable_imports = (
             unrepresentable_import_proofs(assignment, components, evidence)
@@ -5241,8 +5259,8 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
                 ], line_limit)
                 direct_calls = len(merged)
                 window_row_list = repository_window_rows(merged)
-                proof_partitions = (partition_proof_windows(merged, owners)
-                                    if direct_calls > MANDATORY_REPOSITORY_READ_LIMIT else [])
+                proof_partitions = (partition_proof_windows(merged, owners, mandatory_limit)
+                                    if direct_calls > mandatory_limit else [])
             else:
                 proof_partitions = []
         patch_batch = batch if patch_set['read_mode'] == 'chunks' else 1
@@ -5251,7 +5269,7 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
         direct_batch = 2 if assignment['adapter'] == 'claude' else 1
         direct_turns = (direct_calls + direct_batch - 1) // direct_batch
         projected = (patch_turns + packet_calls + segment_turns + direct_turns
-                     + 1 + REPOSITORY_REFUTATION_CALL_RESERVE
+                     + 1 + refutation_reserve
                      + 1 + PROVIDER_TURN_RESERVE)
         seats[seat] = {
             'patch_proof_calls': patch_calls,
@@ -5265,16 +5283,22 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
             'mandatory_window_rows': window_row_list,
             'repository_source_target': target_value,
             'evidence_index_turns': 1,
-            'repository_refutation_turns': REPOSITORY_REFUTATION_CALL_RESERVE,
+            'repository_refutation_turns': refutation_reserve,
             'final_result_turns': 1,
             'projected_turns': projected,
             'provider_turn_limit': CLAUDE_MAX_TURNS if assignment['adapter'] == 'claude' else None,
             'unrepresentable_import_proofs': unrepresentable_imports,
         }
+        if model_budgets:
+            seats[seat].update(
+                repository_expansion_call_limit=expansion_limit,
+                repository_refutation_call_reserve=refutation_reserve,
+                mandatory_repository_read_limit=mandatory_limit,
+            )
         if proof_partitions is not None:
             seats[seat]['proof_partitions'] = proof_partitions
     return {
-        'schema_version': 1,
+        'schema_version': 2 if model_budgets else 1,
         'repository_expansion_call_limit': REPOSITORY_EXPANSION_CALL_LIMIT,
         'repository_refutation_call_reserve': REPOSITORY_REFUTATION_CALL_RESERVE,
         'mandatory_repository_read_limit': MANDATORY_REPOSITORY_READ_LIMIT,
@@ -5284,9 +5308,10 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
 
 
 def capacity_refusal_rows(capacity):
-    limit = capacity['mandatory_repository_read_limit']
     rows = []
     for seat, row in capacity['seats'].items():
+        limit = row.get('mandatory_repository_read_limit',
+                        capacity['mandatory_repository_read_limit'])
         if row['mandatory_repository_reads'] > limit:
             item = {
                 'seat': seat, 'limit': limit, 'count': row['mandatory_repository_reads'],
@@ -5301,8 +5326,9 @@ def capacity_refusal_rows(capacity):
 
 def task_capacity_errors(capacity):
     errors = []
-    limit = capacity['mandatory_repository_read_limit']
     for seat, row in capacity['seats'].items():
+        limit = row.get('mandatory_repository_read_limit',
+                        capacity['mandatory_repository_read_limit'])
         if row.get('unrepresentable_import_proofs'):
             errors.append('task has unreadable import candidates for ' + seat)
         if row['mandatory_repository_reads'] > limit:
@@ -5686,7 +5712,13 @@ def validate_source_context(session, manifest, evidence):
             raise ValueError('invalid source context seat: ' + seat)
         if 'mandatory_source_windows' in packet:
             windows = packet['mandatory_source_windows']
-            if not isinstance(windows, list) or len(windows) > MANDATORY_REPOSITORY_READ_LIMIT:
+            capacity = manifest.get('task_capacity', {})
+            capacity_row = capacity.get('seats', {}).get(seat, {})
+            mandatory_limit = (mandatory_repository_read_limit_for_seat(
+                packet['source_read_required'], capacity_row.get('repository_source_target'),
+                assignment.get('model')) if capacity.get('schema_version') == 2
+                else MANDATORY_REPOSITORY_READ_LIMIT)
+            if not isinstance(windows, list) or len(windows) > mandatory_limit:
                 raise ValueError('invalid mandatory source windows: ' + seat)
             for row in windows:
                 if (not isinstance(row, dict) or set(row) != {'path', 'line_start', 'line_end'}
@@ -6567,11 +6599,15 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         raise ValueError('predecessor only belongs to delta verification or schema-4 plan evidence')
     if phase == 'plan':
         validate_plan(session, manifest, evidence, fresh and not offline, replay_plan_searches)
+    stored_capacity = manifest.get('task_capacity')
+    model_budgets = (isinstance(stored_capacity, dict)
+                     and stored_capacity.get('schema_version') == 2)
     expected_capacity = compile_task_capacity(
         assigned, manifest['patch_sets'], manifest['source_context'],
         manifest['plan']['clusters'] if phase == 'plan' else None,
         None if phase == 'plan' else evidence,
-        None if phase == 'plan' else manifest['components'])
+        None if phase == 'plan' else manifest['components'],
+        model_budgets=model_budgets)
     if manifest.get('task_capacity') != expected_capacity:
         raise ValueError('invalid task capacity contract')
     capacity_failures = task_capacity_errors(expected_capacity)
@@ -7905,11 +7941,12 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
     source_target = (capacity.get('repository_source_target')
                      if isinstance(capacity, dict) else None)
     expansion_limit = repository_expansion_call_limit_for_seat(
-        context['source_read_required'], source_target)
-    refutation_reserve = (manifest.get('task_capacity', {}).get(
-        'repository_refutation_call_reserve', REPOSITORY_REFUTATION_CALL_RESERVE)
-        if isinstance(manifest.get('task_capacity'), dict)
-        else REPOSITORY_REFUTATION_CALL_RESERVE)
+        context['source_read_required'], source_target, assignment.get('model'))
+    refutation_reserve = repository_refutation_call_reserve_for_model(
+        assignment.get('model'))
+    if isinstance(capacity, dict):
+        expansion_limit = capacity.get('repository_expansion_call_limit', expansion_limit)
+        refutation_reserve = capacity.get('repository_refutation_call_reserve', refutation_reserve)
     mandatory_limit = expansion_limit - refutation_reserve
     print('Repository expansion-call budget: ' + str(expansion_limit)
           + ' total; finish required reads by call ' + str(mandatory_limit)
@@ -7919,7 +7956,9 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
         limit = capacity.get('provider_turn_limit')
         limit_text = (str(limit) if isinstance(limit, int)
                       else 'none registered; estimate is advisory')
-        print('Prepared workload estimate: ' + str(capacity['projected_turns'])
+        projected_turns = capacity['projected_turns'] + refutation_reserve - capacity[
+            'repository_refutation_turns']
+        print('Prepared workload estimate: ' + str(projected_turns)
               + ' turns; patch proof ' + str(capacity['patch_proof_calls']) + ' reads/'
               + str(capacity['patch_proof_turns']) + ' turns; source packets '
               + str(capacity['source_packet_calls']) + ' reads; required source segments '
@@ -7928,7 +7967,7 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
               + str(capacity['mandatory_repository_reads']) + ' reads/'
               + str(capacity['mandatory_repository_read_turns']) + ' turns; evidence index '
               + str(capacity['evidence_index_turns']) + ' turn; refutation reserve '
-              + str(capacity['repository_refutation_turns']) + ' turns; final result '
+              + str(refutation_reserve) + ' turns; final result '
               + str(capacity['final_result_turns']) + ' turn; provider hard limit ' + limit_text)
     patch_mode = assignment['patch_read_mode']
     if (manifest['schema_version'] == 4 and manifest['phase'] == 'plan'

@@ -348,14 +348,20 @@ for seat in sys.argv[3:]:
     call_limit = limits['REPOSITORY_EXPANSION_CALL_LIMIT']
     mandatory_limit = limits['MANDATORY_REPOSITORY_READ_LIMIT']
     if manifest:
-        mode = manifest['assignments'][seat]['patch_read_mode']
+        assignment = manifest['assignments'][seat]
+        mode = assignment['patch_read_mode']
         context = manifest['source_context']['seats'][seat]
         packets = bool(context['shards'])
         segments = any(row['segments'] for row in context['required_source_ranges'])
         capacity = manifest.get('task_capacity', {}).get('seats', {}).get(seat, {})
         call_limit = limits['repository_expansion_call_limit_for_seat'](
-            context['source_read_required'], capacity.get('repository_source_target'))
-        mandatory_limit = call_limit - limits['REPOSITORY_REFUTATION_CALL_RESERVE']
+            context['source_read_required'], capacity.get('repository_source_target'),
+            assignment.get('model'))
+        reserve = limits['repository_refutation_call_reserve_for_model'](
+            assignment.get('model'))
+        call_limit = capacity.get('repository_expansion_call_limit', call_limit)
+        reserve = capacity.get('repository_refutation_call_reserve', reserve)
+        mandatory_limit = call_limit - reserve
     print('mode', mode, int(packets), int(segments), call_limit, mandatory_limit)
 PY
 ) || die "cannot compile prompt limits and evidence modes"

@@ -14,6 +14,10 @@
 - Bind prepared plan search output to each assigned cluster so identical search results remain valid, while retaining unambiguous historical prompt bindings.
 - Add explicit controller-owned PR generation progression with immutable source and predecessor bindings.
 
+## 0.8.11
+
+- Give Luna model seats six times the aggregate repository-read budget while preserving source scope, proof order, per-read bounds, and response-size limits.
+
 ## 0.8.9
 
 - Memoize canonical source-context reconstruction within a prepare pass while rechecking source bytes and validation inputs on every visit.

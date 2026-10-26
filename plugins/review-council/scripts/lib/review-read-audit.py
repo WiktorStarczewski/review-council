@@ -3267,7 +3267,8 @@ def assess(args, blocked):
             seat_capacity = manifest.get('task_capacity', {}).get('seats', {}).get(seat, {})
             expansion_limit = repository_expansion_call_limit_for_seat(
                 context['source_read_required'],
-                seat_capacity.get('repository_source_target'))
+                seat_capacity.get('repository_source_target'),
+                manifest['assignments'][seat].get('model'))
             if len(expansion_calls) > expansion_limit:
                 failures.append(violation('repository-expansion-call-limit', args.adapter))
             ordered_proof_calls = ({call_id for call_id, _ in paced_chunk_calls}

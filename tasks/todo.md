@@ -16,11 +16,25 @@
 - [x] Trace historical #1830 proof-read turn counts and inspect the retired compound-batch failure.
 - [x] Draft the separate-read pairing design and receive a clear builder check.
 - [x] Get approval of the pairing design before writing its implementation plan.
-- [ ] Implement only the approved scope with red-before-green tests, normal review, exact-head CI, and release.
+- [x] Implement the approved source-context memo scope with red-before-green tests, normal review, exact-head CI, and release.
+- [ ] Add a 6x aggregate repository-read budget for actual Luna model seats, with source, scope, ordering, per-response, and output-byte proof bounds unchanged.
+- [x] Prove the new per-model limits fail on a test-only CI commit.
+- [ ] Implement and pass normal internal review plus exact-head proof-preparation, Ubuntu, macOS, and Cursor package CI.
+- [ ] Squash-merge and publish signed 0.8.11, reinstall all hosts, and verify installed identity.
 - [ ] Run the matched post-merge #1830 Luna replay and update the eligible post-0.8.9 failure rate.
 - [ ] Monitor fresh post-release first-attempt Luna results until the failure rate is below 5%; keep issue #77 open until then.
 
 The 0.8.3 fix resolves a confirmed launch-root mismatch. It did not resolve the Luna proof-budget failures. In `r3p`, the three locale ranges named by the incomplete result were already present in required source-context packets, but the reviewer spent its limited post-index calls reopening other source. In `r2-codex-luna-3`, the reviewer read repository source before the evidence index. The prompt's numbered required-read sequence omitted the index.
+
+For 0.8.11, the selected Luna allowance is six times the standard per-seat aggregate repository-read budget. Keep per-response byte ceilings and proof validity rules unchanged; the larger allowance is for more ordered, in-scope reads.
+
+The active #1877 review provides a concrete 0.8.9 budget sample: Luna-2 was instructed to stop required reads at call 12 and use at most 16 repository calls, while its prepared workload named 35 required source segments. Its audit recorded 44 source-read calls and both `repository-expansion-call-limit` and `path-outside-scope`; 0.8.9 classifies the budget code as advisory, while the scope violation is fatal and explains exit 2. The larger budget addresses the overage and wasted follow-up, but preserves rejection of out-of-scope reads.
+
+The frozen #1830 replay identifies a separate audit-history issue: 0.8.8 counted each Codex tool output as a turn despite one explicit `turn.started`/`turn.completed` pair, accepting oversized batches. The 0.8.10 parser counts the explicit turn and correctly rejects the output overflow. The adapter and prompt files are unchanged between those versions, so this was an old false pass, not a new 0.8.10 prompt regression.
+
+Expected-red run `40247606189` on test-only commit `b511dacb2f04b7be6dc107eee521cf2fac66bfb2` failed only the new model-specific budget assertions on Ubuntu and macOS; each platform passed 5,160 assertions and failed 4. Proof preparation passed, and Cursor package run `40247606175` passed.
+
+Expected-red run `40250312984` on test-only commit `34f2f81ee3a0b005fa68cfc264e4f0abc82d737e` failed the new legacy schema-1 Luna reserve-display assertion plus the four model-budget regressions on both Ubuntu and macOS. Each platform passed 5,160 shell assertions; all 582 Python tests and proof preparation passed. Cursor package run `40250312987` passed.
 
 PR #83 merged as `6be75ef10b46db6159337bddb3b8dcb074aa6ff1` from `656212573ae690c4cbc8047a23d4ecf64f339260`. Exact-head test run `40175923246` and Cursor package run `40175923301` passed. Signed release `review-council--v0.8.7` was published, and Claude, Codex, and Cursor installs match the release. Issue #77 remains open because no eligible first-attempt Luna sample pinned to 0.8.7 or later has completed.
 
