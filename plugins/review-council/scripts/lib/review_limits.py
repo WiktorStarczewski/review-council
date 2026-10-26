@@ -7,6 +7,8 @@ MANDATORY_REPOSITORY_READ_LIMIT = (
     REPOSITORY_EXPANSION_CALL_LIMIT - REPOSITORY_REFUTATION_CALL_RESERVE
 )
 LUNA_REPOSITORY_READ_BUDGET_MULTIPLIER = 6
+CODEX_REVIEW_TURN_CALL_LIMIT = 2
+LUNA_CODEX_REVIEW_TURN_CALL_LIMIT = 6
 NO_TARGET_REPOSITORY_EXPANSION_CALL_LIMIT = (
     REPOSITORY_EXPANSION_CALL_LIMIT + REPOSITORY_REFUTATION_CALL_RESERVE
 )
@@ -18,6 +20,12 @@ def repository_read_budget_multiplier_for_model(model):
     name = model.rsplit('/', 1)[-1].lower() if isinstance(model, str) else ''
     return LUNA_REPOSITORY_READ_BUDGET_MULTIPLIER if (
         name == 'luna' or name.endswith('-luna')) else 1
+
+
+def codex_review_turn_call_limit_for_model(model):
+    return (LUNA_CODEX_REVIEW_TURN_CALL_LIMIT
+            if repository_read_budget_multiplier_for_model(model) > 1
+            else CODEX_REVIEW_TURN_CALL_LIMIT)
 
 
 def repository_refutation_call_reserve_for_model(model=None):

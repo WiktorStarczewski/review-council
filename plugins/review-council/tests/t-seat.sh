@@ -573,7 +573,7 @@ test_seat_codex_luna_allows_five_commands_per_review_turn() {
   assert_grep "Sol review prompt states the two-call turn cap" \
     "$S/calls/call-1.stdin" 'at most two command_execution calls total'
   assert_grep "Sol rejection names the exceeded turn budget" "$S/err" \
-    'review turn exceeded its read or output budget'
+    'review turn exceeded its command-call budget'
   seat_env_reset "$_path"
 }
 
