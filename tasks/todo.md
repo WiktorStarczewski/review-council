@@ -1253,9 +1253,9 @@ Candidate run `40241061688` on `c30dbeff64ee38bf58ab47413f0b84d5af1b4ce4` passed
 - [x] Prove the signal-finalization races and per-turn call-cap wording regression red on Ubuntu and macOS in run `40320097283`.
 - [x] Prove process-group cancellation after durable reservation fails on Ubuntu and macOS; test-only commit `0e33201`, expected-red run `40323741575`.
 - [x] Prove PR progression accepts a closed reservation whose recorded exit is a catchable signal; expected-red run `40327587192`.
-- [ ] Prove a signal before first-record publication leaves no corrupt attempt and permits the same-label retry.
-- [ ] Prove PR progression refuses an unresolved Agent launch marker.
-- [ ] Prove launch status uses the timestamp from the marker snapshot it validated.
+- [x] Prove a signal before first-record publication leaves no corrupt attempt and permits the same-label retry; expected-red run `40332170227`.
+- [x] Prove PR progression refuses an unresolved Agent launch marker; expected-red run `40332170227`.
+- [x] Prove launch status uses the timestamp from the marker snapshot it validated; expected-red run `40332170227`.
 - [ ] Record CLI process identity, persist catchable cancellation exits, and report dead launches as interrupted.
 - [ ] Keep Agent launch markers and active status tied to the stored task ID.
 - [ ] Complete independent normal review and exact-head Ubuntu, macOS, proof-preparation, and package checks.
@@ -1273,4 +1273,4 @@ Expected-red run `40327587192` on test-only SHA `c2adf015d1ca119e6fbe963b1f44b0f
 
 Expected-red run `40332170227` on test-only SHA `99d9abbce1f1f8f3a1c3665a470661d9b0b32ad9` passed proof preparation; package run `40332170476` passed on the same SHA. Ubuntu and macOS each passed 5,177 assertions and failed 56 across 15 test tasks. Compared with `40327587192`, the only six additional failure labels cover unresolved Agent progression, atomic first-record cancellation/retry, and status snapshot consistency; both platform failure lists match. Complete diagnostics are saved under `/tmp/council-40332170227`.
 
-The completed Agent transcript regression is isolated in test-only commit `c8772c6`; Cursor package run `40335594237` passed on its exact SHA. Expected-red run `40335594238` passed proof preparation and is still running its Ubuntu and macOS verifiers. The production correction is committed separately as `f9baa41`, pending this expected-red result before push.
+The completed Agent transcript regression is isolated in test-only commit `c8772c6`; Cursor package run `40335594237` passed on its exact SHA. Expected-red run `40335594238` passed proof preparation; Ubuntu and macOS each passed 5,177 assertions and failed 56 across 15 tasks. Each platform added only the intended terminal-Agent-transcript failure while removing the prior Agent launch-result label. The production correction is committed separately as `f9baa41`; its independent normal review is clean, and the exact-head green gate is next.
