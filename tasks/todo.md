@@ -1290,9 +1290,9 @@ The completed Agent transcript regression is isolated in test-only commit `c8772
 
 - [x] Verify 0.8.14 release, reopen #77, and reproduce the exit-3 refusal.
 - [x] Add focused regression cases for exit 3, exit 4, and controller-recorded same-provider cancellation.
-- [ ] Complete attempt-record validation, event recording, workflow docs, and normal internal review.
+- [x] Complete attempt-record validation, event recording, workflow docs, and normal internal review.
 - [ ] Send the exact candidate identity and safe-boundary install instructions to the release owner.
 - [ ] Run exact-head CI and prepare the 0.8.15 release candidate.
 - [ ] Measure fresh post-0.8.6 first-attempt Luna audit failure rate; keep #77 open until below 5%.
 
-Review: pending.
+Review: normal internal review found a path-traversal risk in the recovery record. The fix rejects unsafe or unassigned trigger seats before reading artifacts; re-review is complete with no actionable P0-P2 findings.

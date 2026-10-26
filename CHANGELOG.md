@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.8.15
+
+- Recover exit-3 provider failures and explicitly recorded same-provider cancellations through the replacement chain while keeping exit 4 on quota fallback.
+
 ## 0.8.14
 
 - Allow Luna Codex review turns to use up to six command executions while keeping other models at two and preserving aggregate read, output, scope, ordering, proof, and seat-attempt limits.
