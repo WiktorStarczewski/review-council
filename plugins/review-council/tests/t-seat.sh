@@ -1271,6 +1271,18 @@ assert (len(records) == 1 and records[0].get('active_launch') is None
         and records[0].get('terminal_intent') is None), records
 PY
     assert_eq "group cancellation closes its persisted reservation" "$?" 0
+    python3 - "$S" "$SCRIPTS/rev-evidence.py" <<'PY'
+import importlib.util
+import sys
+from pathlib import Path
+
+spec = importlib.util.spec_from_file_location('review_council_evidence_test', sys.argv[2])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+module.pr_progress_idle(Path(sys.argv[1]))
+PY
+    assert_eq "PR progression accepts a completed signal-exit launch" "$?" 0
   fi
   set +m
   seat_env_reset "$_path"
