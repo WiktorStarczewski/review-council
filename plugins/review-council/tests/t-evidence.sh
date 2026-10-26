@@ -3592,7 +3592,7 @@ def replacement_accepts_only_durable_provider_exit_3():
 def replacement_accepts_only_a_recorded_owned_provider_cancellation():
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
         chain_identities = {
-            'sol': ('claude', 'sonnet', 'high'),
+            'sol': ('claude', 'opus', 'high'),
             'terra': ('codex', 'gpt-5.6-sol', 'high'),
             'opus': ('codex', 'gpt-5.6-luna', 'high'),
             'sonnet': ('agent', 'sonnet', 'high'),
@@ -3658,7 +3658,7 @@ def replacement_accepts_only_a_recorded_owned_provider_cancellation():
 def record_provider_cancellation_binds_the_finished_attempts():
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
         chain_identities = {
-            'sol': ('claude', 'sonnet', 'high'),
+            'sol': ('claude', 'opus', 'high'),
             'terra': ('codex', 'gpt-5.6-sol', 'high'),
             'opus': ('codex', 'gpt-5.6-luna', 'high'),
             'sonnet': ('agent', 'sonnet', 'high'),
