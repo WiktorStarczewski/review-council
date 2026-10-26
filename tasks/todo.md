@@ -1,9 +1,10 @@
 ## Luna per-turn command budget follow-up
 
 - [x] Trace the matched #1830 failures to the Codex per-turn two-command ceiling; aggregate read budgets were not exhausted.
-- [x] Add a regression proving a Luna turn can use the observed five calls while Sol remains capped at two; CI confirmed the pre-fix failure.
+- [x] Add a regression proving a Luna turn can use the observed five calls while Sol remains capped at two; CI confirmed the pre-fix behavior, alongside stale prompt assertions and one separate macOS stack timing failure.
 - [x] Implement a model-specific six-call Luna turn cap with the existing byte, scope, ordering, read-budget, proof, and four-attempt limits unchanged.
-- [ ] Complete normal internal review and exact-head CI, then release the fix.
+- [x] Correct exact-head CI assertions to match the numeric limits generated for Luna and Sol; independent normal review found no issue.
+- [ ] Pass exact-head CI, then release the fix.
 - [ ] Replay a large scope on released Luna and compare first-attempt validity and runtime to the preserved Sol evidence.
 
 # Issue #77: Luna reviewer proof reliability

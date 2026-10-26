@@ -375,7 +375,7 @@ for args in (first_review_args, next_review_args, required_review_args, ready_re
     assert 'sandbox_mode="read-only"' in args, args
 assert 'Review this prepared assignment' in first_review_prompt, first_review_prompt
 assert 'already been read in earlier explicit turns' in first_review_prompt, first_review_prompt
-assert 'at most six command_execution calls total' in first_review_prompt, first_review_prompt
+assert 'at most 6 command_execution calls total' in first_review_prompt, first_review_prompt
 assert 'Next evidence question:' in next_review_prompt and 'src/two.ts' in next_review_prompt, next_review_prompt
 required_review_prompt = (root / 'calls' / 'call-10.stdin').read_text(encoding='utf-8')
 assert 'Next evidence question:' in required_review_prompt and 'src/three.ts' in required_review_prompt, required_review_prompt
@@ -559,7 +559,7 @@ test_seat_codex_luna_allows_five_commands_per_review_turn() {
   assert_eq "Luna finalizes after the five-call review turn" \
     "$(wc -l < "$L/calls.log" | tr -d ' ')" 2
   assert_grep "Luna review prompt states the six-call turn cap" \
-    "$L/calls/call-1.stdin" 'at most six command_execution calls total'
+    "$L/calls/call-1.stdin" 'at most 6 command_execution calls total'
   assert_grep "Luna still returns the findings schema" "$L/result.json" '"findings": ?\['
 
   SHIM_MODE=multi-call SHIM_REVIEW_CALLS=3 SHIM_CALLS_FILE="$S/calls.log" \
@@ -571,7 +571,7 @@ test_seat_codex_luna_allows_five_commands_per_review_turn() {
   assert_eq "Sol stops after rejecting its oversized review turn" \
     "$(wc -l < "$S/calls.log" | tr -d ' ')" 1
   assert_grep "Sol review prompt states the two-call turn cap" \
-    "$S/calls/call-1.stdin" 'at most two command_execution calls total'
+    "$S/calls/call-1.stdin" 'at most 2 command_execution calls total'
   assert_grep "Sol rejection names the exceeded turn budget" "$S/err" \
     'review turn exceeded its command-call budget'
   seat_env_reset "$_path"
