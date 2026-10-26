@@ -20,8 +20,8 @@
 - [ ] Add a 6x aggregate repository-read budget for actual Luna model seats, with source, scope, ordering, per-response, and output-byte proof bounds unchanged.
 - [x] Prove the new per-model limits fail on a test-only CI commit.
 - [ ] Implement and pass normal internal review plus exact-head proof-preparation, Ubuntu, macOS, and Cursor package CI.
-- [ ] Add a regression for Codex proof reads that spans real explicit turns without changing per-read, ordering, scope, or output limits.
-- [ ] Stage prepared Codex proof artifacts across resumable turns, then run the full review in a later turn.
+- [ ] Add regressions for Codex prepared-evidence reads and post-index investigation across real explicit turns without changing per-read, ordering, scope, or output limits.
+- [ ] Stage prepared Codex proof artifacts and bounded post-index source investigation across resumable turns, then finalize findings in a tool-free turn.
 - [ ] Complete normal internal review and exact-head CI for the staged Codex runner.
 - [ ] Squash-merge and publish signed 0.8.11, reinstall all hosts, and verify installed identity.
 - [ ] Run the matched post-merge #1830 Luna replay and update the eligible post-0.8.9 failure rate.
@@ -36,6 +36,12 @@ The active #1877 review provides a concrete 0.8.9 budget sample: Luna-2 was inst
 The frozen #1830 replay identifies a separate audit-history issue: 0.8.8 counted each Codex tool output as a turn despite one explicit `turn.started`/`turn.completed` pair, accepting oversized batches. The 0.8.10 parser counts the explicit turn and correctly rejects the output overflow. The adapter and prompt files are unchanged between those versions, so this was an old false pass, not a new 0.8.10 prompt regression.
 
 The matched 0.8.10 #1830 replay exposes the adapter gap behind that rejection: all four Luna attempts and all four Sol replacements emitted 18-27 tool calls in one explicit Codex turn, with 76-206 KB of output and missing or reordered proof. The prompt allowed up to two ordered reads per turn, but `codex exec` kept the entire run inside one explicit turn. The adapter needs to stage required artifact reads through resumable turns before the final review call; the proof auditor and its byte ceilings remain unchanged.
+
+The live #1894 run confirmed both sides of that gap at larger scale. Its four Luna seats required 193, 180, 22, and 16 source segments; each raw stream still contained one explicit turn. The largest seat made 202 prepared-evidence reads and then 17 post-index reads with 46,371 bytes of output in that same turn. All four results were rejected for proof violations. The runner therefore needs resumable turns for prepared reads and for bounded post-index investigation. The 6x Luna call allowance addresses the observed 17-call overflow; it does not relax the two-read batch, 32 KiB output, scope, order, or exact-evidence checks.
+
+Fresh #1880 round 5 artifacts show a related 0.8.9 budget result. Luna returned INCOMPLETE PROOF after its 16-call investigation budget with no audit violations. Luna-2 and Luna-3 returned findings, but each raw stream has one actual Codex turn and 397-408 KB of output; the old audit reports 56 inferred turns. Luna-4 stopped after four calls and 98 KB, before reading the remaining evidence. Under 0.8.10's explicit-turn audit, the first three old receipts would fail the per-turn output bound. This is a parser-era false pass, separate from Luna's aggregate call-budget exhaustion.
+
+The staged 0.8.11 runner retains the current two-read and 32 KiB bounds. The #1894 largest Luna workload has 193 separate required source ranges across 178 paths, so those source segments alone require about 97 prepared turns, plus patch, packet, and index reads. Measure that latency on the matched replay after release; any packetization follow-up must preserve each range, order, and byte limit.
 
 Expected-red run `40247606189` on test-only commit `b511dacb2f04b7be6dc107eee521cf2fac66bfb2` failed only the new model-specific budget assertions on Ubuntu and macOS; each platform passed 5,160 assertions and failed 4. Proof preparation passed, and Cursor package run `40247606175` passed.
 

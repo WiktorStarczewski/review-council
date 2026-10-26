@@ -72,13 +72,13 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 contents = {
-    'r1-full.patch': b'full patch bytes\n',
+    'r1-full.patch': b'patch one\npatch two\n',
     'r1-patch-p01-001.txt': b'patch one\n',
     'r1-patch-p01-002.txt': b'patch two\n',
     'r1-codex-luna-source-context-1.json': b'{"packet":1}\n',
     'r1-codex-luna-source-context-2.json': b'{"packet":2}\n',
     'r1-codex-luna-source-segment-001-001.txt': b'segment one\n',
-    'r1-codex-luna-source-segment-001-002.txt': b'segment two\n',
+    'r1-codex-luna-source-segment-001-002.txt': b'x' * (16 * 1024),
     'r1-codex-luna-source-segment-002-001.txt': b'segment three\n',
     'r1-evidence.md': b'evidence index\n',
 }
@@ -92,11 +92,14 @@ def segment(label, name):
     size = len(contents[name])
     path = root / name
     command = shlex.join(['cat', '--', str(path)])
+    visible = size + 8
     return (f'Required source segment {label}: run {command} raw bytes {size} '
-            f'visible bytes {size} content SHA-256 {digest(name)}')
+            f'visible bytes {visible} content SHA-256 {digest(name)}')
 
 lines = [
     'Review this prepared assignment after all listed evidence is read.',
+    'use at most 4 repository tool calls before stopping this assignment.',
+    'Required post-index original-source target: src/three.ts:1-1 tree fixture blob fixture content SHA-256 fixture reasons []',
     f'Canonical assigned patch: {root}/r1-full.patch SHA-256 {digest("r1-full.patch")} bytes {len(contents["r1-full.patch"])}',
     'Patch chunk batch limit: 2',
 ]
@@ -105,6 +108,7 @@ for index, name in enumerate(('r1-patch-p01-001.txt', 'r1-patch-p01-002.txt'), 1
     start = 0 if index == 1 else len(contents['r1-patch-p01-001.txt'])
     lines.append(f'Assigned patch chunk {index}/2: {root}/{name} bytes {start}-{start + size} SHA-256 {digest(name)}')
 lines.extend([
+    'Source context packet batch limit: 1',
     f'Source context packet: {root}/r1-codex-luna-source-context-1.json',
     f'Source context packet: {root}/r1-codex-luna-source-context-2.json',
     segment('1/2', 'r1-codex-luna-source-segment-001-001.txt'),
@@ -114,17 +118,92 @@ lines.extend([
     'Required source segment batch limit: 1',
     f'Evidence navigation index: {root}/r1-evidence.md',
 ])
-(root / 'prompt.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+artifacts = {
+    name: {'sha256': digest(name), 'words': len(contents[name].split())}
+    for name in contents
+}
+manifest = {
+    'schema_version': 2,
+    'label': '1',
+    'session': str(root.resolve()),
+    'artifacts': artifacts,
+    'assignments': {
+        'codex-luna': {
+            'adapter': 'codex', 'model': 'gpt-6.1-luna',
+            'patch': str(root / 'r1-full.patch'),
+            'patch_sha256': digest('r1-full.patch'),
+            'patch_bytes': len(contents['r1-full.patch']), 'patch_lines': 2,
+            'patch_read_mode': 'chunks', 'patch_set': 'p01',
+        },
+    },
+    'patch_sets': {
+        'p01': {
+            'read_mode': 'chunks', 'patch_sha256': digest('r1-full.patch'),
+            'patch_bytes': len(contents['r1-full.patch']), 'patch_lines': 2,
+            'chunks': [
+                {'artifact': 'r1-patch-p01-001.txt', 'index': 1,
+                 'byte_start': 0, 'byte_end': len(contents['r1-patch-p01-001.txt']),
+                 'bytes': len(contents['r1-patch-p01-001.txt']),
+                 'sha256': digest('r1-patch-p01-001.txt'),
+                 'predicted_visible_bytes': len(contents['r1-patch-p01-001.txt'])},
+                {'artifact': 'r1-patch-p01-002.txt', 'index': 2,
+                 'byte_start': len(contents['r1-patch-p01-001.txt']),
+                 'byte_end': len(contents['r1-full.patch']),
+                 'bytes': len(contents['r1-patch-p01-002.txt']),
+                 'sha256': digest('r1-patch-p01-002.txt'),
+                 'predicted_visible_bytes': len(contents['r1-patch-p01-002.txt'])},
+            ],
+        },
+    },
+    'source_context': {
+        'packet_batch_limit': 1,
+        'seats': {
+            'codex-luna': {
+                'shards': [
+                    {'artifact': 'r1-codex-luna-source-context-1.json',
+                     'bytes': len(contents['r1-codex-luna-source-context-1.json'])},
+                    {'artifact': 'r1-codex-luna-source-context-2.json',
+                     'bytes': len(contents['r1-codex-luna-source-context-2.json'])},
+                ],
+                'required_source_ranges': [
+                    {'segments': [
+                        {'artifact': 'r1-codex-luna-source-segment-001-001.txt',
+                         'index': 1, 'line_start': 1, 'line_end': 1,
+                         'raw_bytes': len(contents['r1-codex-luna-source-segment-001-001.txt']),
+                         'predicted_visible_bytes': len(contents['r1-codex-luna-source-segment-001-001.txt']) + 8,
+                         'content_sha256': digest('r1-codex-luna-source-segment-001-001.txt')},
+                        {'artifact': 'r1-codex-luna-source-segment-001-002.txt',
+                         'index': 2, 'line_start': 2, 'line_end': 2,
+                         'raw_bytes': len(contents['r1-codex-luna-source-segment-001-002.txt']),
+                         'predicted_visible_bytes': len(contents['r1-codex-luna-source-segment-001-002.txt']) + 8,
+                         'content_sha256': digest('r1-codex-luna-source-segment-001-002.txt')},
+                    ]},
+                    {'segments': [
+                        {'artifact': 'r1-codex-luna-source-segment-002-001.txt',
+                         'index': 1, 'line_start': 1, 'line_end': 1,
+                         'raw_bytes': len(contents['r1-codex-luna-source-segment-002-001.txt']),
+                         'predicted_visible_bytes': len(contents['r1-codex-luna-source-segment-002-001.txt']) + 8,
+                         'content_sha256': digest('r1-codex-luna-source-segment-002-001.txt')},
+                    ]},
+                ],
+            },
+        },
+    },
+}
+manifest_raw = json.dumps(manifest, sort_keys=True, separators=(',', ':')).encode() + b'\n'
+(root / 'r1-evidence.manifest.json').write_bytes(manifest_raw)
+lines[0:0] = [f'Evidence manifest SHA-256: {hashlib.sha256(manifest_raw).hexdigest()}']
+(root / 'r1-codex-luna.prompt.md').write_text('\n'.join(lines) + '\n', encoding='utf-8')
 PY
   SHIM_MODE=staged SHIM_ARGS_FILE="$S/last-args" SHIM_STAGE_DIR="$S/calls" \
     SHIM_CALLS_FILE="$S/calls.log" SEAT=codex-luna MODEL=gpt-6.1-luna EFFORT=xhigh \
-    MODE=prompt ROOT="$T" PROMPT="$S/prompt.md" SCHEMA="$SHIM_FIXTURE_DIR/findings.schema.json" \
+    MODE=prompt ROOT="$T" PROMPT="$S/r1-codex-luna.prompt.md" SCHEMA="$SHIM_FIXTURE_DIR/findings.schema.json" \
     OUT="$S/result.json" LOG="$S/adapter.log" RAW="$S/raw.ndjson" BASE=abc \
     bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
   assert_eq "staged Codex proof exits successfully" "$?" 0
   calls=$(wc -l < "$S/calls.log" | tr -d ' ')
-  assert_eq "Codex uses separate resumable turns for the prepared evidence" "$calls" 7
-  if [ "$calls" = 7 ]; then
+  assert_eq "Codex uses separate resumable turns for prepared proof, source review, and findings" "$calls" 13
+  if [ "$calls" = 13 ]; then
     python3 - "$S" <<'PY'
 import json
 import sys
@@ -135,7 +214,8 @@ expected = [
     ['r1-patch-p01-001.txt', 'r1-patch-p01-002.txt'],
     ['r1-codex-luna-source-context-1.json'],
     ['r1-codex-luna-source-context-2.json'],
-    ['r1-codex-luna-source-segment-001-001.txt', 'r1-codex-luna-source-segment-001-002.txt'],
+    ['r1-codex-luna-source-segment-001-001.txt'],
+    ['r1-codex-luna-source-segment-001-002.txt'],
     ['r1-codex-luna-source-segment-002-001.txt'],
     ['r1-evidence.md'],
 ]
@@ -154,22 +234,39 @@ for index, names in enumerate(expected, 1):
     else:
         assert args[0] == 'exec' and args[1] == 'resume', args
         assert 'fixture-thread' in args, args
+        assert 'sandbox_mode="read-only"' in args, args
 
-final_args = (root / 'calls' / 'call-7.args').read_text(encoding='utf-8').splitlines()
-final_prompt = (root / 'calls' / 'call-7.stdin').read_text(encoding='utf-8')
-assert final_args[0:2] == ['exec', 'resume'], final_args
-assert 'fixture-thread' in final_args, final_args
+first_review_args = (root / 'calls' / 'call-8.args').read_text(encoding='utf-8').splitlines()
+first_review_prompt = (root / 'calls' / 'call-8.stdin').read_text(encoding='utf-8')
+next_review_args = (root / 'calls' / 'call-9.args').read_text(encoding='utf-8').splitlines()
+next_review_prompt = (root / 'calls' / 'call-9.stdin').read_text(encoding='utf-8')
+required_review_args = (root / 'calls' / 'call-10.args').read_text(encoding='utf-8').splitlines()
+ready_review_args = (root / 'calls' / 'call-12.args').read_text(encoding='utf-8').splitlines()
+final_args = (root / 'calls' / 'call-13.args').read_text(encoding='utf-8').splitlines()
+final_prompt = (root / 'calls' / 'call-13.stdin').read_text(encoding='utf-8')
+for args in (first_review_args, next_review_args, required_review_args, ready_review_args, final_args):
+    assert args[0:2] == ['exec', 'resume'], args
+    assert 'fixture-thread' in args, args
+    assert 'sandbox_mode="read-only"' in args, args
+assert '--output-schema' in first_review_args and 'review-turn.schema.json' in first_review_args, first_review_args
+assert '--output-schema' in next_review_args and 'review-turn.schema.json' in next_review_args, next_review_args
+assert '--output-schema' in required_review_args and 'review-turn.schema.json' in required_review_args, required_review_args
+assert '--output-schema' in ready_review_args and 'review-turn.schema.json' in ready_review_args, ready_review_args
 assert '--output-schema' in final_args and 'findings.schema.json' in final_args, final_args
-assert 'Review this prepared assignment' in final_prompt, final_prompt
-assert 'already been read in earlier explicit turns' in final_prompt, final_prompt
+assert 'Review this prepared assignment' in first_review_prompt, first_review_prompt
+assert 'already been read in earlier explicit turns' in first_review_prompt, first_review_prompt
+assert 'Next evidence question:' in next_review_prompt and 'src/two.ts' in next_review_prompt, next_review_prompt
+required_review_prompt = (root / 'calls' / 'call-10.stdin').read_text(encoding='utf-8')
+assert 'Next evidence question:' in required_review_prompt and 'src/three.ts' in required_review_prompt, required_review_prompt
+assert 'Return the final findings JSON' in final_prompt, final_prompt
 
 events = [json.loads(line) for line in (root / 'raw.ndjson').read_text().splitlines()]
-assert sum(event.get('type') == 'turn.started' for event in events) == 7
-assert sum(event.get('type') == 'turn.completed' for event in events) == 7
+assert sum(event.get('type') == 'turn.started' for event in events) == 13
+assert sum(event.get('type') == 'turn.completed' for event in events) == 13
 threads = [event.get('thread_id') for event in events if event.get('type') == 'thread.started']
-assert threads == ['fixture-thread'] * 7, threads
+assert threads and set(threads) == {'fixture-thread'}, threads
 assert sum(event.get('type') == 'item.started'
-           and event.get('item', {}).get('type') == 'command_execution' for event in events) == 8
+           and event.get('item', {}).get('type') == 'command_execution' for event in events) == 12
 PY
     assert_eq "proof artifacts are staged in order with the final schema only on resume" "$?" 0
     assert_grep "staging keeps the exact findings output" "$S/result.json" '"findings": ?\['

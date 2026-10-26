@@ -3263,8 +3263,37 @@ PY
     pinned_read_fixture "$LR" "$LS" "$label" gpt-6.1-luna || return
     luna_seat=$(cat "$LS/fixture.seat"); base=$(cat "$LS/fixture.base")
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$LS/r$label-$luna_seat.json"
-    assert_grep "Luna prompt publishes the sixfold total and reserved-call budget" \
-      "$LS/fixture.prompt" 'use at most 120 repository tool calls.*Finish required reads by call 96.*reserve calls 97-120 for refutation'
+    python3 - "$SCRIPTS/lib/review_limits.py" "$LS/fixture.manifest" "$luna_seat" \
+      "$LS/fixture.prompt" <<'PY'
+import re
+import runpy
+import sys
+from pathlib import Path
+
+limits_path, manifest_path, seat, prompt_path = sys.argv[1:]
+limits = runpy.run_path(limits_path)
+manifest = __import__('json').loads(Path(manifest_path).read_text())
+assignment = manifest['assignments'][seat]
+context = manifest['source_context']['seats'][seat]
+capacity = manifest['task_capacity']['seats'][seat]
+model = assignment['model']
+expected_total = limits['repository_expansion_call_limit_for_seat'](
+    context['source_read_required'], capacity['repository_source_target'], model)
+expected_reserve = limits['repository_refutation_call_reserve_for_model'](model)
+assert expected_total == limits['REPOSITORY_EXPANSION_CALL_LIMIT'] * 6 + (
+    expected_reserve if context['source_read_required']
+    and capacity['repository_source_target'] is None else 0), expected_total
+assert capacity['repository_expansion_call_limit'] == expected_total, capacity
+assert capacity['repository_refutation_call_reserve'] == expected_reserve, capacity
+mandatory = expected_total - expected_reserve
+prompt = Path(prompt_path).read_text()
+budget_lines = [line for line in prompt.splitlines() if 'repository tool calls' in line]
+pattern = (rf'use at most {expected_total} repository tool calls\. '
+           rf'Start no new evidence path after call {mandatory}; '
+           r'use the remaining calls only to refute or cite candidates, then return the required JSON\.')
+assert re.search(pattern, prompt), (pattern, budget_lines)
+PY
+    assert_eq "Luna prompt publishes the sixfold total and reserved-call budget" "$?" 0
     for mode in scoped-expansion-120 scoped-expansion-121; do
       pinned_read_transcript "$(cat "$LS/fixture.manifest")" \
         "$LS/r$label-$luna_seat.stream.ndjson" "$LR" "$base" "$mode"
