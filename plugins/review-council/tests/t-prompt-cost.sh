@@ -129,7 +129,29 @@ test_prompt_cost_shared_limits_and_copy() {
     cp -R "$SCRIPTS/lib/." "$COPY/scripts/lib/"
     chmod -R u+w "$COPY/scripts/lib"
     cp "$SCRIPTS/../schema/findings.schema.json" "$COPY/schema/"
-    printf 'READ_LINES = 240\nCODEX_READ_LINES = 160\nCODEX_SOURCE_READ_LINES = 200\nREPOSITORY_EXPANSION_CALL_LIMIT = 9\nMANDATORY_REPOSITORY_READ_LIMIT = 6\n' > "$COPY/scripts/lib/review_limits.py"
+    cat > "$COPY/scripts/lib/review_limits.py" <<'PY'
+READ_LINES = 240
+CODEX_READ_LINES = 160
+CODEX_SOURCE_READ_LINES = 200
+REPOSITORY_EXPANSION_CALL_LIMIT = 9
+REPOSITORY_REFUTATION_CALL_RESERVE = 3
+MANDATORY_REPOSITORY_READ_LIMIT = 6
+LUNA_REPOSITORY_READ_BUDGET_MULTIPLIER = 6
+
+def repository_read_budget_multiplier_for_model(model):
+    name = model.rsplit('/', 1)[-1].lower() if isinstance(model, str) else ''
+    return LUNA_REPOSITORY_READ_BUDGET_MULTIPLIER if name == 'luna' or name.endswith('-luna') else 1
+
+def repository_refutation_call_reserve_for_model(model=None):
+    return REPOSITORY_REFUTATION_CALL_RESERVE * repository_read_budget_multiplier_for_model(model)
+
+def repository_expansion_call_limit_for_seat(source_read_required, repository_source_target, model=None):
+    multiplier = repository_read_budget_multiplier_for_model(model)
+    limit = REPOSITORY_EXPANSION_CALL_LIMIT * multiplier
+    if source_read_required and repository_source_target is None:
+        return limit + REPOSITORY_REFUTATION_CALL_RESERVE * multiplier
+    return limit
+PY
     printf 'frozen patch\n' > "$S/rlimits-full.patch"
     local codex claude codex120
     codex=$("$COPY/scripts/rev-prompt.sh" "$S" limits sol correctness focused) || return
@@ -141,7 +163,29 @@ test_prompt_cost_shared_limits_and_copy() {
     assert_grep 'copied prompt derives native windows from READ_LINES' "$claude" \
       'END - START \+ 1 <= 240'
     assert_grep 'copied prompt derives expansion and reserve from bundled constants' "$codex" 'use at most 9 repository tool calls.*no new evidence path after call 6'
-    printf 'READ_LINES = 120\nCODEX_READ_LINES = 120\nCODEX_SOURCE_READ_LINES = 90\nREPOSITORY_EXPANSION_CALL_LIMIT = 9\nMANDATORY_REPOSITORY_READ_LIMIT = 6\n' > "$COPY/scripts/lib/review_limits.py"
+    cat > "$COPY/scripts/lib/review_limits.py" <<'PY'
+READ_LINES = 120
+CODEX_READ_LINES = 120
+CODEX_SOURCE_READ_LINES = 90
+REPOSITORY_EXPANSION_CALL_LIMIT = 9
+REPOSITORY_REFUTATION_CALL_RESERVE = 3
+MANDATORY_REPOSITORY_READ_LIMIT = 6
+LUNA_REPOSITORY_READ_BUDGET_MULTIPLIER = 6
+
+def repository_read_budget_multiplier_for_model(model):
+    name = model.rsplit('/', 1)[-1].lower() if isinstance(model, str) else ''
+    return LUNA_REPOSITORY_READ_BUDGET_MULTIPLIER if name == 'luna' or name.endswith('-luna') else 1
+
+def repository_refutation_call_reserve_for_model(model=None):
+    return REPOSITORY_REFUTATION_CALL_RESERVE * repository_read_budget_multiplier_for_model(model)
+
+def repository_expansion_call_limit_for_seat(source_read_required, repository_source_target, model=None):
+    multiplier = repository_read_budget_multiplier_for_model(model)
+    limit = REPOSITORY_EXPANSION_CALL_LIMIT * multiplier
+    if source_read_required and repository_source_target is None:
+        return limit + REPOSITORY_REFUTATION_CALL_RESERVE * multiplier
+    return limit
+PY
     codex120=$("$COPY/scripts/rev-prompt.sh" "$S" limits sol correctness focused) || return
     assert_grep 'copied prompt uses configured Codex patch window when limits change' "$codex120" \
       'at most 90 lines for every repository source window and at most 120 lines for each assigned-patch window'

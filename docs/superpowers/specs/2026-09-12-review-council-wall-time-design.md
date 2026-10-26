@@ -126,9 +126,10 @@ evidence failure repeats, create a full-scope child assignment bound to that par
 assignment. A panel receipt selects exactly one immutable generation per assignment
 and rejects mixed snapshots, rosters, bundles, lenses, or prompt generations.
 
-Keep one persistent provider-attempt budget per seat generation across wrapper and
-orchestrator retries. The existing intended ceiling is four calls; restarting the
-wrapper must not reset it. Exhaustion is terminal and explicit.
+Keep one persistent adapter-launch budget per seat generation across wrapper and
+orchestrator retries. The existing ceiling is four reserved launches; restarting the
+wrapper must not reset it. A launch may contain multiple bounded resumable Codex turns,
+which profile usage counts individually. Exhaustion is terminal and explicit.
 
 When one seat fails, start its repair while other original seats continue. Cancel
 siblings only for a panel-global failure such as a stale manifest or changed snapshot.

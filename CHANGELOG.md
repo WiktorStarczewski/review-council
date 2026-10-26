@@ -6,6 +6,13 @@
 - Register numbered fresh plan generations and bind replacement children to their exact root, with the newest generation required by the fix gate.
 - Recover token-bound terminal completion records before a permitted exact reviewer retry.
 
+## 0.8.11
+
+- Give Luna model seats six times the aggregate repository-read budget while preserving source scope, proof order, per-read bounds, and response-size limits.
+- Run Codex custom reviews through bounded resumable turns with or without prepared evidence, and verify the exact required post-index source range before findings can be finalized.
+- Difference Codex's cumulative thread-usage snapshots across resumed turns and disclose resets instead of double-counting earlier work.
+- Preserve legacy Codex input/output usage while marking uncached input unknown when cache counters are absent.
+
 ## 0.8.10
 
 - Let Codex make up to two separate, ordered proof reads in one completed turn while retaining independent artifact checks, the single-packet limit, and existing size caps.

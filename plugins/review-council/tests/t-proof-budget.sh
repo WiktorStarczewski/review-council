@@ -146,7 +146,7 @@ test_edited_tests_exceeding_proof_budget_are_refused() {
 from pathlib import Path
 import sys
 root = Path(sys.argv[1])
-for index in range(13):
+for index in range(17):
     (root / 'tests' / f'test_{index:02d}.py').write_text(
         f'def test_{index:02d}():\n    assert True\n')
 PY
@@ -177,16 +177,16 @@ PY
     assert_eq "edited tests beyond the proof budget are refused before launch" "$status" 2
     [ "$status" -eq 2 ] || return 0
     assert_grep "the refusal names the frozen proof budget" \
-      "$T/proof-tests.err" 'proof reads exceed repository capacity: sol limit=12 count='
+      "$T/proof-tests.err" 'proof reads exceed repository capacity: sol limit=16 count='
     python3 - "$S" <<'PY'
 import json, sys
 from pathlib import Path
 diagnostic = json.loads((Path(sys.argv[1]) / 'prepare-diagnostic-tests.json').read_text())
 row = next(item for item in diagnostic['refusals'] if item['seat'] == 'sol')
-assert row['count'] > 12, row
+assert row['count'] > 16, row
 assert row['partitions']
 assert sum(partition['reads'] for partition in row['partitions']) == row['count']
-assert all(1 <= partition['reads'] <= 12 for partition in row['partitions'])
+assert all(1 <= partition['reads'] <= 16 for partition in row['partitions'])
 assert all(path.startswith('tests/test_') for partition in row['partitions'] for path in partition['paths'])
 PY
     assert_eq "edited-test partitions stay inside the frozen budget" "$?" 0

@@ -103,10 +103,10 @@
 - Test: `plugins/review-council/tests/t-skill.sh`
 
 **Interfaces:**
-- Persist `attempts[panel][seat][generation]` and cap provider calls at four across wrapper and host retries.
+- Persist `attempts[panel][seat][generation]` and cap reserved adapter launches at four across wrapper and host retries; bounded resumable turns inside one Codex launch remain separately metered.
 - Parent-child receipts bind replacement generation, parent manifest, seat, bundle, model, effort, prompt, stream, result, and frozen snapshot hashes.
 
-- [ ] Add a runner fixture that restarts `rev-seat.sh` and prove the fifth provider call is rejected before launch.
+- [ ] Add a runner fixture that restarts `rev-seat.sh` and prove the fifth adapter launch is rejected before launch.
 - [ ] Add a four-seat receipt fixture with one invalid seat, then a valid same-assignment retry. Assert that three original valid seats are retained.
 - [ ] Add a repeated-failure fixture with a full-scope child assignment. Assert one generation per assignment and reject every mixed snapshot, model, bundle, or prompt mutation.
 - [ ] Add skill contract assertions for immediate seat retry, panel-global cancellation, straggler triage, and no edits before the composite receipt seals.

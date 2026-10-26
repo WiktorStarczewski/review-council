@@ -201,8 +201,8 @@ while :; do
     [ -z "$reserve_error" ] || printf 'rev-seat: %s\n' "$reserve_error" >&2
     [ -z "$reserve_error" ] || printf '%s\n' "$reserve_error" >> "$LOG"
     if [ "$reserve_rc" -eq 7 ]; then
-      echo "persistent provider-call cap reached for this seat generation" >> "$LOG"
-      echo "rev-seat: persistent provider-call cap reached for this seat generation" >&2
+      echo "persistent adapter-launch cap reached for this seat generation" >> "$LOG"
+      echo "rev-seat: persistent adapter-launch cap reached for this seat generation" >&2
       PUBLISH_UNRESERVED_EXIT=1
     fi
     finish "$reserve_rc"
@@ -284,7 +284,8 @@ if [ "$ADAPTER" = codex ] && [ "$MODE" = review ] && [ -s "$OUT" ] && ! python3 
 fi
 
 if [ "$rc" -eq 0 ] && [ -s "$OUT" ]; then
-  AUDIT_ARGS=(audit --adapter "$ADAPTER" --raw "$RAW" --prompt "$PROMPT" --root "$ROOT" --session "$SESSION" --out "$AUDITF")
+  AUDIT_ARGS=(audit --adapter "$ADAPTER" --raw "$RAW" --prompt "$PROMPT" \
+    --root "$ROOT" --session "$SESSION" --seat "$SEAT" --out "$AUDITF")
   [ -z "${REV_DEPS_DIR:-}" ] || AUDIT_ARGS+=(--deps "$REV_DEPS_DIR")
   python3 "$HERE/lib/review-read-audit.py" "${AUDIT_ARGS[@]}" >>"$LOG" 2>&1
   AUDIT_RC=$?

@@ -5,6 +5,14 @@
 [ -n "${SHIM_ARGS_FILE:-}" ] && printf '%s\n' "$@" > "$SHIM_ARGS_FILE"
 [ -z "${SHIM_ARGS_DIR:-}" ] || printf '%s\n' "$@" > "$SHIM_ARGS_DIR/$$.args"
 [ -z "${SHIM_CALLS_FILE:-}" ] || printf '%s\n' call >> "$SHIM_CALLS_FILE"
+CALL_NUMBER=""
+if [ -n "${SHIM_CALLS_FILE:-}" ]; then
+  CALL_NUMBER=$(wc -l < "$SHIM_CALLS_FILE" | tr -d ' ')
+  if [ -n "${SHIM_STAGE_DIR:-}" ]; then
+    mkdir -p "$SHIM_STAGE_DIR"
+    printf '%s\n' "$@" > "$SHIM_STAGE_DIR/call-$CALL_NUMBER.args"
+  fi
+fi
 [ -n "${SHIM_ARGS_FILE:-}" ] && printf 'REV_ACTIVE=%s\nNO_PUSH=%s\nNO_SQUASH=%s\ncwd=%s\nHOME=%s\nCODEX_HOME=%s\nCODEX_AUTH_LINK=%s\n' \
   "${REV_ACTIVE:-unset}" "${NO_PUSH:-unset}" "${NO_SQUASH:-unset}" "$PWD" "$HOME" "${CODEX_HOME:-unset}" \
   "$([ -L "${CODEX_HOME:-/missing}/auth.json" ] && echo yes || echo no)" >> "$SHIM_ARGS_FILE.env"
@@ -16,9 +24,18 @@ fi
 OUT=""; prev=""
 for a in "$@"; do [ "$prev" = "-o" ] && OUT=$a; prev=$a; done
 STDIN=$(cat); [ -n "${SHIM_ARGS_FILE:-}" ] && printf '%s' "$STDIN" > "$SHIM_ARGS_FILE.stdin"
+if [ -n "$CALL_NUMBER" ] && [ -n "${SHIM_STAGE_DIR:-}" ]; then
+  printf '%s' "$STDIN" > "$SHIM_STAGE_DIR/call-$CALL_NUMBER.stdin"
+fi
 fixture_output() {
   cp "$1" "$OUT" && chmod u+w "$OUT"
 }
+OUTPUT_SCHEMA=""; want_schema=0
+for a in "$@"; do
+  if [ "$want_schema" = 1 ]; then OUTPUT_SCHEMA=${a##*/}; want_schema=0
+  elif [ "$a" = --output-schema ]; then want_schema=1
+  fi
+done
 case "${SHIM_MODE:-ok}" in
   notauth)    echo '{"type":"error","message":"Not logged in; run codex login"}'; exit 1;;
   ratelimit)  echo '{"type":"error","message":"You have hit your usage limit (429)"}'; exit 1;;
@@ -31,10 +48,175 @@ case "${SHIM_MODE:-ok}" in
     wait "$child"
     exit $?
     ;;
-  notools)    echo '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"done"}}'; fixture_output "$SHIM_FIXTURE_DIR/findings-valid.json"; exit 0;;
-  unbounded)  echo '{"type":"item.started","item":{"id":"bad","type":"command_execution","command":"cat src/x.ts"}}'; echo '{"type":"item.completed","item":{"id":"bad","type":"command_execution","command":"cat src/x.ts","aggregated_output":"source\n","exit_code":0}}'; fixture_output "$SHIM_FIXTURE_DIR/findings-valid.json"; exit 0;;
+  notools)
+    printf '%s\n' '{"type":"thread.started","thread_id":"fixture-thread"}' '{"type":"turn.started"}'
+    if [ "$OUTPUT_SCHEMA" = review-turn.schema.json ]; then
+      printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT"
+    else
+      printf '%s\n' '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"done"}}'
+      fixture_output "$SHIM_FIXTURE_DIR/findings-valid.json"
+    fi
+    printf '%s\n' '{"type":"turn.completed"}'
+    exit 0
+    ;;
+  unbounded)
+    printf '%s\n' '{"type":"thread.started","thread_id":"fixture-thread"}' '{"type":"turn.started"}'
+    if [ "$OUTPUT_SCHEMA" = review-turn.schema.json ]; then
+      printf '%s\n' \
+        '{"type":"item.started","item":{"id":"bad","type":"command_execution","command":"cat src/x.ts"}}' \
+        '{"type":"item.completed","item":{"id":"bad","type":"command_execution","command":"cat src/x.ts","aggregated_output":"source\\n","exit_code":0}}'
+      printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT"
+    else
+      fixture_output "$SHIM_FIXTURE_DIR/findings-valid.json"
+    fi
+    printf '%s\n' '{"type":"turn.completed"}'
+    exit 0
+    ;;
   native)     cat "$SHIM_FIXTURE_DIR/codex-stream.ndjson"; fixture_output "$SHIM_FIXTURE_DIR/codex-review-native.txt"; exit 0;;
   native_bad) cat "$SHIM_FIXTURE_DIR/codex-stream.ndjson"; fixture_output "$SHIM_FIXTURE_DIR/codex-review-native-bad.txt"; exit 0;;
+  resumable-no-manifest)
+    printf '%s\n' '{"type":"thread.started","thread_id":"fixture-thread"}' '{"type":"turn.started"}'
+    TURN_SCHEMA=""; want_schema=0
+    for a in "$@"; do
+      if [ "$want_schema" = 1 ]; then TURN_SCHEMA=$a; want_schema=0
+      elif [ "$a" = --output-schema ]; then want_schema=1
+      fi
+    done
+    case "${TURN_SCHEMA##*/}:$CALL_NUMBER" in
+      review-turn.schema.json:1)
+        printf '%s\n' \
+          "{\"type\":\"item.started\",\"item\":{\"id\":\"unprepared-a\",\"type\":\"command_execution\",\"command\":\"cat -- $SHIM_EVIDENCE_INDEX\"}}" \
+          "{\"type\":\"item.completed\",\"item\":{\"id\":\"unprepared-a\",\"type\":\"command_execution\",\"command\":\"cat -- $SHIM_EVIDENCE_INDEX\",\"aggregated_output\":\"evidence index\n\",\"exit_code\":0}}"
+        printf '%s\n' '{"status":"continue","next_step":"Read src/required.ts:1-1 to complete the required source check."}' > "$OUT"
+        ;;
+      review-turn.schema.json:2)
+        if [ "${SHIM_UNPREPARED_TARGET:-exact}" = wrong ]; then
+          printf '%s\n' \
+            '{"type":"item.started","item":{"id":"unprepared-b","type":"command_execution","command":"sed -n 1,1p src/first.ts"}}' \
+            '{"type":"item.completed","item":{"id":"unprepared-b","type":"command_execution","command":"sed -n 1,1p src/first.ts","aggregated_output":"first source\n","exit_code":0}}'
+        else
+          printf '%s\n' \
+            '{"type":"item.started","item":{"id":"unprepared-b","type":"command_execution","command":"sed -n 1,1p src/required.ts"}}' \
+            '{"type":"item.completed","item":{"id":"unprepared-b","type":"command_execution","command":"sed -n 1,1p src/required.ts","aggregated_output":"required source\n","exit_code":0}}'
+        fi
+        printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT"
+        ;;
+      review-turn.schema.json:3)
+        printf '%s\n' \
+          '{"type":"item.started","item":{"id":"unprepared-c","type":"command_execution","command":"sed -n 1,1p src/required.ts"}}' \
+          '{"type":"item.completed","item":{"id":"unprepared-c","type":"command_execution","command":"sed -n 1,1p src/required.ts","aggregated_output":"required source\n","exit_code":0}}'
+        printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT"
+        ;;
+      findings.schema.json:*) fixture_output "$SHIM_FIXTURE_DIR/findings-valid.json";;
+      :1)
+        printf '%s\n' '{"type":"turn.started"}' '{"type":"item.completed","item":{"id":"one-shot","type":"agent_message","text":"done"}}' '{"type":"turn.completed"}'
+        fixture_output "$SHIM_FIXTURE_DIR/findings-valid.json"
+        exit 0
+        ;;
+      *) echo "unexpected no-manifest call $CALL_NUMBER with schema $TURN_SCHEMA" >&2; exit 1;;
+    esac
+    printf '%s\n' '{"type":"turn.completed"}'
+    exit 0
+    ;;
+  staged)
+    printf '%s\n' '{"type":"thread.started","thread_id":"fixture-thread"}'
+    printf '%s\n' '{"type":"turn.started"}'
+    TURN_SCHEMA=""
+    want_schema=0
+    for a in "$@"; do
+      if [ "$want_schema" = 1 ]; then TURN_SCHEMA=$a; want_schema=0
+      elif [ "$a" = --output-schema ]; then want_schema=1
+      fi
+    done
+    case "${TURN_SCHEMA##*/}" in
+      review-turn.schema.json)
+        case "$CALL_NUMBER" in
+          8)
+            printf '%s\n' \
+              '{"type":"item.started","item":{"id":"review-a","type":"command_execution","command":"rg -n marker src/one.ts"}}' \
+              '{"type":"item.completed","item":{"id":"review-a","type":"command_execution","command":"rg -n marker src/one.ts","aggregated_output":"one:1\\n","exit_code":0}}'
+            printf '%s\n' '{"status":"continue","next_step":"Read src/two.ts to check the follow-up."}' > "$OUT"
+            ;;
+          9)
+            printf '%s\n' \
+              '{"type":"item.started","item":{"id":"review-b","type":"command_execution","command":"rg -n marker src/two.ts"}}' \
+              '{"type":"item.completed","item":{"id":"review-b","type":"command_execution","command":"rg -n marker src/two.ts","aggregated_output":"two:1\\n","exit_code":0}}'
+            printf '%s\n' '{"status":"continue","next_step":"Read the required src/three.ts target."}' > "$OUT"
+            ;;
+          10)
+            printf '%s\n' \
+              '{"type":"item.started","item":{"id":"review-c","type":"command_execution","command":"sed -n 1,1p src/three.ts"}}' \
+              '{"type":"item.completed","item":{"id":"review-c","type":"command_execution","command":"sed -n 1,1p src/three.ts","aggregated_output":"line\n","exit_code":0}}'
+            printf '%s\n' '{"status":"continue","next_step":"Read src/four.ts to check the final caller."}' > "$OUT"
+            ;;
+          11)
+            printf '%s\n' \
+              '{"type":"item.started","item":{"id":"review-d","type":"command_execution","command":"cat src/four.ts"}}' \
+              '{"type":"item.completed","item":{"id":"review-d","type":"command_execution","command":"cat src/four.ts","aggregated_output":"caller\\n","exit_code":0}}'
+            printf '%s\n' '{"status":"continue","next_step":"The required source checks are covered; finish the review."}' > "$OUT"
+            ;;
+          12) printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT";;
+          *) echo "unexpected review turn $CALL_NUMBER" >&2; exit 1;;
+        esac
+        ;;
+      findings.schema.json) fixture_output "$SHIM_FIXTURE_DIR/findings-valid.json";;
+      *)
+        if [ -n "$CALL_NUMBER" ] && [ -n "${SHIM_STAGE_DIR:-}" ]; then
+      python3 - "$SHIM_STAGE_DIR/call-$CALL_NUMBER.stdin" "$CALL_NUMBER" <<'PY'
+import json
+import os
+import shlex
+import sys
+from pathlib import Path
+
+prompt = open(sys.argv[1], encoding='utf-8').read()
+call_number = sys.argv[2]
+session = Path(os.environ['SHIM_STAGE_DIR']).resolve().parent
+root = Path(os.environ['ROOT']).resolve()
+for index, line in enumerate(prompt.splitlines(), 1):
+    if line.startswith('Read exactly: '):
+        command = line[len('Read exactly: '):]
+        words = shlex.split(command)
+        if len(words) != 3 or words[:2] != ['cat', '--']:
+            raise SystemExit(f'unexpected staged read command: {command}')
+        target = Path(words[2]).resolve(strict=True)
+        if not any(target == base or base in target.parents for base in (root, session)):
+            raise SystemExit(f'staged read escaped the test roots: {target}')
+        output = target.read_text(encoding='utf-8')
+        print(json.dumps({'type': 'item.started', 'item': {
+            'id': f'stage-{call_number}-{index}', 'type': 'command_execution', 'command': command}}))
+        print(json.dumps({'type': 'item.completed', 'item': {
+            'id': f'stage-{call_number}-{index}', 'type': 'command_execution', 'command': command,
+            'aggregated_output': output, 'exit_code': 0}}))
+PY
+        fi
+        printf '%s\n' '{"type":"item.completed","item":{"id":"stage-answer","type":"agent_message","text":"READ_STAGE_COMPLETE"}}'
+        ;;
+    esac
+    printf '%s\n' '{"type":"turn.completed"}'
+    exit 0
+    ;;
+  ok)
+    if [ "${2:-}" = review ]; then
+      cat "$SHIM_FIXTURE_DIR/codex-stream.ndjson"
+      fixture_output "$SHIM_FIXTURE_DIR/findings-valid.json"
+    elif [ "$OUTPUT_SCHEMA" = review-turn.schema.json ]; then
+      printf '%s\n' '{"type":"thread.started","thread_id":"fixture-thread"}' '{"type":"turn.started"}' \
+        '{"type":"item.started","item":{"id":"review-diff","type":"command_execution","command":"/bin/zsh -lc '\''git diff abc123 --stat | head -240'\''"}}' \
+        '{"type":"item.completed","item":{"id":"review-diff","type":"command_execution","command":"/bin/zsh -lc '\''git diff abc123 --stat | head -240'\''","aggregated_output":" 2 files changed\n","exit_code":0}}'
+      printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT"
+      printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1000,"output_tokens":100}}'
+    elif [ "$OUTPUT_SCHEMA" = findings.schema.json ]; then
+      printf '%s\n' '{"type":"thread.started","thread_id":"fixture-thread"}' '{"type":"turn.started"}' \
+        '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"One reachable off-by-one; otherwise sound."}}' \
+        '{"type":"turn.completed","usage":{"input_tokens":1000,"output_tokens":100}}'
+      fixture_output "$SHIM_FIXTURE_DIR/findings-valid.json"
+    else
+      cat "$SHIM_FIXTURE_DIR/codex-stream.ndjson"
+      fixture_output "$SHIM_FIXTURE_DIR/findings-valid.json"
+    fi
+    exit 0
+    ;;
   # a failing run whose MODEL OUTPUT merely quotes a 401 (agent_message → `text:` in the log): must NOT read as auth
   noise401)   echo '{"type":"item.completed","item":{"id":"i9","type":"agent_message","text":"the endpoint answers 401 Unauthorized on expiry"}}'; echo '{"type":"turn.completed"}'; exit 1;;
   noise401exec) echo '{"type":"item.started","item":{"id":"i9","type":"command_execution","command":"rg -n \"401 unauthorized\" src"}}'; echo '{"type":"item.completed","item":{"id":"i9","type":"command_execution","command":"rg -n \"401 unauthorized\" src","exit_code":1}}'; echo '{"type":"turn.completed"}'; exit 1;;
