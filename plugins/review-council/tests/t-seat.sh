@@ -1099,11 +1099,15 @@ PY
 }
 test_seat_process_group_cancellation_preserves_partial_stream() {
   local _path="$PATH"; seat_env
-  local S="$T/seat-cancel"; seat_roster "$S"; seat_codex_prompt "$S/p.md"
+  local S="$T/seat-cancel"; seat_roster "$S"
+  seat_codex_prompt "$S/r1-codex-sol.prompt.md"
+  "$SCRIPTS/rev-state.sh" "$S" round=1 min_rounds=1 phase=collect \
+    'seats=["codex-sol"]' open.P0=0 open.P1=0 open.P2=0 fixed=0 >/dev/null
   local child_file="$T/seat-cancel-child.pid" leader pgid child i=0
   set -m
   SHIM_MODE=hang_with_child SHIM_CHILD_PID_FILE="$child_file" \
-    "$SCRIPTS/rev-seat.sh" codex-sol "$S" kill "$S/p.md" > "$T/seat-cancel.out" 2>&1 &
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/r1-codex-sol.prompt.md" \
+    > "$T/seat-cancel.out" 2>&1 &
   leader=$!
   while [ ! -s "$child_file" ] && kill -0 "$leader" 2>/dev/null && [ "$i" -lt 100 ]; do
     sleep 0.1; i=$((i + 1))
@@ -1132,8 +1136,8 @@ test_seat_process_group_cancellation_preserves_partial_stream() {
     ok "cancellation reaches the provider descendant"
   fi
   assert_grep "cancellation retains the partial provider stream" \
-    "$S/rkill-codex-sol.stream.ndjson" '"type":"item.started"'
-  assert_grep "cancellation records a terminal exit" "$S/rkill-codex-sol.exit" '^143$'
+    "$S/r1-codex-sol.stream.ndjson" '"type":"item.started"'
+  assert_grep "cancellation records a terminal exit" "$S/r1-codex-sol.exit" '^143$'
   python3 - "$S" <<'PY'
 import json
 from pathlib import Path
