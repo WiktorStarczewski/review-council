@@ -3558,6 +3558,129 @@ def replacement_runs_on_another_seat():
         assert child['assignments'][executor]['full_state'] is True
         assert child['assignments'][executor]['bundle'] == bundle
 
+def replacement_accepts_only_durable_provider_exit_3():
+    for code in ('3', '4'):
+        with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+            chain_identities = {
+                'sol': ('claude', 'sonnet', 'high'),
+                'terra': ('codex', 'gpt-5.6-sol', 'high'),
+                'opus': ('codex', 'gpt-5.6-luna', 'high'),
+                'sonnet': ('agent', 'sonnet', 'high'),
+            }
+            roster = {'seats': [
+                {'seat': seat, 'extra': False, 'adapter': chain_identities[seat][0],
+                 'model': chain_identities[seat][1], 'effort': chain_identities[seat][2]}
+                for seat in seats]}
+            (session / 'roster.json').write_text(json.dumps(roster))
+            parent = prepare('9', 'risk', *assign, '--full-seat', 'sonnet')
+            prompt = session / 'r9-sol.prompt.md'
+            prompt.write_text('review\n')
+            token = '1' * 32
+            assert reserve_launch_bound(session, '9', 'sol', prompt, token).returncode == 0
+            assert record_launch_bound(session, '9', 'sol', prompt, code, token).returncode == 0
+            (session / 'r9-sol.exit').write_text(code + '\n')
+            child_args = ('--assignment', 'terra=' + parent['assignments']['sol']['bundle'],
+                          '--parent-assignment', '9:sol')
+            if code == '3':
+                child = prepare('9x', 'repair', *child_args)
+                assert child['parent_assignment']['seat'] == 'sol'
+                assert list(child['assignments']) == ['terra']
+            else:
+                call('prepare', session, '9x', '--phase', 'repair', *child_args, good=False,
+                     error='parent assignment has no recorded terminal failure')
+
+def replacement_accepts_only_a_recorded_owned_provider_cancellation():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        chain_identities = {
+            'sol': ('claude', 'sonnet', 'high'),
+            'terra': ('codex', 'gpt-5.6-sol', 'high'),
+            'opus': ('codex', 'gpt-5.6-luna', 'high'),
+            'sonnet': ('agent', 'sonnet', 'high'),
+        }
+        roster = {'seats': [
+            {'seat': seat, 'extra': False, 'adapter': chain_identities[seat][0],
+             'model': chain_identities[seat][1], 'effort': chain_identities[seat][2]}
+            for seat in seats]}
+        (session / 'roster.json').write_text(json.dumps(roster))
+        parent = prepare('10', 'risk', *assign, '--full-seat', 'sonnet')
+        trigger_prompt = session / 'r10-opus.prompt.md'
+        cancelled_prompt = session / 'r10-terra.prompt.md'
+        trigger_prompt.write_text('trigger review\n')
+        cancelled_prompt.write_text('cancelled sibling review\n')
+        assert reserve_launch_bound(session, '10', 'opus', trigger_prompt, '2' * 32).returncode == 0
+        assert record_launch_bound(session, '10', 'opus', trigger_prompt, '3', '2' * 32).returncode == 0
+        (session / 'r10-opus.exit').write_text('3\n')
+        assert reserve_launch_bound(session, '10', 'terra', cancelled_prompt, '3' * 32).returncode == 0
+        assert record_launch_bound(session, '10', 'terra', cancelled_prompt, '130', '3' * 32).returncode == 0
+        (session / 'r10-terra.exit').write_text('130\n')
+        started = 'cli\n33828\nMon Oct 26 21:41:50 2026\n'
+        (session / 'r10-terra.started').write_text(started)
+        child_args = ('--assignment', 'sol=' + parent['assignments']['terra']['bundle'],
+                      '--parent-assignment', '10:terra')
+        call('prepare', session, '10x', '--phase', 'repair', *child_args, good=False,
+             error='parent assignment has no recorded terminal failure')
+        recovery = {
+            'trigger_seat': 'opus',
+            'trigger_exit': 3,
+            'diagnostic': 'provider exited and its sibling was cancelled',
+            'claim': 'controller-owned cancellation',
+            'cancelled_sibling': 'terra',
+            'owned_execution_handle': 33828,
+            'started_identity': started,
+            'cancellation_result': 130,
+            'preserved_valid': 'sol',
+            'source_unchanged': True,
+        }
+        (session / 'r10-provider-recovery.json').write_text(json.dumps(recovery))
+        child = prepare('10x', 'repair', *child_args)
+        assert child['parent_assignment']['seat'] == 'terra'
+        assert list(child['assignments']) == ['sol']
+        recovery['started_identity'] = 'cli\n99999\nchanged start identity\n'
+        (session / 'r10-provider-recovery.json').write_text(json.dumps(recovery))
+        call('prepare', session, '10x2', '--phase', 'repair', *child_args, good=False,
+             error='parent assignment has no recorded terminal failure')
+
+def record_provider_cancellation_binds_the_finished_attempts():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        chain_identities = {
+            'sol': ('claude', 'sonnet', 'high'),
+            'terra': ('codex', 'gpt-5.6-sol', 'high'),
+            'opus': ('codex', 'gpt-5.6-luna', 'high'),
+            'sonnet': ('agent', 'sonnet', 'high'),
+        }
+        roster = {'seats': [
+            {'seat': seat, 'extra': False, 'adapter': chain_identities[seat][0],
+             'model': chain_identities[seat][1], 'effort': chain_identities[seat][2]}
+            for seat in seats]}
+        (session / 'roster.json').write_text(json.dumps(roster))
+        parent = prepare('11', 'risk', *assign, '--full-seat', 'sonnet')
+        trigger_prompt = session / 'r11-opus.prompt.md'
+        cancelled_prompt = session / 'r11-terra.prompt.md'
+        trigger_prompt.write_text('trigger review\n')
+        cancelled_prompt.write_text('cancelled sibling review\n')
+        for seat, prompt, code, token in (('opus', trigger_prompt, '3', '4' * 32),
+                                          ('terra', cancelled_prompt, '130', '5' * 32)):
+            assert reserve_launch_bound(session, '11', seat, prompt, token).returncode == 0
+            assert record_launch_bound(session, '11', seat, prompt, code, token).returncode == 0
+            (session / f'r11-{seat}.exit').write_text(code + '\n')
+        (session / 'r11-terra.started').write_text('cli\n33829\nMon Oct 26 21:42:00 2026\n')
+        attempt = script.parent / 'lib' / 'rev-attempt.py'
+        recorded = subprocess.run([
+            sys.executable, str(attempt), 'record-provider-cancellation', session,
+            '11', 'opus', 'terra', 'task-33829'], capture_output=True, text=True)
+        assert recorded.returncode == 0, recorded.stderr
+        event = json.loads((session / 'r11-terra.provider-recovery.json').read_text())
+        assert event['schema_version'] == 1
+        assert event['trigger_exit'] == 3 and event['cancellation_result'] == 130
+        child = prepare('11x', 'repair', '--assignment', 'sol=' + parent['assignments']['terra']['bundle'],
+                        '--parent-assignment', '11:terra')
+        assert child['parent_assignment']['seat'] == 'terra'
+        event['cancelled_attempt_sha256'] = '0' * 64
+        (session / 'r11-terra.provider-recovery.json').write_text(json.dumps(event))
+        call('prepare', session, '11x2', '--phase', 'repair', '--assignment',
+             'sol=' + parent['assignments']['terra']['bundle'], '--parent-assignment', '11:terra',
+             good=False, error='parent assignment has no recorded terminal failure')
+
 def replacement_chain_reaches_opus():
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
         root_seats = ['codex-luna', 'codex-luna-2', 'codex-luna-3', 'codex-luna-4']
@@ -3664,9 +3787,17 @@ def reserve_launch(session, label, seat, prompt):
     return subprocess.run([sys.executable, str(script.parent / 'lib' / 'rev-attempt.py'), 'reserve',
                            session, label, seat, prompt], capture_output=True, text=True)
 
+def reserve_launch_bound(session, label, seat, prompt, token):
+    return subprocess.run([sys.executable, str(script.parent / 'lib' / 'rev-attempt.py'), 'reserve',
+                           session, label, seat, prompt, token], capture_output=True, text=True)
+
 def record_launch(session, label, seat, prompt, code):
     return subprocess.run([sys.executable, str(script.parent / 'lib' / 'rev-attempt.py'), 'record',
                            session, label, seat, prompt, code], capture_output=True, text=True)
+
+def record_launch_bound(session, label, seat, prompt, code, token):
+    return subprocess.run([sys.executable, str(script.parent / 'lib' / 'rev-attempt.py'), 'record',
+                           session, label, seat, prompt, code, token], capture_output=True, text=True)
 
 def incomplete_proof_is_never_a_valid_result():
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
@@ -4834,6 +4965,9 @@ cases = (
     full_seat_requires_proven_reads, unenforced_agent_seat_binds_only_its_prompt,
     unenforced_audit_is_opt_in, unenforced_audit_cache_is_keyed_on_every_input,
     nested_walks_reuse_cached_audits, replacement_runs_on_another_seat,
+    replacement_accepts_only_durable_provider_exit_3,
+    replacement_accepts_only_a_recorded_owned_provider_cancellation,
+    record_provider_cancellation_binds_the_finished_attempts,
     replacement_chain_reaches_opus,
     incomplete_proof_is_never_a_valid_result, incomplete_proof_is_replaced_at_once,
     semantic_rejection_revokes_sealed_coverage,
@@ -4913,7 +5047,10 @@ groups = {
         nested_walks_reuse_cached_audits,
     ),
     'replacement': (
-        replacement_runs_on_another_seat, replacement_chain_reaches_opus,
+        replacement_runs_on_another_seat, replacement_accepts_only_durable_provider_exit_3,
+        replacement_accepts_only_a_recorded_owned_provider_cancellation,
+        record_provider_cancellation_binds_the_finished_attempts,
+        replacement_chain_reaches_opus,
         incomplete_proof_is_never_a_valid_result,
         incomplete_proof_is_replaced_at_once, incomplete_proof_latches_only_its_label_and_seat,
         hardlinked_incomplete_proof_cannot_verify, hardlinked_incomplete_proof_cannot_seal,
