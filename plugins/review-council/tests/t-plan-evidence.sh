@@ -1387,7 +1387,7 @@ assert clusters[0]['search_pattern'] == r'src/(value|fake)\.ts'
 assert clusters[0]['search_contract'] == {
     'engine':'rg', 'domain':'rg-complete-worktree', 'pattern':r'src/(value|fake)\.ts'}
 assert [(row['path'], row['resolution']) for row in clusters[0]['paths']] == [
-    ('Makefile', 'basename'), ('Makefile', 'basename'),
+    ('Makefile', 'direct'), ('Makefile', 'direct'),
     ('tests/value.test.ts', 'direct'), ('src/value.ts', 'direct')]
 assert [(row['line_start'], row['line_end']) for row in clusters[0]['paths']] == [
     (1, 2), (4, 5), (1, 3), (1, 1)]
