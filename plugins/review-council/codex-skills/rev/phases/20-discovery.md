@@ -386,11 +386,25 @@ configuration. Interrupt only pending sessions. Never cancel a completed valid s
 before its terminal state is preserved, and preserve every partial stream and log for
 diagnosis.
 
+When exit 3 cancels a pending same-provider sibling, first wait for its owned handle to
+finish and for `rev-seat.sh` to record the signal exit. Bind that cancellation before
+preparing any replacement child:
+
+```bash
+python3 "$PLUGIN/scripts/lib/rev-attempt.py" record-provider-cancellation \
+  "$S" "$PANEL_LABEL" "$FAILED_SEAT" "$CANCELLED_SEAT" "$HANDLE"
+```
+
+Record one event for each cancelled sibling. The command requires the trigger's completed
+exit 3, the sibling's recorded signal exit and start marker, and the same enforced
+provider adapter. It binds both attempt records and prompt identities. Exit 4 keeps its
+quota-fallback path and never uses a replacement child.
+
 Exit 7 is local attempt exhaustion, not provider quota. Preserve valid siblings and finish the missing assignment yourself without another repair child.
 
 Retain each completed valid result; a result whose `summary` begins `INCOMPLETE PROOF` is never one. Triage valid results as they arrive, but do not edit until the receipt seals. Continue each failed assignment through the configured eligible replacement chain until valid proof exists or no eligible seat remains. There is no panel-wide cap; each attempt uses a unique child label bound to the immediately failed parent, preserving lineage to the original assignment.
 
-Use `rev-workhorse.py escalate` after each terminal failure to select the next replacement executor. It applies a matching per-review override, or uses the next available family on the host's normal enforced chain. A nonzero exit means no eligible family remains or an explicit override is unavailable; do not silently fall through an unavailable override. When the default chain is exhausted at Opus without a valid result, finish that assignment yourself in the spirit of its lens. When the JSON says `"existing": false`, repair preparation reads `$S/escalation.json`. Each parent must have a recorded terminal failure: its archived `r<N>-<seat>.audit-invalid.json`, exit-0 `INCOMPLETE PROOF` result, or an exact retry that also exited 1 or 2.
+Use `rev-workhorse.py escalate` after each terminal failure to select the next replacement executor. It applies a matching per-review override, or uses the next available family on the host's normal enforced chain. A nonzero exit means no eligible family remains or an explicit override is unavailable; do not silently fall through an unavailable override. When the default chain is exhausted at Opus without a valid result, finish that assignment yourself in the spirit of its lens. When the JSON says `"existing": false`, repair preparation reads `$S/escalation.json`. Each parent must have a recorded terminal failure: its archived `r<N>-<seat>.audit-invalid.json`, exit-0 `INCOMPLETE PROOF` result, an exact retry that also exited 1 or 2, a completed exit 3, or a same-provider cancellation bound by `record-provider-cancellation`.
 
 Choose `<N>x` for the first child and unique suffixes such as `<N>x2` and `<N>x3` for later children across all assignment chains in the panel. For each retry, set `PARENT_LABEL` to the most recently failed manifest and `FAILED_SEAT` to its failed assignment. Prepare each child with:
 

@@ -1,6 +1,6 @@
 {
   "name": "review-council",
-  "version": "0.8.14",
+  "version": "0.8.15",
   "description": "Independent multi-model reviews with verified findings, fix loops, and coordinated reviews across repositories.",
   "author": {
     "name": "Wiktor Starczewski"
