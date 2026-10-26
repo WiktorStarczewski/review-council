@@ -2343,6 +2343,12 @@ assert [(row['path'], row['line_start'], row['resolution']) for row in root_path
     ('package.json', 89, 'direct'),
     ('package.json', 90, 'direct'),
 ], root_paths
+quoted_root_paths = module.plan_field_paths(
+    '`./package.json:91`, `./src/nested value.ts:92`', entries)
+assert [(row['path'], row['line_start'], row['resolution']) for row in quoted_root_paths] == [
+    ('package.json', 91, 'direct'),
+    ('src/nested value.ts', 92, 'direct'),
+], quoted_root_paths
 try:
     module.plan_field_paths('prefixsrc/value.ts.generated.extra', entries)
 except ValueError as error:
@@ -2359,6 +2365,7 @@ bad_fields = {
     'path escape': '../src/value.ts:1',
     'root-relative parent escape': './../src/value.ts:1',
     'in-path parent escape': 'src/../src/value.ts:1',
+    'quoted parent escape': '`../src/value.ts:1`',
     'root path followed by escape': './package.json:89, ../src/value.ts:1',
     'ambiguous basename': 'shared.test.ts:1',
 }
