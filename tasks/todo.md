@@ -1285,3 +1285,14 @@ Expected-red run `40327587192` on test-only SHA `c2adf015d1ca119e6fbe963b1f44b0f
 Expected-red run `40332170227` on test-only SHA `99d9abbce1f1f8f3a1c3665a470661d9b0b32ad9` passed proof preparation; package run `40332170476` passed on the same SHA. Ubuntu and macOS each passed 5,177 assertions and failed 56 across 15 test tasks. Compared with `40327587192`, the only six additional failure labels cover unresolved Agent progression, atomic first-record cancellation/retry, and status snapshot consistency; both platform failure lists match. Complete diagnostics are saved under `/tmp/council-40332170227`.
 
 The completed Agent transcript regression is isolated in test-only commit `c8772c6`; Cursor package run `40335594237` passed on its exact SHA. Expected-red run `40335594238` passed proof preparation; Ubuntu and macOS each passed 5,177 assertions and failed 56 across 15 tasks. Each platform added only the intended terminal-Agent-transcript failure while removing the prior Agent launch-result label. The production correction is committed separately as `f9baa41`; its independent normal review is clean. Final gate run `40340748712` at `5256c1e` passed package and proof preparation; Ubuntu passed 5,230 assertions and failed three test assertions. Two status expectations used the full `codex-sol` name while the status formatter emits `sol`; PR progression was given `p.md` instead of the required canonical round-seat prompt. The production cancellation lifecycle assertions passed. The test fixtures are corrected locally; macOS is still running on the previous SHA.
+
+## Review Council issue #77 exit-3 recovery
+
+- [x] Verify 0.8.14 release, reopen #77, and reproduce the exit-3 refusal.
+- [x] Add focused regression cases for exit 3, exit 4, and controller-recorded same-provider cancellation.
+- [ ] Complete attempt-record validation, event recording, workflow docs, and normal internal review.
+- [ ] Send the exact candidate identity and safe-boundary install instructions to the release owner.
+- [ ] Run exact-head CI and prepare the 0.8.15 release candidate.
+- [ ] Measure fresh post-0.8.6 first-attempt Luna audit failure rate; keep #77 open until below 5%.
+
+Review: pending.

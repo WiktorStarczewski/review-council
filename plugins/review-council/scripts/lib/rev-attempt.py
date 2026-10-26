@@ -17,6 +17,8 @@ from session_inputs import session_input_lock
 
 TERMINAL_EXITS = ('1', '2')
 RECORDED_EXITS = ('0', '1', '2', '3', '4', '7', '129', '130', '143')
+PROVIDER_FAILURE_EXITS = ('3',)
+PROVIDER_CANCELLATION_EXITS = ('129', '130', '143')
 
 
 def safe_regular(path):
@@ -225,21 +227,206 @@ def ended_by_incomplete_proof(session: Path, panel: str, seat: str, prompt: Path
                 and incomplete_proof(session / f'r{panel}-{seat}.json')))
 
 
+def completed_attempt(session: Path, panel: str, seat: str, prompt: Path):
+    try:
+        path, identity = record_path(session, panel, seat, prompt)
+        raw = private_bytes(path)
+        current = json.loads(raw)
+        final = private_bytes(session / f'r{panel}-{seat}.exit').strip().decode('ascii')
+    except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        return None
+    calls = current.get('calls') if isinstance(current, dict) else None
+    launches = current.get('launches') if isinstance(current, dict) else None
+    token = current.get('last_launch') if isinstance(current, dict) else None
+    if (any(current.get(key) != value for key, value in identity.items())
+            or current.get('lifecycle_version') != 2
+            or type(calls) is not int or calls < 1
+            or type(current.get('completed_calls')) is not int or current['completed_calls'] != calls
+            or current.get('active_launch') is not None
+            or current.get('terminal_intent') is not None
+            or not isinstance(launches, list) or len(launches) != calls
+            or any(type(code) is not int or str(code) not in RECORDED_EXITS for code in launches)
+            or str(launches[-1]) != final or final not in RECORDED_EXITS
+            or not isinstance(token, str) or len(token) != 32
+            or not set(token) <= set('0123456789abcdef')):
+        return None
+    return {'exit': final, 'path': path, 'raw': raw, 'record': current,
+            'sha256': hashlib.sha256(raw).hexdigest()}
+
+
+def roster_adapter(session: Path, seat: str):
+    try:
+        roster = json.loads(private_bytes(session / 'roster.json'))
+    except (OSError, ValueError, json.JSONDecodeError, RecursionError):
+        return None
+    rows = roster.get('seats') if isinstance(roster, dict) else None
+    matches = [row for row in rows if isinstance(row, dict) and row.get('seat') == seat] \
+        if isinstance(rows, list) else []
+    if len(matches) != 1:
+        return None
+    adapter = matches[0].get('adapter')
+    return adapter if adapter in ('codex', 'claude', 'gemini') else None
+
+
+def recovery_record(session: Path, panel: str, seat: str):
+    current_path = session / f'r{panel}-{seat}.provider-recovery.json'
+    try:
+        return json.loads(private_bytes(current_path)), current_path
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError, json.JSONDecodeError, RecursionError):
+        return None, current_path
+    legacy_path = session / f'r{panel}-provider-recovery.json'
+    try:
+        return json.loads(private_bytes(legacy_path)), legacy_path
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None, legacy_path
+
+
+def provider_cancellation(session: Path, panel: str, seat: str, cancelled: dict) -> bool:
+    record, path = recovery_record(session, panel, seat)
+    if not isinstance(record, dict):
+        return False
+    trigger_seat = record.get('trigger_seat')
+    cancelled_seat = record.get('cancelled_seat', record.get('cancelled_sibling'))
+    trigger_exit = record.get('trigger_exit')
+    cancellation_exit = record.get('cancellation_result')
+    started = session / f'r{panel}-{seat}.started'
+    try:
+        started_identity = private_bytes(started).decode('utf-8')
+    except (OSError, UnicodeDecodeError, ValueError):
+        return False
+    if (cancelled_seat != seat or trigger_exit != 3
+            or str(cancellation_exit) != cancelled['exit']
+            or cancellation_exit not in (129, 130, 143)
+            or record.get('started_identity') != started_identity
+            or roster_adapter(session, trigger_seat) is None
+            or roster_adapter(session, trigger_seat) != roster_adapter(session, seat)):
+        return False
+    trigger_prompt = session / f'r{panel}-{trigger_seat}.prompt.md'
+    trigger = completed_attempt(session, panel, trigger_seat, trigger_prompt)
+    if trigger is None or trigger['exit'] != '3':
+        return False
+    if type(record.get('schema_version')) is int and record['schema_version'] == 1:
+        expected = {'schema_version', 'panel', 'trigger_seat', 'trigger_exit',
+                    'trigger_prompt_sha256', 'trigger_attempt_sha256', 'cancelled_seat',
+                    'cancellation_result', 'cancelled_prompt_sha256',
+                    'cancelled_attempt_sha256', 'started_identity', 'execution_handle'}
+        if (set(record) != expected or record.get('panel') != panel
+                or record.get('trigger_prompt_sha256') != record_path(
+                    session, panel, trigger_seat, trigger_prompt)[1]['prompt_sha256']
+                or record.get('trigger_attempt_sha256') != trigger['sha256']
+                or record.get('cancelled_prompt_sha256') != cancelled['record']['prompt_sha256']
+                or record.get('cancelled_attempt_sha256') != cancelled['sha256']
+                or not isinstance(record.get('execution_handle'), str)
+                or not record['execution_handle'].strip()):
+            return False
+    else:
+        expected = {'trigger_seat', 'trigger_exit', 'diagnostic', 'claim',
+                    'cancelled_sibling', 'owned_execution_handle', 'started_identity',
+                    'cancellation_result', 'preserved_valid', 'source_unchanged'}
+        if (path.name != f'r{panel}-provider-recovery.json' or set(record) != expected
+                or type(record.get('trigger_exit')) is not int
+                or type(record.get('owned_execution_handle')) is not int
+                or record['owned_execution_handle'] <= 0
+                or record.get('source_unchanged') is not True
+                or any(not isinstance(record.get(key), str) or not record[key].strip()
+                       for key in ('diagnostic', 'claim', 'preserved_valid'))):
+            return False
+    return True
+
+
 def terminal_failure(session: Path, panel: str, seat: str, prompt: Path) -> bool:
-    """The assignment failed for good: a hard audit, a completed launch's incomplete proof, or its one
-    exact retry also exited 1 or 2."""
+    """The assignment failed for good under a recorded audit, provider, or retry outcome."""
     if (semantic_rejection(session, panel, seat) is not None
             or latched(session, panel, seat) or ended_by_incomplete_proof(session, panel, seat, prompt)):
         return True
+    attempt = completed_attempt(session, panel, seat, prompt)
+    if attempt is not None:
+        if attempt['exit'] in PROVIDER_FAILURE_EXITS:
+            return True
+        if attempt['exit'] in PROVIDER_CANCELLATION_EXITS:
+            return provider_cancellation(session, panel, seat, attempt)
     exit_path = session / f'r{panel}-{seat}.exit'
     try:
         path, _ = record_path(session, panel, seat, prompt)
-        launches = json.loads(path.read_text(encoding='utf-8')).get('launches') if safe_regular(path) else None
-        final = exit_path.read_text(encoding='utf-8').strip() if safe_regular(exit_path) else None
-    except (OSError, ValueError):
+        current = json.loads(private_bytes(path)) if safe_regular(path) else None
+        launches = current.get('launches') if isinstance(current, dict) else None
+        final = private_bytes(exit_path).strip().decode('ascii')
+    except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
         return False
     return (isinstance(launches, list) and len(launches) >= 2
-            and all(str(code) in TERMINAL_EXITS for code in launches[-2:]) and final in TERMINAL_EXITS)
+            and all(str(code) in TERMINAL_EXITS for code in launches[-2:])
+            and final in TERMINAL_EXITS)
+
+
+def record_provider_cancellation(session: Path, panel: str, trigger_seat: str,
+                                 cancelled_seat: str, execution_handle: str):
+    safe = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-')
+    if (not panel or not trigger_seat or not cancelled_seat
+            or any(not value or not set(value) <= safe
+                   for value in (panel, trigger_seat, cancelled_seat))
+            or trigger_seat == cancelled_seat or not execution_handle.strip()):
+        return 1
+    directory = session / 'attempts'
+    directory.mkdir(mode=0o700, exist_ok=True)
+    metadata = directory.lstat()
+    if directory.is_symlink() or not stat.S_ISDIR(metadata.st_mode) \
+            or directory.resolve().parent != session:
+        return 1
+    panel_key = hashlib.sha256(panel.encode()).hexdigest()
+    try:
+        panel_descriptor, _ = open_private(directory / ('.panel-' + panel_key + '.lock'))
+    except (OSError, ValueError):
+        return 1
+    with os.fdopen(panel_descriptor, 'r+', encoding='utf-8') as panel_lock:
+        fcntl.flock(panel_lock, fcntl.LOCK_EX)
+        trigger_prompt = session / f'r{panel}-{trigger_seat}.prompt.md'
+        cancelled_prompt = session / f'r{panel}-{cancelled_seat}.prompt.md'
+        trigger = completed_attempt(session, panel, trigger_seat, trigger_prompt)
+        cancelled = completed_attempt(session, panel, cancelled_seat, cancelled_prompt)
+        if (trigger is None or trigger['exit'] != '3' or cancelled is None
+                or cancelled['exit'] not in PROVIDER_CANCELLATION_EXITS
+                or roster_adapter(session, trigger_seat) is None
+                or roster_adapter(session, trigger_seat) != roster_adapter(session, cancelled_seat)):
+            return 1
+        try:
+            started_identity = private_bytes(
+                session / f'r{panel}-{cancelled_seat}.started').decode('utf-8')
+        except (OSError, UnicodeDecodeError, ValueError):
+            return 1
+        trigger_identity = record_path(session, panel, trigger_seat, trigger_prompt)[1]
+        event = {
+            'schema_version': 1,
+            'panel': panel,
+            'trigger_seat': trigger_seat,
+            'trigger_exit': 3,
+            'trigger_prompt_sha256': trigger_identity['prompt_sha256'],
+            'trigger_attempt_sha256': trigger['sha256'],
+            'cancelled_seat': cancelled_seat,
+            'cancellation_result': int(cancelled['exit']),
+            'cancelled_prompt_sha256': cancelled['record']['prompt_sha256'],
+            'cancelled_attempt_sha256': cancelled['sha256'],
+            'started_identity': started_identity,
+            'execution_handle': execution_handle,
+        }
+        path = session / f'r{panel}-{cancelled_seat}.provider-recovery.json'
+        descriptor, temporary = tempfile.mkstemp(prefix='.provider-recovery-', dir=session)
+        try:
+            with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+                json.dump(event, stream, sort_keys=True, separators=(',', ':'))
+                stream.write('\n')
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.link(temporary, path)
+        except FileExistsError:
+            return 1
+        finally:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+    return 0
 
 
 def open_private(path):
@@ -366,6 +553,10 @@ def recover_completion(session, panel, seat, prompt):
 
 def main():
     command = sys.argv[1] if len(sys.argv) > 1 else None
+    if command == 'record-provider-cancellation' and len(sys.argv) == 7:
+        session = Path(sys.argv[2]).resolve()
+        with session_input_lock(session):
+            return record_provider_cancellation(session, *sys.argv[3:])
     if (command, len(sys.argv)) not in (('check', 6), ('reserve', 6), ('reserve', 7), ('record', 7), ('record', 8), ('complete', 8)):
         return 1
     token = sys.argv[-1] if (command, len(sys.argv)) in (('reserve', 7), ('record', 8), ('complete', 8)) else None
