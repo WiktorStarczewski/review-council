@@ -86,6 +86,24 @@ test_seat_codex_instructions_required() {
   )
 }
 
+test_seat_codex_prepared_proof_batches_respect_output_ceiling() {
+  python3 - "$SCRIPTS/lib/codex-proof-stages.py" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location('codex_proof_stages', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+chunks = ['patch chunk 1', 'patch chunk 2']
+visible_bytes = {chunk: 24_500 for chunk in chunks}
+stages = module.grouped(chunks, 2, lambda chunk: visible_bytes[chunk])
+assert stages == [[chunks[0]], [chunks[1]]], stages
+assert all(sum(visible_bytes[chunk] for chunk in stage) <= module.OUTPUT_BYTES
+           for stage in stages), stages
+PY
+  assert_eq "prepared evidence batches stay within the validated turn output ceiling" "$?" 0
+}
+
 test_seat_codex_stages_prepared_evidence() {
   local _path="$PATH"; seat_env
   local S="$T/seat-codex-stages" calls
