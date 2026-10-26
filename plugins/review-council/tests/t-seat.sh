@@ -1153,7 +1153,7 @@ PY
 }
 test_seat_signals_close_attempt_lifecycle() {
   local _path="$PATH"; seat_env
-  local real_python python_bin pid rc i S="$T/seat-complete-signal"
+  local real_python python_bin pid pgid rc i S="$T/seat-complete-signal"
   seat_roster "$S"; seat_codex_prompt "$S/p.md"
   real_python=$(PATH="$_path" command -v python3)
   python_bin="$T/complete-signal-python"; seat_write_signal_gate "$python_bin"
@@ -1230,6 +1230,49 @@ assert (len(records) == 1 and records[0].get('active_launch') is None
 PY
     assert_eq "reservation token closes after a catchable signal" "$?" 0
   fi
+
+  S="$T/seat-reserve-group-signal"; seat_roster "$S"; seat_codex_prompt "$S/p.md"
+  python_bin="$T/reserve-group-signal-python"; seat_write_signal_gate "$python_bin"
+  : > "$T/reserve-group-signal-calls"
+  set -m
+  env PATH="$python_bin:$PATH" REAL_PYTHON="$real_python" \
+    SIGNAL_ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" SIGNAL_GATE_OPERATION=reserve \
+    SIGNAL_GATE_READY="$T/reserve-group-signal.ready" SIGNAL_GATE_RELEASE="$T/reserve-group-signal.release" \
+    SHIM_MODE=ok SHIM_CALLS_FILE="$T/reserve-group-signal-calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" reserve-group "$S/p.md" \
+    > "$T/reserve-group-signal.out" 2>&1 &
+  pid=$!; i=0
+  while [ ! -e "$T/reserve-group-signal.ready" ] && kill -0 "$pid" 2>/dev/null && [ "$i" -lt 250 ]; do
+    sleep 0.02; i=$((i + 1))
+  done
+  if [ ! -e "$T/reserve-group-signal.ready" ]; then
+    fail "group cancellation test reaches the persisted launch token" "wrapper exited before reservation was gated"
+    : > "$T/reserve-group-signal.release"
+    kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  else
+    pgid=$(ps -o pgid= -p "$pid" | tr -d ' ')
+    assert_eq "reservation test owns an isolated process group" "$pgid" "$pid"
+    kill -TERM "-$pgid" 2>/dev/null || true
+    wait "$pid"; rc=$?
+    assert_eq "group cancellation preserves the wrapper signal exit" "$rc" 143
+    assert_grep "group cancellation publishes its reserved exit" "$S/rreserve-group-codex-sol.exit" '^143$'
+    assert_eq "group cancellation never launches the provider" \
+      "$(wc -l < "$T/reserve-group-signal-calls" | tr -d ' ')" 0
+    python3 - "$S" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+records = [json.loads(path.read_text()) for path in (Path(sys.argv[1]) / 'attempts').glob('*.json')]
+assert (len(records) == 1 and records[0].get('active_launch') is None
+        and records[0].get('completed_calls') == records[0].get('calls')
+        and records[0].get('launches') == [143]
+        and records[0].get('terminal_intent') is None), records
+PY
+    assert_eq "group cancellation closes its persisted reservation" "$?" 0
+  fi
+  set +m
   seat_env_reset "$_path"
 }
 
