@@ -72,6 +72,28 @@ case "${SHIM_MODE:-ok}" in
     printf '%s\n' '{"type":"turn.completed"}'
     exit 0
     ;;
+  multi-call)
+    printf '%s\n' '{"type":"thread.started","thread_id":"fixture-thread"}' '{"type":"turn.started"}'
+    if [ "$OUTPUT_SCHEMA" = review-turn.schema.json ]; then
+      commands=("git status --short" "git diff --stat" "pwd" \
+        "git branch --show-current" "git rev-parse --short HEAD")
+      count=${SHIM_REVIEW_CALLS:-5}
+      case "$count" in ''|*[!0-9]*) echo "invalid SHIM_REVIEW_CALLS: $count" >&2; exit 1;; esac
+      [ "$count" -le "${#commands[@]}" ] || { echo "too many fixture calls: $count" >&2; exit 1; }
+      for ((index=1; index<=count; index++)); do
+        command=${commands[index-1]}
+        printf '{"type":"item.started","item":{"id":"multi-%d","type":"command_execution","command":"%s"}}\n' \
+          "$index" "$command"
+        printf '{"type":"item.completed","item":{"id":"multi-%d","type":"command_execution","command":"%s","aggregated_output":"call-%d\\n","exit_code":0}}\n' \
+          "$index" "$command" "$index"
+      done
+      printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT"
+    else
+      fixture_output "$SHIM_FIXTURE_DIR/findings-valid.json"
+    fi
+    printf '%s\n' '{"type":"turn.completed"}'
+    exit 0
+    ;;
   native)     cat "$SHIM_FIXTURE_DIR/codex-stream.ndjson"; fixture_output "$SHIM_FIXTURE_DIR/codex-review-native.txt"; exit 0;;
   native_bad) cat "$SHIM_FIXTURE_DIR/codex-stream.ndjson"; fixture_output "$SHIM_FIXTURE_DIR/codex-review-native-bad.txt"; exit 0;;
   resumable-no-manifest)
