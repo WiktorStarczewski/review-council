@@ -2310,7 +2310,7 @@ PY
   )
 }
 
-test_plan_location_domain() {
+test_evidence_semantic_rejection_plan_location_domain() {
   python3 - "$SCRIPTS/rev-evidence.py" <<'PY'
 import importlib.util, sys
 
@@ -2319,6 +2319,7 @@ module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 entries = {
     'README.md', 'src/value.ts', 'src/value.ts.generated',
     'src/nested value.ts', 'src/uber value.ts', 'src/über value.ts',
+    'package.json', 'apps/web/package.json',
     'tests/unique.test.ts', 'one/shared.test.ts', 'two/shared.test.ts',
 }
 raw = b'''## C-01 - canonical locations
@@ -2337,6 +2338,11 @@ assert [(row['path'], row['line_start'], row['line_end'], row['resolution']) for
     ('README.md', 1, 1, 'basename'),
     ('src/uber value.ts', 5, 6, 'direct'),
 ], rows
+root_paths = module.plan_field_paths('./package.json:89, package.json:90', entries)
+assert [(row['path'], row['line_start'], row['resolution']) for row in root_paths] == [
+    ('package.json', 89, 'direct'),
+    ('package.json', 90, 'direct'),
+], root_paths
 try:
     module.plan_field_paths('prefixsrc/value.ts.generated.extra', entries)
 except ValueError as error:
