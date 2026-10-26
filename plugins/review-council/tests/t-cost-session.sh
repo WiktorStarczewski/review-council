@@ -165,6 +165,7 @@ def sleep(seconds):
         (session/'state.json').write_text(json.dumps(state))
 def run_status(args, **kwargs):
     if args and isinstance(args, (list, tuple)) and args[0] == 'ps':
+        assert list(args) == ['ps', '-p', str(pid), '-o', 'lstart='], args
         return subprocess.CompletedProcess(args, 0, started + '\n', '')
     if state['phase'] == 'done':
         status = 'Council is in done; live finding: pair validation is skipped'
