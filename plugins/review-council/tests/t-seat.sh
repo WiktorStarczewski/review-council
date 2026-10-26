@@ -1432,9 +1432,10 @@ except ValueError as error:
 else:
     raise AssertionError('active Agent launch was treated as idle')
 (session / 'r1-opus.exit').write_text('143\n', encoding='utf-8')
+(session / 'r1-opus.stream.ndjson').write_text('{"type":"agent transcript"}\n', encoding='utf-8')
 module.pr_progress_idle(session)
 PY
-  assert_eq "PR progression waits for an Agent launch result" "$?" 0
+  assert_eq "PR progression waits for an Agent launch and accepts its terminal transcript" "$?" 0
   set +m
   seat_env_reset "$_path"
 }
