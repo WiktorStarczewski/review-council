@@ -15,6 +15,24 @@ seat_codex_prompt() {
     'use at most 4 repository tool calls before stopping this assignment.' \
     'review the diff' > "$1"
 }
+seat_write_signal_gate() {
+  local bin=$1
+  mkdir -p "$bin"
+  cat > "$bin/python3" <<'SH'
+#!/bin/bash
+if [ "$1" = "$SIGNAL_ATTEMPT_HELPER" ] && [ "$2" = "$SIGNAL_GATE_OPERATION" ]; then
+  "$REAL_PYTHON" "$@"
+  gate_rc=$?
+  if [ "$gate_rc" -eq 0 ] && { [ "$2" = reserve ] || [ "$7" = 0 ]; }; then
+    : > "$SIGNAL_GATE_READY"
+    while [ ! -e "$SIGNAL_GATE_RELEASE" ]; do sleep 0.02; done
+  fi
+  exit "$gate_rc"
+fi
+exec "$REAL_PYTHON" "$@"
+SH
+  chmod +x "$bin/python3"
+}
 seat_roster() {  # seat_roster <session-dir> - the roster.json rev-preflight.sh leaves in the session dir.
   # Written by hand on purpose: these tests exercise rev-seat.sh's dispatch, not roster.sh's detection.
   mkdir -p "$1"
@@ -278,6 +296,7 @@ for args in (first_review_args, next_review_args, required_review_args, ready_re
     assert 'sandbox_mode="read-only"' in args, args
 assert 'Review this prepared assignment' in first_review_prompt, first_review_prompt
 assert 'already been read in earlier explicit turns' in first_review_prompt, first_review_prompt
+assert 'at most two command_execution calls total' in first_review_prompt, first_review_prompt
 assert 'Next evidence question:' in next_review_prompt and 'src/two.ts' in next_review_prompt, next_review_prompt
 required_review_prompt = (root / 'calls' / 'call-10.stdin').read_text(encoding='utf-8')
 assert 'Next evidence question:' in required_review_prompt and 'src/three.ts' in required_review_prompt, required_review_prompt
@@ -1130,6 +1149,87 @@ PY
   local status_line; status_line=$("$SCRIPTS/rev-status.sh" "$S")
   assert_grep "cancelled seat is no longer reported as running" \
     <(printf '%s\n' "$status_line") 'codex-sol: failed exit=143'
+  seat_env_reset "$_path"
+}
+test_seat_signals_close_attempt_lifecycle() {
+  local _path="$PATH"; seat_env
+  local real_python python_bin pid rc i S="$T/seat-complete-signal"
+  seat_roster "$S"; seat_codex_prompt "$S/p.md"
+  real_python=$(PATH="$_path" command -v python3)
+  python_bin="$T/complete-signal-python"; seat_write_signal_gate "$python_bin"
+  env PATH="$python_bin:$PATH" REAL_PYTHON="$real_python" \
+    SIGNAL_ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" SIGNAL_GATE_OPERATION=complete \
+    SIGNAL_GATE_READY="$T/complete.ready" SIGNAL_GATE_RELEASE="$T/complete.release" \
+    SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" complete "$S/p.md" \
+    > "$T/complete-signal.out" 2>&1 &
+  pid=$!; i=0
+  while [ ! -e "$T/complete.ready" ] && kill -0 "$pid" 2>/dev/null && [ "$i" -lt 250 ]; do
+    sleep 0.02; i=$((i + 1))
+  done
+  if [ ! -e "$T/complete.ready" ]; then
+    fail "completion test reaches the persisted success intent" "wrapper exited before completion was gated"
+    : > "$T/complete.release"
+    kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  else
+    kill -TERM "$pid" 2>/dev/null || true
+    : > "$T/complete.release"
+    wait "$pid"; rc=$?
+    assert_eq "a signal after success intent preserves the successful exit" "$rc" 0
+    assert_grep "completion keeps its successful exit" "$S/rcomplete-codex-sol.exit" '^0$'
+    python3 - "$S" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+records = [json.loads(path.read_text()) for path in (Path(sys.argv[1]) / 'attempts').glob('*.json')]
+assert (len(records) == 1 and records[0].get('active_launch') is None
+        and records[0].get('completed_calls') == records[0].get('calls')
+        and records[0].get('launches') == [0]
+        and records[0].get('terminal_intent') is None), records
+PY
+    assert_eq "success intent is recorded once after a catchable signal" "$?" 0
+  fi
+
+  S="$T/seat-reserve-signal"; seat_roster "$S"; seat_codex_prompt "$S/p.md"
+  python_bin="$T/reserve-signal-python"; seat_write_signal_gate "$python_bin"
+  : > "$T/reserve-signal-calls"
+  env PATH="$python_bin:$PATH" REAL_PYTHON="$real_python" \
+    SIGNAL_ATTEMPT_HELPER="$SCRIPTS/lib/rev-attempt.py" SIGNAL_GATE_OPERATION=reserve \
+    SIGNAL_GATE_READY="$T/reserve-signal.ready" SIGNAL_GATE_RELEASE="$T/reserve-signal.release" \
+    SHIM_MODE=ok SHIM_CALLS_FILE="$T/reserve-signal-calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" reserve "$S/p.md" \
+    > "$T/reserve-signal.out" 2>&1 &
+  pid=$!; i=0
+  while [ ! -e "$T/reserve-signal.ready" ] && kill -0 "$pid" 2>/dev/null && [ "$i" -lt 250 ]; do
+    sleep 0.02; i=$((i + 1))
+  done
+  if [ ! -e "$T/reserve-signal.ready" ]; then
+    fail "reserve test reaches the persisted launch token" "wrapper exited before reservation was gated"
+    : > "$T/reserve-signal.release"
+    kill -TERM "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  else
+    kill -TERM "$pid" 2>/dev/null || true
+    : > "$T/reserve-signal.release"
+    wait "$pid"; rc=$?
+    assert_eq "a signal after reservation records cancellation" "$rc" 143
+    assert_grep "a signalled reservation publishes its exit" "$S/rreserve-codex-sol.exit" '^143$'
+    assert_eq "a signalled reservation never launches the provider" \
+      "$(wc -l < "$T/reserve-signal-calls" | tr -d ' ')" 0
+    python3 - "$S" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+records = [json.loads(path.read_text()) for path in (Path(sys.argv[1]) / 'attempts').glob('*.json')]
+assert (len(records) == 1 and records[0].get('active_launch') is None
+        and records[0].get('completed_calls') == records[0].get('calls')
+        and records[0].get('launches') == [143]
+        and records[0].get('terminal_intent') is None), records
+PY
+    assert_eq "reservation token closes after a catchable signal" "$?" 0
+  fi
   seat_env_reset "$_path"
 }
 

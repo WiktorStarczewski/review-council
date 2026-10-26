@@ -252,6 +252,7 @@ t-seat.sh::test_seat_incomplete_proof_refuses_a_relaunch	1	normal
 t-seat.sh::test_seat_process_group_cancellation_preserves_partial_stream	4	exclusive
 t-seat.sh::test_seat_rejects_retired_grok_adapter	1	normal
 t-seat.sh::test_seat_scope_env_selects_root_outside_repository	1	normal
+t-seat.sh::test_seat_signals_close_attempt_lifecycle	2	exclusive
 t-seat.sh::test_seat_zero_tool_incomplete_proof_keeps_its_retry	1	normal
 t-seat2.sh::test_seat_classify_exec	1	normal
 t-skill.sh::test_skill_contract	1	normal
