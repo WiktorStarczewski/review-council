@@ -389,7 +389,7 @@ each launches through `rev-seat.sh` - and one `Agent` call per seat whose adapte
 agent row by its roster model: `sonnet` uses `rev-reviewer-sonnet`; `opus` and padded
 `claude-1`, `claude-2`, ... rows use `rev-reviewer`.
 
-Before every initial or same-label retry launch, synchronously remove `$S/r$PANEL_LABEL-$SEAT.exit` and confirm it is absent before starting the reviewer process. Perform this host-side step before dispatch so collection cannot observe an exit from an earlier launch.
+Before every initial or same-label retry launch, synchronously remove `$S/r$PANEL_LABEL-$SEAT.exit` and confirm it is absent before dispatch so collection cannot observe an exit from an earlier launch. `rev-seat.sh` clears any old `.started` marker only after the attempt reservation succeeds, then writes `cli`, the wrapper PID, and its process start identity immediately before calling the provider. For an Agent seat, remove stale `.exit` and `.started` files before dispatch; after storing the returned task ID in the pending-seat handle map, write `.started` as `agent` followed by that exact task ID.
 
 ```
 Bash: ${CLAUDE_PLUGIN_ROOT}/scripts/rev-seat.sh <seat> $S <N> $S/r<N>-<seat>.prompt.md   (run_in_background)

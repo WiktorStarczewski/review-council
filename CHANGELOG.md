@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.8.12
+
+- Keep reviewer seats pending until launch evidence exists, report dead CLI launches as interrupted, and close reservations after catchable cancellation.
+- Publish first attempt records atomically, pair launch status with its marker timestamp, and wait for Agent launch exits before PR progression.
+- Bind Codex command IDs to explicit turns, clarify per-turn call and aggregate read limits, and guide narrow source searches.
 - Skip shell-only plan evidence reconstruction for native hooks and bound contract replay concurrency to its selected worker limit.
 - Register numbered fresh plan generations and bind replacement children to their exact root, with the newest generation required by the fix gate.
 - Recover token-bound terminal completion records before a permitted exact reviewer retry.

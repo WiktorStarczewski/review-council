@@ -16,6 +16,7 @@ if str(LIB_DIR) not in sys.path:
 from session_inputs import session_input_lock
 
 TERMINAL_EXITS = ('1', '2')
+RECORDED_EXITS = ('0', '1', '2', '3', '4', '7', '129', '130', '143')
 
 
 def safe_regular(path):
@@ -256,6 +257,16 @@ def open_private(path):
     return descriptor, created
 
 
+def open_existing_private(path):
+    descriptor = os.open(path, os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0)
+                         | getattr(os, 'O_NONBLOCK', 0))
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        os.close(descriptor)
+        raise ValueError('attempt state is not a private regular file')
+    return descriptor
+
+
 def write_attempt(path, current):
     # The session and panel locks serialize writers across atomic inode replacement.
     descriptor, temporary = tempfile.mkstemp(prefix='.attempt-', dir=path.parent)
@@ -269,6 +280,27 @@ def write_attempt(path, current):
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def publish_new_attempt(path, current):
+    descriptor, temporary = tempfile.mkstemp(prefix='.attempt-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+            json.dump(current, stream, sort_keys=True, separators=(',', ':'))
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        # The caller holds the panel lock, so no reservation can race this absent-path check.
+        if os.path.lexists(path):
+            raise FileExistsError(f'attempt state already exists: {path.name}')
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
 
 
 def archive_stream(session, panel, seat):
@@ -295,19 +327,6 @@ def restore_stream(archived, raw):
     os.replace(archived, raw)
 
 
-def discard_new_attempt(path, stream, created):
-    if not created:
-        return
-    opened = os.fstat(stream.fileno())
-    try:
-        current = path.lstat()
-    except FileNotFoundError:
-        return
-    if (stat.S_ISREG(current.st_mode) and current.st_nlink == 1 and current.st_size == 0
-            and (current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino)):
-        path.unlink()
-
-
 def recover_completion(session, panel, seat, prompt):
     path, identity = record_path(session, panel, seat, prompt)
     if not path.exists():
@@ -332,7 +351,7 @@ def recover_completion(session, panel, seat, prompt):
                 or type(current.get('completed_calls')) is not int
                 or not 0 <= current['completed_calls'] < calls
                 or type(intent['calls']) is not int or intent['calls'] != calls
-                or type(intent['exit']) is not int or intent['exit'] not in (0, 1, 2, 3, 4, 7)
+                or type(intent['exit']) is not int or str(intent['exit']) not in RECORDED_EXITS
                 or not isinstance(intent['token'], str) or len(intent['token']) != 32
                 or not set(intent['token']) <= set('0123456789abcdef')
                 or intent['token'] != current.get('active_launch')):
@@ -394,10 +413,31 @@ def _main_locked(session, command, token):
         if command == 'check':
             return 0
         path, identity = record_path(session, panel, seat, Path(sys.argv[5]))
-        if command in ('record', 'complete') and not path.exists():
-            return 1
         try:
-            descriptor, created = open_private(path)
+            descriptor = open_existing_private(path)
+        except FileNotFoundError:
+            if command != 'reserve':
+                return 1
+            try:
+                archived_stream = archive_stream(session, panel, seat)
+            except OSError:
+                return 1
+            current = dict(identity, calls=1)
+            if token is not None:
+                current.update(lifecycle_version=2, completed_calls=0,
+                               active_launch=token, last_launch=None)
+            try:
+                publish_new_attempt(path, current)
+            except OSError as error:
+                restore_error = None
+                try:
+                    restore_stream(archived_stream, session / f'r{panel}-{seat}.stream.ndjson')
+                except OSError as failure:
+                    restore_error = failure
+                if restore_error is not None:
+                    raise OSError(f'{error}; {restore_error}') from error
+                raise
+            return 0
         except (OSError, ValueError):
             return 1
         with os.fdopen(descriptor, 'r+', encoding='utf-8') as stream:
@@ -406,9 +446,7 @@ def _main_locked(session, command, token):
             try:
                 current = json.load(stream)
             except (json.JSONDecodeError, ValueError):
-                if not created or command in ('record', 'complete'):
-                    return 1
-                current = dict(identity, calls=0)
+                return 1
             if any(current.get(field) != value for field, value in identity.items()):
                 return 1
             calls = current.get('calls')
@@ -438,7 +476,7 @@ def _main_locked(session, command, token):
             elif bound:
                 return 1
             if command in ('record', 'complete'):
-                if sys.argv[6] not in ('0', '1', '2', '3', '4', '7'):
+                if sys.argv[6] not in RECORDED_EXITS:
                     return 1
                 intent = dict(token=token, calls=calls, exit=int(sys.argv[6]))
                 if current.get('terminal_intent') not in (None, intent):
@@ -458,7 +496,6 @@ def _main_locked(session, command, token):
                     try:
                         archived_stream = archive_stream(session, panel, seat)
                     except OSError:
-                        discard_new_attempt(path, stream, created)
                         raise
                 current['calls'] = calls + 1
                 if token is not None:
@@ -472,7 +509,6 @@ def _main_locked(session, command, token):
                         restore_stream(archived_stream, session / f'r{panel}-{seat}.stream.ndjson')
                     except OSError as failure:
                         restore_error = failure
-                discard_new_attempt(path, stream, created)
                 if restore_error is not None:
                     raise OSError(f'{error}; {restore_error}') from error
                 raise error

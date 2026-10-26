@@ -17,17 +17,20 @@
 - [x] Draft the separate-read pairing design and receive a clear builder check.
 - [x] Get approval of the pairing design before writing its implementation plan.
 - [x] Implement the approved source-context memo scope with red-before-green tests, normal review, exact-head CI, and release.
-- [ ] Add a 6x aggregate repository-read budget for actual Luna model seats, with source, scope, ordering, per-response, and output-byte proof bounds unchanged.
+- [x] Add a 6x aggregate repository-read budget for actual Luna model seats, with source, scope, ordering, per-response, and output-byte proof bounds unchanged.
 - [x] Prove the new per-model limits fail on a test-only CI commit.
-- [ ] Implement and pass normal internal review plus exact-head proof-preparation, Ubuntu, macOS, and Cursor package CI.
-- [ ] Add regressions for Codex prepared-evidence reads and post-index investigation across real explicit turns without changing per-read, ordering, scope, or output limits.
-- [ ] Stage prepared Codex proof artifacts when present, and run no-manifest custom reviews through bounded resumable turns, then finalize findings in a tool-free turn.
-- [ ] Make Claude's existing two-read source-turn allowance explicit so large reviews do not spend one model turn per required segment.
-- [ ] Complete normal internal review and exact-head CI for the staged Codex runner.
-- [ ] Squash-merge and publish signed 0.8.11, reinstall all hosts, and verify installed identity.
-- [ ] Run the matched post-merge #1830 Luna replay and update the eligible post-0.8.9 failure rate.
+- [x] Implement and pass normal internal review plus exact-head proof-preparation, Ubuntu, macOS, and Cursor package CI.
+- [x] Add regressions for Codex prepared-evidence reads and post-index investigation across real explicit turns without changing per-read, ordering, scope, or output limits.
+- [x] Stage prepared Codex proof artifacts when present, and run no-manifest custom reviews through bounded resumable turns, then finalize findings in a tool-free turn.
+- [x] Make Claude's existing two-read source-turn allowance explicit so large reviews do not spend one model turn per required segment.
+- [x] Complete normal internal review and exact-head CI for the staged Codex runner.
+- [x] Squash-merge and publish signed 0.8.11, reinstall all hosts, and verify installed identity.
+- [x] Run the matched post-merge #1830 Luna replay and update the eligible post-0.8.9 failure rate.
 - [ ] Monitor fresh post-release first-attempt Luna results until the failure rate is below 5%; keep issue #77 open until then.
 - [ ] Correct status reporting so a prompt without seat launch evidence is not labeled as a provider review in progress.
+- [ ] Publish first attempt records atomically so cancellation cannot leave an empty record that blocks same-label retry.
+- [ ] Read launch marker state and its duration from one file snapshot.
+- [ ] Hold PR progression while an Agent launch marker has no terminal exit.
 
 The expected-red CI run 40280999224 is terminal on Ubuntu and macOS. It exposed the intended usage-snapshot and exact post-index target failures, plus fixture assumptions that counted Codex turns as provider launches, relied on `/tmp` string identity, and selected native review mode while expecting a custom-prompt audit. Those fixtures are being corrected alongside the local production fixes before the next exact-head CI run.
 
@@ -41,7 +44,7 @@ For 0.8.11, the selected Luna allowance is six times the standard per-seat aggre
 
 Exact-head verifier run `40292649184` on `a9f500dc` failed the same no-manifest continuation assertion on Ubuntu and macOS: each platform passed 5,187 checks and failed one, because the second recorded invocation was a fresh `exec` instead of `exec resume`. The adapter now uses its established thread ID as the sole fresh-versus-resume signal. Independent normal review is clean; fresh exact-head CI is still required.
 
-The four-call reservation in `rev-attempt.py` limits adapter launches for one seat generation, not provider turns inside a resumable Codex launch. Codex JSONL exposes cumulative thread token totals on completed turns, so profile usage must difference validated snapshots, disclose resets or malformed snapshots, and leave dollar cost unknown when the stream does not define its scope.
+The user chose to keep the four-reservation per-seat adapter attempt cap and count resumable provider turns separately; do not turn it into a four-turn limit. Codex JSONL exposes cumulative thread token totals on completed turns, so profile usage differences validated snapshots, discloses resets or malformed snapshots, and leaves dollar cost unknown when the stream does not define its scope. `rev-profile.py` reports audited read-turn totals separately from calls.
 
 The active #1877 review provides a concrete 0.8.9 budget sample: Luna-2 was instructed to stop required reads at call 12 and use at most 16 repository calls, while its prepared workload named 35 required source segments. Its audit recorded 44 source-read calls and both `repository-expansion-call-limit` and `path-outside-scope`; 0.8.9 classifies the budget code as advisory, while the scope violation is fatal and explains exit 2. The larger budget addresses the overage and wasted follow-up, but preserves rejection of out-of-scope reads.
 
@@ -49,7 +52,7 @@ The frozen #1830 replay identifies a separate audit-history issue: 0.8.8 counted
 
 The matched 0.8.10 #1830 replay exposes the adapter gap behind that rejection: all four Luna attempts and all four Sol replacements emitted 18-27 tool calls in one explicit Codex turn, with 76-206 KB of output and missing or reordered proof. The prompt allowed up to two ordered reads per turn, but `codex exec` kept the entire run inside one explicit turn. The adapter needs to stage required artifact reads through resumable turns before the final review call; the proof auditor and its byte ceilings remain unchanged.
 
-That frozen replay completed against the same source tree for every seat. The 0.8.8 audit had accepted the same one-turn stream shape by inferring a separate turn for each tool output, so the historical Sol result is a false pass. Replaying with 0.8.10 verified the corrected audit rejects the batch; the post-0.8.11 replay remains necessary to measure the fix.
+That frozen replay completed against the same source tree for every seat. The 0.8.8 audit had accepted the same one-turn stream shape by inferring a separate turn for each tool output, so the historical Sol result is a false pass. Replaying with 0.8.10 verified the corrected audit rejects the batch. The matched 0.8.11 Luna replay is now complete: all four Luna first attempts exited 2 without sealed audits, with 49 calls, 29 provider turns, 382,153 output bytes, all 28 required artifacts read plus one duplicate index read, and 20 post-index expansions. The Luna-2 Sol replacement exposed command-ID reuse across explicit turns; the other initial Luna failures hit turn-local call/output guards. None exhausted the sixfold aggregate allowance. Four selected replacements were valid (three Opus, one Sonnet). The first Luna panel took 348.3s and the full replacement path took 6,506.5s. The 0.8.8 Sol reference reported 4/4 first-attempt success in 288.8s, but its turn count is the known false pass, so only elapsed time is comparable. Issue #77 stays open; a matched current-parser Sol result is still needed before claiming equal proof success.
 
 The live #1894 run confirmed both sides of that gap at larger scale. Its four Luna seats required 193, 180, 22, and 16 source segments; each raw stream still contained one explicit turn. The largest seat made 202 prepared-evidence reads and then 17 post-index reads with 46,371 bytes of output in that same turn. All four results were rejected for proof violations. The runner therefore needs resumable turns for prepared reads and for bounded post-index investigation. The 6x Luna call allowance addresses the observed 17-call overflow; it does not relax the two-read batch, 32 KiB output, scope, order, or exact-evidence checks.
 
@@ -1233,20 +1236,39 @@ Design: `docs/superpowers/specs/2026-10-25-codex-proof-read-pairing-design.md`. 
 - [x] Implement Codex turn grouping, paired proof-read auditing, and accurate capacity estimates.
 - [x] Update generated and installed discovery instructions and Codex prompt contract tests.
 - [x] Complete independent internal review and fix actionable P0-P2 findings.
-- [ ] Pass exact-head Ubuntu, macOS, proof-preparation, and Cursor package CI.
-- [ ] Squash-merge and publish signed Review Council 0.8.10; verify Claude, Codex, and Cursor installs.
+- [x] Pass PR #93 exact-head Ubuntu, macOS, proof-preparation, and package CI.
+- [x] Squash-merge PR #93, publish signed Review Council 0.8.11, and verify Claude, Codex, and Cursor installs against the release.
 - [ ] Run the matched #1830 Luna comparison after merge and update issue #77 with the eligible result.
 
 Normal review found a P2 where Codex output events after `turn.completed` could still earn pair credit. Re-review confirmed the same-turn output check and the final release candidate, with no actionable P0-P2 findings. Expected-red run `40239050569` on test-only SHA `0d6e1e04f1b1bfb5aa0c1b9d52cd9880cb34a95e` passed proof preparation and Cursor packaging, while Ubuntu and macOS exposed that regression plus stale packet, duplicate-read, turn-boundary, and capacity expectations. Those failures are recorded as input to the current exact-head candidate; no green result is claimed yet.
 
-Candidate run `40241061688` on `c30dbeff64ee38bf58ab47413f0b84d5af1b4ce4` passed proof preparation and Cursor packaging. Ubuntu and macOS each passed 5,155 shell assertions and failed four in two stale fixtures: the oversized-sibling plan case lacked explicit Codex turn boundaries, and the host skill assertion expected Claude-only wording. Ubuntu's 582 Python tests passed. Both fixture corrections were re-reviewed clean and committed as `83585e5`; exact-head CI is pending.
+Candidate run `40241061688` on `c30dbeff64ee38bf58ab47413f0b84d5af1b4ce4` passed proof preparation and Cursor packaging. Ubuntu and macOS each passed 5,155 shell assertions and failed four in two stale fixtures: the oversized-sibling plan case lacked explicit Codex turn boundaries, and the host skill assertion expected Claude-only wording. Ubuntu's 582 Python tests passed. Both fixture corrections were re-reviewed clean and committed as `83585e5`. PR #93 later passed exact-head CI in `40299377328` and package validation in `40299376198`, merged as `8d2697b`, and released as signed `review-council--v0.8.11`. All three installed bundles match the release source or Cursor build byte-for-byte and mode-for-mode. The matched #1830 replay is now pending on the same frozen 18-path `src/` scope with four Luna xhigh seats.
 
 ## Prompt-only seats must remain pending
 
-- [ ] Add a regression proving CLI launch markers appear only after a successful reservation.
-- [ ] Prove the marker regression fails on exact source in Ubuntu and macOS CI.
-- [ ] Write launch markers for CLI and Agent seats, and use them for active status and elapsed time.
+- [x] Add a regression proving CLI launch markers appear only after a successful reservation.
+- [x] Prove the marker regression fails on exact source in Ubuntu and macOS CI.
+- [x] Add regressions for repeated Codex command IDs across turns, catchable cancellation, and CLI/Agent launch status; prove the expected red on Ubuntu and macOS in run `40312978967`.
+- [x] Prove the bounded search-guidance regression red on Ubuntu and macOS in run `40316652546`.
+- [x] Prove the signal-finalization races and per-turn call-cap wording regression red on Ubuntu and macOS in run `40320097283`.
+- [x] Prove process-group cancellation after durable reservation fails on Ubuntu and macOS; test-only commit `0e33201`, expected-red run `40323741575`.
+- [x] Prove PR progression accepts a closed reservation whose recorded exit is a catchable signal; expected-red run `40327587192`.
+- [ ] Prove a signal before first-record publication leaves no corrupt attempt and permits the same-label retry.
+- [ ] Prove PR progression refuses an unresolved Agent launch marker.
+- [ ] Prove launch status uses the timestamp from the marker snapshot it validated.
+- [ ] Record CLI process identity, persist catchable cancellation exits, and report dead launches as interrupted.
+- [ ] Keep Agent launch markers and active status tied to the stored task ID.
 - [ ] Complete independent normal review and exact-head Ubuntu, macOS, proof-preparation, and package checks.
 - [ ] Integrate after the 0.8.11 release and publish the next signed release.
 
 Run `40292882622` on test head `e9746c8` confirms the prompt-only state and duration regressions on both operating systems. Each verifier passed 5,158 assertions and failed the four expected assertions across `t-cost-session.sh` and `t-status.sh`; proof preparation passed. The separate launch-marker writer regression is now being added before implementation.
+
+The launch-marker writer regression passed proof preparation and failed the intended CLI marker, prompt-only status, elapsed-time origin, and cost-session status assertions on Ubuntu in `40296561539`; macOS showed those same regressions plus an unrelated race in the existing stack stall test. The intended regression failures are now implemented against explicit launch evidence in the CLI wrapper and Agent launch instructions.
+
+Run `40316652546` on test-only SHA `788a0d635587edc6f8307fc2d6b223a8d7ece39c` passed proof preparation and package run `40316652693`. Ubuntu and macOS each passed 5,168 assertions and failed 42 across 13 tasks; after normalizing temp paths, their failure lists matched. Run `40320097283` on test-only SHA `78bb9c6e8d1cc6b182b23be1f05f2101107e4b21` passed proof preparation and package run `40320097299`. Both platforms passed 5,170 assertions and failed the same 47 labels: the prior 42 plus five new signal-finalization and per-turn cap assertions. Ubuntu completed in 15m48 and macOS in 26m51. The normal review then found a further P2: process-group cancellation can kill the reserve helper after its durable token write but before the wrapper sees success. Test-only commit `0e33201` adds that reproduction. Expected-red run `40323741575` completed on the exact test SHA with proof preparation green; Ubuntu passed 5,173 and Mac passed 5,172. Each platform repeated all 47 prior failures plus the two new group-cancellation assertions. Mac also had one unrelated, non-reproducible stack-stall assertion not present on Ubuntu or run `40320097283`.
+
+Independent normal re-review found three more P2 lifecycle gaps: a signal during initial attempt-record creation can leave a corrupt empty file, PR progression ignores unresolved Agent launch markers, and status reads a launch timestamp separately from the marker state. Add focused expected-red regressions before fixing each path.
+
+Expected-red run `40327587192` on test-only SHA `c2adf015d1ca119e6fbe963b1f44b0fb6d61b05a` passed proof preparation and package run `40327587216`. Both platforms passed 5,173 shell assertions and failed 50. Compared with `40323741575`, Linux added only the intended closed-signal progression failure; macOS added that assertion and its prior one-off stack-stall race did not recur. Full verifier logs are preserved under `/tmp/council-40327587192`.
+
+Expected-red run `40332170227` on test-only SHA `99d9abbce1f1f8f3a1c3665a470661d9b0b32ad9` passed proof preparation; package run `40332170476` passed on the same SHA. Ubuntu and macOS each passed 5,177 assertions and failed 56 across 15 test tasks. Compared with `40327587192`, the only six additional failure labels cover unresolved Agent progression, atomic first-record cancellation/retry, and status snapshot consistency; both platform failure lists match. Complete diagnostics are saved under `/tmp/council-40332170227`.

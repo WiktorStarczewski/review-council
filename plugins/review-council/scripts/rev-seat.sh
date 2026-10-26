@@ -6,7 +6,7 @@
 # model, effort and mode this seat has, and scripts/seats.d/<adapter>.sh owns the CLI invocation.
 # The `agent` adapter is launched by the skill through the Agent tool, not here.
 # Also writes r<N>-<seat>.log (one summarised line per event), .stream.ndjson (raw), .exit (code).
-# Exit: 0 valid JSON | 2 missing/invalid JSON | 3 not signed in | 4 provider quota | 7 local attempt cap | 1 other
+# Exit: 0 valid JSON | 2 missing/invalid JSON | 3 not signed in | 4 provider quota | 7 local attempt cap | 1 other | 129 HUP | 130 INT | 143 TERM
 #
 # This file keeps everything that is NOT CLI-specific: roster lookup, effort precedence, the
 # zero-tool-call retry, native-prose conversion, validation, classification and the summary line.
@@ -97,7 +97,7 @@ else
 fi
 [ -d "$ROOT" ] || { echo "rev-seat: repository root is not a directory: $ROOT" >&2; exit 1; }
 BASEN="$SESSION/r${ROUND}-${SEAT}"
-OUT="$BASEN.json"; LOG="$BASEN.log"; RAW="$BASEN.stream.ndjson"; EXITF="$BASEN.exit"
+OUT="$BASEN.json"; LOG="$BASEN.log"; RAW="$BASEN.stream.ndjson"; EXITF="$BASEN.exit"; STARTEDF="$BASEN.started"
 AUDITF="$BASEN.read-audit.json"
 AUDIT_INVALID_OUT="$BASEN.audit-invalid.json"
 export REV_ACTIVE=1
@@ -123,21 +123,44 @@ preserve_audit_invalid_result() {
 
 RESERVED=0
 PUBLISH_UNRESERVED_EXIT=0
+RESERVING=0
+FINISHING=0
+SIGNAL_EXIT=
 LAUNCH_TOKEN=$(python3 -c 'import uuid; print(uuid.uuid4().hex)') || exit 1
 finish() {  # <code> - validate on 0, record, print the one-line summary, exit
+  FINISHING=1
+  trap '' HUP INT TERM
   local code=$1 n="-"
   if [ "$code" = 0 ]; then n=$(python3 "$VALIDATE" "$OUT" 2>>"$LOG") || { code=2; n="-"; }; fi
-  if [ "$RESERVED" = 1 ] || [ "$PUBLISH_UNRESERVED_EXIT" = 1 ]; then echo "$code" > "$EXITF"; fi
   # A launch that reserved a call records its exit, so an exhausted exact retry is on record.
   if [ "$RESERVED" = 1 ]; then
-    python3 "$HERE/lib/rev-attempt.py" complete "$SESSION" "$ROUND" "$SEAT" "$PROMPT" "$code" "$LAUNCH_TOKEN" >>"$LOG" 2>&1 \
-      || echo "cannot persist this launch's terminal intent" >> "$LOG"
-    python3 "$HERE/lib/rev-attempt.py" record "$SESSION" "$ROUND" "$SEAT" "$PROMPT" "$code" "$LAUNCH_TOKEN" >>"$LOG" 2>&1 \
-      || echo "cannot record this launch's exit" >> "$LOG"
+    if python3 "$HERE/lib/rev-attempt.py" complete "$SESSION" "$ROUND" "$SEAT" "$PROMPT" "$code" "$LAUNCH_TOKEN" >>"$LOG" 2>&1; then
+      echo "$code" > "$EXITF" || echo "cannot publish this launch's exit" >> "$LOG"
+      python3 "$HERE/lib/rev-attempt.py" record "$SESSION" "$ROUND" "$SEAT" "$PROMPT" "$code" "$LAUNCH_TOKEN" >>"$LOG" 2>&1 \
+        || echo "cannot record this launch's exit" >> "$LOG"
+    else
+      echo "cannot persist this launch's terminal intent" >> "$LOG"
+    fi
+  elif [ "$PUBLISH_UNRESERVED_EXIT" = 1 ]; then
+    echo "$code" > "$EXITF"
   fi
   echo "seat=$SEAT round=$ROUND exit=$code findings=$n"
   exit "$code"
 }
+handle_signal() {
+  local code=$1
+  [ "$FINISHING" = 1 ] && return
+  [ -n "$SIGNAL_EXIT" ] || SIGNAL_EXIT=$code
+  [ "$RESERVING" = 1 ] && return
+  if [ "$RESERVED" = 1 ]; then finish "$SIGNAL_EXIT"; fi
+  exit "$SIGNAL_EXIT"
+}
+restore_signal_traps() {
+  trap 'handle_signal 129' HUP
+  trap 'handle_signal 130' INT
+  trap 'handle_signal 143' TERM
+}
+restore_signal_traps
 classify_failure() {  # after a non-zero rc or missing output: 3 auth, 4 cap, 2 no output, 1 other
   local kind
   kind=$(python3 "$HERE/lib/roster.py" --classify-log "$ADAPTER" "$LOG" 2>/dev/null) || kind=other
@@ -195,8 +218,23 @@ fi
 attempt=0
 while :; do
   attempt=$((attempt+1))
+  RESERVING=1
   reserve_error=$(python3 "$HERE/lib/rev-attempt.py" reserve "$SESSION" "$ROUND" "$SEAT" "$PROMPT" "$LAUNCH_TOKEN" 2>&1)
   reserve_rc=$?
+  [ "$reserve_rc" -ne 0 ] || RESERVED=1
+  if [ -n "$SIGNAL_EXIT" ] && [ "$RESERVED" != 1 ]; then
+    # A process-group signal can kill reserve after its durable token write.
+    trap '' HUP INT TERM
+    if python3 "$HERE/lib/rev-attempt.py" complete "$SESSION" "$ROUND" "$SEAT" "$PROMPT" "$SIGNAL_EXIT" "$LAUNCH_TOKEN" >>"$LOG" 2>&1; then
+      RESERVED=1
+    fi
+    restore_signal_traps
+  fi
+  RESERVING=0
+  if [ -n "$SIGNAL_EXIT" ]; then
+    if [ "$RESERVED" = 1 ]; then finish "$SIGNAL_EXIT"; fi
+    exit "$SIGNAL_EXIT"
+  fi
   if [ "$reserve_rc" -ne 0 ]; then
     [ -z "$reserve_error" ] || printf 'rev-seat: %s\n' "$reserve_error" >&2
     [ -z "$reserve_error" ] || printf '%s\n' "$reserve_error" >> "$LOG"
@@ -207,8 +245,16 @@ while :; do
     fi
     finish "$reserve_rc"
   fi
-  RESERVED=1
-  rm -f "$EXITF" "$OUT" "$AUDITF"
+  rm -f "$EXITF" "$OUT" "$AUDITF" "$STARTEDF"
+  started=$(LC_ALL=C ps -p "$$" -o lstart= 2>/dev/null)
+  started=$(printf '%s\n' "$started" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  STARTED_TMP="$STARTEDF.tmp.$$"
+  if [ -z "$started" ] || ! (umask 077; printf 'cli\n%s\n%s\n' "$$" "$started" > "$STARTED_TMP") \
+      || ! mv -f "$STARTED_TMP" "$STARTEDF"; then
+    rm -f "$STARTED_TMP"
+    echo "could not record reviewer launch marker" >> "$LOG"
+    finish 1
+  fi
   [ "$attempt" -ne 1 ] || : > "$LOG"
   "$ADAPTER_SH"; rc=$?
   case "$ADAPTER" in
