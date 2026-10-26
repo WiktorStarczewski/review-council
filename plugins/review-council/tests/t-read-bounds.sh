@@ -3039,6 +3039,62 @@ pinned_read_audit() {
     --session "$S" --out "$S/r$label-$seat.read-audit.json" >/dev/null 2>&1
 }
 
+test_legacy_repository_call_budget_uses_roster_model() {
+  ( local R="$T/legacy-budget-root" S="$T/legacy-budget-session"
+    mkrepo "$R"; mkdir -p "$R/src" "$S"
+    printf 'pub const V0: u32 = 0;\n' > "$R/src/asset.rs"
+    python3 - "$SCRIPTS/lib/review-read-audit.py" "$R" "$S" <<'PY'
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+audit, root, session = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+command = "sed -n '1,1p' src/asset.rs"
+output = subprocess.run(['/bin/sh', '-c', command], cwd=root, check=True,
+                        capture_output=True, text=True).stdout
+
+def assess(seat, model, calls):
+    (session / 'roster.json').write_text(json.dumps({
+        'seats': [{'seat': seat, 'adapter': 'codex', 'model': model}],
+    }) + '\n')
+    prompt = session / f'r27-{seat}.prompt.md'
+    prompt.write_text('Assigned scope: full\n')
+    result = session / f'r27-{seat}.json'
+    result.write_text(json.dumps({'summary': 'checked', 'findings': []}) + '\n')
+    raw = session / f'r27-{seat}.stream.ndjson'
+    events = [{'type': 'turn.started'}]
+    for index in range(calls):
+        call_id = 'read-' + str(index)
+        item = {'id': call_id, 'type': 'command_execution', 'command': command,
+                'aggregated_output': '', 'exit_code': None, 'status': 'in_progress'}
+        events.append({'type': 'item.started', 'item': item})
+        events.append({'type': 'item.completed', 'item': {
+            **item, 'aggregated_output': output, 'exit_code': 0, 'status': 'completed',
+        }})
+    events.append({'type': 'turn.completed'})
+    raw.write_text(''.join(json.dumps(event) + '\n' for event in events))
+    out = session / f'r27-{seat}.read-audit.json'
+    proc = subprocess.run([
+        sys.executable, str(audit), 'audit', '--adapter', 'codex',
+        '--raw', str(raw), '--prompt', str(prompt), '--root', str(root),
+        '--session', str(session), '--out', str(out),
+    ], capture_output=True, text=True)
+    return proc.returncode, json.loads(out.read_text())
+
+for seat, model, limit in (
+        ('sol', 'gpt-6.1-luna', 96), ('terra', 'gpt-6.1-sol', 16)):
+    code, audit_doc = assess(seat, model, limit)
+    assert code == 0 and not audit_doc['violations'], (seat, code, audit_doc['violations'])
+    code, audit_doc = assess(seat, model, limit + 1)
+    assert code == 2 and {row['code'] for row in audit_doc['violations']} == {
+        'repository-expansion-call-limit'}, (seat, code, audit_doc['violations'])
+    assert audit_doc['evidence_scoped'] is False
+PY
+    assert_eq "manifest-free audits apply the roster model repository-call budget" "$?" 0
+  )
+}
+
 # Prints the sorted violation codes, the advisories, then the tool-origin source ranges.
 pinned_read_summary() {
   python3 - "$1" <<'PY'

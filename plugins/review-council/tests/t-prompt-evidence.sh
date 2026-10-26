@@ -492,6 +492,10 @@ PY
       "^Assigned patch line count: $legacy_patch_lines$"
     assert_grep "legacy Codex prompt makes a portable patch read the first evidence action" "$legacy" \
       "^First evidence action: run portable bounded sed windows over .* from line 1 through line $legacy_patch_lines, then stop\\.$"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex","model":"gpt-6.1-luna"}]}' > "$S/roster.json"
+    legacy_luna=$("$SCRIPTS/rev-prompt.sh" "$S" 8 sol regression numeric) || return
+    assert_grep "manifest-free Luna prompt uses the sixfold repository-call budget" "$legacy_luna" \
+      'use at most 96 repository tool calls.*Finish required reads by call 72.*reserve calls 73-96 for refutation'
     local legacy_agent
     printf '%s\n' '{"seats":[{"seat":"opus","adapter":"agent"}]}' > "$S/roster.json"
     legacy_agent=$("$SCRIPTS/rev-prompt.sh" "$S" 8 opus regression numeric) || return
