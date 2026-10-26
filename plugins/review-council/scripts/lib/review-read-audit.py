@@ -2568,6 +2568,26 @@ def post_hook(args):
     return 0
 
 
+def roster_model_for_seat(session, seat=None):
+    roster_path = session / 'roster.json'
+    try:
+        with roster_path.open(encoding='utf-8') as stream:
+            roster = json.load(stream)
+        seats = roster.get('seats')
+        if not isinstance(seats, list):
+            return None
+        if seat is None:
+            if len(seats) != 1:
+                return None
+            seat = seats[0].get('seat')
+        if not isinstance(seat, str) or not seat:
+            return None
+        from workhorse import lookup_launch
+        return lookup_launch(str(roster_path), seat).get('model')
+    except (AttributeError, ImportError, KeyError, OSError, TypeError, ValueError):
+        return None
+
+
 def audit(args):
     # A call raising any violation but a pacing count earns no credit. Credit granted before its
     # violation surfaced (an oversized turn is judged last) is revoked by assessing again. Only
@@ -2969,9 +2989,16 @@ def assess(args, blocked):
     plan_citation_ranges = []
     plan_finding_citations = 0
     manifest_blob_cache = {}
+    budget_model = None
+    budget_source_required = False
+    budget_source_target = None
     if manifest is not None:
         try:
             context = manifest['source_context']['seats'][seat]
+            budget_model = manifest['assignments'][seat].get('model')
+            budget_source_required = context['source_read_required']
+            seat_capacity = manifest.get('task_capacity', {}).get('seats', {}).get(seat, {})
+            budget_source_target = seat_capacity.get('repository_source_target')
             required_source_ranges = context.get('required_source_ranges', [])
             required_source_role = context.get('role')
             required_segment_paths = {
@@ -3260,17 +3287,6 @@ def assess(args, blocked):
                 calls, outputs, order_patch_calls, order_packet_paths, order_segment_paths,
                 evidence_index, root, session,
                 verified_call_ranges))
-            expansion_calls = [
-                call_id for call_id, (name, data, _) in calls.items()
-                if repository_expansion_call(name, data, root, session)
-            ]
-            seat_capacity = manifest.get('task_capacity', {}).get('seats', {}).get(seat, {})
-            expansion_limit = repository_expansion_call_limit_for_seat(
-                context['source_read_required'],
-                seat_capacity.get('repository_source_target'),
-                manifest['assignments'][seat].get('model'))
-            if len(expansion_calls) > expansion_limit:
-                failures.append(violation('repository-expansion-call-limit', args.adapter))
             ordered_proof_calls = ({call_id for call_id, _ in paced_chunk_calls}
                                    | {call_id for call_id, _ in paced_segment_calls}
                                    | paced_index_calls)
@@ -3395,6 +3411,16 @@ def assess(args, blocked):
                         'ranges': relevant})
         except (KeyError, TypeError, ValueError):
             failures.append(violation('invalid-plan-evidence', args.adapter))
+    if manifest is None:
+        budget_model = roster_model_for_seat(session, getattr(args, 'seat', None))
+    expansion_calls = [
+        call_id for call_id, (name, data, _) in calls.items()
+        if repository_expansion_call(name, data, root, session)
+    ]
+    expansion_limit = repository_expansion_call_limit_for_seat(
+        budget_source_required, budget_source_target, budget_model)
+    if len(expansion_calls) > expansion_limit:
+        failures.append(violation('repository-expansion-call-limit', args.adapter))
     result_path = None
     result = None
     result_hash = None
@@ -3522,6 +3548,7 @@ def main():
     audits.add_argument('--prompt', required=True)
     audits.add_argument('--root', required=True)
     audits.add_argument('--session', required=True)
+    audits.add_argument('--seat')
     audits.add_argument('--deps')
     audits.add_argument('--out', required=True)
     args = parser.parse_args()

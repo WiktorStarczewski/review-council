@@ -6360,11 +6360,16 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
             manifest['phase'] != 'repair' and set(assigned) != expected_seats
             and not (manifest['phase'] == 'plan' and single_seat_plan(bundles_by_seat))):
         raise ValueError('assignment roster mismatch')
+    stored_capacity = manifest.get('task_capacity')
+    model_budgets = (isinstance(stored_capacity, dict)
+                     and stored_capacity.get('schema_version') == 2)
     adapters = {s['seat']: s.get('adapter', '') for s in roster['seats']}
     if any(a.get('adapter') != adapters[s] for s, a in assigned.items()):
         raise ValueError('assignment adapter mismatch')
     for seat, assignment in assigned.items():
         row = next(row for row in roster['seats'] if row['seat'] == seat)
+        if model_budgets and assignment.get('model') != row.get('model'):
+            raise ValueError('assignment model mismatch')
         if adapters[seat] == 'cursor-sdk' and ('cursor_sdk' in row or 'cursor_sdk' in assignment):
             identity = cursor_sdk_identity(row)
             if any(assignment.get(key) != value for key, value in identity.items()):
@@ -6599,9 +6604,6 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         raise ValueError('predecessor only belongs to delta verification or schema-4 plan evidence')
     if phase == 'plan':
         validate_plan(session, manifest, evidence, fresh and not offline, replay_plan_searches)
-    stored_capacity = manifest.get('task_capacity')
-    model_budgets = (isinstance(stored_capacity, dict)
-                     and stored_capacity.get('schema_version') == 2)
     expected_capacity = compile_task_capacity(
         assigned, manifest['patch_sets'], manifest['source_context'],
         manifest['plan']['clusters'] if phase == 'plan' else None,
@@ -7682,6 +7684,7 @@ def _prepare_locked(args, session):
             mode = 'full'
         name = f'{prefix}-full.patch' if mode == 'full' else f'{prefix}-{seat}.patch'
         component_ids = [c['id'] for c in components if mode == 'full' or seat in c['specialists']]
+        roster_seat = next(row for row in roster['seats'] if row['seat'] == seat)
         if mode != 'full':
             if args.phase == 'plan':
                 paths = plan_owned_paths[seat]
@@ -7694,9 +7697,9 @@ def _prepare_locked(args, session):
         patch_bodies[seat] = patch_body
         scopes[seat] = {'bundle': bundle, 'bundles': bundle.split('+'), 'scope': mode,
                         'full_state': mode == 'full', 'adapter': adapters[seat], 'components': component_ids,
+                        'model': roster_seat.get('model'),
                         'patch': str(session / name), 'patch_sha256': digest(patch_body),
                         'patch_bytes': len(patch_body), 'patch_lines': len(split_lf_lines(patch_body))}
-        roster_seat = next(row for row in roster['seats'] if row['seat'] == seat)
         if adapters[seat] == 'cursor-sdk' and 'cursor_sdk' in roster_seat:
             scopes[seat].update(cursor_sdk_identity(roster_seat))
         if numeric is not None:

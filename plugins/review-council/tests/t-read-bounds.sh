@@ -2921,6 +2921,39 @@ print(json.load(open(manifest))['assignments'][seat].get('model') or '')
 PY
 ) || return
     assert_eq "prepared assignment preserves its roster model" "$assigned_model" "$model"
+    python3 - "$SCRIPTS/rev-evidence.py" "$manifest" "$seat" <<'PY'
+import json, runpy, sys
+from pathlib import Path
+
+module = runpy.run_path(sys.argv[1])
+manifest_path = Path(sys.argv[2])
+seat = sys.argv[3]
+manifest_raw = manifest_path.read_bytes()
+manifest = json.loads(manifest_raw)
+evidence_path = manifest_path.parent / f"r{manifest['label']}-evidence.json"
+evidence_raw = evidence_path.read_bytes()
+evidence = json.loads(evidence_raw)
+manifest['assignments'][seat]['model'] = 'gpt-6.1-sol'
+evidence['assignments'][seat]['model'] = 'gpt-6.1-sol'
+evidence_raw_changed = module['encoded'](evidence)
+evidence_path.write_bytes(evidence_raw_changed)
+manifest['artifacts'][evidence_path.name] = {
+    'sha256': module['digest'](evidence_raw_changed),
+    'words': len(evidence_raw_changed.split()),
+}
+manifest_path.write_bytes(module['encoded'](manifest))
+try:
+    try:
+        module['validated_manifest'](manifest_path, fresh=False)
+    except ValueError as error:
+        assert str(error) == 'assignment model mismatch', str(error)
+    else:
+        raise AssertionError('manifest accepted a model that differs from the pinned roster')
+finally:
+    evidence_path.write_bytes(evidence_raw)
+    manifest_path.write_bytes(manifest_raw)
+PY
+    assert_eq "manifest rejects a budget model that differs from its roster" "$?" 0
   fi
   bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"][sys.argv[2]]["bundle"])' "$manifest" "$seat") || return
   "$SCRIPTS/rev-prompt.sh" "$S" "$label" "$seat" "$bundle" pinned-read --evidence "$manifest" > "$S/fixture.prompt" || return

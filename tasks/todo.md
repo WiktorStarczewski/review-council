@@ -20,6 +20,9 @@
 - [ ] Add a 6x aggregate repository-read budget for actual Luna model seats, with source, scope, ordering, per-response, and output-byte proof bounds unchanged.
 - [x] Prove the new per-model limits fail on a test-only CI commit.
 - [ ] Implement and pass normal internal review plus exact-head proof-preparation, Ubuntu, macOS, and Cursor package CI.
+- [ ] Add a regression for Codex proof reads that spans real explicit turns without changing per-read, ordering, scope, or output limits.
+- [ ] Stage prepared Codex proof artifacts across resumable turns, then run the full review in a later turn.
+- [ ] Complete normal internal review and exact-head CI for the staged Codex runner.
 - [ ] Squash-merge and publish signed 0.8.11, reinstall all hosts, and verify installed identity.
 - [ ] Run the matched post-merge #1830 Luna replay and update the eligible post-0.8.9 failure rate.
 - [ ] Monitor fresh post-release first-attempt Luna results until the failure rate is below 5%; keep issue #77 open until then.
@@ -32,9 +35,15 @@ The active #1877 review provides a concrete 0.8.9 budget sample: Luna-2 was inst
 
 The frozen #1830 replay identifies a separate audit-history issue: 0.8.8 counted each Codex tool output as a turn despite one explicit `turn.started`/`turn.completed` pair, accepting oversized batches. The 0.8.10 parser counts the explicit turn and correctly rejects the output overflow. The adapter and prompt files are unchanged between those versions, so this was an old false pass, not a new 0.8.10 prompt regression.
 
+The matched 0.8.10 #1830 replay exposes the adapter gap behind that rejection: all four Luna attempts and all four Sol replacements emitted 18-27 tool calls in one explicit Codex turn, with 76-206 KB of output and missing or reordered proof. The prompt allowed up to two ordered reads per turn, but `codex exec` kept the entire run inside one explicit turn. The adapter needs to stage required artifact reads through resumable turns before the final review call; the proof auditor and its byte ceilings remain unchanged.
+
 Expected-red run `40247606189` on test-only commit `b511dacb2f04b7be6dc107eee521cf2fac66bfb2` failed only the new model-specific budget assertions on Ubuntu and macOS; each platform passed 5,160 assertions and failed 4. Proof preparation passed, and Cursor package run `40247606175` passed.
 
 Expected-red run `40250312984` on test-only commit `34f2f81ee3a0b005fa68cfc264e4f0abc82d737e` failed the new legacy schema-1 Luna reserve-display assertion plus the four model-budget regressions on both Ubuntu and macOS. Each platform passed 5,160 shell assertions; all 582 Python tests and proof preparation passed. Cursor package run `40250312987` passed.
+
+Expected-red run `40257552976` on test-only commit `60f8677ff6d0487a7ea94f51d7c8cb3ceb6e92d0` passed proof preparation and failed the intended verifier assertions on both platforms: the manifest-free Luna audit/prompt still used the shared budget, and prepared assignments did not pin the roster model. The failure logs also confirm the staged implementation fixes are absent from that frozen test head.
+
+Live 0.8.9 sessions `#1837`, `#1844`, and `#1880` expose another version boundary: the 0.8.9 auditor reported 20-43 turns for streams containing one explicit Codex turn, because it assigned implicit turns to individual calls. The 0.8.10 parser tracks actual `turn.started` / `turn.completed` boundaries, so those old “valid” receipts are false passes for large proof batches. The #1830 replay's one-turn rejections are consistent with the corrected parser.
 
 PR #83 merged as `6be75ef10b46db6159337bddb3b8dcb074aa6ff1` from `656212573ae690c4cbc8047a23d4ecf64f339260`. Exact-head test run `40175923246` and Cursor package run `40175923301` passed. Signed release `review-council--v0.8.7` was published, and Claude, Codex, and Cursor installs match the release. Issue #77 remains open because no eligible first-attempt Luna sample pinned to 0.8.7 or later has completed.
 
