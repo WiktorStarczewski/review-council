@@ -30,6 +30,35 @@ PY
   )
 }
 
+test_profile_usage_deltas_cumulative_codex_turns() {
+  ( local S="$T/profile-usage-codex-turns"; mkdir -p "$S"
+    printf '%s\n' '{"seats":[{"seat":"codex-luna","adapter":"codex"}]}' > "$S/roster.json"
+    cat > "$S/r1-codex-luna.stream.ndjson" <<'JSON'
+{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":1}}
+{"type":"turn.completed","usage":{"input_tokens":true,"output_tokens":1}}
+{"type":"turn.completed","usage":{"input_tokens":30,"output_tokens":3}}
+{"type":"turn.completed","usage":{"input_tokens":30,"output_tokens":3}}
+{"type":"turn.completed","usage":{"input_tokens":50,"output_tokens":5}}
+{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":1}}
+{"type":"turn.completed","usage":{"input_tokens":15,"output_tokens":3}}
+JSON
+    printf '%s\n' '{"summary":"reviewed","findings":[]}' > "$S/r1-codex-luna.json"
+    printf '0\n' > "$S/r1-codex-luna.exit"
+    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile.json"
+    python3 - "$S/profile.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); s = d['sessions'][0]
+u = s['providers']['codex']
+assert u['calls'] == 7 and u['input_tokens'] == 60 and u['output_tokens'] == 7, u
+assert u['processed_tokens'] == 67 and u['cost_usd'] == 0, u
+assert u['cost_usd_unknown_calls'] == 7 and u['cost_usd_known_calls'] == 0, u
+assert u['unidentified_terminal_calls'] == 7, u
+assert len(s['invalid_usage']) == 2, s
+PY
+    assert_eq "cumulative Codex snapshots are differenced and malformed or reset turns are disclosed" "$?" 0
+  )
+}
+
 test_profile_usage_deduplicates_native_messages() {
   ( local S="$T/profile-usage-native"; mkdir -p "$S"
     printf '%s\n' '{"seats":[{"seat":"opus","adapter":"agent"}]}' > "$S/roster.json"

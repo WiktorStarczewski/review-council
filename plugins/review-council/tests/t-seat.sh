@@ -10,6 +10,11 @@ seat_timeout() {  # seat_timeout <secs> <cmd...> - hard cap, so a runaway seat c
   wait "$pid"; return $?
 }
 seat_env_reset() { PATH="$1"; unset SHIM_FIXTURE_DIR SHIM_ARGS_FILE SHIM_ARGS_DIR SHIM_CALLS_FILE SHIM_CHILD_PID_FILE SHIM_STAGE_DIR SHIM_EVIDENCE_INDEX SHIM_UNPREPARED_TARGET REV_REPO SHIM_MODE; }
+seat_codex_prompt() {
+  printf '%s\n' \
+    'use at most 4 repository tool calls before stopping this assignment.' \
+    'review the diff' > "$1"
+}
 seat_roster() {  # seat_roster <session-dir> - the roster.json rev-preflight.sh leaves in the session dir.
   # Written by hand on purpose: these tests exercise rev-seat.sh's dispatch, not roster.sh's detection.
   mkdir -p "$1"
@@ -225,7 +230,7 @@ import json
 import sys
 from pathlib import Path
 
-root = Path(sys.argv[1])
+root = Path(sys.argv[1]).resolve(strict=True)
 expected = [
     ['r1-patch-p01-001.txt', 'r1-patch-p01-002.txt'],
     ['r1-codex-luna-source-context-1.json'],
@@ -244,7 +249,7 @@ for index, names in enumerate(expected, 1):
     args = (root / 'calls' / f'call-{index}.args').read_text(encoding='utf-8').splitlines()
     assert '--ephemeral' not in args, (index, args)
     assert '--output-schema' not in args, (index, args)
-    assert 'read-only' in args, (index, args)
+    assert 'read-only' in args or 'sandbox_mode="read-only"' in args, (index, args)
     if index == 1:
         assert args[0] == 'exec' and str(root.parent) in args, args
     else:
@@ -401,15 +406,18 @@ PY
 
 test_seat_codex() {
   local _path="$PATH"; seat_env
-  local S="$T/seat-codex"; seat_roster "$S"; echo "review the diff" > "$S/p.md"; : > "$T/args.env"
-  SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" > "$T/out.txt"; local rc=$?
+  local S="$T/seat-codex"; seat_roster "$S"; seat_codex_prompt "$S/p.md"; : > "$T/args.env"
+  mkdir -p "$S/calls"; : > "$S/calls.log"
+  SHIM_MODE=ok SHIM_CALLS_FILE="$S/calls.log" SHIM_STAGE_DIR="$S/calls" \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" > "$T/out.txt"; local rc=$?
   assert_eq "codex ok exit" "$rc" 0
   assert_grep "prints summary line" "$T/out.txt" '^seat=codex-sol round=1 exit=0 findings=1$'
   assert_grep "writes .exit" "$S/r1-codex-sol.exit" '^0$'
   assert_grep "json copied" "$S/r1-codex-sol.json" '"severity": ?"P1"'
   assert_grep "log has exec line" "$S/r1-codex-sol.log" '^exec: .*git diff abc123'
   assert_grep "log has done line" "$S/r1-codex-sol.log" '^done: exit=0'
-  assert_grep "prompt via stdin" "$T/args.stdin" 'review the diff'
+  assert_grep "review prompt via stdin" "$S/calls/call-1.stdin" 'review the diff'
+  assert_grep "findings prompt via stdin" "$T/args.stdin" 'Return the final findings JSON'
   assert_grep "model comes from the roster" "$T/args" '^gpt-5.6-sol$'
   assert_grep "effort comes from the roster" "$T/args" '^model_reasoning_effort=max$'
   assert_grep "prompt review uses compact reviewer instructions" "$T/args" '^model_instructions_file=.*scripts/lib/reviewer-instructions.md$'
@@ -417,8 +425,8 @@ test_seat_codex() {
   assert_grep "seat carries REV_ACTIVE=1" "$T/args.env" '^REV_ACTIVE=1$'
   assert_nogrep "no seat runs unguarded" "$T/args.env" '^REV_ACTIVE=unset$'
   assert_grep "seat records its cwd" "$T/args.env" '^cwd=/'
-  assert_grep "codex gets the repo root with -C" "$T/args" "^$T$"
-  assert_grep "read-only sandbox" "$T/args" '^read-only$'
+  assert_grep "codex gets the repo root with -C" "$S/calls/call-1.args" "^$T$"
+  assert_grep "read-only sandbox" "$T/args" '^(read-only|sandbox_mode="read-only")$'
   assert_grep "schema passed" "$T/args" 'findings.schema.json$'
   assert_nogrep "no write flags" "$T/args" 'danger|workspace-write|--approve'
   SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-terra "$S" 2 "$S/p.md" >/dev/null
@@ -450,7 +458,7 @@ SH
   : > "$T/codex-notools-calls"
   SHIM_MODE=notools SHIM_CALLS_FILE="$T/codex-notools-calls" "$SCRIPTS/rev-seat.sh" codex-sol "$S" 6n "$S/p.md" > "$T/codex-notools.out" 2>&1
   assert_eq "Codex no-tool review exits unusable" "$?" 2
-  assert_eq "Codex no-tool review retries once" "$(wc -l < "$T/codex-notools-calls" | tr -d ' ')" 2
+  assert_eq "Codex no-tool review retries once" "$(wc -l < "$T/codex-notools-calls" | tr -d ' ')" 4
   assert_grep "Codex no-tool log explains the rejection" "$S/r6n-codex-sol.log" 'answered without a single tool call \(attempt 2\)'
   assert_exit "codex-review needs --base" 1 env SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-review "$S" 7 "$S/p.md"
   SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-review "$S" 7 "$S/p.md" --base abc123 >/dev/null
@@ -507,13 +515,13 @@ JSON
   assert_exit "an effort-less Codex roster entry cannot launch" 1 env \
     SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$E" 1 "$E/p.md"
 
-  local C="$T/seat-call-cap"; seat_roster "$C"; echo "review the diff" > "$C/p.md"
+  local C="$T/seat-call-cap"; seat_roster "$C"; seat_codex_prompt "$C/p.md"
   : > "$T/capped-calls"
   local call
   for call in 1 2 3 4; do
     SHIM_MODE=ok SHIM_CALLS_FILE="$T/capped-calls" \
       "$SCRIPTS/rev-seat.sh" codex-sol "$C" cap "$C/p.md" >/dev/null
-    assert_eq "provider call $call stays within the persistent cap" "$?" 0
+    assert_eq "adapter launch $call stays within the persistent cap" "$?" 0
   done
   printf '%s\n' '{"prior":"audit"}' > "$C/rcap-codex-sol.read-audit.json"
   local artifact
@@ -522,19 +530,19 @@ JSON
   done
   SHIM_MODE=ok SHIM_CALLS_FILE="$T/capped-calls" \
     "$SCRIPTS/rev-seat.sh" codex-sol "$C" cap "$C/p.md" >/dev/null 2>&1
-  assert_eq "fifth provider call is rejected before launch" "$?" 7
-  assert_eq "persistent cap permits exactly four provider processes" \
-    "$(wc -l < "$T/capped-calls" | tr -d ' ')" 4
+  assert_eq "fifth adapter launch is rejected before launch" "$?" 7
+  assert_eq "four capped review launches each use a bounded turn and a findings turn" \
+    "$(wc -l < "$T/capped-calls" | tr -d ' ')" 8
   for artifact in json read-audit.json stream.ndjson; do
     assert_exit "cap refusal preserves prior $artifact" 0 \
       cmp -s "$C/before-cap.$artifact" "$C/rcap-codex-sol.$artifact"
   done
   assert_grep "cap refusal persists its diagnostic in the seat log" \
-    "$C/rcap-codex-sol.log" '^persistent provider-call cap reached for this seat generation$'
+    "$C/rcap-codex-sol.log" '^persistent adapter-launch cap reached for this seat generation$'
   assert_grep "cap refusal writes a fresh exit" "$C/rcap-codex-sol.exit" '^7$'
 
   local A="$T/seat-archive-failure" archive_path="$T/archive-path" real_python
-  seat_roster "$A"; echo "review the diff" > "$A/p.md"
+  seat_roster "$A"; seat_codex_prompt "$A/p.md"
   printf 'prior stream\n' > "$A/rarchive-codex-sol.stream.ndjson"
   mkdir -p "$archive_path"
   real_python=$(command -v python3)
@@ -592,10 +600,10 @@ SH
       "$SCRIPTS/rev-seat.sh" codex-sol "$A" archive "$A/p.md" >/dev/null
     assert_eq "archive recovery retains provider call $call" "$?" 0
   done
-  assert_eq "archive recovery retains all four provider launches" \
-    "$(wc -l < "$T/archive-calls" | tr -d ' ')" 4
+  assert_eq "archive recovery retains all four review launches and their bounded turns" \
+    "$(wc -l < "$T/archive-calls" | tr -d ' ')" 8
 
-  local D="$T/seat-corrupt-cap"; seat_roster "$D"; echo "review the diff" > "$D/p.md"
+  local D="$T/seat-corrupt-cap"; seat_roster "$D"; seat_codex_prompt "$D/p.md"
   : > "$T/corrupt-calls"
   SHIM_MODE=ok SHIM_CALLS_FILE="$T/corrupt-calls" \
     "$SCRIPTS/rev-seat.sh" codex-sol "$D" corrupt "$D/p.md" >/dev/null
@@ -603,12 +611,12 @@ SH
   SHIM_MODE=ok SHIM_CALLS_FILE="$T/corrupt-calls" \
     "$SCRIPTS/rev-seat.sh" codex-sol "$D" corrupt "$D/p.md" >/dev/null 2>&1
   assert_eq "corrupt persistent attempt state fails closed" "$?" 1
-  assert_eq "corrupt attempt state launches no replacement provider" \
-    "$(wc -l < "$T/corrupt-calls" | tr -d ' ')" 1
+  assert_eq "corrupt attempt state launches no replacement provider turn" \
+    "$(wc -l < "$T/corrupt-calls" | tr -d ' ')" 2
   assert_grep "corrupt attempt state preserves the prior completion exit" \
     "$D/rcorrupt-codex-sol.exit" '^0$'
 
-  local W="$T/seat-reserve-window"; seat_roster "$W"; echo "review the diff" > "$W/p.md"
+  local W="$T/seat-reserve-window"; seat_roster "$W"; seat_codex_prompt "$W/p.md"
   echo 0 > "$W/rblocked-codex-sol.exit"
   local python_bin="$T/reserve-python-bin" real_python reserve_pid reserve_rc i=0
   real_python=$(command -v python3)
@@ -643,22 +651,36 @@ SH
   assert_eq "blocked cap refusal exits with reserve status" "$reserve_rc" 7
   assert_grep "blocked cap refusal publishes a fresh exit" "$W/rblocked-codex-sol.exit" '^7$'
   assert_grep "blocked cap refusal persists its diagnostic" \
-    "$W/rblocked-codex-sol.log" '^persistent provider-call cap reached for this seat generation$'
+    "$W/rblocked-codex-sol.log" '^persistent adapter-launch cap reached for this seat generation$'
   seat_env_reset "$_path"
 }
 test_seat_zero_tool_incomplete_proof_keeps_its_retry() {
   local _path="$PATH"; seat_env
   local S="$T/seat-zero-tool-proof" bin="$T/seat-zero-tool-bin" label
-  seat_roster "$S"; echo "review the diff" > "$S/p.md"; mkdir -p "$bin"
+  seat_roster "$S"; seat_codex_prompt "$S/p.md"; mkdir -p "$bin"
   cat > "$bin/codex" <<'SH'
 #!/bin/bash
-printf '%s\n' call >> "$ZERO_TOOL_CALLS"
-[ "$(wc -l < "$ZERO_TOOL_CALLS" | tr -d ' ')" = 1 ] || exec "$SHIM_CODEX" "$@"
-out=""; prev=""
-for a in "$@"; do [ "$prev" = "-o" ] && out=$a; prev=$a; done
-cat > /dev/null
-echo '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"INCOMPLETE PROOF"}}'
-printf '%s\n' '{"summary":"INCOMPLETE PROOF: no assigned source was read","findings":[]}' > "$out"
+out=""; prev=""; schema=""
+for a in "$@"; do
+  [ "$prev" != "-o" ] || out=$a
+  [ "$prev" != "--output-schema" ] || schema=${a##*/}
+  prev=$a
+done
+if [ "$(wc -l < "$ZERO_TOOL_CALLS" | tr -d ' ')" -lt 2 ]; then
+  printf '%s\n' call >> "$ZERO_TOOL_CALLS"
+  cat > /dev/null
+  if [ "$schema" = review-turn.schema.json ]; then
+    printf '%s\n' '{"type":"thread.started","thread_id":"fixture-thread"}' '{"type":"turn.started"}' '{"type":"turn.completed"}'
+    printf '%s\n' '{"status":"ready","next_step":""}' > "$out"
+  else
+    printf '%s\n' '{"type":"thread.started","thread_id":"fixture-thread"}' '{"type":"turn.started"}' \
+      '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"INCOMPLETE PROOF"}}' \
+      '{"type":"turn.completed"}'
+    printf '%s\n' '{"summary":"INCOMPLETE PROOF: no assigned source was read","findings":[]}' > "$out"
+  fi
+  exit 0
+fi
+exec "$SHIM_CODEX" "$@"
 SH
   chmod +x "$bin/codex"
   SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" 2 "$S/p.md" >/dev/null 2>&1
@@ -672,7 +694,7 @@ SH
     PATH="$bin:$PATH" ZERO_TOOL_CALLS="$T/zero-tool-calls" SHIM_CODEX="$SHIMS/codex" SHIM_MODE=ok \
       "$SCRIPTS/rev-seat.sh" codex-sol "$S" "$label" "$S/p.md" >/dev/null 2>&1
     assert_eq "label $label: a zero-tool INCOMPLETE PROOF answer still gets its retry" "$?" 0
-    assert_eq "label $label: the answer and its retry are two provider calls" \
+    assert_eq "label $label: the initial incomplete review has two bounded Codex turns" \
       "$(wc -l < "$T/zero-tool-calls" | tr -d ' ')" 2
     assert_grep "label $label: the tool-using retry is the seat's result" \
       "$S/r$label-codex-sol.json" '"severity": ?"P1"'
@@ -682,32 +704,39 @@ SH
   seat_env_reset "$_path"
 }
 seat_incomplete_relaunch_case() {
-  local variant=$1 expected_calls=1 legacy=0 refusals=1 refusal relaunch_rc
+  local variant=$1 expected_calls=2 legacy=0 refusals=1 refusal relaunch_rc
   local _path="$PATH"; seat_env
   local S="$T/seat-incomplete-$variant" bin="$T/seat-incomplete-$variant-bin"
   local calls="$T/incomplete-$variant-calls" artifact
-  seat_roster "$S"; echo "review the diff" > "$S/p.md"; mkdir -p "$bin"
+  seat_roster "$S"; seat_codex_prompt "$S/p.md"; mkdir -p "$bin"
   cat > "$bin/codex" <<'SH'
 #!/bin/bash
-out=""; prev=""
-for a in "$@"; do [ "$prev" = "-o" ] && out=$a; prev=$a; done
-if [ "${INCOMPLETE_MODE:-}" = zero-tool ] && [ ! -s "$SHIM_CALLS_FILE" ]; then
+out=""; prev=""; schema=""
+for a in "$@"; do
+  [ "$prev" != "-o" ] || out=$a
+  [ "$prev" != "--output-schema" ] || schema=${a##*/}
+  prev=$a
+done
+if [ "${INCOMPLETE_MODE:-}" = zero-tool ] && [ ! -s "$SHIM_CALLS_FILE" ] \
+    && [ "$schema" = review-turn.schema.json ]; then
   printf '%s\n' call >> "$SHIM_CALLS_FILE"
   cat > /dev/null
-  echo '{"type":"item.completed","item":{"id":"answer","type":"agent_message","text":"INCOMPLETE PROOF"}}'
-  printf '%s\n' '{"summary":"INCOMPLETE PROOF: no assigned source was read","findings":[]}' > "$out"
+  printf '%s\n' '{"type":"thread.started","thread_id":"fixture-thread"}' '{"type":"turn.started"}' '{"type":"turn.completed"}'
+  printf '%s\n' '{"status":"ready","next_step":""}' > "$out"
   exit 0
 fi
 "$SHIM_CODEX" "$@" || exit
-printf '%s\n' '{"summary":"INCOMPLETE PROOF: the tool budget ran out with source unread","findings":[]}' > "$out"
+if [ "$schema" = findings.schema.json ]; then
+  printf '%s\n' '{"summary":"INCOMPLETE PROOF: the tool budget ran out with source unread","findings":[]}' > "$out"
+fi
 SH
   chmod +x "$bin/codex"
   : > "$calls"
-  [ "$variant" != zero-tool ] || expected_calls=2
+  [ "$variant" != zero-tool ] || expected_calls=4
   PATH="$bin:$PATH" SHIM_CODEX="$SHIMS/codex" INCOMPLETE_MODE="$variant" SHIM_MODE=ok SHIM_CALLS_FILE="$calls" \
     "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null 2>&1
   assert_eq "$variant: a tool-using incomplete launch exits 0" "$?" 0
-  assert_eq "$variant: only the initial launch and any internal retry call the provider" \
+  assert_eq "$variant: bounded review and findings turns are recorded for each launch" \
     "$(wc -l < "$calls" | tr -d ' ')" "$expected_calls"
   case "$variant" in
     legacy-*)
@@ -827,8 +856,8 @@ PY
   SHIM_MODE=ok SHIM_CALLS_FILE="$calls" \
     "$SCRIPTS/rev-seat.sh" codex-sol "$S" 2 "$S/p.md" >/dev/null 2>&1
   assert_eq "$variant: the same seat under the next label still launches" "$?" 0
-  assert_eq "$variant: only the sibling and later label spend new calls" \
-    "$(wc -l < "$calls" | tr -d ' ')" "$((expected_calls + 2))"
+  assert_eq "$variant: the sibling and later label each use their bounded review turns" \
+    "$(wc -l < "$calls" | tr -d ' ')" "$((expected_calls + 4))"
   seat_env_reset "$_path"
 }
 test_seat_incomplete_proof_refuses_a_relaunch() {
@@ -852,7 +881,7 @@ test_seat_unrecorded_failed_incomplete_proof_keeps_its_exact_retry() {
   local _path="$PATH"; seat_env
   local S="$T/seat-unrecorded-failure" bin="$T/unrecorded-failure-bin" real_python
   local calls="$T/unrecorded-failure-calls"
-  seat_roster "$S"; echo "review the diff" > "$S/p.md"; mkdir -p "$bin"
+  seat_roster "$S"; seat_codex_prompt "$S/p.md"; mkdir -p "$bin"
   : > "$calls"
   SHIM_MODE=ok SHIM_CALLS_FILE="$calls" \
     "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null 2>&1
@@ -892,8 +921,8 @@ PY
   SHIM_MODE=ok SHIM_CALLS_FILE="$calls" \
     "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null 2>&1
   assert_eq "the current failed incomplete launch keeps its real wrapper retry" "$?" 0
-  assert_eq "exactly one provider call is spent on the permitted retry" \
-    "$(wc -l < "$calls" | tr -d ' ')" 3
+  assert_eq "the permitted retry uses its bounded review and findings turns" \
+    "$(wc -l < "$calls" | tr -d ' ')" 6
   assert_grep "the retry's complete result replaces the failed incomplete result" \
     "$S/r1-codex-sol.json" '"severity": ?"P1"'
   assert_grep "the failed result remains available in the retained diagnostic" \
@@ -913,7 +942,7 @@ PY
   assert_eq "retry records the interrupted launch before its successor" "$?" 0
 
   local A="$T/seat-active-launch" active_calls="$T/active-launch-calls"
-  seat_roster "$A"; echo "review the diff" > "$A/p.md"
+  seat_roster "$A"; seat_codex_prompt "$A/p.md"
   : > "$active_calls"
   python3 - "$SCRIPTS/lib/rev-attempt.py" "$A" "$A/p.md" <<'PY'
 import importlib.util
@@ -993,7 +1022,7 @@ PY
 }
 test_seat_process_group_cancellation_preserves_partial_stream() {
   local _path="$PATH"; seat_env
-  local S="$T/seat-cancel"; seat_roster "$S"; echo "review the diff" > "$S/p.md"
+  local S="$T/seat-cancel"; seat_roster "$S"; seat_codex_prompt "$S/p.md"
   local child_file="$T/seat-cancel-child.pid" leader pgid child i=0
   set -m
   SHIM_MODE=hang_with_child SHIM_CHILD_PID_FILE="$child_file" \
@@ -1035,7 +1064,7 @@ test_seat_scope_env_selects_root_outside_repository() {
   local R="$T/scope-root'quoted" S="$T/seat-scope-root" CALLER="$T/caller"
   mkrepo "$R"
   seat_roster "$S"
-  echo "review the diff" > "$S/p.md"
+  seat_codex_prompt "$S/p.md"
   python3 - "$S/scope.env" "$R" <<'PY'
 import shlex
 import sys

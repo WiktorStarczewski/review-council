@@ -353,6 +353,7 @@ t-cost-session.sh::test_cost_session_watch_stops_on_declared_terminal_state	1	no
 t-cost-session.sh::test_cost_session_watch_without_duration_runs_until_terminal_state	1	normal
 t-cost-session.sh::test_cost_session_watch_uses_narrated_live_status	1	normal
 t-profile-usage.sh::test_profile_usage_normalizes_categories	1	normal
+t-profile-usage.sh::test_profile_usage_deltas_cumulative_codex_turns	1	normal
 t-profile-usage.sh::test_profile_usage_deduplicates_native_messages	1	normal
 t-profile-usage.sh::test_profile_usage_prefers_terminal_totals	1	normal
 t-profile-usage.sh::test_profile_usage_host_envelope_attribution	1	normal

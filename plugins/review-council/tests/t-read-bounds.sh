@@ -2704,6 +2704,7 @@ test_evidence_audit_failure_modes() {
     cat > "$S/malformed-evidence.md" <<'EOF'
 Evidence manifest SHA-256: 000000000000000000000000000000000000000000000000000000000000000
 Assigned scope: semantic
+use at most 4 repository tool calls before stopping this assignment.
 EOF
     SHIM_MODE=unbounded "$SCRIPTS/rev-seat.sh" codex-sol "$S" malformed \
       "$S/malformed-evidence.md" > "$T/malformed-evidence.out" 2>&1
@@ -2733,6 +2734,7 @@ PY
     cat > "$S/full-evidence.md" <<'EOF'
 Evidence manifest SHA-256: 0000000000000000000000000000000000000000000000000000000000000000
 Assigned scope: full
+use at most 4 repository tool calls before stopping this assignment.
 EOF
     SHIM_MODE=unbounded "$SCRIPTS/rev-seat.sh" codex-sol "$S" full "$S/full-evidence.md" --base fixture \
       > "$T/full-evidence.out" 2>&1
@@ -2748,7 +2750,7 @@ EOF
       "$S/rfull-codex-sol.log" 'retry|rerun'
 
     S="$T/audit-failure-legacy"; seat_roster "$S"
-    printf 'Assigned scope: full\n' > "$S/legacy.md"
+    printf 'Assigned scope: full\nuse at most 4 repository tool calls before stopping this assignment.\n' > "$S/legacy.md"
     SHIM_MODE=unbounded "$SCRIPTS/rev-seat.sh" codex-sol "$S" legacy "$S/legacy.md" \
       > "$T/legacy.out" 2>&1
     assert_eq "invalid legacy audit remains advisory" "$?" 0
@@ -2782,7 +2784,7 @@ SH
     for audit_mode in missing malformed inconsistent; do
       local audit_label="metadata-$audit_mode"
       S="$T/audit-failure-$audit_label"; seat_roster "$S"
-      printf 'Assigned scope: full\n' > "$S/legacy.md"
+      printf 'Assigned scope: full\nuse at most 4 repository tool calls before stopping this assignment.\n' > "$S/legacy.md"
       PATH="$audit_python:$real_python" REAL_PYTHON_PATH="$real_python" \
         AUDIT_SCRIPT="$SCRIPTS/lib/review-read-audit.py" AUDIT_SHIM_MODE="$audit_mode" \
         SHIM_MODE=unbounded "$SCRIPTS/rev-seat.sh" codex-sol "$S" "$audit_label" \
@@ -2811,7 +2813,8 @@ SH
 }
 
 test_adapter_isolation_and_cache_flags() {
-  ( seat_env; local S="$T/read-adapters"; seat_roster "$S"; printf 'full prompt\n' > "$S/p.md"
+  ( seat_env; local S="$T/read-adapters"; seat_roster "$S"
+    printf '%s\n' 'use at most 4 repository tool calls before stopping this assignment.' 'full prompt' > "$S/p.md"
     mkdir -p "$T/codex-state"; printf '{}\n' > "$T/codex-state/auth.json"
     CODEX_HOME="$T/codex-state" SHIM_MODE=ok "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null
     assert_grep "Codex ignores user config" "$T/args" '^--ignore-user-config$'
