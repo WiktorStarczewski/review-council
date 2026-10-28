@@ -4709,11 +4709,12 @@ def source_context_inputs(repo, snapshot, base_tree, evidence, components, plan_
                      if row.get('path') in boundaries or owns_candidate)
     paths.update(gate['path'] for gate in evidence['gates'])
     paths.update(site['path'] for cluster in plan_clusters or [] for site in cluster['paths'])
-    uncached = {entry[1]: entry for tree in (entries, base_entries)
-                for path, entry in tree.items() if path in paths
-                and entry[0] in ('100644', '100755') and entry[1] not in repo.blob_cache}
-    if uncached:
-        repo.preload(uncached, max_bytes=None)
+    if isinstance(repo, Repository):
+        uncached = {entry[1]: entry for tree in (entries, base_entries)
+                    for path, entry in tree.items() if path in paths
+                    and entry[0] in ('100644', '100755') and entry[1] not in repo.blob_cache}
+        if uncached:
+            repo.preload(uncached, max_bytes=None)
     blobs = {entry: repo.blob(entry) for tree in (entries, base_entries)
              for path, entry in tree.items() if path in paths and entry[0] in ('100644', '100755')}
     return entries, base_entries, blobs, {} if blob_lines is None else blob_lines
