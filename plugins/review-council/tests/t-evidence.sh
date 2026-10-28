@@ -3590,7 +3590,8 @@ def replacement_accepts_only_durable_provider_exit_3():
                      error='parent assignment has no recorded terminal failure')
 
 def quota_without_fallback_allows_recorded_exit_4_escalation():
-    for config in ({}, {'quota_fallback': False}, {'quota_fallback': True}):
+    for config in ({}, {'quota_fallback': False}, {'quota_fallback': True}, {'quota_fallback': None},
+                   {'quota_fallback': 'false'}):
         with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
             chain_identities = {
                 'sol': ('claude', 'sonnet', 'high'),
@@ -3610,7 +3611,7 @@ def quota_without_fallback_allows_recorded_exit_4_escalation():
             assert record_launch_bound(session, '9', 'sol', prompt, '4', token).returncode == 0
             (session / 'r9-sol.exit').write_text('4\n')
             args = ('--assignment', 'terra=' + parent['assignments']['sol']['bundle'], '--parent-assignment', '9:sol')
-            if config.get('quota_fallback') is True:
+            if config.get('quota_fallback', False) is not False:
                 call('prepare', session, '9x', '--phase', 'repair', *args, good=False,
                      error='parent assignment has no recorded terminal failure')
             else:
