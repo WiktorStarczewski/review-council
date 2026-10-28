@@ -3590,28 +3590,34 @@ def replacement_accepts_only_durable_provider_exit_3():
                      error='parent assignment has no recorded terminal failure')
 
 def quota_without_fallback_allows_recorded_exit_4_escalation():
-    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
-        chain_identities = {
-            'sol': ('claude', 'sonnet', 'high'),
-            'terra': ('codex', 'gpt-5.6-sol', 'high'),
-            'opus': ('codex', 'gpt-5.6-luna', 'high'),
-            'sonnet': ('agent', 'sonnet', 'high'),
-        }
-        (session / 'roster.json').write_text(json.dumps({'seats': [
-            {'seat': seat, 'extra': False, 'adapter': identity[0], 'model': identity[1], 'effort': identity[2]}
-            for seat, identity in chain_identities.items()]}))
-        (session / 'roster-config.json').write_text(json.dumps({'quota_fallback': False}))
-        parent = prepare('9', 'risk', *assign, '--full-seat', 'sonnet')
-        prompt = session / 'r9-sol.prompt.md'
-        prompt.write_text('review\n')
-        token = '1' * 32
-        assert reserve_launch_bound(session, '9', 'sol', prompt, token).returncode == 0
-        assert record_launch_bound(session, '9', 'sol', prompt, '4', token).returncode == 0
-        (session / 'r9-sol.exit').write_text('4\n')
-        child = prepare('9x', 'repair', '--assignment', 'terra=' + parent['assignments']['sol']['bundle'],
-                        '--parent-assignment', '9:sol')
-        assert child['parent_assignment']['seat'] == 'sol'
-        assert list(child['assignments']) == ['terra']
+    for config in ({}, {'quota_fallback': False}, {'quota_fallback': True}):
+        with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+            chain_identities = {
+                'sol': ('claude', 'sonnet', 'high'),
+                'terra': ('codex', 'gpt-5.6-sol', 'high'),
+                'opus': ('codex', 'gpt-5.6-luna', 'high'),
+                'sonnet': ('agent', 'sonnet', 'high'),
+            }
+            (session / 'roster.json').write_text(json.dumps({'seats': [
+                {'seat': seat, 'extra': False, 'adapter': identity[0], 'model': identity[1], 'effort': identity[2]}
+                for seat, identity in chain_identities.items()]}))
+            (session / 'roster-config.json').write_text(json.dumps(config))
+            parent = prepare('9', 'risk', *assign, '--full-seat', 'sonnet')
+            prompt = session / 'r9-sol.prompt.md'
+            prompt.write_text('review\n')
+            token = '1' * 32
+            assert reserve_launch_bound(session, '9', 'sol', prompt, token).returncode == 0
+            assert record_launch_bound(session, '9', 'sol', prompt, '4', token).returncode == 0
+            (session / 'r9-sol.exit').write_text('4\n')
+            args = ('--assignment', 'terra=' + parent['assignments']['sol']['bundle'], '--parent-assignment', '9:sol')
+            if config.get('quota_fallback') is True:
+                call('prepare', session, '9x', '--phase', 'repair', *args, good=False,
+                     error='parent assignment has no recorded terminal failure')
+            else:
+                child = prepare('9x', 'repair', *args)
+                assert child['parent_assignment']['seat'] == 'sol'
+                assert list(child['assignments']) == ['terra']
+
 
 def replacement_accepts_only_a_recorded_owned_provider_cancellation():
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
@@ -3719,6 +3725,38 @@ def record_provider_cancellation_binds_the_finished_attempts():
         call('prepare', session, '11x2', '--phase', 'repair', '--assignment',
              'sol=' + parent['assignments']['terra']['bundle'], '--parent-assignment', '11:terra',
              good=False, error='parent assignment has no recorded terminal failure')
+
+def recorded_quota_cancellation_requires_fallback_disabled():
+    for enabled in (False, True):
+        with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+            chain_identities = {
+                'sol': ('claude', 'opus', 'high'), 'terra': ('codex', 'gpt-5.6-sol', 'high'),
+                'opus': ('codex', 'gpt-5.6-luna', 'high'), 'sonnet': ('agent', 'sonnet', 'high'),
+            }
+            (session / 'roster.json').write_text(json.dumps({'seats': [
+                {'seat': seat, 'extra': False, 'adapter': identity[0], 'model': identity[1], 'effort': identity[2]}
+                for seat, identity in chain_identities.items()]}))
+            (session / 'roster-config.json').write_text(json.dumps({'quota_fallback': enabled}))
+            parent = prepare('11', 'risk', *assign, '--full-seat', 'sonnet')
+            for seat, code, token in (('opus', '4', '4' * 32), ('terra', '130', '5' * 32)):
+                prompt = session / f'r11-{seat}.prompt.md'
+                prompt.write_text('review\n')
+                assert reserve_launch_bound(session, '11', seat, prompt, token).returncode == 0
+                assert record_launch_bound(session, '11', seat, prompt, code, token).returncode == 0
+                (session / f'r11-{seat}.exit').write_text(code + '\n')
+            (session / 'r11-terra.started').write_text('cli\n33829\nMon Oct 26 21:42:00 2026\n')
+            recorded = subprocess.run([sys.executable, str(script.parent / 'lib' / 'rev-attempt.py'),
+                                       'record-provider-cancellation', session, '11', 'opus', 'terra',
+                                       'task-33829'], capture_output=True, text=True)
+            if enabled:
+                assert recorded.returncode != 0
+            else:
+                assert recorded.returncode == 0, recorded.stderr
+                event = json.loads((session / 'r11-terra.provider-recovery.json').read_text())
+                assert event['trigger_exit'] == 4 and event['cancellation_result'] == 130
+                child = prepare('11x', 'repair', '--assignment', 'sol=' + parent['assignments']['terra']['bundle'],
+                                '--parent-assignment', '11:terra')
+                assert child['parent_assignment']['seat'] == 'terra'
 
 def replacement_chain_reaches_opus():
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
@@ -5006,7 +5044,7 @@ cases = (
     nested_walks_reuse_cached_audits, replacement_runs_on_another_seat,
     replacement_accepts_only_durable_provider_exit_3, quota_without_fallback_allows_recorded_exit_4_escalation,
     replacement_accepts_only_a_recorded_owned_provider_cancellation,
-    record_provider_cancellation_binds_the_finished_attempts,
+    record_provider_cancellation_binds_the_finished_attempts, recorded_quota_cancellation_requires_fallback_disabled,
     replacement_chain_reaches_opus,
     incomplete_proof_is_never_a_valid_result, incomplete_proof_is_replaced_at_once,
     semantic_rejection_revokes_sealed_coverage,
@@ -5089,7 +5127,7 @@ groups = {
         replacement_runs_on_another_seat, replacement_accepts_only_durable_provider_exit_3,
         quota_without_fallback_allows_recorded_exit_4_escalation,
         replacement_accepts_only_a_recorded_owned_provider_cancellation,
-        record_provider_cancellation_binds_the_finished_attempts,
+        record_provider_cancellation_binds_the_finished_attempts, recorded_quota_cancellation_requires_fallback_disabled,
         replacement_chain_reaches_opus,
         incomplete_proof_is_never_a_valid_result,
         incomplete_proof_is_replaced_at_once, incomplete_proof_latches_only_its_label_and_seat,
