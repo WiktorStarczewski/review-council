@@ -1,0 +1,27 @@
+name: Source context batch verification
+on:
+  push:
+    branches: [ci/source-context-batch-green]
+permissions:
+  contents: read
+jobs:
+  verification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - run: test "$(git rev-parse HEAD^)" = 09dcb955056230b4f339e1abc554461d6b45c12e
+      - name: Verify batching and source-context guards
+        run: |
+          set -o pipefail
+          bash plugins/review-council/tests/run-tests.sh evidence_source_context_memo | tee result.log
+          grep -F 'PASS source_context_inputs_batches_uncached_blobs' result.log
+          grep -F 'PASS source_context_memo_validation_guards' result.log
+          grep -F 'PASS source_context_memo_reuses_shared_predecessor_reconstruction' result.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: source-context-batch-green
+          path: result.log
