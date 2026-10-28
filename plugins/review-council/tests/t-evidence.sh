@@ -3589,6 +3589,30 @@ def replacement_accepts_only_durable_provider_exit_3():
                 call('prepare', session, '9x', '--phase', 'repair', *child_args, good=False,
                      error='parent assignment has no recorded terminal failure')
 
+def quota_without_fallback_allows_recorded_exit_4_escalation():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        chain_identities = {
+            'sol': ('claude', 'sonnet', 'high'),
+            'terra': ('codex', 'gpt-5.6-sol', 'high'),
+            'opus': ('codex', 'gpt-5.6-luna', 'high'),
+            'sonnet': ('agent', 'sonnet', 'high'),
+        }
+        (session / 'roster.json').write_text(json.dumps({'seats': [
+            {'seat': seat, 'extra': False, 'adapter': identity[0], 'model': identity[1], 'effort': identity[2]}
+            for seat, identity in chain_identities.items()]}))
+        (session / 'roster-config.json').write_text(json.dumps({'quota_fallback': False}))
+        parent = prepare('9', 'risk', *assign, '--full-seat', 'sonnet')
+        prompt = session / 'r9-sol.prompt.md'
+        prompt.write_text('review\n')
+        token = '1' * 32
+        assert reserve_launch_bound(session, '9', 'sol', prompt, token).returncode == 0
+        assert record_launch_bound(session, '9', 'sol', prompt, '4', token).returncode == 0
+        (session / 'r9-sol.exit').write_text('4\n')
+        child = prepare('9x', 'repair', '--assignment', 'terra=' + parent['assignments']['sol']['bundle'],
+                        '--parent-assignment', '9:sol')
+        assert child['parent_assignment']['seat'] == 'sol'
+        assert list(child['assignments']) == ['terra']
+
 def replacement_accepts_only_a_recorded_owned_provider_cancellation():
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
         chain_identities = {
@@ -4980,7 +5004,7 @@ cases = (
     full_seat_requires_proven_reads, unenforced_agent_seat_binds_only_its_prompt,
     unenforced_audit_is_opt_in, unenforced_audit_cache_is_keyed_on_every_input,
     nested_walks_reuse_cached_audits, replacement_runs_on_another_seat,
-    replacement_accepts_only_durable_provider_exit_3,
+    replacement_accepts_only_durable_provider_exit_3, quota_without_fallback_allows_recorded_exit_4_escalation,
     replacement_accepts_only_a_recorded_owned_provider_cancellation,
     record_provider_cancellation_binds_the_finished_attempts,
     replacement_chain_reaches_opus,
@@ -5063,6 +5087,7 @@ groups = {
     ),
     'replacement': (
         replacement_runs_on_another_seat, replacement_accepts_only_durable_provider_exit_3,
+        quota_without_fallback_allows_recorded_exit_4_escalation,
         replacement_accepts_only_a_recorded_owned_provider_cancellation,
         record_provider_cancellation_binds_the_finished_attempts,
         replacement_chain_reaches_opus,
