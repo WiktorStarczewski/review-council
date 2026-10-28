@@ -1218,6 +1218,12 @@ def source_context_inputs_batches_uncached_blobs():
         for i, path in enumerate(paths):
             assert blobs[entries[path]] == f'def batch{i}():\n    return {i}\n'.encode()
         assert not single_blob_reads, f'source inputs launched {len(single_blob_reads)} per-blob Git reads'
+        large = b'x' * 2_000_001
+        (root / 'large.bin').write_bytes(large)
+        oid = git('hash-object', '-w', 'large.bin')
+        entry = ('100644', oid)
+        assert dict(repo.iter_blobs({'large.bin': entry}))['large.bin'] == module.OVERSIZED_BLOB
+        assert dict(repo.iter_blobs({'large.bin': entry}, max_bytes=None))['large.bin'] == large
 
 def source_context_memo_validation_guards():
     with fixture() as (root, session, git, write, call, prepare, finish):
