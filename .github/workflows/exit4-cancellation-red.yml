@@ -1,0 +1,29 @@
+name: Exit 4 replacement regression
+on:
+  push:
+    branches: [ci/exit4-cancellation-red]
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - run: test "$(git rev-parse HEAD^)" = 23fe29bd716c476c1c260716a0622d3d86dc93f7
+      - name: Verify expected failure
+        run: |
+          set +e
+          bash plugins/review-council/tests/run-tests.sh evidence_hardening_replacement > result.log 2>&1
+          status=$?
+          cat result.log
+          test "$status" -ne 0
+          grep -F 'FAIL quota_without_fallback_allows_recorded_exit_4_escalation' result.log
+          grep -F 'FAIL recorded_quota_cancellation_requires_fallback_disabled' result.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: exit4-regression
+          path: result.log
