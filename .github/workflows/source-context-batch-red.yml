@@ -1,0 +1,29 @@
+name: Source context batch regression
+on:
+  push:
+    branches: [ci/source-context-batch-red]
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - run: test "$(git rev-parse HEAD^)" = 0dbf65bee3fba64f1ccd70ec1e552fd28f75f213
+      - name: Verify expected per-blob regression
+        run: |
+          set +e
+          bash plugins/review-council/tests/run-tests.sh evidence_source_context_memo > result.log 2>&1
+          status=$?
+          cat result.log
+          test "$status" -ne 0
+          grep -F 'FAIL source_context_inputs_batches_uncached_blobs' result.log
+          grep -F 'per-blob Git reads' result.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: source-context-batch-red
+          path: result.log
