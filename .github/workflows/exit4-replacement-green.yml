@@ -1,0 +1,26 @@
+name: Exit 4 replacement verification
+on:
+  push:
+    branches: [ci/exit4-replacement-green]
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - run: test "$(git rev-parse HEAD^)" = e8bc162ed33f470b81a196fa81a759a10873d8ec
+      - name: Verify replacement and cancellation proofs
+        run: |
+          set -o pipefail
+          bash plugins/review-council/tests/run-tests.sh evidence_hardening_replacement | tee result.log
+          grep -F 'PASS quota_without_fallback_allows_recorded_exit_4_escalation' result.log
+          grep -F 'PASS recorded_quota_cancellation_requires_fallback_disabled' result.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: exit4-verification
+          path: result.log
