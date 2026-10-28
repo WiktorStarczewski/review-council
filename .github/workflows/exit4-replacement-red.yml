@@ -1,0 +1,29 @@
+name: Exit 4 replacement regression
+on:
+  push:
+    branches: [ci/exit4-replacement-red]
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - run: test "$(git rev-parse HEAD^)" = 387f55d2e299fe3649305f8d346d2b1e2b37d3bb
+      - name: Verify expected failure
+        run: |
+          set +e
+          bash plugins/review-council/tests/run-tests.sh evidence_hardening_replacement > result.log 2>&1
+          status=$?
+          cat result.log
+          test "$status" -ne 0
+          grep -F 'FAIL quota_without_fallback_allows_recorded_exit_4_escalation' result.log
+          grep -F 'parent assignment has no recorded terminal failure' result.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: exit4-regression
+          path: result.log
