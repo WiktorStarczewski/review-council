@@ -1,0 +1,28 @@
+name: Profiler base-packet verification
+on:
+  push:
+    branches: [ci/profile-base-packets-green]
+permissions:
+  contents: read
+jobs:
+  verification:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - run: test "$(git rev-parse HEAD^)" = 8bd05d2d991d47dac43edbe245d90b17bbbb615a
+      - name: Verify packet accounting and invalid-count guards
+        shell: bash
+        run: |
+          set -o pipefail
+          bash plugins/review-council/tests/run-tests.sh profile_source_context_activity | tee result.log
+          grep -F 'ok   profile counts base-tree packet ranges without claiming citation credit' result.log
+          grep -F 'ok   profile rejects fewer packets than credited packet ranges' result.log
+          grep -F 'ok   profile rejects more source batches than source read calls' result.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: profile-base-packets-green
+          path: result.log
