@@ -14,7 +14,7 @@ jobs:
           fetch-depth: 2
       - name: Bind exact source and pass baseline
         run: |
-          test "$(git rev-parse HEAD^)" = 1ef890d2020beaae60304e153d805d5fe6c4c22f
+          git merge-base --is-ancestor 1ef890d2020beaae60304e153d805d5fe6c4c22f "$GITHUB_SHA"
           git checkout --detach 1ef890d2020beaae60304e153d805d5fe6c4c22f
           test "$(git rev-parse HEAD^{tree})" = 7607bed8e33fa68a00a35b1effc51d22402fc565
           bash plugins/review-council/tests/run-tests.sh profile_source_context_activity > baseline.log 2>&1
