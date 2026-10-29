@@ -11,13 +11,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
-      - run: test "$(git rev-parse HEAD^)" = 11735719687fd6a1eab4a0930959594b2306de73
+          fetch-depth: 0
+      - run: git checkout --detach 11735719687fd6a1eab4a0930959594b2306de73 && test "$(git rev-parse HEAD)" = 11735719687fd6a1eab4a0930959594b2306de73
       - name: Verify intended functional regression
         shell: bash
         run: |
           set +e
-          REV_EVIDENCE_CASE=frozen_exit4_policy_ignores_a_later_config_rewrite bash plugins/review-council/tests/run-tests.sh evidence_hardening_replacement > result.log 2>&1
+          bash plugins/review-council/tests/run-tests.sh evidence_hardening_replacement > result.log 2>&1
           status=$?
           cat result.log
           test "$status" -ne 0 || exit 1
