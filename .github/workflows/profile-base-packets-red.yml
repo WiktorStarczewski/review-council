@@ -1,0 +1,30 @@
+name: Profiler base-packet expected red
+on:
+  push:
+    branches: [ci/profile-base-packets-red]
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - run: test "$(git rev-parse HEAD^)" = 3c8922768ae75d5dfd2e1d32ab39a7f6fd41d7da
+      - name: Verify expected profiler failure
+        shell: bash
+        run: |
+          set +e
+          bash plugins/review-council/tests/run-tests.sh profile_source_context_activity > result.log 2>&1
+          status=$?
+          cat result.log
+          test "$status" -ne 0 || exit 1
+          grep -F 'FAIL profile counts base-tree packet ranges without claiming citation credit' result.log
+          test "$(grep -c '  FAIL ' result.log)" -eq 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: profile-base-packets-red
+          path: result.log
