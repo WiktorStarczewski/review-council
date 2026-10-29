@@ -1,0 +1,54 @@
+name: Profiler malformed range reversal proof
+on:
+  push:
+    branches: [ci/profile-malformed-reversal]
+permissions:
+  contents: read
+jobs:
+  reversal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Bind exact source and pass baseline
+        run: |
+          test "$(git rev-parse HEAD^)" = 1ef890d2020beaae60304e153d805d5fe6c4c22f
+          git checkout --detach 1ef890d2020beaae60304e153d805d5fe6c4c22f
+          test "$(git rev-parse HEAD^{tree})" = 7607bed8e33fa68a00a35b1effc51d22402fc565
+          bash plugins/review-council/tests/run-tests.sh profile_source_context_activity > baseline.log 2>&1
+          cat baseline.log
+          grep -F 'profile rejects malformed shard ranges' baseline.log
+      - name: Reverse validated range behavior and prove the intended assertion
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('plugins/review-council/scripts/rev-profile.py')
+          s = p.read_text()
+          old = '''                        try:
+                              validated, _validated_hash = evidence_validator()(
+                                  manifests[0], fresh=False, offline=True)
+                              validated_shards = validated["source_context"]["seats"][seat]["shards"]
+                              assigned_ranges = sum(len(shard["ranges"]) for shard in validated_shards)
+                          except Exception as error:
+                              raise ValueError("invalid source evidence audit structure") from error'''
+          new = '                        assigned_ranges = sum(len(shard["ranges"]) for shard in shards)'
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, new))
+          PY
+          set +e
+          bash plugins/review-council/tests/run-tests.sh profile_source_context_activity > reversal.log 2>&1
+          status=$?
+          set -e
+          cat reversal.log
+          test "$status" -ne 0
+          grep -F 'FAIL profile rejects malformed shard ranges' reversal.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: profile-malformed-reversal
+          path: |
+            baseline.log
+            reversal.log
