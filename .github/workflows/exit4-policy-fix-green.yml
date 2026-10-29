@@ -1,0 +1,19 @@
+name: Exit 4 policy fix focused proof
+on:
+  push:
+    branches: [ci/exit4-policy-fix-green]
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - run: test "$(git rev-parse HEAD^)" = c7d78449a0d78baffe98b3fac6bf462476f56e68
+      - name: Verify replacement evidence
+        run: bash plugins/review-council/tests/run-tests.sh evidence_hardening_replacement
+      - name: Verify panel request policy
+        run: python3 -m unittest discover -s tests -p test_panel_request.py -v
