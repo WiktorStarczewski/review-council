@@ -4066,6 +4066,34 @@ def preflight_sidecar_substitution_cannot_authorize_exit4():
             assert 'policy' in result.stderr.lower(), result.stderr
 
 
+def post_prepare_manifest_policy_cannot_authorize_exit4():
+    for coordinated in (False, True):
+        with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+            cancellation_roster(session)
+            config = {'quota_fallback': True}
+            (session / 'roster-config.json').write_text(json.dumps(config))
+            attempt, _ = write_fallback_policy(session, config)
+            parent = prepare('9', 'risk', *assign, '--full-seat', 'sonnet')
+            manifest_path = session / 'r9-evidence.manifest.json'
+            for seat, code, token in (('sol', '4', '1' * 32), ('opus', '4', '4' * 32),
+                                      ('terra', '130', '5' * 32)):
+                prompt = session / f'r9-{seat}.prompt.md'
+                prompt.write_text('Evidence manifest SHA-256: ' + hashlib.sha256(manifest_path.read_bytes()).hexdigest() + '\n')
+                assert reserve_launch_bound(session, '9', seat, prompt, token).returncode == 0
+                assert record_launch_bound(session, '9', seat, prompt, code, token).returncode == 0
+                (session / f'r9-{seat}.exit').write_text(code + '\n')
+            (session / 'r9-terra.started').write_text('cli\n33829\nMon Oct 26 21:42:00 2026\n')
+            parent['fallback_policy'] = attempt.fallback_policy_document(True)
+            manifest_path.write_text(json.dumps(parent))
+            if coordinated:
+                (session / 'fallback-policy.json').write_bytes(attempt.fallback_policy_bytes(True))
+            refuse_exit4(session, '9x', 'terra=' + parent['assignments']['sol']['bundle'], '9:sol')
+            recorded = subprocess.run([sys.executable, str(script.parent / 'lib' / 'rev-attempt.py'),
+                                       'record-provider-cancellation', session, '9', 'opus', 'terra',
+                                       'task-33829'], capture_output=True, text=True)
+            assert recorded.returncode != 0, 'manifest mutation cannot authorize exit-4 cancellation'
+
+
 def initialized_session_without_sidecar_refuses_exit4_replacement():
     for config in ({}, {'quota_fallback': False}):
         with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
@@ -5511,6 +5539,7 @@ cases = (
     frozen_exit4_policy_ignores_a_later_config_rewrite,
     legacy_manifests_stay_valid_without_exit4_eligibility,
     preflight_policy_blocks_enabled_to_disabled_rewrite, preflight_sidecar_substitution_cannot_authorize_exit4,
+    post_prepare_manifest_policy_cannot_authorize_exit4,
     initialized_session_without_sidecar_refuses_exit4_replacement,
     replacement_accepts_only_a_recorded_owned_provider_cancellation,
     record_provider_cancellation_binds_the_finished_attempts, recorded_quota_cancellation_requires_fallback_disabled,
@@ -5598,6 +5627,7 @@ groups = {
         frozen_exit4_policy_ignores_a_later_config_rewrite,
         legacy_manifests_stay_valid_without_exit4_eligibility,
         preflight_policy_blocks_enabled_to_disabled_rewrite, preflight_sidecar_substitution_cannot_authorize_exit4,
+        post_prepare_manifest_policy_cannot_authorize_exit4,
         initialized_session_without_sidecar_refuses_exit4_replacement,
         replacement_accepts_only_a_recorded_owned_provider_cancellation,
         record_provider_cancellation_binds_the_finished_attempts, recorded_quota_cancellation_requires_fallback_disabled,
