@@ -9,29 +9,15 @@ jobs:
           fetch-depth: 0
       - name: Bind source and instrument the CI checkout
         run: |
-          test "$(git rev-parse HEAD^)" = dc296b8dbdfa380cb123970a489084bad5670767
+          git diff --exit-code dc296b8dbdfa380cb123970a489084bad5670767 -- plugins/review-council
           python3 - <<'PY'
           from pathlib import Path
           p = Path('plugins/review-council/scripts/rev-profile.py')
           s = p.read_text()
-          s = s.replace('    return module.validated_manifest\n', '''    def measured(*args, **kwargs):
-              import os, time
-              start = time.perf_counter()
-              try:
-                  return module.validated_manifest(*args, **kwargs)
-              finally:
-                  with open(os.environ["PROFILE_BENCH_LOG"], "a") as log:
-                      log.write("validation\\t%.9f\\t%s\\n" % (time.perf_counter() - start, args[0]))
-          return measured
-          ''', 1)
-          s = s.replace('if __name__ == "__main__":\n    main()', '''if __name__ == "__main__":
-              import os, time
-              start = time.perf_counter()
-              try:
-                  main()
-              finally:
-                  with open(os.environ["PROFILE_BENCH_LOG"], "a") as log:
-                      log.write("profile\\t%.9f\\n" % (time.perf_counter() - start))''', 1)
+          wrapper = "    def measured(*args, **kwargs):\n        import os, time\n        start = time.perf_counter()\n        try:\n            return module.validated_manifest(*args, **kwargs)\n        finally:\n            with open(os.environ[\"PROFILE_BENCH_LOG\"], \"a\") as log:\n                log.write(\"validation\\t%.9f\\t%s\\n\" % (time.perf_counter() - start, args[0]))\n    return measured\n"
+          s = s.replace('    return module.validated_manifest\n', wrapper, 1)
+          tail = "if __name__ == \"__main__\":\n    import os, time\n    start = time.perf_counter()\n    try:\n        main()\n    finally:\n        with open(os.environ[\"PROFILE_BENCH_LOG\"], \"a\") as log:\n            log.write(\"profile\\t%.9f\\n\" % (time.perf_counter() - start))"
+          s = s.replace('if __name__ == "__main__":\n    main()', tail, 1)
           p.write_text(s)
           PY
       - name: Measure generated four-seat fixture
