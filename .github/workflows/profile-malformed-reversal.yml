@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
       - name: Bind exact source and pass baseline
         run: |
           git merge-base --is-ancestor 1ef890d2020beaae60304e153d805d5fe6c4c22f "$GITHUB_SHA"
