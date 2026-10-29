@@ -1,0 +1,39 @@
+name: Source context contract verification
+on:
+  push:
+    branches: [ci/profile-final-contract]
+permissions:
+  contents: read
+jobs:
+  contract:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Bind source and recreate checker paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = dc296b8dbdfa380cb123970a489084bad5670767
+          sudo mkdir -p /Users/celrisen
+          sudo chown "$(id -un)" /Users/celrisen
+          git clone --no-hardlinks "$GITHUB_WORKSPACE" /Users/celrisen/review-council-profile-base-packets
+          git -C /Users/celrisen/review-council-profile-base-packets checkout --detach dc296b8dbdfa380cb123970a489084bad5670767
+          mkdir -p /Users/celrisen/.codex/plugins/cache/review-council/review-council/0.8.15
+          git archive b76ca7c6ec1b8b86c54b8df91bea27866ab07424 plugins/review-council | tar -xf - --strip-components=2 -C /Users/celrisen/.codex/plugins/cache/review-council/review-council/0.8.15
+      - name: Install ripgrep
+        run: brew install ripgrep
+      - name: Run exact checker contract
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/contract-session" proof
+          python3 /Users/celrisen/.codex/plugins/cache/review-council/review-council/0.8.15/scripts/rev-contract-check.py \
+            --root /Users/celrisen/review-council-profile-base-packets --session "$RUNNER_TEMP/contract-session" \
+            --base 1c51a2202247a90af06d422f3fa13da31edab116 --static-check --static-result "$GITHUB_WORKSPACE/proof/static-contract.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: profile-final-contract
+          path: proof/
