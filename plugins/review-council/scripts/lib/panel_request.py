@@ -6,10 +6,12 @@ seat them, and four Luna seats otherwise. Off Cursor it is four Luna seats.
 `4*luna` or `4*grok` replaces that preset. The user's permanent config is left
 untouched. Later panels read the frozen roster this config produces.
 """
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import tempfile
 
 
 HOSTS = ('claude', 'codex', 'cursor')
@@ -194,6 +196,32 @@ def sdk_ready():
     return bool(runtime and receipt and Path(runtime).is_dir() and Path(receipt).is_file())
 
 
+def _attempt_policy():
+    cached = getattr(_attempt_policy, 'module', None)
+    if cached is not None:
+        return cached
+    path = Path(__file__).with_name('rev-attempt.py')
+    spec = importlib.util.spec_from_file_location('rev_attempt_policy', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    _attempt_policy.module = module
+    return module
+
+
+def _install_policy(path, raw):
+    descriptor, temporary = tempfile.mkstemp(prefix='.fallback-policy.', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 def write_session(session, text, base_path=None, host=None, grok_ready=None):
     """Write the session roster and return its path. The default mode is normal."""
     host = host or os.environ.get('REVIEW_COUNCIL_HOST') or 'claude'
@@ -220,9 +248,20 @@ def write_session(session, text, base_path=None, host=None, grok_ready=None):
         }
     session = Path(session)
     session.mkdir(parents=True, exist_ok=True)
+    attempt = _attempt_policy()
+    from session_inputs import (
+        SessionInputsError, find_evidence_seal, preflight_inputs_present, session_input_lock)
     config_path = session / 'roster-config.json'
-    _write(session / 'panel-request.json', request)
-    _write(config_path, config)
+    policy = attempt.fallback_policy_bytes(attempt.eligible_document(config))
+    try:
+        with session_input_lock(session):
+            if find_evidence_seal(session) is not None or preflight_inputs_present(session):
+                raise ValueError('session policy is sealed')
+            _write(session / 'panel-request.json', request)
+            _write(config_path, config)
+            _install_policy(session / 'fallback-policy.json', policy)
+    except SessionInputsError as error:
+        raise ValueError(str(error)) from error
     return config_path
 
 

@@ -47,7 +47,7 @@ preflight choice.
    ```bash
    python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-panel-request.py --text "<the user request>" --session "$S" --base "${REVIEW_COUNCIL_CONFIG:-$HOME/.config/review-council/config.json}"
    ```
-   A printed path is `$S/roster-config.json`. Pass it as `REVIEW_COUNCIL_CONFIG` for this preflight only. Do not edit the user's config. A non-zero exit is fatal: relay it and do not preflight. Then:
+   A printed path is `$S/roster-config.json`. Pass it as `REVIEW_COUNCIL_CONFIG` for this preflight only. Do not edit the user's config. That write freezes exit-4 eligibility in `$S/fallback-policy.json` before preflight, and once any of `scope.env`, `roster.json`, `files.txt`, or `untracked.txt` exists, or an evidence manifest exists, panel-request must refuse and leave the sealed policy unchanged. An initialized session that has those inputs and no `$S/fallback-policy.json` has no provable exit-4 policy, so prepare omits eligibility and does not read `roster-config.json`. A non-zero exit is fatal: relay it and do not preflight. Then:
    ```bash
    ${CLAUDE_PLUGIN_ROOT}/scripts/rev-preflight.sh --scope <branch|uncommitted|path> --write $S [--pr <number>]
    ```

@@ -345,6 +345,7 @@ Exit 3 or 4 must cancel that provider's pending siblings. Exit 3 never enters qu
 retry through `rev-workhorse.py escalate`, which honors a matching per-review override and otherwise selects the next higher enforced seat; if that fails, finish the lens yourself. On exit 4,
 when the configuration sets `quota_fallback` to `true`, preserve
 the prior roster, streams, prompt identities, and scope identity, then run preflight again against a fresh sibling session.
+When `quota_fallback` is disabled, escalate the recorded exit-4 assignment through the configured replacement chain. Preserve all valid siblings and their receipts.
 For an Agent seat, accept quota classification only from platform terminal metadata, never reviewer prose.
 Never run quota fallback preflight against the original session. Pass the failed seat into the rerun explicitly:
 
@@ -386,7 +387,7 @@ configuration. Interrupt only pending sessions. Never cancel a completed valid s
 before its terminal state is preserved, and preserve every partial stream and log for
 diagnosis.
 
-When exit 3 cancels a pending same-provider sibling, first wait for its owned handle to
+When exit 3, or exit 4 with quota fallback disabled, cancels a pending same-provider sibling, first wait for its owned handle to
 finish and for `rev-seat.sh` to record the signal exit. Bind that cancellation before
 preparing any replacement child:
 
@@ -395,10 +396,9 @@ python3 "$PLUGIN/scripts/lib/rev-attempt.py" record-provider-cancellation \
   "$S" "$PANEL_LABEL" "$FAILED_SEAT" "$CANCELLED_SEAT" "$HANDLE"
 ```
 
-Record one event for each cancelled sibling. The command requires the trigger's completed
-exit 3, the sibling's recorded signal exit and start marker, and the same enforced
-provider adapter. It binds both attempt records and prompt identities. Exit 4 keeps its
-quota-fallback path and never uses a replacement child.
+Record one event for each cancelled sibling. The command requires the trigger's completed exit 3, or exit 4 when quota fallback is disabled,
+the sibling's recorded signal exit and start marker, and the same enforced
+provider adapter. It binds both attempt records and prompt identities. When quota fallback is enabled, exit 4 uses its quota-fallback path rather than a replacement child.
 
 Exit 7 is local attempt exhaustion, not provider quota. Preserve valid siblings and finish the missing assignment yourself without another repair child.
 

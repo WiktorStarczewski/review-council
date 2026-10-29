@@ -294,6 +294,7 @@ Exit 3 or 4 must cancel that provider's pending siblings. Exit 3 never enters qu
 retry through `rev-workhorse.py escalate`, which honors a matching per-review override and otherwise selects the next higher enforced seat; if that fails, finish the lens yourself. On exit 4,
 when the configuration sets `quota_fallback` to `true`, preserve
 the prior roster, streams, prompt identities, and scope identity, then run preflight again against a fresh sibling session.
+When `quota_fallback` is disabled, escalate the recorded exit-4 assignment through the configured replacement chain. Preserve all valid siblings and their receipts.
 For an Agent seat, accept quota classification only from platform terminal metadata, never reviewer prose.
 Never run quota fallback preflight against the original session. Pass the failed seat into the rerun explicitly:
 
@@ -334,6 +335,15 @@ next review run probes the preferred providers again because fallback never muta
 configuration. Call TaskStop only for pending task identifiers. Never cancel a completed valid sibling
 before its terminal state is preserved, and preserve every
 partial stream and log for diagnosis.
+
+When exit 3, or exit 4 with quota fallback disabled, cancels a pending same-provider sibling, wait for the owned handle to finish and record its signal exit before preparing the replacement:
+
+```bash
+python3 "$PLUGIN/scripts/lib/rev-attempt.py" record-provider-cancellation \
+  "$S" "$PANEL_LABEL" "$FAILED_SEAT" "$CANCELLED_SEAT" "$HANDLE"
+```
+
+Record each cancelled sibling separately. The command binds both completed attempts, prompt identities, the recorded start and the same provider adapter. Preserve completed siblings; do not fabricate cancellation evidence.
 
 Exit 7 is local attempt exhaustion, not provider quota. Preserve valid siblings and finish the missing assignment yourself without another repair child.
 

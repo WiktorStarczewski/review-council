@@ -320,7 +320,9 @@ def provider_cancellation(session: Path, panel: str, seat: str, cancelled: dict)
         started_identity = private_bytes(started).decode('utf-8')
     except (OSError, UnicodeDecodeError, ValueError):
         return False
-    if (cancelled_seat != seat or trigger_exit != 3
+    if (cancelled_seat != seat or type(trigger_exit) is not int
+            or (trigger_exit == 4 and (type(record.get('schema_version')) is not int or record['schema_version'] != 1))
+            or (trigger_exit != 3 and not (trigger_exit == 4 and quota_escalation_without_fallback(session, panel)))
             or str(cancellation_exit) != cancelled['exit']
             or cancellation_exit not in (129, 130, 143)
             or record.get('started_identity') != started_identity
@@ -329,7 +331,7 @@ def provider_cancellation(session: Path, panel: str, seat: str, cancelled: dict)
         return False
     trigger_prompt = session / f'r{panel}-{trigger_seat}.prompt.md'
     trigger = completed_attempt(session, panel, trigger_seat, trigger_prompt)
-    if trigger is None or trigger['exit'] != '3':
+    if trigger is None or trigger['exit'] != str(trigger_exit):
         return False
     if type(record.get('schema_version')) is int and record['schema_version'] == 1:
         expected = {'schema_version', 'panel', 'trigger_seat', 'trigger_exit',
@@ -360,6 +362,38 @@ def provider_cancellation(session: Path, panel: str, seat: str, cancelled: dict)
     return True
 
 
+def eligible_document(config) -> bool:
+    return isinstance(config, dict) and config.get('quota_fallback', False) is False
+
+
+def fallback_policy_document(eligible) -> dict:
+    canonical = json.dumps(
+        {'quota_escalation_without_fallback': eligible},
+        sort_keys=True, separators=(',', ':')) + '\n'
+    return {
+        'schema_version': 1,
+        'quota_escalation_without_fallback': eligible,
+        'sha256': hashlib.sha256(canonical.encode()).hexdigest(),
+    }
+
+
+def fallback_policy_bytes(eligible) -> bytes:
+    return (json.dumps(fallback_policy_document(eligible), sort_keys=True,
+                       separators=(',', ':')) + '\n').encode()
+
+
+def quota_escalation_without_fallback(session: Path, panel: str) -> bool:
+    safe = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-')
+    if not isinstance(panel, str) or not panel or not set(panel) <= safe:
+        return False
+    try:
+        document = json.loads(private_bytes(session / f'r{panel}-evidence.manifest.json'))
+    except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError, RecursionError):
+        return False
+    return (isinstance(document, dict) and document.get('label') == panel
+            and document.get('fallback_policy') == fallback_policy_document(True))
+
+
 def terminal_failure(session: Path, panel: str, seat: str, prompt: Path) -> bool:
     """The assignment failed for good under a recorded audit, provider, or retry outcome."""
     if (semantic_rejection(session, panel, seat) is not None
@@ -368,6 +402,8 @@ def terminal_failure(session: Path, panel: str, seat: str, prompt: Path) -> bool
     attempt = completed_attempt(session, panel, seat, prompt)
     if attempt is not None:
         if attempt['exit'] in PROVIDER_FAILURE_EXITS:
+            return True
+        if attempt['exit'] == '4' and quota_escalation_without_fallback(session, panel):
             return True
         if attempt['exit'] in PROVIDER_CANCELLATION_EXITS:
             return provider_cancellation(session, panel, seat, attempt)
@@ -415,7 +451,9 @@ def record_provider_cancellation(session: Path, panel: str, trigger_seat: str,
         cancelled_prompt = session / f'r{panel}-{cancelled_seat}.prompt.md'
         trigger = completed_attempt(session, panel, trigger_seat, trigger_prompt)
         cancelled = completed_attempt(session, panel, cancelled_seat, cancelled_prompt)
-        if (trigger is None or trigger['exit'] != '3' or cancelled is None
+        if (trigger is None
+                or (trigger['exit'] != '3' and not (trigger['exit'] == '4' and quota_escalation_without_fallback(session, panel)))
+                or cancelled is None
                 or cancelled['exit'] not in PROVIDER_CANCELLATION_EXITS
                 or roster_adapter(session, trigger_seat) is None
                 or roster_adapter(session, trigger_seat) != roster_adapter(session, cancelled_seat)):
@@ -430,7 +468,7 @@ def record_provider_cancellation(session: Path, panel: str, trigger_seat: str,
             'schema_version': 1,
             'panel': panel,
             'trigger_seat': trigger_seat,
-            'trigger_exit': 3,
+            'trigger_exit': int(trigger['exit']),
             'trigger_prompt_sha256': trigger_identity['prompt_sha256'],
             'trigger_attempt_sha256': trigger['sha256'],
             'cancelled_seat': cancelled_seat,
