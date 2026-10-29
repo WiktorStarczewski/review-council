@@ -1197,6 +1197,34 @@ def coverage_reference(session, label):
     raw = path.read_bytes()
     return {'receipt': path.name, 'sha256': module.digest(raw)}
 
+def source_context_inputs_batches_uncached_blobs():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        paths = [f'src/batch{i}.py' for i in range(12)]
+        for i, path in enumerate(paths):
+            write(path, f'def batch{i}():\n    return {i}\n')
+        manifest = prepare('batch', 'risk', *assign)
+        repo = module.Repository(session.resolve())
+        original_git = repo.git
+        single_blob_reads = []
+        def traced_git(*args, **kwargs):
+            if args[:2] == ('cat-file', 'blob'):
+                single_blob_reads.append(args[2])
+            return original_git(*args, **kwargs)
+        repo.git = traced_git
+        evidence = {'symbols': [], 'call_sites': [], 'related_tests': [], 'unresolved_imports': [], 'gates': []}
+        entries, _, blobs, _ = module.source_context_inputs(
+            repo, manifest['snapshot_tree'], manifest['base_tree'], evidence,
+            [{'files': paths, 'boundary': []}])
+        for i, path in enumerate(paths):
+            assert blobs[entries[path]] == f'def batch{i}():\n    return {i}\n'.encode()
+        assert not single_blob_reads, f'source inputs launched {len(single_blob_reads)} per-blob Git reads'
+        large = b'x' * 2_000_001
+        (root / 'large.bin').write_bytes(large)
+        oid = git('hash-object', '-w', 'large.bin')
+        entry = ('100644', oid)
+        assert dict(repo.iter_blobs({'large.bin': entry}))['large.bin'] == module.OVERSIZED_BLOB
+        assert dict(repo.iter_blobs({'large.bin': entry}, max_bytes=None))['large.bin'] == large
+
 def source_context_memo_validation_guards():
     with fixture() as (root, session, git, write, call, prepare, finish):
         prepare('seed', 'risk', *assign)
@@ -5013,7 +5041,7 @@ cases = (
     binary_files_are_hash_pointers,
     conservative_mechanical_classification, bounded_navigation_markdown, opaque_transitions,
     opaque_mode_transition, invalid_manifests, phase_and_predecessor_integrity,
-    source_context_memo_validation_guards,
+    source_context_inputs_batches_uncached_blobs, source_context_memo_validation_guards,
     source_context_memo_reuses_shared_predecessor_reconstruction,
     cumulative_verification_routing, verification_delta_retains_restored_path_source_context,
     verification_delta_source_context_controls, verification_nested_restoration_retains_instruction_context,
@@ -5081,7 +5109,7 @@ groups = {
         phase_and_predecessor_integrity,
     ),
     'source_context_memo': (
-        source_context_memo_validation_guards,
+        source_context_inputs_batches_uncached_blobs, source_context_memo_validation_guards,
         source_context_memo_reuses_shared_predecessor_reconstruction,
     ),
     'routing': (

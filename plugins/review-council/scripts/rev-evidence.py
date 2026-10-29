@@ -1291,11 +1291,11 @@ class Repository:
             self.blob_cache[entry[1]] = self.git('cat-file', 'blob', entry[1])
         return self.blob_cache[entry[1]]
 
-    def preload(self, entries):
-        for path, body in self.iter_blobs(entries):
+    def preload(self, entries, max_bytes=2_000_000):
+        for path, body in self.iter_blobs(entries, max_bytes=max_bytes):
             self.blob_cache[entries[path][1]] = body
 
-    def iter_blobs(self, entries):
+    def iter_blobs(self, entries, max_bytes=2_000_000):
         process = subprocess.Popen(['git', '-C', str(self.root), 'cat-file', '--batch'],
                                    env=self.env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
@@ -1311,12 +1311,12 @@ class Repository:
                     chunk = process.stdout.read(min(remaining, 65536))
                     if not chunk:
                         raise ValueError('incomplete batch blob')
-                    if size <= 2_000_000:
+                    if max_bytes is None or size <= max_bytes:
                         chunks.append(chunk)
                     remaining -= len(chunk)
                 if process.stdout.read(1) != b'\n':
                     raise ValueError('invalid batch blob terminator')
-                yield path, b''.join(chunks) if size <= 2_000_000 else OVERSIZED_BLOB
+                yield path, b''.join(chunks) if max_bytes is None or size <= max_bytes else OVERSIZED_BLOB
             process.stdin.close()
             if process.wait() != 0:
                 raise ValueError('batch blob reader failed')
@@ -4709,6 +4709,12 @@ def source_context_inputs(repo, snapshot, base_tree, evidence, components, plan_
                      if row.get('path') in boundaries or owns_candidate)
     paths.update(gate['path'] for gate in evidence['gates'])
     paths.update(site['path'] for cluster in plan_clusters or [] for site in cluster['paths'])
+    if isinstance(repo, Repository):
+        uncached = {entry[1]: entry for tree in (entries, base_entries)
+                    for path, entry in tree.items() if path in paths
+                    and entry[0] in ('100644', '100755') and entry[1] not in repo.blob_cache}
+        if uncached:
+            repo.preload(uncached, max_bytes=None)
     blobs = {entry: repo.blob(entry) for tree in (entries, base_entries)
              for path, entry in tree.items() if path in paths and entry[0] in ('100644', '100755')}
     return entries, base_entries, blobs, {} if blob_lines is None else blob_lines
