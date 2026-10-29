@@ -882,80 +882,28 @@ PY
     python3 - "$S" <<'PY'
 import hashlib, json, pathlib, sys
 root = pathlib.Path(sys.argv[1]); manifest = root / 'r4-evidence.manifest.json'
-manifest.write_text(json.dumps({'source_context': {'seats': {'sol': {'shards': [{'ranges': [{}, {}, {}]}, {'ranges': [{}, {}]}]}}}}))
+manifest.write_text(json.dumps({'source_context': {'seats': {'sol': {'shards': [{'ranges': [{}, {}, {}, {}, {}]}]}}}}))
 digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
 prompt = root / 'r4-sol.prompt.md'; prompt.write_text('Evidence manifest SHA-256: ' + digest + '\nAssigned scope: semantic\n')
 path = root / 'r4-sol.read-audit.json'; audit = json.loads(path.read_text())
 audit['evidence_manifest_sha256'] = digest; audit['prompt_sha256'] = hashlib.sha256(prompt.read_bytes()).hexdigest()
+audit['status'] = 'valid'; audit['violations'] = []; audit['packet_ranges'] = 5; audit['opened_source_ranges'] = 1
+audit['source_ranges'] = [{'path': f'src/{i}.py', 'line_start': 1, 'line_end': 2, 'origin': 'packet'} for i in range(5)] + [audit['source_ranges'][-1]]
 path.write_text(json.dumps(audit))
 PY
-    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-base-packet.json"
-    python3 - "$S/profile-base-packet.json" <<'PY'
+    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-malformed-ranges.json"
+    python3 - "$S/profile-malformed-ranges.json" <<'PY'
 import json, sys
-a = json.load(open(sys.argv[1]))['sessions'][0]['read_activity']
-assert a['audits'] == 1 and a['packet_ranges'] == 5 and a['opened_source_ranges'] == 1 and a['finding_citations'] == 0, a
-PY
-    assert_eq "profile counts base-tree packet ranges without claiming citation credit" "$?" 0
-    for count in 6 4; do
-      python3 - "$S/r4-sol.read-audit.json" "$count" <<'PY'
-import json, sys
-path = sys.argv[1]; audit = json.load(open(path)); audit['packet_ranges'] = int(sys.argv[2])
-open(path, 'w').write(json.dumps(audit))
-PY
-      "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-shard-count-$count.json"
-      python3 - "$S/profile-shard-count-$count.json" <<'PY'
-import json, sys
-a = json.load(open(sys.argv[1]))['sessions'][0]['read_activity']
+d = json.load(open(sys.argv[1]))
+a = d['sessions'][0]['read_activity']
+scope = d['sessions'][0]['scope_projection']
 assert a['audits'] == 0 and a['packet_ranges'] == 0, a
+assert d['totals']['read_activity']['packet_ranges'] == 0, d
 assert any('invalid source evidence audit structure' in item['reason'] for item in a['invalid_audits']), a
+assert scope['valid_manifests'] == 0, scope
+assert any(item['manifest'] == 'r4-evidence.manifest.json' for item in scope['invalid_manifests']), scope
 PY
-      local status=$?
-      if [ "$count" = 6 ]; then
-        assert_eq "profile rejects packet_ranges above the opened shard total" "$status" 0
-      else
-        assert_eq "profile rejects packet_ranges below the opened shard total" "$status" 0
-      fi
-    done
-    python3 - "$S/r4-sol.read-audit.json" <<'PY'
-import json, sys
-path = sys.argv[1]; audit = json.load(open(path)); audit['packet_ranges'] = 3
-open(path, 'w').write(json.dumps(audit))
-PY
-    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-invalid-packets.json"
-    assert_grep "profile rejects fewer packets than credited packet ranges" \
-      "$S/profile-invalid-packets.json" 'invalid source evidence audit structure'
-    python3 - "$S/r4-sol.read-audit.json" <<'PY'
-import json, sys
-path = sys.argv[1]; audit = json.load(open(path)); audit['packet_ranges'] = 5; audit['source_read_batches'] = 2
-open(path, 'w').write(json.dumps(audit))
-PY
-    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-invalid-batches.json"
-    assert_grep "profile rejects more source batches than source read calls" \
-      "$S/profile-invalid-batches.json" 'invalid source evidence audit structure'
-    python3 - "$S/r4-sol.read-audit.json" <<'PY'
-import json, sys
-path = sys.argv[1]; audit = json.load(open(path))
-audit['status'] = 'invalid'; audit['violations'] = [{'code': 'missing-source-packet'}]
-audit['source_read_batches'] = 1; audit['packet_ranges'] = 3
-audit['source_ranges'] = audit['source_ranges'][:2] + audit['source_ranges'][-1:]
-open(path, 'w').write(json.dumps(audit))
-PY
-    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-partial-invalid.json"
-    python3 - "$S/profile-partial-invalid.json" <<'PY'
-import json, sys
-a = json.load(open(sys.argv[1]))['sessions'][0]['read_activity']
-assert a['audits'] == 1 and a['violating_audits'] == 1 and a['invalid_audits'] == [], a
-assert a['packet_ranges'] == 3, a
-PY
-    assert_eq "profile retains partial invalid packet metrics" "$?" 0
-    python3 - "$S/r4-sol.read-audit.json" <<'PY'
-import json, sys
-path = sys.argv[1]; audit = json.load(open(path)); audit['packet_ranges'] = 6
-open(path, 'w').write(json.dumps(audit))
-PY
-    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-invalid-overcount.json"
-    assert_grep "profile rejects invalid audit packet overcount" "$S/profile-invalid-overcount.json" \
-      'invalid source evidence audit structure'
+    assert_eq "profile rejects malformed shard ranges" "$?" 0
     python3 - "$S" <<'PY'
 import hashlib, json, pathlib, sys
 root = pathlib.Path(sys.argv[1]); manifest = root / 'r4-evidence.manifest.json'
@@ -964,31 +912,167 @@ digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
 prompt = root / 'r4-sol.prompt.md'; prompt.write_text('Evidence manifest SHA-256: ' + digest + '\nAssigned scope: semantic\n')
 path = root / 'r4-sol.read-audit.json'; audit = json.loads(path.read_text())
 audit['evidence_manifest_sha256'] = digest; audit['prompt_sha256'] = hashlib.sha256(prompt.read_bytes()).hexdigest()
-audit['packet_ranges'] = 2; path.write_text(json.dumps(audit))
-PY
-    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-invalid-shards.json"
-    assert_grep "profile rejects malformed shard binding" "$S/profile-invalid-shards.json" \
-      'invalid source evidence audit structure'
-    python3 - "$S" <<'PY'
-import hashlib, json, pathlib, sys
-root = pathlib.Path(sys.argv[1]); manifest = root / 'r4-evidence.manifest.json'
-manifest.write_text(json.dumps({'source_context': {'seats': {'sol': {'shards': [{'ranges': [{}, {}, {}, {}, {}]}]}}}}))
-digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
-prompt = root / 'r4-sol.prompt.md'; prompt.write_text('Evidence manifest SHA-256: ' + digest + '\nAssigned scope: semantic\n')
-path = root / 'r4-sol.read-audit.json'; audit = json.loads(path.read_text())
-audit['evidence_manifest_sha256'] = digest; audit['prompt_sha256'] = hashlib.sha256(prompt.read_bytes()).hexdigest()
-audit['status'] = 'valid'; audit['violations'] = []; audit['packet_ranges'] = 5
-audit['source_ranges'] = [{'path': f'src/{i}.py', 'line_start': 1, 'line_end': 2, 'origin': 'packet'} for i in range(5)] + [audit['source_ranges'][-1]]
+audit['packet_ranges'] = sum(row['origin'] == 'packet' for row in audit['source_ranges'])
 path.write_text(json.dumps(audit))
 PY
-    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-malformed-ranges.json"
-    python3 - "$S/profile-malformed-ranges.json" <<'PY'
+    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-invalid-shards.json"
+    python3 - "$S/profile-invalid-shards.json" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))['sessions'][0]['read_activity']
+assert a['audits'] == 0, a
+assert any('invalid source evidence audit structure' in item['reason'] for item in a['invalid_audits']), a
+PY
+    assert_eq "profile rejects malformed shard binding" "$?" 0
+
+    local B="$T/profile-base-tree" R="$T/profile-base-tree-repo"
+    export REV_SOURCE_CONTEXT=1 REV_PATCH_CHUNKS=1
+    mkrepo "$R"; mkdir -p "$B"
+    printf 'value = 1\n' > "$R/emptied.py"
+    git -C "$R" add emptied.py && git -C "$R" commit -qm 'empty context base'
+    local base; base=$(git -C "$R" rev-parse HEAD)
+    printf "REV_ROOT='%s'\nREV_BASE='%s'\nREV_SCOPE='branch'\n" "$R" "$base" > "$B/scope.env"
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"agent"},{"seat":"terra","adapter":"agent"},{"seat":"opus","adapter":"agent"},{"seat":"sonnet","adapter":"agent"}]}' > "$B/roster.json"
+    : > "$B/files.txt"; : > "$B/untracked.txt"
+    : > "$R/emptied.py"
+    python3 "$SCRIPTS/rev-evidence.py" prepare "$B" 4 --phase discovery >/dev/null || {
+      fail "profile base-tree discovery prepares"; return;
+    }
+    python3 - "$B" > "$T/base-tree-counts.txt" <<'PY' || { fail "profile base-tree shard range"; return; }
+import hashlib, json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+manifest_path = root / 'r4-evidence.manifest.json'
+manifest = json.loads(manifest_path.read_text())
+base_tree = manifest['base_tree']
+snapshot_tree = manifest['snapshot_tree']
+seat = next(name for name, packet in manifest['source_context']['seats'].items()
+            if any(row['path'] == 'emptied.py' and row['blob_tree'] == base_tree
+                   for shard in packet['shards'] for row in shard['ranges']))
+packet = manifest['source_context']['seats'][seat]
+ranges = [row for shard in packet['shards'] for row in shard['ranges']]
+total = sum(len(shard['ranges']) for shard in packet['shards'])
+snapshot_rows = [row for row in ranges if row['blob_tree'] == snapshot_tree]
+assert total > len(snapshot_rows), (total, len(snapshot_rows))
+assignment = manifest['assignments'][seat]
+prompt = root / f'r4-{seat}.prompt.md'
+stream = root / f'r4-{seat}.stream.ndjson'
+result = root / f'r4-{seat}.json'
+digest = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+prompt.write_text('Evidence manifest SHA-256: ' + digest + '\nAssigned scope: semantic\n')
+stream.write_text('{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}\n')
+result.write_text('{"summary":"checked","findings":[]}\n')
+(root / f'r4-{seat}.exit').write_text('0\n')
+mode = assignment['patch_read_mode']
+if mode == 'chunks':
+    patch_calls = len(manifest['patch_sets'][assignment['patch_set']]['chunks'])
+    expected = opened = patch_calls
+else:
+    assert mode == 'windows', mode
+    patch_calls, expected, opened = 1, 0, 0
+tool_calls = max(3, patch_calls, 1)
+source_ranges = [
+    {'path': row['path'], 'line_start': row['line_start'], 'line_end': row['line_end'], 'origin': 'packet'}
+    for row in snapshot_rows
+] + [{'path': 'emptied.py', 'line_start': 1, 'line_end': 1, 'origin': 'tool'}]
+audit = {
+    'schema_version': 2, 'status': 'valid', 'narrow': True, 'adapter': assignment['adapter'],
+    'prompt_sha256': hashlib.sha256(prompt.read_bytes()).hexdigest(),
+    'stream_sha256': hashlib.sha256(stream.read_bytes()).hexdigest(),
+    'result_sha256': hashlib.sha256(result.read_bytes()).hexdigest(),
+    'evidence_manifest_sha256': digest, 'violations': [],
+    'tool_calls': tool_calls, 'tool_turns': 1, 'tool_output_bytes': 1200, 'max_tool_output_bytes': 700,
+    'recognized_tool_calls': 1, 'source_read_calls': 1, 'source_read_batches': 1,
+    'packet_shards': len(packet['shards']),
+    'packet_bytes': sum(shard['bytes'] for shard in packet['shards']),
+    'packet_ranges': total, 'opened_source_ranges': 1, 'finding_citations': 0,
+    'source_ranges': source_ranges, 'patch_proof_mode': mode,
+    'patch_proof_calls': patch_calls, 'patch_proof_turns': patch_calls,
+    'patch_proof_visible_bytes': 280, 'expected_patch_chunks': expected, 'opened_patch_chunks': opened,
+}
+audit_path = root / f'r4-{seat}.read-audit.json'
+audit_path.write_text(json.dumps(audit))
+print(audit_path)
+print(total)
+print(len(snapshot_rows))
+PY
+    local audit_path range_total snapshot_ranges
+    {
+      read -r audit_path
+      read -r range_total
+      read -r snapshot_ranges
+    } < "$T/base-tree-counts.txt"
+    "$SCRIPTS/rev-profile.py" --json "$B" > "$B/profile-base-packet.json"
+    python3 - "$B/profile-base-packet.json" "$range_total" "$audit_path" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); a = d['sessions'][0]['read_activity']
+audit = json.load(open(sys.argv[3]))
+packet_rows = sum(row['origin'] == 'packet' for row in audit['source_ranges'])
+total = int(sys.argv[2])
+assert a['audits'] == 1 and a['invalid_audits'] == [], a
+assert a['finding_citations'] == 0, a
+assert a['packet_ranges'] == total > packet_rows, (a, total, packet_rows)
+PY
+    assert_eq "profile counts base-tree packet ranges without claiming citation credit" "$?" 0
+    for offset in 1 -1; do
+      python3 - "$audit_path" "$range_total" "$offset" <<'PY'
+import json, sys
+path, total, offset = sys.argv[1:]
+audit = json.load(open(path)); audit['packet_ranges'] = int(total) + int(offset)
+open(path, 'w').write(json.dumps(audit))
+PY
+      "$SCRIPTS/rev-profile.py" --json "$B" > "$B/profile-shard-count-$offset.json"
+      python3 - "$B/profile-shard-count-$offset.json" <<'PY'
 import json, sys
 a = json.load(open(sys.argv[1]))['sessions'][0]['read_activity']
 assert a['audits'] == 0 and a['packet_ranges'] == 0, a
 assert any('invalid source evidence audit structure' in item['reason'] for item in a['invalid_audits']), a
 PY
-    assert_eq "profile rejects malformed shard ranges" "$?" 0
+      local status=$?
+      if [ "$offset" = 1 ]; then
+        assert_eq "profile rejects packet_ranges above the opened shard total" "$status" 0
+      else
+        assert_eq "profile rejects packet_ranges below the opened shard total" "$status" 0
+      fi
+    done
+    python3 - "$audit_path" "$snapshot_ranges" <<'PY'
+import json, sys
+path = sys.argv[1]; audit = json.load(open(path)); audit['packet_ranges'] = int(sys.argv[2]) - 1
+open(path, 'w').write(json.dumps(audit))
+PY
+    "$SCRIPTS/rev-profile.py" --json "$B" > "$B/profile-invalid-packets.json"
+    assert_grep "profile rejects fewer packets than credited packet ranges" \
+      "$B/profile-invalid-packets.json" 'invalid source evidence audit structure'
+    python3 - "$audit_path" "$range_total" <<'PY'
+import json, sys
+path = sys.argv[1]; audit = json.load(open(path))
+audit['packet_ranges'] = int(sys.argv[2]); audit['source_read_batches'] = audit['source_read_calls'] + 1
+open(path, 'w').write(json.dumps(audit))
+PY
+    "$SCRIPTS/rev-profile.py" --json "$B" > "$B/profile-invalid-batches.json"
+    assert_grep "profile rejects more source batches than source read calls" \
+      "$B/profile-invalid-batches.json" 'invalid source evidence audit structure'
+    python3 - "$audit_path" "$snapshot_ranges" <<'PY'
+import json, sys
+path = sys.argv[1]; audit = json.load(open(path))
+audit['status'] = 'invalid'; audit['violations'] = [{'code': 'missing-source-packet'}]
+audit['source_read_batches'] = audit['source_read_calls']; audit['packet_ranges'] = int(sys.argv[2])
+open(path, 'w').write(json.dumps(audit))
+PY
+    "$SCRIPTS/rev-profile.py" --json "$B" > "$B/profile-partial-invalid.json"
+    python3 - "$B/profile-partial-invalid.json" "$snapshot_ranges" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))['sessions'][0]['read_activity']
+assert a['audits'] == 1 and a['violating_audits'] == 1 and a['invalid_audits'] == [], a
+assert a['packet_ranges'] == int(sys.argv[2]), a
+PY
+    assert_eq "profile retains partial invalid packet metrics" "$?" 0
+    python3 - "$audit_path" "$range_total" <<'PY'
+import json, sys
+path = sys.argv[1]; audit = json.load(open(path)); audit['packet_ranges'] = int(sys.argv[2]) + 1
+open(path, 'w').write(json.dumps(audit))
+PY
+    "$SCRIPTS/rev-profile.py" --json "$B" > "$B/profile-invalid-overcount.json"
+    assert_grep "profile rejects invalid audit packet overcount" "$B/profile-invalid-overcount.json" \
+      'invalid source evidence audit structure'
   )
 }
 
