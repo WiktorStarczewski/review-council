@@ -1,0 +1,51 @@
+name: Profile validation benchmark
+on: push
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Bind source and instrument the CI checkout
+        run: |
+          test "$(git rev-parse HEAD^)" = dc296b8dbdfa380cb123970a489084bad5670767
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('plugins/review-council/scripts/rev-profile.py')
+          s = p.read_text()
+          s = s.replace('    return module.validated_manifest\n', '''    def measured(*args, **kwargs):
+              import os, time
+              start = time.perf_counter()
+              try:
+                  return module.validated_manifest(*args, **kwargs)
+              finally:
+                  with open(os.environ["PROFILE_BENCH_LOG"], "a") as log:
+                      log.write("validation\\t%.9f\\t%s\\n" % (time.perf_counter() - start, args[0]))
+          return measured
+          ''', 1)
+          s = s.replace('if __name__ == "__main__":\n    main()', '''if __name__ == "__main__":
+              import os, time
+              start = time.perf_counter()
+              try:
+                  main()
+              finally:
+                  with open(os.environ["PROFILE_BENCH_LOG"], "a") as log:
+                      log.write("profile\\t%.9f\\n" % (time.perf_counter() - start))''', 1)
+          p.write_text(s)
+          PY
+      - name: Measure generated four-seat fixture
+        env:
+          PROFILE_BENCH_LOG: /tmp/profile-bench.tsv
+        run: |
+          bash plugins/review-council/tests/run-tests.sh profile_evidence_scope
+          python3 - <<'PY'
+          from collections import Counter
+          from pathlib import Path
+          rows = [line.split('\t') for line in Path('/tmp/profile-bench.tsv').read_text().splitlines()]
+          for kind in ('profile', 'validation'):
+              vals = [float(row[1]) for row in rows if row[0] == kind]
+              print(f'{kind}: calls={len(vals)} total_seconds={sum(vals):.6f} max_seconds={max(vals, default=0):.6f}')
+          counts = Counter(row[2] for row in rows if row[0] == 'validation')
+          print('validation calls per manifest:', sorted(counts.values(), reverse=True))
+          PY
