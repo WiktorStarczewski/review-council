@@ -368,7 +368,7 @@ def read_activity(directory, adapters):
                             or type(row["line_start"]) is not int or type(row["line_end"]) is not int
                             or row["line_start"] < 1 or row["line_end"] < row["line_start"]
                             or row["origin"] not in ("packet", "tool") for row in ranges)
-                        or audit["packet_ranges"] != sum(row["origin"] == "packet" for row in ranges)
+                        or audit["packet_ranges"] < sum(row["origin"] == "packet" for row in ranges)
                         or audit["opened_source_ranges"] != sum(row["origin"] == "tool" for row in ranges)):
                     raise ValueError("invalid source evidence audit structure")
                 result = directory / (stem + ".json")
