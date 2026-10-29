@@ -871,15 +871,51 @@ import json, sys
 path = sys.argv[1]; audit = json.load(open(path)); audit['packet_ranges'] = 5
 open(path, 'w').write(json.dumps(audit))
 PY
+    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-unbound-surplus.json"
+    python3 - "$S/profile-unbound-surplus.json" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))['sessions'][0]['read_activity']
+assert a['audits'] == 0 and a['packet_ranges'] == 0, a
+assert any('invalid source evidence audit structure' in item['reason'] for item in a['invalid_audits']), a
+PY
+    assert_eq "profile rejects an unbound packet_ranges surplus" "$?" 0
+    python3 - "$S" <<'PY'
+import hashlib, json, pathlib, sys
+root = pathlib.Path(sys.argv[1]); manifest = root / 'r4-evidence.manifest.json'
+manifest.write_text(json.dumps({'source_context': {'seats': {'sol': {'shards': [{'ranges': [{}, {}, {}]}, {'ranges': [{}, {}]}]}}}}))
+digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+prompt = root / 'r4-sol.prompt.md'; prompt.write_text('Evidence manifest SHA-256: ' + digest + '\nAssigned scope: semantic\n')
+path = root / 'r4-sol.read-audit.json'; audit = json.loads(path.read_text())
+audit['evidence_manifest_sha256'] = digest; audit['prompt_sha256'] = hashlib.sha256(prompt.read_bytes()).hexdigest()
+path.write_text(json.dumps(audit))
+PY
     "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-base-packet.json"
     python3 - "$S/profile-base-packet.json" <<'PY'
 import json, sys
-profile = json.load(open(sys.argv[1])); activity = profile['sessions'][0]['read_activity']
-assert activity['packet_ranges'] == 5, activity
-assert activity['opened_source_ranges'] == 1, activity
-assert not any('invalid source evidence audit structure' in str(value) for value in profile.get('warnings', [])), profile
+a = json.load(open(sys.argv[1]))['sessions'][0]['read_activity']
+assert a['audits'] == 1 and a['packet_ranges'] == 5 and a['opened_source_ranges'] == 1 and a['finding_citations'] == 0, a
 PY
     assert_eq "profile counts base-tree packet ranges without claiming citation credit" "$?" 0
+    for count in 6 4; do
+      python3 - "$S/r4-sol.read-audit.json" "$count" <<'PY'
+import json, sys
+path = sys.argv[1]; audit = json.load(open(path)); audit['packet_ranges'] = int(sys.argv[2])
+open(path, 'w').write(json.dumps(audit))
+PY
+      "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-shard-count-$count.json"
+      python3 - "$S/profile-shard-count-$count.json" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))['sessions'][0]['read_activity']
+assert a['audits'] == 0 and a['packet_ranges'] == 0, a
+assert any('invalid source evidence audit structure' in item['reason'] for item in a['invalid_audits']), a
+PY
+      local status=$?
+      if [ "$count" = 6 ]; then
+        assert_eq "profile rejects packet_ranges above the opened shard total" "$status" 0
+      else
+        assert_eq "profile rejects packet_ranges below the opened shard total" "$status" 0
+      fi
+    done
     python3 - "$S/r4-sol.read-audit.json" <<'PY'
 import json, sys
 path = sys.argv[1]; audit = json.load(open(path)); audit['packet_ranges'] = 3
