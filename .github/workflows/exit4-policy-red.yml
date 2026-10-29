@@ -1,0 +1,29 @@
+name: Exit 4 frozen policy expected red
+on:
+  push:
+    branches: [ci/exit4-policy-red]
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - run: test "$(git rev-parse HEAD^)" = 11735719687fd6a1eab4a0930959594b2306de73
+      - name: Verify intended functional regression
+        shell: bash
+        run: |
+          set +e
+          REV_EVIDENCE_CASE=frozen_exit4_policy_ignores_a_later_config_rewrite bash plugins/review-council/tests/run-tests.sh evidence_hardening_replacement > result.log 2>&1
+          status=$?
+          cat result.log
+          test "$status" -ne 0 || exit 1
+          grep -F 'exit-4 replacement stays unauthorized' result.log || exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: exit4-policy-red
+          path: result.log
