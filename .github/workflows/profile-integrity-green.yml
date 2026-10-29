@@ -1,0 +1,17 @@
+name: Profiler integrity focused proof
+on:
+  push:
+    branches: [ci/profile-integrity-green]
+permissions:
+  contents: read
+jobs:
+  focused:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - run: test "$(git rev-parse HEAD^)" = f25e4cfff33a4aae42344cf83f8ab30558e40d2d
+      - name: Run profile tests
+        run: bash plugins/review-council/tests/run-tests.sh profile
