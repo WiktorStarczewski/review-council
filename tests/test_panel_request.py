@@ -1,4 +1,5 @@
 """A caller's panel roster is a session config, not a later guess."""
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -17,6 +18,18 @@ def load():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def policy_bytes(eligible):
+    canonical = json.dumps(
+        {'quota_escalation_without_fallback': eligible},
+        sort_keys=True, separators=(',', ':')) + '\n'
+    document = {
+        'schema_version': 1,
+        'quota_escalation_without_fallback': eligible,
+        'sha256': hashlib.sha256(canonical.encode()).hexdigest(),
+    }
+    return (json.dumps(document, sort_keys=True, separators=(',', ':')) + '\n').encode()
 
 
 class PanelRequestTests(unittest.TestCase):
@@ -72,6 +85,8 @@ class PanelRequestTests(unittest.TestCase):
         self.assertEqual(saved['count'], 4)
         self.assertEqual(json.loads(path.read_text())['codex_models'], ['latest-luna'] * 4)
         self.assertEqual(json.loads(path.read_text())['exclude'], ['cursor-sdk', 'gemini'])
+        policy = session / 'fallback-policy.json'
+        policy.write_bytes(b'sentinel\n')
         plain = self.panel.write_session(session, 'no roster here', base, host='claude', grok_ready=False)
         self.assertEqual(plain, session / 'roster-config.json')
         normal = json.loads(plain.read_text())
@@ -79,6 +94,38 @@ class PanelRequestTests(unittest.TestCase):
         self.assertEqual(normal['panel_mode'], 'normal')
         recorded = json.loads((session / 'panel-request.json').read_text())
         self.assertEqual(recorded['chain'], ['luna', 'sonnet', 'sol', 'opus'])
+        self.assertEqual(policy.read_bytes(), policy_bytes(True))
+        self.assertEqual(policy.stat().st_mode & 0o777, 0o600)
+
+    def test_preflight_input_seals_policy_without_a_manifest(self):
+        session = Path(self.temp.name) / 'session'
+        base = Path(self.temp.name) / 'config.json'
+        base.write_text('{"quota_fallback": true}\n')
+        self.panel.write_session(session, 'no roster here', base, host='claude', grok_ready=False)
+        (session / 'roster.json').write_text('{}\n')
+        names = ('roster-config.json', 'panel-request.json', 'fallback-policy.json')
+        snapshots = {name: (session / name).read_bytes() for name in names}
+        base.write_text('{"quota_fallback": false}\n')
+        with self.assertRaises(ValueError) as caught:
+            self.panel.write_session(session, 'no roster here', base, host='claude', grok_ready=False)
+        self.assertEqual(str(caught.exception), 'session policy is sealed')
+        for name, raw in snapshots.items():
+            self.assertEqual((session / name).read_bytes(), raw)
+
+    def test_evidence_manifest_seals_policy_without_standard_inputs(self):
+        session = Path(self.temp.name) / 'session'
+        base = Path(self.temp.name) / 'config.json'
+        base.write_text('{"quota_fallback": true}\n')
+        self.panel.write_session(session, 'no roster here', base, host='claude', grok_ready=False)
+        (session / 'r1-evidence.manifest.json').write_text('{}\n')
+        names = ('roster-config.json', 'panel-request.json', 'fallback-policy.json')
+        snapshots = {name: (session / name).read_bytes() for name in names}
+        base.write_text('{"quota_fallback": false}\n')
+        with self.assertRaises(ValueError) as caught:
+            self.panel.write_session(session, 'no roster here', base, host='claude', grok_ready=False)
+        self.assertEqual(str(caught.exception), 'session policy is sealed')
+        for name, raw in snapshots.items():
+            self.assertEqual((session / name).read_bytes(), raw)
 
     def test_high_effort_is_one_of_each_and_high_risk_is_not(self):
         self.assertEqual(self.panel.chosen_mode('review this, high-risk'), 'normal')

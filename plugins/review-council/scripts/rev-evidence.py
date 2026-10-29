@@ -6346,6 +6346,8 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         raise ValueError('invalid fallback reason')
     if type(manifest.get('schema_version')) is not int or manifest['schema_version'] not in (2, 3, 4) or manifest['session'] != str(session):
         raise ValueError('invalid manifest session/version')
+    if 'fallback_policy' in manifest and manifest['fallback_policy'] not in _fallback_policy_documents():
+        raise ValueError('invalid fallback policy')
     if any(not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', manifest[key]) for key in ('snapshot_tree', 'base_tree')):
         raise ValueError('invalid manifest tree identifier')
     if not SAFE_NAME.fullmatch(manifest['label']) or path.name != f"r{manifest['label']}-evidence.manifest.json":
@@ -6545,7 +6547,8 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
                 or manifest['source'] != parent['source']
                 or manifest['inputs']['roster.json'] != parent['inputs']['roster.json']
                 or manifest['patch_chunks_mode'] != parent['patch_chunks_mode']
-                or manifest['source_context']['enabled'] is not parent['source_context']['enabled']):
+                or manifest['source_context']['enabled'] is not parent['source_context']['enabled']
+                or manifest.get('fallback_policy') != parent.get('fallback_policy')):
             raise ValueError('repair child does not match its parent assignment')
     elif manifest['phase'] != 'repair' and 'parent_assignment' in manifest:
         raise ValueError('parent assignment belongs only to repair evidence')
@@ -7356,6 +7359,57 @@ def attempt_module():
     return module
 
 
+def _fallback_policy_documents():
+    cached = getattr(_fallback_policy_documents, 'cached', None)
+    if cached is None:
+        module = attempt_module()
+        cached = (module.fallback_policy_document(True), module.fallback_policy_document(False))
+        _fallback_policy_documents.cached = cached
+    return cached
+
+
+def accepted_fallback_policy(session):
+    path = Path(session) / 'fallback-policy.json'
+    if not os.path.lexists(path):
+        return None
+    module = attempt_module()
+    choices = [(module.fallback_policy_bytes(flag), module.fallback_policy_document(flag))
+               for flag in (True, False)]
+    try:
+        body = module.private_bytes(path)
+    except (OSError, ValueError):
+        raise ValueError('invalid fallback policy') from None
+    for raw, document in choices:
+        if body == raw:
+            return document, raw
+    raise ValueError('invalid fallback policy')
+
+
+def publish_fallback_policy(path, raw):
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, 'O_NOFOLLOW', 0)
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except FileExistsError:
+        try:
+            existing = attempt_module().private_bytes(path)
+        except (OSError, ValueError):
+            raise ValueError('invalid fallback policy') from None
+        if existing != raw:
+            raise ValueError('invalid fallback policy')
+        return
+    except OSError:
+        raise ValueError('invalid fallback policy') from None
+    try:
+        os.fchmod(descriptor, 0o600)
+        if os.write(descriptor, raw) != len(raw):
+            raise ValueError('invalid fallback policy')
+        os.fsync(descriptor)
+    except OSError:
+        raise ValueError('invalid fallback policy') from None
+    finally:
+        os.close(descriptor)
+
+
 def discard_prepare_diagnostic(session, label):
     path = Path(session) / ('prepare-diagnostic-' + label + '.json')
     try:
@@ -7584,6 +7638,15 @@ def _prepare_locked(args, session):
             'patch_chunks_mode': chunk_mode,
             'source_context_enabled': source_context_enabled,
         }
+    fallback_policy = None
+    fallback_policy_raw = None
+    if parent_manifest is not None:
+        if 'fallback_policy' in parent_manifest:
+            fallback_policy = parent_manifest['fallback_policy']
+    else:
+        accepted = accepted_fallback_policy(session)
+        if accepted is not None:
+            fallback_policy, fallback_policy_raw = accepted
     contract_input = provider_contract_input(session)
     inputs = input_hashes(session, contract_input[0] if contract_input else None)
     for name in ('files.txt', 'untracked.txt'):
@@ -7900,6 +7963,8 @@ def _prepare_locked(args, session):
                 'task_capacity': task_capacity,
                 'word_counts': words, 'inputs': inputs,
                 'artifacts': {name: {'sha256': digest(raw), 'words': len(raw.split())} for name, raw in artifacts.items()}}
+    if fallback_policy is not None:
+        manifest['fallback_policy'] = fallback_policy
     if progress is not None:
         manifest['pr_progress'] = {'artifact': prefix + '-pr-progress.json',
                                    'sha256': digest(encoded(progress))}
@@ -7940,6 +8005,8 @@ def _prepare_locked(args, session):
         writer(session / name, raw)
     if numeric is not None and attempt_module().private_bytes(session / numeric['panel']) != numeric_raw:
         raise ValueError('numeric panel changed during preparation')
+    if parent_manifest is None and fallback_policy_raw is not None:
+        publish_fallback_policy(session / 'fallback-policy.json', fallback_policy_raw)
     writer(manifest_path, encoded(manifest))
     discard_prepare_diagnostic(session, args.label)
     print(manifest_path)

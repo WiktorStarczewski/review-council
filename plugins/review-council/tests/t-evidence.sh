@@ -3617,6 +3617,54 @@ def replacement_accepts_only_durable_provider_exit_3():
                 call('prepare', session, '9x', '--phase', 'repair', *child_args, good=False,
                      error='parent assignment has no recorded terminal failure')
 
+def load_attempt_module():
+    path = script.parent / 'lib' / 'rev-attempt.py'
+    loaded_spec = importlib.util.spec_from_file_location('rev_attempt_policy', path)
+    loaded = importlib.util.module_from_spec(loaded_spec)
+    loaded_spec.loader.exec_module(loaded)
+    return loaded
+
+def load_panel_request():
+    path = script.parent / 'lib' / 'panel_request.py'
+    loaded_spec = importlib.util.spec_from_file_location('panel_request_policy', path)
+    loaded = importlib.util.module_from_spec(loaded_spec)
+    loaded_spec.loader.exec_module(loaded)
+    return loaded
+
+def write_fallback_policy(session, config, attempt=None):
+    attempt = attempt or load_attempt_module()
+    raw = attempt.fallback_policy_bytes(attempt.eligible_document(config))
+    path = session / 'fallback-policy.json'
+    path.write_bytes(raw)
+    path.chmod(0o600)
+    return attempt, raw
+
+def quota_roster(session):
+    identities = {
+        'sol': ('claude', 'sonnet', 'high'), 'terra': ('codex', 'gpt-5.6-sol', 'high'),
+        'opus': ('codex', 'gpt-5.6-luna', 'high'), 'sonnet': ('agent', 'sonnet', 'high'),
+    }
+    (session / 'roster.json').write_text(json.dumps({'seats': [
+        {'seat': seat, 'extra': False, 'adapter': identity[0], 'model': identity[1], 'effort': identity[2]}
+        for seat, identity in identities.items()]}))
+
+def cancellation_roster(session):
+    identities = {
+        'sol': ('claude', 'opus', 'high'), 'terra': ('codex', 'gpt-5.6-sol', 'high'),
+        'opus': ('codex', 'gpt-5.6-luna', 'high'), 'sonnet': ('agent', 'sonnet', 'high'),
+    }
+    (session / 'roster.json').write_text(json.dumps({'seats': [
+        {'seat': seat, 'extra': False, 'adapter': identity[0], 'model': identity[1], 'effort': identity[2]}
+        for seat, identity in identities.items()]}))
+
+def record_sol_exit(session, label, code):
+    prompt = session / f'r{label}-sol.prompt.md'
+    prompt.write_text('review\n')
+    token = '1' * 32
+    assert reserve_launch_bound(session, label, 'sol', prompt, token).returncode == 0
+    assert record_launch_bound(session, label, 'sol', prompt, code, token).returncode == 0
+    (session / f'r{label}-sol.exit').write_text(code + '\n')
+
 def quota_without_fallback_allows_recorded_exit_4_escalation():
     for config in ({}, {'quota_fallback': False}, {'quota_fallback': True}, {'quota_fallback': None},
                    {'quota_fallback': 'false'}):
@@ -3631,6 +3679,7 @@ def quota_without_fallback_allows_recorded_exit_4_escalation():
                 {'seat': seat, 'extra': False, 'adapter': identity[0], 'model': identity[1], 'effort': identity[2]}
                 for seat, identity in chain_identities.items()]}))
             (session / 'roster-config.json').write_text(json.dumps(config))
+            write_fallback_policy(session, config)
             parent = prepare('9', 'risk', *assign, '--full-seat', 'sonnet')
             prompt = session / 'r9-sol.prompt.md'
             prompt.write_text('review\n')
@@ -3648,36 +3697,363 @@ def quota_without_fallback_allows_recorded_exit_4_escalation():
                 assert list(child['assignments']) == ['terra']
 
 
+def refuse_exit4(session, label, assignment, parent):
+    result = subprocess.run([sys.executable, str(script), 'prepare', str(session), label, '--phase', 'repair',
+                             '--assignment', assignment, '--parent-assignment', parent],
+                            capture_output=True, text=True)
+    assert result.returncode != 0, 'exit-4 replacement stays unauthorized'
+    assert 'parent assignment has no recorded terminal failure' in result.stderr, result.stderr
+    return result
+
+def finish_replacement_seat(session, call, label, seat, summary):
+    path = session / f'r{label}-evidence.manifest.json'
+    (session / f'r{label}-{seat}.prompt.md').write_text(call('render', path, seat))
+    (session / f'r{label}-{seat}.json').write_text(json.dumps({'summary': summary, 'findings': []}))
+    (session / f'r{label}-{seat}.exit').write_text('0\n')
+    write_agent_audit(session, label, seat)
+
+def manifest_word_counts(session, manifest):
+    prefix = 'r' + manifest['label']
+    assigned = manifest['assignments']
+    words = {kind: len((session / f'{prefix}-{kind}.patch').read_bytes().split())
+             for kind in ('full', 'semantic', 'delta')}
+    words['evidence'] = sum(len((session / f'{prefix}-{name}.md').read_bytes().split())
+                            for name in ('evidence', 'instructions'))
+    words['source_context'] = sum(
+        len((session / artifact).read_bytes().split())
+        for packet in manifest['source_context']['seats'].values()
+        for artifact in ([shard['artifact'] for shard in packet['shards']]
+                         + [segment['artifact'] for required in packet['required_source_ranges']
+                            for segment in required['segments']]))
+    words['assigned_patch'] = sum(len(Path(assignment['patch']).read_bytes().split())
+                                  for assignment in assigned.values())
+    words['plan'] = len((session / f'{prefix}-plan.md').read_bytes().split())
+    words['closure'] = len((session / f'{prefix}-plan-closure.patch').read_bytes().split())
+    if (all('search_proof' in cluster for cluster in manifest['plan']['clusters'])
+            and all('plan_clusters' in assignment for assignment in assigned.values())):
+        clusters_by_id = {cluster['id']: cluster for cluster in manifest['plan']['clusters']}
+        words['prepared_search'] = sum(
+            len((session / clusters_by_id[cluster_id]['search_proof']['artifact']).read_bytes().split())
+            for assignment in assigned.values()
+            for cluster_id in assignment['plan_clusters'])
+    words['avoided'] = max(0, len(assigned) * words['full'] - words['assigned_patch']
+                           - len(assigned) * words['evidence'] - words['source_context']
+                           - words.get('prepared_search', 0))
+    return words
+
+def refresh_required_prediction(row, context, seat):
+    payload_entry = {key: value for key, value in row.items()
+                     if key not in ('required_payload_bytes',
+                                    'required_payload_predicted_visible_bytes', 'segments')}
+    payload_entry['content'] = ''
+    payload_lines = module.patch_display_lines(module.encoded({
+        'schema_version': 1, 'snapshot_tree': context['snapshot_tree'],
+        'base_tree': context['base_tree'], 'seat': seat, 'shard_index': 1,
+        'shard_count': 1, 'entries': [payload_entry]}))
+    row['required_payload_predicted_visible_bytes'] = (
+        row['required_payload_bytes'] + payload_lines * module.SOURCE_SEGMENT_PREFIX_RESERVE)
+
+def retarget_plan_source(session, manifest, evidence, components):
+    hunk_by_path = {}
+    for hunk in evidence.get('hunks', []):
+        hunk_by_path.setdefault(hunk['path'], []).append(hunk['sha256'])
+    component_by_id = {component['id']: component for component in components}
+    context = manifest['source_context']
+    for seat, assignment in manifest['assignments'].items():
+        packet = context['seats'][seat]
+        ids = sorted(assignment['components'])
+        packet['components'] = ids
+        relevant = [component for component in components if component['id'] in set(ids)]
+        packet['hunk_sha256'] = sorted({
+            value for component in relevant for path in component['files']
+            for value in hunk_by_path.get(path, [])})
+        if not ids:
+            for shard in packet.get('shards', []):
+                manifest['artifacts'].pop(shard['artifact'], None)
+            for row in packet.get('required_source_ranges', []):
+                for segment in row.get('segments', []):
+                    manifest['artifacts'].pop(segment['artifact'], None)
+            packet['shards'] = []
+            packet['omitted_source_ranges'] = []
+            packet['required_source_ranges'] = []
+            for key in packet['omitted']:
+                packet['omitted'][key] = 0
+            continue
+        binding = module.hunk_binding(ids, component_by_id, hunk_by_path)
+        for shard in packet.get('shards', []):
+            artifact = session / shard['artifact']
+            payload = json.loads(artifact.read_text())
+            for entry in payload['entries']:
+                entry['component_ids'] = list(ids)
+                entry['hunk_binding_sha256'] = binding
+            raw = json.dumps(payload).encode()
+            artifact.write_bytes(raw)
+            shard['bytes'] = len(raw)
+            shard['sha256'] = hashlib.sha256(raw).hexdigest()
+            shard['predicted_visible_bytes'] = module.predicted_source_visible_bytes(raw)
+            shard['ranges'] = [{key: value for key, value in entry.items() if key != 'content'}
+                               for entry in payload['entries']]
+            manifest['artifacts'][shard['artifact']]['sha256'] = shard['sha256']
+            manifest['artifacts'][shard['artifact']]['words'] = len(raw.split())
+        for row in packet.get('omitted_source_ranges', []):
+            row['component_ids'] = list(ids)
+            row['hunk_binding_sha256'] = binding
+        for row in packet.get('required_source_ranges', []):
+            row['component_ids'] = list(ids)
+            row['hunk_binding_sha256'] = binding
+            refresh_required_prediction(row, context, seat)
+
+def rewrite_plan_as_schema3(session, manifest_path):
+    evidence_path = session / 'r1p-evidence.json'
+    manifest = json.loads(manifest_path.read_text())
+    evidence = json.loads(evidence_path.read_text())
+    manifest['schema_version'] = 3
+    for document in (manifest, evidence):
+        for key in ('routing_version', 'delta_mode', 'delta_reason', 'common_artifacts'):
+            document['plan'].pop(key)
+    roster = json.loads((session / 'roster.json').read_text())
+    ordered = {row['seat']: manifest['assignments'][row['seat']]
+               for row in roster['seats'] if row.get('seat') in manifest['assignments']}
+    owner = manifest['mechanical_owner']
+    clusters = manifest['plan']['clusters']
+    expected = module.plan_cluster_assignments(ordered, owner, clusters)
+    for seat, cluster_ids in expected.items():
+        manifest['assignments'][seat]['plan_clusters'] = list(cluster_ids)
+        evidence['assignments'][seat]['plan_clusters'] = list(cluster_ids)
+    closure = module.split_patch((session / 'r1p-plan-closure.patch').read_bytes(),
+                                 manifest['plan']['closure_paths'])
+    components = module.plan_components_for(
+        closure, evidence['dependencies'], ordered, owner, clusters, True, None)
+    manifest['components'] = components
+    for seat, assignment in manifest['assignments'].items():
+        assignment['components'] = [component['id'] for component in components
+                                    if assignment['full_state'] or seat in component['specialists']]
+    retarget_plan_source(session, manifest, evidence, components)
+    for seat, packet in manifest['source_context']['seats'].items():
+        if 'mandatory_source_windows' not in packet:
+            continue
+        delivered = list(packet['required_source_ranges']) + [
+            dict(row) for shard in packet['shards'] for row in shard['ranges']]
+        packet['mandatory_source_windows'] = module.published_mandatory_windows(
+            manifest['assignments'][seat], clusters, delivered)
+    context = manifest['source_context']
+    for seat, packet in context['seats'].items():
+        packet['source_read_required'] = module.repository_source_read_required(
+            packet, context['enabled'], context['snapshot_tree'], manifest['assignments'][seat])
+    manifest['task_capacity'] = module.compile_task_capacity(
+        manifest['assignments'], manifest['patch_sets'], manifest['source_context'], clusters)
+    evidence['assignments'] = manifest['assignments']
+    evidence['plan'] = manifest['plan']
+    evidence['components'] = components
+    evidence['source_context'] = manifest['source_context']
+    raw = json.dumps(evidence).encode()
+    evidence_path.write_bytes(raw)
+    manifest['artifacts'][evidence_path.name]['sha256'] = hashlib.sha256(raw).hexdigest()
+    manifest['artifacts'][evidence_path.name]['words'] = len(raw.split())
+    manifest['word_counts'] = manifest_word_counts(session, manifest)
+    manifest_path.write_text(json.dumps(manifest))
+
 def frozen_exit4_policy_ignores_a_later_config_rewrite():
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
-        identities = {
-            'sol': ('claude', 'sonnet', 'high'), 'terra': ('codex', 'gpt-5.6-sol', 'high'),
-            'opus': ('codex', 'gpt-5.6-luna', 'high'), 'sonnet': ('agent', 'sonnet', 'high'),
-        }
-        (session / 'roster.json').write_text(json.dumps({'seats': [
-            {'seat': seat, 'extra': False, 'adapter': identity[0], 'model': identity[1], 'effort': identity[2]}
-            for seat, identity in identities.items()]}))
-        config = session / 'roster-config.json'
-        config.write_text(json.dumps({'quota_fallback': True}))
-        canonical = json.dumps({'quota_escalation_without_fallback': False}, sort_keys=True, separators=(',', ':')) + '\n'
-        policy = {'schema_version': 1, 'quota_escalation_without_fallback': False,
-                  'sha256': hashlib.sha256(canonical.encode()).hexdigest()}
-        sidecar = session / 'fallback-policy.json'
-        sidecar.write_text(json.dumps(policy, sort_keys=True, separators=(',', ':')) + '\n')
-        sidecar.chmod(0o600)
+        quota_roster(session)
+        config = {'quota_fallback': True}
+        (session / 'roster-config.json').write_text(json.dumps(config))
+        attempt, planted = write_fallback_policy(session, config)
         parent = prepare('9', 'risk', *assign, '--full-seat', 'sonnet')
-        prompt = session / 'r9-sol.prompt.md'
-        prompt.write_text('review\n')
-        token = '1' * 32
-        assert reserve_launch_bound(session, '9', 'sol', prompt, token).returncode == 0
-        assert record_launch_bound(session, '9', 'sol', prompt, '4', token).returncode == 0
-        (session / 'r9-sol.exit').write_text('4\n')
-        config.write_text(json.dumps({'quota_fallback': False}))
-        result = subprocess.run([sys.executable, str(script), 'prepare', str(session), '9x', '--phase', 'repair',
-                                 '--assignment', 'terra=' + parent['assignments']['sol']['bundle'],
-                                 '--parent-assignment', '9:sol'], capture_output=True, text=True)
-        assert result.returncode != 0, 'exit-4 replacement stays unauthorized'
-        assert 'parent assignment has no recorded terminal failure' in result.stderr
+        record_sol_exit(session, '9', '4')
+        (session / 'roster-config.json').write_text(json.dumps({'quota_fallback': False}))
+        refuse_exit4(session, '9x', 'terra=' + parent['assignments']['sol']['bundle'], '9:sol')
+        recorded = subprocess.run([sys.executable, str(script.parent / 'lib' / 'rev-attempt.py'),
+                                   'record-provider-cancellation', session, '9', 'sol', 'terra', 'task-9'],
+                                  capture_output=True, text=True)
+        assert recorded.returncode != 0
+        assert attempt.quota_escalation_without_fallback(session, '9') is False
+        assert (session / 'fallback-policy.json').read_bytes() == planted
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        quota_roster(session)
+        config = {'quota_fallback': False}
+        (session / 'roster-config.json').write_text(json.dumps(config))
+        attempt, _planted = write_fallback_policy(session, config)
+        parent = prepare('9', 'risk', *assign, '--full-seat', 'sonnet')
+        record_sol_exit(session, '9', '4')
+        child = prepare('9x', 'repair', '--assignment', 'terra=' + parent['assignments']['sol']['bundle'],
+                        '--parent-assignment', '9:sol')
+        assert child['parent_assignment']['seat'] == 'sol'
+        for seat in parent['assignments']:
+            if seat == 'sol':
+                continue
+            finish_replacement_seat(session, call, '9', seat, 'root')
+        finish_replacement_seat(session, call, '9x', 'terra', 'replacement')
+        (session / 'roster-config.json').write_text(json.dumps({'quota_fallback': True}))
+        call('verify-panel', session, '9', '--replacement', 'sol=9x')
+        assert attempt.quota_escalation_without_fallback(session, '9') is True
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        cancellation_roster(session)
+        config = {'quota_fallback': False}
+        (session / 'roster-config.json').write_text(json.dumps(config))
+        attempt, _planted = write_fallback_policy(session, config)
+        parent = prepare('11', 'risk', *assign, '--full-seat', 'sonnet')
+        for seat, code, token in (('opus', '4', '4' * 32), ('terra', '130', '5' * 32)):
+            prompt = session / f'r11-{seat}.prompt.md'
+            prompt.write_text('review\n')
+            assert reserve_launch_bound(session, '11', seat, prompt, token).returncode == 0
+            assert record_launch_bound(session, '11', seat, prompt, code, token).returncode == 0
+            (session / f'r11-{seat}.exit').write_text(code + '\n')
+        (session / 'r11-terra.started').write_text('cli\n33829\nMon Oct 26 21:42:00 2026\n')
+        (session / 'roster-config.json').write_text(json.dumps({'quota_fallback': True}))
+        recorded = subprocess.run([sys.executable, str(script.parent / 'lib' / 'rev-attempt.py'),
+                                   'record-provider-cancellation', session, '11', 'opus', 'terra',
+                                   'task-33829'], capture_output=True, text=True)
+        assert recorded.returncode == 0, recorded.stderr
+        child = prepare('11x', 'repair', '--assignment', 'sol=' + parent['assignments']['terra']['bundle'],
+                        '--parent-assignment', '11:terra')
+        assert child['parent_assignment']['seat'] == 'terra'
+        assert attempt.quota_escalation_without_fallback(session, '11') is True
+
+def legacy_manifests_stay_valid_without_exit4_eligibility():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        quota_roster(session)
+        config = {'quota_fallback': False}
+        (session / 'roster-config.json').write_text(json.dumps(config))
+        attempt, _planted = write_fallback_policy(session, config)
+        document = attempt.fallback_policy_document(True)
+        parent = prepare('9', 'risk', *assign, '--full-seat', 'sonnet')
+        assert parent['fallback_policy'] == document
+        record_sol_exit(session, '9', '4')
+        assert attempt.quota_escalation_without_fallback(session, '9') is True
+        manifest_path = session / 'r9-evidence.manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        manifest.pop('fallback_policy')
+        manifest_path.write_text(json.dumps(manifest))
+        (session / 'roster-config.json').write_text(json.dumps(config))
+        call('verify', manifest_path)
+        assert attempt.quota_escalation_without_fallback(session, '9') is False
+        call('prepare', session, '9x', '--phase', 'repair',
+             '--assignment', 'terra=' + parent['assignments']['sol']['bundle'],
+             '--parent-assignment', '9:sol', good=False,
+             error='parent assignment has no recorded terminal failure')
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        quota_roster(session)
+        config = {'quota_fallback': False}
+        (session / 'roster-config.json').write_text(json.dumps(config))
+        attempt, _planted = write_fallback_policy(session, config)
+        document = attempt.fallback_policy_document(True)
+        parent = prepare('9', 'risk', *assign, '--full-seat', 'sonnet')
+        assert parent['fallback_policy'] == document
+        record_sol_exit(session, '9', '3')
+        manifest_path = session / 'r9-evidence.manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        manifest.pop('fallback_policy')
+        manifest_path.write_text(json.dumps(manifest))
+        (session / 'fallback-policy.json').unlink()
+        call('verify', manifest_path)
+        child = prepare('9x', 'repair', '--assignment', 'terra=' + parent['assignments']['sol']['bundle'],
+                        '--parent-assignment', '9:sol')
+        assert 'fallback_policy' not in child
+        later = prepare('2', 'risk', *assign, '--full-seat', 'sonnet')
+        assert 'fallback_policy' not in later
+        assert not os.path.lexists(session / 'fallback-policy.json')
+        assert attempt.quota_escalation_without_fallback(session, '2') is False
+        assert json.loads((session / 'roster-config.json').read_text()) == config
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        config = {'quota_fallback': False}
+        (session / 'roster-config.json').write_text(json.dumps(config))
+        attempt, _planted = write_fallback_policy(session, config)
+        document = attempt.fallback_policy_document(True)
+        plan_path = session / 'fix-plan.md'
+        plan_path.write_text(
+            "## C-01 · keep the frozen policy\n"
+            "Findings: RC-001 (P1)\n"
+            "Rule: Exit-4 eligibility is the manifest document.\n"
+            "Sites: main.py:1 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'def first' .)\n"
+            "Test: test_calls.py:1\n"
+            "Prediction: stripping the key leaves verify successful.\n")
+        digest = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+        parent = prepare('1p', 'plan', '--plan', plan_path, '--plan-sha256', digest,
+                         '--assignment', 'sol=plan-completeness',
+                         '--assignment', 'terra=plan-soundness',
+                         '--assignment', 'opus=plan-simplicity',
+                         '--assignment', 'sonnet=plan-tests',
+                         '--full-seat', 'sol', timeout=90)
+        assert parent['fallback_policy'] == document
+        manifest_path = session / 'r1p-evidence.manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        manifest.pop('fallback_policy')
+        manifest_path.write_text(json.dumps(manifest))
+        (session / 'fallback-policy.json').unlink()
+        call('verify', manifest_path, timeout=90)
+        assert json.loads(manifest_path.read_text())['schema_version'] == 4
+        assert attempt.quota_escalation_without_fallback(session, '1p') is False
+        assert json.loads((session / 'roster-config.json').read_text()) == config
+        manifest = json.loads(manifest_path.read_text())
+        manifest['fallback_policy'] = {}
+        manifest_path.write_text(json.dumps(manifest))
+        call('verify', manifest_path, good=False, error='invalid fallback policy', timeout=90)
+        manifest.pop('fallback_policy')
+        manifest_path.write_text(json.dumps(manifest))
+        rewrite_plan_as_schema3(session, manifest_path)
+        call('verify', manifest_path, timeout=90)
+        verified = json.loads(manifest_path.read_text())
+        assert verified['schema_version'] == 3
+        assert attempt.quota_escalation_without_fallback(session, '1p') is False
+
+def preflight_policy_blocks_enabled_to_disabled_rewrite():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        saved = {name: (session / name).read_bytes()
+                 for name in ('scope.env', 'roster.json', 'files.txt', 'untracked.txt')}
+        for name in saved:
+            (session / name).unlink()
+        panel = load_panel_request()
+        base = session.parent / 'base.json'
+        base.write_text('{"quota_fallback": true}\n')
+        panel.write_session(session, 'no roster here', base, host='claude', grok_ready=False)
+        for name, raw in saved.items():
+            (session / name).write_bytes(raw)
+        names = ('roster-config.json', 'panel-request.json', 'fallback-policy.json')
+        snapshots = {name: (session / name).read_bytes() for name in names}
+        base.write_text('{"quota_fallback": false}\n')
+        try:
+            panel.write_session(session, 'no roster here', base, host='claude', grok_ready=False)
+        except ValueError as error:
+            assert str(error) == 'session policy is sealed', error
+        else:
+            raise AssertionError('session policy is sealed')
+        assert {name: (session / name).read_bytes() for name in names} == snapshots
+        (session / 'roster-config.json').write_text('{"quota_fallback": false}\n')
+        cancellation_roster(session)
+        parent = prepare('11', 'risk', *assign, '--full-seat', 'sonnet')
+        attempt = load_attempt_module()
+        assert parent['fallback_policy'] == attempt.fallback_policy_document(False)
+        for seat, code, token in (('opus', '4', '4' * 32), ('terra', '130', '5' * 32)):
+            prompt = session / f'r11-{seat}.prompt.md'
+            prompt.write_text('review\n')
+            assert reserve_launch_bound(session, '11', seat, prompt, token).returncode == 0
+            assert record_launch_bound(session, '11', seat, prompt, code, token).returncode == 0
+            (session / f'r11-{seat}.exit').write_text(code + '\n')
+        (session / 'r11-terra.started').write_text('cli\n33829\nMon Oct 26 21:42:00 2026\n')
+        recorded = subprocess.run([sys.executable, str(script.parent / 'lib' / 'rev-attempt.py'),
+                                   'record-provider-cancellation', session, '11', 'opus', 'terra',
+                                   'task-33829'], capture_output=True, text=True)
+        assert recorded.returncode != 0
+        refuse_exit4(session, '11x', 'sol=' + parent['assignments']['terra']['bundle'], '11:terra')
+        assert attempt.quota_escalation_without_fallback(session, '11') is False
+        assert (session / 'fallback-policy.json').read_bytes() == snapshots['fallback-policy.json']
+
+def initialized_session_without_sidecar_refuses_exit4_replacement():
+    for config in ({}, {'quota_fallback': False}):
+        with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+            quota_roster(session)
+            (session / 'roster-config.json').write_text(json.dumps(config))
+            names = ('scope.env', 'roster.json', 'files.txt', 'untracked.txt', 'roster-config.json')
+            before = {name: (session / name).read_bytes() for name in names}
+            parent = prepare('9', 'risk', *assign, '--full-seat', 'sonnet')
+            assert 'fallback_policy' not in parent
+            assert not os.path.lexists(session / 'fallback-policy.json')
+            assert {name: (session / name).read_bytes() for name in names} == before
+            record_sol_exit(session, '9', '4')
+            attempt = load_attempt_module()
+            assert attempt.quota_escalation_without_fallback(session, '9') is False
+            refuse_exit4(session, '9x', 'terra=' + parent['assignments']['sol']['bundle'], '9:sol')
 
 
 def replacement_accepts_only_a_recorded_owned_provider_cancellation():
@@ -3798,6 +4174,7 @@ def recorded_quota_cancellation_requires_fallback_disabled():
                 {'seat': seat, 'extra': False, 'adapter': identity[0], 'model': identity[1], 'effort': identity[2]}
                 for seat, identity in chain_identities.items()]}))
             (session / 'roster-config.json').write_text(json.dumps({'quota_fallback': enabled}))
+            write_fallback_policy(session, {'quota_fallback': enabled})
             parent = prepare('11', 'risk', *assign, '--full-seat', 'sonnet')
             for seat, code, token in (('opus', '4', '4' * 32), ('terra', '130', '5' * 32)):
                 prompt = session / f'r11-{seat}.prompt.md'
@@ -5105,6 +5482,9 @@ cases = (
     nested_walks_reuse_cached_audits, replacement_runs_on_another_seat,
     replacement_accepts_only_durable_provider_exit_3, quota_without_fallback_allows_recorded_exit_4_escalation,
     frozen_exit4_policy_ignores_a_later_config_rewrite,
+    legacy_manifests_stay_valid_without_exit4_eligibility,
+    preflight_policy_blocks_enabled_to_disabled_rewrite,
+    initialized_session_without_sidecar_refuses_exit4_replacement,
     replacement_accepts_only_a_recorded_owned_provider_cancellation,
     record_provider_cancellation_binds_the_finished_attempts, recorded_quota_cancellation_requires_fallback_disabled,
     replacement_chain_reaches_opus,
@@ -5189,6 +5569,9 @@ groups = {
         replacement_runs_on_another_seat, replacement_accepts_only_durable_provider_exit_3,
         quota_without_fallback_allows_recorded_exit_4_escalation,
         frozen_exit4_policy_ignores_a_later_config_rewrite,
+        legacy_manifests_stay_valid_without_exit4_eligibility,
+        preflight_policy_blocks_enabled_to_disabled_rewrite,
+        initialized_session_without_sidecar_refuses_exit4_replacement,
         replacement_accepts_only_a_recorded_owned_provider_cancellation,
         record_provider_cancellation_binds_the_finished_attempts, recorded_quota_cancellation_requires_fallback_disabled,
         replacement_chain_reaches_opus,

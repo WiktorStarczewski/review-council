@@ -71,6 +71,11 @@ def find_evidence_seal(session: Path) -> Path | None:
                  if fnmatch.fnmatchcase(entry.name, 'r*-evidence.manifest.json')), None)
 
 
+def preflight_inputs_present(session: Path) -> bool:
+    session = _directory(session)
+    return any(_has_entry(session / name) for name in STANDARD_INPUTS)
+
+
 @contextmanager
 def session_input_lock(session: Path) -> Iterator[Path]:
     session = _directory(session)

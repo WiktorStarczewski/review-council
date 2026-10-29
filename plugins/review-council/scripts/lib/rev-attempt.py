@@ -322,7 +322,7 @@ def provider_cancellation(session: Path, panel: str, seat: str, cancelled: dict)
         return False
     if (cancelled_seat != seat or type(trigger_exit) is not int
             or (trigger_exit == 4 and (type(record.get('schema_version')) is not int or record['schema_version'] != 1))
-            or (trigger_exit != 3 and not (trigger_exit == 4 and quota_escalation_without_fallback(session)))
+            or (trigger_exit != 3 and not (trigger_exit == 4 and quota_escalation_without_fallback(session, panel)))
             or str(cancellation_exit) != cancelled['exit']
             or cancellation_exit not in (129, 130, 143)
             or record.get('started_identity') != started_identity
@@ -362,15 +362,36 @@ def provider_cancellation(session: Path, panel: str, seat: str, cancelled: dict)
     return True
 
 
-def quota_escalation_without_fallback(session: Path) -> bool:
-    config = session / 'roster-config.json'
-    if not safe_regular(config):
+def eligible_document(config) -> bool:
+    return isinstance(config, dict) and config.get('quota_fallback', False) is False
+
+
+def fallback_policy_document(eligible) -> dict:
+    canonical = json.dumps(
+        {'quota_escalation_without_fallback': eligible},
+        sort_keys=True, separators=(',', ':')) + '\n'
+    return {
+        'schema_version': 1,
+        'quota_escalation_without_fallback': eligible,
+        'sha256': hashlib.sha256(canonical.encode()).hexdigest(),
+    }
+
+
+def fallback_policy_bytes(eligible) -> bytes:
+    return (json.dumps(fallback_policy_document(eligible), sort_keys=True,
+                       separators=(',', ':')) + '\n').encode()
+
+
+def quota_escalation_without_fallback(session: Path, panel: str) -> bool:
+    safe = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-')
+    if not isinstance(panel, str) or not panel or not set(panel) <= safe:
         return False
     try:
-        value = json.loads(private_bytes(config))
-    except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        document = json.loads(private_bytes(session / f'r{panel}-evidence.manifest.json'))
+    except (OSError, UnicodeDecodeError, ValueError, json.JSONDecodeError, RecursionError):
         return False
-    return isinstance(value, dict) and value.get('quota_fallback', False) is False
+    return (isinstance(document, dict) and document.get('label') == panel
+            and document.get('fallback_policy') == fallback_policy_document(True))
 
 
 def terminal_failure(session: Path, panel: str, seat: str, prompt: Path) -> bool:
@@ -382,7 +403,7 @@ def terminal_failure(session: Path, panel: str, seat: str, prompt: Path) -> bool
     if attempt is not None:
         if attempt['exit'] in PROVIDER_FAILURE_EXITS:
             return True
-        if attempt['exit'] == '4' and quota_escalation_without_fallback(session):
+        if attempt['exit'] == '4' and quota_escalation_without_fallback(session, panel):
             return True
         if attempt['exit'] in PROVIDER_CANCELLATION_EXITS:
             return provider_cancellation(session, panel, seat, attempt)
@@ -431,7 +452,7 @@ def record_provider_cancellation(session: Path, panel: str, trigger_seat: str,
         trigger = completed_attempt(session, panel, trigger_seat, trigger_prompt)
         cancelled = completed_attempt(session, panel, cancelled_seat, cancelled_prompt)
         if (trigger is None
-                or (trigger['exit'] != '3' and not (trigger['exit'] == '4' and quota_escalation_without_fallback(session)))
+                or (trigger['exit'] != '3' and not (trigger['exit'] == '4' and quota_escalation_without_fallback(session, panel)))
                 or cancelled is None
                 or cancelled['exit'] not in PROVIDER_CANCELLATION_EXITS
                 or roster_adapter(session, trigger_seat) is None
