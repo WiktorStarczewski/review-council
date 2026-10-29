@@ -368,7 +368,7 @@ def read_activity(directory, adapters):
                             or type(row["line_start"]) is not int or type(row["line_end"]) is not int
                             or row["line_start"] < 1 or row["line_end"] < row["line_start"]
                             or row["origin"] not in ("packet", "tool") for row in ranges)
-                        or audit["packet_ranges"] != sum(row["origin"] == "packet" for row in ranges)
+                        or audit["packet_ranges"] < sum(row["origin"] == "packet" for row in ranges)
                         or audit["opened_source_ranges"] != sum(row["origin"] == "tool" for row in ranges)):
                     raise ValueError("invalid source evidence audit structure")
                 result = directory / (stem + ".json")
@@ -401,6 +401,8 @@ def read_activity(directory, adapters):
                         or (audit["status"] == "invalid" and findings is not None
                             and finding_coverage > len(findings))):
                     raise ValueError("read audit finding coverage mismatch")
+                packet_rows = sum(row["origin"] == "packet" for row in ranges)
+                assigned_ranges = None
                 manifest_hash = audit.get("evidence_manifest_sha256")
                 if manifest_hash is not None:
                     if not isinstance(manifest_hash, str) or re.fullmatch(r"[0-9a-f]{64}", manifest_hash) is None:
@@ -410,6 +412,26 @@ def read_activity(directory, adapters):
                     if len(manifests) != 1:
                         raise ValueError("read audit manifest hash mismatch")
                     manifest = json.loads(manifests[0].read_text())
+                    seat = max((name for name in adapters if stem.endswith("-" + name)), key=len, default=None)
+                    context = manifest.get("source_context", {})
+                    if not isinstance(context, dict) or not isinstance(context.get("seats", {}), dict):
+                        raise ValueError("invalid source evidence audit structure")
+                    seat_context = context.get("seats", {}).get(seat, {})
+                    if not isinstance(seat_context, dict):
+                        raise ValueError("invalid source evidence audit structure")
+                    shards = seat_context.get("shards")
+                    if "shards" in seat_context:
+                        if (not isinstance(shards, list) or any(
+                                not isinstance(shard, dict) or not isinstance(shard.get("ranges"), list)
+                                for shard in shards)):
+                            raise ValueError("invalid source evidence audit structure")
+                        try:
+                            validated, _validated_hash = evidence_validator()(
+                                manifests[0], fresh=False, offline=True)
+                            validated_shards = validated["source_context"]["seats"][seat]["shards"]
+                            assigned_ranges = sum(len(shard["ranges"]) for shard in validated_shards)
+                        except Exception as error:
+                            raise ValueError("invalid source evidence audit structure") from error
                     if manifest.get("phase") == "plan":
                         plan = manifest.get("plan") or {}
                         artifact = directory / str(plan.get("artifact", ""))
@@ -422,6 +444,11 @@ def read_activity(directory, adapters):
                         raise ValueError("non-plan audit contains plan citation coverage")
                 elif (plan_artifact_sha256 is not None or plan_citations or plan_finding_citations):
                     raise ValueError("plan citations require an evidence manifest")
+                if (assigned_ranges is None and audit["packet_ranges"] != packet_rows
+                        or assigned_ranges is not None and (
+                            audit["packet_ranges"] > assigned_ranges
+                            or audit["status"] == "valid" and audit["packet_ranges"] != assigned_ranges)):
+                    raise ValueError("invalid source evidence audit structure")
                 patch_mode = audit.get("patch_proof_mode")
                 patch_fields = (
                     "patch_proof_calls", "patch_proof_turns", "patch_proof_visible_bytes",
