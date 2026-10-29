@@ -425,7 +425,13 @@ def read_activity(directory, adapters):
                                 not isinstance(shard, dict) or not isinstance(shard.get("ranges"), list)
                                 for shard in shards)):
                             raise ValueError("invalid source evidence audit structure")
-                        assigned_ranges = sum(len(shard["ranges"]) for shard in shards)
+                        try:
+                            validated, _validated_hash = evidence_validator()(
+                                manifests[0], fresh=False, offline=True)
+                            validated_shards = validated["source_context"]["seats"][seat]["shards"]
+                            assigned_ranges = sum(len(shard["ranges"]) for shard in validated_shards)
+                        except Exception as error:
+                            raise ValueError("invalid source evidence audit structure") from error
                     if manifest.get("phase") == "plan":
                         plan = manifest.get("plan") or {}
                         artifact = directory / str(plan.get("artifact", ""))
