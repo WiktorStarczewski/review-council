@@ -27,16 +27,9 @@ jobs:
           from pathlib import Path
           p = Path('plugins/review-council/scripts/rev-profile.py')
           s = p.read_text()
-          old = '''                        try:
-                              validated, _validated_hash = evidence_validator()(
-                                  manifests[0], fresh=False, offline=True)
-                              validated_shards = validated["source_context"]["seats"][seat]["shards"]
-                              assigned_ranges = sum(len(shard["ranges"]) for shard in validated_shards)
-                          except Exception as error:
-                              raise ValueError("invalid source evidence audit structure") from error'''
-          new = '                        assigned_ranges = sum(len(shard["ranges"]) for shard in shards)'
-          assert s.count(old) == 1
-          p.write_text(s.replace(old, new))
+          start = s.index('                        try:\n                            validated, _validated_hash = evidence_validator()(')
+          end = s.index('                    if manifest.get("phase") == "plan":', start)
+          p.write_text(s[:start] + '                        assigned_ranges = sum(len(shard["ranges"]) for shard in shards)\n' + s[end:])
           PY
           set +e
           bash plugins/review-council/tests/run-tests.sh profile_source_context_activity > reversal.log 2>&1
