@@ -868,7 +868,29 @@ PY
       'patch_proof_calls:2 patch_proof_turns:2 patch_proof_bytes:280 expected_chunks:2 opened_chunks:2 patch_modes:window:0,chunk:1'
     python3 - "$S/r4-sol.read-audit.json" <<'PY'
 import json, sys
-path = sys.argv[1]; audit = json.load(open(path)); audit['source_read_batches'] = 2
+path = sys.argv[1]; audit = json.load(open(path)); audit['packet_ranges'] = 5
+open(path, 'w').write(json.dumps(audit))
+PY
+    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-base-packet.json"
+    python3 - "$S/profile-base-packet.json" <<'PY'
+import json, sys
+profile = json.load(open(sys.argv[1])); activity = profile['sessions'][0]['read_activity']
+assert activity['packet_ranges'] == 5, activity
+assert activity['opened_source_ranges'] == 1, activity
+assert not any('invalid source evidence audit structure' in str(value) for value in profile.get('warnings', [])), profile
+PY
+    assert_eq "profile counts base-tree packet ranges without claiming citation credit" "$?" 0
+    python3 - "$S/r4-sol.read-audit.json" <<'PY'
+import json, sys
+path = sys.argv[1]; audit = json.load(open(path)); audit['packet_ranges'] = 3
+open(path, 'w').write(json.dumps(audit))
+PY
+    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-invalid-packets.json"
+    assert_grep "profile rejects fewer packets than credited packet ranges" \
+      "$S/profile-invalid-packets.json" 'invalid source evidence audit structure'
+    python3 - "$S/r4-sol.read-audit.json" <<'PY'
+import json, sys
+path = sys.argv[1]; audit = json.load(open(path)); audit['packet_ranges'] = 5; audit['source_read_batches'] = 2
 open(path, 'w').write(json.dumps(audit))
 PY
     "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-invalid-batches.json"
