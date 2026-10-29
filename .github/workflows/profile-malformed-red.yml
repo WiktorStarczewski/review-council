@@ -1,0 +1,29 @@
+name: Profiler malformed manifest expected red
+on:
+  push:
+    branches: [ci/profile-malformed-red]
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - run: test "$(git rev-parse HEAD^)" = 87afc6cf535a2ffd8ef2ddbd7907a71fcec4103b
+      - name: Verify intended functional failures
+        shell: bash
+        run: |
+          set +e
+          bash plugins/review-council/tests/run-tests.sh profile_source_context_activity > result.log 2>&1
+          status=$?
+          cat result.log
+          test "$status" -ne 0 || exit 1
+          grep -F 'FAIL profile rejects malformed shard ranges' result.log || exit 1
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: profile-malformed-red
+          path: result.log
