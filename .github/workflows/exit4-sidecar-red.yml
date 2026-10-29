@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - run: git checkout --detach 423a8d20756e61d4318f66eadcd39ed9030d062c && test "$(git rev-parse HEAD)" = 423a8d20756e61d4318f66eadcd39ed9030d062c
+      - run: git checkout --detach 250c9876414945115e6ffb14ff6369ecf523f9b1 && test "$(git rev-parse HEAD)" = 250c9876414945115e6ffb14ff6369ecf523f9b1
       - run: sudo apt-get update -qq && sudo apt-get install -y ripgrep
       - name: Verify intended functional regression
         shell: bash
@@ -22,8 +22,7 @@ jobs:
           status=$?
           cat result.log
           test "$status" -ne 0 || exit 1
-          grep -F 'post_prepare_manifest_policy_cannot_authorize_exit4' result.log || exit 1
-          grep -F 'exit-4 replacement stays unauthorized' result.log || exit 1
+          grep -F 'FAIL post_prepare_manifest_policy_cannot_authorize_exit4 exit-4 replacement stays unauthorized' result.log || exit 1
       - uses: actions/upload-artifact@v4
         if: always()
         with:
