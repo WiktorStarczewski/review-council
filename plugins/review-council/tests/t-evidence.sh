@@ -4039,6 +4039,33 @@ def preflight_policy_blocks_enabled_to_disabled_rewrite():
         assert attempt.quota_escalation_without_fallback(session, '11') is False
         assert (session / 'fallback-policy.json').read_bytes() == snapshots['fallback-policy.json']
 
+def preflight_sidecar_substitution_cannot_authorize_exit4():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        quota_roster(session)
+        names = ('scope.env', 'roster.json', 'files.txt', 'untracked.txt')
+        stage = session.parent / 'staged-inputs'
+        stage.mkdir()
+        for name in names:
+            (stage / name).write_bytes((session / name).read_bytes())
+            (session / name).unlink()
+        panel = load_panel_request()
+        base = session.parent / 'base.json'
+        base.write_text('{"quota_fallback": true}\n')
+        panel.write_session(session, 'no roster here', base, host='claude', grok_ready=False)
+        installed = subprocess.run([sys.executable, str(script.parent / 'lib' / 'session_inputs.py'),
+                                    'install', str(session), str(stage)], capture_output=True, text=True)
+        assert installed.returncode == 0, installed.stderr
+        write_fallback_policy(session, {'quota_fallback': False})
+        result = subprocess.run([sys.executable, str(script), 'prepare', str(session), '9', '--phase', 'risk',
+                                 *assign, '--full-seat', 'sonnet'], capture_output=True, text=True)
+        if result.returncode == 0:
+            parent = json.loads((session / 'r9-evidence.manifest.json').read_text())
+            record_sol_exit(session, '9', '4')
+            refuse_exit4(session, '9x', 'terra=' + parent['assignments']['sol']['bundle'], '9:sol')
+        else:
+            assert 'policy' in result.stderr.lower(), result.stderr
+
+
 def initialized_session_without_sidecar_refuses_exit4_replacement():
     for config in ({}, {'quota_fallback': False}):
         with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
@@ -5483,7 +5510,7 @@ cases = (
     replacement_accepts_only_durable_provider_exit_3, quota_without_fallback_allows_recorded_exit_4_escalation,
     frozen_exit4_policy_ignores_a_later_config_rewrite,
     legacy_manifests_stay_valid_without_exit4_eligibility,
-    preflight_policy_blocks_enabled_to_disabled_rewrite,
+    preflight_policy_blocks_enabled_to_disabled_rewrite, preflight_sidecar_substitution_cannot_authorize_exit4,
     initialized_session_without_sidecar_refuses_exit4_replacement,
     replacement_accepts_only_a_recorded_owned_provider_cancellation,
     record_provider_cancellation_binds_the_finished_attempts, recorded_quota_cancellation_requires_fallback_disabled,
@@ -5570,7 +5597,7 @@ groups = {
         quota_without_fallback_allows_recorded_exit_4_escalation,
         frozen_exit4_policy_ignores_a_later_config_rewrite,
         legacy_manifests_stay_valid_without_exit4_eligibility,
-        preflight_policy_blocks_enabled_to_disabled_rewrite,
+        preflight_policy_blocks_enabled_to_disabled_rewrite, preflight_sidecar_substitution_cannot_authorize_exit4,
         initialized_session_without_sidecar_refuses_exit4_replacement,
         replacement_accepts_only_a_recorded_owned_provider_cancellation,
         record_provider_cancellation_binds_the_finished_attempts, recorded_quota_cancellation_requires_fallback_disabled,
