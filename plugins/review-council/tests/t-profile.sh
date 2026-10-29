@@ -969,6 +969,26 @@ PY
     "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-invalid-shards.json"
     assert_grep "profile rejects malformed shard binding" "$S/profile-invalid-shards.json" \
       'invalid source evidence audit structure'
+    python3 - "$S" <<'PY'
+import hashlib, json, pathlib, sys
+root = pathlib.Path(sys.argv[1]); manifest = root / 'r4-evidence.manifest.json'
+manifest.write_text(json.dumps({'source_context': {'seats': {'sol': {'shards': [{'ranges': [{}, {}, {}, {}, {}]}]}}}}))
+digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+prompt = root / 'r4-sol.prompt.md'; prompt.write_text('Evidence manifest SHA-256: ' + digest + '\nAssigned scope: semantic\n')
+path = root / 'r4-sol.read-audit.json'; audit = json.loads(path.read_text())
+audit['evidence_manifest_sha256'] = digest; audit['prompt_sha256'] = hashlib.sha256(prompt.read_bytes()).hexdigest()
+audit['status'] = 'valid'; audit['violations'] = []; audit['packet_ranges'] = 5
+audit['source_ranges'] = [{'path': f'src/{i}.py', 'line_start': 1, 'line_end': 2, 'origin': 'packet'} for i in range(5)] + [audit['source_ranges'][-1]]
+path.write_text(json.dumps(audit))
+PY
+    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-malformed-ranges.json"
+    python3 - "$S/profile-malformed-ranges.json" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))['sessions'][0]['read_activity']
+assert a['audits'] == 0 and a['packet_ranges'] == 0, a
+assert any('invalid source evidence audit structure' in item['reason'] for item in a['invalid_audits']), a
+PY
+    assert_eq "profile rejects malformed shard ranges" "$?" 0
   )
 }
 
