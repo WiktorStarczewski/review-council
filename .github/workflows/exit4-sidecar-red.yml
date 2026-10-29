@@ -13,11 +13,12 @@ jobs:
         with:
           fetch-depth: 0
       - run: git checkout --detach 423a8d20756e61d4318f66eadcd39ed9030d062c && test "$(git rev-parse HEAD)" = 423a8d20756e61d4318f66eadcd39ed9030d062c
+      - run: sudo apt-get update -qq && sudo apt-get install -y ripgrep
       - name: Verify intended functional regression
         shell: bash
         run: |
           set +e
-          REV_EVIDENCE_CASE=post_prepare_manifest_policy_cannot_authorize_exit4 bash plugins/review-council/tests/run-tests.sh evidence_hardening > result.log 2>&1
+          bash plugins/review-council/tests/run-tests.sh evidence_hardening_replacement > result.log 2>&1
           status=$?
           cat result.log
           test "$status" -ne 0 || exit 1
