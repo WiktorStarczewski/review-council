@@ -4069,7 +4069,7 @@ def preflight_sidecar_substitution_cannot_authorize_exit4():
 def post_prepare_manifest_policy_cannot_authorize_exit4():
     for coordinated in (False, True):
         with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
-            cancellation_roster(session)
+            quota_roster(session)
             config = {'quota_fallback': True}
             (session / 'roster-config.json').write_text(json.dumps(config))
             attempt, _ = write_fallback_policy(session, config)
