@@ -932,6 +932,30 @@ PY
     "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-invalid-batches.json"
     assert_grep "profile rejects more source batches than source read calls" \
       "$S/profile-invalid-batches.json" 'invalid source evidence audit structure'
+    python3 - "$S/r4-sol.read-audit.json" <<'PY'
+import json, sys
+path = sys.argv[1]; audit = json.load(open(path))
+audit['status'] = 'invalid'; audit['violations'] = [{'code': 'missing-source-packet'}]
+audit['source_read_batches'] = 1; audit['packet_ranges'] = 3
+audit['source_ranges'] = audit['source_ranges'][:2] + audit['source_ranges'][-1:]
+open(path, 'w').write(json.dumps(audit))
+PY
+    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-partial-invalid.json"
+    python3 - "$S/profile-partial-invalid.json" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1]))['sessions'][0]['read_activity']
+assert a['audits'] == 1 and a['violating_audits'] == 1 and a['invalid_audits'] == [], a
+assert a['packet_ranges'] == 3, a
+PY
+    assert_eq "profile retains partial invalid packet metrics" "$?" 0
+    python3 - "$S/r4-sol.read-audit.json" <<'PY'
+import json, sys
+path = sys.argv[1]; audit = json.load(open(path)); audit['packet_ranges'] = 6
+open(path, 'w').write(json.dumps(audit))
+PY
+    "$SCRIPTS/rev-profile.py" --json "$S" > "$S/profile-invalid-overcount.json"
+    assert_grep "profile rejects invalid audit packet overcount" "$S/profile-invalid-overcount.json" \
+      'invalid source evidence audit structure'
   )
 }
 
