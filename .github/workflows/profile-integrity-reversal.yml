@@ -1,0 +1,42 @@
+name: Profiler integrity behavioral reversal
+on:
+  push:
+    branches: [ci/profile-integrity-reversal]
+permissions:
+  contents: read
+jobs:
+  reversal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Bind snapshot and passing baseline
+        run: |
+          test "$(git rev-parse HEAD^)" = 49d56722dd49533be59ade6ee7e17f60262c661e
+          bash plugins/review-council/tests/run-tests.sh profile_source_context_activity
+      - name: Verify dependency-preserving reversal
+        shell: bash
+        run: |
+          set -euo pipefail
+          git show 8a8b1f36b5c89cb777927e98c33b294ad5433923:plugins/review-council/scripts/rev-profile.py > plugins/review-council/scripts/rev-profile.py
+          git diff --full-index --binary > reversal.patch
+          sha256sum reversal.patch > reversal.sha256
+          set +e
+          bash plugins/review-council/tests/run-tests.sh profile_source_context_activity > result.log 2>&1
+          status=$?
+          set -e
+          cat result.log
+          test "$status" -ne 0
+          grep -F 'FAIL profile rejects an unbound packet_ranges surplus' result.log
+          grep -F 'FAIL profile rejects packet_ranges above the opened shard total' result.log
+          grep -F 'FAIL profile rejects packet_ranges below the opened shard total' result.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: profile-integrity-reversal
+          path: |
+            result.log
+            reversal.patch
+            reversal.sha256
