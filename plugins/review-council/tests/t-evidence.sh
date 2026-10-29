@@ -3648,6 +3648,38 @@ def quota_without_fallback_allows_recorded_exit_4_escalation():
                 assert list(child['assignments']) == ['terra']
 
 
+def frozen_exit4_policy_ignores_a_later_config_rewrite():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        identities = {
+            'sol': ('claude', 'sonnet', 'high'), 'terra': ('codex', 'gpt-5.6-sol', 'high'),
+            'opus': ('codex', 'gpt-5.6-luna', 'high'), 'sonnet': ('agent', 'sonnet', 'high'),
+        }
+        (session / 'roster.json').write_text(json.dumps({'seats': [
+            {'seat': seat, 'extra': False, 'adapter': identity[0], 'model': identity[1], 'effort': identity[2]}
+            for seat, identity in identities.items()]}))
+        config = session / 'roster-config.json'
+        config.write_text(json.dumps({'quota_fallback': True}))
+        canonical = json.dumps({'quota_escalation_without_fallback': False}, sort_keys=True, separators=(',', ':')) + '\n'
+        policy = {'schema_version': 1, 'quota_escalation_without_fallback': False,
+                  'sha256': hashlib.sha256(canonical.encode()).hexdigest()}
+        sidecar = session / 'fallback-policy.json'
+        sidecar.write_text(json.dumps(policy, sort_keys=True, separators=(',', ':')) + '\n')
+        sidecar.chmod(0o600)
+        parent = prepare('9', 'risk', *assign, '--full-seat', 'sonnet')
+        prompt = session / 'r9-sol.prompt.md'
+        prompt.write_text('review\n')
+        token = '1' * 32
+        assert reserve_launch_bound(session, '9', 'sol', prompt, token).returncode == 0
+        assert record_launch_bound(session, '9', 'sol', prompt, '4', token).returncode == 0
+        (session / 'r9-sol.exit').write_text('4\n')
+        config.write_text(json.dumps({'quota_fallback': False}))
+        result = subprocess.run([sys.executable, str(script), 'prepare', str(session), '9x', '--phase', 'repair',
+                                 '--assignment', 'terra=' + parent['assignments']['sol']['bundle'],
+                                 '--parent-assignment', '9:sol'], capture_output=True, text=True)
+        assert result.returncode != 0, 'exit-4 replacement stays unauthorized'
+        assert 'parent assignment has no recorded terminal failure' in result.stderr
+
+
 def replacement_accepts_only_a_recorded_owned_provider_cancellation():
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
         chain_identities = {
@@ -5072,6 +5104,7 @@ cases = (
     unenforced_audit_is_opt_in, unenforced_audit_cache_is_keyed_on_every_input,
     nested_walks_reuse_cached_audits, replacement_runs_on_another_seat,
     replacement_accepts_only_durable_provider_exit_3, quota_without_fallback_allows_recorded_exit_4_escalation,
+    frozen_exit4_policy_ignores_a_later_config_rewrite,
     replacement_accepts_only_a_recorded_owned_provider_cancellation,
     record_provider_cancellation_binds_the_finished_attempts, recorded_quota_cancellation_requires_fallback_disabled,
     replacement_chain_reaches_opus,
@@ -5155,6 +5188,7 @@ groups = {
     'replacement': (
         replacement_runs_on_another_seat, replacement_accepts_only_durable_provider_exit_3,
         quota_without_fallback_allows_recorded_exit_4_escalation,
+        frozen_exit4_policy_ignores_a_later_config_rewrite,
         replacement_accepts_only_a_recorded_owned_provider_cancellation,
         record_provider_cancellation_binds_the_finished_attempts, recorded_quota_cancellation_requires_fallback_disabled,
         replacement_chain_reaches_opus,
