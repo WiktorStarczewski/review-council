@@ -289,6 +289,30 @@ def review_status(path):
 
 def expected_stage_read(prompt, session):
     lines = Path(prompt).read_text(encoding='utf-8').splitlines()
+    manifest_rows = all_matches(
+        lines, r'Prepared evidence manifest: ([A-Za-z0-9_.-]+) SHA-256 ([0-9a-f]{64})')
+    if len(manifest_rows) != 1:
+        raise StageError('prepared proof stage does not bind one evidence manifest')
+    session_path = Path(session).resolve(strict=True)
+    manifest_name, expected_manifest_hash = manifest_rows[0].groups()
+    suffix = '-evidence.manifest.json'
+    if not manifest_name.endswith(suffix):
+        raise StageError('prepared proof stage evidence manifest name is invalid')
+    label = manifest_name[:-len(suffix)]
+    manifest_path = direct_path(str(session_path / manifest_name), session_path, manifest_name)
+    manifest_raw = safe_read(manifest_path, session_path, 16 * 1024 * 1024)
+    if sha256(manifest_raw) != expected_manifest_hash:
+        raise StageError('prepared proof stage evidence manifest hash changed')
+    try:
+        manifest = json.loads(manifest_raw)
+    except (UnicodeError, ValueError) as error:
+        raise StageError('prepared proof stage evidence manifest is invalid') from error
+    if (not isinstance(manifest, dict) or manifest.get('label') != label[1:]
+            or manifest.get('session') != str(session_path)):
+        raise StageError('prepared proof stage evidence manifest identity changed')
+    artifacts = manifest.get('artifacts')
+    if not isinstance(artifacts, dict):
+        raise StageError('prepared proof stage artifact table is missing')
     reads = [line[len('Read exactly: '):] for line in lines
              if line.startswith('Read exactly: ')]
     if len(reads) != PREPARED_READS_PER_TURN:
@@ -297,10 +321,31 @@ def expected_stage_read(prompt, session):
         words = shlex.split(reads[0])
     except ValueError as error:
         raise StageError('prepared proof stage read command is malformed') from error
-    if len(words) != 3 or words[:2] != ['cat', '--']:
-        raise StageError('prepared proof stage read must be one bounded cat command')
-    target = direct_path(words[2], Path(session).resolve(strict=True))
-    return target, safe_read(target, Path(session).resolve(strict=True), OUTPUT_BYTES)
+    if len(words) == 3 and words[:2] == ['cat', '--']:
+        target = direct_path(words[2], session_path)
+        mode = 'cat'
+    elif len(words) == 4 and words[:2] == ['sed', '-n']:
+        match = re.fullmatch(r'([1-9][0-9]*),([1-9][0-9]*)p', words[2])
+        if not match:
+            raise StageError('prepared proof stage patch window is malformed')
+        start, end = map(int, match.groups())
+        if start > end:
+            raise StageError('prepared proof stage patch window is reversed')
+        target = direct_path(words[3], session_path)
+        mode = 'sed'
+    else:
+        raise StageError('prepared proof stage read must be one bounded cat or sed command')
+    raw = artifact_bytes(session_path, artifacts, target.name, size_limit=32 * 1024 * 1024)
+    if mode == 'cat':
+        expected = raw
+    else:
+        audit = read_audit_module()
+        if end > len(audit.split_lf_lines(raw)):
+            raise StageError('prepared proof stage patch window exceeds its artifact')
+        expected = audit.byte_range(raw, start, end)
+    if len(expected) > OUTPUT_BYTES:
+        raise StageError('prepared proof stage read exceeds its bounded output size')
+    return target, expected, mode, words
 
 
 def turn_stats(path, root, session, stage_prompt=None):
@@ -376,16 +421,23 @@ def turn_stats(path, root, session, stage_prompt=None):
     root_path = Path(root).resolve()
     session_path = Path(session).resolve()
     if stage_prompt is not None:
-        expected_path, expected_raw = expected_stage_read(stage_prompt, session_path)
+        expected_path, expected_raw, expected_mode, expected_words = expected_stage_read(
+            stage_prompt, session_path)
         if len(calls) != PREPARED_READS_PER_TURN:
             raise StageError('prepared proof turn did not read its listed artifact')
         call_id, command = next(iter(calls.items()))
         call_data = {'command': command}
+        try:
+            command_words = shlex.split(command)
+        except ValueError as error:
+            raise StageError('prepared proof turn read command is malformed') from error
         if (not successes.get(call_id)
+                or command_words != expected_words
                 or audit.paths_opened_by_call('command_execution', call_data, root_path)
                 != [expected_path]
-                or not audit.complete_packet_read(
+                or (expected_mode == 'cat' and not audit.complete_packet_read(
                     'command_execution', call_data, expected_path, root_path)
+                )
                 or not audit.delivered_matches_bytes(
                     'codex', 'command_execution', output_values[call_id], expected_raw, 1)):
             raise StageError('prepared proof turn did not exactly read its listed artifact')
@@ -592,7 +644,8 @@ def prepared_stages(prompt, seat, model, stage_dir):
     for index, stage in enumerate(stages, 1):
         stage_prompt = [
             f'Prepared evidence read stage {index} of {len(stages)} ({stage["kind"]}).',
-            'Read exactly the one listed prepared artifact in full with one native shell tool call.',
+            f'Prepared evidence manifest: {manifest_path.name} SHA-256 {digests[0]}',
+            'Run exactly the one listed prepared evidence command and return its complete output.',
             'Do not search, read anything else, review the change, or combine commands.',
             'After all reads succeed, respond exactly READ_STAGE_COMPLETE and stop.',
         ]

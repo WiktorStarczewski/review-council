@@ -410,6 +410,7 @@ PY
 
 test_seat_codex_prepared_evidence_stage_turn_requires_exact_complete_read() {
   python3 - "$SCRIPTS/lib/codex-proof-stages.py" "$T" <<'PY'
+import hashlib
 import inspect
 import importlib.util
 import json
@@ -426,19 +427,46 @@ root.mkdir(parents=True)
 session.mkdir()
 first = session / 'r1-patch-p01-001.txt'
 second = session / 'r1-patch-p01-002.txt'
+patch = session / 'r1-full.patch'
 first.write_bytes(b'first full chunk\n')
 second.write_bytes(b'second full chunk\n')
-prompt = session / 'stage.prompt'
-prompt.write_text(
-    'Prepared evidence read stage 1 of 2 (patch chunks).\n'
-    'Read exactly the one listed prepared artifact in full with one native shell tool call.\n'
-    'Read exactly: cat -- ' + str(first) + '\n', encoding='utf-8')
+patch.write_bytes(b'first line\nsecond line\nthird line\n')
+manifest = {
+    'schema_version': 2,
+    'label': '1',
+    'session': str(session),
+    'scope': '.',
+    'delta_paths': [],
+    'assignments': {'codex-sol': {'adapter': 'codex', 'scope': 'full', 'full_state': True}},
+    'artifacts': {
+        path.name: {'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+        for path in (first, second, patch)
+    },
+}
+manifest_path = session / 'r1-evidence.manifest.json'
+manifest_raw = (json.dumps(manifest, sort_keys=True, separators=(',', ':')) + '\n').encode()
+manifest_path.write_bytes(manifest_raw)
+manifest_line = (
+    'Prepared evidence manifest: ' + manifest_path.name + ' SHA-256 '
+    + hashlib.sha256(manifest_raw).hexdigest() + '\n'
+)
+
+def make_prompt(name, command):
+    path = session / name
+    path.write_text(
+        manifest_line
+        + 'Prepared evidence read stage 1 of 2 (patch chunks).\n'
+        + 'Run exactly the one listed prepared evidence command and return its complete output.\n'
+        + 'Read exactly: ' + command + '\n', encoding='utf-8')
+    return path
+
+prompt = make_prompt('stage.prompt', 'cat -- ' + str(first))
 assert module.stage_read_count(prompt) == 1
 exact_audit = 'stage_prompt' in inspect.signature(module.turn_stats).parameters
 
-def turn_stats(stream):
+def turn_stats(stream, stage=prompt):
     if exact_audit:
-        return module.turn_stats(stream, root, session, prompt)
+        return module.turn_stats(stream, root, session, stage)
     return module.turn_stats(stream, root, session)
 
 def write_stream(name, command=None, output=None):
@@ -460,15 +488,23 @@ complete = write_stream('complete', 'cat -- ' + str(first), first.read_text())
 calls, output_bytes, expansions = turn_stats(complete)
 assert (calls, output_bytes, expansions) == (1, len(first.read_bytes()), 0)
 
+window_prompt = make_prompt('window.prompt', 'sed -n 2,3p ' + str(patch))
+window_output = 'second line\nthird line\n'
+window = write_stream('window', 'sed -n 2,3p ' + str(patch), window_output)
+calls, output_bytes, expansions = turn_stats(window, window_prompt)
+assert (calls, output_bytes, expansions) == (1, len(window_output.encode()), 0)
+
 cases = {
-    'missing': write_stream('missing'),
-    'reordered': write_stream('reordered', 'cat -- ' + str(second), second.read_text()),
-    'partial': write_stream('partial', 'cat -- ' + str(first), 'first'),
+    'missing': (write_stream('missing'), prompt),
+    'reordered': (write_stream('reordered', 'cat -- ' + str(second), second.read_text()), prompt),
+    'partial': (write_stream('partial', 'cat -- ' + str(first), 'first'), prompt),
+    'partial window': (write_stream('partial-window', 'sed -n 2,3p ' + str(patch), 'second line\n'),
+                       window_prompt),
 }
 failures = []
-for label, stream in cases.items():
+for label, (stream, stage) in cases.items():
     try:
-        turn_stats(stream)
+        turn_stats(stream, stage)
     except module.StageError:
         continue
     failures.append(label + ' prepared evidence read was accepted')
@@ -483,9 +519,18 @@ except module.StageError:
     pass
 else:
     failures.append('paired reads were accepted in one prepared stage')
+
+first.write_bytes(b'mutated after manifest creation\n')
+tampered = write_stream('tampered', 'cat -- ' + str(first), first.read_text())
+try:
+    turn_stats(tampered)
+except module.StageError:
+    pass
+else:
+    failures.append('artifact changed after manifest verification was accepted')
 assert not failures, '; '.join(failures)
 PY
-  assert_eq "single-read stages accept complete evidence and reject missing, reordered, partial, and paired reads" "$?" 0
+  assert_eq "manifest-bound single-read stages accept complete cat and sed reads and reject missing, reordered, partial, paired, and changed artifacts" "$?" 0
 }
 
 test_seat_codex_resumes_unprepared_reviews() {
