@@ -2747,8 +2747,11 @@ spec = importlib.util.spec_from_file_location('rev_attempt', sys.argv[1])
 attempt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(attempt)
 session, standalone = map(Path, sys.argv[2:])
-assert attempt.terminal_failure(session, '1', 'codex-sol', session / 'p.md'), \
-    'a complete exact retry ending in 130 permits configured replacement'
+if not attempt.terminal_failure(session, '1', 'codex-sol', session / 'p.md'):
+    path, _ = attempt.record_path(session, '1', 'codex-sol', session / 'p.md')
+    record = json.loads(path.read_text())
+    final = (session / 'r1-codex-sol.exit').read_text().strip()
+    raise AssertionError(f'complete exact retry was not terminal: record={record!r}, exit={final!r}')
 assert not attempt.terminal_failure(standalone, '1', 'codex-sol', standalone / 'p.md'), \
     'a standalone 130 cannot qualify for replacement'
 provider = Path(sys.argv[2]).parent / 'retry-exit-130-provider'
