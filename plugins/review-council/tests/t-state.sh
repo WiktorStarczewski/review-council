@@ -118,8 +118,9 @@ PY
 }
 
 state_record_terminal_failure() {
-  local session=$1 label=$2 seat=$3 prompt="$session/r${label}-${seat}.prompt.md"
-  local attempt="$SCRIPTS/lib/rev-attempt.py" code
+  local session=$1 label=$2 seat=$3 prompt attempt code
+  prompt="$session/r${label}-${seat}.prompt.md"
+  attempt="$SCRIPTS/lib/rev-attempt.py"
   printf 'review prompt\n' > "$prompt"
   for code in 2 2; do
     python3 "$attempt" reserve "$session" "$label" "$seat" "$prompt" || return

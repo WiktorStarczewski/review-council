@@ -1306,4 +1306,4 @@ Review: normal internal review found a path-traversal risk in the recovery recor
 - [ ] Complete one independent normal review and address actionable findings.
 - [ ] Merge the small workflow fix and share the adopted recovery step with walletissues sessions.
 
-Run `41209614941` on `7af3e37` exposed stale state-gate fixtures: they wrote exit files without the attempt journal now required to prove two terminal failures. The fixtures now record retries through `rev-attempt.py` and assert that an unjournaled failed exit is refused; this correction needs a new exact-head run.
+Run `41209614941` on `7af3e37` exposed stale state-gate fixtures: they wrote exit files without the attempt journal now required to prove two terminal failures. Run `41211125996` caught an unbound-variable failure in the new fixture helper under `set -u`; the assignment order is corrected. The current exact-head run must complete before the next correction can be declared verified.
