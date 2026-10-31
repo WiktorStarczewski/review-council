@@ -3663,7 +3663,7 @@ def replacement_requires_quota_disabled_escalation_record():
         marker['panel'] = '10'
         marker_path.write_text(json.dumps(marker) + '\n')
         marker_path.chmod(0o600)
-        call('prepare', session, '11x-other-panel', '--phase', 'repair', *child_args, env=env,
+        call('prepare', session, '11x2', '--phase', 'repair', *child_args, env=env,
              good=False, error='parent assignment has no recorded terminal failure')
         marker['panel'] = '11'
         marker_path.write_text(json.dumps(marker) + '\n')
