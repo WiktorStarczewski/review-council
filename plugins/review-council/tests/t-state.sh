@@ -40,12 +40,27 @@ state_gate_refuses() {
   before=$(cksum < "$S/state.json")
   "$SCRIPTS/rev-state.sh" "$S" "$@" > "$T/gate.out" 2> "$T/gate.err"; rc=$?
   after=$(cksum < "$S/state.json")
+  if [ "$rc" -ne 2 ]; then
+    printf '%s: unexpected phase=fix result rc=%s\n' "$name" "$rc" >&2
+    cat "$T/gate.err" "$T/gate.out" "$S/state.json" >&2
+  fi
   assert_eq "$name: refused" "$rc" 2
   assert_eq "$name: state unchanged" "$after" "$before"
   assert_grep "$name: names the round" "$T/gate.err" "refusing phase=fix for round $round:"
   assert_grep "$name: names the plan panel way out" "$T/gate.err" "plan panel r${round}p"
   assert_grep "$name: names the skip-line way out" "$T/gate.err" "Plan panel r${round}p - SKIPPED: <reason>"
   assert_grep "$name: names the manual-review way out" "$T/gate.err" "r${round}p-manual-plan-review.json"
+}
+
+state_gate_allows() {
+  local name=$1 S=$2; shift 2
+  local rc
+  "$@" > "$T/gate-allow.out" 2> "$T/gate-allow.err"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '%s: expected phase=fix to pass, got rc=%s\n' "$name" "$rc" >&2
+    cat "$T/gate-allow.err" "$T/gate-allow.out" >&2
+  fi
+  assert_eq "$name" "$rc" 0
 }
 
 state_write_plan_manifest() {
@@ -230,8 +245,10 @@ test_state_fix_gate() {
   state_write_manual_plan_review "$S" 8p codex-opus
   assert_exit "explicit full-plan manual review allows fix after hard seat failure" 0 "$ST" "$S" phase=fix
   assert_grep "manual fallback is recorded separately from a seat result" "$S/r8p-manual-plan-review.json" '"decision": "accepted"'
-  test ! -e "$S/r8p-codex-opus.json" && test ! -e "$S/r8p-codex-opus.exit"
+  test ! -e "$S/r8p-codex-opus.json"
   assert_eq "manual fallback does not fabricate a seat result" "$?" 0
+  assert_eq "manual fallback preserves the failed exit receipt" \
+    "$(cat "$S/r8p-codex-opus.exit")" 2
 
   for mutation in unchecked missing-assignment stale-plan stale-manifest; do
     S="$T/gate-plan-manual-review-$mutation"
@@ -270,7 +287,8 @@ test_state_fix_gate() {
   state_record_terminal_failure "$S" 11px codex-sol
   printf '{"status":"invalid"}\n' > "$S/r11px-codex-sol.audit-invalid.json"
   state_write_manual_plan_review "$S" 11p codex-opus
-  assert_exit "manual review allows fix after the replacement chain fails" 0 "$ST" "$S" phase=fix
+  state_gate_allows "manual review allows fix after the replacement chain fails" \
+    "$S" "$ST" "$S" phase=fix
 
   S="$T/gate-plan-prepare-retry"
   "$ST" "$S" round=12 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
@@ -286,7 +304,8 @@ test_state_fix_gate() {
   state_write_plan_manifest "$S" 12px2 current codex-terra
   printf '{"findings":[]}\n' > "$S/r12px2-codex-terra.json"
   echo 0 > "$S/r12px2-codex-terra.exit"
-  assert_exit "a fresh successful replacement covers a failed prepare attempt" 0 "$ST" "$S" phase=fix
+  state_gate_allows "a fresh successful replacement covers a failed prepare attempt" \
+    "$S" "$ST" "$S" phase=fix
 
   S="$T/gate-plan-root-prepare-only"
   "$ST" "$S" round=13 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
@@ -438,6 +457,6 @@ test_state_fix_gate_accepts_a_px_plan_replacement() {
       "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plans"].get("5px"))' "$S/state.json")" "['codex-sol']"
     state_gate_refuses "a <N>px plan panel that has not returned" "$S" 5 phase=fix
     printf '{"summary":"sound","findings":[]}\n' > "$S/r5px-codex-sol.json"; echo 0 > "$S/r5px-codex-sol.exit"
-    assert_exit "a completed <N>px plan panel allows fix" 0 "$ST" "$S" phase=fix
+    state_gate_allows "a completed <N>px plan panel allows fix" "$S" "$ST" "$S" phase=fix
   )
 }
