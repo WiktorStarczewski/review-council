@@ -11,6 +11,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Semantic result rejection regressions
         run: bash plugins/review-council/tests/run-tests.sh evidence_semantic_rejection
+      - name: Prepared evidence read regressions
+        run: bash plugins/review-council/tests/run-tests.sh prepared_evidence
       - name: Rust import proof regressions
         run: python3 -m unittest discover -s tests -p test_rust_import_resolution.py -v
       - name: Complete code source proof regressions

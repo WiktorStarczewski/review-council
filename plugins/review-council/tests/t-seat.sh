@@ -115,6 +115,7 @@ test_seat_codex_prepares_window_mode_patch_reads() {
   python3 - "$SCRIPTS/lib/codex-proof-stages.py" "$T" <<'PY'
 import hashlib
 import importlib.util
+import inspect
 import json
 import re
 from pathlib import Path
@@ -240,10 +241,13 @@ manifest = {
     'schema_version': 2,
     'label': '1',
     'session': str(root.resolve()),
+    'scope': '.',
+    'delta_paths': [],
     'artifacts': artifacts,
     'assignments': {
         'codex-luna': {
             'adapter': 'codex', 'model': 'gpt-6.1-luna',
+            'scope': 'full', 'full_state': True,
             'patch': str(root / 'r1-full.patch'),
             'patch_sha256': digest('r1-full.patch'),
             'patch_bytes': len(contents['r1-full.patch']), 'patch_lines': 2,
@@ -325,8 +329,8 @@ PY
   fi
   assert_eq "staged Codex proof exits successfully" "$adapter_rc" 0
   calls=$(wc -l < "$S/calls.log" | tr -d ' ')
-  assert_eq "Codex uses separate resumable turns for prepared proof, source review, and findings" "$calls" 13
-  if [ "$calls" = 13 ]; then
+  assert_eq "Codex uses separate resumable turns for single-artifact proof, source review, and findings" "$calls" 14
+  if [ "$calls" = 14 ]; then
     python3 - "$S" <<'PY'
 import json
 import sys
@@ -334,7 +338,8 @@ from pathlib import Path
 
 root = Path(sys.argv[1]).resolve(strict=True)
 expected = [
-    ['r1-patch-p01-001.txt', 'r1-patch-p01-002.txt'],
+    ['r1-patch-p01-001.txt'],
+    ['r1-patch-p01-002.txt'],
     ['r1-codex-luna-source-context-1.json'],
     ['r1-codex-luna-source-context-2.json'],
     ['r1-codex-luna-source-segment-001-001.txt'],
@@ -348,6 +353,7 @@ for index, names in enumerate(expected, 1):
               for line in prompt.splitlines() if line.startswith('Read exactly: cat -- ')]
     wanted = [str(root / name) for name in names]
     assert actual == wanted, (index, actual, wanted)
+    assert len(actual) == 1, (index, actual)
     args = (root / 'calls' / f'call-{index}.args').read_text(encoding='utf-8').splitlines()
     assert '--ephemeral' not in args, (index, args)
     assert '--output-schema' not in args, (index, args)
@@ -361,14 +367,14 @@ for index, names in enumerate(expected, 1):
         assert 'fixture-thread' in args, args
         assert 'sandbox_mode="read-only"' in args, args
 
-first_review_args = (root / 'calls' / 'call-8.args').read_text(encoding='utf-8').splitlines()
-first_review_prompt = (root / 'calls' / 'call-8.stdin').read_text(encoding='utf-8')
-next_review_args = (root / 'calls' / 'call-9.args').read_text(encoding='utf-8').splitlines()
-next_review_prompt = (root / 'calls' / 'call-9.stdin').read_text(encoding='utf-8')
-required_review_args = (root / 'calls' / 'call-10.args').read_text(encoding='utf-8').splitlines()
-ready_review_args = (root / 'calls' / 'call-12.args').read_text(encoding='utf-8').splitlines()
-final_args = (root / 'calls' / 'call-13.args').read_text(encoding='utf-8').splitlines()
-final_prompt = (root / 'calls' / 'call-13.stdin').read_text(encoding='utf-8')
+first_review_args = (root / 'calls' / 'call-9.args').read_text(encoding='utf-8').splitlines()
+first_review_prompt = (root / 'calls' / 'call-9.stdin').read_text(encoding='utf-8')
+next_review_args = (root / 'calls' / 'call-10.args').read_text(encoding='utf-8').splitlines()
+next_review_prompt = (root / 'calls' / 'call-10.stdin').read_text(encoding='utf-8')
+required_review_args = (root / 'calls' / 'call-11.args').read_text(encoding='utf-8').splitlines()
+ready_review_args = (root / 'calls' / 'call-13.args').read_text(encoding='utf-8').splitlines()
+final_args = (root / 'calls' / 'call-14.args').read_text(encoding='utf-8').splitlines()
+final_prompt = (root / 'calls' / 'call-14.stdin').read_text(encoding='utf-8')
 for args in (first_review_args, next_review_args, required_review_args, ready_review_args, final_args):
     assert args[0:2] == ['exec', 'resume'], args
     assert 'fixture-thread' in args, args
@@ -377,7 +383,7 @@ assert 'Review this prepared assignment' in first_review_prompt, first_review_pr
 assert 'already been read in earlier explicit turns' in first_review_prompt, first_review_prompt
 assert 'at most 6 command_execution calls total' in first_review_prompt, first_review_prompt
 assert 'Next evidence question:' in next_review_prompt and 'src/two.ts' in next_review_prompt, next_review_prompt
-required_review_prompt = (root / 'calls' / 'call-10.stdin').read_text(encoding='utf-8')
+required_review_prompt = (root / 'calls' / 'call-11.stdin').read_text(encoding='utf-8')
 assert 'Next evidence question:' in required_review_prompt and 'src/three.ts' in required_review_prompt, required_review_prompt
 assert 'Return the final findings JSON' in final_prompt, final_prompt
 for args, expected_schema in (
@@ -390,8 +396,8 @@ for args, expected_schema in (
     assert Path(args[schema_index + 1]).name == expected_schema, args
 
 events = [json.loads(line) for line in (root / 'raw.ndjson').read_text().splitlines()]
-assert sum(event.get('type') == 'turn.started' for event in events) == 13
-assert sum(event.get('type') == 'turn.completed' for event in events) == 13
+assert sum(event.get('type') == 'turn.started' for event in events) == 14
+assert sum(event.get('type') == 'turn.completed' for event in events) == 14
 threads = [event.get('thread_id') for event in events if event.get('type') == 'thread.started']
 assert threads and set(threads) == {'fixture-thread'}, threads
 assert sum(event.get('type') == 'item.started'
@@ -401,6 +407,85 @@ PY
     assert_grep "staging keeps the exact findings output" "$S/result.json" '"findings": ?\['
   fi
   seat_env_reset "$_path"
+}
+
+test_seat_codex_prepared_evidence_stage_turn_requires_exact_complete_read() {
+  python3 - "$SCRIPTS/lib/codex-proof-stages.py" "$T" <<'PY'
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location('codex_proof_stages', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+base = Path(sys.argv[2]) / 'codex-stage-turn-contract'
+root = base / 'repo'
+session = base / 'session'
+root.mkdir(parents=True)
+session.mkdir()
+first = session / 'r1-patch-p01-001.txt'
+second = session / 'r1-patch-p01-002.txt'
+first.write_bytes(b'first full chunk\n')
+second.write_bytes(b'second full chunk\n')
+prompt = session / 'stage.prompt'
+prompt.write_text(
+    'Prepared evidence read stage 1 of 2 (patch chunks).\n'
+    'Read exactly the one listed prepared artifact in full with one native shell tool call.\n'
+    'Read exactly: cat -- ' + str(first) + '\n', encoding='utf-8')
+assert module.stage_read_count(prompt) == 1
+exact_audit = 'stage_prompt' in inspect.signature(module.turn_stats).parameters
+
+def turn_stats(stream):
+    if exact_audit:
+        return module.turn_stats(stream, root, session, prompt)
+    return module.turn_stats(stream, root, session)
+
+def write_stream(name, command=None, output=None):
+    events = [{'type': 'turn.started'}]
+    if command is not None:
+        events.extend([
+            {'type': 'item.started', 'item': {
+                'id': 'read', 'type': 'command_execution', 'command': command}},
+            {'type': 'item.completed', 'item': {
+                'id': 'read', 'type': 'command_execution', 'command': command,
+                'aggregated_output': output, 'exit_code': 0}},
+        ])
+    events.append({'type': 'turn.completed'})
+    path = session / (name + '.ndjson')
+    path.write_text(''.join(json.dumps(event) + '\n' for event in events), encoding='utf-8')
+    return path
+
+complete = write_stream('complete', 'cat -- ' + str(first), first.read_text())
+calls, output_bytes, expansions = turn_stats(complete)
+assert (calls, output_bytes, expansions) == (1, len(first.read_bytes()), 0)
+
+cases = {
+    'missing': write_stream('missing'),
+    'reordered': write_stream('reordered', 'cat -- ' + str(second), second.read_text()),
+    'partial': write_stream('partial', 'cat -- ' + str(first), 'first'),
+}
+failures = []
+for label, stream in cases.items():
+    try:
+        turn_stats(stream)
+    except module.StageError:
+        continue
+    failures.append(label + ' prepared evidence read was accepted')
+
+two_reads = session / 'two-reads.prompt'
+two_reads.write_text(
+    'Read exactly: cat -- ' + str(first) + '\n'
+    'Read exactly: cat -- ' + str(second) + '\n', encoding='utf-8')
+try:
+    module.stage_read_count(two_reads)
+except module.StageError:
+    pass
+else:
+    failures.append('paired reads were accepted in one prepared stage')
+assert not failures, '; '.join(failures)
+PY
+  assert_eq "single-read stages accept complete evidence and reject missing, reordered, partial, and paired reads" "$?" 0
 }
 
 test_seat_codex_resumes_unprepared_reviews() {
