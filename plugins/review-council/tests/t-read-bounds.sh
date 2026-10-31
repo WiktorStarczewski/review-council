@@ -2754,6 +2754,89 @@ def bind(session, retry=retry_label, expected=0):
     return run(session, 'record-execution-retry', session, root_label, seat, retry,
                expected=expected)
 
+failures = []
+for suffix in ('2', '02'):
+    numeric, prompt = fixture('numeric-' + suffix)
+    retry = '1x' + suffix
+    launch(numeric, root_label, prompt, 2, ('a' if suffix == '2' else 'b') * 32)
+    launch(numeric, retry, prompt, 2, ('c' if suffix == '2' else 'd') * 32)
+    bind(numeric, retry=retry)
+    demand((numeric / f'r{root_label}-{seat}.execution-retry.json').is_file(),
+           f'{retry} remains a valid numeric retry label')
+
+numeric_one, prompt = fixture('numeric-one')
+launch(numeric_one, root_label, prompt, 2, 'e' * 32)
+launch(numeric_one, '1x1', prompt, 2, 'f' * 32)
+invalid_label = bind(numeric_one, retry='1x1', expected=1)
+demand('Traceback' not in invalid_label.stderr,
+       'a below-minimum decimal suffix is rejected without a traceback')
+demand(not (numeric_one / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'a below-minimum decimal suffix publishes no binding')
+demand(attempt.execution_retry_label('1', '1x' + '0' * 30 + '2'),
+       'a supported long leading-zero suffix with value two remains valid')
+digit_limit_reader = getattr(sys, 'get_int_max_str_digits', None)
+if digit_limit_reader is not None:
+    digit_limit = digit_limit_reader()
+    if digit_limit > 1:
+        under_limit = '0' * max(0, digit_limit - 2) + '2'
+        demand(len(under_limit) == digit_limit - 1
+               and attempt.execution_retry_label('1', '1x' + under_limit),
+               'a leading-zero suffix one digit under the runtime limit remains valid')
+
+long_retry = '1x' + '9' * 33
+oversized, prompt = fixture('oversized')
+launch(oversized, root_label, prompt, 2, '1' * 32)
+launch(oversized, long_retry, prompt, 2, '2' * 32)
+original_label = attempt.execution_retry_label
+missing = object()
+prior_int = attempt.__dict__.get('int', missing)
+real_int = int
+
+def digit_limited_int(value, *args, **kwargs):
+    if (isinstance(value, str) and value.isascii() and value.isdecimal()
+            and len(value) > 32):
+        raise ValueError('simulated integer-string digit limit')
+    return real_int(value, *args, **kwargs)
+
+def digit_limited_label(root_label_value, retry_value):
+    previous = attempt.__dict__.get('int', missing)
+    attempt.int = digit_limited_int
+    try:
+        return original_label(root_label_value, retry_value)
+    finally:
+        if previous is missing:
+            attempt.__dict__.pop('int', None)
+        else:
+            attempt.int = previous
+
+attempt.execution_retry_label = digit_limited_label
+try:
+    try:
+        bind_result = attempt.record_execution_retry(oversized, root_label, seat, long_retry)
+    except ValueError:
+        failures.append('FAIL oversized retry label fails closed without ValueError')
+    else:
+        demand(bind_result == 1, 'an oversized retry label is rejected')
+    demand(not (oversized / f'r{root_label}-{seat}.execution-retry.json').exists(),
+           'an oversized retry label publishes no binding')
+
+    persisted, prompt = fixture('oversized-persisted')
+    launch(persisted, root_label, prompt, 2, '3' * 32)
+    persisted_binding = persisted / f'r{root_label}-{seat}.execution-retry.json'
+    persisted_binding.write_text(json.dumps({'retry_label': long_retry}) + '\n')
+    try:
+        terminal = attempt.terminal_failure(persisted, root_label, seat, prompt)
+    except ValueError:
+        failures.append('FAIL oversized persisted binding does not raise')
+    else:
+        demand(terminal is False, 'an oversized persisted binding is not terminal failure')
+finally:
+    attempt.execution_retry_label = original_label
+    if prior_int is missing:
+        attempt.__dict__.pop('int', None)
+    else:
+        attempt.int = prior_int
+
 valid, prompt = fixture('valid')
 launch(valid, root_label, prompt, 2, 'a' * 32)
 launch(valid, retry_label, prompt, 2, 'b' * 32)
@@ -2873,6 +2956,60 @@ for field, value in (('root_label', '2'), ('seat', 'codex-luna-2')):
     binding.write_text(json.dumps(record) + '\n')
     demand(not attempt.terminal_failure(tampered, root_label, seat, prompt),
            f'mismatched {field} cannot establish terminal failure')
+
+list_attempt, prompt = fixture('list-attempt-artifact')
+launch(list_attempt, root_label, prompt, 2, '4' * 32)
+launch(list_attempt, retry_label, prompt, 2, '5' * 32)
+root_attempt_path = attempt.record_path(list_attempt, root_label, seat, prompt)[0]
+root_attempt_path.write_text('["not an attempt object"]\n')
+try:
+    attempt.record_execution_retry(list_attempt, root_label, seat, retry_label)
+except AttributeError:
+    failures.append('FAIL list-valued attempt artifact fails closed without AttributeError')
+else:
+    demand(not (list_attempt / f'r{root_label}-{seat}.execution-retry.json').exists(),
+           'a list-valued attempt artifact publishes no binding')
+try:
+    terminal = attempt.terminal_failure(list_attempt, root_label, seat, prompt)
+except AttributeError:
+    failures.append('FAIL list-valued attempt artifact does not raise from terminal_failure')
+else:
+    demand(terminal is False, 'a list-valued attempt artifact is not terminal failure')
+
+audit_record, prompt = fixture('list-root-audit-record')
+launch(audit_record, root_label, prompt, 2, '6' * 32)
+launch(audit_record, retry_label, prompt, 2, '7' * 32)
+(audit_record / f'r{root_label}-{seat}.read-audit.json').write_text('[]\n')
+try:
+    audit_binding_result = attempt.record_execution_retry(audit_record, root_label, seat, retry_label)
+except AttributeError as error:
+    failures.append(f'FAIL non-object read-audit record path raised {type(error).__name__}')
+else:
+    demand(audit_binding_result == 0,
+           'a non-object read-audit preserves the existing no-hard-failure classification')
+    demand((audit_record / f'r{root_label}-{seat}.execution-retry.json').is_file(),
+           'a non-object read-audit allows only the terminal-failure binding')
+    demand(attempt.terminal_failure(audit_record, root_label, seat, prompt),
+           'the valid failure binding remains terminal under a non-object read-audit')
+    demand(not (audit_record / f'r{retry_label}-{seat}.json').exists()
+           and not (audit_record / f'r{retry_label}-{seat}.read-audit.json').exists(),
+           'the non-object read-audit binding creates no result or audit proof')
+
+audit_terminal, prompt = fixture('list-root-audit-terminal')
+launch(audit_terminal, root_label, prompt, 2, '8' * 32)
+(audit_terminal / f'r{root_label}-{seat}.read-audit.json').write_text('[]\n')
+try:
+    audit_terminal_result = attempt.terminal_failure(audit_terminal, root_label, seat, prompt)
+except AttributeError as error:
+    failures.append(f'FAIL non-object read-audit terminal path raised {type(error).__name__}')
+else:
+    demand(audit_terminal_result is False,
+           'a non-object read-audit alone does not make an assignment terminal failure')
+
+if failures:
+    for failure in failures:
+        print(failure, file=sys.stderr)
+    sys.exit(1)
 print('exact retry binding scenarios passed')
 PY
     assert_eq "exact retry binding validates immutable lineage and fail-closed cases" "$?" 0
