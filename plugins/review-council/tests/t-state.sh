@@ -289,6 +289,26 @@ test_state_fix_gate() {
   state_gate_allows "manual review allows fix after the replacement chain fails" \
     "$S" "$ST" "$S" phase=fix
 
+  S="$T/gate-plan-child-duplicate-binding"
+  "$ST" "$S" round=14 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
+  "$ST" "$S" phase=plan round=14p 'seats=["codex-opus","codex-sol"]' >/dev/null
+  state_write_plan_manifest "$S" 14p current codex-opus codex-sol
+  for failed_seat in codex-opus codex-sol; do
+    state_record_terminal_failure "$S" 14p "$failed_seat"
+    printf '{"status":"invalid"}\n' > "$S/r14p-$failed_seat.audit-invalid.json"
+  done
+  "$ST" "$S" phase=plan round=14px 'seats=["codex-terra"]' \
+    plan_replacement_for=14p:codex-opus >/dev/null
+  local duplicate_rc=0
+  "$ST" "$S" phase=plan round=14px 'seats=["codex-terra"]' \
+    plan_replacement_for=14p:codex-sol >/dev/null 2>&1 || duplicate_rc=$?
+  assert_eq "a replacement child cannot bind to a second root assignment" "$duplicate_rc" 2
+  state_write_plan_manifest "$S" 14px current codex-terra
+  printf '{"findings":[]}\n' > "$S/r14px-codex-terra.json"
+  printf '0\n' > "$S/r14px-codex-terra.exit"
+  state_gate_refuses "one successful replacement cannot satisfy two failed assignments" \
+    "$S" 14 phase=fix
+
   S="$T/gate-plan-prepare-retry"
   "$ST" "$S" round=12 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
   "$ST" "$S" phase=plan round=12p 'seats=["codex-opus"]' >/dev/null
