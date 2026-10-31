@@ -4426,8 +4426,21 @@ def code_proof_obligations(assignment, components, evidence, packet, snapshot=No
         path = hunk.get('path')
         if path not in files or not is_test_path(path):
             continue
-        pending = sorted({line for line in hunk.get('changed_lines') or []
-                          if type(line) is int and line >= 1})
+        replacement_groups = hunk.get('replacement_groups') or []
+        deletion_groups = [group for group in replacement_groups
+                           if group.get('base_lines') and not group.get('added_lines')]
+        deletion_only = (hunk.get('kind') == 'modify' and base_tree is not None
+                         and deletion_groups
+                         and not any(group.get('added_lines') for group in replacement_groups))
+        if deletion_only:
+            pending = sorted({group['base_lines'][0] for group in deletion_groups
+                              if type(group['base_lines'][0]) is int
+                              and group['base_lines'][0] >= 1})
+            proof_tree = base_tree
+        else:
+            pending = sorted({line for line in hunk.get('changed_lines') or []
+                              if type(line) is int and line >= 1})
+            proof_tree = base_tree if hunk.get('kind') == 'delete' else snapshot
         cursor = 0
         while cursor < len(pending):
             start = pending[cursor]
@@ -4435,7 +4448,7 @@ def code_proof_obligations(assignment, components, evidence, packet, snapshot=No
             while cursor < len(pending) and pending[cursor] <= start + line_limit - 1:
                 last = pending[cursor]
                 cursor += 1
-            add(path, start, last, {path}, base_tree if hunk.get('kind') == 'delete' else snapshot)
+            add(path, start, last, {path}, proof_tree)
     for row in packet.get('omitted_source_ranges') or []:
         reasons = row.get('reasons') or []
         caller_names = [reason.split(':', 1)[1] for reason in reasons
