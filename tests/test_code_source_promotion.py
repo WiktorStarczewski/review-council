@@ -247,7 +247,9 @@ class CodeSourcePromotionTests(unittest.TestCase):
         self.assertTrue(all(not group['added_lines'] for group in hunk['replacement_groups']))
 
         deleted_anchor = min(hunk['base_changed_lines'])
-        base_ranges = [row for row in fixture.context['required_source_ranges']
+        delivered = [row for shard in fixture.context['shards'] for row in shard['ranges']]
+        delivered += fixture.context['required_source_ranges']
+        base_ranges = [row for row in delivered
                        if row['path'] == path and row['blob_tree'] == manifest['base_tree']]
         self.assertTrue(any(row['line_start'] <= deleted_anchor <= row['line_end']
                             for row in base_ranges),
