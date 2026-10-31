@@ -117,6 +117,17 @@ if mutation == 'stale-manifest':
 PY
 }
 
+state_record_terminal_failure() {
+  local session=$1 label=$2 seat=$3 prompt="$session/r${label}-${seat}.prompt.md"
+  local attempt="$SCRIPTS/lib/rev-attempt.py" code
+  printf 'review prompt\n' > "$prompt"
+  for code in 2 2; do
+    python3 "$attempt" reserve "$session" "$label" "$seat" "$prompt" || return
+    python3 "$attempt" record "$session" "$label" "$seat" "$prompt" "$code" || return
+  done
+  printf '2\n' > "$session/r${label}-${seat}.exit"
+}
+
 state_write_prepare_diagnostic() {
   local session=$1 label=$2
   python3 - "$session" "$label" <<'PY'
@@ -213,7 +224,7 @@ test_state_fix_gate() {
   "$ST" "$S" round=8 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
   "$ST" "$S" phase=plan round=8p 'seats=["codex-opus"]' >/dev/null
   state_write_plan_manifest "$S" 8p current codex-opus
-  printf 'review prompt\n' > "$S/r8p-codex-opus.prompt.md"
+  state_record_terminal_failure "$S" 8p codex-opus
   printf '{"status":"invalid"}\n' > "$S/r8p-codex-opus.audit-invalid.json"
   state_write_manual_plan_review "$S" 8p codex-opus
   assert_exit "explicit full-plan manual review allows fix after hard seat failure" 0 "$ST" "$S" phase=fix
@@ -226,7 +237,7 @@ test_state_fix_gate() {
     "$ST" "$S" round=9 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
     "$ST" "$S" phase=plan round=9p 'seats=["codex-opus"]' >/dev/null
     state_write_plan_manifest "$S" 9p current codex-opus
-    printf 'review prompt\n' > "$S/r9p-codex-opus.prompt.md"
+    state_record_terminal_failure "$S" 9p codex-opus
     printf '{"status":"invalid"}\n' > "$S/r9p-codex-opus.audit-invalid.json"
     state_write_manual_plan_review "$S" 9p codex-opus "$mutation"
     if [ "$mutation" = stale-plan ]; then printf '\nChanged plan\n' >> "$S/fix-plan.md"; fi
@@ -238,21 +249,24 @@ test_state_fix_gate() {
   "$ST" "$S" round=10 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
   "$ST" "$S" phase=plan round=10p 'seats=["codex-opus"]' >/dev/null
   state_write_plan_manifest "$S" 10p current codex-opus
+  printf 'review prompt\n' > "$S/r10p-codex-opus.prompt.md"
+  printf '{"status":"invalid"}\n' > "$S/r10p-codex-opus.audit-invalid.json"
+  printf '2\n' > "$S/r10p-codex-opus.exit"
   state_write_manual_plan_review "$S" 10p codex-opus
-  state_gate_refuses "manual review requires a terminal failed assignment" "$S" 10 phase=fix
+  state_gate_refuses "an unrecorded failed exit cannot authorize manual fix" "$S" 10 phase=fix
 
   S="$T/gate-plan-manual-review-pending-child"
   "$ST" "$S" round=11 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
   "$ST" "$S" phase=plan round=11p 'seats=["codex-opus"]' >/dev/null
   state_write_plan_manifest "$S" 11p current codex-opus
-  printf 'review prompt\n' > "$S/r11p-codex-opus.prompt.md"
+  state_record_terminal_failure "$S" 11p codex-opus
   printf '{"status":"invalid"}\n' > "$S/r11p-codex-opus.audit-invalid.json"
   "$ST" "$S" phase=plan round=11px 'seats=["codex-sol"]' \
     plan_replacement_for=11p:codex-opus >/dev/null
   state_write_plan_manifest "$S" 11px current codex-sol
   state_write_manual_plan_review "$S" 11p codex-opus
   state_gate_refuses "manual review cannot bypass a pending replacement" "$S" 11 phase=fix
-  printf 'replacement prompt\n' > "$S/r11px-codex-sol.prompt.md"
+  state_record_terminal_failure "$S" 11px codex-sol
   printf '{"status":"invalid"}\n' > "$S/r11px-codex-sol.audit-invalid.json"
   state_write_manual_plan_review "$S" 11p codex-opus
   assert_exit "manual review allows fix after the replacement chain fails" 0 "$ST" "$S" phase=fix
@@ -261,7 +275,7 @@ test_state_fix_gate() {
   "$ST" "$S" round=12 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
   "$ST" "$S" phase=plan round=12p 'seats=["codex-opus"]' >/dev/null
   state_write_plan_manifest "$S" 12p current codex-opus
-  printf 'review prompt\n' > "$S/r12p-codex-opus.prompt.md"
+  state_record_terminal_failure "$S" 12p codex-opus
   printf '{"status":"invalid"}\n' > "$S/r12p-codex-opus.audit-invalid.json"
   "$ST" "$S" phase=plan round=12px 'seats=["codex-sol"]' \
     plan_replacement_for=12p:codex-opus >/dev/null
@@ -407,8 +421,8 @@ test_state_fix_gate_accepts_a_px_plan_replacement() {
     "$ST" "$S" round=5 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
     "$ST" "$S" phase=plan round=5p 'seats=["codex-terra"]' >/dev/null
     state_write_plan_manifest "$S" 5p stale codex-terra
-    printf 'plan review\n' > "$S/r5p-codex-terra.prompt.md"
-    echo 2 > "$S/r5p-codex-terra.exit"; printf '{"summary":"x","findings":[]}\n' > "$S/r5p-codex-terra.audit-invalid.json"
+    state_record_terminal_failure "$S" 5p codex-terra
+    printf '{"summary":"x","findings":[]}\n' > "$S/r5p-codex-terra.audit-invalid.json"
     state_gate_refuses "a hard-failed plan seat" "$S" 5 phase=fix
     local before
     before=$(cksum < "$S/state.json")

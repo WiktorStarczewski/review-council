@@ -1305,3 +1305,5 @@ Review: normal internal review found a path-traversal risk in the recovery recor
 - [ ] Pass exact-head Ubuntu, macOS, proof-preparation, and package checks.
 - [ ] Complete one independent normal review and address actionable findings.
 - [ ] Merge the small workflow fix and share the adopted recovery step with walletissues sessions.
+
+Run `41209614941` on `7af3e37` exposed stale state-gate fixtures: they wrote exit files without the attempt journal now required to prove two terminal failures. The fixtures now record retries through `rev-attempt.py` and assert that an unjournaled failed exit is refused; this correction needs a new exact-head run.
