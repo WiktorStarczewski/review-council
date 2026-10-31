@@ -181,4 +181,3 @@ else:
     assert commands == expected, commands
     assert [path for path, _ in observations] == expected, observations
     assert rc == 0, f'single-read stages rejected complete full-scope evidence (exit {rc})'
-PY
