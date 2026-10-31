@@ -73,6 +73,49 @@ manifest = {"label": label, "phase": "plan", "plan": {"sha256": sha},
 PY
 }
 
+state_write_manual_plan_review() {
+  local session=$1 label=$2 failed=$3 mutation=${4:-}
+  python3 - "$session" "$label" "$failed" "$mutation" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+session = Path(sys.argv[1])
+label, failed, mutation = sys.argv[2:]
+manifest_path = session / f'r{label}-evidence.manifest.json'
+manifest_bytes = manifest_path.read_bytes()
+manifest = json.loads(manifest_bytes)
+review = {
+    'schema_version': 1,
+    'plan_label': label,
+    'plan_sha256': hashlib.sha256((session / 'fix-plan.md').read_bytes()).hexdigest(),
+    'manifest_sha256': hashlib.sha256(manifest_bytes).hexdigest(),
+    'reviewed_assignments': sorted(manifest['assignments']),
+    'failed_assignments': sorted(filter(None, failed.split(','))),
+    'escalation_exhausted': True,
+    'decision': 'accepted',
+    'summary': 'Reviewed every cluster against the plan contract.',
+    'contract_checks': {
+        'required_cluster_fields': True,
+        'bounded_site_search_and_path_accounting': True,
+        'falsifiable_tests_and_predictions': True,
+        'authorized_scope_preserved': True,
+        'objections_resolved': True,
+    },
+}
+if mutation == 'unchecked':
+    review['contract_checks']['authorized_scope_preserved'] = False
+if mutation == 'missing-assignment':
+    review['reviewed_assignments'] = []
+if mutation == 'stale-plan':
+    review['plan_sha256'] = '0' * 64
+if mutation == 'stale-manifest':
+    review['manifest_sha256'] = '0' * 64
+(session / f'r{label}-manual-plan-review.json').write_text(json.dumps(review) + '\n')
+PY
+}
+
 test_state_fix_gate() {
   local ST="$SCRIPTS/rev-state.sh" S
 
@@ -140,6 +183,36 @@ test_state_fix_gate() {
   state_gate_refuses "a plan seat with an exit but no result" "$S" 6 phase=fix
   printf '{"findings":[]}\n' > "$S/r6p-opus.json"
   assert_exit "every plan seat returned allows fix" 0 "$ST" "$S" phase=fix
+
+  S="$T/gate-plan-manual-review"
+  "$ST" "$S" round=8 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
+  "$ST" "$S" phase=plan round=8p 'seats=["codex-opus"]' >/dev/null
+  state_write_plan_manifest "$S" 8p current codex-opus
+  printf '{"status":"invalid"}\n' > "$S/r8p-codex-opus.audit-invalid.json"
+  state_write_manual_plan_review "$S" 8p codex-opus
+  assert_exit "explicit full-plan manual review allows fix after hard seat failure" 0 "$ST" "$S" phase=fix
+  assert_grep "manual fallback is recorded separately from a seat result" "$S/r8p-manual-plan-review.json" '"decision": "accepted"'
+  test ! -e "$S/r8p-codex-opus.json" && test ! -e "$S/r8p-codex-opus.exit"
+  assert_eq "manual fallback does not fabricate a seat result" "$?" 0
+
+  for mutation in unchecked missing-assignment stale-plan stale-manifest; do
+    S="$T/gate-plan-manual-review-$mutation"
+    "$ST" "$S" round=9 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
+    "$ST" "$S" phase=plan round=9p 'seats=["codex-opus"]' >/dev/null
+    state_write_plan_manifest "$S" 9p current codex-opus
+    printf '{"status":"invalid"}\n' > "$S/r9p-codex-opus.audit-invalid.json"
+    state_write_manual_plan_review "$S" 9p codex-opus "$mutation"
+    if [ "$mutation" = stale-plan ]; then printf '\nChanged plan\n' >> "$S/fix-plan.md"; fi
+    if [ "$mutation" = stale-manifest ]; then printf ' \n' >> "$S/r9p-evidence.manifest.json"; fi
+    state_gate_refuses "manual review rejects $mutation" "$S" 9 phase=fix
+  done
+
+  S="$T/gate-plan-manual-review-without-failure"
+  "$ST" "$S" round=10 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
+  "$ST" "$S" phase=plan round=10p 'seats=["codex-opus"]' >/dev/null
+  state_write_plan_manifest "$S" 10p current codex-opus
+  state_write_manual_plan_review "$S" 10p codex-opus
+  state_gate_refuses "manual review requires a terminal failed assignment" "$S" 10 phase=fix
 
   S="$T/gate-round-labels"
   "$ST" "$S" round=7 phase=triage open.P2=1 >/dev/null
