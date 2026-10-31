@@ -215,6 +215,59 @@ class CodeSourcePromotionTests(unittest.TestCase):
                       {row['code'] for row in audit['violations']})
         evidence.validated_manifest(fixture.manifest_path)
 
+    def test_deletion_only_hunk_maps_out_of_range_new_anchor_to_base_source(self):
+        fixture = self.fixture()
+        path = 'tests/policy.test.ts'
+        fixture.write(path, "\n".join([
+            "test('active behavior', () => expect(active()).toBe(true));",
+            "test('retired behavior one', () => expect(retiredOne()).toBe(false));",
+            "test('retired behavior two', () => expect(retiredTwo()).toBe(false));",
+            "test('retired behavior three', () => expect(retiredThree()).toBe(false));",
+        ]) + "\n")
+        fixture.freeze()
+        fixture.write(path, "test('active behavior', () => expect(active()).toBe(true));\n")
+
+        status_before = fixture.git('status', '--porcelain')
+        process = fixture.prepare()
+        self.assertEqual(process.returncode, 0, process.stderr)
+        fixture.load()
+
+        evidence = load_evidence()
+        manifest = fixture.manifest
+        self.assertEqual(manifest['scope'], '.')
+        self.assertEqual(set(manifest['paths']), {path})
+        self.assertEqual(fixture.git('status', '--porcelain'), status_before)
+        current_line_count = len((fixture.root / path).read_text().splitlines())
+        facts = json.loads((fixture.session / 'r1-evidence.json').read_text())
+        hunk = next(row for row in facts['hunks'] if row['path'] == path)
+        self.assertEqual(hunk['kind'], 'modify')
+        self.assertGreater(hunk['changed_lines'][0], current_line_count)
+        self.assertTrue(hunk['base_changed_lines'])
+        self.assertTrue(hunk['replacement_groups'])
+        self.assertTrue(all(not group['added_lines'] for group in hunk['replacement_groups']))
+
+        deleted_anchor = min(hunk['base_changed_lines'])
+        base_ranges = [row for row in fixture.context['required_source_ranges']
+                       if row['path'] == path and row['blob_tree'] == manifest['base_tree']]
+        self.assertTrue(any(row['line_start'] <= deleted_anchor <= row['line_end']
+                            for row in base_ranges),
+                        'the deleted hunk anchor must be delivered from the base tree')
+        self.assertTrue(all(row['line_end'] - row['line_start'] + 1 <= evidence.CODEX_READ_LINES
+                            for row in base_ranges))
+        for seat, assignment in manifest['assignments'].items():
+            packet = manifest['source_context']['seats'][seat]
+            obligations, _ = evidence.code_proof_obligations(
+                assignment, manifest['components'], facts, packet,
+                snapshot=manifest['snapshot_tree'], base_tree=manifest['base_tree'],
+                with_tree=True)
+            self.assertEqual(obligations, [], 'residual source proof for ' + seat)
+        for capacity in manifest['task_capacity']['seats'].values():
+            self.assertLessEqual(capacity['mandatory_repository_reads'], 12)
+        self.assertEqual(evidence.REPOSITORY_EXPANSION_CALL_LIMIT, 16)
+        self.assertEqual(evidence.REPOSITORY_REFUTATION_CALL_RESERVE, 4)
+        self.assertEqual(evidence.CODEX_READ_LINES, 160)
+        evidence.validated_manifest(fixture.manifest_path)
+
     def test_historical_and_current_proofs_at_same_coordinates_do_not_cover_each_other(self):
         evidence = load_evidence()
         path = 'tests/policy.rs'
