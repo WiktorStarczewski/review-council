@@ -1302,8 +1302,9 @@ Review: normal internal review found a path-traversal risk in the recovery recor
 - [x] Trace why a completed retry sequence `[2, 130]` is not eligible for configured replacement.
 - [x] Add a focused regression for exact `[2, 130]` retries, standalone 130, provider cancellation, and incomplete attempt state.
 - [x] Preserve adapter cancellation exit codes at the seat wrapper boundary.
-- [ ] Implement replacement eligibility only for a complete exact retry; keep 130 out of reviewer results and receipts.
-- [ ] Run the focused test and exact candidate CI, then complete an independent normal review.
-- [ ] Reconcile `rev-attempt.py` with PR #102 without editing its branch or extending that PR.
+- [x] Implement replacement eligibility only for a complete exact retry; keep 130 out of reviewer results and receipts.
+- [ ] Run the focused test and exact candidate CI on the final documentation head.
+- [x] Complete an independent normal review of the code at `1ffe0a1` with no actionable P0-P2 findings.
+- [x] Reconcile the `rev-attempt.py` overlap with PR #102 without editing its branch. #102 binds missing-child-manifest retries to root prompt and attempt hashes; this candidate handles the exact `[2, 130]` retry sequence.
 
-Review: pending.
+Review: independent normal review was clean at code head `1ffe0a1`; the follow-up commit records this result and reconciles the separate PR #102 behavior. Re-run exact-head CI before merge.
