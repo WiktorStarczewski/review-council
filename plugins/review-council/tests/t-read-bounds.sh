@@ -2717,8 +2717,15 @@ PY
     printf 'review\n' > "$interrupted/p.md"
     printf 'review\n' > "$provider/p.md"
 
-    SHIM_MODE=empty "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" --base main >/dev/null 2>&1
+    SHIM_MODE=unusable_with_tool "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" --base main >/dev/null 2>&1
     assert_eq "a retry begins after the recorded unusable result" "$?" 2
+    python3 - "$S" <<'PY'
+import glob, json, sys
+record = json.load(open(glob.glob(sys.argv[1] + '/attempts/*.json')[0]))
+assert record['calls'] == record['completed_calls'] == 1
+assert record['launches'] == [2]
+PY
+    assert_eq "one unusable tool call has a complete exit record" "$?" 0
     SHIM_MODE=interrupted "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" --base main >/dev/null 2>&1
     assert_eq "the exact retry records its interruption" "$?" 130
     assert_exit "the interrupted retry does not publish reviewer findings" 1 \

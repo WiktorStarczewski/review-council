@@ -41,6 +41,12 @@ case "${SHIM_MODE:-ok}" in
   ratelimit)  echo '{"type":"error","message":"You have hit your usage limit (429)"}'; exit 1;;
   interrupted) exit 130;;
   empty)      echo '{"type":"turn.completed"}'; exit 0;;
+  unusable_with_tool)
+    printf '%s\n' \
+      '{"type":"item.started","item":{"id":"unusable-read","type":"command_execution","command":"git status --short"}}' \
+      '{"type":"item.completed","item":{"id":"unusable-read","type":"command_execution","command":"git status --short","aggregated_output":"","exit_code":0}}' \
+      '{"type":"turn.completed"}'
+    exit 0;;
   badjson)    echo '{"type":"turn.completed"}'; echo 'not json' > "$OUT"; exit 0;;
   hang_with_child)
     echo '{"type":"item.started","item":{"id":"partial","type":"command_execution","command":"rg -n partial src"}}'
