@@ -2725,7 +2725,7 @@ def run(session, *args, expected=0):
            f'{args[0]} exited {result.returncode}, wanted {expected}: {result.stderr}')
     return result
 
-def fixture(name):
+def fixture(name, parent_assignment=None):
     session = root / name
     session.mkdir(parents=True)
     prompt = session / 'r1-codex-sol.prompt.md'
@@ -2734,6 +2734,9 @@ def fixture(name):
         'session': str(session.resolve()),
         'assignments': {seat: {'bundle': 'correctness-boundaries'}},
     }
+    if parent_assignment is not None:
+        manifest['phase'] = 'repair'
+        manifest['parent_assignment'] = parent_assignment
     manifest_raw = (json.dumps(manifest) + '\n').encode()
     (session / 'r1-evidence.manifest.json').write_bytes(manifest_raw)
     manifest_sha256 = hashlib.sha256(manifest_raw).hexdigest()
@@ -2792,6 +2795,15 @@ prompt.unlink()
 bind(missing_prompt, expected=1)
 demand(not (missing_prompt / f'r{root_label}-{seat}.execution-retry.json').exists(),
        'missing root prompt hash cannot be bound')
+
+child_root, prompt = fixture('child-root', {'manifest': 'r0-evidence.manifest.json'})
+launch(child_root, root_label, prompt, 2, 'c' * 32)
+launch(child_root, retry_label, prompt, 2, 'd' * 32)
+bind(child_root, expected=1)
+demand(not (child_root / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'a replacement child cannot become a new retry root')
+demand(not attempt.terminal_failure(child_root, root_label, seat, prompt),
+       'a rejected child-root binding cannot establish terminal failure')
 
 mismatched, prompt = fixture('mismatched-prompt')
 other = mismatched / 'other.prompt.md'
