@@ -420,7 +420,7 @@ import sys
 spec = importlib.util.spec_from_file_location('codex_proof_stages', sys.argv[1])
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
-base = Path(sys.argv[2]) / 'codex-stage-turn-contract'
+base = (Path(sys.argv[2]) / 'codex-stage-turn-contract').resolve()
 root = base / 'repo'
 session = base / 'session'
 root.mkdir(parents=True)
