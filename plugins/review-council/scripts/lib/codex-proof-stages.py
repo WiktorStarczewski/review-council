@@ -19,6 +19,7 @@ from review_limits import codex_review_turn_call_limit_for_model
 OUTPUT_BYTES = 32 * 1024
 PROOF_TURN_BYTES = 60 * 1024
 SOURCE_SEGMENT_VISIBLE_LIMIT = 16 * 1024
+PREPARED_READS_PER_TURN = 1
 
 
 class StageError(ValueError):
@@ -128,8 +129,8 @@ def review_budget(prompt):
 def stage_read_count(prompt):
     count = sum(line.startswith('Read exactly: ')
                 for line in Path(prompt).read_text(encoding='utf-8').splitlines())
-    if not 1 <= count <= 2:
-        raise StageError('prepared proof stage does not contain one or two reads')
+    if count != PREPARED_READS_PER_TURN:
+        raise StageError('prepared proof stage must contain exactly one read')
     return count
 
 
@@ -286,9 +287,27 @@ def review_status(path):
     return status, next_step
 
 
-def turn_stats(path, root, session):
+def expected_stage_read(prompt, session):
+    lines = Path(prompt).read_text(encoding='utf-8').splitlines()
+    reads = [line[len('Read exactly: '):] for line in lines
+             if line.startswith('Read exactly: ')]
+    if len(reads) != PREPARED_READS_PER_TURN:
+        raise StageError('prepared proof stage must contain exactly one read')
+    try:
+        words = shlex.split(reads[0])
+    except ValueError as error:
+        raise StageError('prepared proof stage read command is malformed') from error
+    if len(words) != 3 or words[:2] != ['cat', '--']:
+        raise StageError('prepared proof stage read must be one bounded cat command')
+    target = direct_path(words[2], Path(session).resolve(strict=True))
+    return target, safe_read(target, Path(session).resolve(strict=True), OUTPUT_BYTES)
+
+
+def turn_stats(path, root, session, stage_prompt=None):
     calls = {}
     outputs = set()
+    output_values = {}
+    successes = {}
     total = 0
     starts = 0
     completions = 0
@@ -348,12 +367,30 @@ def turn_stats(path, root, session):
                         output = item.get('aggregated_output', item.get('output'))
                         total += visible_bytes(output)
                         outputs.add(call_id)
+                        output_values[call_id] = output
+                        successes[call_id] = item.get('exit_code') == 0
     except OSError as error:
         raise StageError('Codex review-turn stream is unavailable') from error
     if starts != 1 or completions != 1 or active_turn or set(calls) != outputs:
         raise StageError('Codex review turn has incomplete explicit turn or command boundaries')
+    root_path = Path(root).resolve()
+    session_path = Path(session).resolve()
+    if stage_prompt is not None:
+        expected_path, expected_raw = expected_stage_read(stage_prompt, session_path)
+        if len(calls) != PREPARED_READS_PER_TURN:
+            raise StageError('prepared proof turn did not read its listed artifact')
+        call_id, command = next(iter(calls.items()))
+        call_data = {'command': command}
+        if (not successes.get(call_id)
+                or audit.paths_opened_by_call('command_execution', call_data, root_path)
+                != [expected_path]
+                or not audit.complete_packet_read(
+                    'command_execution', call_data, expected_path, root_path)
+                or not audit.delivered_matches_bytes(
+                    'codex', 'command_execution', output_values[call_id], expected_raw, 1)):
+            raise StageError('prepared proof turn did not exactly read its listed artifact')
     expansions = sum(audit.repository_expansion_call(
-        'command_execution', {'command': command}, Path(root), Path(session))
+        'command_execution', {'command': command}, root_path, session_path)
         for command in calls.values())
     return len(calls), total, expansions
 
@@ -438,9 +475,9 @@ def prepared_stages(prompt, seat, model, stage_dir):
         if len(limit_rows) != 1:
             raise StageError('prompt patch chunk batch limit is missing or repeated')
         patch_limit = int(limit_rows[0].group(1))
-        stages.extend([{'kind': 'patch chunks', 'files': group}
-                       for group in grouped(verified_chunks, patch_limit,
-                                            lambda item: item['visible'])])
+        batches = grouped(verified_chunks, patch_limit, lambda item: item['visible'])
+        stages.extend({'kind': 'patch chunks', 'files': [item]}
+                      for group in batches for item in group)
     elif patch_mode in ('full', 'windows'):
         patch_path = direct_path(assignment.get('patch'), session)
         raw = artifact_bytes(session, artifacts, patch_path.name,
@@ -536,7 +573,8 @@ def prepared_stages(prompt, seat, model, stage_dir):
         if segment_limits:
             raise StageError('prompt contains an unassigned source segment batch limit')
     if segment_files:
-        for group in grouped(segment_files, 2, lambda item: item['visible'],
+        for group in grouped(segment_files, PREPARED_READS_PER_TURN,
+                             lambda item: item['visible'],
                              lambda item: item['oversized']):
             stages.append({'kind': 'required source segments',
                            'files': [{'path': item['path'], 'command': command_file(item['path'])}
@@ -554,7 +592,7 @@ def prepared_stages(prompt, seat, model, stage_dir):
     for index, stage in enumerate(stages, 1):
         stage_prompt = [
             f'Prepared evidence read stage {index} of {len(stages)} ({stage["kind"]}).',
-            'Read exactly the listed prepared artifact(s), in order, with one native shell tool call per line.',
+            'Read exactly the one listed prepared artifact in full with one native shell tool call.',
             'Do not search, read anything else, review the change, or combine commands.',
             'After all reads succeed, respond exactly READ_STAGE_COMPLETE and stop.',
         ]
@@ -578,6 +616,7 @@ def main():
     parser.add_argument('--required-post-index-target')
     parser.add_argument('--review-status')
     parser.add_argument('--turn-stats')
+    parser.add_argument('--stage-prompt')
     parser.add_argument('--post-index-target-read-count')
     parser.add_argument('--root')
     parser.add_argument('--session')
@@ -626,7 +665,7 @@ def main():
             if not args.root or not args.session:
                 raise StageError('review turn metrics require the repository and session roots')
             calls, output_bytes, expansions = turn_stats(
-                args.turn_stats, args.root, args.session)
+                args.turn_stats, args.root, args.session, args.stage_prompt)
             print(f'{calls}\t{output_bytes}\t{expansions}')
         except (OSError, UnicodeError, StageError) as error:
             print('codex proof staging: ' + str(error), file=sys.stderr)

@@ -125,7 +125,8 @@ else
       EXPECTED_STAGE_READS=$(python3 "$STAGES_HELPER" --stage-read-count "$STAGE_PROMPT") || exit 1
       run_codex_turn "$STAGE_PROMPT" || exit $?
       STAGE_STATS=$(python3 "$STAGES_HELPER" --turn-stats "$TURN_RAW" \
-        --root "$AUDIT_ROOT" --session "$SESSION_DIR") || exit 1
+        --root "$AUDIT_ROOT" --session "$SESSION_DIR" \
+        --stage-prompt "$STAGE_PROMPT") || exit 1
       IFS=$'\t' read -r STAGE_READS STAGE_BYTES STAGE_EXPANSION_READS <<< "$STAGE_STATS"
       if [ "$STAGE_READS" -ne "$EXPECTED_STAGE_READS" ] \
           || [ "$STAGE_BYTES" -gt 61440 ] || [ "$STAGE_EXPANSION_READS" -ne 0 ]; then
