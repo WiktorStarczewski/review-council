@@ -342,6 +342,8 @@ def plan_assignment_failures(label):
             return None
         child_success = False
         for child in children:
+            if child in mapped_children:
+                return None
             parsed = parse_plan_label(child)
             child_seats = plans.get(child)
             child_manifest_raw = stable_receipt_bytes(f'r{child}-evidence.manifest.json')
@@ -499,6 +501,10 @@ if 'phase' in assigned and phase == 'plan' and {'round', 'seats'} <= assigned:
             links = replacement_map.setdefault(parent_label, {})
             if not isinstance(links, dict):
                 refuse(f"refusing phase=plan round={label}: replacement mapping is not an object")
+            if any(not isinstance(existing, list) for existing in links.values()):
+                refuse(f"refusing phase=plan round={label}: replacement mapping contains malformed links")
+            if any(label in existing for existing in links.values()):
+                refuse(f"refusing phase=plan round={label}: replacement is already bound to another assignment")
             children = links.setdefault(failed_seat, [])
             if not isinstance(children, list) or label in children:
                 refuse(f"refusing phase=plan round={label}: duplicate or malformed replacement link")

@@ -299,10 +299,23 @@ test_state_fix_gate() {
   done
   "$ST" "$S" phase=plan round=14px 'seats=["codex-terra"]' \
     plan_replacement_for=14p:codex-opus >/dev/null
+  local before_duplicate
+  before_duplicate=$(cksum < "$S/state.json")
   local duplicate_rc=0
   "$ST" "$S" phase=plan round=14px 'seats=["codex-terra"]' \
     plan_replacement_for=14p:codex-sol >/dev/null 2>&1 || duplicate_rc=$?
   assert_eq "a replacement child cannot bind to a second root assignment" "$duplicate_rc" 2
+  assert_eq "a rejected replacement binding leaves state unchanged" \
+    "$(cksum < "$S/state.json")" "$before_duplicate"
+  python3 - "$S/state.json" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+state = json.loads(path.read_text())
+state['plan_replacements']['14p']['codex-sol'] = ['14px']
+path.write_text(json.dumps(state) + '\n')
+PY
   state_write_plan_manifest "$S" 14px current codex-terra
   printf '{"findings":[]}\n' > "$S/r14px-codex-terra.json"
   printf '0\n' > "$S/r14px-codex-terra.exit"
