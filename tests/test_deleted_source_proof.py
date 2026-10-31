@@ -29,7 +29,8 @@ def load_evidence():
 
 class SourceFixture:
     def __init__(self, directory, mode, oversized_lines=180, oversized_line_bytes=None,
-                 compact_segment_lines=None):
+                 compact_segment_lines=None, compact_segment_line_bytes=16,
+                 adapter='codex'):
         self.root = directory / 'repo'
         self.session = directory / 'session'
         self.root.mkdir(parents=True)
@@ -47,7 +48,8 @@ class SourceFixture:
                 if compact_segment_lines is not None:
                     self.oversized_source = (
                         'def retired_oversized():\n'
-                        + ''.join(f'    value_{index:03d} = "' + 'y' * 16 + '"\n'
+                        + ''.join(f'    value_{index:03d} = "'
+                                  + 'y' * compact_segment_line_bytes + '"\n'
                                   for index in range(compact_segment_lines))
                         + f'    return value_{compact_segment_lines - 1:03d}\n')
                 elif oversized_line_bytes is None:
@@ -81,7 +83,8 @@ class SourceFixture:
         for name in ('files.txt', 'untracked.txt'):
             (self.session / name).write_text('')
         (self.session / 'roster.json').write_text(json.dumps({'seats': [
-            {'seat': seat, 'adapter': 'codex'} for seat in ('sol', 'second', 'third', 'fourth')
+            {'seat': seat, 'adapter': adapter if seat == 'sol' else 'codex'}
+            for seat in ('sol', 'second', 'third', 'fourth')
         ]}))
         self.label = '1p' if mode == 'plan' else '1'
         self.phase = 'plan' if mode == 'plan' else 'discovery'
@@ -254,6 +257,77 @@ class SourceFixture:
             env=self.env, text=True, capture_output=True)
         return process.returncode, json.loads(audit_path.read_text())
 
+    def audit_claude(self, *, group_required_segments=0, omitted_artifacts=(),
+                     reverse_grouped_segments=False, include_evidence_index=False):
+        events = []
+        sequence = 0
+
+        def read_turn(reads):
+            nonlocal sequence
+            sequence += 1
+            turn_id = f'claude-turn-{sequence}'
+            uses = []
+            results = []
+            for path, output in reads:
+                call_id = f'claude-read-{sequence}-{len(uses) + 1}'
+                uses.append({'type': 'tool_use', 'id': call_id, 'name': 'Read',
+                             'input': {'file_path': str(path)}})
+                results.append({'type': 'tool_result', 'tool_use_id': call_id,
+                                'content': output})
+            events.extend([
+                {'type': 'assistant', 'message': {'id': turn_id, 'content': uses}},
+                {'type': 'user', 'message': {'content': results}},
+            ])
+
+        def read_artifact(path):
+            if path.name not in omitted_artifacts:
+                read_turn([(path, path.read_text())])
+
+        assignment = self.manifest['assignments'][self.seat]
+        patch_set = self.manifest['patch_sets'][assignment['patch_set']]
+        if patch_set['read_mode'] == 'chunks':
+            for chunk in patch_set['chunks']:
+                read_artifact(self.session / chunk['artifact'])
+        else:
+            patch = Path(assignment['patch'])
+            read_turn([(patch, patch.read_text())])
+
+        for shard in self.context['shards']:
+            read_artifact(self.session / shard['artifact'])
+
+        segment_paths = [self.session / segment['artifact']
+                         for required in self.context['required_source_ranges']
+                         for segment in required['segments']]
+        grouped = segment_paths[:group_required_segments]
+        if reverse_grouped_segments:
+            grouped.reverse()
+        if grouped:
+            reads = [(path, path.read_text()) for path in grouped
+                     if path.name not in omitted_artifacts]
+            if include_evidence_index:
+                index = self.session / f'r{self.label}-evidence.md'
+                reads.append((index, index.read_text()))
+            if reads:
+                read_turn(reads)
+        for path in segment_paths[group_required_segments:]:
+            read_artifact(path)
+        index = self.session / f'r{self.label}-evidence.md'
+        if not include_evidence_index:
+            read_artifact(index)
+
+        stem = self.session / f'r{self.label}-{self.seat}'
+        raw = Path(str(stem) + '.stream.ndjson')
+        raw.write_text(''.join(json.dumps(event) + '\n' for event in events))
+        result_path = Path(str(stem) + '.json')
+        result_path.write_text(json.dumps({'summary': 'checked', 'findings': []}))
+        audit_path = Path(str(stem) + '.read-audit.json')
+        process = subprocess.run(
+            [os.sys.executable, str(SCRIPTS / 'lib/review-read-audit.py'), 'audit',
+             '--adapter', 'claude', '--raw', str(raw), '--prompt', str(self.prompt),
+             '--root', str(self.root), '--session', str(self.session), '--out', str(audit_path)],
+            env=self.env, text=True, capture_output=True)
+        return process.returncode, json.loads(audit_path.read_text())
+
     def current_bytes(self, row):
         return ''.join((self.root / row['path']).read_text().splitlines(keepends=True)[
             row['line_start'] - 1:row['line_end']])
@@ -309,6 +383,100 @@ class RequiredSourceProofTests(unittest.TestCase):
         self.assertEqual((rc, audit['violations']), (0, []))
         self.assertEqual(audit['source_read_calls'], 2)
         self.assertEqual(audit['tool_turns'], audit['tool_calls'] - 1)
+
+    def test_claude_source_segment_turn_estimate_obeys_count_and_byte_limits(self):
+        evidence = load_evidence()
+
+        def segment(index, visible_bytes, *, one_line=False):
+            return {
+                'index': index,
+                'line_start': index,
+                'line_end': index if one_line else index + 1,
+                'predicted_visible_bytes': visible_bytes,
+            }
+
+        def turns(segments):
+            return evidence.source_segment_turn_count(
+                [{'segments': segments}], 4, 60 * 1024)
+
+        self.assertEqual(turns([segment(index, 15 * 1024) for index in range(4)]), 1)
+        self.assertEqual(turns([segment(index, 10 * 1024) for index in range(5)]), 2)
+        self.assertEqual(turns([segment(index, 15_361) for index in range(4)]), 2)
+        self.assertEqual(turns([
+            segment(1, 10 * 1024), segment(2, 20 * 1024, one_line=True),
+            segment(3, 10 * 1024), segment(4, 10 * 1024),
+        ]), 3)
+
+    def test_claude_accepts_four_ordered_source_segments_under_sixty_kib(self):
+        fixture = self.fixture(
+            'deleted', adapter='claude', compact_segment_lines=1500)
+        segments = [segment for required in fixture.context['required_source_ranges']
+                    for segment in required['segments']]
+        self.assertGreaterEqual(len(segments), 5)
+        first_four = segments[:4]
+        self.assertTrue(all(segment['predicted_visible_bytes'] <= 16 * 1024
+                            for segment in first_four))
+        self.assertLessEqual(sum(segment['predicted_visible_bytes'] for segment in first_four),
+                             60 * 1024)
+        rc, audit = fixture.audit_claude(group_required_segments=4)
+        self.assertEqual((rc, audit['violations']), (0, []))
+        self.assertEqual(audit['required_source_ranges_covered'], 1)
+        fixture.receipt_gate(audit)
+
+    def test_claude_rejects_five_source_segments_even_under_sixty_kib(self):
+        fixture = self.fixture(
+            'deleted', adapter='claude', compact_segment_lines=1500)
+        segments = [segment for required in fixture.context['required_source_ranges']
+                    for segment in required['segments']]
+        self.assertGreaterEqual(len(segments), 5)
+        first_five = segments[:5]
+        self.assertLessEqual(sum(segment['predicted_visible_bytes'] for segment in first_five),
+                             60 * 1024)
+        rc, audit = fixture.audit_claude(group_required_segments=5)
+        self.assertEqual(rc, 2)
+        self.assertIn('required-source-segment-batch-too-large',
+                      [row['code'] for row in audit['violations']])
+
+    def test_claude_rejects_four_source_segments_over_sixty_kib(self):
+        fixture = self.fixture(
+            'deleted', adapter='claude', compact_segment_lines=1500,
+            compact_segment_line_bytes=40)
+        segments = [segment for required in fixture.context['required_source_ranges']
+                    for segment in required['segments']]
+        self.assertGreaterEqual(len(segments), 5)
+        first_four = segments[:4]
+        self.assertTrue(all(segment['predicted_visible_bytes'] <= 16 * 1024
+                            for segment in first_four))
+        self.assertGreater(sum(segment['predicted_visible_bytes'] for segment in first_four),
+                           60 * 1024)
+        rc, audit = fixture.audit_claude(group_required_segments=4)
+        self.assertEqual(rc, 2)
+        self.assertIn('required-source-segment-batch-too-large',
+                      [row['code'] for row in audit['violations']])
+
+    def test_claude_source_batches_preserve_exact_order_and_completeness(self):
+        fixture = self.fixture(
+            'deleted', adapter='claude', compact_segment_lines=1500)
+        first_segment = fixture.context['required_source_ranges'][0]['segments'][0]['artifact']
+        rc, reordered = fixture.audit_claude(
+            group_required_segments=4, reverse_grouped_segments=True)
+        self.assertEqual(rc, 2)
+        self.assertIn('reordered-required-source-segments',
+                      [row['code'] for row in reordered['violations']])
+        rc, omitted = fixture.audit_claude(
+            group_required_segments=4, omitted_artifacts=(first_segment,))
+        self.assertEqual(rc, 2)
+        self.assertIn('missing-required-source-segment',
+                      [row['code'] for row in omitted['violations']])
+
+    def test_claude_source_batches_cannot_include_an_evidence_index(self):
+        fixture = self.fixture(
+            'deleted', adapter='claude', compact_segment_lines=1500)
+        rc, audit = fixture.audit_claude(
+            group_required_segments=2, include_evidence_index=True)
+        self.assertEqual(rc, 2)
+        self.assertIn('evidence-proof-batch-too-large',
+                      [row['code'] for row in audit['violations']])
 
     def test_codex_reads_without_turn_boundaries_remain_unpaired(self):
         fixture = self.fixture('deleted')
