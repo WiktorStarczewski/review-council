@@ -1308,3 +1308,15 @@ Review: normal internal review found a path-traversal risk in the recovery recor
 - [x] Reconcile the `rev-attempt.py` overlap with PR #102 without editing its branch. #102 binds missing-child-manifest retries to root prompt and attempt hashes; this candidate handles the exact `[2, 130]` retry sequence.
 
 Review: independent normal review was clean at code head `1ffe0a1`; the follow-up commit records this result and reconciles the separate PR #102 behavior. Re-run exact-head CI before merge.
+
+# Claude source-only four-read batching for full-scope evidence preparation
+
+- [x] Add estimator and audit regressions for Claude source-only turns, preserving the two-read limit for mixed proofs.
+- [x] Confirm expected-red run 41219263183 fails the four intended assertions on frozen source.
+- [x] Implement up to four consecutive source segments under a 60 KiB turn cap, with existing 32 KiB per-response bounds.
+- [x] Update evidence manifest validation, prompt contract and both discovery guides.
+- [x] Recompute the unchanged frozen #2069 evidence manifest: 142 paths, 368 hunks, 54 components, 288 required ranges, and 298 source segments. The original projection is 175 turns; the candidate projection is 101 turns (75 source-segment turns and 14 patch turns). This is an estimator result, not a live provider run or measured token/cost saving.
+- [ ] Complete independent normal review, fix P0-P2 findings, rebase on current main and pass exact-head CI.
+- [ ] Push the reviewed branch and open a draft PR.
+
+Review: One independent normal reviewer found no actionable findings. The candidate is limited to Claude source-only required segment reads, retaining the 32 KiB response cap, 60 KiB turn cap, exact order/hash/completeness checks, the two-read mixed-proof limit and other-adapter behavior. Expected-red run 41219263183 confirmed all four intended assertions failed; 5,251 other release tests passed. Exact-head passing CI remains pending after the merge of PR #107.

@@ -1446,7 +1446,7 @@ PY
     assert_grep "Claude may batch four required source segments" "$claude_prompt" \
       '^Required source segment batch limit: 4$'
     assert_grep "Claude prompt bounds source-only batches by count and bytes" "$claude_prompt" \
-      '^Claude source read batching: issue up to four consecutive required source segment reads in one assistant message, in listed order, only when their combined visible output is at most 60 KiB; read a final singleton or an oversized single-line segment alone\.$'
+      '^Claude source read batching: issue up to four consecutive required source segment reads in one assistant message, in listed order, only when each response is at most 32 KiB and their combined visible output is at most 60 KiB; keep the turn source-only without patch chunks or the evidence index\. Read a final singleton or an oversized single-line segment alone\.$'
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r9c-sol.json"
     python3 - "$claude_manifest" "$S/r9c-sol.stream.ndjson" <<'PY'
 import json, pathlib, sys

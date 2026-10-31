@@ -257,7 +257,8 @@ class SourceFixture:
             env=self.env, text=True, capture_output=True)
         return process.returncode, json.loads(audit_path.read_text())
 
-    def audit_claude(self, *, group_required_segments=0, omitted_artifacts=(),
+    def audit_claude(self, *, group_required_segments=0, group_required_start=0,
+                     omitted_artifacts=(),
                      reverse_grouped_segments=False, include_evidence_index=False):
         events = []
         sequence = 0
@@ -298,7 +299,10 @@ class SourceFixture:
         segment_paths = [self.session / segment['artifact']
                          for required in self.context['required_source_ranges']
                          for segment in required['segments']]
-        grouped = segment_paths[:group_required_segments]
+        for path in segment_paths[:group_required_start]:
+            read_artifact(path)
+        grouped = segment_paths[group_required_start:
+                                group_required_start + group_required_segments]
         if reverse_grouped_segments:
             grouped.reverse()
         if grouped:
@@ -309,7 +313,7 @@ class SourceFixture:
                 reads.append((index, index.read_text()))
             if reads:
                 read_turn(reads)
-        for path in segment_paths[group_required_segments:]:
+        for path in segment_paths[group_required_start + group_required_segments:]:
             read_artifact(path)
         index = self.session / f'r{self.label}-evidence.md'
         if not include_evidence_index:
@@ -439,17 +443,22 @@ class RequiredSourceProofTests(unittest.TestCase):
 
     def test_claude_rejects_four_source_segments_over_sixty_kib(self):
         fixture = self.fixture(
-            'deleted', adapter='claude', compact_segment_lines=1500,
-            compact_segment_line_bytes=40)
+            'deleted', adapter='claude', compact_segment_lines=5,
+            compact_segment_line_bytes=16_357)
         segments = [segment for required in fixture.context['required_source_ranges']
                     for segment in required['segments']]
         self.assertGreaterEqual(len(segments), 5)
-        first_four = segments[:4]
-        self.assertTrue(all(segment['predicted_visible_bytes'] <= 16 * 1024
+        first_four = segments[1:5]
+        self.assertTrue(all(segment['line_start'] == segment['line_end']
                             for segment in first_four))
+        self.assertEqual([segment['predicted_visible_bytes'] for segment in first_four],
+                         [16 * 1024] * 4)
+        self.assertTrue(all(segment['raw_bytes'] < 32 * 1024 for segment in first_four))
+        self.assertGreater(sum(segment['raw_bytes'] for segment in first_four), 60 * 1024)
         self.assertGreater(sum(segment['predicted_visible_bytes'] for segment in first_four),
                            60 * 1024)
-        rc, audit = fixture.audit_claude(group_required_segments=4)
+        rc, audit = fixture.audit_claude(
+            group_required_start=1, group_required_segments=4)
         self.assertEqual(rc, 2)
         self.assertIn('required-source-segment-batch-too-large',
                       [row['code'] for row in audit['violations']])
