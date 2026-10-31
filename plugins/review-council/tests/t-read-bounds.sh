@@ -2696,6 +2696,141 @@ PY
   )
 }
 
+test_recorded_exact_retry_binding() {
+  ( python3 - "$SCRIPTS/lib/rev-attempt.py" "$T/retry-binding" <<'PY'
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+helper = Path(sys.argv[1])
+root = Path(sys.argv[2])
+spec = importlib.util.spec_from_file_location('rev_attempt', helper)
+attempt = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(attempt)
+seat = 'codex-sol'
+root_label = '1'
+retry_label = '1x'
+
+def demand(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+def run(session, *args, expected=0):
+    result = subprocess.run([sys.executable, str(helper), *map(str, args)],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    demand(result.returncode == expected,
+           f'{args[0]} exited {result.returncode}, wanted {expected}: {result.stderr}')
+    return result
+
+def fixture(name):
+    session = root / name
+    session.mkdir(parents=True)
+    prompt = session / 'r1-codex-sol.prompt.md'
+    prompt.write_text('the exact root prompt\n')
+    manifest = {
+        'schema_version': 3, 'label': root_label, 'phase': 'risk',
+        'assignments': {seat: {'bundle': 'correctness-boundaries'}},
+    }
+    (session / 'r1-evidence.manifest.json').write_text(json.dumps(manifest) + '\n')
+    return session, prompt
+
+def launch(session, label, prompt, exit_code, token, write_exit=True):
+    run(session, 'reserve', session, label, seat, prompt, token)
+    run(session, 'record', session, label, seat, prompt, exit_code, token)
+    if write_exit:
+        (session / f'r{label}-{seat}.exit').write_text(f'{exit_code}\n')
+
+def bind(session, retry=retry_label, expected=0):
+    return run(session, 'record-execution-retry', session, root_label, seat, retry,
+               expected=expected)
+
+valid, prompt = fixture('valid')
+launch(valid, root_label, prompt, 2, 'a' * 32)
+launch(valid, retry_label, prompt, 2, 'b' * 32)
+root_attempt_before = attempt.completed_attempt(valid, root_label, seat, prompt)['raw']
+retry_attempt_before = attempt.completed_attempt(valid, retry_label, seat, prompt)['raw']
+bind(valid)
+binding = valid / f'r{root_label}-{seat}.execution-retry.json'
+record = json.loads(binding.read_text())
+expected_hash = attempt.record_path(valid, root_label, seat, prompt)[1]['prompt_sha256']
+demand(record['root_prompt_sha256'] == expected_hash, 'binding names the root prompt hash')
+demand(attempt.terminal_failure(valid, root_label, seat, prompt),
+       'a complete same-prompt exit-2 retry establishes terminal failure')
+demand(not (valid / f'r{retry_label}-{seat}.json').exists()
+       and not (valid / f'r{retry_label}-{seat}.read-audit.json').exists(),
+       'failed execution remains without review result or audit')
+demand((attempt.completed_attempt(valid, retry_label, seat, prompt) or {}).get('exit') == '2',
+       'binding preserves the retry exit')
+demand(attempt.completed_attempt(valid, root_label, seat, prompt)['raw'] == root_attempt_before
+       and attempt.completed_attempt(valid, retry_label, seat, prompt)['raw'] == retry_attempt_before,
+       'binding does not rewrite either attempt record')
+prior_binding = binding.read_bytes()
+bind(valid, expected=1)
+demand(binding.read_bytes() == prior_binding, 'binding publication is write-once')
+
+missing_prompt, prompt = fixture('missing-prompt')
+launch(missing_prompt, root_label, prompt, 2, 'c' * 32)
+launch(missing_prompt, retry_label, prompt, 2, 'd' * 32)
+prompt.unlink()
+bind(missing_prompt, expected=1)
+demand(not (missing_prompt / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'missing root prompt hash cannot be bound')
+
+mismatched, prompt = fixture('mismatched-prompt')
+other = mismatched / 'other.prompt.md'
+other.write_text('different prompt\n')
+launch(mismatched, root_label, prompt, 2, 'e' * 32)
+launch(mismatched, retry_label, other, 2, 'f' * 32)
+bind(mismatched, expected=1)
+demand(not (mismatched / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'retry with a different prompt hash cannot be bound')
+
+missing_launch, prompt = fixture('missing-launch')
+launch(missing_launch, root_label, prompt, 2, '1' * 32)
+run(missing_launch, 'reserve', missing_launch, retry_label, seat, prompt, '2' * 32)
+bind(missing_launch, expected=1)
+demand(not (missing_launch / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'an unfinished retry launch cannot be bound')
+
+missing_exit, prompt = fixture('missing-exit')
+launch(missing_exit, root_label, prompt, 2, '3' * 32)
+launch(missing_exit, retry_label, prompt, 2, '4' * 32, write_exit=False)
+bind(missing_exit, expected=1)
+demand(not (missing_exit / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'a retry without its terminal exit cannot be bound')
+
+exit4, prompt = fixture('exit4')
+launch(exit4, root_label, prompt, 2, '5' * 32)
+launch(exit4, retry_label, prompt, 4, '6' * 32)
+(exit4 / f'r{retry_label}-{seat}.log').write_text('end usage={"output_tokens":429}\n')
+bind(exit4, expected=1)
+demand(not attempt.terminal_failure(exit4, root_label, seat, prompt),
+       'usage-only 429 does not make exit 4 an execution failure')
+demand(not (exit4 / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'exit 4 cannot be rebound as an execution failure')
+
+tampered, prompt = fixture('tampered-hash')
+launch(tampered, root_label, prompt, 2, '7' * 32)
+launch(tampered, retry_label, prompt, 2, '8' * 32)
+bind(tampered)
+binding = tampered / f'r{root_label}-{seat}.execution-retry.json'
+record = json.loads(binding.read_text())
+del record['root_prompt_sha256']
+binding.write_text(json.dumps(record) + '\n')
+demand(not attempt.terminal_failure(tampered, root_label, seat, prompt),
+       'missing prompt hash cannot establish terminal failure')
+record['root_prompt_sha256'] = '0' * 64
+binding.write_text(json.dumps(record) + '\n')
+demand(not attempt.terminal_failure(tampered, root_label, seat, prompt),
+       'mismatched prompt hash cannot establish terminal failure')
+print('exact retry binding scenarios passed')
+PY
+    assert_eq "exact retry binding validates immutable lineage and fail-closed cases" "$?" 0
+  )
+}
+
 test_evidence_audit_failure_modes() {
   ( seat_env; local S="$T/audit-failure-malformed"; seat_roster "$S"
     cat > "$S/malformed-evidence.md" <<'EOF'
