@@ -2696,6 +2696,87 @@ PY
   )
 }
 
+test_exact_retry_exit_130_qualifies_for_replacement() {
+  ( seat_env
+    local S="$T/retry-exit-130" interrupted="$T/retry-exit-130-alone" session
+    local provider="$T/retry-exit-130-provider"
+    seat_roster "$S"; seat_roster "$interrupted"; seat_roster "$provider"
+    for session in "$S" "$interrupted" "$provider"; do
+      python3 - "$session/roster.json" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+roster = json.loads(path.read_text())
+seat = next(row for row in roster['seats'] if row['seat'] == 'codex-sol')
+seat['mode'] = 'review'
+path.write_text(json.dumps(roster) + '\n')
+PY
+    done
+    printf 'review\n' > "$S/p.md"
+    printf 'review\n' > "$interrupted/p.md"
+    printf 'review\n' > "$provider/p.md"
+
+    SHIM_MODE=unusable_with_tool "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" --base main >/dev/null 2>&1
+    assert_eq "a retry begins after the recorded unusable result" "$?" 2
+    python3 - "$S" <<'PY'
+import glob, json, sys
+record = json.load(open(glob.glob(sys.argv[1] + '/attempts/*.json')[0]))
+assert record['calls'] == record['completed_calls'] == 1
+assert record['launches'] == [2]
+PY
+    assert_eq "one unusable tool call has a complete exit record" "$?" 0
+    SHIM_MODE=interrupted "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" --base main >/dev/null 2>&1
+    assert_eq "the exact retry records its interruption" "$?" 130
+    assert_exit "the interrupted retry does not publish reviewer findings" 1 \
+      test -e "$S/r1-codex-sol.json"
+    assert_eq "the exact retry history is [2, 130]" \
+      "$(python3 -c 'import glob,json,sys; print([json.load(open(p))["launches"] for p in glob.glob(sys.argv[1] + "/attempts/*.json")])' "$S")" \
+      "[[2, 130]]"
+
+    SHIM_MODE=interrupted "$SCRIPTS/rev-seat.sh" codex-sol "$interrupted" 1 \
+      "$interrupted/p.md" --base main >/dev/null 2>&1
+    assert_eq "a standalone interruption is recorded" "$?" 130
+    SHIM_MODE=notauth "$SCRIPTS/rev-seat.sh" codex-sol "$provider" 1 \
+      "$provider/p.md" --base main >/dev/null 2>&1
+    assert_eq "the provider failure is recorded before its interrupted retry" "$?" 3
+    SHIM_MODE=interrupted "$SCRIPTS/rev-seat.sh" codex-sol "$provider" 1 \
+      "$provider/p.md" --base main >/dev/null 2>&1
+    assert_eq "a retry after provider failure remains an interruption" "$?" 130
+
+    python3 - "$SCRIPTS/lib/rev-attempt.py" "$S" "$interrupted" <<'PY'
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location('rev_attempt', sys.argv[1])
+attempt = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(attempt)
+session, standalone = map(Path, sys.argv[2:])
+if not attempt.terminal_failure(session, '1', 'codex-sol', session / 'p.md'):
+    path, _ = attempt.record_path(session, '1', 'codex-sol', session / 'p.md')
+    record = json.loads(path.read_text())
+    final = (session / 'r1-codex-sol.exit').read_text().strip()
+    raise AssertionError(f'complete exact retry was not terminal: record={record!r}, exit={final!r}')
+assert not attempt.terminal_failure(standalone, '1', 'codex-sol', standalone / 'p.md'), \
+    'a standalone 130 cannot qualify for replacement'
+provider = Path(sys.argv[2]).parent / 'retry-exit-130-provider'
+assert not attempt.terminal_failure(provider, '1', 'codex-sol', provider / 'p.md'), \
+    'an exit 3 followed by 130 needs its existing provider-cancellation proof'
+
+path, _ = attempt.record_path(session, '1', 'codex-sol', session / 'p.md')
+record = json.loads(path.read_text())
+record['completed_calls'] = 1
+record['active_launch'] = 'a' * 32
+path.write_text(json.dumps(record, sort_keys=True, separators=(',', ':')) + '\n')
+assert not attempt.terminal_failure(session, '1', 'codex-sol', session / 'p.md'), \
+    'an incomplete exact retry cannot qualify for replacement'
+PY
+    assert_eq "replacement eligibility requires a complete exact retry" "$?" 0
+  )
+}
+
 test_evidence_audit_failure_modes() {
   ( seat_env; local S="$T/audit-failure-malformed"; seat_roster "$S"
     cat > "$S/malformed-evidence.md" <<'EOF'
