@@ -10,6 +10,7 @@ OpenAI Luna, then Anthropic Sonnet, then OpenAI Sol, then Anthropic Opus.
 Frontier review seats stay on the roster.
 """
 import json
+import importlib.util
 import os
 from pathlib import Path
 import re
@@ -367,7 +368,16 @@ def escalation_override(session, family):
     return target
 
 
-def escalate(session, seat):
+def record_quota_disabled_escalation(session, panel, failed_seat, replacement_seat):
+    attempt_path = Path(__file__).resolve().with_name('rev-attempt.py')
+    spec = importlib.util.spec_from_file_location('rev_attempt_for_escalation', attempt_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.record_quota_disabled_escalation(
+        Path(session), panel, failed_seat, replacement_seat)
+
+
+def escalate(session, seat, panel=None):
     """Write the next enforced chain seat for a review seat that failed twice.
 
     An existing core seat of that family is reused and any stale escalation file
@@ -398,6 +408,10 @@ def escalate(session, seat):
         _clear_escalation(session)
         raise ValueError('normal chain is exhausted')
     spec, existing = chosen
+    if panel is not None:
+        status = record_quota_disabled_escalation(session, panel, seat, spec['seat'])
+        if status == 1:
+            raise ValueError('cannot bind the quota-disabled exit-4 escalation to this panel')
     if existing:
         _clear_escalation(session)
         return {'seat': spec['seat'], 'family': roster_family(spec), 'existing': True}

@@ -13,7 +13,8 @@ import tempfile
 LIB_DIR = Path(__file__).resolve().parent
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
-from session_inputs import session_input_lock
+from session_inputs import SessionInputsError, session_input_lock
+from roster import load_config, quota_fallback_setting
 
 TERMINAL_EXITS = ('1', '2')
 RECORDED_EXITS = ('0', '1', '2', '3', '4', '7', '129', '130', '143')
@@ -360,7 +361,135 @@ def provider_cancellation(session: Path, panel: str, seat: str, cancelled: dict)
     return True
 
 
-def terminal_failure(session: Path, panel: str, seat: str, prompt: Path) -> bool:
+def quota_fallback_identity():
+    config, error = load_config()
+    if error:
+        return None
+    enabled, error = quota_fallback_setting(config)
+    if error:
+        return None
+    encoded = json.dumps(config, ensure_ascii=True, sort_keys=True,
+                         separators=(',', ':')).encode('utf-8')
+    return enabled, hashlib.sha256(encoded).hexdigest()
+
+
+def quota_disabled_escalation_path(session: Path, panel: str, seat: str):
+    return session / f'r{panel}-{seat}.quota-disabled-escalation.json'
+
+
+def record_quota_disabled_escalation(session: Path, panel: str, failed_seat: str,
+                                     replacement_seat: str) -> int:
+    safe = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-')
+    if (not all(isinstance(value, str) for value in (panel, failed_seat, replacement_seat))
+            or any(not value or not set(value) <= safe
+                   for value in (panel, failed_seat, replacement_seat))
+            or failed_seat == replacement_seat):
+        return 1
+    try:
+        with session_input_lock(session):
+            directory = session / 'attempts'
+            directory.mkdir(mode=0o700, exist_ok=True)
+            metadata = directory.lstat()
+            if (directory.is_symlink() or not stat.S_ISDIR(metadata.st_mode)
+                    or directory.resolve().parent != session):
+                return 1
+            panel_key = hashlib.sha256(panel.encode()).hexdigest()
+            panel_descriptor, _ = open_private(directory / ('.panel-' + panel_key + '.lock'))
+            with os.fdopen(panel_descriptor, 'r+', encoding='utf-8') as panel_lock:
+                fcntl.flock(panel_lock, fcntl.LOCK_EX)
+                assignments = panel_assignments(session, panel)
+                prompt = session / f'r{panel}-{failed_seat}.prompt.md'
+                if (assignments is None or failed_seat not in assignments
+                        or not safe_regular(prompt)):
+                    return 1
+                prompt_sha = hashlib.sha256(private_bytes(prompt)).hexdigest()
+                attempt = completed_attempt(session, panel, failed_seat, prompt)
+                if attempt is None or attempt['exit'] != '4':
+                    return 2
+                try:
+                    policy = quota_fallback_identity()
+                except (OSError, ValueError, TypeError):
+                    return 1
+                if policy is None:
+                    return 1
+                enabled, config_sha = policy
+                if enabled:
+                    return 2
+                identity = attempt['record']
+                if identity.get('prompt_sha256') != prompt_sha:
+                    return 1
+                record = {
+                    'schema_version': 1,
+                    'panel': panel,
+                    'failed_seat': failed_seat,
+                    'failed_exit': 4,
+                    'replacement_seat': replacement_seat,
+                    'quota_fallback': False,
+                    'config_sha256': config_sha,
+                    'prompt_sha256': prompt_sha,
+                    'attempt_sha256': attempt['sha256'],
+                }
+                path = quota_disabled_escalation_path(session, panel, failed_seat)
+                descriptor, temporary = tempfile.mkstemp(
+                    prefix='.quota-disabled-escalation-', dir=session)
+                try:
+                    with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+                        json.dump(record, stream, sort_keys=True, separators=(',', ':'))
+                        stream.write('\n')
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                    try:
+                        os.link(temporary, path)
+                    except FileExistsError:
+                        try:
+                            prior = json.loads(private_bytes(path))
+                        except (OSError, ValueError, json.JSONDecodeError, RecursionError):
+                            return 1
+                        return 0 if prior == record else 1
+                finally:
+                    try:
+                        os.unlink(temporary)
+                    except FileNotFoundError:
+                        pass
+                return 0
+    except (OSError, ValueError, SessionInputsError, json.JSONDecodeError, RecursionError):
+        return 1
+
+
+def valid_quota_disabled_escalation(session: Path, panel: str, seat: str, prompt: Path,
+                                    attempt: dict, replacement_seat: str) -> bool:
+    safe = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-')
+    if (not isinstance(replacement_seat, str) or not replacement_seat
+            or not set(replacement_seat) <= safe):
+        return False
+    try:
+        policy = quota_fallback_identity()
+        if policy is None:
+            return False
+        enabled, config_sha = policy
+        record = json.loads(private_bytes(
+            quota_disabled_escalation_path(session, panel, seat)))
+        prompt_sha = hashlib.sha256(private_bytes(prompt)).hexdigest()
+    except (OSError, ValueError, TypeError, json.JSONDecodeError, RecursionError):
+        return False
+    return (not enabled and isinstance(record, dict)
+            and set(record) == {'schema_version', 'panel', 'failed_seat', 'failed_exit',
+                                'replacement_seat', 'quota_fallback', 'config_sha256',
+                                'prompt_sha256', 'attempt_sha256'}
+            and type(record.get('schema_version')) is int and record['schema_version'] == 1
+            and record.get('panel') == panel and record.get('failed_seat') == seat
+            and type(record.get('failed_exit')) is int and record['failed_exit'] == 4
+            and record.get('replacement_seat') == replacement_seat
+            and record.get('quota_fallback') is False
+            and record.get('config_sha256') == config_sha
+            and record.get('prompt_sha256') == prompt_sha
+            and record.get('prompt_sha256') == attempt['record'].get('prompt_sha256')
+            and record.get('attempt_sha256') == attempt['sha256']
+            and attempt.get('exit') == '4')
+
+
+def terminal_failure(session: Path, panel: str, seat: str, prompt: Path,
+                     replacement_seat: str | None = None) -> bool:
     """The assignment failed for good under a recorded audit, provider, or retry outcome."""
     if (semantic_rejection(session, panel, seat) is not None
             or latched(session, panel, seat) or ended_by_incomplete_proof(session, panel, seat, prompt)):
@@ -369,6 +498,10 @@ def terminal_failure(session: Path, panel: str, seat: str, prompt: Path) -> bool
     if attempt is not None:
         if attempt['exit'] in PROVIDER_FAILURE_EXITS:
             return True
+        if attempt['exit'] == '4':
+            return (replacement_seat is not None
+                    and valid_quota_disabled_escalation(
+                        session, panel, seat, prompt, attempt, replacement_seat))
         if attempt['exit'] in PROVIDER_CANCELLATION_EXITS:
             return provider_cancellation(session, panel, seat, attempt)
     exit_path = session / f'r{panel}-{seat}.exit'
@@ -583,6 +716,9 @@ def recover_completion(session, panel, seat, prompt):
 
 def main():
     command = sys.argv[1] if len(sys.argv) > 1 else None
+    if command == 'record-quota-disabled-escalation' and len(sys.argv) == 6:
+        session = Path(sys.argv[2]).resolve()
+        return record_quota_disabled_escalation(session, *sys.argv[3:])
     if command == 'record-provider-cancellation' and len(sys.argv) == 7:
         session = Path(sys.argv[2]).resolve()
         with session_input_lock(session):
