@@ -1299,7 +1299,7 @@ Review: normal internal review found a path-traversal risk in the recovery recor
 ## Quota-disabled exit-4 replacement recovery
 
 - [ ] Confirm the documented exit-4 path and bind the `quota_fallback` policy to a durable escalation record.
-- [ ] Add regression cases proving exit 4 requires a same-panel escalation record and is rejected when quota fallback is enabled or evidence is stale.
+- [ ] Add regression cases proving exit 4 and the exact `[4,2]` attempt sequence require a same-panel escalation record, while other retry sequences are rejected when quota fallback is disabled.
 - [ ] Add regression cases separating Codex `output_tokens: 429` usage telemetry from an explicit provider quota error.
 - [ ] Implement the smallest validator and escalation-record change that preserves full scope and receipt checks.
 - [ ] Run the focused regression through the repository's approved CI route and confirm all existing replacement cases.

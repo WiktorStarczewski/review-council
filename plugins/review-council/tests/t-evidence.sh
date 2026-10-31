@@ -3620,7 +3620,7 @@ def replacement_accepts_only_durable_provider_exit_3():
 def replacement_requires_quota_disabled_escalation_record():
     attempt_script = Path(script).parent / 'lib' / 'rev-attempt.py'
 
-    def prepare_exit_4(session, prepare, env):
+    def prepare_exit_4(session, prepare, env, retry_code=None):
         chain_identities = {
             'sol': ('claude', 'sonnet', 'high'),
             'terra': ('codex', 'gpt-5.6-sol', 'high'),
@@ -3638,7 +3638,14 @@ def replacement_requires_quota_disabled_escalation_record():
         token = '2' * 32
         assert reserve_launch_bound(session, '11', 'sol', prompt, token).returncode == 0
         assert record_launch_bound(session, '11', 'sol', prompt, '4', token).returncode == 0
-        (session / 'r11-sol.exit').write_text('4\n')
+        final_exit = '4'
+        if retry_code is not None:
+            retry_token = '3' * 32
+            assert reserve_launch_bound(session, '11', 'sol', prompt, retry_token).returncode == 0
+            assert record_launch_bound(
+                session, '11', 'sol', prompt, retry_code, retry_token).returncode == 0
+            final_exit = retry_code
+        (session / 'r11-sol.exit').write_text(final_exit + '\n')
         child_args = ('--assignment', 'terra=' + parent['assignments']['sol']['bundle'],
                       '--parent-assignment', '11:sol')
         return prompt, child_args
@@ -3684,6 +3691,28 @@ def replacement_requires_quota_disabled_escalation_record():
         prompt.write_text('review\n')
         config.write_text('{"extra":true}\n')
         call('prepare', session, '11x3', '--phase', 'repair', *child_args, env=env,
+             good=False, error='parent assignment has no recorded terminal failure')
+
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        config = session / 'review-council-config.json'
+        config.write_text('{}\n')
+        env = {'REVIEW_COUNCIL_CONFIG': str(config)}
+        prompt, child_args = prepare_exit_4(session, prepare, env, retry_code='2')
+        call('record-quota-disabled-escalation', session, '11', 'sol', 'terra', env=env,
+             entrypoint=attempt_script)
+        child = prepare('11x', 'repair', *child_args, env=env)
+        assert child['parent_assignment']['seat'] == 'sol'
+        assert child['replacement_executor']['seat'] == 'terra'
+        assert list(child['assignments']) == ['terra']
+
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        config = session / 'review-council-config.json'
+        config.write_text('{}\n')
+        env = {'REVIEW_COUNCIL_CONFIG': str(config)}
+        prompt, child_args = prepare_exit_4(session, prepare, env, retry_code='1')
+        call('record-quota-disabled-escalation', session, '11', 'sol', 'terra', env=env,
+             good=False, entrypoint=attempt_script)
+        call('prepare', session, '11x', '--phase', 'repair', *child_args, env=env,
              good=False, error='parent assignment has no recorded terminal failure')
 
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
