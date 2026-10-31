@@ -152,7 +152,10 @@ case "${SHIM_MODE:-ok}" in
     done
     case "${TURN_SCHEMA##*/}" in
       review-turn.schema.json)
-        case "$CALL_NUMBER" in
+        if [ -n "${SHIM_STAGE_READ_MODE:-}" ]; then
+          printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT"
+        else
+          case "$CALL_NUMBER" in
           8)
             printf '%s\n' \
               '{"type":"item.started","item":{"id":"review-a","type":"command_execution","command":"rg -n marker src/one.ts"}}' \
@@ -178,8 +181,9 @@ case "${SHIM_MODE:-ok}" in
             printf '%s\n' '{"status":"continue","next_step":"The required source checks are covered; finish the review."}' > "$OUT"
             ;;
           12) printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT";;
-          *) echo "unexpected review turn $CALL_NUMBER" >&2; exit 1;;
-        esac
+            *) echo "unexpected review turn $CALL_NUMBER" >&2; exit 1;;
+          esac
+        fi
         ;;
       findings.schema.json) fixture_output "$SHIM_FIXTURE_DIR/findings-valid.json";;
       *)
@@ -195,21 +199,25 @@ prompt = open(sys.argv[1], encoding='utf-8').read()
 call_number = sys.argv[2]
 session = Path(os.environ['SHIM_STAGE_DIR']).resolve().parent
 root = Path(os.environ['ROOT']).resolve()
-for index, line in enumerate(prompt.splitlines(), 1):
-    if line.startswith('Read exactly: '):
-        command = line[len('Read exactly: '):]
-        words = shlex.split(command)
-        if len(words) != 3 or words[:2] != ['cat', '--']:
-            raise SystemExit(f'unexpected staged read command: {command}')
-        target = Path(words[2]).resolve(strict=True)
-        if not any(target == base or base in target.parents for base in (root, session)):
-            raise SystemExit(f'staged read escaped the test roots: {target}')
-        output = target.read_text(encoding='utf-8')
-        print(json.dumps({'type': 'item.started', 'item': {
-            'id': f'stage-{call_number}-{index}', 'type': 'command_execution', 'command': command}}))
-        print(json.dumps({'type': 'item.completed', 'item': {
-            'id': f'stage-{call_number}-{index}', 'type': 'command_execution', 'command': command,
-            'aggregated_output': output, 'exit_code': 0}}))
+commands = [line[len('Read exactly: '):] for line in prompt.splitlines()
+            if line.startswith('Read exactly: ')]
+for index, original in enumerate(commands, 1):
+    command = original
+    if (os.environ.get('SHIM_STAGE_READ_MODE') == 'duplicate_second'
+            and len(commands) == 2 and index == 2):
+        command = commands[0]
+    words = shlex.split(command)
+    if len(words) != 3 or words[:2] != ['cat', '--']:
+        raise SystemExit(f'unexpected staged read command: {command}')
+    target = Path(words[2]).resolve(strict=True)
+    if not any(target == base or base in target.parents for base in (root, session)):
+        raise SystemExit(f'staged read escaped the test roots: {target}')
+    output = target.read_text(encoding='utf-8')
+    print(json.dumps({'type': 'item.started', 'item': {
+        'id': f'stage-{call_number}-{index}', 'type': 'command_execution', 'command': command}}))
+    print(json.dumps({'type': 'item.completed', 'item': {
+        'id': f'stage-{call_number}-{index}', 'type': 'command_execution', 'command': command,
+        'aggregated_output': output, 'exit_code': 0}}))
 PY
         fi
         printf '%s\n' '{"type":"item.completed","item":{"id":"stage-answer","type":"agent_message","text":"READ_STAGE_COMPLETE"}}'
