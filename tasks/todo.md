@@ -1308,3 +1308,15 @@ Review: normal internal review found a path-traversal risk in the recovery recor
 - [ ] Merge the small workflow fix and share the adopted recovery step with walletissues sessions.
 
 Run `41209614941` on `7af3e37` exposed stale state-gate fixtures: they wrote exit files without the attempt journal now required to prove two terminal failures. Run `41211125996` caught an unbound-variable failure in the new fixture helper under `set -u`; the assignment order is corrected. Run `41215562217` found two more fixture issues: child manifests overwrote the frozen root plan, and the unrecorded-exit case also wrote a hard-audit latch. Both fixtures are corrected; a fresh full exact-head run is required.
+
+## Exact retry exit-130 replacement candidate
+
+- [x] Trace why a completed retry sequence `[2, 130]` is not eligible for configured replacement.
+- [x] Add a focused regression for exact `[2, 130]` retries, standalone 130, provider cancellation, and incomplete attempt state.
+- [x] Preserve adapter cancellation exit codes at the seat wrapper boundary.
+- [x] Implement replacement eligibility only for a complete exact retry; keep 130 out of reviewer results and receipts.
+- [ ] Run the focused test and exact candidate CI on the final documentation head.
+- [x] Complete an independent normal review of the code at `1ffe0a1` with no actionable P0-P2 findings.
+- [x] Reconcile the `rev-attempt.py` overlap with PR #102 without editing its branch. #102 binds missing-child-manifest retries to root prompt and attempt hashes; this candidate handles the exact `[2, 130]` retry sequence.
+
+Review: independent normal review was clean at code head `1ffe0a1`; the follow-up commit records this result and reconciles the separate PR #102 behavior. Re-run exact-head CI before merge.

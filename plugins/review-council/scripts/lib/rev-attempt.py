@@ -370,7 +370,10 @@ def terminal_failure(session: Path, panel: str, seat: str, prompt: Path) -> bool
         if attempt['exit'] in PROVIDER_FAILURE_EXITS:
             return True
         if attempt['exit'] in PROVIDER_CANCELLATION_EXITS:
-            return provider_cancellation(session, panel, seat, attempt)
+            if provider_cancellation(session, panel, seat, attempt):
+                return True
+        if attempt['record'].get('launches') == [2, 130]:
+            return True
     exit_path = session / f'r{panel}-{seat}.exit'
     try:
         path, _ = record_path(session, panel, seat, prompt)
