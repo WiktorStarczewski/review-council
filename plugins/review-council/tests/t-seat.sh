@@ -411,9 +411,10 @@ PY
 test_seat_codex_prepared_stage_rejects_omitted_second_patch_chunk() {
   python3 "$HERE/codex-prepared-paired-read-regression.py" "$SCRIPTS" "$FX" "$SHIMS" "$T"
   assert_eq "prepared paired-read omission regression" "$?" 0
+  prepared_evidence_stage_turn_requires_exact_complete_read
 }
 
-test_seat_codex_prepared_evidence_stage_turn_requires_exact_complete_read() {
+prepared_evidence_stage_turn_requires_exact_complete_read() {
   python3 - "$SCRIPTS/lib/codex-proof-stages.py" "$T" <<'PY'
 import hashlib
 import inspect
