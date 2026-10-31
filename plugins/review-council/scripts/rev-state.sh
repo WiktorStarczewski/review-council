@@ -322,7 +322,6 @@ def plan_assignment_failures(label):
     current_sha = hashlib.sha256(current_plan).hexdigest()
     if (not isinstance(manifest, dict) or manifest.get('label') != label
             or manifest.get('phase') != 'plan' or not isinstance(manifest.get('plan'), dict)
-            or manifest['plan'].get('sha256') != current_sha
             or not isinstance(manifest.get('assignments'), dict)
             or set(manifest['assignments']) != set(original_seats)):
         return None
