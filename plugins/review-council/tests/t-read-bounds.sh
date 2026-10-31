@@ -2699,6 +2699,7 @@ PY
 test_recorded_exact_retry_binding() {
   ( python3 - "$SCRIPTS/lib/rev-attempt.py" "$T/retry-binding" <<'PY'
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -2728,12 +2729,16 @@ def fixture(name):
     session = root / name
     session.mkdir(parents=True)
     prompt = session / 'r1-codex-sol.prompt.md'
-    prompt.write_text('the exact root prompt\n')
     manifest = {
         'schema_version': 3, 'label': root_label, 'phase': 'risk',
+        'session': str(session.resolve()),
         'assignments': {seat: {'bundle': 'correctness-boundaries'}},
     }
-    (session / 'r1-evidence.manifest.json').write_text(json.dumps(manifest) + '\n')
+    manifest_raw = (json.dumps(manifest) + '\n').encode()
+    (session / 'r1-evidence.manifest.json').write_bytes(manifest_raw)
+    manifest_sha256 = hashlib.sha256(manifest_raw).hexdigest()
+    prompt.write_text('the exact root prompt\n'
+                      f'Evidence manifest SHA-256: {manifest_sha256}\n')
     return session, prompt
 
 def launch(session, label, prompt, exit_code, token, write_exit=True):
@@ -2758,6 +2763,16 @@ expected_hash = attempt.record_path(valid, root_label, seat, prompt)[1]['prompt_
 demand(record['root_prompt_sha256'] == expected_hash, 'binding names the root prompt hash')
 demand(attempt.terminal_failure(valid, root_label, seat, prompt),
        'a complete same-prompt exit-2 retry establishes terminal failure')
+manifest_path = valid / f'r{root_label}-evidence.manifest.json'
+manifest_raw = manifest_path.read_bytes()
+manifest = json.loads(manifest_raw)
+manifest['session'] = str(valid.parent / 'foreign-session')
+manifest_path.write_text(json.dumps(manifest) + '\n')
+demand(not attempt.terminal_failure(valid, root_label, seat, prompt),
+       'binding rejects a root manifest moved to another session')
+manifest_path.write_bytes(manifest_raw)
+demand(attempt.terminal_failure(valid, root_label, seat, prompt),
+       'restoring the exact root manifest restores terminal failure')
 demand(not (valid / f'r{retry_label}-{seat}.json').exists()
        and not (valid / f'r{retry_label}-{seat}.read-audit.json').exists(),
        'failed execution remains without review result or audit')
@@ -2801,6 +2816,14 @@ bind(missing_exit, expected=1)
 demand(not (missing_exit / f'r{root_label}-{seat}.execution-retry.json').exists(),
        'a retry without its terminal exit cannot be bound')
 
+child_manifest, prompt = fixture('child-manifest')
+launch(child_manifest, root_label, prompt, 2, '9' * 32)
+launch(child_manifest, retry_label, prompt, 2, 'a' * 32)
+(child_manifest / f'r{retry_label}-evidence.manifest.json').write_text('{}\n')
+bind(child_manifest, expected=1)
+demand(not (child_manifest / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'a published retry manifest uses the normal lineage path')
+
 exit4, prompt = fixture('exit4')
 launch(exit4, root_label, prompt, 2, '5' * 32)
 launch(exit4, retry_label, prompt, 4, '6' * 32)
@@ -2816,7 +2839,8 @@ launch(tampered, root_label, prompt, 2, '7' * 32)
 launch(tampered, retry_label, prompt, 2, '8' * 32)
 bind(tampered)
 binding = tampered / f'r{root_label}-{seat}.execution-retry.json'
-record = json.loads(binding.read_text())
+valid_record = json.loads(binding.read_text())
+record = dict(valid_record)
 del record['root_prompt_sha256']
 binding.write_text(json.dumps(record) + '\n')
 demand(not attempt.terminal_failure(tampered, root_label, seat, prompt),
@@ -2825,6 +2849,12 @@ record['root_prompt_sha256'] = '0' * 64
 binding.write_text(json.dumps(record) + '\n')
 demand(not attempt.terminal_failure(tampered, root_label, seat, prompt),
        'mismatched prompt hash cannot establish terminal failure')
+for field, value in (('root_label', '2'), ('seat', 'codex-luna-2')):
+    record = dict(valid_record)
+    record[field] = value
+    binding.write_text(json.dumps(record) + '\n')
+    demand(not attempt.terminal_failure(tampered, root_label, seat, prompt),
+           f'mismatched {field} cannot establish terminal failure')
 print('exact retry binding scenarios passed')
 PY
     assert_eq "exact retry binding validates immutable lineage and fail-closed cases" "$?" 0

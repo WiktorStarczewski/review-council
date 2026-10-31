@@ -480,3 +480,20 @@ cancel that provider's pending siblings, retry through `rev-workhorse.py escalat
 Never lower effort or drop a configured core seat. If fewer than three reviewers
 complete a round, retry each missing assignment through `rev-workhorse.py escalate`, which honors a matching per-review override and otherwise selects the next higher enforced seat. If that fails, cover the missing lens yourself, record it as orchestrator coverage, and continue. Do not describe that coverage as a certified seat. Repair children use `<N>x`, then distinct suffixed labels such as `<N>x2`; the default one-seat plan panel remains a separate exception.
 Record reduced coverage and failed extras; never label an incomplete run clean.
+
+If an exact execution retry completed with exit 1 or 2 but its child manifest was never
+published, preserve its attempt and exit artifacts, then write the recovery binding
+against the original assignment:
+
+```bash
+python3 "$PLUGIN/scripts/lib/rev-attempt.py" record-execution-retry \
+  "$S" "$ROOT_LABEL" "$SEAT" "$RETRY_LABEL"
+```
+
+The command requires the root manifest to assign the seat, the root prompt hash to
+match both complete launch records, and both recorded exits to be 1 or 2. It refuses
+an existing child manifest, an audit or incomplete-proof failure, an exit 4, or a
+second binding. The binding establishes only terminal failure; it creates no result,
+read audit, or receipt proof. Continue from the root assignment with
+`--parent-assignment "$ROOT_LABEL:$SEAT"` and a fresh unique child label, such as
+`<N>x2` after `<N>x` was used.

@@ -5,9 +5,9 @@
 **Approach:** Add a write-once recovery binding that matches the retry attempt to the root prompt hash and validates completed launch and exit records. Let terminal-failure checks consume that binding while leaving receipt and read-audit validation unchanged. Reject quota-classified exit 4 from this execution-retry path.
 
 - [x] Add regression coverage for a valid binding, missing or mismatched prompt hashes, missing launch or exit, and exit-4 rejection.
-- [ ] Prove the regression fails on the intended binding assertion in CI.
-- [ ] Implement write-once binding creation and validation in `rev-attempt.py`.
-- [ ] Document the recovery command in both Review Council discovery phase files.
+- [x] Prove the regression fails on the intended binding assertion in CI.
+- [x] Implement write-once binding creation and validation in `rev-attempt.py`.
+- [x] Document the recovery command in both Review Council discovery phase files.
 - [ ] Run focused tests, inspect the exact diff, and send it for independent normal review.
 
 **Review:** Pending.
