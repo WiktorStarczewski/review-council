@@ -55,6 +55,8 @@ def hard_audit_failure(audit: Path) -> bool:
         result = json.loads(audit.read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError, ValueError):
         return False
+    if not isinstance(result, dict):
+        return False
     return (result.get('schema_version') == 2 and result.get('status') == 'invalid'
             and result.get('evidence_scoped') is True)
 
@@ -232,6 +234,8 @@ def completed_attempt(session: Path, panel: str, seat: str, prompt: Path):
         path, identity = record_path(session, panel, seat, prompt)
         raw = private_bytes(path)
         current = json.loads(raw)
+        if not isinstance(current, dict):
+            return None
         final = private_bytes(session / f'r{panel}-{seat}.exit').strip().decode('ascii')
     except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         return None
@@ -279,6 +283,114 @@ def panel_assignments(session: Path, panel: str):
     if not isinstance(assignments, dict):
         return None
     return assignments
+
+
+def execution_retry_path(session: Path, panel: str, seat: str) -> Path:
+    return session / f'r{panel}-{seat}.execution-retry.json'
+
+
+def execution_retry_label(root: str, retry: str) -> bool:
+    prefix = root + 'x'
+    if retry == prefix:
+        return True
+    suffix = retry[len(prefix):] if retry.startswith(prefix) else ''
+    if not suffix or not suffix.isdecimal():
+        return False
+    try:
+        return int(suffix) >= 2
+    except ValueError:
+        return False
+
+
+def execution_retry_payload(session: Path, panel: str, seat: str, retry: str, prompt: Path):
+    safe = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-')
+    if (not all(isinstance(value, str) and value and set(value) <= safe
+                for value in (panel, seat, retry))
+            or not execution_retry_label(panel, retry)):
+        return None
+    resolved_session = session.resolve()
+    prompt_name = f'r{panel}-{seat}.prompt.md'
+    manifest_path = session / f'r{panel}-evidence.manifest.json'
+    retry_manifest = session / f'r{retry}-evidence.manifest.json'
+    attempts = session / 'attempts'
+    try:
+        if prompt.name != prompt_name or prompt.resolve().parent != resolved_session \
+                or os.path.lexists(retry_manifest):
+            return None
+        attempts_metadata = attempts.lstat()
+        if attempts.is_symlink() or not stat.S_ISDIR(attempts_metadata.st_mode) \
+                or attempts.resolve().parent != resolved_session:
+            return None
+        prompt_raw = private_bytes(prompt)
+        manifest_raw = private_bytes(manifest_path)
+        manifest = json.loads(manifest_raw)
+        manifest_sha256 = hashlib.sha256(manifest_raw).hexdigest()
+        assignments = manifest.get('assignments') if isinstance(manifest, dict) else None
+        assignment = assignments.get(seat) if isinstance(assignments, dict) else None
+        if (not isinstance(manifest, dict)
+                or manifest.get('label') != panel
+                or manifest.get('session') != str(resolved_session)
+                or type(manifest.get('schema_version')) is not int
+                or manifest['schema_version'] not in (2, 3, 4)
+                or manifest.get('phase') not in ('discovery', 'risk', 'verification', 'repair', 'numeric')
+                or manifest.get('parent_assignment') is not None
+                or not isinstance(assignment, dict)
+                or not isinstance(assignment.get('bundle'), str)
+                or not assignment['bundle']):
+            return None
+        if prompt_raw.decode('utf-8').splitlines().count(
+                'Evidence manifest SHA-256: ' + manifest_sha256) != 1:
+            return None
+        if (semantic_rejection(session, panel, seat) is not None
+                or latched(session, panel, seat)
+                or ended_by_incomplete_proof(session, panel, seat, prompt)):
+            return None
+        root_attempt = completed_attempt(session, panel, seat, prompt)
+        retry_attempt = completed_attempt(session, retry, seat, prompt)
+    except (OSError, ValueError, TypeError, KeyError, UnicodeDecodeError,
+            json.JSONDecodeError, RecursionError):
+        return None
+    if (root_attempt is None or retry_attempt is None
+            or root_attempt['exit'] not in TERMINAL_EXITS
+            or retry_attempt['exit'] not in TERMINAL_EXITS
+            or len(root_attempt['record']['launches']) != 1
+            or len(retry_attempt['record']['launches']) != 1):
+        return None
+    prompt_sha256 = hashlib.sha256(prompt_raw).hexdigest()
+    root_token = root_attempt['record'].get('last_launch')
+    retry_token = retry_attempt['record'].get('last_launch')
+    if (root_attempt['record'].get('prompt_sha256') != prompt_sha256
+            or retry_attempt['record'].get('prompt_sha256') != prompt_sha256
+            or not all(isinstance(token, str) and len(token) == 32
+                       and set(token) <= set('0123456789abcdef')
+                       for token in (root_token, retry_token))):
+        return None
+    return {
+        'schema_version': 1,
+        'root_label': panel,
+        'seat': seat,
+        'root_manifest_sha256': manifest_sha256,
+        'root_prompt_sha256': prompt_sha256,
+        'root_attempt_sha256': root_attempt['sha256'],
+        'root_attempt_token': root_token,
+        'root_exit': root_attempt['exit'],
+        'retry_label': retry,
+        'retry_attempt_sha256': retry_attempt['sha256'],
+        'retry_attempt_token': retry_token,
+        'retry_exit': retry_attempt['exit'],
+    }
+
+
+def execution_retry_binding(session: Path, panel: str, seat: str, prompt: Path):
+    try:
+        record = json.loads(private_bytes(execution_retry_path(session, panel, seat)))
+    except (OSError, ValueError, TypeError, KeyError, UnicodeDecodeError,
+            json.JSONDecodeError, RecursionError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    expected = execution_retry_payload(session, panel, seat, record.get('retry_label'), prompt)
+    return record if expected is not None and record == expected else None
 
 
 def recovery_record(session: Path, panel: str, seat: str):
@@ -371,6 +483,8 @@ def terminal_failure(session: Path, panel: str, seat: str, prompt: Path) -> bool
             return True
         if attempt['exit'] in PROVIDER_CANCELLATION_EXITS:
             return provider_cancellation(session, panel, seat, attempt)
+    if execution_retry_binding(session, panel, seat, prompt) is not None:
+        return True
     exit_path = session / f'r{panel}-{seat}.exit'
     try:
         path, _ = record_path(session, panel, seat, prompt)
@@ -382,6 +496,31 @@ def terminal_failure(session: Path, panel: str, seat: str, prompt: Path) -> bool
     return (isinstance(launches, list) and len(launches) >= 2
             and all(str(code) in TERMINAL_EXITS for code in launches[-2:])
             and final in TERMINAL_EXITS)
+
+
+def record_execution_retry(session: Path, panel: str, seat: str, retry: str):
+    prompt = session / f'r{panel}-{seat}.prompt.md'
+    payload = execution_retry_payload(session, panel, seat, retry, prompt)
+    if payload is None:
+        return 1
+    path = execution_retry_path(session, panel, seat)
+    descriptor, temporary = tempfile.mkstemp(prefix='.execution-retry-', dir=session)
+    try:
+        with os.fdopen(descriptor, 'wb') as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write((json.dumps(payload, sort_keys=True, separators=(',', ':')) + '\n').encode())
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            return 1
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+    return 0
 
 
 def record_provider_cancellation(session: Path, panel: str, trigger_seat: str,
@@ -583,6 +722,10 @@ def recover_completion(session, panel, seat, prompt):
 
 def main():
     command = sys.argv[1] if len(sys.argv) > 1 else None
+    if command == 'record-execution-retry' and len(sys.argv) == 6:
+        session = Path(sys.argv[2]).resolve()
+        with session_input_lock(session):
+            return record_execution_retry(session, *sys.argv[3:])
     if command == 'record-provider-cancellation' and len(sys.argv) == 7:
         session = Path(sys.argv[2]).resolve()
         with session_input_lock(session):

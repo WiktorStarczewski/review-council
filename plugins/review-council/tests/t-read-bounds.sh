@@ -2696,6 +2696,357 @@ PY
   )
 }
 
+test_recorded_exact_retry_binding() {
+  ( python3 - "$SCRIPTS/lib/rev-attempt.py" "$T/retry-binding" <<'PY'
+import importlib.util
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+helper = Path(sys.argv[1])
+root = Path(sys.argv[2])
+spec = importlib.util.spec_from_file_location('rev_attempt', helper)
+attempt = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(attempt)
+seat = 'codex-sol'
+root_label = '1'
+retry_label = '1x'
+
+def demand(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+def run(session, *args, expected=0):
+    result = subprocess.run([sys.executable, str(helper), *map(str, args)],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    demand(result.returncode == expected,
+           f'{args[0]} exited {result.returncode}, wanted {expected}: {result.stderr}')
+    return result
+
+def fixture(name, parent_assignment=None):
+    session = root / name
+    session.mkdir(parents=True)
+    prompt = session / 'r1-codex-sol.prompt.md'
+    manifest = {
+        'schema_version': 3, 'label': root_label, 'phase': 'risk',
+        'session': str(session.resolve()),
+        'assignments': {seat: {'bundle': 'correctness-boundaries'}},
+    }
+    if parent_assignment is not None:
+        manifest['phase'] = 'repair'
+        manifest['parent_assignment'] = parent_assignment
+    manifest_raw = (json.dumps(manifest) + '\n').encode()
+    (session / 'r1-evidence.manifest.json').write_bytes(manifest_raw)
+    manifest_sha256 = hashlib.sha256(manifest_raw).hexdigest()
+    prompt.write_text('the exact root prompt\n'
+                      f'Evidence manifest SHA-256: {manifest_sha256}\n')
+    return session, prompt
+
+def launch(session, label, prompt, exit_code, token, write_exit=True):
+    run(session, 'reserve', session, label, seat, prompt, token)
+    run(session, 'record', session, label, seat, prompt, exit_code, token)
+    if write_exit:
+        (session / f'r{label}-{seat}.exit').write_text(f'{exit_code}\n')
+
+def bind(session, retry=retry_label, expected=0):
+    return run(session, 'record-execution-retry', session, root_label, seat, retry,
+               expected=expected)
+
+failures = []
+for suffix in ('2', '02'):
+    numeric, prompt = fixture('numeric-' + suffix)
+    retry = '1x' + suffix
+    launch(numeric, root_label, prompt, 2, ('a' if suffix == '2' else 'b') * 32)
+    launch(numeric, retry, prompt, 2, ('c' if suffix == '2' else 'd') * 32)
+    bind(numeric, retry=retry)
+    demand((numeric / f'r{root_label}-{seat}.execution-retry.json').is_file(),
+           f'{retry} remains a valid numeric retry label')
+
+numeric_one, prompt = fixture('numeric-one')
+launch(numeric_one, root_label, prompt, 2, 'e' * 32)
+launch(numeric_one, '1x1', prompt, 2, 'f' * 32)
+invalid_label = bind(numeric_one, retry='1x1', expected=1)
+demand('Traceback' not in invalid_label.stderr,
+       'a below-minimum decimal suffix is rejected without a traceback')
+demand(not (numeric_one / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'a below-minimum decimal suffix publishes no binding')
+demand(attempt.execution_retry_label('1', '1x' + '0' * 30 + '2'),
+       'a supported long leading-zero suffix with value two remains valid')
+digit_limit_reader = getattr(sys, 'get_int_max_str_digits', None)
+if digit_limit_reader is not None:
+    digit_limit = digit_limit_reader()
+    if digit_limit > 1:
+        under_limit = '0' * max(0, digit_limit - 2) + '2'
+        demand(len(under_limit) == digit_limit - 1
+               and attempt.execution_retry_label('1', '1x' + under_limit),
+               'a leading-zero suffix one digit under the runtime limit remains valid')
+
+long_retry = '1x' + '9' * 33
+oversized, prompt = fixture('oversized')
+launch(oversized, root_label, prompt, 2, '1' * 32)
+launch(oversized, long_retry, prompt, 2, '2' * 32)
+original_label = attempt.execution_retry_label
+missing = object()
+prior_int = attempt.__dict__.get('int', missing)
+real_int = int
+
+def digit_limited_int(value, *args, **kwargs):
+    if (isinstance(value, str) and value.isascii() and value.isdecimal()
+            and len(value) > 32):
+        raise ValueError('simulated integer-string digit limit')
+    return real_int(value, *args, **kwargs)
+
+def digit_limited_label(root_label_value, retry_value):
+    previous = attempt.__dict__.get('int', missing)
+    attempt.int = digit_limited_int
+    try:
+        return original_label(root_label_value, retry_value)
+    finally:
+        if previous is missing:
+            attempt.__dict__.pop('int', None)
+        else:
+            attempt.int = previous
+
+attempt.execution_retry_label = digit_limited_label
+try:
+    try:
+        bind_result = attempt.record_execution_retry(oversized, root_label, seat, long_retry)
+    except ValueError:
+        failures.append('FAIL oversized retry label fails closed without ValueError')
+    else:
+        demand(bind_result == 1, 'an oversized retry label is rejected')
+    demand(not (oversized / f'r{root_label}-{seat}.execution-retry.json').exists(),
+           'an oversized retry label publishes no binding')
+
+    persisted, prompt = fixture('oversized-persisted')
+    launch(persisted, root_label, prompt, 2, '3' * 32)
+    persisted_binding = persisted / f'r{root_label}-{seat}.execution-retry.json'
+    persisted_binding.write_text(json.dumps({'retry_label': long_retry}) + '\n')
+    try:
+        terminal = attempt.terminal_failure(persisted, root_label, seat, prompt)
+    except ValueError:
+        failures.append('FAIL oversized persisted binding does not raise')
+    else:
+        demand(terminal is False, 'an oversized persisted binding is not terminal failure')
+finally:
+    attempt.execution_retry_label = original_label
+    if prior_int is missing:
+        attempt.__dict__.pop('int', None)
+    else:
+        attempt.int = prior_int
+
+valid, prompt = fixture('valid')
+launch(valid, root_label, prompt, 2, 'a' * 32)
+launch(valid, retry_label, prompt, 2, 'b' * 32)
+root_attempt_before = attempt.completed_attempt(valid, root_label, seat, prompt)['raw']
+retry_attempt_before = attempt.completed_attempt(valid, retry_label, seat, prompt)['raw']
+bind(valid)
+binding = valid / f'r{root_label}-{seat}.execution-retry.json'
+record = json.loads(binding.read_text())
+expected_hash = attempt.record_path(valid, root_label, seat, prompt)[1]['prompt_sha256']
+demand(record['root_prompt_sha256'] == expected_hash, 'binding names the root prompt hash')
+demand(attempt.terminal_failure(valid, root_label, seat, prompt),
+       'a complete same-prompt exit-2 retry establishes terminal failure')
+alias_root = root / 'alias'
+alias_root.symlink_to(root, target_is_directory=True)
+alias_session = alias_root / 'valid'
+alias_prompt = alias_session / prompt.name
+demand(attempt.terminal_failure(alias_session, root_label, seat, alias_prompt),
+       'binding accepts a canonical session reached through a symlinked parent')
+manifest_path = valid / f'r{root_label}-evidence.manifest.json'
+manifest_raw = manifest_path.read_bytes()
+manifest = json.loads(manifest_raw)
+manifest['session'] = str(valid.parent / 'foreign-session')
+manifest_path.write_text(json.dumps(manifest) + '\n')
+demand(not attempt.terminal_failure(valid, root_label, seat, prompt),
+       'binding rejects a root manifest moved to another session')
+manifest_path.write_bytes(manifest_raw)
+demand(attempt.terminal_failure(valid, root_label, seat, prompt),
+       'restoring the exact root manifest restores terminal failure')
+demand(not (valid / f'r{retry_label}-{seat}.json').exists()
+       and not (valid / f'r{retry_label}-{seat}.read-audit.json').exists(),
+       'failed execution remains without review result or audit')
+demand((attempt.completed_attempt(valid, retry_label, seat, prompt) or {}).get('exit') == '2',
+       'binding preserves the retry exit')
+demand(attempt.completed_attempt(valid, root_label, seat, prompt)['raw'] == root_attempt_before
+       and attempt.completed_attempt(valid, retry_label, seat, prompt)['raw'] == retry_attempt_before,
+       'binding does not rewrite either attempt record')
+prior_binding = binding.read_bytes()
+bind(valid, expected=1)
+demand(binding.read_bytes() == prior_binding, 'binding publication is write-once')
+
+missing_prompt, prompt = fixture('missing-prompt')
+launch(missing_prompt, root_label, prompt, 2, 'c' * 32)
+launch(missing_prompt, retry_label, prompt, 2, 'd' * 32)
+prompt.unlink()
+bind(missing_prompt, expected=1)
+demand(not (missing_prompt / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'missing root prompt hash cannot be bound')
+
+child_root, prompt = fixture('child-root', {'manifest': 'r0-evidence.manifest.json'})
+launch(child_root, root_label, prompt, 2, 'c' * 32)
+launch(child_root, retry_label, prompt, 2, 'd' * 32)
+bind(child_root, expected=1)
+demand(not (child_root / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'a replacement child cannot become a new retry root')
+demand(not attempt.terminal_failure(child_root, root_label, seat, prompt),
+       'a rejected child-root binding cannot establish terminal failure')
+
+mismatched, prompt = fixture('mismatched-prompt')
+other = mismatched / 'other.prompt.md'
+other.write_text('different prompt\n')
+launch(mismatched, root_label, prompt, 2, 'e' * 32)
+launch(mismatched, retry_label, other, 2, 'f' * 32)
+bind(mismatched, expected=1)
+demand(not (mismatched / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'retry with a different prompt hash cannot be bound')
+
+missing_launch, prompt = fixture('missing-launch')
+launch(missing_launch, root_label, prompt, 2, '1' * 32)
+run(missing_launch, 'reserve', missing_launch, retry_label, seat, prompt, '2' * 32)
+bind(missing_launch, expected=1)
+demand(not (missing_launch / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'an unfinished retry launch cannot be bound')
+
+missing_exit, prompt = fixture('missing-exit')
+launch(missing_exit, root_label, prompt, 2, '3' * 32)
+launch(missing_exit, retry_label, prompt, 2, '4' * 32, write_exit=False)
+bind(missing_exit, expected=1)
+demand(not (missing_exit / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'a retry without its terminal exit cannot be bound')
+
+child_manifest, prompt = fixture('child-manifest')
+launch(child_manifest, root_label, prompt, 2, '9' * 32)
+launch(child_manifest, retry_label, prompt, 2, 'a' * 32)
+(child_manifest / f'r{retry_label}-evidence.manifest.json').write_text('{}\n')
+bind(child_manifest, expected=1)
+demand(not (child_manifest / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'a published retry manifest uses the normal lineage path')
+
+exit4, prompt = fixture('exit4')
+launch(exit4, root_label, prompt, 2, '5' * 32)
+launch(exit4, retry_label, prompt, 4, '6' * 32)
+(exit4 / f'r{retry_label}-{seat}.log').write_text('end usage={"output_tokens":429}\n')
+bind(exit4, expected=1)
+demand(not attempt.terminal_failure(exit4, root_label, seat, prompt),
+       'usage-only 429 does not make exit 4 an execution failure')
+demand(not (exit4 / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'exit 4 cannot be rebound as an execution failure')
+
+tampered, prompt = fixture('tampered-hash')
+launch(tampered, root_label, prompt, 2, '7' * 32)
+launch(tampered, retry_label, prompt, 2, '8' * 32)
+bind(tampered)
+binding = tampered / f'r{root_label}-{seat}.execution-retry.json'
+valid_record = json.loads(binding.read_text())
+record = dict(valid_record)
+del record['root_prompt_sha256']
+binding.write_text(json.dumps(record) + '\n')
+demand(not attempt.terminal_failure(tampered, root_label, seat, prompt),
+       'missing prompt hash cannot establish terminal failure')
+record['root_prompt_sha256'] = '0' * 64
+binding.write_text(json.dumps(record) + '\n')
+demand(not attempt.terminal_failure(tampered, root_label, seat, prompt),
+       'mismatched prompt hash cannot establish terminal failure')
+for field, value in (('root_label', '2'), ('seat', 'codex-luna-2')):
+    record = dict(valid_record)
+    record[field] = value
+    binding.write_text(json.dumps(record) + '\n')
+    demand(not attempt.terminal_failure(tampered, root_label, seat, prompt),
+           f'mismatched {field} cannot establish terminal failure')
+
+list_attempt, prompt = fixture('list-attempt-artifact')
+launch(list_attempt, root_label, prompt, 2, '4' * 32)
+launch(list_attempt, retry_label, prompt, 2, '5' * 32)
+root_attempt_path = attempt.record_path(list_attempt, root_label, seat, prompt)[0]
+root_attempt_path.write_text('["not an attempt object"]\n')
+try:
+    attempt.record_execution_retry(list_attempt, root_label, seat, retry_label)
+except AttributeError:
+    failures.append('FAIL list-valued attempt artifact fails closed without AttributeError')
+else:
+    demand(not (list_attempt / f'r{root_label}-{seat}.execution-retry.json').exists(),
+           'a list-valued attempt artifact publishes no binding')
+try:
+    terminal = attempt.terminal_failure(list_attempt, root_label, seat, prompt)
+except AttributeError:
+    failures.append('FAIL list-valued attempt artifact does not raise from terminal_failure')
+else:
+    demand(terminal is False, 'a list-valued attempt artifact is not terminal failure')
+
+audit_record, prompt = fixture('list-root-audit-record')
+launch(audit_record, root_label, prompt, 2, '6' * 32)
+launch(audit_record, retry_label, prompt, 2, '7' * 32)
+(audit_record / f'r{root_label}-{seat}.read-audit.json').write_text('[]\n')
+try:
+    audit_binding_result = attempt.record_execution_retry(audit_record, root_label, seat, retry_label)
+except AttributeError as error:
+    failures.append(f'FAIL non-object read-audit record path raised {type(error).__name__}')
+else:
+    demand(audit_binding_result == 0,
+           'a non-object read-audit preserves the existing no-hard-failure classification')
+    demand((audit_record / f'r{root_label}-{seat}.execution-retry.json').is_file(),
+           'a non-object read-audit allows only the terminal-failure binding')
+    demand(attempt.terminal_failure(audit_record, root_label, seat, prompt),
+           'the valid failure binding remains terminal under a non-object read-audit')
+    demand(not (audit_record / f'r{retry_label}-{seat}.json').exists()
+           and not (audit_record / f'r{retry_label}-{seat}.read-audit.json').exists(),
+           'the non-object read-audit binding creates no result or audit proof')
+
+audit_terminal, prompt = fixture('list-root-audit-terminal')
+launch(audit_terminal, root_label, prompt, 2, '8' * 32)
+(audit_terminal / f'r{root_label}-{seat}.read-audit.json').write_text('[]\n')
+try:
+    audit_terminal_result = attempt.terminal_failure(audit_terminal, root_label, seat, prompt)
+except AttributeError as error:
+    failures.append(f'FAIL non-object read-audit terminal path raised {type(error).__name__}')
+else:
+    demand(audit_terminal_result is False,
+           'a non-object read-audit alone does not make an assignment terminal failure')
+
+root_audit_invalid, prompt = fixture('root-audit-invalid')
+launch(root_audit_invalid, root_label, prompt, 2, '9' * 32)
+launch(root_audit_invalid, retry_label, prompt, 2, 'a' * 32)
+(root_audit_invalid / f'r{root_label}-{seat}.audit-invalid.json').write_text('invalid\n')
+bind_result = bind(root_audit_invalid, expected=1)
+demand('Traceback' not in bind_result.stderr,
+       'root audit-invalid marker refuses the binding without a traceback')
+demand(not (root_audit_invalid / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'root audit-invalid marker publishes no binding')
+
+root_hard_audit, prompt = fixture('root-hard-read-audit')
+launch(root_hard_audit, root_label, prompt, 2, 'b' * 32)
+launch(root_hard_audit, retry_label, prompt, 2, 'c' * 32)
+(root_hard_audit / f'r{root_label}-{seat}.read-audit.json').write_text(
+    json.dumps({'schema_version': 2, 'status': 'invalid', 'evidence_scoped': True}) + '\n')
+bind_result = bind(root_hard_audit, expected=1)
+demand('Traceback' not in bind_result.stderr,
+       'root hard read-audit refuses the binding without a traceback')
+demand(not (root_hard_audit / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'root hard read-audit publishes no binding')
+
+retry_audit_invalid, prompt = fixture('retry-audit-invalid-only')
+launch(retry_audit_invalid, root_label, prompt, 2, 'd' * 32)
+launch(retry_audit_invalid, retry_label, prompt, 2, 'e' * 32)
+(retry_audit_invalid / f'r{retry_label}-{seat}.audit-invalid.json').write_text('invalid\n')
+bind(retry_audit_invalid)
+demand((retry_audit_invalid / f'r{root_label}-{seat}.execution-retry.json').is_file(),
+       'retry-label-only audit-invalid marker does not refuse root binding')
+demand(attempt.terminal_failure(retry_audit_invalid, root_label, seat, prompt),
+       'retry-label-only audit-invalid marker does not change root terminal failure')
+
+if failures:
+    for failure in failures:
+        print(failure, file=sys.stderr)
+    sys.exit(1)
+print('exact retry binding scenarios passed')
+PY
+    assert_eq "exact retry binding validates immutable lineage and fail-closed cases" "$?" 0
+  )
+}
+
 test_evidence_audit_failure_modes() {
   ( seat_env; local S="$T/audit-failure-malformed"; seat_roster "$S"
     cat > "$S/malformed-evidence.md" <<'EOF'
