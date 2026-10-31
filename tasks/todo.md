@@ -1306,4 +1306,4 @@ Review: normal internal review found a path-traversal risk in the recovery recor
 - [ ] Complete one independent normal review and address actionable findings.
 - [ ] Merge the small workflow fix and share the adopted recovery step with walletissues sessions.
 
-Run `41209614941` on `7af3e37` exposed stale state-gate fixtures: they wrote exit files without the attempt journal now required to prove two terminal failures. Run `41211125996` caught an unbound-variable failure in the new fixture helper under `set -u`; the assignment order is corrected. The current exact-head run must complete before the next correction can be declared verified.
+Run `41209614941` on `7af3e37` exposed stale state-gate fixtures: they wrote exit files without the attempt journal now required to prove two terminal failures. Run `41211125996` caught an unbound-variable failure in the new fixture helper under `set -u`; the assignment order is corrected. Run `41215562217` found two more fixture issues: child manifests overwrote the frozen root plan, and the unrecorded-exit case also wrote a hard-audit latch. Both fixtures are corrected; a fresh full exact-head run is required.

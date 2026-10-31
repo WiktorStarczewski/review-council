@@ -66,7 +66,7 @@ state_gate_allows() {
 state_write_plan_manifest() {
   local session=$1 label=$2 freshness=$3 sha
   shift 3
-  printf 'Plan panel %s\n' "$label" > "$session/fix-plan.md"
+  [ -f "$session/fix-plan.md" ] || printf 'Plan panel %s\n' "$label" > "$session/fix-plan.md"
   sha=$(python3 - "$session/fix-plan.md" <<'PY'
 import hashlib
 import pathlib
@@ -268,7 +268,6 @@ test_state_fix_gate() {
   "$ST" "$S" phase=plan round=10p 'seats=["codex-opus"]' >/dev/null
   state_write_plan_manifest "$S" 10p current codex-opus
   printf 'review prompt\n' > "$S/r10p-codex-opus.prompt.md"
-  printf '{"status":"invalid"}\n' > "$S/r10p-codex-opus.audit-invalid.json"
   printf '2\n' > "$S/r10p-codex-opus.exit"
   state_write_manual_plan_review "$S" 10p codex-opus
   state_gate_refuses "an unrecorded failed exit cannot authorize manual fix" "$S" 10 phase=fix
