@@ -1316,7 +1316,9 @@ Review: independent normal review was clean at code head `1ffe0a1`; the follow-u
 - [x] Implement up to four consecutive source segments under a 60 KiB turn cap, with existing 32 KiB per-response bounds.
 - [x] Update evidence manifest validation, prompt contract and both discovery guides.
 - [x] Recompute the unchanged frozen #2069 evidence manifest: 142 paths, 368 hunks, 54 components, 288 required ranges, and 298 source segments. The original projection is 175 turns; the candidate projection is 101 turns (75 source-segment turns and 14 patch turns). This is an estimator result, not a live provider run or measured token/cost saving.
-- [ ] Complete independent normal review, fix P0-P2 findings, rebase on current main and pass exact-head CI.
+- [ ] Fix exact-head CI failures in both verifier platforms, complete Council review, rebase on current main and pass exact-head CI.
 - [ ] Push the reviewed branch and open a draft PR.
 
 Review: One independent normal reviewer found no actionable findings. The candidate is limited to Claude source-only required segment reads, retaining the 32 KiB response cap, 60 KiB turn cap, exact order/hash/completeness checks, the two-read mixed-proof limit and other-adapter behavior. Expected-red run 41219263183 confirmed all four intended assertions failed; 5,251 other release tests passed. Exact-head passing CI remains pending after the merge of PR #107.
+
+CI diagnosis: exact-head run 41227193633 failed on both Ubuntu and macOS. The shell failures were stale contract assertions. The Python failure exposed that `evidence-proof-batch-too-large` was advisory for Claude, allowing a mixed source-plus-index turn above the two-read limit to remain valid. The fix makes that mixed-batch violation fatal for Claude while keeping the four-read exemption restricted to source-only required segments.

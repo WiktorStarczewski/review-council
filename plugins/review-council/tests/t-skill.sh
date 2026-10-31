@@ -311,8 +311,10 @@ test_skill_contract() {
       '24 KiB raw, 30 KiB.*eight prefix bytes'
     assert_grep "host preserves the ordinary output authority" "$H" \
       '32 KiB per-tool and ordinary per-turn output limits still apply'
-    assert_grep "host bounds provider ordered proof batches" "$H" \
-      'Claude and Codex adapters may use two ordered proof reads in one turn.*60 KiB'
+    assert_grep "host keeps mixed ordered proof batches to two reads" "$H" \
+      'Mixed ordered proof turns may use at most two reads under a 60 KiB combined cap'
+    assert_grep "host limits Claude four-read batches to source-only segments" "$H" \
+      'Claude may use up to four consecutive required-source-segment reads in a source-only turn.*do not mix them with patch chunks or the evidence index'
     assert_grep "host keeps packet and repository turns ordinary" "$H" \
       'Source-context packets and repository reads retain the ordinary 32 KiB turn cap'
     assert_grep "host orders chunk reads before source packets" "$H" \

@@ -632,7 +632,7 @@ PY
           assert_grep "$recovery_adapter prefix keeps inclusive 240-line source windows" \
             "$recovery_prefix" 'END - START \+ 1 <= 240'
           assert_grep "$recovery_adapter prefix carries per-turn byte bound" \
-            "$recovery_prefix" '32 KiB combined output ceiling';;
+            "$recovery_prefix" 'ordinary tool turns within 32 KiB combined output';;
       esac
       assert_grep "$recovery_adapter prefix carries ordered proof turn bound" \
         "$recovery_prefix" 'at most the rendered proof read limit.*60 KiB combined output ceiling'

@@ -3647,9 +3647,11 @@ def assess(args, blocked):
             'duplicate-required-source-segment', 'evidence-proof-batch-too-large',
             'source-packet-batch-too-large',
         }
+        claude_fatal = {'evidence-proof-batch-too-large'}
         fatal = [item for item in unique
                  if item.get('code') not in ADVISORY_CODES
-                 or (args.adapter == 'codex' and item.get('code') in codex_fatal)]
+                 or (args.adapter == 'codex' and item.get('code') in codex_fatal)
+                 or (args.adapter == 'claude' and item.get('code') in claude_fatal)]
         if not fatal:
             advisories = unique
             unique = []
