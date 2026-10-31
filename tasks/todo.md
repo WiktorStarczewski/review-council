@@ -1296,3 +1296,12 @@ The completed Agent transcript regression is isolated in test-only commit `c8772
 - [ ] Measure fresh post-0.8.6 first-attempt Luna audit failure rate; keep #77 open until below 5%.
 
 Review: normal internal review found a path-traversal risk in the recovery record. The fix rejects unsafe or unassigned trigger seats before reading artifacts; re-review was clean. Exact-head CI then caught two cancellation-test fixtures selecting Sonnet after a Sol parent, against the configured Luna -> Sonnet -> Sol -> Opus order. The fixtures now select Opus; re-review and a fresh exact-head gate remain pending.
+
+## Review Council manual plan-review fallback
+
+- [x] Reproduce the phase=fix refusal after the configured plan-seat chain fails; expected-red run `41205101249`.
+- [x] Add a separate manual-review record bound to the current plan and evidence manifest, and reject missing, stale, incomplete, or pending-replacement evidence; treat replacement prepare diagnostics as settled failures, never success.
+- [x] Update both host phase guides and their contract test.
+- [ ] Pass exact-head Ubuntu, macOS, proof-preparation, and package checks.
+- [ ] Complete one independent normal review and address actionable findings.
+- [ ] Merge the small workflow fix and share the adopted recovery step with walletissues sessions.
