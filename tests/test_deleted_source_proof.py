@@ -420,8 +420,9 @@ class RequiredSourceProofTests(unittest.TestCase):
         first_four = segments[:4]
         self.assertTrue(all(segment['predicted_visible_bytes'] <= 16 * 1024
                             for segment in first_four))
-        self.assertLessEqual(sum(segment['predicted_visible_bytes'] for segment in first_four),
-                             60 * 1024)
+        combined = sum(segment['predicted_visible_bytes'] for segment in first_four)
+        self.assertGreater(combined, 32 * 1024)
+        self.assertLessEqual(combined, 60 * 1024)
         rc, audit = fixture.audit_claude(group_required_segments=4)
         self.assertEqual((rc, audit['violations']), (0, []))
         self.assertEqual(audit['required_source_ranges_covered'], 1)

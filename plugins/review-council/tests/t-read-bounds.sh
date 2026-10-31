@@ -643,6 +643,8 @@ spec.loader.exec_module(audit)
 proof = {'chunk', 'segment', 'index'}
 assert audit.ordered_proof_turn_exempt(2, ['chunk', 'index'], proof, 40 * 1024)
 assert audit.ordered_proof_turn_exempt(2, ['segment', 'index'], proof, 60 * 1024)
+assert audit.ordered_proof_turn_exempt(2, ['segment', 'index'], {'segment', 'index'}, 40 * 1024)
+assert not audit.ordered_proof_turn_exempt(2, ['segment', 'index'], {'index'}, 40 * 1024)
 assert not audit.ordered_proof_turn_exempt(1, ['chunk', 'index'], proof, 40 * 1024)
 assert not audit.ordered_proof_turn_exempt(2, ['chunk', 'segment', 'index'], proof, 40 * 1024)
 assert not audit.ordered_proof_turn_exempt(2, ['chunk', 'index'], proof, 60 * 1024 + 1)

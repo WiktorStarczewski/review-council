@@ -45,11 +45,33 @@ class ReviewBoundaryTests(unittest.TestCase):
         self.assertEqual(self.evidence.read_batch_limit('claude'), 2)
         self.assertEqual(self.evidence.read_batch_limit('cursor-sdk'), 1)
 
+    def test_source_only_segment_turn_checks_adapter_membership_and_bytes(self):
+        calls = ['segment-1', 'segment-2', 'segment-3', 'segment-4']
+        required = [(call, 1) for call in calls]
+        outputs = {call: {'success': True, 'bytes': 15 * 1024} for call in calls}
+        helper = self.audit.source_only_segment_turn
+        self.assertTrue(helper('claude', calls, outputs, required, 4))
+        self.assertFalse(helper('codex', calls, outputs, required, 4))
+        self.assertFalse(helper('claude', calls[:3] + ['index'], outputs, required, 4))
+        failed = {**outputs, 'segment-4': {'success': False, 'bytes': 1}}
+        self.assertFalse(helper('claude', calls, failed, required, 4))
+        missing = {k: v for k, v in outputs.items() if k != 'segment-4'}
+        self.assertFalse(helper('claude', calls, missing, required, 4))
+        oversized = {**outputs, 'segment-4': {'success': True, 'bytes': 32 * 1024 + 1}}
+        self.assertFalse(helper('claude', calls, oversized, required, 4))
+        too_large = {call: {'success': True, 'bytes': 16 * 1024} for call in calls}
+        self.assertFalse(helper('claude', calls, too_large, required, 4))
+
     def test_ordered_proof_turn_limit_rejects_output_over_60_kib(self):
         calls = ['read-1', 'read-2']
         proof_calls = set(calls)
         self.assertTrue(self.audit.ordered_proof_turn_exempt(
             2, calls, proof_calls, 60 * 1024))
+        mixed_calls = ['required-segment', 'evidence-index']
+        self.assertTrue(self.audit.ordered_proof_turn_exempt(
+            2, mixed_calls, set(mixed_calls), 40 * 1024))
+        self.assertFalse(self.audit.ordered_proof_turn_exempt(
+            2, mixed_calls, {'evidence-index'}, 40 * 1024))
         self.assertFalse(self.audit.ordered_proof_turn_exempt(
             2, calls, proof_calls, 60 * 1024 + 1))
 
