@@ -403,6 +403,11 @@ PY
   seat_env_reset "$_path"
 }
 
+test_seat_codex_prepared_stage_rejects_omitted_second_patch_chunk() {
+  python3 "$HERE/codex-prepared-paired-read-regression.py" "$SCRIPTS" "$FX" "$SHIMS" "$T"
+  assert_eq "prepared paired-read omission regression" "$?" 0
+}
+
 test_seat_codex_resumes_unprepared_reviews() {
   local _path="$PATH"; seat_env
   local S="$T/seat-codex-unprepared" W="$T/seat-codex-unprepared-wrong" calls
