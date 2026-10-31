@@ -2766,6 +2766,12 @@ expected_hash = attempt.record_path(valid, root_label, seat, prompt)[1]['prompt_
 demand(record['root_prompt_sha256'] == expected_hash, 'binding names the root prompt hash')
 demand(attempt.terminal_failure(valid, root_label, seat, prompt),
        'a complete same-prompt exit-2 retry establishes terminal failure')
+alias_root = root / 'alias'
+alias_root.symlink_to(root, target_is_directory=True)
+alias_session = alias_root / 'valid'
+alias_prompt = alias_session / prompt.name
+demand(attempt.terminal_failure(alias_session, root_label, seat, alias_prompt),
+       'binding accepts a canonical session reached through a symlinked parent')
 manifest_path = valid / f'r{root_label}-evidence.manifest.json'
 manifest_raw = manifest_path.read_bytes()
 manifest = json.loads(manifest_raw)

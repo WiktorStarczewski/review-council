@@ -299,17 +299,18 @@ def execution_retry_payload(session: Path, panel: str, seat: str, retry: str, pr
                 for value in (panel, seat, retry))
             or not execution_retry_label(panel, retry)):
         return None
+    resolved_session = session.resolve()
     prompt_name = f'r{panel}-{seat}.prompt.md'
     manifest_path = session / f'r{panel}-evidence.manifest.json'
     retry_manifest = session / f'r{retry}-evidence.manifest.json'
     attempts = session / 'attempts'
     try:
-        if prompt.name != prompt_name or prompt.resolve().parent != session \
+        if prompt.name != prompt_name or prompt.resolve().parent != resolved_session \
                 or os.path.lexists(retry_manifest):
             return None
         attempts_metadata = attempts.lstat()
         if attempts.is_symlink() or not stat.S_ISDIR(attempts_metadata.st_mode) \
-                or attempts.resolve().parent != session:
+                or attempts.resolve().parent != resolved_session:
             return None
         prompt_raw = private_bytes(prompt)
         manifest_raw = private_bytes(manifest_path)
@@ -319,10 +320,11 @@ def execution_retry_payload(session: Path, panel: str, seat: str, retry: str, pr
         assignment = assignments.get(seat) if isinstance(assignments, dict) else None
         if (not isinstance(manifest, dict)
                 or manifest.get('label') != panel
-                or manifest.get('session') != str(session.resolve())
+                or manifest.get('session') != str(resolved_session)
                 or type(manifest.get('schema_version')) is not int
                 or manifest['schema_version'] not in (2, 3, 4)
                 or manifest.get('phase') not in ('discovery', 'risk', 'verification', 'repair', 'numeric')
+                or manifest.get('parent_assignment') is not None
                 or not isinstance(assignment, dict)
                 or not isinstance(assignment.get('bundle'), str)
                 or not assignment['bundle']):

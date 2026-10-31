@@ -500,9 +500,10 @@ python3 "$PLUGIN/scripts/lib/rev-attempt.py" record-execution-retry \
 
 The command requires the root manifest to assign the seat, the root prompt hash to
 match both complete launch records, and both recorded exits to be 1 or 2. It refuses
-an existing child manifest, an audit or incomplete-proof failure, an exit 4, or a
-second binding. The binding establishes only terminal failure; it creates no result,
-read audit, or receipt proof. Continue from the root assignment with
+a replacement-child manifest as the root, an existing child manifest, an audit or
+incomplete-proof failure, an exit 4, or a second binding. The binding establishes
+only terminal failure; it creates no result, read audit, or receipt proof. Continue
+from the root assignment with
 `--parent-assignment "$ROOT_LABEL:$SEAT"` and a fresh unique child label, such as
 `<N>x2` after `<N>x` was used.
 
