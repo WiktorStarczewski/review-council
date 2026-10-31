@@ -115,7 +115,6 @@ test_seat_codex_prepares_window_mode_patch_reads() {
   python3 - "$SCRIPTS/lib/codex-proof-stages.py" "$T" <<'PY'
 import hashlib
 import importlib.util
-import inspect
 import json
 import re
 from pathlib import Path
@@ -411,6 +410,7 @@ PY
 
 test_seat_codex_prepared_evidence_stage_turn_requires_exact_complete_read() {
   python3 - "$SCRIPTS/lib/codex-proof-stages.py" "$T" <<'PY'
+import inspect
 import importlib.util
 import json
 from pathlib import Path
