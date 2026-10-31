@@ -3006,6 +3006,37 @@ else:
     demand(audit_terminal_result is False,
            'a non-object read-audit alone does not make an assignment terminal failure')
 
+root_audit_invalid, prompt = fixture('root-audit-invalid')
+launch(root_audit_invalid, root_label, prompt, 2, '9' * 32)
+launch(root_audit_invalid, retry_label, prompt, 2, 'a' * 32)
+(root_audit_invalid / f'r{root_label}-{seat}.audit-invalid.json').write_text('invalid\n')
+bind_result = bind(root_audit_invalid, expected=1)
+demand('Traceback' not in bind_result.stderr,
+       'root audit-invalid marker refuses the binding without a traceback')
+demand(not (root_audit_invalid / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'root audit-invalid marker publishes no binding')
+
+root_hard_audit, prompt = fixture('root-hard-read-audit')
+launch(root_hard_audit, root_label, prompt, 2, 'b' * 32)
+launch(root_hard_audit, retry_label, prompt, 2, 'c' * 32)
+(root_hard_audit / f'r{root_label}-{seat}.read-audit.json').write_text(
+    json.dumps({'schema_version': 2, 'status': 'invalid', 'evidence_scoped': True}) + '\n')
+bind_result = bind(root_hard_audit, expected=1)
+demand('Traceback' not in bind_result.stderr,
+       'root hard read-audit refuses the binding without a traceback')
+demand(not (root_hard_audit / f'r{root_label}-{seat}.execution-retry.json').exists(),
+       'root hard read-audit publishes no binding')
+
+retry_audit_invalid, prompt = fixture('retry-audit-invalid-only')
+launch(retry_audit_invalid, root_label, prompt, 2, 'd' * 32)
+launch(retry_audit_invalid, retry_label, prompt, 2, 'e' * 32)
+(retry_audit_invalid / f'r{retry_label}-{seat}.audit-invalid.json').write_text('invalid\n')
+bind(retry_audit_invalid)
+demand((retry_audit_invalid / f'r{root_label}-{seat}.execution-retry.json').is_file(),
+       'retry-label-only audit-invalid marker does not refuse root binding')
+demand(attempt.terminal_failure(retry_audit_invalid, root_label, seat, prompt),
+       'retry-label-only audit-invalid marker does not change root terminal failure')
+
 if failures:
     for failure in failures:
         print(failure, file=sys.stderr)

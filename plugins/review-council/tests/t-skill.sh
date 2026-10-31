@@ -31,6 +31,21 @@ test_skill_contract() {
   rev_bundle "$SK/codex-skills/rev" "$T/codex-skills/rev/SKILL.md"
   local K="$T/skills/rev/SKILL.md" ST="$SK/skills/stack/SKILL.md" POL="$SK/skills/rev/POLICY.md" AG="$SK/agents/rev-reviewer.md" SG="$SK/agents/rev-reviewer-sonnet.md"
   local CK="$T/codex-skills/rev/SKILL.md" CST="$SK/codex-skills/stack/SKILL.md"
+  local retry_scope_missing=0 retry_scope_phrase
+  for retry_scope_phrase in \
+    'Audit and incomplete-proof refusals apply to the root assignment only.' \
+    'An audit or incomplete-proof marker on the retry label does not refuse the binding.'; do
+    if ! tr '\n' ' ' < "$K" | grep -Fq -- "$retry_scope_phrase"; then
+      echo "claude: missing: $retry_scope_phrase"
+      retry_scope_missing=1
+    fi
+    if ! tr '\n' ' ' < "$CK" | grep -Fq -- "$retry_scope_phrase"; then
+      echo "codex: missing: $retry_scope_phrase"
+      retry_scope_missing=1
+    fi
+  done
+  assert_eq "Audit and incomplete-proof refusals apply to the root assignment only" \
+    "$retry_scope_missing" "0"
   if [ ! -f "$ST" ]; then fail "stack SKILL.md exists" "$ST missing"; return; fi
   ok "stack SKILL.md exists"
   if [ ! -f "$CK" ]; then fail "Codex rev SKILL.md exists" "$CK missing"; return; fi
