@@ -5,8 +5,8 @@ there is no accepted fix or every accepted fix is a P3 or one-line P2. Repeat it
 when verification accepts a new P0/P1 root cause or another nontrivial cluster.
 The plan panel runs after triage and before any edit of the working tree.
 When the plan panel is skipped, append a line beginning `Plan panel r<N>p - SKIPPED: <reason>` to `$S/findings.md` before `phase=fix`.
-`rev-state.sh` refuses `phase=fix` for code round `<N>` while `open.P0 + open.P1 + open.P2` is above zero, unless that skip line exists or every original plan assignment has either its own valid result or a successful one-seat child explicitly bound to that assignment, with a manifest whose plan hash still matches `fix-plan.md`.
-An incomplete plan panel is not a skip: after fixing a local cause, continue through `rev-workhorse.py escalate`, which honors a matching per-review override and otherwise uses the next higher enforced seat, until a valid plan result exists or the eligible chain is exhausted. If the chain is exhausted, review the plan yourself against the plan contract before any edit.
+`rev-state.sh` refuses `phase=fix` for code round `<N>` while `open.P0 + open.P1 + open.P2` is above zero, unless the skip line exists, every original plan assignment has its own valid result or a successful bound one-seat replacement, or a current, hash-bound manual plan review accepts the full plan after the eligible chain is exhausted.
+An incomplete plan panel is not a skip: after fixing a local cause, continue through `rev-workhorse.py escalate`, which honors a matching per-review override and otherwise uses the next higher enforced seat, until a valid plan result exists or the eligible chain is exhausted. Once each unresolved assignment has recorded terminal failure and no replacement is pending, review the plan yourself against the plan contract before any edit and record that review in `r<N>p-manual-plan-review.json`. The record must bind the exact plan and manifest hashes, name every original assignment in `reviewed_assignments`, list exactly the unresolved failed assignments in `failed_assignments`, set `escalation_exhausted` to true and `decision` to `accepted`, include a non-empty summary, and set all five `contract_checks` (`required_cluster_fields`, `bounded_site_search_and_path_accounting`, `falsifiable_tests_and_predictions`, `authorized_scope_preserved`, and `objections_resolved`) to true. The gate verifies each failure against its persisted terminal-failure evidence and refuses while any replacement is pending. A matching non-certifying diagnostic settles only that replacement attempt; it never covers the original assignment. This record is an operator attestation, not a seat result, panel receipt, or SKIPPED marker.
 
 Why: over 11 past runs, 56% of all findings (68% from round 5 on) were fixes of an
 earlier round's fix, and 55% of those were *incomplete* fixes - a rule applied to the one
@@ -116,8 +116,12 @@ rule explicit and lets the panel attack it before it becomes code. Evidence:
    limits and coverage requirements stay unchanged. Do not launch plan seats after either
    refusal, do not repeat that prepare unchanged, and do not use the provider-seat replacement.
    One fresh schema-4 label is allowed only after the plan's site list or the
-   evidence compiler changes. If the same refusal remains, leave the plan panel incomplete
-   and review the plan yourself against the plan contract before any edit.
+   evidence compiler changes. If the same refusal remains, keep the plan panel incomplete.
+   Review the plan and diagnostic to identify a plan, input, or compiler correction; do not
+   enter `phase=fix` on manual approval alone. A root plan preparation diagnostic has no
+   manifest or terminal seat evidence and cannot satisfy the manual plan-review gate. For a
+   one-seat replacement, its matching diagnostic settles that attempt only; after correcting
+   the cause, register a fresh child label. It never counts as a successful assignment.
 
    Use the matching round label `<N>p` (the plan panel is extra, not a numbered code
    panel); write its outputs as `r<N>p-<seat>.json`. Collect as usual. Before triage,

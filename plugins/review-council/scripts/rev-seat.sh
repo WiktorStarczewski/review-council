@@ -269,6 +269,10 @@ while :; do
   break
 done
 
+case "$rc" in
+  129|130|143) finish "$rc";;
+esac
+
 if [ "$ADAPTER" = cursor-sdk ] && [ "$rc" -ne 0 ]; then
   [ ! -s "$OUT" ] || mv "$OUT" "$BASEN.transport-invalid.json"
   case "$rc" in 1|2|3|4) finish "$rc";; *) finish 1;; esac
