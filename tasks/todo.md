@@ -1296,3 +1296,13 @@ The completed Agent transcript regression is isolated in test-only commit `c8772
 - [ ] Measure fresh post-0.8.6 first-attempt Luna audit failure rate; keep #77 open until below 5%.
 
 Review: normal internal review found a path-traversal risk in the recovery record. The fix rejects unsafe or unassigned trigger seats before reading artifacts; re-review was clean. Exact-head CI then caught two cancellation-test fixtures selecting Sonnet after a Sol parent, against the configured Luna -> Sonnet -> Sol -> Opus order. The fixtures now select Opus; re-review and a fresh exact-head gate remain pending.
+
+## Exact retry exit-130 replacement candidate
+
+- [x] Trace why a completed retry sequence `[2, 130]` is not eligible for configured replacement.
+- [x] Add a focused regression for exact `[2, 130]` retries, standalone 130, provider cancellation, and incomplete attempt state.
+- [ ] Implement replacement eligibility only for a complete exact retry; keep 130 out of reviewer results and receipts.
+- [ ] Run the focused test and exact candidate CI, then complete an independent normal review.
+- [ ] Reconcile `rev-attempt.py` with PR #102 without editing its branch or extending that PR.
+
+Review: pending.
