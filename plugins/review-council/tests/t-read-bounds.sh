@@ -2698,16 +2698,28 @@ PY
 
 test_exact_retry_exit_130_qualifies_for_replacement() {
   ( seat_env
-    local S="$T/retry-exit-130" interrupted="$T/retry-exit-130-alone"
+    local S="$T/retry-exit-130" interrupted="$T/retry-exit-130-alone" session
     local provider="$T/retry-exit-130-provider"
     seat_roster "$S"; seat_roster "$interrupted"; seat_roster "$provider"
+    for session in "$S" "$interrupted" "$provider"; do
+      python3 - "$session/roster.json" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+roster = json.loads(path.read_text())
+seat = next(row for row in roster['seats'] if row['seat'] == 'codex-sol')
+seat['mode'] = 'review'
+path.write_text(json.dumps(roster) + '\n')
+PY
+    done
     printf 'review\n' > "$S/p.md"
     printf 'review\n' > "$interrupted/p.md"
     printf 'review\n' > "$provider/p.md"
 
-    SHIM_MODE=empty "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null 2>&1
+    SHIM_MODE=empty "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" --base main >/dev/null 2>&1
     assert_eq "a retry begins after the recorded unusable result" "$?" 2
-    SHIM_MODE=interrupted "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" >/dev/null 2>&1
+    SHIM_MODE=interrupted "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" --base main >/dev/null 2>&1
     assert_eq "the exact retry records its interruption" "$?" 130
     assert_exit "the interrupted retry does not publish reviewer findings" 1 \
       test -e "$S/r1-codex-sol.json"
@@ -2716,13 +2728,13 @@ test_exact_retry_exit_130_qualifies_for_replacement() {
       "[[2, 130]]"
 
     SHIM_MODE=interrupted "$SCRIPTS/rev-seat.sh" codex-sol "$interrupted" 1 \
-      "$interrupted/p.md" >/dev/null 2>&1
+      "$interrupted/p.md" --base main >/dev/null 2>&1
     assert_eq "a standalone interruption is recorded" "$?" 130
     SHIM_MODE=notauth "$SCRIPTS/rev-seat.sh" codex-sol "$provider" 1 \
-      "$provider/p.md" >/dev/null 2>&1
+      "$provider/p.md" --base main >/dev/null 2>&1
     assert_eq "the provider failure is recorded before its interrupted retry" "$?" 3
     SHIM_MODE=interrupted "$SCRIPTS/rev-seat.sh" codex-sol "$provider" 1 \
-      "$provider/p.md" >/dev/null 2>&1
+      "$provider/p.md" --base main >/dev/null 2>&1
     assert_eq "a retry after provider failure remains an interruption" "$?" 130
 
     python3 - "$SCRIPTS/lib/rev-attempt.py" "$S" "$interrupted" <<'PY'
