@@ -55,6 +55,8 @@ def hard_audit_failure(audit: Path) -> bool:
         result = json.loads(audit.read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError, ValueError):
         return False
+    if not isinstance(result, dict):
+        return False
     return (result.get('schema_version') == 2 and result.get('status') == 'invalid'
             and result.get('evidence_scoped') is True)
 
@@ -232,6 +234,8 @@ def completed_attempt(session: Path, panel: str, seat: str, prompt: Path):
         path, identity = record_path(session, panel, seat, prompt)
         raw = private_bytes(path)
         current = json.loads(raw)
+        if not isinstance(current, dict):
+            return None
         final = private_bytes(session / f'r{panel}-{seat}.exit').strip().decode('ascii')
     except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         return None
@@ -290,7 +294,12 @@ def execution_retry_label(root: str, retry: str) -> bool:
     if retry == prefix:
         return True
     suffix = retry[len(prefix):] if retry.startswith(prefix) else ''
-    return bool(suffix and suffix.isdecimal() and int(suffix) >= 2)
+    if not suffix or not suffix.isdecimal():
+        return False
+    try:
+        return int(suffix) >= 2
+    except ValueError:
+        return False
 
 
 def execution_retry_payload(session: Path, panel: str, seat: str, retry: str, prompt: Path):
