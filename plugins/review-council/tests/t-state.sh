@@ -40,17 +40,33 @@ state_gate_refuses() {
   before=$(cksum < "$S/state.json")
   "$SCRIPTS/rev-state.sh" "$S" "$@" > "$T/gate.out" 2> "$T/gate.err"; rc=$?
   after=$(cksum < "$S/state.json")
+  if [ "$rc" -ne 2 ]; then
+    printf '%s: unexpected phase=fix result rc=%s\n' "$name" "$rc" >&2
+    cat "$T/gate.err" "$T/gate.out" "$S/state.json" >&2
+  fi
   assert_eq "$name: refused" "$rc" 2
   assert_eq "$name: state unchanged" "$after" "$before"
   assert_grep "$name: names the round" "$T/gate.err" "refusing phase=fix for round $round:"
   assert_grep "$name: names the plan panel way out" "$T/gate.err" "plan panel r${round}p"
   assert_grep "$name: names the skip-line way out" "$T/gate.err" "Plan panel r${round}p - SKIPPED: <reason>"
+  assert_grep "$name: names the manual-review way out" "$T/gate.err" "r${round}p-manual-plan-review.json"
+}
+
+state_gate_allows() {
+  local name=$1 S=$2; shift 2
+  local rc
+  "$@" > "$T/gate-allow.out" 2> "$T/gate-allow.err"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf '%s: expected phase=fix to pass, got rc=%s\n' "$name" "$rc" >&2
+    cat "$T/gate-allow.err" "$T/gate-allow.out" >&2
+  fi
+  assert_eq "$name" "$rc" 0
 }
 
 state_write_plan_manifest() {
   local session=$1 label=$2 freshness=$3 sha
   shift 3
-  printf 'Plan panel %s\n' "$label" > "$session/fix-plan.md"
+  [ -f "$session/fix-plan.md" ] || printf 'Plan panel %s\n' "$label" > "$session/fix-plan.md"
   sha=$(python3 - "$session/fix-plan.md" <<'PY'
 import hashlib
 import pathlib
@@ -70,6 +86,85 @@ assignments = {seat: {"bundle": "plan-completeness", "scope": "full"}
 manifest = {"label": label, "phase": "plan", "plan": {"sha256": sha},
             "assignments": assignments}
 (session / f"r{label}-evidence.manifest.json").write_text(json.dumps(manifest) + "\n")
+PY
+}
+
+state_write_manual_plan_review() {
+  local session=$1 label=$2 failed=$3 mutation=${4:-}
+  python3 - "$session" "$label" "$failed" "$mutation" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+session = Path(sys.argv[1])
+label, failed, mutation = sys.argv[2:]
+manifest_path = session / f'r{label}-evidence.manifest.json'
+manifest_bytes = manifest_path.read_bytes()
+manifest = json.loads(manifest_bytes)
+review = {
+    'schema_version': 1,
+    'plan_label': label,
+    'plan_sha256': hashlib.sha256((session / 'fix-plan.md').read_bytes()).hexdigest(),
+    'manifest_sha256': hashlib.sha256(manifest_bytes).hexdigest(),
+    'reviewed_assignments': sorted(manifest['assignments']),
+    'failed_assignments': sorted(filter(None, failed.split(','))),
+    'escalation_exhausted': True,
+    'decision': 'accepted',
+    'summary': 'Reviewed every cluster against the plan contract.',
+    'contract_checks': {
+        'required_cluster_fields': True,
+        'bounded_site_search_and_path_accounting': True,
+        'falsifiable_tests_and_predictions': True,
+        'authorized_scope_preserved': True,
+        'objections_resolved': True,
+    },
+}
+if mutation == 'unchecked':
+    review['contract_checks']['authorized_scope_preserved'] = False
+if mutation == 'missing-assignment':
+    review['reviewed_assignments'] = []
+if mutation == 'stale-plan':
+    review['plan_sha256'] = '0' * 64
+if mutation == 'stale-manifest':
+    review['manifest_sha256'] = '0' * 64
+(session / f'r{label}-manual-plan-review.json').write_text(json.dumps(review) + '\n')
+PY
+}
+
+state_record_terminal_failure() {
+  local session=$1 label=$2 seat=$3 prompt attempt code
+  prompt="$session/r${label}-${seat}.prompt.md"
+  attempt="$SCRIPTS/lib/rev-attempt.py"
+  printf 'review prompt\n' > "$prompt"
+  for code in 2 2; do
+    python3 "$attempt" reserve "$session" "$label" "$seat" "$prompt" || return
+    python3 "$attempt" record "$session" "$label" "$seat" "$prompt" "$code" || return
+  done
+  printf '2\n' > "$session/r${label}-${seat}.exit"
+}
+
+state_write_prepare_diagnostic() {
+  local session=$1 label=$2
+  python3 - "$session" "$label" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+session = Path(sys.argv[1])
+label = sys.argv[2]
+diagnostic = {
+    'schema_version': 1,
+    'kind': 'prepare-diagnostic',
+    'certifying': False,
+    'label': label,
+    'phase': 'plan',
+    'stage': 'capacity',
+    'timed_out': False,
+    'error': 'mandatory source reads exceed repository capacity',
+    'refusals': [{'seat': 'codex-sol', 'limit': 16, 'count': 17}],
+}
+(session / f'prepare-diagnostic-{label}.json').write_text(json.dumps(diagnostic) + '\n')
 PY
 }
 
@@ -140,6 +235,115 @@ test_state_fix_gate() {
   state_gate_refuses "a plan seat with an exit but no result" "$S" 6 phase=fix
   printf '{"findings":[]}\n' > "$S/r6p-opus.json"
   assert_exit "every plan seat returned allows fix" 0 "$ST" "$S" phase=fix
+
+  S="$T/gate-plan-manual-review"
+  "$ST" "$S" round=8 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
+  "$ST" "$S" phase=plan round=8p 'seats=["codex-opus"]' >/dev/null
+  state_write_plan_manifest "$S" 8p current codex-opus
+  state_record_terminal_failure "$S" 8p codex-opus
+  printf '{"status":"invalid"}\n' > "$S/r8p-codex-opus.audit-invalid.json"
+  state_write_manual_plan_review "$S" 8p codex-opus
+  assert_exit "explicit full-plan manual review allows fix after hard seat failure" 0 "$ST" "$S" phase=fix
+  assert_grep "manual fallback is recorded separately from a seat result" "$S/r8p-manual-plan-review.json" '"decision": "accepted"'
+  test ! -e "$S/r8p-codex-opus.json"
+  assert_eq "manual fallback does not fabricate a seat result" "$?" 0
+  assert_eq "manual fallback preserves the failed exit receipt" \
+    "$(cat "$S/r8p-codex-opus.exit")" 2
+
+  for mutation in unchecked missing-assignment stale-plan stale-manifest; do
+    S="$T/gate-plan-manual-review-$mutation"
+    "$ST" "$S" round=9 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
+    "$ST" "$S" phase=plan round=9p 'seats=["codex-opus"]' >/dev/null
+    state_write_plan_manifest "$S" 9p current codex-opus
+    state_record_terminal_failure "$S" 9p codex-opus
+    printf '{"status":"invalid"}\n' > "$S/r9p-codex-opus.audit-invalid.json"
+    state_write_manual_plan_review "$S" 9p codex-opus "$mutation"
+    if [ "$mutation" = stale-plan ]; then printf '\nChanged plan\n' >> "$S/fix-plan.md"; fi
+    if [ "$mutation" = stale-manifest ]; then printf ' \n' >> "$S/r9p-evidence.manifest.json"; fi
+    state_gate_refuses "manual review rejects $mutation" "$S" 9 phase=fix
+  done
+
+  S="$T/gate-plan-manual-review-without-failure"
+  "$ST" "$S" round=10 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
+  "$ST" "$S" phase=plan round=10p 'seats=["codex-opus"]' >/dev/null
+  state_write_plan_manifest "$S" 10p current codex-opus
+  printf 'review prompt\n' > "$S/r10p-codex-opus.prompt.md"
+  printf '2\n' > "$S/r10p-codex-opus.exit"
+  state_write_manual_plan_review "$S" 10p codex-opus
+  state_gate_refuses "an unrecorded failed exit cannot authorize manual fix" "$S" 10 phase=fix
+
+  S="$T/gate-plan-manual-review-pending-child"
+  "$ST" "$S" round=11 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
+  "$ST" "$S" phase=plan round=11p 'seats=["codex-opus"]' >/dev/null
+  state_write_plan_manifest "$S" 11p current codex-opus
+  state_record_terminal_failure "$S" 11p codex-opus
+  printf '{"status":"invalid"}\n' > "$S/r11p-codex-opus.audit-invalid.json"
+  "$ST" "$S" phase=plan round=11px 'seats=["codex-sol"]' \
+    plan_replacement_for=11p:codex-opus >/dev/null
+  state_write_plan_manifest "$S" 11px current codex-sol
+  state_write_manual_plan_review "$S" 11p codex-opus
+  state_gate_refuses "manual review cannot bypass a pending replacement" "$S" 11 phase=fix
+  state_record_terminal_failure "$S" 11px codex-sol
+  printf '{"status":"invalid"}\n' > "$S/r11px-codex-sol.audit-invalid.json"
+  state_write_manual_plan_review "$S" 11p codex-opus
+  state_gate_allows "manual review allows fix after the replacement chain fails" \
+    "$S" "$ST" "$S" phase=fix
+
+  S="$T/gate-plan-child-duplicate-binding"
+  "$ST" "$S" round=14 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
+  "$ST" "$S" phase=plan round=14p 'seats=["codex-opus","codex-sol"]' >/dev/null
+  state_write_plan_manifest "$S" 14p current codex-opus codex-sol
+  for failed_seat in codex-opus codex-sol; do
+    state_record_terminal_failure "$S" 14p "$failed_seat"
+    printf '{"status":"invalid"}\n' > "$S/r14p-$failed_seat.audit-invalid.json"
+  done
+  "$ST" "$S" phase=plan round=14px 'seats=["codex-terra"]' \
+    plan_replacement_for=14p:codex-opus >/dev/null
+  local before_duplicate
+  before_duplicate=$(cksum < "$S/state.json")
+  local duplicate_rc=0
+  "$ST" "$S" phase=plan round=14px 'seats=["codex-terra"]' \
+    plan_replacement_for=14p:codex-sol >/dev/null 2>&1 || duplicate_rc=$?
+  assert_eq "a replacement child cannot bind to a second root assignment" "$duplicate_rc" 2
+  assert_eq "a rejected replacement binding leaves state unchanged" \
+    "$(cksum < "$S/state.json")" "$before_duplicate"
+  python3 - "$S/state.json" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+state = json.loads(path.read_text())
+state['plan_replacements']['14p']['codex-sol'] = ['14px']
+path.write_text(json.dumps(state) + '\n')
+PY
+  state_write_plan_manifest "$S" 14px current codex-terra
+  printf '{"findings":[]}\n' > "$S/r14px-codex-terra.json"
+  printf '0\n' > "$S/r14px-codex-terra.exit"
+  state_gate_refuses "one successful replacement cannot satisfy two failed assignments" \
+    "$S" 14 phase=fix
+
+  S="$T/gate-plan-prepare-retry"
+  "$ST" "$S" round=12 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
+  "$ST" "$S" phase=plan round=12p 'seats=["codex-opus"]' >/dev/null
+  state_write_plan_manifest "$S" 12p current codex-opus
+  state_record_terminal_failure "$S" 12p codex-opus
+  printf '{"status":"invalid"}\n' > "$S/r12p-codex-opus.audit-invalid.json"
+  "$ST" "$S" phase=plan round=12px 'seats=["codex-sol"]' \
+    plan_replacement_for=12p:codex-opus >/dev/null
+  state_write_prepare_diagnostic "$S" 12px
+  "$ST" "$S" phase=plan round=12px2 'seats=["codex-terra"]' \
+    plan_replacement_for=12p:codex-opus >/dev/null
+  state_write_plan_manifest "$S" 12px2 current codex-terra
+  printf '{"findings":[]}\n' > "$S/r12px2-codex-terra.json"
+  echo 0 > "$S/r12px2-codex-terra.exit"
+  state_gate_allows "a fresh successful replacement covers a failed prepare attempt" \
+    "$S" "$ST" "$S" phase=fix
+
+  S="$T/gate-plan-root-prepare-only"
+  "$ST" "$S" round=13 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
+  "$ST" "$S" phase=plan round=13p 'seats=["codex-opus"]' >/dev/null
+  state_write_prepare_diagnostic "$S" 13p
+  state_gate_refuses "a root prepare diagnostic cannot authorize manual fix" "$S" 13 phase=fix
 
   S="$T/gate-round-labels"
   "$ST" "$S" round=7 phase=triage open.P2=1 >/dev/null
@@ -269,8 +473,8 @@ test_state_fix_gate_accepts_a_px_plan_replacement() {
     "$ST" "$S" round=5 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
     "$ST" "$S" phase=plan round=5p 'seats=["codex-terra"]' >/dev/null
     state_write_plan_manifest "$S" 5p stale codex-terra
-    printf 'plan review\n' > "$S/r5p-codex-terra.prompt.md"
-    echo 2 > "$S/r5p-codex-terra.exit"; printf '{"summary":"x","findings":[]}\n' > "$S/r5p-codex-terra.audit-invalid.json"
+    state_record_terminal_failure "$S" 5p codex-terra
+    printf '{"summary":"x","findings":[]}\n' > "$S/r5p-codex-terra.audit-invalid.json"
     state_gate_refuses "a hard-failed plan seat" "$S" 5 phase=fix
     local before
     before=$(cksum < "$S/state.json")
@@ -285,6 +489,6 @@ test_state_fix_gate_accepts_a_px_plan_replacement() {
       "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["plans"].get("5px"))' "$S/state.json")" "['codex-sol']"
     state_gate_refuses "a <N>px plan panel that has not returned" "$S" 5 phase=fix
     printf '{"summary":"sound","findings":[]}\n' > "$S/r5px-codex-sol.json"; echo 0 > "$S/r5px-codex-sol.exit"
-    assert_exit "a completed <N>px plan panel allows fix" 0 "$ST" "$S" phase=fix
+    state_gate_allows "a completed <N>px plan panel allows fix" "$S" "$ST" "$S" phase=fix
   )
 }
