@@ -7,8 +7,8 @@ import subprocess
 import sys
 
 scripts, fixtures, shims, temporary = map(Path, sys.argv[1:5])
-session = temporary / 'seat-codex-omitted-second'
-repo = temporary / 'repo'
+session = (temporary / 'seat-codex-omitted-second').resolve()
+repo = (temporary / 'repo').resolve()
 stages = session / 'calls'
 session.mkdir(parents=True)
 repo.mkdir(parents=True)
