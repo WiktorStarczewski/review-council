@@ -505,7 +505,7 @@ incomplete-proof failure, an exit 4, or a second binding.
 Audit and incomplete-proof refusals apply to the root assignment only.
 An audit or incomplete-proof marker on the retry label does not refuse the binding.
 The binding establishes only terminal failure; it creates no result, read audit, or
-it creates no result, read audit, or receipt proof. Continue
+receipt proof. Continue
 from the root assignment with
 `--parent-assignment "$ROOT_LABEL:$SEAT"` and a fresh unique child label, such as
 `<N>x2` after `<N>x` was used.
