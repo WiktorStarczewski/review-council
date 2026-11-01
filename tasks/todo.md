@@ -1,3 +1,12 @@
+# PR #109: bounded Codex patch chunk batching
+
+- [x] Add exact chunk batching, byte ceiling, mixed-read, ordering and loss tests.
+- [x] Inspect initial exact-head expected-red run 41296670721. It reached the tests, with 5,333 passed and 8 failed, but the embedded capacity fixture requested 14 mandatory reads against the existing limit of 12, so the run is not accepted as a clean red proof.
+- [x] Correct the fixture to 12 mandatory reads while preserving the expected 6-chunk batch assertions. The guarded local shell check refused at load 6.96 over the 6.0 limit, so no local check ran.
+- [ ] Rerun exact-head expected-red CI and confirm only intended behavior assertions fail.
+- [ ] Implement Codex-only six-chunk patch reads with the separate 144 KiB ceiling, exact consecutive chunk hashes/order and the existing mixed-read and per-read audit checks unchanged.
+- [ ] Pass exact-head CI and package checks, complete an independent normal review, integrate current main, and merge only after all required gates pass.
+
 ## Luna per-turn command budget follow-up
 
 - [x] Trace the matched #1830 failures to the Codex per-turn two-command ceiling; aggregate read budgets were not exhausted.

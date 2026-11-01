@@ -120,13 +120,13 @@ codex_context = {'seats': {'sol': {
 chunks = [{'bytes':24 * 1024} for _ in range(703)]
 cluster = {'id':'C-01', 'paths':[
     {'path':f'src/{index}.py', 'line_start':1, 'line_end':1}
-    for index in range(14)]}
+    for index in range(12)]}
 capacity = module.compile_task_capacity(
     codex_assignment, {'p01': {'read_mode':'chunks', 'chunks':chunks}},
     codex_context, [cluster])
 assert capacity['seats']['sol']['patch_proof_turns'] == 118
-assert capacity['seats']['sol']['mandatory_repository_read_turns'] == 14
-assert capacity['seats']['sol']['projected_turns'] == 140
+assert capacity['seats']['sol']['mandatory_repository_read_turns'] == 12
+assert capacity['seats']['sol']['projected_turns'] == 138
 assert module.task_capacity_errors(capacity) == []
 
 assignment = {'sol': {'adapter':'codex', 'patch_set':'p01', 'patch_lines':0,
