@@ -418,7 +418,7 @@ sonnet_partial_21_windows_are_refused() {
   ( local pair R S status
     pair=$(sonnet_window_fixture 21 partial) || return
     R=${pair%%$'\n'*}; S=${pair#*$'\n'}
-    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex","model":"gpt-6-sol","effort":"high","extra":false},{"seat":"sonnet","adapter":"claude","model":"sonnet","effort":"high","extra":false}]}' \
+    printf '%s\n' '{"seats":[{"seat":"codex-luna","adapter":"codex","model":"gpt-6-luna","effort":"high","extra":false},{"seat":"sonnet","adapter":"claude","model":"sonnet","effort":"high","extra":false}]}' \
       > "$S/roster.json"
     REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=0 \
       python3 "$SCRIPTS/rev-evidence.py" prepare "$S" sonnetpartial --phase discovery \
@@ -474,7 +474,8 @@ expected = [f'tests/test_{index:02d}.py' for index in range(22)]
 spec = importlib.util.spec_from_file_location('sonnet_window_limits', limits_path)
 limits = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(limits)
-expected_limit = limits.mandatory_repository_read_limit_for_seat(True, None, 'sonnet')
+expected_limit = limits.mandatory_repository_read_limit_for_seat(
+    True, None, 'sonnet', full_state=True)
 assert row['limit'] == expected_limit and row['count'] == 22, row
 assert [window['path'] for window in row['windows']] == expected, row
 assert all(1 <= partition['reads'] <= row['limit'] for partition in row['partitions']), row
