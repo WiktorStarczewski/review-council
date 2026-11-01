@@ -404,7 +404,7 @@ def record_quota_disabled_escalation(session: Path, panel: str, failed_seat: str
                     return 1
                 prompt_sha = hashlib.sha256(private_bytes(prompt)).hexdigest()
                 attempt = completed_attempt(session, panel, failed_seat, prompt)
-                if attempt is None or attempt['exit'] != '4':
+                if attempt is None or not quota_disabled_attempt_outcome(attempt):
                     return 2
                 try:
                     policy = quota_fallback_identity()
@@ -456,6 +456,14 @@ def record_quota_disabled_escalation(session: Path, panel: str, failed_seat: str
         return 1
 
 
+def quota_disabled_attempt_outcome(attempt: dict) -> bool:
+    """Accept a single quota exit or its recorded exact retry ending with exit 2."""
+    record = attempt.get('record') if isinstance(attempt, dict) else None
+    launches = record.get('launches') if isinstance(record, dict) else None
+    return ((attempt.get('exit') == '4' and launches == [4])
+            or (attempt.get('exit') == '2' and launches == [4, 2]))
+
+
 def valid_quota_disabled_escalation(session: Path, panel: str, seat: str, prompt: Path,
                                     attempt: dict, replacement_seat: str) -> bool:
     safe = set('abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-')
@@ -485,7 +493,7 @@ def valid_quota_disabled_escalation(session: Path, panel: str, seat: str, prompt
             and record.get('prompt_sha256') == prompt_sha
             and record.get('prompt_sha256') == attempt['record'].get('prompt_sha256')
             and record.get('attempt_sha256') == attempt['sha256']
-            and attempt.get('exit') == '4')
+            and quota_disabled_attempt_outcome(attempt))
 
 
 def terminal_failure(session: Path, panel: str, seat: str, prompt: Path,
@@ -498,7 +506,7 @@ def terminal_failure(session: Path, panel: str, seat: str, prompt: Path,
     if attempt is not None:
         if attempt['exit'] in PROVIDER_FAILURE_EXITS:
             return True
-        if attempt['exit'] == '4':
+        if quota_disabled_attempt_outcome(attempt):
             return (replacement_seat is not None
                     and valid_quota_disabled_escalation(
                         session, panel, seat, prompt, attempt, replacement_seat))
