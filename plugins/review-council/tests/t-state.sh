@@ -144,6 +144,27 @@ state_record_terminal_failure() {
   printf '2\n' > "$session/r${label}-${seat}.exit"
 }
 
+state_record_quota_disabled_failure() {
+  local session=$1 label=$2 seat=$3 replacement=$4 code final prompt attempt config token
+  shift 4
+  prompt="$session/r${label}-${seat}.prompt.md"
+  attempt="$SCRIPTS/lib/rev-attempt.py"
+  config="$session/review-council-config.json"
+  printf '{}\n' > "$config"
+  printf 'review prompt\n' > "$prompt"
+  for code in "$@"; do
+    token=$(python3 -c 'import secrets; print(secrets.token_hex(16))') || return
+    python3 "$attempt" reserve "$session" "$label" "$seat" "$prompt" "$token" || return
+    python3 "$attempt" record "$session" "$label" "$seat" "$prompt" "$code" "$token" || return
+    final=$code
+  done
+  printf '%s\n' "$final" > "$session/r${label}-${seat}.exit"
+  if [ "$replacement" != none ]; then
+    REVIEW_COUNCIL_CONFIG="$config" python3 "$attempt" record-quota-disabled-escalation \
+      "$session" "$label" "$seat" "$replacement" || return
+  fi
+}
+
 state_write_prepare_diagnostic() {
   local session=$1 label=$2
   python3 - "$session" "$label" <<'PY'
@@ -491,4 +512,43 @@ test_state_fix_gate_accepts_a_px_plan_replacement() {
     printf '{"summary":"sound","findings":[]}\n' > "$S/r5px-codex-sol.json"; echo 0 > "$S/r5px-codex-sol.exit"
     state_gate_allows "a completed <N>px plan panel allows fix" "$S" "$ST" "$S" phase=fix
   )
+}
+
+test_state_plan_quota_disabled_replacement_requires_the_bound_seat() {
+  local ST="$SCRIPTS/rev-state.sh" S sequence replacement rc
+  for sequence in single retry; do
+    S="$T/gate-plan-quota-$sequence"
+    rc=0
+    "$ST" "$S" round=6 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
+    "$ST" "$S" phase=plan round=6p 'seats=["codex-opus"]' >/dev/null
+    state_write_plan_manifest "$S" 6p current codex-opus
+    if [ "$sequence" = single ]; then
+      state_record_quota_disabled_failure "$S" 6p codex-opus codex-sol 4 || rc=$?
+    else
+      state_record_quota_disabled_failure "$S" 6p codex-opus codex-sol 4 2 || rc=$?
+    fi
+    assert_eq "the $sequence quota-disabled marker fixture is valid" "${rc:-0}" 0
+    rc=0
+    REVIEW_COUNCIL_CONFIG="$S/review-council-config.json" "$ST" "$S" \
+      phase=plan round=6px 'seats=["codex-sol"]' plan_replacement_for=6p:codex-opus >/dev/null || rc=$?
+    assert_eq "the $sequence marker permits its bound plan replacement" "$rc" 0
+    state_write_plan_manifest "$S" 6px current codex-sol
+    printf '{"summary":"sound","findings":[]}\n' > "$S/r6px-codex-sol.json"
+    printf '0\n' > "$S/r6px-codex-sol.exit"
+    state_gate_allows "a $sequence exit-4 plan replacement satisfies the plan gate" \
+      "$S" env REVIEW_COUNCIL_CONFIG="$S/review-council-config.json" "$ST" "$S" phase=fix
+  done
+
+  for replacement in none codex-terra; do
+    S="$T/gate-plan-quota-invalid-$replacement"
+    "$ST" "$S" round=7 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
+    "$ST" "$S" phase=plan round=7p 'seats=["codex-opus"]' >/dev/null
+    state_write_plan_manifest "$S" 7p current codex-opus
+    rc=0
+    state_record_quota_disabled_failure "$S" 7p codex-opus "$replacement" 4 || rc=$?
+    assert_eq "the $replacement quota-disabled marker fixture is valid" "$rc" 0
+    assert_exit "a missing or mismatched escalation seat cannot authorize replacement" 2 \
+      env REVIEW_COUNCIL_CONFIG="$S/review-council-config.json" "$ST" "$S" \
+      phase=plan round=7px 'seats=["codex-sol"]' plan_replacement_for=7p:codex-opus
+  done
 }
