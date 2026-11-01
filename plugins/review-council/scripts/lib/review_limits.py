@@ -34,19 +34,19 @@ def repository_refutation_call_reserve_for_model(model=None):
 
 
 def repository_expansion_call_limit_for_seat(source_read_required, repository_source_target,
-                                             model=None):
+                                             model=None, full_state=False):
     multiplier = repository_read_budget_multiplier_for_model(model)
     limit = REPOSITORY_EXPANSION_CALL_LIMIT * multiplier
     if source_read_required and repository_source_target is None:
         name = model.rsplit('/', 1)[-1].lower() if isinstance(model, str) else ''
-        if name == 'sonnet':
+        if name == 'sonnet' and full_state:
             limit = SONNET_REPOSITORY_EXPANSION_CALL_LIMIT
         return limit + REPOSITORY_REFUTATION_CALL_RESERVE * multiplier
     return limit
 
 
 def mandatory_repository_read_limit_for_seat(source_read_required, repository_source_target,
-                                             model=None):
+                                             model=None, full_state=False):
     return (repository_expansion_call_limit_for_seat(
-        source_read_required, repository_source_target, model)
+        source_read_required, repository_source_target, model, full_state)
         - repository_refutation_call_reserve_for_model(model))

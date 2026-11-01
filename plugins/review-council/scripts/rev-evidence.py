@@ -4577,7 +4577,8 @@ def grouped_plan_source_promotions(assignment, plan_clusters, delivered, omitted
     while True:
         windows, source_target, covered = view(selected)
         mandatory_limit = mandatory_repository_read_limit_for_seat(
-            count_target, source_target, assignment.get('model'))
+            count_target, source_target, assignment.get('model'),
+            assignment.get('full_state', False))
         if len(windows) <= mandatory_limit:
             return sorted(selected)
         missing = uncovered_plan_ranges(assignment, plan_clusters, covered)
@@ -5316,7 +5317,7 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
         if model_budgets:
             expansion_limit = repository_expansion_call_limit_for_seat(
                 packet.get('source_read_required', False), repository_target,
-                assignment.get('model'))
+                assignment.get('model'), assignment.get('full_state', False))
             refutation_reserve = repository_refutation_call_reserve_for_model(
                 assignment.get('model'))
             mandatory_limit = expansion_limit - refutation_reserve
@@ -5801,7 +5802,8 @@ def validate_source_context(session, manifest, evidence):
             capacity_row = capacity.get('seats', {}).get(seat, {})
             mandatory_limit = (mandatory_repository_read_limit_for_seat(
                 packet['source_read_required'], capacity_row.get('repository_source_target'),
-                assignment.get('model')) if capacity.get('schema_version') == 2
+                assignment.get('model'), assignment.get('full_state', False))
+                if capacity.get('schema_version') == 2
                 else MANDATORY_REPOSITORY_READ_LIMIT)
             if not isinstance(windows, list) or len(windows) > mandatory_limit:
                 raise ValueError('invalid mandatory source windows: ' + seat)
@@ -8030,7 +8032,8 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
     source_target = (capacity.get('repository_source_target')
                      if isinstance(capacity, dict) else None)
     expansion_limit = repository_expansion_call_limit_for_seat(
-        context['source_read_required'], source_target, assignment.get('model'))
+        context['source_read_required'], source_target, assignment.get('model'),
+        assignment.get('full_state', False))
     refutation_reserve = repository_refutation_call_reserve_for_model(
         assignment.get('model'))
     if isinstance(capacity, dict):

@@ -329,9 +329,11 @@ limits_spec = importlib.util.spec_from_file_location('sonnet_window_limits', lim
 limits = importlib.util.module_from_spec(limits_spec)
 limits_spec.loader.exec_module(limits)
 target = {'path': 'tests/test_00.py'}
-assert limits.repository_expansion_call_limit_for_seat(True, None, 'sonnet') == 25
+assert limits.repository_expansion_call_limit_for_seat(True, None, 'sonnet', True) == 25
+assert limits.mandatory_repository_read_limit_for_seat(True, None, 'sonnet', True) == 21
+assert limits.repository_expansion_call_limit_for_seat(True, None, 'sonnet') == 20
+assert limits.mandatory_repository_read_limit_for_seat(True, None, 'sonnet') == 16
 assert limits.repository_refutation_call_reserve_for_model('sonnet') == 4
-assert limits.mandatory_repository_read_limit_for_seat(True, None, 'sonnet') == 21
 assert limits.repository_expansion_call_limit_for_seat(True, target, 'sonnet') == 16
 assert limits.mandatory_repository_read_limit_for_seat(True, target, 'sonnet') == 12
 assert limits.repository_expansion_call_limit_for_seat(True, None, 'gpt-6-sol') == 20
@@ -428,7 +430,7 @@ sonnet_partial_21_windows_are_refused() {
     assert_eq "a partial Sonnet assignment with 21 source windows is refused" "$status" 2
     [ "$status" -eq 2 ] || return 0
     assert_grep "the partial assignment is held to Sonnet's standard mandatory read limit" \
-      "$T/sonnet-partial-prepare.err" 'proof reads exceed repository capacity: sonnet limit=12 count=21'
+      "$T/sonnet-partial-prepare.err" 'proof reads exceed repository capacity: sonnet limit=16 count=21'
     python3 - "$S" <<'PY'
 import json
 import sys
@@ -436,7 +438,7 @@ from pathlib import Path
 diagnostic = json.loads((Path(sys.argv[1]) / 'prepare-diagnostic-sonnetpartial.json').read_text())
 row = next(item for item in diagnostic['refusals'] if item['seat'] == 'sonnet')
 expected = [f'tests/test_{index:02d}.py' for index in range(21)]
-assert row['limit'] == 12 and row['count'] == 21, row
+assert row['limit'] == 16 and row['count'] == 21, row
 assert [window['path'] for window in row['windows']] == expected, row
 PY
     assert_eq "the partial-seat refusal preserves its exact 21 ordered source windows" "$?" 0
