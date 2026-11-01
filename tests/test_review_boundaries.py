@@ -62,6 +62,22 @@ class ReviewBoundaryTests(unittest.TestCase):
         too_large = {call: {'success': True, 'bytes': 16 * 1024} for call in calls}
         self.assertFalse(helper('claude', calls, too_large, required, 4))
 
+    def test_source_only_segment_turn_uses_precomputed_segment_ids(self):
+        calls = ['segment-1', 'segment-2', 'segment-3', 'segment-4']
+        outputs = {call: {'success': True, 'bytes': 15 * 1024} for call in calls}
+
+        class MembershipOnly:
+            def __contains__(self, call_id):
+                return call_id in calls
+
+            def __iter__(self):
+                raise AssertionError('per-turn validation must not rebuild the full segment-ID set')
+
+        required_ids = MembershipOnly()
+        helper = self.audit.source_only_segment_turn
+        self.assertTrue(helper('claude', calls, outputs, required_ids, 4))
+        self.assertFalse(helper('codex', calls, outputs, required_ids, 4))
+
     def test_ordered_proof_turn_limit_rejects_output_over_60_kib(self):
         calls = ['read-1', 'read-2']
         proof_calls = set(calls)
