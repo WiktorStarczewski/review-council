@@ -940,6 +940,8 @@ for path in sys.argv[1:]:
     for phrase in ('"$S" review_origin_ack=<N>', 'inherit-breaker "$PARENT_S"',
                    'Apply the standing decision yourself', 'revert the cited review changes',
                    'defer the originating findings', 'An exit-4 quota substitution never uses a replacement child',
+                   '`--panel` with the exact label containing that attempt',
+                   'When `quota_fallback` is false, an exit-4 child is accepted only if',
                    'Receiptless legacy numeric rounds are not counted.',
                    'SDK numeric receipts also support this review-origin accounting;',
                    'they still never grant adaptive coverage.'):

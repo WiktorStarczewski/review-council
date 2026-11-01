@@ -29,13 +29,15 @@ def main(argv=None):
     escalate = commands.add_parser('escalate')
     escalate.add_argument('--session', required=True)
     escalate.add_argument('--seat', required=True)
+    escalate.add_argument('--panel')
     args = parser.parse_args(argv)
     try:
         if args.command == 'advance':
             print(json.dumps(workhorse.advance(args.session), sort_keys=True))
             return 0
         if args.command == 'escalate':
-            print(json.dumps(workhorse.escalate(args.session, args.seat), sort_keys=True))
+            print(json.dumps(workhorse.escalate(args.session, args.seat, panel=args.panel),
+                             sort_keys=True))
             return 0
         if args.command == 'resolve':
             written = workhorse.write_record(args.write, workhorse.probe(), refresh=args.refresh)

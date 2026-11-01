@@ -7568,7 +7568,8 @@ def _prepare_locked(args, session):
             raise ValueError('replacement executor must be an enforced seat')
         parent_executor = executor_row_for_manifest(session, parent_manifest, parent_seat)
         if not attempt_module().terminal_failure(session, parent_label, parent_seat,
-                                                 session / f'r{parent_label}-{parent_seat}.prompt.md'):
+                                                 session / f'r{parent_label}-{parent_seat}.prompt.md',
+                                                 replacement_seat=executor):
             raise ValueError('parent assignment has no recorded terminal failure')
         replacement_executor = replacement_executor_metadata(executor_row)
         validate_replacement_edge(
@@ -8332,7 +8333,8 @@ def replacement_chain_to_root(session, root_manifest, root_hash, root_seat, fina
                 raise ValueError('replacement child is bound to another parent assignment')
             if not attempt_module().terminal_failure(
                     session, parent['label'], parent_seat,
-                    session / f"r{parent['label']}-{parent_seat}.prompt.md"):
+                    session / f"r{parent['label']}-{parent_seat}.prompt.md",
+                    replacement_seat=next(iter(current['assignments']))):
                 raise ValueError('replacement parent assignment has no recorded terminal failure')
             chain.append((current_path, current, current_hash))
             return final_manifest, final_hash, next(iter(final_manifest['assignments'])), chain
@@ -8340,7 +8342,8 @@ def replacement_chain_to_root(session, root_manifest, root_hash, root_seat, fina
             raise ValueError('replacement chain does not lead to the selected root panel')
         if not attempt_module().terminal_failure(
                 session, parent['label'], parent_seat,
-                session / f"r{parent['label']}-{parent_seat}.prompt.md"):
+                session / f"r{parent['label']}-{parent_seat}.prompt.md",
+                replacement_seat=next(iter(current['assignments']))):
             raise ValueError('replacement parent assignment has no recorded terminal failure')
         chain.append((current_path, current, current_hash))
         current_path, current, current_hash = parent_path, parent, parent_hash

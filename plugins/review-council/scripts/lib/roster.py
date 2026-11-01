@@ -1229,7 +1229,7 @@ def classify_provider_failure(adapter, stdout='', stderr='', summary_log=None):
     if summary_log is not None:
         lines = []
         for line in summary_log.splitlines():
-            if re.match(r'^(?:text|exec|done): |^tool_call ', line):
+            if re.match(r'^(?:text|exec|done): |^tool_call |^end usage=', line):
                 continue
             lines.append(line)
         cli_text = '\n'.join(lines)
