@@ -1354,4 +1354,6 @@ CI diagnosis: exact-head run 41227193633 failed on both Ubuntu and macOS. The sh
 - [ ] Run focused state tests and exact-head CI.
 - [ ] Complete the repository-required independent normal review and share the adopted workflow fix with walletissues sessions.
 
+CI diagnosis: exact-head run 41298649446 failed before executing shell tests because the new `t-state.sh` test lacked a `test-costs.tsv` row; the 594-test Python suite passed. The metadata row is added, and functional red-before-fix is still pending.
+
 Review: Current main `9c4b7bb` records the selected replacement seat, but `rev-state.sh` calls `terminal_failure` without it in the plan registration and completion paths. This leaves the marker unverifiable in plan phase. The #516 `r4p2` attempt is one exit-4 launch caused by command-call-budget exhaustion; `output_tokens: 429` is usage data, not a provider quota error. The earlier run's quota setting is not proven, so recovery must preserve the same fail-closed marker requirement.
