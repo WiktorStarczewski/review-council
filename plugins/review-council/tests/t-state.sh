@@ -145,7 +145,7 @@ state_record_terminal_failure() {
 }
 
 state_record_quota_disabled_failure() {
-  local session=$1 label=$2 seat=$3 replacement=$4 code final prompt attempt config
+  local session=$1 label=$2 seat=$3 replacement=$4 code final prompt attempt config token
   shift 4
   prompt="$session/r${label}-${seat}.prompt.md"
   attempt="$SCRIPTS/lib/rev-attempt.py"
@@ -153,8 +153,9 @@ state_record_quota_disabled_failure() {
   printf '{}\n' > "$config"
   printf 'review prompt\n' > "$prompt"
   for code in "$@"; do
-    python3 "$attempt" reserve "$session" "$label" "$seat" "$prompt" || return
-    python3 "$attempt" record "$session" "$label" "$seat" "$prompt" "$code" || return
+    token=$(python3 -c 'import secrets; print(secrets.token_hex(16))') || return
+    python3 "$attempt" reserve "$session" "$label" "$seat" "$prompt" "$token" || return
+    python3 "$attempt" record "$session" "$label" "$seat" "$prompt" "$code" "$token" || return
     final=$code
   done
   printf '%s\n' "$final" > "$session/r${label}-${seat}.exit"
@@ -517,6 +518,7 @@ test_state_plan_quota_disabled_replacement_requires_the_bound_seat() {
   local ST="$SCRIPTS/rev-state.sh" S sequence replacement rc
   for sequence in single retry; do
     S="$T/gate-plan-quota-$sequence"
+    rc=0
     "$ST" "$S" round=6 phase=triage open.P0=0 open.P1=1 open.P2=0 >/dev/null
     "$ST" "$S" phase=plan round=6p 'seats=["codex-opus"]' >/dev/null
     state_write_plan_manifest "$S" 6p current codex-opus

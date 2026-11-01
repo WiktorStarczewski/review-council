@@ -1356,4 +1356,6 @@ CI diagnosis: exact-head run 41227193633 failed on both Ubuntu and macOS. The sh
 
 CI diagnosis: exact-head run 41298649446 failed before executing shell tests because the new `t-state.sh` test lacked a `test-costs.tsv` row; the 594-test Python suite passed. The metadata row is added, and functional red-before-fix is still pending.
 
+CI diagnosis: exact-head run 41299502380 executed the shell regression but failed its marker fixtures because the helper used legacy unbound attempt records. The fixtures now use lifecycle-v2 launch tokens; rerun the regression on this corrected test-only head before counting it as red-before-fix.
+
 Review: Current main `9c4b7bb` records the selected replacement seat, but `rev-state.sh` calls `terminal_failure` without it in the plan registration and completion paths. This leaves the marker unverifiable in plan phase. The #516 `r4p2` attempt is one exit-4 launch caused by command-call-budget exhaustion; `output_tokens: 429` is usage data, not a provider quota error. The earlier run's quota setting is not proven, so recovery must preserve the same fail-closed marker requirement.
