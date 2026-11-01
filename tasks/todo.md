@@ -1345,3 +1345,13 @@ Review: independent normal review was clean at code head `1ffe0a1`; the follow-u
 Review: One independent normal reviewer found no actionable findings. The candidate is limited to Claude source-only required segment reads, retaining the 32 KiB response cap, 60 KiB turn cap, exact order/hash/completeness checks, the two-read mixed-proof limit and other-adapter behavior. Expected-red run 41219263183 confirmed all four intended assertions failed; 5,251 other release tests passed. Exact-head passing CI remains pending after the merge of PR #107.
 
 CI diagnosis: exact-head run 41227193633 failed on both Ubuntu and macOS. The shell failures were stale contract assertions. The Python failure exposed that `evidence-proof-batch-too-large` was advisory for Claude, allowing a mixed source-plus-index turn above the two-read limit to remain valid. The fix makes that mixed-batch violation fatal for Claude while keeping the four-read exemption restricted to source-only required segments.
+
+## Plan-phase quota-disabled replacement binding
+
+- [x] Trace why the current `phase=plan` gate cannot accept the quota-disabled exit-4 record added by PR #101.
+- [ ] Add red state tests for `[4]` and `[4,2]` markers bound to the replacement seat, plus missing and mismatched marker rejection.
+- [ ] Thread the next replacement seat through plan registration and the final plan gate without making exit 4 generally terminal.
+- [ ] Run focused state tests and exact-head CI.
+- [ ] Complete the repository-required independent normal review and share the adopted workflow fix with walletissues sessions.
+
+Review: Current main `9c4b7bb` records the selected replacement seat, but `rev-state.sh` calls `terminal_failure` without it in the plan registration and completion paths. This leaves the marker unverifiable in plan phase. The #516 `r4p2` attempt is one exit-4 launch caused by command-call-budget exhaustion; `output_tokens: 429` is usage data, not a provider quota error. The earlier run's quota setting is not proven, so recovery must preserve the same fail-closed marker requirement.
