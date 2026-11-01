@@ -47,20 +47,20 @@ class ReviewBoundaryTests(unittest.TestCase):
 
     def test_source_only_segment_turn_checks_adapter_membership_and_bytes(self):
         calls = ['segment-1', 'segment-2', 'segment-3', 'segment-4']
-        required = [(call, 1) for call in calls]
+        required_ids = set(calls)
         outputs = {call: {'success': True, 'bytes': 15 * 1024} for call in calls}
         helper = self.audit.source_only_segment_turn
-        self.assertTrue(helper('claude', calls, outputs, required, 4))
-        self.assertFalse(helper('codex', calls, outputs, required, 4))
-        self.assertFalse(helper('claude', calls[:3] + ['index'], outputs, required, 4))
+        self.assertTrue(helper('claude', calls, outputs, required_ids, 4))
+        self.assertFalse(helper('codex', calls, outputs, required_ids, 4))
+        self.assertFalse(helper('claude', calls[:3] + ['index'], outputs, required_ids, 4))
         failed = {**outputs, 'segment-4': {'success': False, 'bytes': 1}}
-        self.assertFalse(helper('claude', calls, failed, required, 4))
+        self.assertFalse(helper('claude', calls, failed, required_ids, 4))
         missing = {k: v for k, v in outputs.items() if k != 'segment-4'}
-        self.assertFalse(helper('claude', calls, missing, required, 4))
+        self.assertFalse(helper('claude', calls, missing, required_ids, 4))
         oversized = {**outputs, 'segment-4': {'success': True, 'bytes': 32 * 1024 + 1}}
-        self.assertFalse(helper('claude', calls, oversized, required, 4))
+        self.assertFalse(helper('claude', calls, oversized, required_ids, 4))
         too_large = {call: {'success': True, 'bytes': 16 * 1024} for call in calls}
-        self.assertFalse(helper('claude', calls, too_large, required, 4))
+        self.assertFalse(helper('claude', calls, too_large, required_ids, 4))
 
     def test_source_only_segment_turn_uses_precomputed_segment_ids(self):
         calls = ['segment-1', 'segment-2', 'segment-3', 'segment-4']
