@@ -2,6 +2,7 @@ READ_LINES = 240
 CODEX_READ_LINES = 160
 CODEX_SOURCE_READ_LINES = 200
 REPOSITORY_EXPANSION_CALL_LIMIT = 16
+SONNET_REPOSITORY_EXPANSION_CALL_LIMIT = 21
 REPOSITORY_REFUTATION_CALL_RESERVE = 4
 MANDATORY_REPOSITORY_READ_LIMIT = (
     REPOSITORY_EXPANSION_CALL_LIMIT - REPOSITORY_REFUTATION_CALL_RESERVE
@@ -37,6 +38,9 @@ def repository_expansion_call_limit_for_seat(source_read_required, repository_so
     multiplier = repository_read_budget_multiplier_for_model(model)
     limit = REPOSITORY_EXPANSION_CALL_LIMIT * multiplier
     if source_read_required and repository_source_target is None:
+        name = model.rsplit('/', 1)[-1].lower() if isinstance(model, str) else ''
+        if name == 'sonnet':
+            limit = SONNET_REPOSITORY_EXPANSION_CALL_LIMIT
         return limit + REPOSITORY_REFUTATION_CALL_RESERVE * multiplier
     return limit
 
