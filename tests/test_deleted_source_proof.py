@@ -1,4 +1,5 @@
 """Required source proof must describe an executable, exact snapshot obligation."""
+import argparse
 import copy
 import hashlib
 import importlib.util
@@ -257,9 +258,9 @@ class SourceFixture:
             env=self.env, text=True, capture_output=True)
         return process.returncode, json.loads(audit_path.read_text())
 
-    def audit_claude(self, *, group_required_segments=0, group_required_start=0,
-                     omitted_artifacts=(),
-                     reverse_grouped_segments=False, include_evidence_index=False):
+    def claude_transcript(self, *, group_required_segments=0, group_required_start=0,
+                          omitted_artifacts=(), reverse_grouped_segments=False,
+                          include_evidence_index=False):
         events = []
         sequence = 0
 
@@ -325,6 +326,17 @@ class SourceFixture:
         result_path = Path(str(stem) + '.json')
         result_path.write_text(json.dumps({'summary': 'checked', 'findings': []}))
         audit_path = Path(str(stem) + '.read-audit.json')
+        return raw, result_path, audit_path
+
+    def audit_claude(self, *, group_required_segments=0, group_required_start=0,
+                     omitted_artifacts=(),
+                     reverse_grouped_segments=False, include_evidence_index=False):
+        raw, _, audit_path = self.claude_transcript(
+            group_required_segments=group_required_segments,
+            group_required_start=group_required_start,
+            omitted_artifacts=omitted_artifacts,
+            reverse_grouped_segments=reverse_grouped_segments,
+            include_evidence_index=include_evidence_index)
         process = subprocess.run(
             [os.sys.executable, str(SCRIPTS / 'lib/review-read-audit.py'), 'audit',
              '--adapter', 'claude', '--raw', str(raw), '--prompt', str(self.prompt),
@@ -427,6 +439,90 @@ class RequiredSourceProofTests(unittest.TestCase):
         self.assertEqual((rc, audit['violations']), (0, []))
         self.assertEqual(audit['required_source_ranges_covered'], 1)
         fixture.receipt_gate(audit)
+
+    def test_claude_turn_size_gate_uses_source_only_segment_turn(self):
+        fixture = self.fixture(
+            'deleted', adapter='claude', compact_segment_lines=1500)
+        raw, result_path, audit_path = fixture.claude_transcript(
+            group_required_segments=4)
+        audit = load(SCRIPTS / 'lib/review-read-audit.py',
+                     'review_read_audit_in_process')
+        args = argparse.Namespace(
+            adapter='claude', raw=str(raw), prompt=str(fixture.prompt),
+            root=str(fixture.root), session=str(fixture.session), deps=None,
+            seat=None, out=str(audit_path), result=str(result_path))
+        required = fixture.context['required_source_ranges']
+        segment_paths = [fixture.session / segment['artifact']
+                         for row in required for segment in row['segments']]
+        target_paths = [str(path) for path in segment_paths[:4]]
+        events = [json.loads(line) for line in raw.read_text().splitlines()]
+        target_calls = None
+        delivered = {}
+        for event in events:
+            if event['type'] == 'assistant':
+                reads = [item for item in event['message']['content']
+                         if item.get('type') == 'tool_use' and item.get('name') == 'Read']
+                paths = [item['input']['file_path'] for item in reads]
+                if paths == target_paths:
+                    target_calls = tuple(item['id'] for item in reads)
+            elif event['type'] == 'user':
+                delivered.update({item['tool_use_id']: item['content']
+                                  for item in event['message']['content']})
+        self.assertIsNotNone(target_calls)
+        sizes = [audit.output_bytes(delivered[call_id]) for call_id in target_calls]
+        self.assertTrue(all(size <= audit.OUTPUT_BYTES for size in sizes))
+        self.assertGreater(sum(sizes), audit.OUTPUT_BYTES)
+        self.assertLessEqual(sum(sizes), audit.PATCH_TURN_OUTPUT_BYTES)
+
+        original_ordered_proof = audit.ordered_proof_turn_exempt
+        proof_calls = []
+
+        def ordered_proof_spy(limit, output_calls, proof_call_ids, turn_size):
+            if tuple(output_calls) == target_calls:
+                proof_calls.append(set(proof_call_ids))
+            return original_ordered_proof(limit, output_calls, proof_call_ids, turn_size)
+
+        audit.ordered_proof_turn_exempt = ordered_proof_spy
+        try:
+            _, clean_violations, clean_revoked = audit.assess(args, set())
+        finally:
+            audit.ordered_proof_turn_exempt = original_ordered_proof
+        self.assertTrue(any(set(target_calls).issubset(calls) for calls in proof_calls))
+        self.assertNotIn('tool-turn-output-too-large',
+                         [item['code'] for item in clean_violations])
+        self.assertNotIn('evidence-proof-batch-too-large',
+                         [item['code'] for item in clean_violations])
+        self.assertTrue(set(target_calls).isdisjoint(clean_revoked))
+
+        original_source_only = audit.source_only_segment_turn
+        source_records = []
+
+        def source_only_spy(adapter, turn_calls, outputs, required_calls, limit):
+            result = original_source_only(
+                adapter, turn_calls, outputs, required_calls, limit)
+            if tuple(turn_calls) == target_calls:
+                source_records.append(result)
+                if len(source_records) == 3:
+                    return False
+            return result
+
+        audit.source_only_segment_turn = source_only_spy
+        try:
+            spied, spied_violations, spied_revoked = audit.assess(args, set())
+        finally:
+            audit.source_only_segment_turn = original_source_only
+        self.assertEqual(source_records, [True, True, False])
+        self.assertIn('tool-turn-output-too-large',
+                      [item['code'] for item in spied['advisories']])
+        self.assertNotIn('tool-turn-output-too-large',
+                         [item['code'] for item in spied_violations])
+        self.assertNotIn('evidence-proof-batch-too-large',
+                         [item['code'] for item in spied_violations])
+        self.assertTrue(set(target_calls).issubset(spied_revoked))
+
+        _, repeated_violations, _ = audit.assess(args, spied_revoked)
+        self.assertIn('evidence-proof-batch-too-large',
+                      [item['code'] for item in repeated_violations])
 
     def test_claude_rejects_five_source_segments_even_under_sixty_kib(self):
         fixture = self.fixture(

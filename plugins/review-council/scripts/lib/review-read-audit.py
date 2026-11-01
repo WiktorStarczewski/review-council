@@ -2495,6 +2495,12 @@ def source_segment_batch_exempt(adapter, call_ids, outputs, source_segment_calls
     return sum(outputs[call_id]['bytes'] for call_id in call_ids) <= PATCH_TURN_OUTPUT_BYTES
 
 
+def source_only_segment_turn(adapter, turn_calls, outputs, required_segment_calls, limit):
+    source_segment_call_ids = {call_id for call_id, _ in required_segment_calls}
+    return source_segment_batch_exempt(
+        adapter, turn_calls, outputs, source_segment_call_ids, limit)
+
+
 def required_range_covered(required, ranges):
     cursor = required['line_start']
     for row in sorted((row for row in ranges if row['path'] == required['path']
@@ -3412,11 +3418,10 @@ def assess(args, blocked):
                     failures.append(violation('invalid-required-source-identity', args.adapter))
             if observed_required_segments != sorted(observed_required_segments):
                 failures.append(violation('reordered-required-source-segments', args.adapter))
-            source_segment_call_ids = {call_id for call_id, _ in required_segment_calls}
             for turn in {turn for _, turn in paced_segment_calls}:
                 turn_calls = turns.get(turn, [])
-                source_only_batch = source_segment_batch_exempt(
-                    args.adapter, turn_calls, outputs, source_segment_call_ids,
+                source_only_batch = source_only_segment_turn(
+                    args.adapter, turn_calls, outputs, required_segment_calls,
                     source_segment_batch_limit)
                 segment_count = sum(call_turn == turn for _, call_turn in paced_segment_calls)
                 if (segment_count > source_segment_batch_limit
@@ -3439,8 +3444,8 @@ def assess(args, blocked):
             for turn in turns:
                 proof_reads = [call_id for call_id in turns[turn]
                                if call_id in ordered_proof_calls]
-                source_only_batch = source_segment_batch_exempt(
-                    args.adapter, turns[turn], outputs, source_segment_call_ids,
+                source_only_batch = source_only_segment_turn(
+                    args.adapter, turns[turn], outputs, required_segment_calls,
                     source_segment_batch_limit)
                 if len(proof_reads) > adapter_read_batch_limit and not source_only_batch:
                     failures.append(violation('evidence-proof-batch-too-large', args.adapter))
