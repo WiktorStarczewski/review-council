@@ -1402,6 +1402,7 @@ class Repository:
             patch = by_path[path]
             left_blob = self.blob(left) if left else None
             right_blob = self.blob(right) if right else None
+            current_line_count = len(split_lf_lines(right_blob)) if isinstance(right_blob, bytes) else 0
             if (blob_is_binary(left_blob) or blob_is_binary(right_blob)
                     or git_binary_patch(patch)):
                 patch = binary_file_pointer(
@@ -1442,7 +1443,9 @@ class Repository:
                                                            'added_lines': group_added})
                             group_base = []; group_added = []
                         if line.startswith(('+', '-')):
-                            changed_lines.append(old_position if kind == 'delete' else new_position)
+                            changed_lines.append(
+                                old_position if kind == 'delete'
+                                else min(max(new_position, 1), current_line_count))
                         if line.startswith('-'):
                             base_changed_lines.append(old_position)
                             group_base.append(old_position)

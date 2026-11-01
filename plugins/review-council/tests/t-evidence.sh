@@ -978,6 +978,27 @@ def quoted_paths():
     with fixture('r\u00e9po space\'"colon:back\\slash') as (root, session, git, write, call, prepare, finish):
         prepare(); call('render', session / 'r1-evidence.manifest.json', 'sol')
 
+def eof_deletion_anchors_stay_in_source():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('tail.py', 'kept = 1\nremoved = 2\n')
+        git('add', 'tail.py'); git('commit', '-qm', 'add eof deletion fixture')
+        base = git('rev-parse', 'HEAD')
+        scope = (session / 'scope.env').read_text().splitlines()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + shlex.quote(base) if row.startswith('REV_BASE=') else row
+            for row in scope) + '\n')
+
+        write('tail.py', 'kept = 1\n')
+        repository = module.Repository(session.resolve())
+        snapshot, _ = repository.snapshot()
+        patches, hunks, _, _ = repository.changes(repository.tree(base), snapshot)
+        hunk = next(row for row in hunks if row['path'] == 'tail.py')
+        patch = dict(patches)['tail.py']
+
+        assert hunk['changed_lines'] == [1], hunk
+        assert hunk['base_changed_lines'] == [2], hunk
+        assert b'-removed = 2' in patch, patch
+
 def changed_symbols():
     with fixture() as (root, session, git, write, call, prepare, finish):
         write('_locales/en/messages.json', '{"hello":{"message":"Hello"}}\n')
@@ -5092,7 +5113,8 @@ def binary_files_are_hash_pointers():
             assert len(patch_set['chunks']) <= 1
 
 cases = (
-    storage_redirects, quoted_paths, changed_symbols, empty_patch_needs_no_fake_read,
+    storage_redirects, quoted_paths, eof_deletion_anchors_stay_in_source,
+    changed_symbols, empty_patch_needs_no_fake_read,
     binary_files_are_hash_pointers,
     conservative_mechanical_classification, bounded_navigation_markdown, opaque_transitions,
     opaque_mode_transition, invalid_manifests, phase_and_predecessor_integrity,
@@ -5158,7 +5180,8 @@ groups = {
         semantic_rejection_replaces_a_different_original_sibling,
         semantic_rejection_refuses_redirected_and_stale_records),
     'structure': (
-        storage_redirects, quoted_paths, changed_symbols, empty_patch_needs_no_fake_read,
+        storage_redirects, quoted_paths, eof_deletion_anchors_stay_in_source,
+        changed_symbols, empty_patch_needs_no_fake_read,
         conservative_mechanical_classification, bounded_navigation_markdown,
         binary_files_are_hash_pointers,
         opaque_transitions, opaque_mode_transition, invalid_manifests,
