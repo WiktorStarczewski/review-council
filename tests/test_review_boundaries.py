@@ -45,11 +45,49 @@ class ReviewBoundaryTests(unittest.TestCase):
         self.assertEqual(self.evidence.read_batch_limit('claude'), 2)
         self.assertEqual(self.evidence.read_batch_limit('cursor-sdk'), 1)
 
+    def test_source_only_segment_turn_checks_adapter_membership_and_bytes(self):
+        calls = ['segment-1', 'segment-2', 'segment-3', 'segment-4']
+        required_ids = set(calls)
+        outputs = {call: {'success': True, 'bytes': 15 * 1024} for call in calls}
+        helper = self.audit.source_only_segment_turn
+        self.assertTrue(helper('claude', calls, outputs, required_ids, 4))
+        self.assertFalse(helper('codex', calls, outputs, required_ids, 4))
+        self.assertFalse(helper('claude', calls[:3] + ['index'], outputs, required_ids, 4))
+        failed = {**outputs, 'segment-4': {'success': False, 'bytes': 1}}
+        self.assertFalse(helper('claude', calls, failed, required_ids, 4))
+        missing = {k: v for k, v in outputs.items() if k != 'segment-4'}
+        self.assertFalse(helper('claude', calls, missing, required_ids, 4))
+        oversized = {**outputs, 'segment-4': {'success': True, 'bytes': 32 * 1024 + 1}}
+        self.assertFalse(helper('claude', calls, oversized, required_ids, 4))
+        too_large = {call: {'success': True, 'bytes': 16 * 1024} for call in calls}
+        self.assertFalse(helper('claude', calls, too_large, required_ids, 4))
+
+    def test_source_only_segment_turn_uses_precomputed_segment_ids(self):
+        calls = ['segment-1', 'segment-2', 'segment-3', 'segment-4']
+        outputs = {call: {'success': True, 'bytes': 15 * 1024} for call in calls}
+
+        class MembershipOnly:
+            def __contains__(self, call_id):
+                return call_id in calls
+
+            def __iter__(self):
+                raise AssertionError('per-turn validation must not rebuild the full segment-ID set')
+
+        required_ids = MembershipOnly()
+        helper = self.audit.source_only_segment_turn
+        self.assertTrue(helper('claude', calls, outputs, required_ids, 4))
+        self.assertFalse(helper('codex', calls, outputs, required_ids, 4))
+
     def test_ordered_proof_turn_limit_rejects_output_over_60_kib(self):
         calls = ['read-1', 'read-2']
         proof_calls = set(calls)
         self.assertTrue(self.audit.ordered_proof_turn_exempt(
             2, calls, proof_calls, 60 * 1024))
+        mixed_calls = ['required-segment', 'evidence-index']
+        self.assertTrue(self.audit.ordered_proof_turn_exempt(
+            2, mixed_calls, set(mixed_calls), 40 * 1024))
+        self.assertFalse(self.audit.ordered_proof_turn_exempt(
+            2, mixed_calls, {'evidence-index'}, 40 * 1024))
         self.assertFalse(self.audit.ordered_proof_turn_exempt(
             2, calls, proof_calls, 60 * 1024 + 1))
 

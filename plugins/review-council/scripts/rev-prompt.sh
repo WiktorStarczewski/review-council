@@ -649,7 +649,7 @@ EOC
         printf '5. Codex source batching is disabled; do not use a source-batch payload. Each source read is a separate tool call. Use at most %s lines for every repository source window and at most %s lines for each assigned-patch window, splitting further into consecutive windows as needed. Aim for under 24 KiB per response and per ordinary turn; if a planned response or turn may exceed 24 KiB, narrow it before reading. Hard ceilings are 32 KiB per response and for an ordinary turn. Ordered proof phases may use their rendered 60 KiB turn budget, with each response below 32 KiB; source packets stay within their ordinary 32 KiB turn cap. Line limits do not limit bytes. ' "$PROMPT_SOURCE_READ_LINES" "$PROMPT_PATCH_READ_LINES"
       fi
     else
-      printf '5. Batch independent bounded tool calls into one turn with a 32 KiB combined output ceiling. '
+      printf '5. Keep ordinary tool turns within 32 KiB combined output; follow the rendered ordered-proof read count and 60 KiB limit when that evidence phase is active. '
     fi
     if [ -n "$EVIDENCE" ]; then
       printf 'Ordered '

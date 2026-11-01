@@ -44,6 +44,16 @@ class LatestRosterTests(unittest.TestCase):
                              (lambda *args: (True, None, "logged in"))):
             return self.roster.build(probe, quota_failed)
 
+    def test_codex_usage_token_count_429_is_not_a_provider_quota_error(self):
+        result = self.roster.classify_provider_failure(
+            "codex", summary_log='end usage={"input_tokens":14,"output_tokens":429}')
+        self.assertEqual(result, ("other", "unclassified provider failure"))
+
+    def test_codex_provider_quota_429_remains_a_quota_error(self):
+        result = self.roster.classify_provider_failure(
+            "codex", summary_log="429 RESOURCE_EXHAUSTED: quota exceeded")
+        self.assertEqual(result, ("quota", "quota exhausted"))
+
     def test_latest_families_use_numeric_generations_and_ignore_hidden_and_other_families(self):
         effective, error, strict = self.roster.resolve_codex_config(self.cfg, self.cache)
         self.assertIsNone(error)

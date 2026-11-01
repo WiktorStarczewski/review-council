@@ -222,42 +222,7 @@ def latest_plan_root(number):
 
 
 def plan_gate_complete(label):
-    if plan_completed(label):
-        return True
-    plans = state.get('plans')
-    if not isinstance(plans, dict):
-        return False
-    original_seats = plans.get(label)
-    if not isinstance(original_seats, list) or not original_seats:
-        return False
-    manifest = plan_manifest(label)
-    if (manifest is None or not isinstance(manifest.get('assignments'), dict)
-            or set(manifest['assignments']) != set(original_seats)):
-        return False
-    replacement_map = state.get('plan_replacements', {})
-    if not isinstance(replacement_map, dict):
-        return False
-    replacements = replacement_map.get(label, {})
-    if not isinstance(replacements, dict):
-        return False
-    def successful_child(child):
-        parsed = parse_plan_label(child)
-        if (parsed is None or parsed['child'] is None or parsed['root'] != label
-                or not isinstance(plans.get(child), list) or len(plans[child]) != 1
-                or not plan_completed(child)):
-            return False
-        child_manifest = plan_manifest(child)
-        assignment = ((child_manifest or {}).get('assignments') or {}).get(plans[child][0])
-        return (isinstance(assignment, dict) and assignment.get('bundle') == 'plan-completeness'
-                and assignment.get('scope') == 'full')
-
-    for seat in original_seats:
-        if plan_assignment_completed(label, seat, manifest):
-            continue
-        children = replacements.get(seat)
-        if not isinstance(children, list) or not any(successful_child(child) for child in children):
-            return False
-    return True
+    return plan_assignment_failures(label) == []
 
 
 def plan_assignment_terminal_failure(label, seat):
@@ -291,6 +256,193 @@ def plan_assignment_needs_replacement(label, seat):
     if plan_assignment_completed(label, seat, manifest, current_sha):
         return False
     return plan_assignment_terminal_failure(label, seat)
+
+
+def stable_receipt_bytes(name):
+    path = os.path.join(session, name)
+    try:
+        before = os.lstat(path)
+        if not stat.S_ISREG(before.st_mode) or before.st_size <= 0:
+            return None
+        with open(path, 'rb') as stream:
+            opened = os.fstat(stream.fileno())
+            raw = stream.read()
+        after = os.lstat(path)
+    except OSError:
+        return None
+    def identity(info):
+        return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns,
+                info.st_ctime_ns, info.st_nlink)
+    if (not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(after.st_mode)
+            or identity(before) != identity(opened) or identity(opened) != identity(after)
+            or len(raw) != after.st_size):
+        return None
+    return raw
+
+
+def plan_prepare_failed(label):
+    raw = stable_receipt_bytes(f'prepare-diagnostic-{label}.json')
+    if raw is None:
+        return False
+    try:
+        diagnostic = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError, RecursionError):
+        return False
+    return (isinstance(diagnostic, dict)
+            and type(diagnostic.get('schema_version')) is int
+            and diagnostic['schema_version'] == 1
+            and diagnostic.get('kind') == 'prepare-diagnostic'
+            and diagnostic.get('certifying') is False
+            and diagnostic.get('label') == label
+            and diagnostic.get('phase') == 'plan'
+            and isinstance(diagnostic.get('stage'), str) and bool(diagnostic['stage'].strip())
+            and type(diagnostic.get('timed_out')) is bool
+            and isinstance(diagnostic.get('error'), str) and bool(diagnostic['error'].strip())
+            and isinstance(diagnostic.get('refusals'), list))
+
+
+def plan_assignment_failures(label):
+    plans = state.get('plans')
+    if not isinstance(plans, dict):
+        return None
+    original_seats = plans.get(label)
+    if (not isinstance(original_seats, list) or not original_seats
+            or any(not isinstance(seat, str) or not re.fullmatch(SEAT_NAME, seat)
+                   for seat in original_seats)
+            or len(set(original_seats)) != len(original_seats)):
+        return None
+    manifest_bytes = stable_receipt_bytes(f'r{label}-evidence.manifest.json')
+    current_plan = stable_receipt_bytes('fix-plan.md')
+    if manifest_bytes is None or current_plan is None:
+        return None
+    try:
+        manifest = json.loads(manifest_bytes)
+    except (UnicodeError, json.JSONDecodeError, RecursionError):
+        return None
+    current_sha = hashlib.sha256(current_plan).hexdigest()
+    if (not isinstance(manifest, dict) or manifest.get('label') != label
+            or manifest.get('phase') != 'plan' or not isinstance(manifest.get('plan'), dict)
+            or not isinstance(manifest.get('assignments'), dict)
+            or set(manifest['assignments']) != set(original_seats)):
+        return None
+    replacement_map = state.get('plan_replacements', {})
+    if not isinstance(replacement_map, dict):
+        return None
+    replacements = replacement_map.get(label, {})
+    if (not isinstance(replacements, dict)
+            or not set(replacements) <= set(original_seats)):
+        return None
+    mapped_children = set()
+    failures = []
+    for seat in original_seats:
+        children = replacements.get(seat, [])
+        if (not isinstance(children, list)
+                or any(not isinstance(child, str) for child in children)
+                or len(set(children)) != len(children)):
+            return None
+        child_success = False
+        for child in children:
+            if child in mapped_children:
+                return None
+            parsed = parse_plan_label(child)
+            child_seats = plans.get(child)
+            child_manifest_raw = stable_receipt_bytes(f'r{child}-evidence.manifest.json')
+            if child_manifest_raw is None:
+                child_seat = child_seats[0] if isinstance(child_seats, list) and len(child_seats) == 1 else None
+                if (parsed is None or parsed['child'] is None or parsed['root'] != label
+                        or not isinstance(child_seat, str)
+                        or os.path.lexists(os.path.join(session, f'r{child}-evidence.manifest.json'))
+                        or not plan_prepare_failed(child)
+                        or any(os.path.lexists(os.path.join(session, f'r{child}-{child_seat}{suffix}'))
+                               for suffix in ('.prompt.md', '.json', '.exit', '.audit-invalid.json',
+                                              '.read-audit.json'))):
+                    return None
+                mapped_children.add(child)
+                continue
+            try:
+                child_manifest = json.loads(child_manifest_raw)
+            except (UnicodeError, json.JSONDecodeError, RecursionError):
+                return None
+            if (parsed is None or parsed['child'] is None or parsed['root'] != label
+                    or not isinstance(child_seats, list) or len(child_seats) != 1
+                    or not isinstance(child_seats[0], str)
+                    or not isinstance(child_manifest, dict)
+                    or child_manifest.get('label') != child
+                    or child_manifest.get('phase') != 'plan'
+                    or not isinstance(child_manifest.get('plan'), dict)
+                    or child_manifest['plan'].get('sha256') != current_sha
+                    or not isinstance(child_manifest.get('assignments'), dict)):
+                return None
+            if os.path.lexists(os.path.join(session, f'prepare-diagnostic-{child}.json')):
+                return None
+            child_seat = child_seats[0]
+            child_assignment = child_manifest['assignments'].get(child_seat)
+            if (set(child_manifest['assignments']) != {child_seat}
+                    or not isinstance(child_assignment, dict)
+                    or child_assignment.get('bundle') != 'plan-completeness'
+                    or child_assignment.get('scope') != 'full'):
+                return None
+            mapped_children.add(child)
+            if plan_assignment_completed(child, child_seat, child_manifest, current_sha):
+                child_success = True
+            elif not plan_assignment_terminal_failure(child, child_seat):
+                return None
+        original_complete = plan_assignment_completed(label, seat, manifest, current_sha)
+        if original_complete or child_success:
+            continue
+        if not plan_assignment_terminal_failure(label, seat):
+            return None
+        failures.append(seat)
+
+    for child, seats in plans.items():
+        parsed = parse_plan_label(child)
+        if (parsed is not None and parsed['child'] is not None and parsed['root'] == label
+                and child not in mapped_children):
+            return None
+    return failures
+
+
+def manual_plan_review_complete(label):
+    raw = stable_receipt_bytes(f'r{label}-manual-plan-review.json')
+    manifest_raw = stable_receipt_bytes(f'r{label}-evidence.manifest.json')
+    plan_raw = stable_receipt_bytes('fix-plan.md')
+    failures = plan_assignment_failures(label)
+    if raw is None or manifest_raw is None or plan_raw is None or not failures:
+        return False
+    try:
+        review = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError, RecursionError):
+        return False
+    fields = {'schema_version', 'plan_label', 'plan_sha256', 'manifest_sha256',
+              'reviewed_assignments', 'failed_assignments', 'escalation_exhausted',
+              'decision', 'summary', 'contract_checks'}
+    plans = state.get('plans')
+    seats = plans.get(label) if isinstance(plans, dict) else None
+    expected_checks = {'required_cluster_fields', 'bounded_site_search_and_path_accounting',
+                       'falsifiable_tests_and_predictions', 'authorized_scope_preserved',
+                       'objections_resolved'}
+    if (not isinstance(review, dict) or set(review) != fields
+            or type(review.get('schema_version')) is not int or review['schema_version'] != 1
+            or review.get('plan_label') != label
+            or review.get('plan_sha256') != hashlib.sha256(plan_raw).hexdigest()
+            or review.get('manifest_sha256') != hashlib.sha256(manifest_raw).hexdigest()
+            or not isinstance(seats, list)
+            or not isinstance(review.get('reviewed_assignments'), list)
+            or any(not isinstance(seat, str) for seat in review['reviewed_assignments'])
+            or len(set(review['reviewed_assignments'])) != len(review['reviewed_assignments'])
+            or set(review['reviewed_assignments']) != set(seats)
+            or not isinstance(review.get('failed_assignments'), list)
+            or any(not isinstance(seat, str) for seat in review['failed_assignments'])
+            or len(set(review['failed_assignments'])) != len(review['failed_assignments'])
+            or set(review['failed_assignments']) != set(failures)
+            or review.get('escalation_exhausted') is not True
+            or review.get('decision') != 'accepted'
+            or not isinstance(review.get('summary'), str) or not review['summary'].strip()
+            or not isinstance(review.get('contract_checks'), dict)
+            or set(review['contract_checks']) != expected_checks
+            or any(value is not True for value in review['contract_checks'].values())):
+        return False
+    return True
 
 
 def plan_skipped(label):
@@ -349,6 +501,10 @@ if 'phase' in assigned and phase == 'plan' and {'round', 'seats'} <= assigned:
             links = replacement_map.setdefault(parent_label, {})
             if not isinstance(links, dict):
                 refuse(f"refusing phase=plan round={label}: replacement mapping is not an object")
+            if any(not isinstance(existing, list) for existing in links.values()):
+                refuse(f"refusing phase=plan round={label}: replacement mapping contains malformed links")
+            if any(label in existing for existing in links.values()):
+                refuse(f"refusing phase=plan round={label}: replacement is already bound to another assignment")
             children = links.setdefault(failed_seat, [])
             if not isinstance(children, list) or label in children:
                 refuse(f"refusing phase=plan round={label}: duplicate or malformed replacement link")
@@ -403,12 +559,14 @@ if 'phase' in assigned and phase == 'fix':
             refuse(f"refusing phase=fix: cannot determine the code round from round={state.get('round')!r}; "
                    "set round=<N> before phase=fix")
         label = latest_plan_root(code_number)
-        if not plan_gate_complete(label) and not plan_skipped(label):
+        if (not plan_gate_complete(label) and not plan_skipped(label)
+                and not manual_plan_review_complete(label)):
             refuse(f"refusing phase=fix for round {code_number}: {total} open P0-P2 findings need "
                    f"the plan gate - complete plan panel r{label}, or bind a successful one-seat "
                    f"replacement to each failed or stale assignment with "
                    f"plan_replacement_for={label}:<failed-seat> (phase=plan round=<label>x[2...] "
                    f"\"seats=[...]\", then every covered seat's result JSON and 0 exit), or append a findings.md line "
-                   f"'Plan panel r{label} - SKIPPED: <reason>'")
+                   f"'Plan panel r{label} - SKIPPED: <reason>', or record an accepted, full-scope "
+                   f"manual review in r{label}-manual-plan-review.json after the eligible chain is exhausted")
 save()
 PY

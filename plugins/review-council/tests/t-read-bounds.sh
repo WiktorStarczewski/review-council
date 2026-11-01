@@ -643,6 +643,8 @@ spec.loader.exec_module(audit)
 proof = {'chunk', 'segment', 'index'}
 assert audit.ordered_proof_turn_exempt(2, ['chunk', 'index'], proof, 40 * 1024)
 assert audit.ordered_proof_turn_exempt(2, ['segment', 'index'], proof, 60 * 1024)
+assert audit.ordered_proof_turn_exempt(2, ['segment', 'index'], {'segment', 'index'}, 40 * 1024)
+assert not audit.ordered_proof_turn_exempt(2, ['segment', 'index'], {'index'}, 40 * 1024)
 assert not audit.ordered_proof_turn_exempt(1, ['chunk', 'index'], proof, 40 * 1024)
 assert not audit.ordered_proof_turn_exempt(2, ['chunk', 'segment', 'index'], proof, 40 * 1024)
 assert not audit.ordered_proof_turn_exempt(2, ['chunk', 'index'], proof, 60 * 1024 + 1)
@@ -1443,10 +1445,10 @@ PY
     claude_bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"]["sol"]["bundle"])' "$claude_manifest") || return
     claude_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 9c sol "$claude_bundle" required-source \
       --evidence "$claude_manifest") || return
-    assert_grep "Claude may batch two required source segments" "$claude_prompt" \
-      '^Required source segment batch limit: 2$'
-    assert_grep "Claude prompt schedules each pair in one assistant message" "$claude_prompt" \
-      '^Claude source read batching: issue each pair of consecutive required source segment reads in one assistant message, in listed order; wait for both results before continuing\. Read a final singleton or an oversized single-line segment alone\.$'
+    assert_grep "Claude may batch four required source segments" "$claude_prompt" \
+      '^Required source segment batch limit: 4$'
+    assert_grep "Claude prompt bounds source-only batches by count and bytes" "$claude_prompt" \
+      '^Claude source read batching: issue up to four consecutive required source segment reads in one assistant message, in listed order, only when each response is at most 32 KiB and their combined visible output is at most 60 KiB; keep the turn source-only without patch chunks or the evidence index\. Read a final singleton or an oversized single-line segment alone\.$'
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r9c-sol.json"
     python3 - "$claude_manifest" "$S/r9c-sol.stream.ndjson" <<'PY'
 import json, pathlib, sys
@@ -1469,9 +1471,11 @@ PY
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter claude \
       --raw "$S/r9c-sol.stream.ndjson" --prompt "$claude_prompt" --root "$R" --session "$S" \
       --out "$S/r9c-sol.read-audit.json" >/dev/null 2>&1
-    assert_eq "Claude rejects three required source segments in one real message" "$?" 2
-    assert_grep "oversized Claude source batch has a stable violation" "$S/r9c-sol.read-audit.json" \
-      '"code":"required-source-segment-batch-too-large"'
+    assert_eq "Claude transcript remains invalid when a valid-sized batch omits required segments" "$?" 2
+    assert_grep "incomplete Claude source batch has a stable violation" "$S/r9c-sol.read-audit.json" \
+      '"code":"missing-required-source-segment"'
+    assert_nogrep "three source-only reads remain within Claude's source batch count" \
+      "$S/r9c-sol.read-audit.json" '"code":"required-source-segment-batch-too-large"'
     cp "$T/required-source-roster.json" "$S/roster.json"
 
     python3 - "$S/roster.json" <<'PY'
@@ -2693,6 +2697,87 @@ assert attempt.terminal_failure(session, '4', 'codex-sol', session / 'p.md')
 assert not attempt.terminal_failure(session, '4', 'codex-terra', session / 'p.md')
 PY
     assert_eq "an exhausted exact retry is a recorded terminal failure" "$?" 0
+  )
+}
+
+test_exact_retry_exit_130_qualifies_for_replacement() {
+  ( seat_env
+    local S="$T/retry-exit-130" interrupted="$T/retry-exit-130-alone" session
+    local provider="$T/retry-exit-130-provider"
+    seat_roster "$S"; seat_roster "$interrupted"; seat_roster "$provider"
+    for session in "$S" "$interrupted" "$provider"; do
+      python3 - "$session/roster.json" <<'PY'
+import json, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+roster = json.loads(path.read_text())
+seat = next(row for row in roster['seats'] if row['seat'] == 'codex-sol')
+seat['mode'] = 'review'
+path.write_text(json.dumps(roster) + '\n')
+PY
+    done
+    printf 'review\n' > "$S/p.md"
+    printf 'review\n' > "$interrupted/p.md"
+    printf 'review\n' > "$provider/p.md"
+
+    SHIM_MODE=unusable_with_tool "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" --base main >/dev/null 2>&1
+    assert_eq "a retry begins after the recorded unusable result" "$?" 2
+    python3 - "$S" <<'PY'
+import glob, json, sys
+record = json.load(open(glob.glob(sys.argv[1] + '/attempts/*.json')[0]))
+assert record['calls'] == record['completed_calls'] == 1
+assert record['launches'] == [2]
+PY
+    assert_eq "one unusable tool call has a complete exit record" "$?" 0
+    SHIM_MODE=interrupted "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" --base main >/dev/null 2>&1
+    assert_eq "the exact retry records its interruption" "$?" 130
+    assert_exit "the interrupted retry does not publish reviewer findings" 1 \
+      test -e "$S/r1-codex-sol.json"
+    assert_eq "the exact retry history is [2, 130]" \
+      "$(python3 -c 'import glob,json,sys; print([json.load(open(p))["launches"] for p in glob.glob(sys.argv[1] + "/attempts/*.json")])' "$S")" \
+      "[[2, 130]]"
+
+    SHIM_MODE=interrupted "$SCRIPTS/rev-seat.sh" codex-sol "$interrupted" 1 \
+      "$interrupted/p.md" --base main >/dev/null 2>&1
+    assert_eq "a standalone interruption is recorded" "$?" 130
+    SHIM_MODE=notauth "$SCRIPTS/rev-seat.sh" codex-sol "$provider" 1 \
+      "$provider/p.md" --base main >/dev/null 2>&1
+    assert_eq "the provider failure is recorded before its interrupted retry" "$?" 3
+    SHIM_MODE=interrupted "$SCRIPTS/rev-seat.sh" codex-sol "$provider" 1 \
+      "$provider/p.md" --base main >/dev/null 2>&1
+    assert_eq "a retry after provider failure remains an interruption" "$?" 130
+
+    python3 - "$SCRIPTS/lib/rev-attempt.py" "$S" "$interrupted" <<'PY'
+import importlib.util
+import json
+from pathlib import Path
+import sys
+
+spec = importlib.util.spec_from_file_location('rev_attempt', sys.argv[1])
+attempt = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(attempt)
+session, standalone = map(Path, sys.argv[2:])
+if not attempt.terminal_failure(session, '1', 'codex-sol', session / 'p.md'):
+    path, _ = attempt.record_path(session, '1', 'codex-sol', session / 'p.md')
+    record = json.loads(path.read_text())
+    final = (session / 'r1-codex-sol.exit').read_text().strip()
+    raise AssertionError(f'complete exact retry was not terminal: record={record!r}, exit={final!r}')
+assert not attempt.terminal_failure(standalone, '1', 'codex-sol', standalone / 'p.md'), \
+    'a standalone 130 cannot qualify for replacement'
+provider = Path(sys.argv[2]).parent / 'retry-exit-130-provider'
+assert not attempt.terminal_failure(provider, '1', 'codex-sol', provider / 'p.md'), \
+    'an exit 3 followed by 130 needs its existing provider-cancellation proof'
+
+path, _ = attempt.record_path(session, '1', 'codex-sol', session / 'p.md')
+record = json.loads(path.read_text())
+record['completed_calls'] = 1
+record['active_launch'] = 'a' * 32
+path.write_text(json.dumps(record, sort_keys=True, separators=(',', ':')) + '\n')
+assert not attempt.terminal_failure(session, '1', 'codex-sol', session / 'p.md'), \
+    'an incomplete exact retry cannot qualify for replacement'
+PY
+    assert_eq "replacement eligibility requires a complete exact retry" "$?" 0
   )
 }
 

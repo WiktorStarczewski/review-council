@@ -1296,3 +1296,52 @@ The completed Agent transcript regression is isolated in test-only commit `c8772
 - [ ] Measure fresh post-0.8.6 first-attempt Luna audit failure rate; keep #77 open until below 5%.
 
 Review: normal internal review found a path-traversal risk in the recovery record. The fix rejects unsafe or unassigned trigger seats before reading artifacts; re-review was clean. Exact-head CI then caught two cancellation-test fixtures selecting Sonnet after a Sol parent, against the configured Luna -> Sonnet -> Sol -> Opus order. The fixtures now select Opus; re-review and a fresh exact-head gate remain pending.
+## Quota-disabled exit-4 replacement recovery
+
+- [ ] Confirm the documented exit-4 path and bind the `quota_fallback` policy to a durable escalation record.
+- [ ] Add regression cases proving exit 4 and the exact `[4,2]` attempt sequence require a same-panel escalation record, while other retry sequences are rejected when quota fallback is disabled.
+- [ ] Add regression cases separating Codex `output_tokens: 429` usage telemetry from an explicit provider quota error.
+- [ ] Implement the smallest validator and escalation-record change that preserves full scope and receipt checks.
+- [ ] Run the focused regression through the repository's approved CI route and confirm all existing replacement cases.
+- [ ] Complete the required Council review with a canonical receipt, address actionable findings, and share the adopted workflow change with live walletissues sessions.
+
+Progress (2026-10-31): Test-only head `b7f0aed` completed expected-red run `41161800743` on both platforms. The Python case failed on the missing `panel` argument, and the shell case refused exit 4 without its durable record; proof preparation passed. Test-only commit `5c5bee6` adds usage-count and explicit-quota classifier cases. Package run `41163092848` passed. Expected-red run `41163092865` completed on Ubuntu and macOS: both platform logs show the intended usage-count classifier assertion and exit-4 binding checks failing, with all other Python and shell checks passing. The classifier filter and durable exit-4 changes are local and uncommitted; current implementation CI has not run. `ci-local` refused the named Python invocation before execution because Python is not on its allowlist; no local test ran.
+
+
+## Review Council manual plan-review fallback
+
+- [x] Reproduce the phase=fix refusal after the configured plan-seat chain fails; expected-red run `41205101249`.
+- [x] Add a separate manual-review record bound to the current plan and evidence manifest, and reject missing, stale, incomplete, or pending-replacement evidence; treat replacement prepare diagnostics as settled failures, never success.
+- [x] Update both host phase guides and their contract test.
+- [ ] Pass exact-head Ubuntu, macOS, proof-preparation, and package checks.
+- [x] Complete the first independent normal review; it found that one replacement child can be bound to multiple failed root assignments.
+- [ ] Add the duplicate-child regression, reject duplicate bindings at registration and gate validation, then re-review.
+- [ ] Merge the small workflow fix and share the adopted recovery step with walletissues sessions.
+
+Run `41209614941` on `7af3e37` exposed stale state-gate fixtures: they wrote exit files without the attempt journal now required to prove two terminal failures. Run `41211125996` caught an unbound-variable failure in the new fixture helper under `set -u`; the assignment order is corrected. Run `41215562217` found two more fixture issues: child manifests overwrote the frozen root plan, and the unrecorded-exit case also wrote a hard-audit latch. Both fixtures are corrected; a fresh full exact-head run is required.
+
+## Exact retry exit-130 replacement candidate
+
+- [x] Trace why a completed retry sequence `[2, 130]` is not eligible for configured replacement.
+- [x] Add a focused regression for exact `[2, 130]` retries, standalone 130, provider cancellation, and incomplete attempt state.
+- [x] Preserve adapter cancellation exit codes at the seat wrapper boundary.
+- [x] Implement replacement eligibility only for a complete exact retry; keep 130 out of reviewer results and receipts.
+- [ ] Run the focused test and exact candidate CI on the final documentation head.
+- [x] Complete an independent normal review of the code at `1ffe0a1` with no actionable P0-P2 findings.
+- [x] Reconcile the `rev-attempt.py` overlap with PR #102 without editing its branch. #102 binds missing-child-manifest retries to root prompt and attempt hashes; this candidate handles the exact `[2, 130]` retry sequence.
+
+Review: independent normal review was clean at code head `1ffe0a1`; the follow-up commit records this result and reconciles the separate PR #102 behavior. Re-run exact-head CI before merge.
+
+# Claude source-only four-read batching for full-scope evidence preparation
+
+- [x] Add estimator and audit regressions for Claude source-only turns, preserving the two-read limit for mixed proofs.
+- [x] Confirm expected-red run 41219263183 fails the four intended assertions on frozen source.
+- [x] Implement up to four consecutive source segments under a 60 KiB turn cap, with existing 32 KiB per-response bounds.
+- [x] Update evidence manifest validation, prompt contract and both discovery guides.
+- [x] Recompute the unchanged frozen #2069 evidence manifest: 142 paths, 368 hunks, 54 components, 288 required ranges, and 298 source segments. The original projection is 175 turns; the candidate projection is 101 turns (75 source-segment turns and 14 patch turns). This is an estimator result, not a live provider run or measured token/cost saving.
+- [ ] Fix exact-head CI failures in both verifier platforms, complete Council review, rebase on current main and pass exact-head CI.
+- [ ] Push the reviewed branch and open a draft PR.
+
+Review: One independent normal reviewer found no actionable findings. The candidate is limited to Claude source-only required segment reads, retaining the 32 KiB response cap, 60 KiB turn cap, exact order/hash/completeness checks, the two-read mixed-proof limit and other-adapter behavior. Expected-red run 41219263183 confirmed all four intended assertions failed; 5,251 other release tests passed. Exact-head passing CI remains pending after the merge of PR #107.
+
+CI diagnosis: exact-head run 41227193633 failed on both Ubuntu and macOS. The shell failures were stale contract assertions. The Python failure exposed that `evidence-proof-batch-too-large` was advisory for Claude, allowing a mixed source-plus-index turn above the two-read limit to remain valid. The fix makes that mixed-batch violation fatal for Claude while keeping the four-read exemption restricted to source-only required segments.

@@ -48,6 +48,8 @@ SOURCE_SEGMENT_VISIBLE_LIMIT = 16 * 1024
 SOURCE_SEGMENT_SINGLE_LINE_VISIBLE_LIMIT = 32 * 1024
 SOURCE_SEGMENT_LINE_LIMIT = READ_LINES
 SOURCE_SEGMENT_PREFIX_RESERVE = 8
+CLAUDE_SOURCE_SEGMENT_BATCH_LIMIT = 4
+SOURCE_SEGMENT_BATCH_VISIBLE_LIMIT = 60 * 1024
 PATCH_CHUNK_RAW_LIMIT = 24 * 1024
 PATCH_CHUNK_VISIBLE_LIMIT = 30 * 1024
 PATCH_CHUNK_LINE_LIMIT = 1000
@@ -90,6 +92,11 @@ def phase_bundles(phase):
 
 def read_batch_limit(adapter):
     return 2 if adapter in ('claude', 'codex') else 1
+
+
+def source_segment_batch_limit(adapter):
+    return (CLAUDE_SOURCE_SEGMENT_BATCH_LIMIT if adapter == 'claude'
+            else read_batch_limit(adapter))
 
 
 def read_line_limit(adapter):
@@ -465,23 +472,28 @@ def source_segment_requires_standalone_turn(segment):
             and segment['predicted_visible_bytes'] > SOURCE_SEGMENT_VISIBLE_LIMIT)
 
 
-def source_segment_turn_count(required_source_ranges, batch_limit):
+def source_segment_turn_count(required_source_ranges, batch_limit, byte_limit=None):
     segments = [segment for required in required_source_ranges
                 for segment in required['segments']]
-    if batch_limit <= 1:
-        return len(segments)
     turns = 0
-    paired = False
+    batch_count = 0
+    batch_bytes = 0
     for segment in segments:
         if source_segment_requires_standalone_turn(segment):
-            turns += int(paired) + 1
-            paired = False
-        elif paired:
+            turns += int(batch_count > 0) + 1
+            batch_count = 0
+            batch_bytes = 0
+            continue
+        segment_bytes = segment['predicted_visible_bytes']
+        if batch_count and (batch_count >= batch_limit
+                            or (byte_limit is not None
+                                and batch_bytes + segment_bytes > byte_limit)):
             turns += 1
-            paired = False
-        else:
-            paired = True
-    return turns + int(paired)
+            batch_count = 0
+            batch_bytes = 0
+        batch_count += 1
+        batch_bytes += segment_bytes
+    return turns + int(batch_count > 0)
 
 
 def patch_sets_for(scopes, patch_bodies, prefix, setting):
@@ -5337,7 +5349,11 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
                 proof_partitions = []
         patch_batch = batch if patch_set['read_mode'] == 'chunks' else 1
         patch_turns = (patch_calls + patch_batch - 1) // patch_batch
-        segment_turns = source_segment_turn_count(packet['required_source_ranges'], batch)
+        source_segment_batch = source_segment_batch_limit(assignment['adapter'])
+        source_segment_bytes = (SOURCE_SEGMENT_BATCH_VISIBLE_LIMIT
+                                if assignment['adapter'] == 'claude' else None)
+        segment_turns = source_segment_turn_count(
+            packet['required_source_ranges'], source_segment_batch, source_segment_bytes)
         direct_batch = 2 if assignment['adapter'] == 'claude' else 1
         direct_turns = (direct_calls + direct_batch - 1) // direct_batch
         projected = (patch_turns + packet_calls + segment_turns + direct_turns
@@ -7555,7 +7571,8 @@ def _prepare_locked(args, session):
             raise ValueError('replacement executor must be an enforced seat')
         parent_executor = executor_row_for_manifest(session, parent_manifest, parent_seat)
         if not attempt_module().terminal_failure(session, parent_label, parent_seat,
-                                                 session / f'r{parent_label}-{parent_seat}.prompt.md'):
+                                                 session / f'r{parent_label}-{parent_seat}.prompt.md',
+                                                 replacement_seat=executor):
             raise ValueError('parent assignment has no recorded terminal failure')
         replacement_executor = replacement_executor_metadata(executor_row)
         validate_replacement_edge(
@@ -8198,10 +8215,10 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
                       + ' visible bytes ' + str(segment['predicted_visible_bytes'])
                       + ' content SHA-256 ' + segment['content_sha256'])
             print('Required source segment batch limit: '
-                  + str(read_batch_limit(assignment['adapter'])))
+                  + str(source_segment_batch_limit(assignment['adapter'])))
         if (assignment['adapter'] == 'claude'
                 and any(row.get('segments') for row in context['required_source_ranges'])):
-            print('Claude source read batching: issue each pair of consecutive required source segment reads in one assistant message, in listed order; wait for both results before continuing. Read a final singleton or an oversized single-line segment alone.')
+            print('Claude source read batching: issue up to four consecutive required source segment reads in one assistant message, in listed order, only when each response is at most 32 KiB and their combined visible output is at most 60 KiB; keep the turn source-only without patch chunks or the evidence index. Read a final singleton or an oversized single-line segment alone.')
         print('Source read required: ' + str(context['source_read_required']).lower())
     else:
         print('Post-patch evidence order: read the evidence index before original source.')
@@ -8319,7 +8336,8 @@ def replacement_chain_to_root(session, root_manifest, root_hash, root_seat, fina
                 raise ValueError('replacement child is bound to another parent assignment')
             if not attempt_module().terminal_failure(
                     session, parent['label'], parent_seat,
-                    session / f"r{parent['label']}-{parent_seat}.prompt.md"):
+                    session / f"r{parent['label']}-{parent_seat}.prompt.md",
+                    replacement_seat=next(iter(current['assignments']))):
                 raise ValueError('replacement parent assignment has no recorded terminal failure')
             chain.append((current_path, current, current_hash))
             return final_manifest, final_hash, next(iter(final_manifest['assignments'])), chain
@@ -8327,7 +8345,8 @@ def replacement_chain_to_root(session, root_manifest, root_hash, root_seat, fina
             raise ValueError('replacement chain does not lead to the selected root panel')
         if not attempt_module().terminal_failure(
                 session, parent['label'], parent_seat,
-                session / f"r{parent['label']}-{parent_seat}.prompt.md"):
+                session / f"r{parent['label']}-{parent_seat}.prompt.md",
+                replacement_seat=next(iter(current['assignments']))):
             raise ValueError('replacement parent assignment has no recorded terminal failure')
         chain.append((current_path, current, current_hash))
         current_path, current, current_hash = parent_path, parent, parent_hash

@@ -31,7 +31,8 @@ eligibility. Status distinguishes semantic rejection from provider failure.
 Continue the existing configured replacement chain:
 
 ```bash
-python3 "$PLUGIN/scripts/rev-workhorse.py" escalate --session "$S" --seat "$FAILED_SEAT"
+python3 "$PLUGIN/scripts/rev-workhorse.py" escalate --session "$S" --seat "$FAILED_SEAT" \
+  --panel "$FAILED_LABEL"
 python3 "$PLUGIN/scripts/rev-evidence.py" prepare "$S" "$CHILD_LABEL" \
   --phase repair --assignment "$EXECUTOR=$PARENT_BUNDLE" \
   --parent-assignment "$FAILED_LABEL:$FAILED_SEAT"

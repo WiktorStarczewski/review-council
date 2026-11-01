@@ -311,8 +311,10 @@ test_skill_contract() {
       '24 KiB raw, 30 KiB.*eight prefix bytes'
     assert_grep "host preserves the ordinary output authority" "$H" \
       '32 KiB per-tool and ordinary per-turn output limits still apply'
-    assert_grep "host bounds provider ordered proof batches" "$H" \
-      'Claude and Codex adapters may use two ordered proof reads in one turn.*60 KiB'
+    assert_grep "host keeps mixed ordered proof batches to two reads" "$H" \
+      'Mixed ordered proof turns may use at most two reads under a 60 KiB combined cap'
+    assert_grep "host limits Claude four-read batches to source-only segments" "$H" \
+      'Claude may use up to four consecutive required-source-segment reads in a source-only turn.*do not mix them with patch chunks or the evidence index'
     assert_grep "host keeps packet and repository turns ordinary" "$H" \
       'Source-context packets and repository reads retain the ordinary 32 KiB turn cap'
     assert_grep "host orders chunk reads before source packets" "$H" \
@@ -688,8 +690,8 @@ skill_adapter_and_plan_gate_contract() {
   local verify_one='`verify-panel` certifies the one-seat plan panel once that seat returns'
   local before_code='The plan panel runs after triage and before any edit of the working tree.'
   local skip_line='When the plan panel is skipped, append a line beginning `Plan panel r<N>p - SKIPPED: <reason>` to `$S/findings.md` before `phase=fix`.'
-  local gate='`rev-state.sh` refuses `phase=fix` for code round `<N>` while `open.P0 + open.P1 + open.P2` is above zero, unless that skip line exists or every original plan assignment has either its own valid result or a successful one-seat child explicitly bound to that assignment, with a manifest whose plan hash still matches `fix-plan.md`.'
-  local incomplete='An incomplete plan panel is not a skip: after fixing a local cause, continue through `rev-workhorse.py escalate`, which honors a matching per-review override and otherwise uses the next higher enforced seat, until a valid plan result exists or the eligible chain is exhausted.'
+  local gate='`rev-state.sh` refuses `phase=fix` for code round `<N>` while `open.P0 + open.P1 + open.P2` is above zero, unless the skip line exists, every original plan assignment has its own valid result or a successful bound one-seat replacement, or a current, hash-bound manual plan review accepts the full plan after the eligible chain is exhausted.'
+  local incomplete='An incomplete plan panel is not a skip: after fixing a local cause, continue through `rev-workhorse.py escalate`, which honors a matching per-review override and otherwise uses the next higher enforced seat, until a valid plan result exists or the eligible chain is exhausted. Once each unresolved assignment has recorded terminal failure and no replacement is pending, review the plan yourself against the plan contract before any edit and record that review in `r<N>p-manual-plan-review.json`.'
   local fresh_counts='Write all three counts in one call after the round'"'"'s seats have exited: `rev-state.sh` refuses `phase=fix` while `open.P0`, `open.P1` and `open.P2` predate the newest `r<N>-<seat>.exit`, and only all three in one call refresh that stamp. A plan panel'"'"'s `r<N>p-<seat>.exit` is not a seat exit for this purpose, so triage stays valid across the plan gate.'
   local sibling='Sibling-site completeness: for each fix commit since the base, name the rule it applies and search the repository for sites, arms, realms, callers and copies (tests, JSDoc, docs) the rule reaches but the commit missed.'
   # Host-tied evidence wording that must never return: an evidence or plan decision keyed on the
@@ -938,6 +940,8 @@ for path in sys.argv[1:]:
     for phrase in ('"$S" review_origin_ack=<N>', 'inherit-breaker "$PARENT_S"',
                    'Apply the standing decision yourself', 'revert the cited review changes',
                    'defer the originating findings', 'An exit-4 quota substitution never uses a replacement child',
+                   '`--panel` with the exact label containing that attempt',
+                   'When `quota_fallback` is false, an exit-4 child is accepted only if',
                    'Receiptless legacy numeric rounds are not counted.',
                    'SDK numeric receipts also support this review-origin accounting;',
                    'they still never grant adaptive coverage.'):
