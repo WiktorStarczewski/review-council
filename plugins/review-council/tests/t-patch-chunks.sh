@@ -425,8 +425,8 @@ PY
     terra_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 terra "$terra_bundle" chunks --evidence "$manifest") || return
     opus_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 opus "$opus_bundle" chunks --evidence "$manifest") || return
     sonnet_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 sonnet "$sonnet_bundle" chunks --evidence "$manifest") || return
-    assert_grep "Terra batches two consecutive patch chunks" "$terra_prompt" \
-      '^Patch chunk batch limit: 2$'
+    assert_grep "Terra's Codex adapter batches six consecutive patch chunks" "$terra_prompt" \
+      '^Patch chunk batch limit: 6$'
     assert_grep "Opus remains limited to two consecutive patch chunks" "$opus_prompt" \
       '^Patch chunk batch limit: 2$'
     assert_grep "Terra chunk prompt gives an exact shell recipe" "$terra_prompt" \
@@ -779,7 +779,8 @@ PY
     actual=$(python3 - "$S/r24-sol.read-audit.json" <<'PY'
 import json, sys
 row = json.load(open(sys.argv[1]))
-print('yes' if row['expected_patch_chunks'] == row['opened_patch_chunks'] == 7 else 'no')
+print('yes' if row['expected_patch_chunks'] == row['opened_patch_chunks'] == row['patch_proof_calls']
+      and row['patch_proof_turns'] == 2 else 'no')
 PY
 )
     assert_eq "six-chunk batch preserves every assigned chunk" "$actual" "yes"

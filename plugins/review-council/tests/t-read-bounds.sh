@@ -1408,10 +1408,10 @@ PY
       "$S/r9-sol.read-audit.json" '"required_source_range_proofs":\[\{"blob_oid":"[0-9a-f]{64}"'
     assert_grep "Codex permits two required source segments per completed turn" "$prompt" \
       '^Required source segment batch limit: 2$'
-    assert_grep "Codex prompt gives patch chunks an isolated six-read batch contract" "$prompt" \
-      '^Codex patch chunk batches: up to 6 consecutive chunks in exact order, at most 144 KiB aggregate output, and no other reads in that completed explicit model turn\.'
-    assert_grep "Codex prompt keeps other ordered proof reads at two per turn" "$prompt" \
-      '^Codex ordered proof reads: up to 2 required source segments or evidence-index reads per completed explicit model turn\. Patch chunks use the separate contract below\.'
+    assert_grep "Codex window-mode prompt keeps ordered proof reads at two per turn" "$prompt" \
+      '^Codex ordered proof reads: up to 2 required source segments or evidence-index reads per completed explicit model turn\.'
+    assert_nogrep "Codex window-mode prompt omits the patch-chunk contract" "$prompt" \
+      '^Codex patch chunk batches:'
     assert_grep "Codex prompt keeps oversized single-line segments alone" "$prompt" \
       '^A required source segment over 16 KiB because it is one line must be read alone\.$'
     assert_grep "Codex reads required source through a session artifact" "$prompt" \
@@ -4014,7 +4014,7 @@ test_audit_severity_pacing_keeps_credit() {
     severity_transcript "$S" 33 codex "{\"batch_chunks\":[1,2],\"alter_chunk\":2,\"tail\":[$clean]}"
     assert_eq "the same batch with an altered chunk is incomplete" \
       "$(severity_audit "$R" "$S" 33 codex)" \
-      "$(severity_expect invalid "assigned-patch-output-mismatch@command_execution,missing-assigned-patch-chunk@codex" -)"
+      "$(severity_expect invalid "assigned-patch-output-mismatch@command_execution,evidence-proof-batch-too-large@codex,missing-assigned-patch-chunk@codex" -)"
 
     # An oversized read in a shared turn must also revoke otherwise valid proof reads.
     local size='tool-output-too-large@command_execution,tool-turn-output-too-large@codex'
