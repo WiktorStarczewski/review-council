@@ -926,10 +926,10 @@ def fixture(name='repo', object_format=None, adapter='agent'):
             return subprocess.check_output(['git', '-C', str(root), *args], stderr=subprocess.PIPE).decode().strip()
         def write(name, text):
             p = root / name; p.parent.mkdir(parents=True, exist_ok=True); p.write_text(text)
-        def call(*args, good=True, timeout=30, env=None, error=None):
+        def call(*args, good=True, timeout=30, env=None, error=None, entrypoint=None):
             run_env = dict(os.environ, REV_PATCH_CHUNKS='auto', REV_SOURCE_CONTEXT='1')
             run_env.update(env or {})
-            p = subprocess.run([sys.executable, str(script), *map(str, args)], capture_output=True, text=True, timeout=timeout, env=run_env)
+            p = subprocess.run([sys.executable, str(entrypoint or script), *map(str, args)], capture_output=True, text=True, timeout=timeout, env=run_env)
             assert 'Traceback' not in p.stderr, p.stderr
             assert (p.returncode == 0) == good, (p.returncode, p.stdout, p.stderr)
             if error is not None:
@@ -3617,6 +3617,124 @@ def replacement_accepts_only_durable_provider_exit_3():
                 call('prepare', session, '9x', '--phase', 'repair', *child_args, good=False,
                      error='parent assignment has no recorded terminal failure')
 
+def replacement_requires_quota_disabled_escalation_record():
+    attempt_script = Path(script).parent / 'lib' / 'rev-attempt.py'
+
+    def prepare_exit_4(session, prepare, env, retry_code=None):
+        chain_identities = {
+            'sol': ('claude', 'sonnet', 'high'),
+            'terra': ('codex', 'gpt-5.6-sol', 'high'),
+            'opus': ('codex', 'gpt-5.6-luna', 'high'),
+            'sonnet': ('agent', 'sonnet', 'high'),
+        }
+        roster = {'seats': [
+            {'seat': seat, 'extra': False, 'adapter': identity[0],
+             'model': identity[1], 'effort': identity[2]}
+            for seat, identity in chain_identities.items()]}
+        (session / 'roster.json').write_text(json.dumps(roster))
+        parent = prepare('11', 'risk', *assign, '--full-seat', 'sonnet', env=env)
+        prompt = session / 'r11-sol.prompt.md'
+        prompt.write_text('review\n')
+        token = '2' * 32
+        assert reserve_launch_bound(session, '11', 'sol', prompt, token).returncode == 0
+        assert record_launch_bound(session, '11', 'sol', prompt, '4', token).returncode == 0
+        final_exit = '4'
+        if retry_code is not None:
+            retry_token = '3' * 32
+            assert reserve_launch_bound(session, '11', 'sol', prompt, retry_token).returncode == 0
+            assert record_launch_bound(
+                session, '11', 'sol', prompt, retry_code, retry_token).returncode == 0
+            final_exit = retry_code
+        (session / 'r11-sol.exit').write_text(final_exit + '\n')
+        child_args = ('--assignment', 'terra=' + parent['assignments']['sol']['bundle'],
+                      '--parent-assignment', '11:sol')
+        return prompt, child_args
+
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        config = session / 'review-council-config.json'
+        config.write_text('{}\n')
+        env = {'REVIEW_COUNCIL_CONFIG': str(config)}
+        prompt, child_args = prepare_exit_4(session, prepare, env)
+        call('prepare', session, '11x', '--phase', 'repair', *child_args, env=env,
+             good=False, error='parent assignment has no recorded terminal failure')
+        attempt_path = next((session / 'attempts').glob('*.json'))
+        config_sha = hashlib.sha256(b'{}').hexdigest()
+        marker = {
+            'schema_version': 1, 'panel': '11', 'failed_seat': 'sol', 'failed_exit': 4,
+            'replacement_seat': 'terra', 'quota_fallback': False,
+            'config_sha256': config_sha,
+            'prompt_sha256': hashlib.sha256(prompt.read_bytes()).hexdigest(),
+            'attempt_sha256': hashlib.sha256(attempt_path.read_bytes()).hexdigest(),
+        }
+        marker_path = session / 'r11-sol.quota-disabled-escalation.json'
+        marker_path.write_text(json.dumps(marker) + '\n')
+        marker_path.chmod(0o600)
+        marker['panel'] = '10'
+        marker_path.write_text(json.dumps(marker) + '\n')
+        marker_path.chmod(0o600)
+        call('prepare', session, '11x2', '--phase', 'repair', *child_args, env=env,
+             good=False, error='parent assignment has no recorded terminal failure')
+        marker['panel'] = '11'
+        marker_path.write_text(json.dumps(marker) + '\n')
+        marker_path.chmod(0o600)
+        child = prepare('11x', 'repair', *child_args, env=env)
+        assert child['parent_assignment']['seat'] == 'sol'
+        assert child['replacement_executor']['seat'] == 'terra'
+        assert list(child['assignments']) == ['terra']
+        marker_path.unlink()
+        call('record-quota-disabled-escalation', session, '11', 'sol', 'terra', env=env,
+             entrypoint=attempt_script)
+        child = prepare('11x', 'repair', *child_args, env=env)
+        prompt.write_text('changed prompt\n')
+        call('prepare', session, '11x2', '--phase', 'repair', *child_args, env=env,
+             good=False, error='parent assignment has no recorded terminal failure')
+        prompt.write_text('review\n')
+        config.write_text('{"extra":true}\n')
+        call('prepare', session, '11x3', '--phase', 'repair', *child_args, env=env,
+             good=False, error='parent assignment has no recorded terminal failure')
+
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        config = session / 'review-council-config.json'
+        config.write_text('{}\n')
+        env = {'REVIEW_COUNCIL_CONFIG': str(config)}
+        prompt, child_args = prepare_exit_4(session, prepare, env, retry_code='2')
+        call('record-quota-disabled-escalation', session, '11', 'sol', 'terra', env=env,
+             entrypoint=attempt_script)
+        child = prepare('11x', 'repair', *child_args, env=env)
+        assert child['parent_assignment']['seat'] == 'sol'
+        assert child['replacement_executor']['seat'] == 'terra'
+        assert list(child['assignments']) == ['terra']
+
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        config = session / 'review-council-config.json'
+        config.write_text('{}\n')
+        env = {'REVIEW_COUNCIL_CONFIG': str(config)}
+        prompt, child_args = prepare_exit_4(session, prepare, env, retry_code='1')
+        call('record-quota-disabled-escalation', session, '11', 'sol', 'terra', env=env,
+             good=False, entrypoint=attempt_script)
+        call('prepare', session, '11x', '--phase', 'repair', *child_args, env=env,
+             good=False, error='parent assignment has no recorded terminal failure')
+
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        config = session / 'review-council-config.json'
+        config.write_text('{}\n')
+        env = {'REVIEW_COUNCIL_CONFIG': str(config)}
+        prompt, child_args = prepare_exit_4(session, prepare, env)
+        call('record-quota-disabled-escalation', session, '11', 'sol', 'opus', env=env,
+             entrypoint=attempt_script)
+        call('prepare', session, '11x', '--phase', 'repair', *child_args, env=env,
+             good=False, error='parent assignment has no recorded terminal failure')
+
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        config = session / 'review-council-config.json'
+        config.write_text('{"quota_fallback":true}\n')
+        env = {'REVIEW_COUNCIL_CONFIG': str(config)}
+        prompt, child_args = prepare_exit_4(session, prepare, env)
+        call('record-quota-disabled-escalation', session, '11', 'sol', 'terra', env=env,
+             good=False, entrypoint=attempt_script)
+        call('prepare', session, '11x', '--phase', 'repair', *child_args, env=env,
+             good=False, error='parent assignment has no recorded terminal failure')
+
 def replacement_accepts_only_a_recorded_owned_provider_cancellation():
     with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
         chain_identities = {
@@ -5009,6 +5127,7 @@ cases = (
     unenforced_audit_is_opt_in, unenforced_audit_cache_is_keyed_on_every_input,
     nested_walks_reuse_cached_audits, replacement_runs_on_another_seat,
     replacement_accepts_only_durable_provider_exit_3,
+    replacement_requires_quota_disabled_escalation_record,
     replacement_accepts_only_a_recorded_owned_provider_cancellation,
     record_provider_cancellation_binds_the_finished_attempts,
     replacement_chain_reaches_opus,
@@ -5091,6 +5210,7 @@ groups = {
     ),
     'replacement': (
         replacement_runs_on_another_seat, replacement_accepts_only_durable_provider_exit_3,
+        replacement_requires_quota_disabled_escalation_record,
         replacement_accepts_only_a_recorded_owned_provider_cancellation,
         record_provider_cancellation_binds_the_finished_attempts,
         replacement_chain_reaches_opus,

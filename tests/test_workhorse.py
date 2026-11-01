@@ -138,6 +138,34 @@ class WorkhorseTests(unittest.TestCase):
         self.assertEqual(overridden['family'], 'sol')
         self.assertFalse(overridden['existing'])
 
+    def test_exit_4_escalation_binds_panel_and_selected_replacement(self):
+        session = Path(self.temp.name) / 'exit-four'
+        session.mkdir()
+        record = self.workhorse.resolve_available('codex', luna=('gpt-5.6-luna', 'high'))
+        self.workhorse.write_record(session / 'workhorse.json', record)
+        (session / 'roster.json').write_text(json.dumps({'seats': [
+            {'seat': 'codex-luna', 'adapter': 'codex', 'model': 'gpt-5.6-luna',
+             'effort': 'high', 'extra': False}]}))
+        seen = []
+        original_candidates = self.workhorse._candidates
+        self.workhorse._candidates = lambda _host, include_cursor=True: ({}, {
+            'cursor-grok': None,
+            'luna': None,
+            'sonnet': {'adapter': 'claude', 'model': 'sonnet', 'effort': 'high',
+                       'lab': 'anthropic'},
+            'sol': None,
+            'opus': None,
+        })
+        self.workhorse.record_quota_disabled_escalation = (
+            lambda current_session, panel, failed, replacement:
+            seen.append((current_session, panel, failed, replacement)) or 2)
+        try:
+            chosen = self.workhorse.escalate(session, 'codex-luna', panel='r4')
+        finally:
+            self.workhorse._candidates = original_candidates
+        self.assertEqual(chosen['seat'], 'escalate-sonnet')
+        self.assertEqual(seen, [(session, 'r4', 'codex-luna', 'escalate-sonnet')])
+
     def test_credit_or_auth_failure_blocks_a_failed_cursor_run_only(self):
         blocked = self.workhorse.cursor_writer_blocked
         self.assertTrue(blocked(1, '', 'You are out of credits'))
