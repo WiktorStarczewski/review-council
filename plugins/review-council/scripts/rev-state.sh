@@ -225,7 +225,7 @@ def plan_gate_complete(label):
     return plan_assignment_failures(label) == []
 
 
-def plan_assignment_terminal_failure(label, seat):
+def plan_assignment_terminal_failure(label, seat, replacement_seat=None):
     evidence = os.environ.get('REV_STATE_EVIDENCE')
     if not evidence:
         return False
@@ -239,12 +239,13 @@ def plan_assignment_terminal_failure(label, seat):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         from pathlib import Path
-        return module.terminal_failure(Path(session), label, seat, Path(prompt))
+        return module.terminal_failure(
+            Path(session), label, seat, Path(prompt), replacement_seat)
     except (OSError, ValueError, AttributeError, ImportError):
         return False
 
 
-def plan_assignment_needs_replacement(label, seat):
+def plan_assignment_needs_replacement(label, seat, replacement_seat=None):
     manifest = plan_manifest(label)
     if manifest is None or seat not in (manifest.get('assignments') or {}):
         return False
@@ -255,7 +256,7 @@ def plan_assignment_needs_replacement(label, seat):
         return True
     if plan_assignment_completed(label, seat, manifest, current_sha):
         return False
-    return plan_assignment_terminal_failure(label, seat)
+    return plan_assignment_terminal_failure(label, seat, replacement_seat)
 
 
 def stable_receipt_bytes(name):
@@ -341,6 +342,7 @@ def plan_assignment_failures(label):
                 or len(set(children)) != len(children)):
             return None
         child_success = False
+        original_terminal_failure = plan_assignment_terminal_failure(label, seat)
         for child in children:
             if child in mapped_children:
                 return None
@@ -358,6 +360,9 @@ def plan_assignment_failures(label):
                                               '.read-audit.json'))):
                     return None
                 mapped_children.add(child)
+                original_terminal_failure = (original_terminal_failure
+                                              or plan_assignment_terminal_failure(
+                                                  label, seat, child_seat))
                 continue
             try:
                 child_manifest = json.loads(child_manifest_raw)
@@ -383,6 +388,9 @@ def plan_assignment_failures(label):
                     or child_assignment.get('scope') != 'full'):
                 return None
             mapped_children.add(child)
+            original_terminal_failure = (original_terminal_failure
+                                          or plan_assignment_terminal_failure(
+                                              label, seat, child_seat))
             if plan_assignment_completed(child, child_seat, child_manifest, current_sha):
                 child_success = True
             elif not plan_assignment_terminal_failure(child, child_seat):
@@ -390,7 +398,7 @@ def plan_assignment_failures(label):
         original_complete = plan_assignment_completed(label, seat, manifest, current_sha)
         if original_complete or child_success:
             continue
-        if not plan_assignment_terminal_failure(label, seat):
+        if not original_terminal_failure:
             return None
         failures.append(seat)
 
@@ -492,7 +500,7 @@ if 'phase' in assigned and phase == 'plan' and {'round', 'seats'} <= assigned:
                     or len(seats) != 1 or seats[0] == failed_seat):
                 refuse(f"refusing phase=plan round={label}: replacement must cover one different seat "
                        f"and bind to an assignment in r{parent_label}")
-            if not plan_assignment_needs_replacement(parent_label, failed_seat):
+            if not plan_assignment_needs_replacement(parent_label, failed_seat, seats[0]):
                 refuse(f"refusing phase=plan round={label}: original assignment {failed_seat} in "
                        f"r{parent_label} has no terminal failure or stale plan hash")
             replacement_map = state.setdefault('plan_replacements', {})
