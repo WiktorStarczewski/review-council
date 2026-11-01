@@ -408,6 +408,40 @@ PY
     assert_eq "the read audit credits every one of the 21 scoped windows" "$?" 0
     sonnet_preserve_window_artifacts sonnet21
     assert_eq "the full manifest, prompt, transcript, source and audit are retained" "$?" 0
+    sonnet_partial_21_windows_are_refused
+  )
+}
+
+sonnet_partial_21_windows_are_refused() {
+  ( local pair R S status
+    pair=$(sonnet_window_fixture 21 partial) || return
+    R=${pair%%$'\n'*}; S=${pair#*$'\n'}
+    printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex","model":"gpt-6-sol","effort":"high","extra":false},{"seat":"sonnet","adapter":"claude","model":"sonnet","effort":"high","extra":false}]}' \
+      > "$S/roster.json"
+    REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=0 \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$S" sonnetpartial --phase discovery \
+      > "$T/sonnet-partial-prepare.out" 2> "$T/sonnet-partial-prepare.err"
+    status=$?
+    if [ "$status" -ne 2 ]; then
+      cat "$T/sonnet-partial-prepare.out" "$T/sonnet-partial-prepare.err" >&2
+    fi
+    assert_eq "a partial Sonnet assignment with 21 source windows is refused" "$status" 2
+    [ "$status" -eq 2 ] || return 0
+    assert_grep "the partial assignment is held to Sonnet's standard mandatory read limit" \
+      "$T/sonnet-partial-prepare.err" 'proof reads exceed repository capacity: sonnet limit=12 count=21'
+    python3 - "$S" <<'PY'
+import json
+import sys
+from pathlib import Path
+diagnostic = json.loads((Path(sys.argv[1]) / 'prepare-diagnostic-sonnetpartial.json').read_text())
+row = next(item for item in diagnostic['refusals'] if item['seat'] == 'sonnet')
+expected = [f'tests/test_{index:02d}.py' for index in range(21)]
+assert row['limit'] == 12 and row['count'] == 21, row
+assert [window['path'] for window in row['windows']] == expected, row
+PY
+    assert_eq "the partial-seat refusal preserves its exact 21 ordered source windows" "$?" 0
+    sonnet_preserve_window_artifacts sonnetpartial
+    assert_eq "the complete partial-seat refusal diagnostic and source are retained" "$?" 0
   )
 }
 
