@@ -643,6 +643,8 @@ spec.loader.exec_module(audit)
 proof = {'chunk', 'segment', 'index'}
 assert audit.ordered_proof_turn_exempt(2, ['chunk', 'index'], proof, 40 * 1024)
 assert audit.ordered_proof_turn_exempt(2, ['segment', 'index'], proof, 60 * 1024)
+assert audit.ordered_proof_turn_exempt(2, ['segment', 'index'], {'segment', 'index'}, 40 * 1024)
+assert not audit.ordered_proof_turn_exempt(2, ['segment', 'index'], {'index'}, 40 * 1024)
 assert not audit.ordered_proof_turn_exempt(1, ['chunk', 'index'], proof, 40 * 1024)
 assert not audit.ordered_proof_turn_exempt(2, ['chunk', 'segment', 'index'], proof, 40 * 1024)
 assert not audit.ordered_proof_turn_exempt(2, ['chunk', 'index'], proof, 60 * 1024 + 1)
@@ -1443,10 +1445,10 @@ PY
     claude_bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"]["sol"]["bundle"])' "$claude_manifest") || return
     claude_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 9c sol "$claude_bundle" required-source \
       --evidence "$claude_manifest") || return
-    assert_grep "Claude may batch two required source segments" "$claude_prompt" \
-      '^Required source segment batch limit: 2$'
-    assert_grep "Claude prompt schedules each pair in one assistant message" "$claude_prompt" \
-      '^Claude source read batching: issue each pair of consecutive required source segment reads in one assistant message, in listed order; wait for both results before continuing\. Read a final singleton or an oversized single-line segment alone\.$'
+    assert_grep "Claude may batch four required source segments" "$claude_prompt" \
+      '^Required source segment batch limit: 4$'
+    assert_grep "Claude prompt bounds source-only batches by count and bytes" "$claude_prompt" \
+      '^Claude source read batching: issue up to four consecutive required source segment reads in one assistant message, in listed order, only when each response is at most 32 KiB and their combined visible output is at most 60 KiB; keep the turn source-only without patch chunks or the evidence index\. Read a final singleton or an oversized single-line segment alone\.$'
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r9c-sol.json"
     python3 - "$claude_manifest" "$S/r9c-sol.stream.ndjson" <<'PY'
 import json, pathlib, sys
@@ -1469,9 +1471,11 @@ PY
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter claude \
       --raw "$S/r9c-sol.stream.ndjson" --prompt "$claude_prompt" --root "$R" --session "$S" \
       --out "$S/r9c-sol.read-audit.json" >/dev/null 2>&1
-    assert_eq "Claude rejects three required source segments in one real message" "$?" 2
-    assert_grep "oversized Claude source batch has a stable violation" "$S/r9c-sol.read-audit.json" \
-      '"code":"required-source-segment-batch-too-large"'
+    assert_eq "Claude transcript remains invalid when a valid-sized batch omits required segments" "$?" 2
+    assert_grep "incomplete Claude source batch has a stable violation" "$S/r9c-sol.read-audit.json" \
+      '"code":"missing-required-source-segment"'
+    assert_nogrep "three source-only reads remain within Claude's source batch count" \
+      "$S/r9c-sol.read-audit.json" '"code":"required-source-segment-batch-too-large"'
     cp "$T/required-source-roster.json" "$S/roster.json"
 
     python3 - "$S/roster.json" <<'PY'

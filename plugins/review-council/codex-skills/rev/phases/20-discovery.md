@@ -151,7 +151,7 @@ offsets are contiguous, and concatenating the chunks without delimiters must rep
 the canonical patch exactly. Reviewers read every chunk once, in rendered order and in
 full, before source-context packets or source expansion. Chunk reads prove change
 discovery only; they never establish source citation evidence.
-The 32 KiB per-tool and ordinary per-turn output limits still apply. Claude and Codex adapters may use two ordered proof reads in one turn across patch chunks, required source segments, and the evidence index under a 60 KiB combined cap. Codex pairing requires a completed explicit turn boundary; calls without one are audited separately. Source-context packets and repository reads retain the ordinary 32 KiB turn cap. Repository expansion begins in a later turn. Chunk mode is used only when it saves at least
+The 32 KiB per-tool and ordinary per-turn output limits still apply. Mixed ordered proof turns may use at most two reads under a 60 KiB combined cap. Claude may use up to four consecutive required-source-segment reads in a source-only turn when every response is at most 32 KiB and their combined visible output is at most 60 KiB; do not mix them with patch chunks or the evidence index. Codex pairing requires a completed explicit turn boundary; calls without one are audited separately. Source-context packets and repository reads retain the ordinary 32 KiB turn cap. Repository expansion begins in a later turn. Chunk mode is used only when it saves at least
 10 percent against 240-line windows. Invalid UTF-8, NUL, an older manifest without a
 chunk set, or `REV_PATCH_CHUNKS=0` keeps window mode.
 
@@ -170,7 +170,7 @@ segment may extend to the 32 KiB per-tool ceiling when that line cannot be split
 Read that segment alone when its predicted visible size exceeds 16 KiB.
 The renderer uses each adapter's
 native full-file action: shell `cat` for Codex, `Read` for Claude, and `read_file` for
-Gemini. Claude may read two listed source segments per turn. Codex may read two only
+Gemini. Claude may batch up to four consecutive listed source segments in a source-only turn, subject to the 32 KiB per-response and 60 KiB combined-output ceilings. Codex may read two only
 inside a completed explicit turn; Gemini reads one. Every segment must be read once
 in order before the parent range earns a receipt.
 

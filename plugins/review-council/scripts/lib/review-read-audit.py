@@ -2484,6 +2484,22 @@ def ordered_proof_turn_exempt(batch_limit, output_calls, proof_calls, size):
             and all(call_id in proof_calls for call_id in output_calls))
 
 
+def source_segment_batch_exempt(adapter, call_ids, outputs, source_segment_calls, limit):
+    if (adapter != 'claude'
+            or not 2 < len(call_ids) <= limit
+            or any(call_id not in source_segment_calls or call_id not in outputs
+                   or not outputs[call_id]['success']
+                   or outputs[call_id]['bytes'] > OUTPUT_BYTES
+                   for call_id in call_ids)):
+        return False
+    return sum(outputs[call_id]['bytes'] for call_id in call_ids) <= PATCH_TURN_OUTPUT_BYTES
+
+
+def source_only_segment_turn(adapter, turn_calls, outputs, required_segment_call_ids, limit):
+    return source_segment_batch_exempt(
+        adapter, turn_calls, outputs, required_segment_call_ids, limit)
+
+
 def required_range_covered(required, ranges):
     cursor = required['line_start']
     for row in sorted((row for row in ranges if row['path'] == required['path']
@@ -2700,6 +2716,7 @@ def assess(args, blocked):
         prompt_lines = []
     evidence_module = _load_evidence_module()
     adapter_read_batch_limit = evidence_module.read_batch_limit(args.adapter)
+    source_segment_batch_limit = evidence_module.source_segment_batch_limit(args.adapter)
     authorized, complete_paths = prompt_permissions(prompt, root, session)
     dependency = Path(args.deps).resolve() if args.deps else None
     roots = allowed_roots(root, session, args.deps)
@@ -3097,7 +3114,7 @@ def assess(args, blocked):
     opened_patch_chunks = 0
     exact_patch_chunk_calls = set()
     exact_evidence_index_calls = set()
-    required_segment_calls = []
+    required_segment_call_ids = set()
     oversized_required_segment_calls = set()
     # Byte-proved ordered reads, credited or not: the pacing counts are taken over these.
     paced_chunk_calls = []
@@ -3310,7 +3327,7 @@ def assess(args, blocked):
                 patch_proof_turns = len(proof_turns)
 
             observed_required_segments = []
-            required_segment_calls = []
+            required_segment_call_ids = set()
             observed_by_required = {index: [] for index in range(len(required_source_ranges))}
             seen_required_segments = set()
             for call_id, (name, data, turn) in calls.items():
@@ -3329,6 +3346,10 @@ def assess(args, blocked):
                     duplicate = identity in seen_required_segments
                     if not complete_packet_read(name, data, path, root):
                         failures.append(violation('partial-required-source-segment', name))
+                        continue
+                    if output['bytes'] > OUTPUT_BYTES:
+                        failures.append(violation('tool-output-too-large', name))
+                        blocked.add(call_id)
                         continue
                     try:
                         metadata = path.lstat()
@@ -3358,7 +3379,7 @@ def assess(args, blocked):
                     seen_required_segments.add(identity)
                     observed_by_required[required_index].append(segment['index'])
                     observed_required_segments.append(identity)
-                    required_segment_calls.append((call_id, turn))
+                    required_segment_call_ids.add(call_id)
                     if required['blob_tree'] == snapshot_tree:
                         tool_ranges.append({'path': required['path'],
                                             'line_start': segment['line_start'],
@@ -3396,10 +3417,14 @@ def assess(args, blocked):
                     failures.append(violation('invalid-required-source-identity', args.adapter))
             if observed_required_segments != sorted(observed_required_segments):
                 failures.append(violation('reordered-required-source-segments', args.adapter))
-            source_segment_batch_limit = adapter_read_batch_limit
             for turn in {turn for _, turn in paced_segment_calls}:
-                if (sum(call_turn == turn for _, call_turn in paced_segment_calls)
-                        > source_segment_batch_limit):
+                turn_calls = turns.get(turn, [])
+                source_only_batch = source_only_segment_turn(
+                    args.adapter, turn_calls, outputs, required_segment_call_ids,
+                    source_segment_batch_limit)
+                segment_count = sum(call_turn == turn for _, call_turn in paced_segment_calls)
+                if (segment_count > source_segment_batch_limit
+                        or (segment_count > adapter_read_batch_limit and not source_only_batch)):
                     failures.append(violation('required-source-segment-batch-too-large', args.adapter))
             order_patch_calls = exact_patch_chunk_calls if patch_proof_mode == 'chunks' \
                 else proof_call_ids
@@ -3418,7 +3443,10 @@ def assess(args, blocked):
             for turn in turns:
                 proof_reads = [call_id for call_id in turns[turn]
                                if call_id in ordered_proof_calls]
-                if len(proof_reads) > adapter_read_batch_limit:
+                source_only_batch = source_only_segment_turn(
+                    args.adapter, turns[turn], outputs, required_segment_call_ids,
+                    source_segment_batch_limit)
+                if len(proof_reads) > adapter_read_batch_limit and not source_only_batch:
                     failures.append(violation('evidence-proof-batch-too-large', args.adapter))
                 if (len(turns[turn]) > 1
                         and any(call_id in oversized_required_segment_calls
@@ -3502,9 +3530,11 @@ def assess(args, blocked):
         proof_exempt = ordered_proof_turn_exempt(
             adapter_read_batch_limit, output_calls,
             exact_patch_chunk_calls
-            | {call_id for call_id, _ in required_segment_calls}
+            | required_segment_call_ids
             | exact_evidence_index_calls,
-            size)
+            size) or source_only_segment_turn(
+                args.adapter, turns.get(turn, []), outputs,
+                required_segment_call_ids, source_segment_batch_limit)
         if not ordinary_exempt and not proof_exempt:
             failures.append(violation('tool-turn-output-too-large', args.adapter))
             blocked.update(turns.get(turn, []))
@@ -3620,9 +3650,11 @@ def assess(args, blocked):
             'duplicate-required-source-segment', 'evidence-proof-batch-too-large',
             'source-packet-batch-too-large',
         }
+        claude_fatal = {'evidence-proof-batch-too-large'}
         fatal = [item for item in unique
                  if item.get('code') not in ADVISORY_CODES
-                 or (args.adapter == 'codex' and item.get('code') in codex_fatal)]
+                 or (args.adapter == 'codex' and item.get('code') in codex_fatal)
+                 or (args.adapter == 'claude' and item.get('code') in claude_fatal)]
         if not fatal:
             advisories = unique
             unique = []
