@@ -3533,10 +3533,9 @@ def assess(args, blocked):
             exact_patch_chunk_calls
             | {call_id for call_id, _ in required_segment_calls}
             | exact_evidence_index_calls,
-            size) or source_segment_batch_exempt(
+            size) or source_only_segment_turn(
                 args.adapter, turns.get(turn, []), outputs,
-                {call_id for call_id, _ in required_segment_calls},
-                source_segment_batch_limit)
+                required_segment_calls, source_segment_batch_limit)
         if not ordinary_exempt and not proof_exempt:
             failures.append(violation('tool-turn-output-too-large', args.adapter))
             blocked.update(turns.get(turn, []))
