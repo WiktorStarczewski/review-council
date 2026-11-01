@@ -28,6 +28,14 @@ def load_evidence():
     return module
 
 
+def load_read_audit():
+    spec = importlib.util.spec_from_file_location(
+        'review_read_audit_in_process', SCRIPTS / 'lib/review-read-audit.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 class SourceFixture:
     def __init__(self, directory, mode, oversized_lines=180, oversized_line_bytes=None,
                  compact_segment_lines=None, compact_segment_line_bytes=16,
@@ -445,8 +453,7 @@ class RequiredSourceProofTests(unittest.TestCase):
             'deleted', adapter='claude', compact_segment_lines=1500)
         raw, result_path, audit_path = fixture.claude_transcript(
             group_required_segments=4)
-        audit = load(SCRIPTS / 'lib/review-read-audit.py',
-                     'review_read_audit_in_process')
+        audit = load_read_audit()
         args = argparse.Namespace(
             adapter='claude', raw=str(raw), prompt=str(fixture.prompt),
             root=str(fixture.root), session=str(fixture.session), deps=None,
