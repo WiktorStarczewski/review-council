@@ -508,9 +508,9 @@ class RequiredSourceProofTests(unittest.TestCase):
             result = original_source_only(
                 adapter, turn_calls, outputs, required_calls, limit)
             if tuple(turn_calls) == target_calls:
+                if len(source_records) == 2:
+                    result = False
                 source_records.append(result)
-                if len(source_records) == 3:
-                    return False
             return result
 
         audit.source_only_segment_turn = source_only_spy
