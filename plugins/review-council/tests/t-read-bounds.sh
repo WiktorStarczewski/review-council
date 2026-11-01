@@ -1107,6 +1107,8 @@ PY
     local bundle
     bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"]["sol"]["bundle"])' "$manifest") || return
     prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 8 sol "$bundle" patch-chunks --evidence "$manifest") || return
+    assert_grep "window-mode Codex prompt limits source and evidence reads without claiming a patch-window turn cap" \
+      "$prompt" '^Codex ordered proof reads: up to 2 required source segments or evidence-index reads per completed explicit model turn\.$'
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r8-sol.json"
 
     write_patch_transcript() {
@@ -1409,7 +1411,7 @@ PY
     assert_grep "Codex prompt gives patch chunks an isolated six-read batch contract" "$prompt" \
       '^Codex patch chunk batches: up to 6 consecutive chunks in exact order, at most 144 KiB aggregate output, and no other reads in that completed explicit model turn\.'
     assert_grep "Codex prompt keeps other ordered proof reads at two per turn" "$prompt" \
-      '^Codex ordered proof reads: up to 2 required source segments or evidence-index reads per completed explicit model turn\. Patch chunks follow their separate contract above\.'
+      '^Codex ordered proof reads: up to 2 required source segments or evidence-index reads per completed explicit model turn\. Patch chunks use the separate contract below\.'
     assert_grep "Codex prompt keeps oversized single-line segments alone" "$prompt" \
       '^A required source segment over 16 KiB because it is one line must be read alone\.$'
     assert_grep "Codex reads required source through a session artifact" "$prompt" \

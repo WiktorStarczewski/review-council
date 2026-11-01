@@ -650,8 +650,8 @@ manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2])
 root = pathlib.Path(sys.argv[3]); mode = sys.argv[4]; session = pathlib.Path(sys.argv[1]).parent
 assignment = manifest['assignments']['sol']
 chunks = list(manifest['patch_sets'][assignment['patch_set']]['chunks'])
-turn_limit = (6 if mode in ('batch-six', 'batch-seven', 'mixed')
-              else 3 if mode == 'too-many' else 2)
+turn_limit = (7 if mode == 'batch-seven' else
+              6 if mode in ('batch-six', 'mixed') else 2)
 if mode == 'reorder':
     chunks[0], chunks[1] = chunks[1], chunks[0]
 elif mode == 'missing':
@@ -770,14 +770,6 @@ chunk_artifacts = {row['artifact'] for value in m['patch_sets'].values() for row
 assert all(row['path'] not in chunk_artifacts for row in a['source_ranges'])
 PY
     assert_eq "chunk proof counters are internally consistent" "$?" 0
-
-    write_transcript too-many
-    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
-      --raw "$S/r24-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
-      --out "$S/r24-sol.read-audit.json" >/dev/null 2>&1
-    assert_eq "three Codex patch reads in one explicit turn exceed its batch limit" "$?" 2
-    assert_grep "oversized Codex patch turns have a stable batch violation" \
-      "$S/r24-sol.read-audit.json" '"code":"patch-chunk-batch-too-large"'
 
     write_transcript batch-six
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \

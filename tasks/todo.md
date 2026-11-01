@@ -3,9 +3,12 @@
 - [x] Add exact chunk batching, byte ceiling, mixed-read, ordering and loss tests.
 - [x] Inspect initial exact-head expected-red run 41296670721. It reached the tests, with 5,333 passed and 8 failed, but the embedded capacity fixture requested 14 mandatory reads against the existing limit of 12, so the run is not accepted as a clean red proof.
 - [x] Correct the fixture to 12 mandatory reads while preserving the expected 6-chunk batch assertions. The guarded local shell check refused at load 6.96 over the 6.0 limit, so no local check ran.
-- [ ] Rerun exact-head expected-red CI and confirm only intended behavior assertions fail.
-- [ ] Implement Codex-only six-chunk patch reads with the separate 144 KiB ceiling, exact consecutive chunk hashes/order and the existing mixed-read and per-read audit checks unchanged.
-- [ ] Pass exact-head CI and package checks, complete an independent normal review, integrate current main, and merge only after all required gates pass.
+- [x] Rerun exact-head expected-red CI and confirm the implementation contract is red. Run 41300194311 on test head 13009216 passed proof preparation; package run 41300194333 passed. Ubuntu and macOS each reached the full shell verifier with 5,333 assertions passing and the 8 new capacity, six-chunk audit, helper, and prompt assertions failing.
+- [x] Implement Codex-only six-chunk patch reads with the separate 144 KiB ceiling, exact consecutive chunk hashes/order and the existing mixed-read and per-read audit checks unchanged. Normal review found and fixed the stale three-chunk rejection assertion and inaccurate window-mode prompt claim; re-review caught fixture indentation and a seven-read grouping error, both corrected before CI.
+- [ ] Pass exact-head CI and package checks.
+- [x] Complete independent normal re-review of all corrected findings; the reviewer confirmed the heredoc, seven-read rejection, and window-mode prompt corrections with no remaining actionable issues.
+- [x] Integrate current Review Council main e1d2feaa into the local PR branch. Merge commit fa70d45; not pushed.
+- [ ] Push the reviewed branch and merge only after all required current-head gates pass.
 
 ## Luna per-turn command budget follow-up
 

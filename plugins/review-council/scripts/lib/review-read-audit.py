@@ -22,6 +22,7 @@ SEARCH_RESULTS = 80
 SEARCH_RESULT_SENTINEL = SEARCH_RESULTS + 1
 OUTPUT_BYTES = 32 * 1024
 PATCH_TURN_OUTPUT_BYTES = 60 * 1024
+CODEX_PATCH_CHUNK_TURN_OUTPUT_BYTES = 144 * 1024
 # Pacing codes count byte-proved reads after the fact and never withdraw credit from them.
 PACING_CODES = {
     'patch-chunk-batch-too-large', 'required-source-segment-batch-too-large',
@@ -2484,6 +2485,18 @@ def ordered_proof_turn_exempt(batch_limit, output_calls, proof_calls, size):
             and all(call_id in proof_calls for call_id in output_calls))
 
 
+def codex_patch_chunk_turn_exempt(adapter, output_calls, outputs, exact_patch_chunk_calls):
+    limit = _load_evidence_module().patch_chunk_batch_limit(adapter)
+    if (adapter != 'codex' or not 1 < len(output_calls) <= limit
+            or set(output_calls) != exact_patch_chunk_calls):
+        return False
+    if any(call_id not in outputs or not outputs[call_id]['success']
+           or outputs[call_id]['bytes'] > OUTPUT_BYTES for call_id in output_calls):
+        return False
+    return sum(outputs[call_id]['bytes'] for call_id in output_calls) \
+        <= CODEX_PATCH_CHUNK_TURN_OUTPUT_BYTES
+
+
 def source_segment_batch_exempt(adapter, call_ids, outputs, source_segment_calls, limit):
     if (adapter != 'claude'
             or not 2 < len(call_ids) <= limit
@@ -2716,6 +2729,7 @@ def assess(args, blocked):
         prompt_lines = []
     evidence_module = _load_evidence_module()
     adapter_read_batch_limit = evidence_module.read_batch_limit(args.adapter)
+    patch_chunk_batch_limit = evidence_module.patch_chunk_batch_limit(args.adapter)
     source_segment_batch_limit = evidence_module.source_segment_batch_limit(args.adapter)
     authorized, complete_paths = prompt_permissions(prompt, root, session)
     dependency = Path(args.deps).resolve() if args.deps else None
@@ -3280,7 +3294,7 @@ def assess(args, blocked):
                 patch_proof_turns = len({turn for _, turn, _ in exact_calls})
                 patch_proof_visible_bytes = sum(size for _, _, size in exact_calls)
                 opened_patch_chunks = len(observed)
-                batch_limit = adapter_read_batch_limit
+                batch_limit = patch_chunk_batch_limit
                 for turn in {turn for _, turn in paced_chunk_calls}:
                     if sum(call_turn == turn for _, call_turn in paced_chunk_calls) > batch_limit:
                         failures.append(violation('patch-chunk-batch-too-large', args.adapter))
@@ -3443,10 +3457,20 @@ def assess(args, blocked):
             for turn in turns:
                 proof_reads = [call_id for call_id in turns[turn]
                                if call_id in ordered_proof_calls]
+                turn_output_calls = [call_id for call_id in turns[turn]
+                                     if call_id in outputs]
+                turn_patch_chunk_calls = [call_id for call_id in turns[turn]
+                                          if call_id in exact_patch_chunk_calls]
+                if (args.adapter == 'codex' and turn_patch_chunk_calls
+                        and set(turn_output_calls) != set(turn_patch_chunk_calls)):
+                    failures.append(violation('evidence-proof-batch-too-large', args.adapter))
+                patch_chunk_batch = codex_patch_chunk_turn_exempt(
+                    args.adapter, turn_output_calls, outputs, set(turn_patch_chunk_calls))
                 source_only_batch = source_only_segment_turn(
                     args.adapter, turns[turn], outputs, required_segment_call_ids,
                     source_segment_batch_limit)
-                if len(proof_reads) > adapter_read_batch_limit and not source_only_batch:
+                if (len(proof_reads) > adapter_read_batch_limit
+                        and not source_only_batch and not patch_chunk_batch):
                     failures.append(violation('evidence-proof-batch-too-large', args.adapter))
                 if (len(turns[turn]) > 1
                         and any(call_id in oversized_required_segment_calls
@@ -3524,6 +3548,8 @@ def assess(args, blocked):
         if size <= OUTPUT_BYTES:
             continue
         output_calls = [call_id for call_id in turns.get(turn, []) if call_id in outputs]
+        turn_patch_chunk_calls = [call_id for call_id in turns.get(turn, [])
+                                  if call_id in exact_patch_chunk_calls]
         ordinary_exempt = (len(output_calls) == 1 and byte_exempt(
             calls[output_calls[0]][0], calls[output_calls[0]][1],
             root, session, complete_paths))
@@ -3532,7 +3558,9 @@ def assess(args, blocked):
             exact_patch_chunk_calls
             | required_segment_call_ids
             | exact_evidence_index_calls,
-            size) or source_only_segment_turn(
+            size) or codex_patch_chunk_turn_exempt(
+                args.adapter, output_calls, outputs,
+                set(turn_patch_chunk_calls)) or source_only_segment_turn(
                 args.adapter, turns.get(turn, []), outputs,
                 required_segment_call_ids, source_segment_batch_limit)
         if not ordinary_exempt and not proof_exempt:
