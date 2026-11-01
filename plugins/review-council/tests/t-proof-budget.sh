@@ -240,3 +240,204 @@ PY
     assert_eq "verify accepts a panel that omitted an unsplittable line" "$?" 0
   )
 }
+
+sonnet_window_fixture() {
+  local count=$1 name=$2 R="$T/sonnet-window-$2-root" S="$T/sonnet-window-$2-session"
+  mkrepo "$R" || return
+  mkdir -p "$R/tests" "$S"
+  python3 - "$R" "$count" <<'PY'
+from pathlib import Path
+import sys
+root, count = Path(sys.argv[1]), int(sys.argv[2])
+for index in range(count):
+    (root / 'tests' / f'test_{index:02d}.py').write_text(
+        f'def test_{index:02d}():\n    assert True\n')
+PY
+  git -C "$R" add . && git -C "$R" commit -qm "sonnet proof window base" || return
+  local base; base=$(git -C "$R" rev-parse HEAD) || return
+  python3 - "$R" <<'PY'
+from pathlib import Path
+import sys
+for path in (Path(sys.argv[1]) / 'tests').glob('test_*.py'):
+    path.write_text(path.read_text().replace('assert True', 'assert False'))
+PY
+  printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+    "$base" "$R" > "$S/scope.env"
+  printf '%s\n' "$R"/tests/test_*.py | sed "s#^$R/##" > "$S/files.txt"
+  : > "$S/untracked.txt"
+  printf '%s\n' '{"seats":[{"seat":"sonnet","adapter":"claude","model":"sonnet","effort":"high","extra":false},{"seat":"sol","adapter":"codex","model":"gpt-6-sol","effort":"high","extra":false},{"seat":"opus","adapter":"claude","model":"opus","effort":"high","extra":false}]}' > "$S/roster.json"
+  printf '%s\n' "$R" "$S"
+}
+
+sonnet_preserve_window_artifacts() {
+  local name=$1 base=${REVIEW_COUNCIL_TEST_ARTIFACT_DIR:-}
+  local tag=${REVIEW_COUNCIL_TEST_ARTIFACT_TAG:-} destination test_root=$T
+  [ -n "$base" ] || return 0
+  [ -n "$tag" ] || { echo "artifact tag is required when retention is enabled" >&2; return 1; }
+  destination="$base/$tag/$name"
+  [ ! -e "$destination" ] || { echo "artifact destination already exists: $destination" >&2; return 1; }
+  mkdir -p "$destination" || return
+  destination=$(cd "$destination" && pwd -P) || return
+  mv "$test_root" "$destination/test-root" \
+    && ln -s "$destination/test-root" "$test_root.preserved-link" \
+    && mv "$test_root.preserved-link" "$test_root"
+}
+
+test_sonnet_21_windows_fit_and_are_read_audited() {
+  ( local pair R S status manifest prompt
+    pair=$(sonnet_window_fixture 21 positive) || return
+    R=${pair%%$'\n'*}; S=${pair#*$'\n'}
+    REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=0 \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$S" sonnet21 --phase discovery \
+      > "$T/sonnet-21-prepare.out" 2> "$T/sonnet-21-prepare.err"
+    status=$?
+    if [ "$status" -ne 0 ]; then
+      cat "$T/sonnet-21-prepare.out" "$T/sonnet-21-prepare.err" >&2
+    fi
+    assert_eq "a full-state Sonnet assignment retains exactly 21 mandatory windows" "$status" 0
+    [ "$status" -eq 0 ] || return 0
+    manifest="$S/rsonnet21-evidence.manifest.json"
+    prompt=$("$SCRIPTS/rev-prompt.sh" "$S" sonnet21 sonnet simplicity proof-budget \
+      --evidence "$manifest") || return
+    python3 - "$manifest" "$R" "$S/rsonnet21-sonnet.stream.ndjson" \
+      "$SCRIPTS/rev-evidence.py" "$SCRIPTS/lib/review_limits.py" <<'PY'
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import sys
+manifest_path, root_path, stream_path, evidence_path, limits_path = map(Path, sys.argv[1:])
+manifest = json.loads(manifest_path.read_text())
+root = root_path.resolve()
+session = manifest_path.parent
+assignment = manifest['assignments']['sonnet']
+capacity = manifest['task_capacity']['seats']['sonnet']
+rows = capacity['mandatory_window_rows']
+expected = [f'tests/test_{index:02d}.py' for index in range(21)]
+assert assignment['full_state'] is True, assignment
+assert assignment['model'] == 'sonnet', assignment
+assert capacity['mandatory_repository_reads'] == 21, capacity
+assert capacity['repository_expansion_call_limit'] == 25, capacity
+assert capacity['repository_refutation_call_reserve'] == 4, capacity
+assert capacity['mandatory_repository_read_limit'] == 21, capacity
+context = manifest['source_context']['seats']['sonnet']
+assert context['source_read_required'] is True, context
+assert capacity['repository_source_target'] is None, capacity
+limits_spec = importlib.util.spec_from_file_location('sonnet_window_limits', limits_path)
+limits = importlib.util.module_from_spec(limits_spec)
+limits_spec.loader.exec_module(limits)
+target = {'path': 'tests/test_00.py'}
+assert limits.repository_expansion_call_limit_for_seat(True, None, 'sonnet') == 25
+assert limits.repository_refutation_call_reserve_for_model('sonnet') == 4
+assert limits.mandatory_repository_read_limit_for_seat(True, None, 'sonnet') == 21
+assert limits.repository_expansion_call_limit_for_seat(True, target, 'sonnet') == 16
+assert limits.mandatory_repository_read_limit_for_seat(True, target, 'sonnet') == 12
+assert limits.repository_expansion_call_limit_for_seat(True, None, 'gpt-6-sol') == 20
+assert limits.mandatory_repository_read_limit_for_seat(True, None, 'gpt-6-sol') == 16
+assert [row['path'] for row in rows] == expected, rows
+assert all(row['line_start'] == 2 and row['line_end'] == 2 for row in rows), rows
+spec = importlib.util.spec_from_file_location('sonnet_window_evidence', evidence_path)
+evidence = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(evidence)
+repository = evidence.Repository(session.resolve())
+entries = repository.entries(manifest['snapshot_tree'])
+events = []
+def read(identity, path, output, offset=None, limit=None):
+    tool_input = {'file_path': str(path)}
+    if offset is not None:
+        tool_input.update(offset=offset, limit=limit)
+    events.extend([
+        {'type': 'assistant', 'message': {'content': [{
+            'type': 'tool_use', 'id': identity, 'name': 'Read', 'input': tool_input}]}},
+        {'type': 'user', 'message': {'content': [{
+            'type': 'tool_result', 'tool_use_id': identity, 'content': output}]}},
+    ])
+if assignment['patch_read_mode'] == 'chunks':
+    for chunk in manifest['patch_sets'][assignment['patch_set']]['chunks']:
+        artifact = session / chunk['artifact']
+        read('patch-' + str(chunk['index']), artifact, artifact.read_text())
+else:
+    patch = Path(assignment['patch'])
+    patch_lines = patch.read_text().splitlines(keepends=True)
+    for first in range(1, len(patch_lines) + 1, 240):
+        last = min(len(patch_lines), first + 239)
+        read('patch-' + str(first), patch, ''.join(patch_lines[first - 1:last]),
+             first, last - first + 1)
+context = manifest['source_context']['seats']['sonnet']
+for index, shard in enumerate(context['shards'], 1):
+    artifact = session / shard['artifact']
+    read('packet-' + str(index), artifact, artifact.read_text())
+for index, required in enumerate(context['required_source_ranges'], 1):
+    for segment in required['segments']:
+        artifact = session / segment['artifact']
+        read(f'segment-{index}-{segment["index"]}', artifact, artifact.read_text())
+index_path = session / 'rsonnet21-evidence.md'
+read('evidence-index', index_path, index_path.read_text())
+for number, row in enumerate(rows):
+    path = row['path']
+    entry = entries[path]
+    blob = repository.blob(entry)
+    lines = evidence.split_lf_lines(blob)
+    first, last = row['line_start'], row['line_end']
+    content = b''.join(lines[first - 1:last]).decode()
+    on_disk = (root / path).read_bytes()
+    assert hashlib.sha256(blob).digest() == hashlib.sha256(on_disk).digest(), path
+    read('window-' + str(number), root / path, content, first, last - first + 1)
+stream_path.write_text(''.join(json.dumps(event) + '\n' for event in events))
+Path(str(stream_path).replace('.stream.ndjson', '.json')).write_text(
+    '{"summary":"checked","findings":[]}\n')
+PY
+    assert_eq "the audit transcript contains the exact full-scope window order and snapshot content" "$?" 0
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter claude \
+      --raw "$S/rsonnet21-sonnet.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
+      --out "$S/rsonnet21-sonnet.read-audit.json" > "$T/sonnet-21-audit.out" 2> "$T/sonnet-21-audit.err"
+    assert_eq "the Claude read audit accepts the 21-window transcript" "$?" 0
+    python3 - "$S/rsonnet21-sonnet.read-audit.json" <<'PY'
+import json
+import sys
+audit = json.load(open(sys.argv[1]))
+assert audit['status'] == 'valid', audit
+assert not audit['violations'], audit
+for index in range(21):
+    path = f'tests/test_{index:02d}.py'
+    assert any(row['path'] == path and row['line_start'] <= 2 <= row['line_end']
+               for row in audit['source_ranges']), (path, audit['source_ranges'])
+PY
+    assert_eq "the read audit credits every one of the 21 scoped windows" "$?" 0
+    sonnet_preserve_window_artifacts sonnet21
+    assert_eq "the full manifest, prompt, transcript, source and audit are retained" "$?" 0
+  )
+}
+
+test_sonnet_22_windows_are_refused() {
+  ( local pair R S status
+    pair=$(sonnet_window_fixture 22 over-budget) || return
+    R=${pair%%$'\n'*}; S=${pair#*$'\n'}
+    REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=0 \
+      python3 "$SCRIPTS/rev-evidence.py" prepare "$S" sonnet22 --phase discovery \
+      > "$T/sonnet-22-prepare.out" 2> "$T/sonnet-22-prepare.err"
+    status=$?
+    if [ "$status" -ne 2 ]; then
+      cat "$T/sonnet-22-prepare.out" "$T/sonnet-22-prepare.err" >&2
+    fi
+    assert_eq "a Sonnet assignment over the 21-window limit is refused before launch" "$status" 2
+    [ "$status" -eq 2 ] || return 0
+    assert_grep "the refusal names the Sonnet 21-window limit" \
+      "$T/sonnet-22-prepare.err" 'proof reads exceed repository capacity: sonnet limit=21 count=22'
+    python3 - "$S" <<'PY'
+import json
+import sys
+from pathlib import Path
+session = Path(sys.argv[1])
+diagnostic = json.loads((session / 'prepare-diagnostic-sonnet22.json').read_text())
+row = next(item for item in diagnostic['refusals'] if item['seat'] == 'sonnet')
+expected = [f'tests/test_{index:02d}.py' for index in range(22)]
+assert row['limit'] == 21 and row['count'] == 22, row
+assert [window['path'] for window in row['windows']] == expected, row
+assert all(1 <= partition['reads'] <= 21 for partition in row['partitions']), row
+PY
+    assert_eq "the refusal preserves all 22 ordered proof windows" "$?" 0
+    sonnet_preserve_window_artifacts sonnet22
+    assert_eq "the complete 22-window refusal diagnostic and source are retained" "$?" 0
+  )
+}
