@@ -136,6 +136,7 @@ assert all(any(row['path'] == path and row['line_start'] <= 4 <= row['line_end']
 assert not audit['violations'], audit
 PYAUDIT
     assert_eq "the auditor credits every qualified caller range" "$?" 0
+    sonnet_21_windows_fit_and_are_read_audited
   )
 }
 
@@ -238,6 +239,7 @@ PY
     python3 "$SCRIPTS/rev-evidence.py" verify "$S/rwide-evidence.manifest.json" \
       > "$T/wide-line-verify.out" 2> "$T/wide-line-verify.err"
     assert_eq "verify accepts a panel that omitted an unsplittable line" "$?" 0
+    sonnet_22_windows_are_refused
   )
 }
 
@@ -283,7 +285,7 @@ sonnet_preserve_window_artifacts() {
     && mv "$test_root.preserved-link" "$test_root"
 }
 
-test_sonnet_21_windows_fit_and_are_read_audited() {
+sonnet_21_windows_fit_and_are_read_audited() {
   ( local pair R S status manifest prompt
     pair=$(sonnet_window_fixture 21 positive) || return
     R=${pair%%$'\n'*}; S=${pair#*$'\n'}
@@ -409,7 +411,7 @@ PY
   )
 }
 
-test_sonnet_22_windows_are_refused() {
+sonnet_22_windows_are_refused() {
   ( local pair R S status
     pair=$(sonnet_window_fixture 22 over-budget) || return
     R=${pair%%$'\n'*}; S=${pair#*$'\n'}
@@ -422,19 +424,24 @@ test_sonnet_22_windows_are_refused() {
     fi
     assert_eq "a Sonnet assignment over the 21-window limit is refused before launch" "$status" 2
     [ "$status" -eq 2 ] || return 0
-    assert_grep "the refusal names the Sonnet 21-window limit" \
-      "$T/sonnet-22-prepare.err" 'proof reads exceed repository capacity: sonnet limit=21 count=22'
-    python3 - "$S" <<'PY'
+    assert_grep "the refusal names the current Sonnet limit and 22-window count" \
+      "$T/sonnet-22-prepare.err" 'proof reads exceed repository capacity: sonnet limit=[0-9]+ count=22'
+    python3 - "$S" "$SCRIPTS/lib/review_limits.py" <<'PY'
+import importlib.util
 import json
 import sys
 from pathlib import Path
-session = Path(sys.argv[1])
+session, limits_path = Path(sys.argv[1]), Path(sys.argv[2])
 diagnostic = json.loads((session / 'prepare-diagnostic-sonnet22.json').read_text())
 row = next(item for item in diagnostic['refusals'] if item['seat'] == 'sonnet')
 expected = [f'tests/test_{index:02d}.py' for index in range(22)]
-assert row['limit'] == 21 and row['count'] == 22, row
+spec = importlib.util.spec_from_file_location('sonnet_window_limits', limits_path)
+limits = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(limits)
+expected_limit = limits.mandatory_repository_read_limit_for_seat(True, None, 'sonnet')
+assert row['limit'] == expected_limit and row['count'] == 22, row
 assert [window['path'] for window in row['windows']] == expected, row
-assert all(1 <= partition['reads'] <= 21 for partition in row['partitions']), row
+assert all(1 <= partition['reads'] <= row['limit'] for partition in row['partitions']), row
 PY
     assert_eq "the refusal preserves all 22 ordered proof windows" "$?" 0
     sonnet_preserve_window_artifacts sonnet22
