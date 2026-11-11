@@ -157,6 +157,122 @@ class CodeSourcePromotionTests(unittest.TestCase):
             fixture.write(path, (fixture.root / path).read_text().replace('assert "old', 'assert "new'))
         self.assert_full_proof(fixture, {path: (2, 2) for path in paths})
 
+    def test_type_only_consumers_do_not_expand_changed_static_method_docs(self):
+        fixture = self.fixture()
+        declaration = '''export interface ClientOptions { feeFaucetId?: string; }
+export declare class MidenClient {
+  /**
+   * Creates and initializes a new MidenClient.
+   *
+   * Every non-mock client must name the chain's fee faucet in
+   * {@link ClientOptions.feeFaucetId} while the SDK carries a default for no
+   * network; without it creation fails with an error saying so.
+   */
+  static create(options?: ClientOptions): Promise<MidenClient>;
+  /**
+   * Creates a client preconfigured for testnet (rpc, prover, note transport, autoSync).
+   *
+   * Still needs {@link ClientOptions.feeFaucetId}: the preconfigured defaults
+   * cover the endpoints, not the chain's fee asset.
+   */
+  static createTestnet(options?: ClientOptions): Promise<MidenClient>;
+  /**
+   * Creates a client preconfigured for devnet (rpc, prover, note transport, autoSync).
+   *
+   * Still needs {@link ClientOptions.feeFaucetId}: the preconfigured defaults
+   * cover the endpoints, not the chain's fee asset.
+   */
+  static createDevnet(options?: ClientOptions): Promise<MidenClient>;
+}
+'''
+        updated_declaration = declaration.replace(
+            "   * Every non-mock client must name the chain's fee faucet in\n"
+            '   * {@link ClientOptions.feeFaucetId} while the SDK carries a default for no\n'
+            '   * network; without it creation fails with an error saying so.\n',
+            '   * {@link ClientOptions.feeFaucetId} is optional: the client receives the\n'
+            "   * chain's protocol configuration, which names the fee asset, from the node\n"
+            '   * when it syncs. The option only sets what `feeFaucetId()` reports before\n'
+            '   * that first sync.\n')
+        updated_declaration = updated_declaration.replace(
+            '   * Still needs {@link ClientOptions.feeFaucetId}: the preconfigured defaults\n'
+            "   * cover the endpoints, not the chain's fee asset.\n",
+            '   * {@link ClientOptions.feeFaucetId} is optional: the client receives the\n'
+            "   * chain's protocol configuration, which names the fee asset, from the node\n"
+            '   * when it syncs. The option only sets what `feeFaucetId()` reports before\n'
+            '   * that first sync.\n')
+        old_changelog = (
+            '* [FIX][docs] The shipped agent guides no longer call `feeFaucetId` required. '
+            'The `@miden-sdk/react` and `@miden-sdk/miden-sdk` `AGENTS.md`, the '
+            '`web-client-usage` skill, the root README and the Turnkey React example said '
+            'a client or provider created without it fails; since 0.17 the client receives '
+            'the fee asset with the protocol configuration when it syncs, and the option '
+            'only sets what `client.feeFaucetId()` reports before the first sync. The guides '
+            'now say so, including that `feeFaucetId()` rejects before the first sync on a '
+            'client created without it ([#515](https://github.com/0xMiden/web-sdk/issues/515), '
+            '[#517](https://github.com/0xMiden/web-sdk/pull/517)).\n')
+        new_changelog = (
+            '* [FIX][docs] The shipped agent guides and type declarations no longer call '
+            '`feeFaucetId` required. The `@miden-sdk/react` and `@miden-sdk/miden-sdk` '
+            '`AGENTS.md`, the `web-client-usage` skill, the root README, the Turnkey React '
+            'example and the `MidenClient.create`, `createTestnet` and `createDevnet` '
+            'declaration JSDoc said a client or provider created without it fails; since '
+            '0.17 the client receives the fee asset with the protocol configuration when '
+            'it syncs, and the option only sets what `client.feeFaucetId()` reports before '
+            'the first sync. They now say so, including that `feeFaucetId()` rejects before '
+            'the first sync on a client created without it '
+            '([#515](https://github.com/0xMiden/web-sdk/issues/515), '
+            '[#517](https://github.com/0xMiden/web-sdk/pull/517), '
+            '[#518](https://github.com/0xMiden/web-sdk/pull/518)).\n')
+        fixture.write('CHANGELOG.md', old_changelog)
+        declaration_path = 'crates/web-client/js/types/api-types.d.ts'
+        fixture.write(declaration_path, declaration)
+        fixture.write('src/client-factory.ts',
+                      "import { MidenClient } from '../crates/web-client/js/types/api-types';\n"
+                      'export async function createClient() {\n'
+                      '  return MidenClient.create({ feeFaucetId: "faucet" });\n'
+                      '}\n')
+        fixture.write('tests/miden-client-create.test.ts',
+                      "import { MidenClient } from '../crates/web-client/js/types/api-types';\n"
+                      'export async function createsTestnetClient() {\n'
+                      '  return MidenClient.createTestnet();\n'
+                      '}\n')
+        type_only_paths = set()
+        for index in range(100):
+            path = f'tests/type_only_consumer_{index:03}.test.ts'
+            type_only_paths.add(path)
+            fixture.write(path,
+                          "import type { MidenClient } from '../crates/web-client/js/types/api-types';\n"
+                          f'type ClientShape{index:03} = MidenClient;\n')
+        fixture.freeze()
+        fixture.seat = 'codex-luna'
+        (fixture.session / 'roster.json').write_text(json.dumps({'seats': [
+            {'seat': seat, 'adapter': 'codex', 'model': 'gpt-6-luna'}
+            for seat in ('codex-luna', 'codex-luna-2', 'codex-luna-3', 'codex-luna-4')
+        ]}))
+        fixture.write('CHANGELOG.md', new_changelog)
+        fixture.write(declaration_path, updated_declaration)
+        changed = set(fixture.git('diff', '--name-only', fixture.base).splitlines())
+        self.assertEqual(changed, {'CHANGELOG.md', declaration_path})
+
+        process = fixture.prepare()
+        self.assertEqual(process.returncode, 0, process.stderr)
+        fixture.load()
+        self.assertEqual(set(fixture.manifest['paths']), changed)
+        self.assertEqual(fixture.manifest['scope'], '.')
+        facts = json.loads((fixture.session / 'r1-evidence.json').read_text())
+        related = {row['path'] for row in facts['related_tests']}
+        self.assertEqual(related, {'tests/miden-client-create.test.ts'})
+        delivered = [row for shard in fixture.context['shards'] for row in shard['ranges']]
+        delivered += fixture.context['required_source_ranges']
+        delivered_paths = {row['path'] for row in delivered}
+        self.assertIn(declaration_path, delivered_paths)
+        self.assertIn('src/client-factory.ts', delivered_paths)
+        self.assertIn('tests/miden-client-create.test.ts', delivered_paths)
+        self.assertFalse(type_only_paths & delivered_paths)
+        capacity = fixture.manifest['task_capacity']['seats'][fixture.seat]
+        self.assertEqual(capacity['mandatory_repository_read_limit'], 96)
+        self.assertLessEqual(capacity['mandatory_repository_reads'], 96)
+
     def test_missing_import_target_still_refuses_before_manifest_publication(self):
         fixture = self.fixture()
         fixture.write('Cargo.toml', '[package]\nname = "fixture_game"\nversion = "0.1.0"\n')
