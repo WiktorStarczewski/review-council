@@ -13,6 +13,8 @@ jobs:
         with: { node-version: 22 }
       - name: Pi host contracts
         run: python3 -m unittest discover -s tests -p test_pi.py -v
+      - name: Existing Codex host contracts
+        run: python3 -m unittest discover -s tests -p test_codex.py -v
       - name: Native command contracts
         run: node --test tests/pi-rev.test.mjs
       - name: Generated workflow drift

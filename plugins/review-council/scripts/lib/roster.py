@@ -60,7 +60,7 @@ _RESOLVED = {}   # one build()'s Anthropic adapter, and the claude CLI check `au
 
 CODEX_HOST = os.environ.get('REVIEW_COUNCIL_HOST') == 'codex'
 CURSOR_HOST = os.environ.get('REVIEW_COUNCIL_HOST') == 'cursor'
-EXTERNAL_HOST = CODEX_HOST or CURSOR_HOST or os.environ.get('REVIEW_COUNCIL_HOST') == 'pi'
+PI_HOST = os.environ.get('REVIEW_COUNCIL_HOST') == 'pi'
 LABS = {'codex': 'openai', 'gemini': 'google', 'agent': 'anthropic', 'claude': 'anthropic',
         'cursor-sdk': 'xai'}
 # the name an adapter answers to in the --brief line, in `excluded[].cli` and in config `exclude`
@@ -1055,7 +1055,7 @@ def anthropic_adapter(cfg):
     """The adapter this build seats Anthropic reviewers on: `claude` (the CLI) or `agent` (the host's
     Agent tool). A Codex host has no Agent tool. `auto` prefers a signed-in CLI, whose evidence the
     host can audit, and checks it once per build."""
-    if EXTERNAL_HOST:
+    if CODEX_HOST or CURSOR_HOST or PI_HOST:
         return 'claude'
     if 'adapter' not in _RESOLVED:
         setting, _ = claude_adapter_setting(cfg)
@@ -1785,7 +1785,7 @@ def pad(seats, excluded, cfg, probe_results):
     missing = PANEL - len([s for s in seats if not s['extra']])
     if missing <= 0:
         return 0
-    if EXTERNAL_HOST:
+    if CODEX_HOST or CURSOR_HOST or PI_HOST:
         # These hosts have no implicit Anthropic agent. Reuse a surviving transport,
         # after exclusions and probes; independent runs are not independent labs.
         bases = [s for s in seats if not s['extra']]
@@ -1851,7 +1851,7 @@ def degradation(seats, padded):
         return labs, True, 'quota fallback: %s; reduced provider diversity' % detail
     if padded <= 0 and len(labs) > 1:
         return labs, False, None
-    if CODEX_HOST or os.environ.get('REVIEW_COUNCIL_HOST') == 'pi':
+    if CODEX_HOST or PI_HOST:
         if not labs:
             return labs, True, 'no usable reviewer CLI - sign in to a supported provider'
         detail = ('%d repeat CLI seats; ' % padded) if padded else ''
@@ -2024,7 +2024,7 @@ def build(do_probe, quota_failed_seats=(), *, review_mode='code'):
     # those steps actually removed rather than a count taken before they ran.
     pad(kept, excluded, cfg, probe_results)
     # A silent fallback would hide partial, unenforced evidence and plan coverage.
-    if (not EXTERNAL_HOST and _RESOLVED.get('cli') and claude_adapter_setting(cfg)[0] == 'auto'
+    if (not (CODEX_HOST or CURSOR_HOST or PI_HOST) and _RESOLVED.get('cli') and claude_adapter_setting(cfg)[0] == 'auto'
             and any(s['adapter'] == 'agent' for s in kept)):
         excluded.append({'cli': 'claude_adapter',
                          'reason': 'auto -> agent (claude CLI %s): evidence and plan panels have partial, unenforced coverage'
@@ -2045,7 +2045,7 @@ def build(do_probe, quota_failed_seats=(), *, review_mode='code'):
     quota_labs.discard(None)
     quota_floor_met = (not floor_error and fallback_enabled and quota_labs
                        and len(set(real) | quota_labs) >= floor)
-    labs_strict = (not floor_error and (floor > 1 or EXTERNAL_HOST)
+    labs_strict = (not floor_error and (floor > 1 or CODEX_HOST or CURSOR_HOST or PI_HOST)
                    and len(real) < floor and not quota_floor_met)
     if labs_strict:
         append_exclusion(excluded, 'min_labs',
