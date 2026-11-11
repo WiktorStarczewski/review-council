@@ -12,7 +12,7 @@ from pathlib import Path
 import re
 
 
-HOSTS = ('claude', 'codex', 'cursor')
+HOSTS = ('claude', 'codex', 'cursor', 'pi')
 FAMILIES = ('luna', 'sol', 'terra', 'grok')
 NORMAL_CHAIN = ('luna', 'sonnet', 'sol', 'opus')
 REQUEST = re.compile(

@@ -7,14 +7,14 @@ actionable issues before publication.
 
 ## Prepare and review the candidate
 
-Start from a clean candidate commit and keep all three plugin manifest versions aligned.
+Start from a clean candidate commit and keep all three plugin manifests and the root Pi package version aligned.
 The repository rule in `AGENTS.md` applies to every host and release path. Do not invoke
 Review Council `rev` or `stack` for this repository.
 
 Verify the latest signed stable release before using it as the candidate base:
 
 ```bash
-git verify-tag review-council--v0.8.14
+git verify-tag review-council--v0.8.15
 ```
 
 Run the complete deterministic candidate gate in CI for the exact candidate commit on
@@ -25,7 +25,7 @@ python3 scripts/verify-review-council.py --root .
 ```
 
 The pull request workflows run the gate and package validation. Require both operating
-system results and the Cursor package job to pass on the current PR head. Any failure
+system results and the Cursor and Pi package jobs to pass on the current PR head. Any failure
 stops the release until the candidate is fixed and the required gates pass.
 
 ## Merge and publish
@@ -37,14 +37,18 @@ the pull request.
 From a clean checkout of the merged commit, publish the signed release:
 
 ```bash
-git tag -s review-council--v0.8.15 -m "review-council 0.8.15" "$MERGE_COMMIT"
-git push origin review-council--v0.8.15
-git verify-tag review-council--v0.8.15
-gh release create review-council--v0.8.15 --verify-tag \
-  --title "review-council 0.8.15" --generate-notes
+git tag -s review-council--v0.9.0 -m "review-council 0.9.0" "$MERGE_COMMIT"
+git push origin review-council--v0.9.0
+git verify-tag review-council--v0.9.0
+gh release create review-council--v0.9.0 --verify-tag \
+  --title "review-council 0.9.0" --generate-notes
 ```
 
 Reinstall `review-council@review-council` for Claude and Codex, and run
 `install-cursor.sh` for Cursor. In fresh sessions on each host, require `rev` and
-`stack` at version `0.8.15`, and compare installed file and mode identity with the
-released tag.
+`stack` at version `0.9.0`, and compare installed file and mode identity with the
+released tag. For Pi, install the pinned Git package and require `/rev` plus the
+`review-council-rev` skill at the same version (no stack). Run `/rev --setup` and
+verify command provenance, then compare installed file identity with the tag.
+Pi's `pi-package` CI job exercises actual install and RPC discovery without
+provider calls. This establishes package loading, not a live review receipt.

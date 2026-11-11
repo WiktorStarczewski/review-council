@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.9.0
+
+- Add native Pi `/rev` with one-line Git package installation, setup diagnostics and a host-bound workflow that cannot be shadowed by shared Codex skills.
+- Keep Pi reviewer and workhorse calls on explicit external transports, preserve review evidence and recovery rules, and support Pi phase resumption without requiring a subagent extension.
+- Validate Pi host contracts, generated workflow drift and real package command discovery in CI. Pi stack hosting is not included.
+
 ## 0.8.15
 
 - Recover exit-3 provider failures and explicitly recorded same-provider cancellations through the replacement chain while keeping exit 4 on quota fallback.

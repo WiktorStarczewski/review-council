@@ -10,6 +10,7 @@
   <a href="LICENSE"><img alt="license: MIT" src="https://img.shields.io/github/license/WiktorStarczewski/review-council?color=0969da"></a>
   <img alt="Claude Code plugin" src="https://img.shields.io/badge/Claude%20Code-plugin-d97757">
   <img alt="Codex plugin" src="https://img.shields.io/badge/Codex-plugin-412991">
+  <img alt="Pi package" src="https://img.shields.io/badge/Pi-package-555555">
   <img alt="runtime: bash and the python3 standard library" src="https://img.shields.io/badge/runtime-bash%20%2B%20python3%20stdlib-57606a">
 </p>
 
@@ -62,6 +63,16 @@ codex plugin add review-council@review-council
 
 Start a new Codex chat. [Codex setup](docs/codex.md) covers branch installs, local
 development and host differences.
+
+**Pi**
+
+```bash
+pi install git:github.com/WiktorStarczewski/review-council
+```
+
+Run `/reload`, then `/rev --setup` to check prerequisites. Invoke `/rev` with the
+same review scopes shown below. [Pi setup](docs/pi.md) covers authentication,
+updates, pinned releases and host differences. Pi supports `/rev` only, not stack.
 
 **Cursor**
 
@@ -128,6 +139,9 @@ roster needs.
 In Codex, ask in plain words: *"Use review-council to review this branch against
 origin/main"*, *"... for one round, read-only, on my uncommitted changes"*, or *"... to review
 the SDK and wallet branches as a dependency stack"*.
+
+In Pi, use `/rev`, `/rev uncommitted --read-only`, or `/rev <PR URL>`.
+The package binds its own Pi workflow, even if a shared Codex `rev` skill exists.
 
 In Cursor, select the native `rev` or `stack` skill and use the same requests.
 Verify the loaded package identity as described in [Cursor setup](docs/cursor.md).

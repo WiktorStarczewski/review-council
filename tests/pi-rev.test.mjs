@@ -6,7 +6,7 @@ import test from 'node:test';
 const extensionURL = new URL('../pi/rev.mjs', import.meta.url);
 const root = fileURLToPath(new URL('../', import.meta.url));
 
-async function harness({ idle = true, active = false } = {}) {
+async function harness({ idle = true } = {}) {
   assert.ok(existsSync(extensionURL), 'native /rev extension must exist');
   const { default: extension } = await import(extensionURL);
   const commands = new Map();
@@ -28,15 +28,8 @@ async function harness({ idle = true, active = false } = {}) {
     cwd: '/tmp/reviewed project',
     ui: { notify: (...args) => notices.push(args) },
   };
-  const previous = process.env.REV_ACTIVE;
-  if (active) process.env.REV_ACTIVE = '1';
-  try {
-    return { commands, messages, notices, executions, ctx,
-      invoke: (args) => commands.get('rev').handler(args, ctx) };
-  } finally {
-    if (previous === undefined) delete process.env.REV_ACTIVE;
-    else process.env.REV_ACTIVE = previous;
-  }
+  return { commands, messages, notices, executions, ctx,
+    invoke: (args) => commands.get('rev').handler(args, ctx) };
 }
 
 test('registers only /rev and binds the installed Pi workflow without shell interpretation', async () => {
@@ -97,4 +90,8 @@ test('manifest exposes only native Pi resources with no install lifecycle script
   assert.deepEqual(manifest.pi.prompts, []);
   assert.deepEqual(manifest.pi.themes, []);
   assert.equal(manifest.scripts?.postinstall, undefined);
+  for (const host of ['claude', 'codex', 'cursor']) {
+    const plugin = JSON.parse(readFileSync(new URL(`../plugins/review-council/.${host}-plugin/plugin.json`, import.meta.url)));
+    assert.equal(manifest.version, plugin.version, `${host} release version must match Pi`);
+  }
 });
