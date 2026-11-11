@@ -3486,7 +3486,8 @@ context = manifest['source_context']['seats'][seat]
 capacity = manifest['task_capacity']['seats'][seat]
 model = assignment['model']
 expected_total = limits['repository_expansion_call_limit_for_seat'](
-    context['source_read_required'], capacity['repository_source_target'], model)
+    context['source_read_required'], capacity['repository_source_target'], model,
+    manifest['assignments'][seat]['full_state'])
 expected_reserve = limits['repository_refutation_call_reserve_for_model'](model)
 assert expected_total == limits['REPOSITORY_EXPANSION_CALL_LIMIT'] * 6 + (
     expected_reserve if context['source_read_required']
