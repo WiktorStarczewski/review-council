@@ -94,6 +94,10 @@ def read_batch_limit(adapter):
     return 2 if adapter in ('claude', 'codex') else 1
 
 
+def patch_chunk_batch_limit(adapter):
+    return 6 if adapter == 'codex' else read_batch_limit(adapter)
+
+
 def source_segment_batch_limit(adapter):
     return (CLAUDE_SOURCE_SEGMENT_BATCH_LIMIT if adapter == 'claude'
             else read_batch_limit(adapter))
@@ -5280,7 +5284,6 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
         line_limit = read_line_limit(assignment['adapter'])
         patch_calls = (len(patch_set['chunks']) if patch_set['read_mode'] == 'chunks'
                        else (assignment['patch_lines'] + patch_limit - 1) // patch_limit)
-        batch = read_batch_limit(assignment['adapter'])
         packet = context['seats'][seat]
         packet_calls = len(packet['shards'])
         segment_calls = sum(len(row['segments']) for row in packet['required_source_ranges'])
@@ -5344,7 +5347,8 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
                                     if direct_calls > mandatory_limit else [])
             else:
                 proof_partitions = []
-        patch_batch = batch if patch_set['read_mode'] == 'chunks' else 1
+        patch_batch = (patch_chunk_batch_limit(assignment['adapter'])
+                       if patch_set['read_mode'] == 'chunks' else 1)
         patch_turns = (patch_calls + patch_batch - 1) // patch_batch
         source_segment_batch = source_segment_batch_limit(assignment['adapter'])
         source_segment_bytes = (SOURCE_SEGMENT_BATCH_VISIBLE_LIMIT
@@ -8128,7 +8132,7 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
     first_action = None
     if patch_mode == 'chunks':
         patch_set = manifest['patch_sets'][assignment['patch_set']]
-        batch_limit = read_batch_limit(assignment['adapter'])
+        batch_limit = patch_chunk_batch_limit(assignment['adapter'])
         print('Patch chunk batch limit: ' + str(batch_limit))
         print('Canonical assigned patch: ' + assignment['patch'] + ' SHA-256 '
               + assignment['patch_sha256'] + ' bytes ' + str(assignment['patch_bytes']))
@@ -8141,8 +8145,9 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
         first = str(Path(manifest['session']) / patch_set['chunks'][0]['artifact'])
         if assignment['adapter'] == 'codex':
             first_action = ('run ' + shlex.join(['cat', '--', first])
-                            + '. Continue in exact order, with up to two separate cat commands '
-                            + 'in one completed explicit model turn. Each command reads one chunk.')
+                            + '. Continue in exact order, with up to 6 consecutive patch chunks '
+                            + 'and at most 144 KiB aggregate output in one completed explicit '
+                            + 'model turn. Use one separate cat command for each chunk.')
         else:
             tool = read_tool_name(assignment['adapter'])
             first_action = ('use ' + tool + ' to read ' + str(batch_limit)
@@ -8172,9 +8177,17 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
               + ' Do not read the evidence index, source context, or original source until '
               + 'the assigned patch is complete.')
     if assignment['adapter'] == 'codex':
-        print('Codex ordered proof reads: up to 2 consecutive patch chunks, required source '
-              + 'segments, or evidence-index reads in a completed explicit model turn. Issue '
-              + 'each read through its own native command in exact order.')
+        if patch_mode == 'chunks':
+            print('Codex ordered proof reads: up to 2 required source segments or evidence-index '
+                  + 'reads per completed explicit model turn. Patch chunks use the separate '
+                  + 'contract below.')
+        else:
+            print('Codex ordered proof reads: up to 2 required source segments or evidence-index '
+                  + 'reads per completed explicit model turn.')
+        if patch_mode == 'chunks':
+            print('Codex patch chunk batches: up to 6 consecutive chunks in exact order, at most '
+                  + '144 KiB aggregate output, and no other reads in that completed explicit '
+                  + 'model turn.')
         print('A required source segment over 16 KiB because it is one line must be read alone.')
     print('Source context enabled: ' + str(manifest['source_context']['enabled']).lower())
     if manifest['source_context']['enabled']:

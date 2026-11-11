@@ -92,13 +92,13 @@ capacity = module.compile_task_capacity(assignment, window_sets, context)
 assert capacity['seats']['opus']['patch_proof_turns'] == 315
 assert capacity['seats']['opus']['projected_turns'] == 323
 assert module.task_capacity_errors(capacity) == ['task exceeds provider turn capacity: opus']
-chunk_sets = {'p01': {'read_mode':'chunks', 'chunks':[{}] * 300}}
+chunk_sets = {'p01': {'read_mode':'chunks', 'chunks':[{'bytes':1}] * 300}}
 capacity = module.compile_task_capacity(assignment, chunk_sets, context)
 assert capacity['seats']['opus']['repository_refutation_turns'] == 4
 assert capacity['seats']['opus']['projected_turns'] == 158
 assert module.task_capacity_errors(capacity) == []
 
-chunk_sets = {'p01': {'read_mode':'chunks', 'chunks':[{}] * 304}}
+chunk_sets = {'p01': {'read_mode':'chunks', 'chunks':[{'bytes':1}] * 304}}
 capacity = module.compile_task_capacity(assignment, chunk_sets, context)
 assert capacity['seats']['opus']['projected_turns'] == 160
 assert module.task_capacity_errors(capacity) == []
@@ -110,6 +110,24 @@ capacity = module.compile_task_capacity(assignment, chunk_sets, context)
 assert capacity['seats']['opus']['mandatory_repository_reads'] == 1
 assert capacity['seats']['opus']['projected_turns'] == 161
 assert module.task_capacity_errors(capacity) == ['task exceeds provider turn capacity: opus']
+
+codex_assignment = {'sol': {'adapter':'codex', 'model':'gpt-6.1-sol',
+                             'patch_set':'p01', 'patch_lines':0,
+                             'plan_clusters':['C-01']}}
+codex_context = {'seats': {'sol': {
+    'shards':[], 'required_source_ranges':[], 'omitted_source_ranges':[],
+    'source_read_required':False}}}
+chunks = [{'bytes':24 * 1024} for _ in range(703)]
+cluster = {'id':'C-01', 'paths':[
+    {'path':f'src/{index}.py', 'line_start':1, 'line_end':1}
+    for index in range(12)]}
+capacity = module.compile_task_capacity(
+    codex_assignment, {'p01': {'read_mode':'chunks', 'chunks':chunks}},
+    codex_context, [cluster])
+assert capacity['seats']['sol']['patch_proof_turns'] == 118
+assert capacity['seats']['sol']['mandatory_repository_read_turns'] == 12
+assert capacity['seats']['sol']['projected_turns'] == 138
+assert module.task_capacity_errors(capacity) == []
 
 assignment = {'sol': {'adapter':'codex', 'patch_set':'p01', 'patch_lines':0,
                       'plan_clusters':['C-01']}}
@@ -392,8 +410,10 @@ PY
       'reading only consecutive chunks in exact order and in full'
     assert_nogrep "chunk prompt does not reapply line-window limits to complete artifacts" "$prompt" \
       'at most 160 lines for each assigned-patch window'
-    assert_grep "Codex permits two patch chunks per completed turn" "$prompt" \
-      '^Patch chunk batch limit: 2$'
+    assert_grep "Codex permits six patch chunks per completed turn" "$prompt" \
+      '^Patch chunk batch limit: 6$'
+    assert_grep "Codex patch batches have a separate byte ceiling" "$prompt" \
+      'up to 6 consecutive patch chunks.*144 KiB'
     assert_grep "Codex chunk prompt gives an exact shell recipe" "$prompt" \
       '^First assigned-patch action: run cat -- '
     assert_nogrep "Codex chunk prompt never requests a native read tool" "$prompt" \
@@ -405,9 +425,9 @@ PY
     terra_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 terra "$terra_bundle" chunks --evidence "$manifest") || return
     opus_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 opus "$opus_bundle" chunks --evidence "$manifest") || return
     sonnet_prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 21 sonnet "$sonnet_bundle" chunks --evidence "$manifest") || return
-    assert_grep "Terra batches two consecutive patch chunks" "$terra_prompt" \
-      '^Patch chunk batch limit: 2$'
-    assert_grep "Opus batches two consecutive patch chunks" "$opus_prompt" \
+    assert_grep "Terra's Codex adapter batches six consecutive patch chunks" "$terra_prompt" \
+      '^Patch chunk batch limit: 6$'
+    assert_grep "Opus remains limited to two consecutive patch chunks" "$opus_prompt" \
       '^Patch chunk batch limit: 2$'
     assert_grep "Terra chunk prompt gives an exact shell recipe" "$terra_prompt" \
       '^First assigned-patch action: run cat -- '
@@ -607,7 +627,7 @@ test_patch_chunk_audit_contract() {
     python3 - "$R/src/large.py" <<'PY'
 import sys
 with open(sys.argv[1], 'w') as stream:
-    for index in range(4200):
+    for index in range(7000):
         stream.write(f'value_{index:04d} = {index:04d}\n')
 PY
     local base manifest prompt
@@ -630,7 +650,8 @@ manifest = json.load(open(sys.argv[1])); out = pathlib.Path(sys.argv[2])
 root = pathlib.Path(sys.argv[3]); mode = sys.argv[4]; session = pathlib.Path(sys.argv[1]).parent
 assignment = manifest['assignments']['sol']
 chunks = list(manifest['patch_sets'][assignment['patch_set']]['chunks'])
-turn_limit = 3 if mode == 'too-many' else 2
+turn_limit = (7 if mode == 'batch-seven' else
+              6 if mode in ('batch-six', 'mixed') else 2)
 if mode == 'reorder':
     chunks[0], chunks[1] = chunks[1], chunks[0]
 elif mode == 'missing':
@@ -668,6 +689,8 @@ for position, row in enumerate(chunks, 1):
                 content.splitlines(keepends=True)[0])
     else:
         command('chunk-' + str(position), 'cat -- ' + shlex.quote(str(path)), content)
+    if mode == 'mixed' and position == turn_limit:
+        command('mixed-source', "sed -n '1,1p' src/large.py", 'value_0000 = 0000\n')
     if position % turn_limit == 0 or position == len(chunks):
         events.append({'type':'turn.completed'})
 if mode in ('duplicate', 'duplicate-truncate', 'duplicate-replace'):
@@ -748,13 +771,35 @@ assert all(row['path'] not in chunk_artifacts for row in a['source_ranges'])
 PY
     assert_eq "chunk proof counters are internally consistent" "$?" 0
 
-    write_transcript too-many
+    write_transcript batch-six
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
       --raw "$S/r24-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
       --out "$S/r24-sol.read-audit.json" >/dev/null 2>&1
-    assert_eq "three Codex patch reads in one explicit turn exceed its batch limit" "$?" 2
-    assert_grep "oversized Codex patch turns have a stable batch violation" \
-      "$S/r24-sol.read-audit.json" '"code":"patch-chunk-batch-too-large"'
+    assert_eq "Codex accepts six ordered patch chunks in a completed turn" "$?" 0
+    actual=$(python3 - "$S/r24-sol.read-audit.json" <<'PY'
+import json, sys
+row = json.load(open(sys.argv[1]))
+print('yes' if row['expected_patch_chunks'] == row['opened_patch_chunks'] == row['patch_proof_calls']
+      and row['patch_proof_turns'] == 2 else 'no')
+PY
+)
+    assert_eq "six-chunk batch preserves every assigned chunk" "$actual" "yes"
+
+    write_transcript batch-seven
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+      --raw "$S/r24-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
+      --out "$S/r24-sol.read-audit.json" >/dev/null 2>&1
+    assert_eq "seven Codex patch chunks in one turn exceed the batch budget" "$?" 2
+    assert_grep "seven-chunk batch has a stable batch violation" "$S/r24-sol.read-audit.json" \
+      '"code":"patch-chunk-batch-too-large"'
+
+    write_transcript mixed
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+      --raw "$S/r24-sol.stream.ndjson" --prompt "$prompt" --root "$R" --session "$S" \
+      --out "$S/r24-sol.read-audit.json" >/dev/null 2>&1
+    assert_eq "Codex rejects a source read mixed into a patch-chunk batch" "$?" 2
+    assert_grep "mixed patch batch has a stable proof-batch violation" \
+      "$S/r24-sol.read-audit.json" '"code":"evidence-proof-batch-too-large"'
 
     local mode code
     for mode in missing reorder replace duplicate duplicate-truncate duplicate-replace unassigned truncate oversized packet-first search-first \

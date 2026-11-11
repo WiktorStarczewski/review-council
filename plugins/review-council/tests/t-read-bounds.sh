@@ -650,8 +650,29 @@ assert not audit.ordered_proof_turn_exempt(2, ['chunk', 'segment', 'index'], pro
 assert not audit.ordered_proof_turn_exempt(2, ['chunk', 'index'], proof, 60 * 1024 + 1)
 assert not audit.ordered_proof_turn_exempt(2, ['packet', 'index'], proof, 40 * 1024)
 assert not audit.ordered_proof_turn_exempt(2, ['chunk', 'source'], proof, 40 * 1024)
+
+chunk_calls = [f'chunk-{index}' for index in range(6)]
+chunk_outputs = {call: {'success':True, 'bytes':24 * 1024} for call in chunk_calls}
+assert audit.codex_patch_chunk_turn_exempt('codex', chunk_calls, chunk_outputs,
+                                           set(chunk_calls))
+assert not audit.codex_patch_chunk_turn_exempt('claude', chunk_calls, chunk_outputs,
+                                               set(chunk_calls))
+assert not audit.codex_patch_chunk_turn_exempt(
+    'codex', chunk_calls + ['source'], chunk_outputs, set(chunk_calls))
+over_budget = dict(chunk_outputs)
+over_budget['chunk-5'] = {'success':True, 'bytes':25 * 1024}
+assert not audit.codex_patch_chunk_turn_exempt(
+    'codex', chunk_calls, over_budget, set(chunk_calls))
+over_call = dict(chunk_outputs)
+over_call['chunk-0'] = {'success':True, 'bytes':33 * 1024}
+assert not audit.codex_patch_chunk_turn_exempt(
+    'codex', chunk_calls, over_call, set(chunk_calls))
+seven_calls = chunk_calls + ['chunk-6']
+seven_outputs = dict(chunk_outputs, **{'chunk-6': {'success':True, 'bytes':1}})
+assert not audit.codex_patch_chunk_turn_exempt(
+    'codex', seven_calls, seven_outputs, set(seven_calls))
 PY
-  assert_eq "only bounded ordered proof reads share the 60 KiB turn exemption" "$?" 0
+  assert_eq "only isolated proof reads within their adapter budget share a turn" "$?" 0
 }
 
 test_grok_visible_output_accounting() {
@@ -1086,6 +1107,8 @@ PY
     local bundle
     bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"]["sol"]["bundle"])' "$manifest") || return
     prompt=$("$SCRIPTS/rev-prompt.sh" "$S" 8 sol "$bundle" patch-chunks --evidence "$manifest") || return
+    assert_grep "window-mode Codex prompt limits source and evidence reads without claiming a patch-window turn cap" \
+      "$prompt" '^Codex ordered proof reads: up to 2 required source segments or evidence-index reads per completed explicit model turn\.$'
     printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r8-sol.json"
 
     write_patch_transcript() {
@@ -1385,8 +1408,10 @@ PY
       "$S/r9-sol.read-audit.json" '"required_source_range_proofs":\[\{"blob_oid":"[0-9a-f]{64}"'
     assert_grep "Codex permits two required source segments per completed turn" "$prompt" \
       '^Required source segment batch limit: 2$'
-    assert_grep "Codex prompt requires explicit turns for ordered proof pairing" "$prompt" \
-      '^Codex ordered proof reads: up to 2 consecutive patch chunks, required source segments, or evidence-index reads in a completed explicit model turn\.'
+    assert_grep "Codex window-mode prompt keeps ordered proof reads at two per turn" "$prompt" \
+      '^Codex ordered proof reads: up to 2 required source segments or evidence-index reads per completed explicit model turn\.'
+    assert_nogrep "Codex window-mode prompt omits the patch-chunk contract" "$prompt" \
+      '^Codex patch chunk batches:'
     assert_grep "Codex prompt keeps oversized single-line segments alone" "$prompt" \
       '^A required source segment over 16 KiB because it is one line must be read alone\.$'
     assert_grep "Codex reads required source through a session artifact" "$prompt" \
@@ -3989,7 +4014,7 @@ test_audit_severity_pacing_keeps_credit() {
     severity_transcript "$S" 33 codex "{\"batch_chunks\":[1,2],\"alter_chunk\":2,\"tail\":[$clean]}"
     assert_eq "the same batch with an altered chunk is incomplete" \
       "$(severity_audit "$R" "$S" 33 codex)" \
-      "$(severity_expect invalid "assigned-patch-output-mismatch@command_execution,missing-assigned-patch-chunk@codex" -)"
+      "$(severity_expect invalid "assigned-patch-output-mismatch@command_execution,evidence-proof-batch-too-large@codex,missing-assigned-patch-chunk@codex" -)"
 
     # An oversized read in a shared turn must also revoke otherwise valid proof reads.
     local size='tool-output-too-large@command_execution,tool-turn-output-too-large@codex'
