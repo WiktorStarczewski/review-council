@@ -41,6 +41,20 @@ w.resolve_available('pi', luna=('gpt-6-luna', 'high'))]))
         self.assertIsNone(sonnet)
         self.assertEqual((record['host'], record['adapter']), ('pi', 'codex'))
 
+    def test_pi_request_freezes_the_normal_roster_without_rewriting_user_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory)
+            config = session / 'user.json'
+            config.write_text('{"extras": false}\n')
+            env = dict(os.environ, REVIEW_COUNCIL_HOST='pi')
+            proc = subprocess.run(['python3', str(PLUGIN / 'scripts/rev-panel-request.py'),
+                                   '--text', 'branch', '--session', directory, '--base', str(config)],
+                                  env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            request = json.loads((session / 'panel-request.json').read_text())
+            self.assertEqual(request['host'], 'pi')
+            self.assertEqual(config.read_text(), '{"extras": false}\n')
+
     def test_pi_resumption_selects_bundled_phase_files(self):
         brief = module(PLUGIN / 'scripts/rev-brief.py')
         self.assertEqual(brief.skill_dir('pi'), PLUGIN / 'pi-skills/review-council-rev')

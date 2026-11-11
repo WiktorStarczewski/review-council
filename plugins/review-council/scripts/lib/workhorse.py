@@ -26,7 +26,7 @@ if str(LIB) not in sys.path:
 from roster import (AUTH_FAILURE, CLAUDE_SESSION_ENV, QUOTA_FAILURE, claude_cli_reason,
                     codex_catalog, codex_catalog_path, codex_suffix, reasoning_efforts)
 
-HOSTS = ('claude', 'codex', 'cursor')
+HOSTS = ('claude', 'codex', 'cursor', 'pi')
 CHAIN = ('luna', 'sonnet', 'sol', 'opus')
 ORDER = ('cursor-grok',) + CHAIN
 FAMILIES = ORDER
