@@ -115,10 +115,18 @@ When present it replaces `baseline.md` in reviewer prompts; include the full bas
 including skipped checks and pre-existing failures.
 
 Unless session state or config explicitly sets `status_tick` to `false`, keep a live
-progress watcher attached from setup through completion:
-`python3 "$PLUGIN/scripts/rev-context.py" "$S" --watch`.
-Relay each narrated status line as-is. Also run `rev-status.sh "$S"` after a phase
-change, seat failure, or terminal result; see the triage phase for what each update
-contains and what it must omit.
-The default watch runs until a terminal phase. Add `--duration <seconds>` only for a
-deliberately bounded watch.
+progress watcher in a session-owned background process from setup through completion:
+
+```bash
+REVIEW_COUNCIL_HOST=pi python3 "$PLUGIN/scripts/rev-context.py" "$S" --watch \
+  >>"$S/status-watch.log" 2>&1 < /dev/null &
+printf '%s\n' "$!" >"$S/status-watch.pid"
+```
+
+Retain its process start identity. At every bounded process poll, read new lines
+from `$S/status-watch.log` and relay each narrated line as-is exactly once, tracking
+the last consumed offset. Also run `REVIEW_COUNCIL_HOST=pi "$PLUGIN/scripts/rev-status.sh"
+"$S"` after a phase change, seat failure, or terminal result. The watcher exits on
+a terminal phase. Never hold a Pi bash call open for the lifetime of a review.
+On resumption, verify the saved process identity; restart a dead watcher without
+discarding its log or replaying already consumed lines.

@@ -154,9 +154,11 @@ a phase change, a seat failure, or a terminal result, and run `rev-status.sh "$S
 The status script reads artifacts without model calls and summarizes reviewer activity,
 open P0-P2 findings, fixes, and the latest returned finding. Large changes deserve
 explicit remaining-coverage notes, not just counts. When `status_tick` is true, use
-`python3 "$PLUGIN/scripts/rev-context.py" "$S" --watch` in an attached execution.
-It runs until a terminal phase, emits narrated live status, and keeps the ten-minute
-cadence fixed across state changes. Relay scheduled events only while the tick is enabled.
+the session-owned background watcher from setup, polling `$S/status-watch.log`
+for new narrated lines during every bounded process poll. Verify its saved process
+identity and recover a dead watcher without clearing the log. It runs until a terminal
+phase and keeps the ten-minute cadence fixed across state changes. Relay each new
+scheduled event once, using the saved consumed offset, only while the tick is enabled.
 
 For an initialized PR scope, later review-owned commits or dirty fixes require the explicit [PR progression declaration](../../../docs/pr-progress.md) on the next prepare. Keep original scope and evidence immutable; never bypass the pinned guard or infer ownership from ancestry.
 

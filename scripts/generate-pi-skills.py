@@ -67,6 +67,37 @@ there is a concrete external blocker. Do not edit while reviewer reads are activ
         text = text.replace('including Codex and Claude Code', 'including Pi, Codex and Claude Code')
     if relative == Path('phases/10-setup.md'):
         text = text.replace('Codex roster', 'Pi roster')
+        text = replace_once(text,
+            'progress watcher attached from setup through completion:\n'
+            '`python3 "$PLUGIN/scripts/rev-context.py" "$S" --watch`.\n'
+            'Relay each narrated status line as-is. Also run `rev-status.sh "$S"` after a phase\n'
+            'change, seat failure, or terminal result; see the triage phase for what each update\n'
+            'contains and what it must omit.\n'
+            'The default watch runs until a terminal phase. Add `--duration <seconds>` only for a\n'
+            'deliberately bounded watch.',
+            'progress watcher in a session-owned background process from setup through completion:\n\n'
+            '```bash\n'
+            'REVIEW_COUNCIL_HOST=pi python3 "$PLUGIN/scripts/rev-context.py" "$S" --watch \\\n'
+            '  >>"$S/status-watch.log" 2>&1 < /dev/null &\n'
+            'printf \'%s\\n\' "$!" >"$S/status-watch.pid"\n'
+            '```\n\n'
+            'Retain its process start identity. At every bounded process poll, read new lines\n'
+            'from `$S/status-watch.log` and relay each narrated line as-is exactly once, tracking\n'
+            'the last consumed offset. Also run `REVIEW_COUNCIL_HOST=pi "$PLUGIN/scripts/rev-status.sh"\n'
+            '"$S"` after a phase change, seat failure, or terminal result. The watcher exits on\n'
+            'a terminal phase. Never hold a Pi bash call open for the lifetime of a review.\n'
+            'On resumption, verify the saved process identity; restart a dead watcher without\n'
+            'discarding its log or replaying already consumed lines.')
+    if relative == Path('phases/30-triage.md'):
+        text = replace_once(text,
+            '`python3 "$PLUGIN/scripts/rev-context.py" "$S" --watch` in an attached execution.\n'
+            'It runs until a terminal phase, emits narrated live status, and keeps the ten-minute\n'
+            'cadence fixed across state changes. Relay scheduled events only while the tick is enabled.',
+            'the session-owned background watcher from setup, polling `$S/status-watch.log`\n'
+            'for new narrated lines during every bounded process poll. Verify its saved process\n'
+            'identity and recover a dead watcher without clearing the log. It runs until a terminal\n'
+            'phase and keeps the ten-minute cadence fixed across state changes. Relay each new\n'
+            'scheduled event once, using the saved consumed offset, only while the tick is enabled.')
     if relative == Path('phases/20-discovery.md'):
         text = text.replace('a Codex host always seats them on `claude`.',
                             'a Pi host always seats them on the external `claude` CLI.')

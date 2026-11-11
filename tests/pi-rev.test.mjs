@@ -83,6 +83,15 @@ test('setup checks tools with bounded execution but never calls provider models'
   assert.match(h.notices[0][0], /codex login/);
 });
 
+test('Pi status phases use durable watcher files rather than unavailable attached sessions', () => {
+  for (const phase of ['10-setup', '30-triage']) {
+    const text = readFileSync(new URL(`../plugins/review-council/pi-skills/review-council-rev/phases/${phase}.md`, import.meta.url), 'utf8');
+    assert.doesNotMatch(text, /watcher attached|in an attached execution/);
+    assert.match(text, /status-watch\.log/);
+    assert.match(text, /poll/i);
+  }
+});
+
 test('manifest exposes only native Pi resources with no install lifecycle scripts', async () => {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url)));
   assert.deepEqual(manifest.pi.extensions, ['./pi/rev.mjs']);
