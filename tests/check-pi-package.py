@@ -21,7 +21,8 @@ def check():
         subprocess.run(['pi', 'install', str(REPO)], env=env, cwd=root,
                        check=True, timeout=30)
         settings = json.loads((root / 'agent/settings.json').read_text())
-        assert str(REPO) in settings['packages'], settings
+        assert REPO in [(root / 'agent' / source).resolve()
+                        for source in settings['packages']], settings
         with (root / 'stderr.log').open('w+') as errors:
             proc = subprocess.Popen(['pi', '--mode', 'rpc', '--no-session',
                                      '--no-context-files', '--offline'],
