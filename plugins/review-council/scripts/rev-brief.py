@@ -29,6 +29,8 @@ PHASE_FILES = {
 
 
 def skill_dir(host):
+    if host == 'pi':
+        return PLUGIN / 'pi-skills' / 'review-council-rev'
     if host == 'codex':
         return PLUGIN / 'codex-skills' / 'rev'
     if host == 'cursor':
@@ -90,7 +92,7 @@ def main(argv=None):
     parser.add_argument('--host', default='claude')
     parser.add_argument('--config')
     args = parser.parse_args(argv)
-    if args.host not in ('claude', 'codex', 'cursor'):
+    if args.host not in ('claude', 'codex', 'cursor', 'pi'):
         print('rev-brief: unknown host', file=sys.stderr)
         return 2
     print(json.dumps(brief(args.session, args.host, args.config), indent=2, sort_keys=True))

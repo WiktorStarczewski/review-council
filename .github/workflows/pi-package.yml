@@ -1,0 +1,25 @@
+name: pi-package
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  pi-package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - name: Pi host contracts
+        run: python3 -m unittest discover -s tests -p test_pi.py -v
+      - name: Existing Codex host contracts
+        run: python3 -m unittest discover -s tests -p test_codex.py -v
+      - name: Native command contracts
+        run: node --test tests/pi-rev.test.mjs
+      - name: Generated workflow drift
+        run: python3 scripts/generate-pi-skills.py --check
+      - name: Install Pi
+        run: npm install -g @earendil-works/pi-coding-agent@1.5.2
+      - name: Actual Pi package discovery
+        run: python3 tests/check-pi-package.py

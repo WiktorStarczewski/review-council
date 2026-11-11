@@ -1,0 +1,72 @@
+"""Pi must use enforced external transports and its own resumable workflow."""
+import importlib.util
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+import unittest
+from unittest.mock import patch
+
+REPO = Path(__file__).resolve().parents[1]
+PLUGIN = REPO / 'plugins/review-council'
+
+
+def module(path):
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    result = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(result)
+    return result
+
+
+class PiHostTests(unittest.TestCase):
+    def test_pi_never_selects_an_implicit_agent_even_when_requested(self):
+        with patch.dict(os.environ, {'REVIEW_COUNCIL_HOST': 'pi',
+                                     'REVIEW_COUNCIL_CLAUDE_ADAPTER': 'agent'}):
+            roster = module(PLUGIN / 'scripts/lib/roster.py')
+            self.assertEqual(roster.anthropic_adapter({}), 'claude')
+
+    def test_pi_workhorse_accepts_host_and_requires_cli_for_anthropic(self):
+        code = '''import sys, json
+sys.path.insert(0, sys.argv[1])
+import workhorse as w
+print(json.dumps([w.host_name('pi'), w.sonnet_candidate('pi', 'missing'),
+w.resolve_available('pi', luna=('gpt-6-luna', 'high'))]))
+'''
+        proc = subprocess.run(['python3', '-c', code, str(PLUGIN / 'scripts/lib')],
+                              capture_output=True, text=True, timeout=10)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        host, sonnet, record = json.loads(proc.stdout)
+        self.assertEqual(host, 'pi')
+        self.assertIsNone(sonnet)
+        self.assertEqual((record['host'], record['adapter']), ('pi', 'codex'))
+
+    def test_pi_request_freezes_the_normal_roster_without_rewriting_user_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory)
+            config = session / 'user.json'
+            config.write_text('{"extras": false}\n')
+            env = dict(os.environ, REVIEW_COUNCIL_HOST='pi')
+            proc = subprocess.run(['python3', str(PLUGIN / 'scripts/rev-panel-request.py'),
+                                   '--text', 'branch', '--session', directory, '--base', str(config)],
+                                  env=env, capture_output=True, text=True, timeout=10)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            request = json.loads((session / 'panel-request.json').read_text())
+            self.assertEqual(request['host'], 'pi')
+            self.assertEqual(config.read_text(), '{"extras": false}\n')
+
+    def test_pi_resumption_selects_bundled_phase_files(self):
+        brief = module(PLUGIN / 'scripts/rev-brief.py')
+        self.assertEqual(brief.skill_dir('pi'), PLUGIN / 'pi-skills/review-council-rev')
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory)
+            (session / 'state.json').write_text(json.dumps({'phase': 'fix'}))
+            proc = subprocess.run(['python3', str(PLUGIN / 'scripts/rev-brief.py'),
+                                   directory, '--host', 'pi'],
+                                  capture_output=True, text=True, timeout=10)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(json.loads(proc.stdout)['phase_file'], 'phases/30-triage.md')
+
+
+if __name__ == '__main__':
+    unittest.main()
