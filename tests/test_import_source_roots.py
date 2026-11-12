@@ -2,6 +2,7 @@
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 from test_code_source_promotion import PromotionFixture
 from test_deleted_source_proof import load_evidence
@@ -50,8 +51,8 @@ class MemoryRepository:
 
 
 class ImportCandidateIdentityTests(unittest.TestCase):
-    def facts(self, files, *changed):
-        evidence = load_evidence()
+    def facts(self, files, *changed, evidence=None):
+        evidence = evidence or load_evidence()
         repository = MemoryRepository(files)
         hunks = [{'path': path, 'changed_lines': [1]} for path in changed]
         return evidence.facts(repository, 'snapshot', hunks, {path: 'code' for path in changed})
@@ -142,6 +143,72 @@ class ImportCandidateIdentityTests(unittest.TestCase):
         self.assertFalse(any(row['source'] == 'src/consumer.ts'
                              and row['target'] == 'visual/fixture.tsx'
                              for row in facts['dependencies']), facts)
+
+    def test_named_barrel_route_work_is_bounded_per_snapshot(self):
+        evidence = load_evidence()
+        consumers = {f'src/consumer{index}.ts' for index in range(32)}
+        files = {
+            'src/hooks.ts': 'export const useAccount = () => 1;\n',
+            'src/index.ts': 'export { useAccount } from "./exports";\n',
+            'src/exports.ts': 'export { useAccount } from "./hooks";\n',
+            'visual/fixture.tsx': 'export const useAccount = () => 2;\n',
+            **{path: 'import { useAccount } from "./index";\nuseAccount();\n'
+               for path in consumers},
+        }
+        changed = ('src/hooks.ts', 'visual/fixture.tsx')
+        with mock.patch.object(evidence, 'ts_reexport_references',
+                               wraps=evidence.ts_reexport_references) as traversals:
+            facts = self.facts(files, *changed, evidence=evidence)
+            self.assertEqual({row['path'] for row in facts['call_sites']
+                              if row['name'] == 'useAccount'}, consumers)
+            obligations = {row['path']: row for row in facts['unresolved_imports']
+                           if row['path'] in consumers}
+            self.assertEqual(set(obligations), consumers)
+            for path, obligation in obligations.items():
+                self.assertEqual({row['path'] for row in obligation['candidate_symbols']},
+                                 {'src/hooks.ts', 'src/index.ts', 'src/exports.ts'})
+                self.assertNotIn('visual/fixture.tsx', obligation['candidate_targets'])
+                self.assertIn({'source': path, 'target': 'src/hooks.ts',
+                               'kind': 'ambiguous-import'}, facts['dependencies'])
+                self.assertIn({'source': path, 'target': 'src/index.ts',
+                               'kind': 'local-import'}, facts['dependencies'])
+            self.assertIn({'source': 'src/index.ts', 'target': 'src/exports.ts',
+                           'kind': 'local-import'}, facts['dependencies'])
+            self.assertIn({'source': 'src/exports.ts', 'target': 'src/hooks.ts',
+                           'kind': 'local-import'}, facts['dependencies'])
+            self.assertLessEqual(traversals.call_count, 12,
+                                 'shared named-barrel routes were traversed again per consumer')
+            snapshots = [(dict(files), facts)]
+
+            files['src/exports.ts'] = 'export { useAccount } from "../visual/fixture";\n'
+            traversals.reset_mock()
+            facts = self.facts(files, *changed, evidence=evidence)
+            for obligation in facts['unresolved_imports']:
+                if obligation['path'] in consumers:
+                    self.assertIn('visual/fixture.tsx', obligation['candidate_targets'])
+                    self.assertNotIn('src/hooks.ts', obligation['candidate_targets'])
+            self.assertEqual({row['path'] for row in facts['call_sites']
+                              if row['name'] == 'useAccount'}, consumers)
+            self.assertLessEqual(traversals.call_count, 12)
+            snapshots.append((dict(files), facts))
+
+            files['src/index.ts'] += 'export * from "./missing";\n'
+            traversals.reset_mock()
+            facts = self.facts(files, *changed, evidence=evidence)
+            obligations = {row['path']: row for row in facts['unresolved_imports']
+                           if row['path'] in consumers}
+            self.assertEqual(set(obligations), consumers)
+            for obligation in obligations.values():
+                self.assertTrue(obligation['candidate_route_symbols'])
+                self.assertIn({'path': 'src/index.ts', 'line_start': 1, 'line_end': 2},
+                              obligation['candidate_search_ranges'])
+            self.assertLessEqual(traversals.call_count, 12)
+            snapshots.append((dict(files), facts))
+
+        with mock.patch.object(evidence, 'lru_cache',
+                               lambda **options: lambda function: function, create=True):
+            for source, cached in snapshots:
+                self.assertEqual(self.facts(source, *changed, evidence=evidence), cached)
 
     def test_aliased_barrel_retains_original_symbol_without_fixture_homonym(self):
         facts = self.facts({
