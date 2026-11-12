@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import queue
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -14,6 +15,9 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def check():
+    loader = Path(shutil.which('pi')).resolve().parent / 'core/extensions/loader.js'
+    subprocess.run(['node', '--test', str(REPO / 'tests/pi-reload.test.mjs')],
+                   env=dict(os.environ, PI_TEST_LOADER=loader.as_uri()), check=True, timeout=30)
     with tempfile.TemporaryDirectory(prefix='council-pi-discovery-') as directory:
         root = Path(directory)
         env = dict(os.environ, HOME=str(root), PI_CODING_AGENT_DIR=str(root / 'agent'),
