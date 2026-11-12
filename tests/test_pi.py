@@ -55,6 +55,24 @@ w.resolve_available('pi', luna=('gpt-6-luna', 'high'))]))
             self.assertEqual(request['host'], 'pi')
             self.assertEqual(config.read_text(), '{"extras": false}\n')
 
+    def test_pi_high_request_selects_two_sol_and_two_opus_without_user_config_changes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = Path(directory)
+            config = session / 'user.json'
+            original = '{"claude_models":["opus","sonnet"],"extras":true}\n'
+            config.write_text(original)
+            proc = subprocess.run(['python3', str(PLUGIN / 'scripts/rev-panel-request.py'),
+                                   '--text', 'mode: high\nbranch', '--session', directory,
+                                   '--base', str(config)],
+                                  env=dict(os.environ, REVIEW_COUNCIL_HOST='pi'),
+                                  capture_output=True, text=True, timeout=10)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            selected = json.loads((session / 'roster-config.json').read_text())
+            self.assertEqual(selected['codex_models'], ['latest-sol', 'latest-sol'])
+            self.assertEqual(selected['claude_seats'], 2)
+            self.assertNotIn('claude_models', selected)
+            self.assertEqual(config.read_text(), original)
+
     def test_pi_resumption_selects_bundled_phase_files(self):
         brief = module(PLUGIN / 'scripts/rev-brief.py')
         self.assertEqual(brief.skill_dir('pi'), PLUGIN / 'pi-skills/review-council-rev')

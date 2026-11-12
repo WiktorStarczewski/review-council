@@ -19,6 +19,14 @@ def load():
     return module
 
 
+def load_roster():
+    spec = importlib.util.spec_from_file_location('roster_under_test', ROSTER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.PI_HOST = True
+    return module
+
+
 class PanelRequestTests(unittest.TestCase):
     def setUp(self):
         self.panel = load()
@@ -80,15 +88,15 @@ class PanelRequestTests(unittest.TestCase):
         recorded = json.loads((session / 'panel-request.json').read_text())
         self.assertEqual(recorded['chain'], ['luna', 'sonnet', 'sol', 'opus'])
 
-    def test_high_effort_is_one_of_each_and_high_risk_is_not(self):
+    def test_high_effort_is_two_sol_two_opus_and_high_risk_is_not(self):
         self.assertEqual(self.panel.chosen_mode('review this, high-risk'), 'normal')
         self.assertEqual(self.panel.chosen_mode('/rev this_pr, high effort'), 'high')
         self.assertEqual(self.panel.chosen_mode('high effort, then normal effort'), 'normal')
         config = self.panel.mode_config({'codex_effort': 'max', 'quota_fallback': True}, 'high', 'claude', False)
-        self.assertEqual(config['codex_models'], ['latest-sol', 'latest-luna'])
-        self.assertEqual(config['claude_models'], ['opus', 'sonnet'])
+        self.assertEqual(config['codex_models'], ['latest-sol', 'latest-sol'])
+        self.assertEqual(config['claude_seats'], 2)
+        self.assertNotIn('claude_models', config)
         self.assertEqual(config['codex_effort'], 'max')
-        self.assertNotIn('claude_seats', config)
         self.assertEqual(config['panel_mode'], 'high')
         cursor = self.panel.chain_for('cursor')
         self.assertEqual(cursor, ('grok', 'luna', 'sonnet', 'sol', 'opus'))
@@ -108,10 +116,98 @@ class PanelRequestTests(unittest.TestCase):
         explicit = self.panel.session_config({}, {'family': 'grok', 'count': 4}, host='cursor', grok_ready=True)
         self.assertNotIn('panel_fallback', explicit)
 
+    def high_fixture(self):
+        roster = load_roster()
+        cfg = {'panel_mode': 'high', 'codex_models': ['gpt-5.6-sol'] * 2,
+               'claude_seats': 2, 'extras': False, 'min_labs': 1}
+        sols = [roster.make_seat(name, 'codex', 'gpt-5.6-sol', 'xhigh')
+                for name in ('codex-sol', 'codex-sol-2')]
+        opuses = roster.opus_seats('claude', 2)
+        return roster, cfg, sols, opuses
+
+    def test_high_preset_is_identical_on_all_hosts_and_drops_old_claude_models(self):
+        for host in ('claude', 'codex', 'cursor', 'pi'):
+            with self.subTest(host=host):
+                session = Path(self.temp.name) / host
+                base = Path(self.temp.name) / 'base.json'
+                original = '{"claude_models":["opus","sonnet"],"quota_fallback":true}\n'
+                base.write_text(original)
+                path = self.panel.write_session(session, 'mode: high', base,
+                                                host=host, grok_ready=True)
+                cfg = json.loads(path.read_text())
+                self.assertEqual(cfg['codex_models'], ['latest-sol', 'latest-sol'])
+                self.assertEqual(cfg['claude_seats'], 2)
+                self.assertNotIn('claude_models', cfg)
+                self.assertNotIn('cursor_sdk_models', cfg)
+                self.assertTrue(cfg['quota_fallback'])
+                self.assertEqual(base.read_text(), original)
+
+    def test_explicit_roster_still_overrides_high(self):
+        path = self.panel.write_session(Path(self.temp.name) / 'explicit',
+                                        'mode: high, use 4*luna', host='pi', grok_ready=False)
+        cfg = json.loads(path.read_text())
+        self.assertEqual(cfg['codex_models'], ['latest-luna'] * 4)
+        self.assertEqual(cfg['claude_seats'], 0)
+        self.assertNotIn('claude_models', cfg)
+        self.assertEqual(json.loads((path.parent / 'panel-request.json').read_text())['roster'], 'explicit')
+
+    def test_high_healthy_panel_has_four_distinct_required_seats(self):
+        roster, cfg, sols, opuses = self.high_fixture()
+        names = roster.codex_seat_names([('gpt-5.6-sol', 'xhigh')] * 2)
+        self.assertEqual(names, ['codex-sol', 'codex-sol-2'])
+        actual_opuses, error = roster.claude_seats('claude', cfg)
+        self.assertIsNone(error)
+        self.assertEqual([(s['seat'], s['model']) for s in actual_opuses],
+                         [('opus', 'opus'), ('opus-2', 'opus')])
+        kept, excluded = sols + opuses, []
+        roster.substitute_high_pairs(kept, excluded, cfg)
+        self.assertEqual([s['seat'] for s in kept], ['codex-sol', 'codex-sol-2', 'opus', 'opus-2'])
+        self.assertEqual(excluded, [])
+        self.assertEqual(roster.enforce_exact_seats(cfg, kept, excluded), (None, None))
+
+    def test_high_replaces_both_missing_opus_seats_without_padding(self):
+        roster, cfg, sols, _ = self.high_fixture()
+        kept, excluded = sols, []
+        roster.substitute_high_pairs(kept, excluded, cfg)
+        clones = [s for s in kept if s.get('substitutes_for')]
+        self.assertEqual([s['substitutes_for'] for s in clones], ['opus', 'opus-2'])
+        self.assertEqual([s['model'] for s in clones], ['gpt-5.6-sol', 'gpt-5.6-sol'])
+        self.assertEqual(len({s['seat'] for s in kept}), 4)
+        self.assertFalse(any(s.get('padded') for s in kept))
+        self.assertEqual(roster.enforce_exact_seats(cfg, kept, excluded), (None, None))
+
+    def test_high_replaces_both_missing_sol_seats_without_padding(self):
+        roster, cfg, _, opuses = self.high_fixture()
+        kept, excluded = opuses, []
+        roster.substitute_high_pairs(kept, excluded, cfg)
+        clones = [s for s in kept if s.get('substitutes_for')]
+        self.assertEqual([s['substitutes_for'] for s in clones], ['codex-sol', 'codex-sol-2'])
+        self.assertEqual([s['model'] for s in clones], ['opus', 'opus'])
+        self.assertEqual(len({s['seat'] for s in kept}), 4)
+        self.assertEqual(roster.enforce_exact_seats(cfg, kept, excluded), (None, None))
+
+    def test_high_partial_missing_seat_is_replaced_once_and_exclusions_are_not_bypassed(self):
+        roster, cfg, sols, opuses = self.high_fixture()
+        kept, excluded = sols + opuses[:1], []
+        roster.substitute_high_pairs(kept, excluded, cfg)
+        roster.substitute_high_pairs(kept, excluded, cfg)
+        self.assertEqual([s['substitutes_for'] for s in kept if s.get('substitutes_for')], ['opus-2'])
+        self.assertEqual(len(kept), 4)
+        cfg['exclude'] = ['opus-2']
+        kept, excluded = sols + opuses[:1], []
+        roster.substitute_high_pairs(kept, excluded, cfg)
+        self.assertEqual(len(kept), 3)
+        self.assertIsNotNone(roster.enforce_exact_seats(cfg, kept, excluded)[0])
+
+    def test_high_with_both_families_down_invents_nothing(self):
+        roster, cfg, _, _ = self.high_fixture()
+        kept, excluded = [], []
+        roster.substitute_high_pairs(kept, excluded, cfg)
+        self.assertEqual(kept, [])
+        self.assertIsNotNone(roster.enforce_exact_seats(cfg, kept, excluded)[0])
+
     def test_high_mode_substitutes_a_missing_partner_and_not_a_third_family(self):
-        spec = importlib.util.spec_from_file_location('roster_under_test', ROSTER)
-        roster = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(roster)
+        roster = load_roster()
         cfg = {'panel_mode': 'high', 'codex_models': ['gpt-5.6-sol', 'gpt-5.6-luna'],
                'claude_models': ['opus', 'sonnet']}
         sol = {'seat': 'codex-sol', 'adapter': 'codex', 'model': 'gpt-5.6-sol',
