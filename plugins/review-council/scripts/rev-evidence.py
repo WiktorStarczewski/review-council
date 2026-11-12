@@ -1506,8 +1506,7 @@ def brace_code(source, extension):
         elif source.startswith('/*', index):
             depth = 1; index += 2
             while index < len(source) and depth:
-                if (extension not in ('.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx')
-                        and source.startswith('/*', index)):
+                if extension == '.rs' and source.startswith('/*', index):
                     depth += 1; index += 2
                 elif source.startswith('*/', index):
                     depth -= 1; index += 2
