@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.9.1
+
+- Add `/council` as the primary Pi review command, retaining `/rev` as an alias.
+- Show an independent Council footer and select ECO (four Luna) or HIGH (Opus, Sol, Sonnet and Luna) with `/council eco` and `/council high`, without requiring Ponytail.
+- Persist the panel selection per session and apply it to new command, conversational and direct-skill reviews while preserving explicit overrides and frozen review rosters.
+
 ## 0.9.0
 
 - Add native Pi `/rev` with one-line Git package installation, setup diagnostics and a host-bound workflow that cannot be shadowed by shared Codex skills.

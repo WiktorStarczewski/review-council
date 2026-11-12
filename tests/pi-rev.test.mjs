@@ -45,7 +45,7 @@ async function harness({ idle = true, entries = [], hasUI = true } = {}) {
   const emit = (name, event = {}) => events.get(name)?.(event, ctx);
   await emit('session_start', { reason: 'startup' });
   return { commands, messages, notices, executions, ctx, statuses, saved, entries, emit,
-    invoke: (args = '', name = 'council') => commands.get(name)?.handler(args, ctx) }; 
+    invoke: (args = '', name = 'council') => commands.get(name)?.handler(args, ctx) };
 }
 
 test('registers /council and /rev and binds the installed Pi workflow without shell interpretation', async () => {

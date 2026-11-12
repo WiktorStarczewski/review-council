@@ -70,9 +70,11 @@ development and host differences.
 pi install git:github.com/WiktorStarczewski/review-council
 ```
 
-Run `/reload`, then `/rev --setup` to check prerequisites. Invoke `/rev` with the
-same review scopes shown below. [Pi setup](docs/pi.md) covers authentication,
-updates, pinned releases and host differences. Pi supports `/rev` only, not stack.
+Run `/reload`, then `/council --setup` to check prerequisites. Invoke `/council` with the
+same review scopes shown below. `/council eco` or `/council high` selects the session panel,
+shown in Council's own footer without requiring Ponytail. `/rev` remains an alias.
+[Pi setup](docs/pi.md) covers authentication, updates, pinned releases and session modes.
+Pi does not support stack.
 
 **Cursor**
 
@@ -140,7 +142,9 @@ In Codex, ask in plain words: *"Use review-council to review this branch against
 origin/main"*, *"... for one round, read-only, on my uncommitted changes"*, or *"... to review
 the SDK and wallet branches as a dependency stack"*.
 
-In Pi, use `/rev`, `/rev uncommitted --read-only`, or `/rev <PR URL>`.
+In Pi, use `/council`, `/council uncommitted --read-only`, or `/council <PR URL>`.
+Select ECO (four Luna reviewers, the default) or HIGH (Opus, Sol, Sonnet and Luna)
+with `/council eco` or `/council high`; `/council status` reports the selection.
 The package binds its own Pi workflow, even if a shared Codex `rev` skill exists.
 
 In Cursor, select the native `rev` or `stack` skill and use the same requests.
