@@ -1716,27 +1716,30 @@ def _fresh_seat_name(base, seats, clones):
 
 
 def _high_required_names(cfg):
-    """Family to the seat name enforce_exact_seats will require for a high panel."""
+    """Family to every seat name enforce_exact_seats requires for a high panel."""
     names = {}
     allowed, error = codex_models_setting(cfg)
     if allowed and not error:
         for slug, seat_name in zip(allowed, codex_seat_names([(slug, None) for slug in allowed])):
             family = codex_suffix(slug)
-            if family in ('sol', 'luna') and family not in names:
-                names[family] = seat_name
+            if family in ('sol', 'luna'):
+                names.setdefault(family, []).append(seat_name)
     claude, error = claude_models_setting(cfg)
     if claude and not error:
         for model, seat_name in zip(claude, claude_model_seat_names(claude)):
-            if model not in names:
-                names[model] = seat_name
+            names.setdefault(model, []).append(seat_name)
+    elif claude is None and not error and 'claude_seats' in cfg:
+        count, error = claude_seat_count(cfg)
+        if count and not error:
+            names['opus'] = [seat['seat'] for seat in opus_seats('agent', count)]
     return names
 
 
 def substitute_high_pairs(kept, excluded, cfg):
-    """Opus and Sol cover each other, and Sonnet and Luna cover each other.
+    """Sol/Opus and legacy Sonnet/Luna seats cover their missing partner seats.
 
-    A missing side is a core seat cloned from the survivor, with substitutes_for
-    set to the required name. If both sides are down, nothing is invented.
+    Each missing required name gets a core clone with substitutes_for set to
+    that name. If both families are down, nothing is invented.
     """
     if cfg.get('panel_mode') != 'high':
         return
@@ -1750,26 +1753,26 @@ def substitute_high_pairs(kept, excluded, cfg):
             present[family] = seat
     clones = []
     for family, partner in pairs:
-        if family in present or partner not in present or family not in expected:
+        if partner not in present:
             continue
-        name = expected[family]
-        if name in dropped or family in dropped:
-            continue
-        if any(seat.get('substitutes_for') == name for seat in kept):
-            continue
-        if any(entry.get('cli') in (name, family) and entry.get('reason') == 'excluded by config'
-               for entry in excluded):
-            continue
-        source = present[partner]
-        seat_name = _fresh_seat_name(source['seat'] + '-for-' + family, kept, clones)
-        clone = dict(source)
-        clone.pop('padded', None)
-        clone['extra'] = False
-        clone['seat'] = seat_name
-        clone['substitutes_for'] = name
-        clones.append(clone)
-        present[family] = clone
-        append_exclusion(excluded, name, 'unavailable; %s substitutes' % seat_name)
+        for name in expected.get(family, ()):
+            if name in dropped or family in dropped:
+                continue
+            if any(seat.get('seat') == name or seat.get('substitutes_for') == name
+                   for seat in kept if not seat.get('extra')):
+                continue
+            if any(entry.get('cli') in (name, family) and entry.get('reason') == 'excluded by config'
+                   for entry in excluded):
+                continue
+            source = present[partner]
+            seat_name = _fresh_seat_name(source['seat'] + '-for-' + family, kept, clones)
+            clone = dict(source)
+            clone.pop('padded', None)
+            clone['extra'] = False
+            clone['seat'] = seat_name
+            clone['substitutes_for'] = name
+            clones.append(clone)
+            append_exclusion(excluded, name, 'unavailable; %s substitutes' % seat_name)
     kept.extend(clones)
 
 

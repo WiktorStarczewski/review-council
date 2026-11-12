@@ -57,7 +57,7 @@ preflight choice.
    refs into a clean worktree before preflight, then retry only with a fresh session.
    Do not replace a refused PR-bound preflight with an unbound branch review. Do not
    combine `--pr` with an explicit `--base`.
-   The default mode is normal: four Luna seats, or four Cursor Grok seats when this host is Cursor and the SDK can seat them. `high effort` selects high: one Opus, one Sol, one Sonnet, and one Luna. An explicit `4*luna` or `4*grok` overrides that preset. `$S/panel-request.json` records the mode and the chain. Every later code panel and the plan panel uses that frozen roster. Do not rebuild it, and do not put the workhorse in those panels.
+   The default mode is normal: four Luna seats, or four Cursor Grok seats when this host is Cursor and the SDK can seat them. `high effort` selects high: two Sol seats and two Opus seats. An explicit `4*luna` or `4*grok` overrides that preset. `$S/panel-request.json` records the mode and the chain. Every later code panel and the plan panel uses that frozen roster. Do not rebuild it, and do not put the workhorse in those panels.
    For a fresh session, non-zero → relay the one-line reason verbatim. Exit 5 is retryable. Preserve the
    session and retry after the temporary provider availability problem clears. Exit 6 is permanent.
    Stop because the scope or strict roster contract cannot run as asked. A thin
