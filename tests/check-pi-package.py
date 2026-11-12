@@ -71,7 +71,7 @@ def check():
                     assert len(command) == 1, commands
                     assert command[0]['source'] == 'extension', command
                     provenance = command[0]['sourceInfo']['path']
-                    assert Path(provenance).resolve() == REPO / 'pi/rev.mjs', command
+                    assert Path(provenance).resolve() == REPO / 'pi/rev.ts', command
                 skills = [item['name'] for item in commands if item['source'] == 'skill']
                 assert skills == ['skill:review-council-rev'], skills
                 assert not any(item['name'] == 'stack' for item in commands), commands

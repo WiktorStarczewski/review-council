@@ -1,12 +1,12 @@
 {
   "name": "review-council",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "Independent multi-model review and fixes for Pi",
   "license": "MIT",
   "repository": "https://github.com/WiktorStarczewski/review-council",
   "keywords": ["pi-package", "code-review", "multi-model"],
   "pi": {
-    "extensions": ["./pi/rev.mjs"],
+    "extensions": ["./pi/rev.ts"],
     "skills": ["./plugins/review-council/pi-skills/review-council-rev"],
     "prompts": [],
     "themes": []

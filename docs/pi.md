@@ -14,12 +14,15 @@ subagent package or npm runtime dependency is required.
 For a pinned release:
 
 ```bash
-pi install git:github.com/WiktorStarczewski/review-council@review-council--v0.9.1
+pi install git:github.com/WiktorStarczewski/review-council@review-council--v0.9.2
 ```
 
 Pi manages Git package installation, updates and removal. To update an unpinned
 install, run `pi update --extensions` and `/reload`. A pinned tag does not move;
-install the new release ref explicitly. To remove the package:
+install the new release ref explicitly. Council uses a transformed TypeScript entrypoint
+so `/reload` also picks up an upgrade inside the existing Pi process, including an
+upgrade from the earlier native ESM entrypoint. No restart is required.
+To remove the package:
 
 ```bash
 pi remove git:github.com/WiktorStarczewski/review-council
