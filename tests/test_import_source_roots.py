@@ -102,6 +102,42 @@ class ImportCandidateIdentityTests(unittest.TestCase):
         self.assertIn({'source': 'src/index.ts', 'target': 'src/protocol.ts',
                        'kind': 'local-import'}, facts['dependencies'])
 
+    def test_non_nested_comment_globs_keep_supported_language_spans_and_callers(self):
+        evidence = load_evidence()
+        cases = [
+            ('.go', 'package demo; func Visible() int {',
+             'package demo\nvar result = Visible()\n'),
+            ('.java', 'class Widget { public static int Visible() {',
+             'class Consumer {\nint result = Widget.Visible();\n}\n'),
+            ('.c', 'int Visible(void) {',
+             'int Visible(void);\nint caller(void) { return Visible(); }\n'),
+            ('.cpp', 'int Visible() {',
+             'int Visible();\nint caller() { return Visible(); }\n'),
+        ]
+        for extension, declaration, caller in cases:
+            with self.subTest(extension=extension):
+                path = 'src/visible' + extension
+                caller_path = 'src/caller' + extension
+                source = (declaration + '\n /* Source src/*fixture/item' + extension
+                          + ' */\n return 1;\n' + ('}}\n' if extension == '.java' else '}\n'))
+                lines = source.splitlines()
+                spans = evidence.brace_spans(lines, extension)
+                self.assertIn((1, 4, 'Visible'), spans)
+                self.assertIn((1, 'Visible'), evidence.cross_file_symbols(path, lines, spans))
+                facts = self.facts({path: source, caller_path: caller}, path, evidence=evidence)
+                self.assertTrue(any(row['path'] == caller_path and row['line'] == 2
+                                    and row['name'] == 'Visible'
+                                    for row in facts['call_sites']), facts)
+
+    def test_rust_nested_comments_keep_embedded_declarations_masked(self):
+        evidence = load_evidence()
+        lines = ('/* outer /* inner */ pub fn hidden() {} */\n'
+                 'pub fn Visible() {}\n').splitlines()
+        spans = evidence.brace_spans(lines, '.rs')
+        self.assertEqual(spans, [(2, 2, 'Visible')])
+        self.assertEqual(evidence.cross_file_symbols('src/visible.rs', lines, spans),
+                         {(2, 'Visible')})
+
     def test_plaintext_symbol_mentions_do_not_create_related_test_consumers(self):
         facts = self.facts({
             'visual/fixture.tsx': 'export const useAccount = () => 1;\n',
@@ -115,7 +151,7 @@ class ImportCandidateIdentityTests(unittest.TestCase):
                              and row['target'] == 'visual/fixture.tsx'
                              for row in facts['dependencies']), facts)
         self.assertIn({'source': 'visual/fixture.test.tsx', 'target': 'visual/fixture.tsx',
-                       'kind': 'related-test'}, facts['dependencies'])
+                       'kind': 'local-import'}, facts['dependencies'])
 
     def test_true_consumer_keeps_exact_changed_module_with_name_collision(self):
         facts = self.facts({
