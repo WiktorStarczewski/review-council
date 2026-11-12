@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.9.3
+
+- Preserve two visible spacing cells between the Council footer icon and label, using emoji presentation and nonbreaking spaces instead of ASCII spaces that Pi collapses.
+- Test the actual Pi footer renderer in addition to raw status output and same-process hot reload.
+
 ## 0.9.2
 
 - Make Pi `/reload` pick up Council upgrades without restarting the process by loading the extension through Pi's transformed TypeScript path instead of cached native ESM.

@@ -71,7 +71,7 @@ test('bare council starts a review and rev remains an equivalent alias', async (
 
 test('Council owns its footer without any Ponytail integration', async () => {
   const h = await harness();
-  assert.deepEqual([...h.statuses], [['review-council', '⚖  council: 🌿 ECO']]);
+  assert.deepEqual([...h.statuses], [['review-council', '⚖️\u00a0\u00a0council: 🌿 ECO']]);
 });
 
 for (const mode of ['eco', 'high']) {
@@ -79,7 +79,7 @@ for (const mode of ['eco', 'high']) {
     const h = await harness();
     await h.invoke(` ${mode.toUpperCase()} `);
     assert.deepEqual(h.saved, [{ type: 'custom', customType: 'review-council-mode', data: { mode } }]);
-    assert.equal(h.statuses.get('review-council'), mode === 'eco' ? '⚖  council: 🌿 ECO' : '⚖  council: 🔥 HIGH');
+    assert.equal(h.statuses.get('review-council'), mode === 'eco' ? '⚖️\u00a0\u00a0council: 🌿 ECO' : '⚖️\u00a0\u00a0council: 🔥 HIGH');
     assert.equal(h.messages.length, 0);
     assert.equal(h.executions.length, 0);
     await h.invoke('status');
@@ -106,7 +106,7 @@ for (const reason of ['startup', 'reload', 'resume', 'fork']) {
       { type: 'custom', customType: 'ponytail-mode', data: { mode: 'eco' } },
     ] });
     await h.emit('session_start', { reason });
-    assert.equal(h.statuses.get('review-council'), '⚖  council: 🔥 HIGH');
+    assert.equal(h.statuses.get('review-council'), '⚖️\u00a0\u00a0council: 🔥 HIGH');
     assert.equal(h.saved.length, 0);
   });
 }
@@ -116,11 +116,11 @@ test('tree navigation and new sessions do not retain a previous mode', async () 
   await h.invoke('high');
   h.entries.length = 0;
   await h.emit('session_tree');
-  assert.equal(h.statuses.get('review-council'), '⚖  council: 🌿 ECO');
+  assert.equal(h.statuses.get('review-council'), '⚖️\u00a0\u00a0council: 🌿 ECO');
   await h.invoke('high');
   h.entries.length = 0;
   await h.emit('session_start', { reason: 'new' });
-  assert.equal(h.statuses.get('review-council'), '⚖  council: 🌿 ECO');
+  assert.equal(h.statuses.get('review-council'), '⚖️\u00a0\u00a0council: 🌿 ECO');
 });
 
 test('headless session keeps mode policy without trying to render status', async () => {

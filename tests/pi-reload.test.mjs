@@ -33,15 +33,15 @@ test('same-process Pi reload renders updated Council code at the same installed 
     writeFileSync(entry, original);
     const before = await loadExtensions([entry], directory);
     assert.deepEqual(before.errors, []);
-    assert.equal(footer(before.extensions[0]), '⚖  council: 🌿 ECO');
+    assert.equal(footer(before.extensions[0]), '⚖️\u00a0\u00a0council: 🌿 ECO');
 
-    const updated = original.replace('⚖  ', '⚖  upgraded ');
+    const updated = original.replace("'council: '", "'upgraded council: '");
     assert.notEqual(updated, original);
     writeFileSync(entry, updated);
     clearExtensionCache();
     const after = await loadExtensions([entry], directory);
     assert.deepEqual(after.errors, []);
-    assert.equal(footer(after.extensions[0]), '⚖  upgraded council: 🌿 ECO',
+    assert.equal(footer(after.extensions[0]), '⚖️\u00a0\u00a0upgraded council: 🌿 ECO',
       'Pi reload must not retain the old native ESM factory');
   } finally {
     rmSync(directory, { recursive: true, force: true });

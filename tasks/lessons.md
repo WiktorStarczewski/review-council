@@ -1,5 +1,9 @@
 # Lessons
 
+- Test footer text through the actual renderer and inspect a screenshot. Pi collapses
+  consecutive ASCII spaces; emoji presentation and nonbreaking spaces preserve intended
+  terminal cell spacing. Raw setStatus assertions alone do not prove visible layout.
+
 - Fresh-process Pi RPC checks do not prove hot upgrades. Replace the entrypoint at the
   same path and reload inside one real host loader process; native ESM can retain an old
   factory even after Pi clears its own extension cache.

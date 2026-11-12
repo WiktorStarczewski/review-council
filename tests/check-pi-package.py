@@ -84,7 +84,7 @@ def check():
                         statuses = [item for item in notices if item.get('method') == 'setStatus']
                         assert len(statuses) == 1, notices
                         assert statuses[0]['statusKey'] == 'review-council', statuses
-                        expected = '⚖  council: 🔥 HIGH' if flag == 'high' else '⚖  council: 🌿 ECO'
+                        expected = '⚖️\u00a0\u00a0council: 🔥 HIGH' if flag == 'high' else '⚖️\u00a0\u00a0council: 🌿 ECO'
                         plain = re.sub(r'\x1b\[[0-9;]*m', '', statuses[0]['statusText'])
                         assert plain == expected, plain
             finally:

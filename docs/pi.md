@@ -14,7 +14,7 @@ subagent package or npm runtime dependency is required.
 For a pinned release:
 
 ```bash
-pi install git:github.com/WiktorStarczewski/review-council@review-council--v0.9.2
+pi install git:github.com/WiktorStarczewski/review-council@review-council--v0.9.3
 ```
 
 Pi manages Git package installation, updates and removal. To update an unpinned
@@ -62,8 +62,8 @@ Bare `/council` starts a review, just like `/rev`. Exact `eco`, `high` and `stat
 subcommands do not start reviews or call providers. Autocomplete offers these commands.
 Use `./high`, for example, to review a path whose name matches a subcommand.
 
-The independent footer shows `⚖  council: 🌿 ECO` or `⚖  council: 🔥 HIGH`, with two
-spaces after the scales icon. It does not require Ponytail or another extension.
+The independent footer shows `⚖️  council: 🌿 ECO` or `⚖️  council: 🔥 HIGH`, with two
+nonbreaking spaces after the emoji icon so Pi does not collapse the visible gap. It does not require Ponytail or another extension.
 ECO is the default four-Luna panel. HIGH uses the existing Opus, Sol, Sonnet and Luna
 preset, retaining installed effort, availability and recovery rules.
 
