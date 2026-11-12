@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.9.3
+
+- Show one visible space between the Council footer icon and label, using explicit emoji presentation to keep terminal cell width consistent.
+- Test the actual Pi footer renderer in addition to raw status output and same-process hot reload.
+
 ## 0.9.2
 
 - Make Pi `/reload` pick up Council upgrades without restarting the process by loading the extension through Pi's transformed TypeScript path instead of cached native ESM.
