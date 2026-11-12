@@ -91,6 +91,32 @@ w.resolve_available('pi', luna=('gpt-6-luna', 'high'))]))
                          ['claude-opus-4-7', 'claude-opus-4-7'])
         self.assertEqual(roster.enforce_exact_seats(cfg, kept, excluded), (None, None))
 
+    def test_pi_high_keeps_explicit_transport_and_effort_guards(self):
+        cases = [
+            ('disabled', '0', {}, None, 'config'),
+            ('pinned-low-effort', '1', {'opus-2': {'effort': 'medium'}}, None, 'config'),
+            ('reported-low-effort', '1', {}, 'medium', 'availability'),
+        ]
+        for name, enabled, pins, reported_effort, expected in cases:
+            with self.subTest(case=name), patch.dict(os.environ, {
+                    'REVIEW_COUNCIL_HOST': 'pi', 'REVIEW_COUNCIL_CLAUDE_SEAT': enabled}):
+                roster = module(PLUGIN / 'scripts/lib/roster.py')
+                cfg = {'panel_mode': 'high', 'codex_models': ['gpt-5.6-sol'] * 2,
+                       'claude_seats': 2, 'min_labs': 1, 'pin': pins}
+                kept = [roster.make_seat(seat, 'codex', 'gpt-5.6-sol', 'xhigh')
+                        for seat in ('codex-sol', 'codex-sol-2')]
+                if enabled == '1':
+                    kept.extend(roster.opus_seats('claude', 2))
+                roster.apply_pins(cfg, kept)
+                if reported_effort:
+                    kept[-1]['effort'] = reported_effort
+                excluded = []
+                roster.substitute_high_pairs(kept, excluded, cfg)
+                self.assertEqual(roster.enforce_exact_seats(cfg, kept, excluded)[0], expected)
+                if enabled == '1':
+                    cfg.pop('panel_mode')
+                    self.assertEqual(roster.enforce_exact_seats(cfg, kept, []), (None, None))
+
     def test_pi_resumption_selects_bundled_phase_files(self):
         brief = module(PLUGIN / 'scripts/rev-brief.py')
         self.assertEqual(brief.skill_dir('pi'), PLUGIN / 'pi-skills/review-council-rev')
