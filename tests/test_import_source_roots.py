@@ -230,6 +230,18 @@ class ImportCandidateIdentityTests(unittest.TestCase):
                 self.assertIn({'path': 'src/index.ts', 'line_start': 1, 'line_end': 2},
                               obligation['candidate_search_ranges'], facts)
 
+    def test_commented_import_cannot_supply_a_local_export_route(self):
+        facts = self.facts({
+            'src/hooks.ts': 'export const useAccount = () => 1;\n',
+            'src/index.ts': ('// import { useAccount as localAccount } from "./hooks";\n'
+                             'export { localAccount as getAccount };\n'),
+            'src/consumer.ts': 'import { getAccount } from "./index";\ngetAccount();\n',
+        }, 'src/hooks.ts')
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'src/consumer.ts')
+        self.assertFalse(obligation['candidate_route_symbols'], facts)
+        self.assertTrue(obligation['candidate_search_ranges'], facts)
+
     def test_mixed_wildcard_and_named_alias_hops_keep_exact_route(self):
         facts = self.facts({
             'src/hooks.ts': 'export const useAccount = () => 1;\n',
