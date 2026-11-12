@@ -6,6 +6,7 @@ from bisect import bisect_right
 from collections import Counter
 from contextlib import contextmanager, redirect_stdout
 from difflib import SequenceMatcher
+from functools import lru_cache
 import hashlib
 import importlib.util
 import io
@@ -1495,6 +1496,7 @@ def classify(path, body, mode):
 def brace_code(source, extension):
     masked = list(source)
     index = 0
+    after_string = False
     while index < len(source):
         start = index
         char = source[index]
@@ -1504,7 +1506,7 @@ def brace_code(source, extension):
         elif source.startswith('/*', index):
             depth = 1; index += 2
             while index < len(source) and depth:
-                if source.startswith('/*', index):
+                if extension == '.rs' and source.startswith('/*', index):
                     depth += 1; index += 2
                 elif source.startswith('*/', index):
                     depth -= 1; index += 2
@@ -1536,10 +1538,14 @@ def brace_code(source, extension):
             if index >= len(source):
                 return None
             index += 1
+            after_string = True
         elif char == '/' and extension in ('.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx'):
             prefix = ''.join(masked[max(0, index - 24):index]).rstrip()
-            regex_start = not prefix or prefix[-1] in '=([{,:;!&|?~%^+*-' or re.search(r'\b(?:return|throw|yield|case)\s*$', prefix)
+            regex_start = not after_string and (
+                not prefix or prefix.endswith('=>') or prefix[-1] in '=([{,:;!&|?~%^+*-'
+                or re.search(r'\b(?:return|throw|yield|case)\s*$', prefix))
             if not regex_start:
+                after_string = False
                 index += 1
                 continue
             index += 1; in_class = False
@@ -1563,6 +1569,8 @@ def brace_code(source, extension):
             end = source.find('\n', index)
             index = len(source) if end < 0 else end
         else:
+            if not char.isspace():
+                after_string = False
             index += 1
             continue
         for position in range(start, index):
@@ -1836,13 +1844,24 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
     for symbol in symbols:
         if symbol['name']:
             definitions.setdefault(symbol['name'], []).append(symbol)
-    changed_stems = {Path(p).stem for p in categories}
+    def stem_key(path, test=False):
+        stem = Path(path).stem
+        if test:
+            stem = stem.replace('test_', '').replace('_test', '')
+        suffix = Path(path).suffix.lower()
+        family = ('ts-js' if is_ts_js_path(path) else 'c-family'
+                  if suffix in {'.c', '.h', '.cpp', '.cc', '.cxx', '.hpp', '.hh', '.hxx', '.m', '.mm'}
+                  else suffix)
+        return stem, family
+
+    changed_stems = {stem_key(p) for p in categories}
     tokens = re.compile(r'\b[A-Za-z_$][\w$]*\b')
     call_tokens = re.compile(r'\b([A-Za-z_$][\w$]*)\s*\(')
     base_url_configs = source_base_urls(repo, entries)
     source_config_cache = {}
     candidate_file_cache = {}
     wildcard_lines_cache = {}
+    reexport_source = lru_cache(maxsize=256)(ts_reexport_source)
 
     def wildcard_source_lines(path):
         if path not in wildcard_lines_cache:
@@ -1857,43 +1876,68 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                     wildcard_lines_cache[path] = None
         return wildcard_lines_cache[path]
 
-    def wildcard_reexport_route(start, target, name):
-        if start == target:
-            return [], [], {start}
-        queue = [start]
-        parents = {start: None}
+    @lru_cache(maxsize=4096)
+    def reexport_route(start, target, name, imported_name=None):
+        root = (start, imported_name or name)
+        if root == (target, name):
+            return [], [], {start}, False
+        queue = [root]
+        parents = {root: None}
+        unresolved_route = False
+        found = None
         while queue and len(parents) <= 256:
             current = queue.pop(0)
-            lines = wildcard_source_lines(current)
+            lines = wildcard_source_lines(current[0])
             if lines is None:
+                unresolved_route = True
                 continue
-            configs, _ = source_configs_for_path(current, base_url_configs)
-            for line_number, reference in ts_wildcard_references(lines):
-                for child in resolve_import_candidates(current, reference, entries, configs):
-                    if child == target:
-                        parents[child] = (current, line_number)
+            configs, _ = source_configs_for_path(current[0], base_url_configs)
+            for reference, next_name, source_ranges in ts_reexport_references(
+                    lines, current[1], reexport_source):
+                if reference is None:
+                    unresolved_route = True
+                    continue
+                children = resolve_import_candidates(current[0], reference, entries, configs)
+                if len(children) != 1:
+                    unresolved_route = True
+                for child in children:
+                    node = (child, next_name)
+                    if node == (target, name):
+                        if found is not None:
+                            continue
+                        parents[node] = (current, source_ranges)
                         edges = []
-                        node = child
-                        while node != start:
-                            previous, edge_line = parents[node]
-                            edges.append((previous, node, edge_line))
+                        while node != root:
+                            previous, ranges = parents[node]
+                            edges.append((previous[0], node[0], ranges))
                             node = previous
                         edges.reverse()
                         route_symbols = [
-                            {'path': source, 'line_start': edge_line,
-                             'line_end': edge_line, 'name': name, 'blob_tree': tree}
-                            for source, _, edge_line in edges]
+                            {'path': source, 'line_start': first,
+                             'line_end': last, 'name': name, 'blob_tree': tree}
+                            for source, _, ranges in edges for first, last in ranges]
                         route_paths = {start, target}
                         route_paths.update(source for source, _, _ in edges)
                         route_paths.update(destination for _, destination, _ in edges)
                         route_dependencies = [
                             (source, destination, 'local-import')
                             for source, destination, _ in edges]
-                        return route_symbols, route_dependencies, route_paths
-                    if child not in parents and child in entries and len(parents) < 256:
-                        parents[child] = (current, line_number)
-                        queue.append(child)
-        return [], [], set()
+                        found = (route_symbols, route_dependencies, route_paths)
+                        continue
+                    if node in parents:
+                        ancestor = current
+                        while ancestor is not None:
+                            if ancestor == node:
+                                unresolved_route = True
+                                break
+                            ancestor = parents[ancestor][0] if parents[ancestor] else None
+                    elif child in entries:
+                        if len(parents) < 256:
+                            parents[node] = (current, source_ranges)
+                            queue.append(node)
+                        else:
+                            unresolved_route = True
+        return (*(found or ([], [], set())), unresolved_route or bool(queue))
 
     for path, raw in repo.iter_blobs(entries):
         if entries[path][0] not in ('100644', '100755') or raw is OVERSIZED_BLOB or b'\0' in raw:
@@ -1902,9 +1946,16 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
             lines = split_lf_text(raw.decode('utf-8'))
         except UnicodeDecodeError:
             continue
-        is_test = is_test_path(path)
-        related = Path(path).stem.replace('test_', '').replace('_test', '') in changed_stems
+        is_test = is_test_path(path) and not is_prose_path(path)
+        related = stem_key(path, test=True) in changed_stems
         code_file = is_source_file(path)
+        if is_test and not code_file:
+            lexical_targets = {symbol['path']
+                               for name in set(tokens.findall('\n'.join(lines))) & names
+                               for symbol in definitions[name]
+                               if symbol.get('cross_file') and symbol['path'] != path}
+            related = related or bool(lexical_targets)
+            dependencies.update((path, target, 'related-test') for target in lexical_targets)
         imported_targets = set()
         bindings = []
         config_ranges = []
@@ -1950,6 +2001,9 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
             for binding in bindings:
                 imported_name = binding['imported_name']
                 resolved = set(binding.get('candidate_targets') or [])
+                resolved_ts_import = (typed_imports and len(resolved) == 1
+                                      and not (ambiguous_config
+                                               and not binding['reference'].startswith('.')))
                 if binding.get('module_alias'):
                     separator = binding.get('member_separator') or '::'
                     if module_alias_source is None:
@@ -1970,18 +2024,30 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                                   if symbol.get('cross_file') and symbol['path'] in resolved
                                   and symbol['path'] != path]
                 else:
-                    candidates = [symbol for symbol in definitions.get(imported_name, [])
+                    candidate_rows = (definitions.values() if resolved_ts_import
+                                      else [definitions.get(imported_name, [])])
+                    candidates = [symbol for rows in candidate_rows for symbol in rows
                                   if symbol.get('cross_file') and symbol['path'] != path]
-                matching = [symbol for symbol in candidates if symbol['path'] in resolved]
+                matching = [symbol for symbol in candidates if symbol['path'] in resolved
+                            and (binding.get('module_alias') or binding.get('default_import')
+                                 or symbol['name'] == imported_name)]
                 if matching:
                     candidates = matching
+                elif resolved_ts_import:
+                    candidates = [symbol for symbol in candidates if any(
+                        route[0] or route[3]
+                        for target in resolved
+                        for route in [reexport_route(
+                            target, symbol['path'], symbol['name'],
+                            symbol['name'] if binding.get('module_alias') else imported_name)])]
                 binding['candidate_symbols'] = [] if binding.get('default_import') else [
                     {'path': symbol['path'], 'line_start': symbol['line'],
                      'line_end': symbol['line_end'], 'name': symbol['name'],
                      'blob_tree': symbol['blob_tree']}
                     for symbol in candidates]
                 candidate_names = ({symbol['name'] for symbol in candidates}
-                                   if binding.get('module_alias') or binding.get('default_import')
+                                   if (resolved_ts_import or binding.get('module_alias')
+                                       or binding.get('default_import'))
                                    else {imported_name})
                 candidate_search_ranges = []
                 unreadable_candidate_targets = []
@@ -2037,13 +2103,16 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                                            or row['name'] in default_names)]
                     binding['candidate_symbols'].extend(target_symbols)
                     route_symbols = []
+                    unresolved_routes = False
                     if (not target_symbols and typed_imports
                             and not binding.get('default_import')):
                         for symbol in candidates:
                             if symbol['name'] not in candidate_names:
                                 continue
-                            rows, route_edges, paths = wildcard_reexport_route(
-                                target, symbol['path'], symbol['name'])
+                            rows, route_edges, paths, needs_search = reexport_route(
+                                target, symbol['path'], symbol['name'],
+                                symbol['name'] if binding.get('module_alias') else imported_name)
+                            unresolved_routes = unresolved_routes or needs_search
                             if rows:
                                 route_symbols.extend(rows)
                                 candidate_route_symbols.extend(rows)
@@ -2051,7 +2120,7 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                                 imported_targets.update(paths)
                                 dependencies.update(route_edges)
                     binding['candidate_symbols'].extend(route_symbols)
-                    if not target_symbols and not route_symbols and line_count:
+                    if not target_symbols and (not route_symbols or unresolved_routes) and line_count:
                         candidate_search_ranges.append({
                             'path': target, 'line_start': 1,
                             'line_end': line_count,
@@ -2134,24 +2203,27 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
             for call_name in sorted(set(call_tokens.findall(line)) if code_file else set()):
                 call_bindings = bindings_by_local.get(call_name, [])
                 qualified_module_bindings = []
+                bound_call = bool(call_bindings)
                 if call_name in definitions:
                     for rows in bindings_by_local.values():
                         for binding in rows:
                             if (binding.get('module_alias')
-                                    and any(symbol['name'] == call_name
-                                            for symbol in binding.get('candidate_symbols', []))
                                     and re.search(r'\b' + re.escape(binding['local_name'])
                                                   + r'\s*' + re.escape(
                                                       binding.get('member_separator') or '::')
                                                   + r'\s*' + re.escape(call_name)
                                                   + r'\s*\(', line)):
-                                qualified_module_bindings.append(binding)
+                                bound_call = True
+                                if any(symbol['name'] == call_name
+                                       for symbol in binding.get('candidate_symbols', [])):
+                                    qualified_module_bindings.append(binding)
                 names_to_record = {call_name} if call_name in definitions else set()
                 names_to_record.update(symbol['name'] for binding in call_bindings
                                        for symbol in binding['candidate_symbols'])
                 for name in sorted(names_to_record):
                     matching_bindings = [binding for binding in call_bindings
-                                         if binding['imported_name'] == name
+                                         if (binding['imported_name'] == name
+                                             and binding.get('unresolved'))
                                          or any(symbol['name'] == name
                                                 for symbol in binding['candidate_symbols'])]
                     if name == call_name:
@@ -2165,7 +2237,7 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                         for symbol in live_definitions)
                     unresolved_target = any(binding.get('unresolved')
                                             for binding in matching_bindings)
-                    unbound_candidate = (not resolved and not matching_bindings and any(
+                    unbound_candidate = (not resolved and not bound_call and any(
                         (symbol.get('kind') == 'deleted lexical declaration'
                          and symbol['path'] == path)
                         or (symbol['path'] != path and symbol.get('cross_file'))
@@ -2194,8 +2266,9 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                         related = True
         if is_test and related:
             tests.append({'path': path, 'basis': 'test path with lexical reference or same stem'})
-            stem = Path(path).stem.replace('test_', '').replace('_test', '')
-            dependencies.update((path, changed, 'related-test') for changed in categories if Path(changed).stem == stem and changed != path)
+            key = stem_key(path, test=True)
+            dependencies.update((path, changed, 'related-test') for changed in categories
+                                if stem_key(changed) == key and changed != path)
         basename = Path(path).name
         config = bool(re.search(r'(?:^|[.])(eslint|prettier|vitest|jest|nyc|coverage|ruff|mypy|pytest|tsconfig)', basename))
         if basename in ('package.json', 'Cargo.toml', 'pyproject.toml', 'Makefile', 'makefile', 'justfile', 'Justfile', 'go.mod') or path.startswith('.github/workflows/') or config:
@@ -2287,7 +2360,53 @@ def ts_wildcard_references(lines):
             for match in pattern.finditer(source)]
 
 
-def ts_import_bindings(lines):
+def ts_reexport_source(source):
+    code = brace_code(source, '.ts')
+    return code, (ts_import_bindings(source.split('\n'), code) if code is not None else [])
+
+
+def ts_reexport_references(lines, name, prepare_source=None):
+    source = '\n'.join(lines)
+    code, bindings = (prepare_source or ts_reexport_source)(source)
+    if code is None:
+        return [(None, name, [(1, max(1, len(lines)))])]
+    code_lines = code.split('\n')
+    references = [(reference, name, [(line, line)])
+                  for line, reference in ts_wildcard_references(lines)
+                  if code_lines[line - 1].lstrip().startswith('export')]
+    pattern = re.compile(
+        r"\bexport\s+(?:type\s+)?\{([^}]*)\}(?:\s*from\s*(['\"])([^'\"]+)\2)?", re.S)
+    for keyword in re.finditer(r'\bexport\b', code):
+        match = pattern.match(source, keyword.start())
+        if match is None:
+            continue
+        line = source.count('\n', 0, match.start()) + 1
+        for item in match.group(1).split(','):
+            item = re.sub(r'/\*.*?\*/|//[^\n]*', '', item, flags=re.S).strip()
+            names = re.fullmatch(
+                r'(?:type\s+)?([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?', item)
+            if not names:
+                if item:
+                    references.append((None, name, [(line, line)]))
+                continue
+            local_name = names.group(1)
+            if (names.group(2) or local_name) != name:
+                continue
+            if match.group(3) and local_name != 'default':
+                references.append((match.group(3), local_name, [(line, line)]))
+                continue
+            imports = [binding for binding in bindings if binding['local_name'] == local_name]
+            if (match.group(3) or len(imports) != 1 or imports[0].get('module_alias')
+                    or imports[0].get('default_import')):
+                references.append((None, name, [(line, line)]))
+            else:
+                binding = imports[0]
+                references.append((binding['reference'], binding['imported_name'],
+                                   [(line, line), (binding['line_start'], binding['line_end'])]))
+    return references
+
+
+def ts_import_bindings(lines, code=None):
     source = '\n'.join(lines)
     bindings = []
     default_pattern = re.compile(
@@ -2295,6 +2414,8 @@ def ts_import_bindings(lines):
         r"(?:\s*,\s*(?:\*\s+as\s+[A-Za-z_$][\w$]*|\{[^}]*\}))?"
         r"\s*from\s*(['\"])([^'\"]+)\2", re.S)
     for match in default_pattern.finditer(source):
+        if code is not None and code[match.start():match.start() + 6] != 'import':
+            continue
         line_start = source.count('\n', 0, match.start()) + 1
         line_end = source.count('\n', 0, match.end()) + 1
         bindings.append({'reference': match.group(3), 'imported_name': 'default',
@@ -2304,6 +2425,8 @@ def ts_import_bindings(lines):
         r"\bimport\s+(?:type\s+)?(?:[A-Za-z_$][\w$]*\s*,\s*)?"
         r"\*\s+as\s+([A-Za-z_$][\w$]*)\s*from\s*(['\"])([^'\"]+)\2")
     for match in namespace_pattern.finditer(source):
+        if code is not None and code[match.start():match.start() + 6] != 'import':
+            continue
         line_start = source.count('\n', 0, match.start()) + 1
         line_end = source.count('\n', 0, match.end()) + 1
         bindings.append({'reference': match.group(3), 'imported_name': '*',
@@ -2315,6 +2438,8 @@ def ts_import_bindings(lines):
         r"\{([^}]*)\}\s*from\s*(['\"])([^'\"]+)\2",
         re.S)
     for match in pattern.finditer(source):
+        if code is not None and code[match.start():match.start() + 6] != 'import':
+            continue
         line_start = source.count('\n', 0, match.start()) + 1
         line_end = source.count('\n', 0, match.end()) + 1
         for item in match.group(1).split(','):
