@@ -1854,6 +1854,7 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
     source_config_cache = {}
     candidate_file_cache = {}
     wildcard_lines_cache = {}
+    reexport_source = lru_cache(maxsize=256)(ts_reexport_source)
 
     def wildcard_source_lines(path):
         if path not in wildcard_lines_cache:
@@ -1884,7 +1885,8 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                 unresolved_route = True
                 continue
             configs, _ = source_configs_for_path(current[0], base_url_configs)
-            for reference, next_name, source_ranges in ts_reexport_references(lines, current[1]):
+            for reference, next_name, source_ranges in ts_reexport_references(
+                    lines, current[1], reexport_source):
                 if reference is None:
                     unresolved_route = True
                     continue
@@ -2351,9 +2353,14 @@ def ts_wildcard_references(lines):
             for match in pattern.finditer(source)]
 
 
-def ts_reexport_references(lines, name):
-    source = '\n'.join(lines)
+def ts_reexport_source(source):
     code = brace_code(source, '.ts')
+    return code, (ts_import_bindings(source.split('\n'), code) if code is not None else [])
+
+
+def ts_reexport_references(lines, name, prepare_source=None):
+    source = '\n'.join(lines)
+    code, bindings = (prepare_source or ts_reexport_source)(source)
     if code is None:
         return [(None, name, [(1, max(1, len(lines)))])]
     code_lines = code.split('\n')
@@ -2362,7 +2369,6 @@ def ts_reexport_references(lines, name):
                   if code_lines[line - 1].lstrip().startswith('export')]
     pattern = re.compile(
         r"\bexport\s+(?:type\s+)?\{([^}]*)\}(?:\s*from\s*(['\"])([^'\"]+)\2)?", re.S)
-    bindings = ts_import_bindings(lines, code)
     for keyword in re.finditer(r'\bexport\b', code):
         match = pattern.match(source, keyword.start())
         if match is None:
