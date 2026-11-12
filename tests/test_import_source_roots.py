@@ -210,6 +210,70 @@ class ImportCandidateIdentityTests(unittest.TestCase):
             for source, cached in snapshots:
                 self.assertEqual(self.facts(source, *changed, evidence=evidence), cached)
 
+    def test_distinct_routes_reuse_lexical_work_for_the_same_barrel_blob(self):
+        evidence = load_evidence()
+        sources = {f'src/unit{index}.ts': f'export const read{index} = () => {index};\n'
+                   for index in range(6)}
+        barrel = ''.join(f'import {{ read{index} as local{index} }} from "./unit{index}";\n'
+                         f'export {{ local{index} as entry{index} }};\n' for index in range(6))
+        consumers = {f'src/consumer{index}.ts' for index in range(3)}
+        consumer = ('import { ' + ', '.join(f'entry{index}' for index in range(6))
+                    + ' } from "./index";\n'
+                    + ''.join(f'entry{index}();\n' for index in range(6)))
+        files = {**sources, 'src/index.ts': barrel,
+                 'visual/fixture.tsx': 'export const read0 = () => 100;\n',
+                 **{path: consumer for path in consumers}}
+        changed = (*sources, 'visual/fixture.tsx')
+        snapshots = []
+        retargeted = barrel.replace('"./unit0"', '"../visual/fixture"')
+        for body in [barrel, retargeted, retargeted + 'export * from "./missing";\n']:
+            with self.subTest(barrel=body):
+                files['src/index.ts'] = body
+                with mock.patch.object(evidence, 'brace_code', wraps=evidence.brace_code) as masking, \
+                        mock.patch.object(evidence, 'ts_import_bindings',
+                                          wraps=evidence.ts_import_bindings) as imports:
+                    facts = self.facts(files, *changed, evidence=evidence)
+                obligations = {(row['path'], row['imported_name']): row
+                               for row in facts['unresolved_imports'] if row['path'] in consumers}
+                self.assertEqual(set(obligations),
+                                 {(path, f'entry{index}') for path in consumers for index in range(6)})
+                calls = {(row['path'], row['name'], row.get('local_name'))
+                         for row in facts['call_sites'] if row['path'] in consumers}
+                expected = {(path, f'read{index}', f'entry{index}')
+                            for path in consumers for index in range(6)}
+                if './missing' in body:
+                    self.assertTrue(expected <= calls, calls)
+                else:
+                    self.assertEqual(calls, expected)
+                for (path, imported_name), obligation in obligations.items():
+                    index = int(imported_name.removeprefix('entry'))
+                    target = ('visual/fixture.tsx' if index == 0 and body != barrel
+                              else f'src/unit{index}.ts')
+                    self.assertIn(target, obligation['candidate_targets'])
+                    self.assertIn({'source': path, 'target': target, 'kind': 'ambiguous-import'},
+                                  facts['dependencies'])
+                    self.assertEqual({row['path'] for row in obligation['candidate_route_symbols']},
+                                     {'src/index.ts'})
+                    if './missing' in body:
+                        self.assertIn({'path': 'src/index.ts', 'line_start': 1, 'line_end': 13},
+                                      obligation['candidate_search_ranges'])
+                    else:
+                        self.assertEqual({row['path'] for row in obligation['candidate_symbols']},
+                                         {target, 'src/index.ts'})
+                source_text = body.removesuffix('\n')
+                mask_calls = sum(call.args[0] == source_text for call in masking.call_args_list)
+                import_calls = sum('\n'.join(call.args[0]) == source_text
+                                   for call in imports.call_args_list)
+                self.assertLessEqual(mask_calls, 3,
+                                     'distinct routes masked the same immutable barrel again')
+                self.assertLessEqual(import_calls, 2,
+                                     'distinct routes reparsed the same immutable barrel imports')
+                snapshots.append((dict(files), facts))
+
+        with mock.patch.object(evidence, 'lru_cache', lambda **options: lambda function: function):
+            for source, cached in snapshots:
+                self.assertEqual(self.facts(source, *changed, evidence=evidence), cached)
+
     def test_aliased_barrel_retains_original_symbol_without_fixture_homonym(self):
         facts = self.facts({
             'src/hooks.ts': 'export const useAccount = () => 1;\n',
