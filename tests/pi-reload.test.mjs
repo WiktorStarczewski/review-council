@@ -33,7 +33,7 @@ test('same-process Pi reload renders updated Council code at the same installed 
     writeFileSync(entry, original);
     const before = await loadExtensions([entry], directory);
     assert.deepEqual(before.errors, []);
-    assert.equal(footer(before.extensions[0]), '⚖️\u00a0\u00a0council: 🌿 ECO');
+    assert.equal(footer(before.extensions[0]), '⚖️ council: 🌿 ECO');
 
     const updated = original.replace("'council: '", "'upgraded council: '");
     assert.notEqual(updated, original);
@@ -41,14 +41,14 @@ test('same-process Pi reload renders updated Council code at the same installed 
     clearExtensionCache();
     const after = await loadExtensions([entry], directory);
     assert.deepEqual(after.errors, []);
-    assert.equal(footer(after.extensions[0]), '⚖️\u00a0\u00a0upgraded council: 🌿 ECO',
+    assert.equal(footer(after.extensions[0]), '⚖️ upgraded council: 🌿 ECO',
       'Pi reload must not retain the old native ESM factory');
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
 });
 
-test('real Pi footer preserves two visible spacing cells after the Council icon', async () => {
+test('real Pi footer preserves one visible spacing cell after the Council icon', async () => {
   initTheme('dark');
   const source = new URL(manifest.pi.extensions[0], root);
   const loaded = await loadExtensions([fileURLToPath(source)], fileURLToPath(root));
@@ -67,5 +67,5 @@ test('real Pi footer preserves two visible spacing cells after the Council icon'
     getExtensionStatuses: () => new Map([['review-council', status]]),
   };
   const rendered = stripVTControlCharacters(new FooterComponent(session, data).render(200).at(-1));
-  assert.equal(rendered, '⚖️\u00a0\u00a0council: 🌿 ECO');
+  assert.equal(rendered, '⚖️ council: 🌿 ECO');
 });

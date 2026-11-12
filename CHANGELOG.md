@@ -4,7 +4,7 @@
 
 ## 0.9.3
 
-- Preserve two visible spacing cells between the Council footer icon and label, using emoji presentation and nonbreaking spaces instead of ASCII spaces that Pi collapses.
+- Show one visible space between the Council footer icon and label, using explicit emoji presentation to keep terminal cell width consistent.
 - Test the actual Pi footer renderer in addition to raw status output and same-process hot reload.
 
 ## 0.9.2

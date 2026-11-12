@@ -25,8 +25,7 @@ export default function reviewCouncil(pi) {
   const syncStatus = (ctx) => {
     if (!ctx.hasUI) return;
     const fg = (color, text) => ctx.ui.theme?.fg(color, text) ?? text;
-    // Pi collapses ASCII spaces; emoji presentation also keeps terminal cell width consistent.
-    ctx.ui.setStatus('review-council', '⚖️\u00a0\u00a0' + fg('muted', 'council: ') +
+    ctx.ui.setStatus('review-council', '⚖️ ' + fg('muted', 'council: ') +
       fg('text', mode === 'high' ? '🔥 HIGH' : '🌿 ECO'));
   };
 
