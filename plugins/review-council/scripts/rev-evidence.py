@@ -1496,6 +1496,7 @@ def classify(path, body, mode):
 def brace_code(source, extension):
     masked = list(source)
     index = 0
+    after_string = False
     while index < len(source):
         start = index
         char = source[index]
@@ -1505,7 +1506,8 @@ def brace_code(source, extension):
         elif source.startswith('/*', index):
             depth = 1; index += 2
             while index < len(source) and depth:
-                if source.startswith('/*', index):
+                if (extension not in ('.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx')
+                        and source.startswith('/*', index)):
                     depth += 1; index += 2
                 elif source.startswith('*/', index):
                     depth -= 1; index += 2
@@ -1537,10 +1539,14 @@ def brace_code(source, extension):
             if index >= len(source):
                 return None
             index += 1
+            after_string = True
         elif char == '/' and extension in ('.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx'):
             prefix = ''.join(masked[max(0, index - 24):index]).rstrip()
-            regex_start = not prefix or prefix.endswith('=>') or prefix[-1] in '=([{,:;!&|?~%^+*-' or re.search(r'\b(?:return|throw|yield|case)\s*$', prefix)
+            regex_start = not after_string and (
+                not prefix or prefix.endswith('=>') or prefix[-1] in '=([{,:;!&|?~%^+*-'
+                or re.search(r'\b(?:return|throw|yield|case)\s*$', prefix))
             if not regex_start:
+                after_string = False
                 index += 1
                 continue
             index += 1; in_class = False
@@ -1564,6 +1570,8 @@ def brace_code(source, extension):
             end = source.find('\n', index)
             index = len(source) if end < 0 else end
         else:
+            if not char.isspace():
+                after_string = False
             index += 1
             continue
         for position in range(start, index):
@@ -1939,7 +1947,7 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
             lines = split_lf_text(raw.decode('utf-8'))
         except UnicodeDecodeError:
             continue
-        is_test = is_test_path(path)
+        is_test = is_test_path(path) and not is_prose_path(path)
         related = stem_key(path, test=True) in changed_stems
         code_file = is_source_file(path)
         if is_test and not code_file:
