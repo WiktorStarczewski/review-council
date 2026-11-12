@@ -192,6 +192,44 @@ class ImportCandidateIdentityTests(unittest.TestCase):
         self.assertTrue(any(row['path'] == 'src/consumer.ts'
                             and row['name'] == 'useAccount' for row in facts['call_sites']), facts)
 
+    def test_comment_or_string_export_cannot_prove_an_alias_route(self):
+        fake_exports = [
+            '// export { useAccount as getAccount } from "./hooks";\n',
+            '/* export { useAccount as getAccount } from "./hooks"; */\n',
+            'const text = \'export { useAccount as getAccount } from "./hooks";\';\n',
+            'const text = `export { useAccount as getAccount } from "./hooks";`;\n',
+        ]
+        for source in fake_exports:
+            with self.subTest(source=source):
+                facts = self.facts({
+                    'src/hooks.ts': 'export const useAccount = () => 1;\n',
+                    'src/index.ts': source,
+                    'src/consumer.ts': ('import { getAccount as currentAccount } from "./index";\n'
+                                        'currentAccount();\n'),
+                }, 'src/hooks.ts')
+                self.assertFalse(any(row.get('candidate_route_symbols')
+                                     for row in facts['unresolved_imports']
+                                     if row['path'] == 'src/consumer.ts'), facts)
+                self.assertFalse(any(row['path'] == 'src/consumer.ts'
+                                     for row in facts['call_sites']), facts)
+
+    def test_valid_alias_route_keeps_an_unresolved_sibling_search(self):
+        valid = 'export { useAccount as getAccount } from "./hooks";\n'
+        missing = 'export * from "./missing";\n'
+        for source in [missing + valid, valid + missing]:
+            with self.subTest(source=source):
+                facts = self.facts({
+                    'src/hooks.ts': 'export const useAccount = () => 1;\n',
+                    'src/index.ts': source,
+                    'src/consumer.ts': ('import { getAccount as currentAccount } from "./index";\n'
+                                        'currentAccount();\n'),
+                }, 'src/hooks.ts')
+                obligation = next(row for row in facts['unresolved_imports']
+                                  if row['path'] == 'src/consumer.ts')
+                self.assertTrue(obligation['candidate_route_symbols'], facts)
+                self.assertIn({'path': 'src/index.ts', 'line_start': 1, 'line_end': 2},
+                              obligation['candidate_search_ranges'], facts)
+
     def test_mixed_wildcard_and_named_alias_hops_keep_exact_route(self):
         facts = self.facts({
             'src/hooks.ts': 'export const useAccount = () => 1;\n',
