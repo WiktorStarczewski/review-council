@@ -15,7 +15,12 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def check():
-    loader = Path(shutil.which('pi')).resolve().parent / 'core/extensions/loader.js'
+    executable = Path(shutil.which('pi')).resolve()
+    package_root = next(parent for parent in executable.parents
+                        if (parent / 'package.json').is_file()
+                        and json.loads((parent / 'package.json').read_text()).get('name')
+                        == '@earendil-works/pi-coding-agent')
+    loader = package_root / 'dist/core/extensions/loader.js'
     subprocess.run(['node', '--test', str(REPO / 'tests/pi-reload.test.mjs')],
                    env=dict(os.environ, PI_TEST_LOADER=loader.as_uri()), check=True, timeout=30)
     with tempfile.TemporaryDirectory(prefix='council-pi-discovery-') as directory:
