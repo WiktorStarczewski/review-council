@@ -71,6 +71,52 @@ class ImportCandidateIdentityTests(unittest.TestCase):
         self.assertIn({'source': 'src/consumer.ts', 'target': 'src/hooks.ts',
                        'kind': 'local-import'}, facts['dependencies'])
 
+    def test_jsx_quoted_attribute_does_not_create_an_unrelated_export_route(self):
+        facts = self.facts({
+            'src/Widget.tsx': ('export const OwnWidget = () => (\n'
+                               '  <div className="shrink-0"\n'
+                               '  />\n);\n'),
+            'src/consumer.ts': 'import { OwnWidget } from "./Widget";\nOwnWidget();\n',
+            'visual/fixture.tsx': 'export const FixtureOnly = () => 1;\n',
+        }, 'visual/fixture.tsx')
+        self.assertFalse(any(row['source'] == 'src/consumer.ts'
+                             and row['target'] == 'visual/fixture.tsx'
+                             for row in facts['dependencies']), facts)
+        self.assertFalse(any(row['path'] == 'src/consumer.ts'
+                             for row in facts['unresolved_imports'] + facts['call_sites']), facts)
+        self.assertIn({'source': 'src/consumer.ts', 'target': 'src/Widget.tsx',
+                       'kind': 'local-import'}, facts['dependencies'])
+
+    def test_typescript_comment_glob_does_not_create_an_unrelated_export_route(self):
+        facts = self.facts({
+            'src/index.ts': 'export const ownValue = () => 1;\nexport * from "./protocol";\n',
+            'src/protocol.ts': '/** ABI source src/modules/*.sol */\nexport const protocolValue = 1;\n',
+            'src/consumer.ts': 'import { ownValue } from "./index";\nownValue();\n',
+            'visual/fixture.tsx': 'export const FixtureOnly = () => 1;\n',
+        }, 'visual/fixture.tsx')
+        self.assertFalse(any(row['source'] == 'src/consumer.ts'
+                             and row['target'] == 'visual/fixture.tsx'
+                             for row in facts['dependencies']), facts)
+        self.assertFalse(any(row['path'] == 'src/consumer.ts'
+                             for row in facts['unresolved_imports'] + facts['call_sites']), facts)
+        self.assertIn({'source': 'src/index.ts', 'target': 'src/protocol.ts',
+                       'kind': 'local-import'}, facts['dependencies'])
+
+    def test_plaintext_symbol_mentions_do_not_create_related_test_consumers(self):
+        facts = self.facts({
+            'visual/fixture.tsx': 'export const useAccount = () => 1;\n',
+            'visual/fixture.test.tsx': 'import { useAccount } from "./fixture";\nuseAccount();\n',
+            'docs/specs/fixture.md': 'The fixture uses useAccount() in this design.\n',
+            'docs/specs/fixture.txt': 'The fixture uses useAccount() in this design.\n',
+        }, 'visual/fixture.tsx')
+        self.assertEqual({row['path'] for row in facts['related_tests']},
+                         {'visual/fixture.test.tsx'})
+        self.assertFalse(any(row['source'].startswith('docs/')
+                             and row['target'] == 'visual/fixture.tsx'
+                             for row in facts['dependencies']), facts)
+        self.assertIn({'source': 'visual/fixture.test.tsx', 'target': 'visual/fixture.tsx',
+                       'kind': 'related-test'}, facts['dependencies'])
+
     def test_true_consumer_keeps_exact_changed_module_with_name_collision(self):
         facts = self.facts({
             'src/hooks.ts': 'export const useAccount = () => 1;\n',
