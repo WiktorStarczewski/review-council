@@ -1701,8 +1701,10 @@ def _seat_family(seat):
         suffix = codex_suffix(model)
         if suffix in ('sol', 'luna'):
             return suffix
-    if adapter in ('claude', 'agent') and model in ('opus', 'sonnet'):
-        return model
+    if adapter in ('claude', 'agent') and opus_model(model):
+        return 'opus'
+    if adapter in ('claude', 'agent') and model == 'sonnet':
+        return 'sonnet'
     return None
 
 
