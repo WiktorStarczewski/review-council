@@ -4,10 +4,13 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { stripVTControlCharacters } from 'node:util';
 
 const root = new URL('../', import.meta.url);
 const manifest = JSON.parse(readFileSync(new URL('package.json', root), 'utf8'));
 const { loadExtensions, clearExtensionCache } = await import(process.env.PI_TEST_LOADER);
+const { FooterComponent } = await import(new URL('../../modes/interactive/components/footer.js', process.env.PI_TEST_LOADER));
+const { initTheme } = await import(new URL('../../modes/interactive/theme/theme.js', process.env.PI_TEST_LOADER));
 
 function footer(extension) {
   let text;
@@ -43,4 +46,26 @@ test('same-process Pi reload renders updated Council code at the same installed 
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('real Pi footer preserves two visible spacing cells after the Council icon', async () => {
+  initTheme('dark');
+  const source = new URL(manifest.pi.extensions[0], root);
+  const loaded = await loadExtensions([fileURLToPath(source)], fileURLToPath(root));
+  assert.deepEqual(loaded.errors, []);
+  const status = footer(loaded.extensions[0]);
+  const session = {
+    state: {},
+    getContextUsage: () => ({ percent: 0, contextWindow: 1000 }),
+    sessionManager: {
+      getEntryCount: () => 0, getSessionId: () => 'test', getLeafId: () => null,
+      getEntries: () => [], getCwd: () => '/tmp', getSessionName: () => undefined,
+    },
+  };
+  const data = {
+    getGitBranch: () => undefined, getAvailableProviderCount: () => 0,
+    getExtensionStatuses: () => new Map([['review-council', status]]),
+  };
+  const rendered = stripVTControlCharacters(new FooterComponent(session, data).render(200).at(-1));
+  assert.equal(rendered, '⚖️\u00a0\u00a0council: 🌿 ECO');
 });
