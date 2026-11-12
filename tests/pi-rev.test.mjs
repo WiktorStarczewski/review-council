@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-const extensionURL = new URL('../pi/rev.mjs', import.meta.url);
+const extensionURL = new URL('../pi/rev.ts', import.meta.url);
 const root = fileURLToPath(new URL('../', import.meta.url));
 
 async function harness({ idle = true, entries = [], hasUI = true } = {}) {
@@ -214,7 +214,7 @@ test('Pi status phases use durable watcher files rather than unavailable attache
 
 test('manifest exposes only native Pi resources with no install lifecycle scripts', async () => {
   const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url)));
-  assert.deepEqual(manifest.pi.extensions, ['./pi/rev.mjs']);
+  assert.deepEqual(manifest.pi.extensions, ['./pi/rev.ts']);
   assert.deepEqual(manifest.pi.skills, ['./plugins/review-council/pi-skills/review-council-rev']);
   assert.deepEqual(manifest.pi.prompts, []);
   assert.deepEqual(manifest.pi.themes, []);

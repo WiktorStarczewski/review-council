@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import queue
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -14,6 +15,14 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def check():
+    executable = Path(shutil.which('pi')).resolve()
+    package_root = next(parent for parent in executable.parents
+                        if (parent / 'package.json').is_file()
+                        and json.loads((parent / 'package.json').read_text()).get('name')
+                        == '@earendil-works/pi-coding-agent')
+    loader = package_root / 'dist/core/extensions/loader.js'
+    subprocess.run(['node', '--test', str(REPO / 'tests/pi-reload.test.mjs')],
+                   env=dict(os.environ, PI_TEST_LOADER=loader.as_uri()), check=True, timeout=30)
     with tempfile.TemporaryDirectory(prefix='council-pi-discovery-') as directory:
         root = Path(directory)
         env = dict(os.environ, HOME=str(root), PI_CODING_AGENT_DIR=str(root / 'agent'),
@@ -62,7 +71,7 @@ def check():
                     assert len(command) == 1, commands
                     assert command[0]['source'] == 'extension', command
                     provenance = command[0]['sourceInfo']['path']
-                    assert Path(provenance).resolve() == REPO / 'pi/rev.mjs', command
+                    assert Path(provenance).resolve() == REPO / 'pi/rev.ts', command
                 skills = [item['name'] for item in commands if item['source'] == 'skill']
                 assert skills == ['skill:review-council-rev'], skills
                 assert not any(item['name'] == 'stack' for item in commands), commands

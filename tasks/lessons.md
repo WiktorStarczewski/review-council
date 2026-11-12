@@ -1,5 +1,9 @@
 # Lessons
 
+- Fresh-process Pi RPC checks do not prove hot upgrades. Replace the entrypoint at the
+  same path and reload inside one real host loader process; native ESM can retain an old
+  factory even after Pi clears its own extension cache.
+
 - A lower credit bill and unchanged finding count can hide a lost critical defect.
   Freeze severity, citation and evidence-depth gates before paid comparisons; never
   let an aggregate quality mean override a failing case.

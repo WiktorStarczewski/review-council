@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.9.2
+
+- Make Pi `/reload` pick up Council upgrades without restarting the process by loading the extension through Pi's transformed TypeScript path instead of cached native ESM.
+- Verify same-path, same-process upgrades with the real Pi loader, alongside existing command and package discovery checks.
+
 ## 0.9.1
 
 - Add `/council` as the primary Pi review command, retaining `/rev` as an alias.
