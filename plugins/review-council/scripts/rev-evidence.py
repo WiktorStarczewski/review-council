@@ -6,6 +6,7 @@ from bisect import bisect_right
 from collections import Counter
 from contextlib import contextmanager, redirect_stdout
 from difflib import SequenceMatcher
+from functools import lru_cache
 import hashlib
 import importlib.util
 import io
@@ -1867,6 +1868,7 @@ def facts(repo, tree, hunks, categories, base_tree=None, entries_by_tree=None):
                     wildcard_lines_cache[path] = None
         return wildcard_lines_cache[path]
 
+    @lru_cache(maxsize=4096)
     def reexport_route(start, target, name, imported_name=None):
         root = (start, imported_name or name)
         if root == (target, name):
