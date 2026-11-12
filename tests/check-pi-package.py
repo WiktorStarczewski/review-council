@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import subprocess
 import tempfile
 import threading
@@ -56,19 +57,27 @@ def check():
             try:
                 response, _ = request({'id': 'commands', 'type': 'get_commands'})
                 commands = response['data']['commands']
-                rev = [item for item in commands if item['name'] == 'rev']
-                assert len(rev) == 1, commands
-                assert rev[0]['source'] == 'extension', rev
-                provenance = rev[0]['sourceInfo']['path']
-                assert Path(provenance).resolve() == REPO / 'pi/rev.mjs', rev
+                for name in ('council', 'rev'):
+                    command = [item for item in commands if item['name'] == name]
+                    assert len(command) == 1, commands
+                    assert command[0]['source'] == 'extension', command
+                    provenance = command[0]['sourceInfo']['path']
+                    assert Path(provenance).resolve() == REPO / 'pi/rev.mjs', command
                 skills = [item['name'] for item in commands if item['source'] == 'skill']
                 assert skills == ['skill:review-council-rev'], skills
                 assert not any(item['name'] == 'stack' for item in commands), commands
-                for flag in ('--help', '--setup'):
-                    response, seen = request({'id': flag, 'type': 'prompt', 'message': '/rev ' + flag})
+                for flag in ('--help', '--setup', 'high', 'status', 'eco'):
+                    response, seen = request({'id': flag, 'type': 'prompt', 'message': '/council ' + flag})
                     assert response['data']['disposition'] == 'handled', response
                     notices = [item for item in seen if item.get('type') == 'extension_ui_request']
                     assert notices, seen
+                    if flag in ('high', 'eco'):
+                        statuses = [item for item in notices if item.get('method') == 'setStatus']
+                        assert len(statuses) == 1, notices
+                        assert statuses[0]['statusKey'] == 'review-council', statuses
+                        expected = '⚖  council: 🔥 HIGH' if flag == 'high' else '⚖  council: 🌿 ECO'
+                        plain = re.sub(r'\x1b\[[0-9;]*m', '', statuses[0]['statusText'])
+                        assert plain == expected, plain
             finally:
                 proc.stdin.close()
                 try:
@@ -82,7 +91,7 @@ def check():
                 diagnostics = errors.read()
                 assert proc.returncode == 0, diagnostics
                 assert 'Failed to load extension' not in diagnostics, diagnostics
-        print('PASS: installed Pi package discovers /rev and its unique skill; help/setup make no model calls')
+        print('PASS: installed Pi package discovers /council, /rev and its unique skill; mode/status/help/setup make no model calls')
 
 
 if __name__ == '__main__':

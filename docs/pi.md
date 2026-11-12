@@ -6,7 +6,7 @@
 pi install git:github.com/WiktorStarczewski/review-council
 ```
 
-Run `/reload` or start a new Pi session. The package registers `/rev` and the
+Run `/reload` or start a new Pi session. The package registers `/council`, the `/rev` compatibility alias and the
 uniquely named `review-council-rev` skill. It does not register `/stack`, load
 Claude hooks, or change another host's installation. No build step, optional
 subagent package or npm runtime dependency is required.
@@ -14,7 +14,7 @@ subagent package or npm runtime dependency is required.
 For a pinned release:
 
 ```bash
-pi install git:github.com/WiktorStarczewski/review-council@review-council--v0.9.0
+pi install git:github.com/WiktorStarczewski/review-council@review-council--v0.9.1
 ```
 
 Pi manages Git package installation, updates and removal. To update an unpinned
@@ -31,7 +31,7 @@ Pi loads that directory directly, so keep it available and reload after edits.
 
 ## Setup
 
-Run `/rev --setup`. This reports executable presence only and makes no model
+Run `/council --setup`. This reports executable presence only and makes no model
 calls. Required tools are Bash, Git, Python 3 and ripgrep. GitHub CLI (`gh`) is
 required for PR scopes and publication. Authenticate GitHub with `gh auth login`.
 
@@ -45,21 +45,39 @@ consume provider usage. Setup output is not proof of authenticated availability.
 ## Invoke
 
 ```text
-/rev
-/rev uncommitted --read-only
-/rev https://github.com/owner/repo/pull/12
-/rev branch 4 --base origin/next
-/rev --help
+/council
+/council uncommitted --read-only
+/council https://github.com/owner/repo/pull/12
+/council branch 4 --base origin/next
+/council --help
+/council eco
+/council high
+/council status
 ```
 
+Bare `/council` starts a review, just like `/rev`. Exact `eco`, `high` and `status`
+subcommands do not start reviews or call providers. Autocomplete offers these commands.
+Use `./high`, for example, to review a path whose name matches a subcommand.
+
+The independent footer shows `⚖  council: 🌿 ECO` or `⚖  council: 🔥 HIGH`, with two
+spaces after the scales icon. It does not require Ponytail or another extension.
+ECO is the default four-Luna panel. HIGH uses the existing Opus, Sol, Sonnet and Luna
+preset, retaining installed effort, availability and recovery rules.
+
+The selection applies to new reviews throughout this Pi session, including conversational
+and direct-skill requests. It survives reload/resume and follows the selected session-tree
+branch; a new session starts at ECO. A deliberate per-review mode or roster overrides the
+session default without changing it. An initialized review keeps its frozen roster.
+No permanent Council configuration is changed.
+
 All existing review scopes, audit/receipt requirements and fix-loop rules apply.
-Arguments reach the workflow as text, not shell commands. Running `/rev` while Pi
+Arguments reach the workflow as text, not shell commands. Running `/council` or `/rev` while Pi
 is busy or a nested review is active is refused. Publication and pushing retain
 the original workflow's authorization boundaries; invoking the command does not
 grant unrelated write permissions.
 
 The command binds its own installed skill directly. A shared `~/.agents/skills/rev`
-from Codex cannot shadow `/rev`. For explicit skill invocation or natural-language
+from Codex cannot shadow `/council` or `/rev`. For explicit skill invocation or natural-language
 requests, use `/skill:review-council-rev`; do not use another host's shared `rev`.
 If another extension also registers `/rev`, Pi adds numeric suffixes. Inspect the
 command's provenance and select this package's command rather than assuming a suffix.
