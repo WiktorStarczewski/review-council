@@ -73,6 +73,24 @@ w.resolve_available('pi', luna=('gpt-6-luna', 'high'))]))
             self.assertNotIn('claude_models', selected)
             self.assertEqual(config.read_text(), original)
 
+    def test_pi_high_valid_pinned_opus_models_can_replace_both_sol_seats(self):
+        with patch.dict(os.environ, {'REVIEW_COUNCIL_HOST': 'pi'}):
+            roster = module(PLUGIN / 'scripts/lib/roster.py')
+        cfg = {'panel_mode': 'high', 'codex_models': ['gpt-5.6-sol'] * 2,
+               'claude_seats': 2, 'min_labs': 1,
+               'pin': {'opus': {'model': 'claude-opus-4-7'},
+                       'opus-2': {'model': 'claude-opus-4-7'}}}
+        kept, excluded = roster.opus_seats('claude', 2), []
+        roster.apply_pins(cfg, kept)
+        self.assertIsNone(roster.claude_pin_conflict(cfg, 2))
+        roster.substitute_high_pairs(kept, excluded, cfg)
+        clones = [seat for seat in kept if seat.get('substitutes_for')]
+        self.assertEqual([seat['substitutes_for'] for seat in clones],
+                         ['codex-sol', 'codex-sol-2'])
+        self.assertEqual([seat['model'] for seat in clones],
+                         ['claude-opus-4-7', 'claude-opus-4-7'])
+        self.assertEqual(roster.enforce_exact_seats(cfg, kept, excluded), (None, None))
+
     def test_pi_resumption_selects_bundled_phase_files(self):
         brief = module(PLUGIN / 'scripts/rev-brief.py')
         self.assertEqual(brief.skill_dir('pi'), PLUGIN / 'pi-skills/review-council-rev')
