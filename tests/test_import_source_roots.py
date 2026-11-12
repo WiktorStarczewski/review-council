@@ -143,6 +143,137 @@ class ImportCandidateIdentityTests(unittest.TestCase):
                              and row['target'] == 'visual/fixture.tsx'
                              for row in facts['dependencies']), facts)
 
+    def test_aliased_barrel_retains_original_symbol_without_fixture_homonym(self):
+        facts = self.facts({
+            'src/hooks.ts': 'export const useAccount = () => 1;\n',
+            'src/index.ts': 'export { useAccount as getAccount } from "./hooks";\n',
+            'src/consumer.ts': 'import { getAccount } from "./index";\ngetAccount();\n',
+            'visual/fixture.tsx': 'export const useAccount = () => 2;\n',
+        }, 'src/hooks.ts', 'visual/fixture.tsx')
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'src/consumer.ts')
+        self.assertNotIn('visual/fixture.tsx', obligation['candidate_targets'])
+        self.assertTrue(any(row['path'] == 'src/consumer.ts'
+                            and row['name'] == 'useAccount'
+                            and row.get('local_name') == 'getAccount'
+                            for row in facts['call_sites']), facts)
+        self.assertIn({'source': 'src/index.ts', 'target': 'src/hooks.ts',
+                       'kind': 'local-import'}, facts['dependencies'])
+
+    def test_consumer_alias_keeps_renamed_barrel_export(self):
+        facts = self.facts({
+            'src/hooks.ts': 'export const useAccount = () => 1;\n',
+            'src/index.ts': 'export { useAccount as getAccount } from "./hooks";\n',
+            'src/consumer.ts': 'import { getAccount as currentAccount } from "./index";\ncurrentAccount();\n',
+            'visual/fixture.tsx': 'export const useAccount = () => 2;\n',
+        }, 'src/hooks.ts', 'visual/fixture.tsx')
+        self.assertTrue(any(row['path'] == 'src/consumer.ts'
+                            and row['name'] == 'useAccount'
+                            and row.get('local_name') == 'currentAccount'
+                            for row in facts['call_sites']), facts)
+        self.assertFalse(any(row['source'] == 'src/consumer.ts'
+                             and row['target'] == 'visual/fixture.tsx'
+                             for row in facts['dependencies']), facts)
+
+    def test_local_import_then_export_alias_keeps_both_source_proofs(self):
+        facts = self.facts({
+            'src/hooks.ts': 'export const useAccount = () => 1;\n',
+            'src/index.ts': ('import { useAccount as localAccount } from "./hooks";\n'
+                             'export { localAccount as getAccount };\n'),
+            'src/consumer.ts': 'import { getAccount } from "./index";\ngetAccount();\n',
+            'visual/fixture.tsx': 'export const useAccount = () => 2;\n',
+        }, 'src/hooks.ts', 'visual/fixture.tsx')
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'src/consumer.ts')
+        self.assertEqual({(row['path'], row['line_start'], row['line_end'])
+                          for row in obligation['candidate_route_symbols']},
+                         {('src/index.ts', 1, 1), ('src/index.ts', 2, 2)})
+        self.assertNotIn('visual/fixture.tsx', obligation['candidate_targets'])
+        self.assertTrue(any(row['path'] == 'src/consumer.ts'
+                            and row['name'] == 'useAccount' for row in facts['call_sites']), facts)
+
+    def test_mixed_wildcard_and_named_alias_hops_keep_exact_route(self):
+        facts = self.facts({
+            'src/hooks.ts': 'export const useAccount = () => 1;\n',
+            'src/exports.ts': 'export { useAccount as readAccount } from "./hooks";\n',
+            'src/middle.ts': 'export * from "./exports";\n',
+            'src/index.ts': 'export { readAccount as getAccount } from "./middle";\n',
+            'src/consumer.ts': 'import { getAccount } from "./index";\ngetAccount();\n',
+            'visual/fixture.tsx': 'export const useAccount = () => 2;\n',
+        }, 'src/hooks.ts', 'visual/fixture.tsx')
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'src/consumer.ts')
+        self.assertEqual({row['path'] for row in obligation['candidate_route_symbols']},
+                         {'src/index.ts', 'src/middle.ts', 'src/exports.ts'})
+        self.assertNotIn('visual/fixture.tsx', obligation['candidate_targets'])
+        self.assertTrue(any(row['path'] == 'src/consumer.ts'
+                            and row['name'] == 'useAccount' for row in facts['call_sites']), facts)
+
+    def test_reexport_revisit_keeps_distinct_export_names(self):
+        facts = self.facts({
+            'src/hooks.ts': 'export const useAccount = () => 1;\n',
+            'src/index.ts': ('export { relay as getAccount } from "./next";\n'
+                             'export { useAccount } from "./hooks";\n'),
+            'src/next.ts': 'export { useAccount as relay } from "./index";\n',
+            'src/consumer.ts': 'import { getAccount } from "./index";\ngetAccount();\n',
+            'visual/fixture.tsx': 'export const useAccount = () => 2;\n',
+        }, 'src/hooks.ts', 'visual/fixture.tsx')
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'src/consumer.ts')
+        self.assertEqual({(row['path'], row['line_start'])
+                          for row in obligation['candidate_route_symbols']},
+                         {('src/index.ts', 1), ('src/index.ts', 2), ('src/next.ts', 1)})
+        self.assertNotIn('visual/fixture.tsx', obligation['candidate_targets'])
+
+    def test_alias_does_not_bind_another_changed_name_in_the_target_file(self):
+        facts = self.facts({
+            'src/hooks.ts': 'export const useAccount = () => 1;\n',
+            'src/index.ts': 'export { otherAccount as getAccount } from "./hooks";\n',
+            'src/consumer.ts': 'import { getAccount } from "./index";\ngetAccount();\n',
+            'visual/fixture.tsx': 'export const useAccount = () => 2;\n',
+        }, 'src/hooks.ts', 'visual/fixture.tsx')
+        self.assertFalse(any(row['path'] == 'src/consumer.ts'
+                             for row in facts['unresolved_imports'] + facts['call_sites']), facts)
+
+    def test_unsupported_local_export_keeps_explicit_search_obligation(self):
+        facts = self.facts({
+            'src/hooks.ts': 'export const useAccount = () => 1;\n',
+            'src/index.ts': 'export { unknownAccount as getAccount };\n',
+            'src/consumer.ts': 'import { getAccount } from "./index";\ngetAccount();\n',
+        }, 'src/hooks.ts')
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'src/consumer.ts')
+        self.assertIn('src/hooks.ts', obligation['candidate_targets'])
+        self.assertTrue(obligation['candidate_search_ranges'])
+
+    def test_ambiguous_local_export_keeps_explicit_search_obligation(self):
+        facts = self.facts({
+            'src/hooks.ts': 'export const useAccount = () => 1;\n',
+            'src/other.ts': 'export const otherAccount = () => 2;\n',
+            'src/index.ts': ('import { useAccount as localAccount } from "./hooks";\n'
+                             'import { otherAccount as localAccount } from "./other";\n'
+                             'export { localAccount as getAccount };\n'),
+            'src/consumer.ts': 'import { getAccount } from "./index";\ngetAccount();\n',
+        }, 'src/hooks.ts')
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'src/consumer.ts')
+        self.assertIn('src/hooks.ts', obligation['candidate_targets'])
+        self.assertTrue(obligation['candidate_search_ranges'])
+
+    def test_cyclic_local_exports_keep_explicit_search_obligation(self):
+        facts = self.facts({
+            'src/hooks.ts': 'export const useAccount = () => 1;\n',
+            'src/index.ts': ('import { getAccount as localAccount } from "./next";\n'
+                             'export { localAccount as getAccount };\n'),
+            'src/next.ts': ('import { getAccount as localAccount } from "./index";\n'
+                            'export { localAccount as getAccount };\n'),
+            'src/consumer.ts': 'import { getAccount } from "./index";\ngetAccount();\n',
+        }, 'src/hooks.ts')
+        obligation = next(row for row in facts['unresolved_imports']
+                          if row['path'] == 'src/consumer.ts')
+        self.assertIn('src/hooks.ts', obligation['candidate_targets'])
+        self.assertTrue(obligation['candidate_search_ranges'])
+
     def test_dynamic_import_and_unbound_dispatch_keep_their_existing_proof(self):
         facts = self.facts({
             'src/hooks.ts': 'export const useAccount = () => 1;\n',
@@ -202,10 +333,35 @@ class ImportCandidateIdentityTests(unittest.TestCase):
             'native/Tests/bridge.swift': 'func verifyBridge() { nativeBridgeCall() }\n',
         }, 'src/bridge.ts')
         self.assertTrue(any(row['path'] == 'native/Tests/bridge.swift'
-                            and row['name'] == 'nativeBridgeCall'
-                            for row in facts['call_sites']), facts)
-        self.assertTrue(any(row['path'] == 'native/Tests/bridge.swift'
                             for row in facts['related_tests']), facts)
+        self.assertIn({'source': 'native/Tests/bridge.swift', 'target': 'src/bridge.ts',
+                       'kind': 'related-test'}, facts['dependencies'])
+        self.assertFalse(any(row['path'] == 'native/Tests/bridge.swift'
+                             for row in facts['call_sites']), facts)
+
+    def test_cross_language_lexical_test_keeps_obligation_without_matching_stem(self):
+        facts = self.facts({
+            'src/bridge.ts': 'export function nativeBridgeCall() { return 1; }\n',
+            'native/Tests/protocol.swift': 'func verifyBridge() { nativeBridgeCall() }\n',
+        }, 'src/bridge.ts')
+        self.assertTrue(any(row['path'] == 'native/Tests/protocol.swift'
+                            for row in facts['related_tests']), facts)
+        self.assertIn({'source': 'native/Tests/protocol.swift', 'target': 'src/bridge.ts',
+                       'kind': 'related-test'}, facts['dependencies'])
+        self.assertFalse(any(row['path'] == 'native/Tests/protocol.swift'
+                             for row in facts['call_sites']), facts)
+
+    def test_cross_language_lexical_value_keeps_related_test_without_call_claim(self):
+        facts = self.facts({
+            'src/bridge.ts': 'export const featureEnabled = true;\n',
+            'native/Tests/protocol.swift': 'let observed = featureEnabled\n',
+        }, 'src/bridge.ts')
+        self.assertTrue(any(row['path'] == 'native/Tests/protocol.swift'
+                            for row in facts['related_tests']), facts)
+        self.assertIn({'source': 'native/Tests/protocol.swift', 'target': 'src/bridge.ts',
+                       'kind': 'related-test'}, facts['dependencies'])
+        self.assertFalse(any(row['path'] == 'native/Tests/protocol.swift'
+                             for row in facts['call_sites']), facts)
 
 
 if __name__ == '__main__':
