@@ -242,6 +242,18 @@ class ImportCandidateIdentityTests(unittest.TestCase):
         self.assertFalse(obligation['candidate_route_symbols'], facts)
         self.assertTrue(obligation['candidate_search_ranges'], facts)
 
+    def test_arrow_regex_literal_cannot_prove_a_local_export_route(self):
+        facts = self.facts({
+            'src/hooks.ts': 'export const useAccount = () => 1;\n',
+            'src/index.ts': ('import { useAccount } from "./hooks";\n'
+                             'const match = () => /export { useAccount as getAccount }/.test(text);\n'),
+            'src/consumer.ts': ('import { getAccount as currentAccount } from "./index";\n'
+                                'currentAccount();\n'),
+        }, 'src/hooks.ts')
+        self.assertFalse(any(row.get('candidate_route_symbols')
+                             for row in facts['unresolved_imports']
+                             if row['path'] == 'src/consumer.ts'), facts)
+
     def test_mixed_wildcard_and_named_alias_hops_keep_exact_route(self):
         facts = self.facts({
             'src/hooks.ts': 'export const useAccount = () => 1;\n',
