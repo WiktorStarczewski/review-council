@@ -1401,6 +1401,11 @@ def claude_pin_conflict(cfg, count):
         model = pin.get('model') if isinstance(pin, dict) else None
         if isinstance(model, str) and model and not opus_model(model):
             return seat, 'pinned model %s is outside the Opus family' % model
+        effort = pin.get('effort') if isinstance(pin, dict) else None
+        if cfg.get('panel_mode') == 'high' and isinstance(effort, str) \
+                and effort and effort != CLAUDE_EFFORT:
+            return seat, 'pinned effort %s does not match required effort %s' \
+                         % (effort, CLAUDE_EFFORT)
     return None
 
 
@@ -1596,6 +1601,12 @@ def enforce_exact_seats(cfg, seats, excluded):
         strict_class, strict_reason = strict_winner(
             strict_class, strict_reason, 'config', reason)
     valid_positive = ('claude_models' not in cfg and valid_claude and raw_claude > 0)
+    high_count = valid_positive and cfg.get('panel_mode') == 'high'
+    if high_count and claude_disabled:
+        reason = ('claude_seats conflicts with claude_seat: false' if cfg.get('claude_seat') is False
+                  else 'claude_seats conflicts with REVIEW_COUNCIL_CLAUDE_SEAT=0')
+        append_exclusion(excluded, 'claude_seats', 'strict: ' + reason)
+        strict_class, strict_reason = strict_winner(strict_class, strict_reason, 'config', reason)
     if valid_positive and not claude_disabled:
         adapter = anthropic_adapter(cfg)
         pin_conflict = claude_pin_conflict(cfg, raw_claude)
@@ -1610,7 +1621,8 @@ def enforce_exact_seats(cfg, seats, excluded):
         matched.update(s['seat'] for s in seats
                        if s['adapter'] == adapter and not s['extra']
                        and not s.get('padded') and s['seat'] in required_names
-                       and opus_model(s.get('model')))
+                       and opus_model(s.get('model'))
+                       and (not high_count or s.get('effort') == CLAUDE_EFFORT))
         if len(matched) != raw_claude:
             summary = 'claude_seats requires %d matching seat(s), %d survived' \
                       % (raw_claude, len(matched))
