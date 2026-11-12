@@ -1538,7 +1538,7 @@ def brace_code(source, extension):
             index += 1
         elif char == '/' and extension in ('.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx'):
             prefix = ''.join(masked[max(0, index - 24):index]).rstrip()
-            regex_start = not prefix or prefix[-1] in '=([{,:;!&|?~%^+*-' or re.search(r'\b(?:return|throw|yield|case)\s*$', prefix)
+            regex_start = not prefix or prefix.endswith('=>') or prefix[-1] in '=([{,:;!&|?~%^+*-' or re.search(r'\b(?:return|throw|yield|case)\s*$', prefix)
             if not regex_start:
                 index += 1
                 continue
