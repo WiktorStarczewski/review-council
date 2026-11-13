@@ -14,7 +14,7 @@ subagent package or npm runtime dependency is required.
 For a pinned release:
 
 ```bash
-pi install git:github.com/WiktorStarczewski/review-council@review-council--v0.9.3
+pi install git:github.com/WiktorStarczewski/review-council@review-council--v0.9.4
 ```
 
 Pi manages Git package installation, updates and removal. To update an unpinned
@@ -64,8 +64,8 @@ Use `./high`, for example, to review a path whose name matches a subcommand.
 
 The independent footer shows `⚖️ council: 🌿 ECO` or `⚖️ council: 🔥 HIGH`, with one
 space after the explicitly emoji-width icon. It does not require Ponytail or another extension.
-ECO is the default four-Luna panel. HIGH uses the existing Opus, Sol, Sonnet and Luna
-preset, retaining installed effort, availability and recovery rules.
+ECO is the default four-Luna panel. HIGH uses two Sol seats and two Opus seats,
+retaining installed effort, availability and recovery rules.
 
 The selection applies to new reviews throughout this Pi session, including conversational
 and direct-skill requests. It survives reload/resume and follows the selected session-tree

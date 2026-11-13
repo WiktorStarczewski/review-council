@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.9.4
+
+- Set new HIGH reviews to two Sol seats and two Opus seats across hosts. ECO, explicit per-review overrides and initialized frozen rosters remain unchanged.
+- Account for every required repeated seat during HIGH availability substitution, while preserving explicit exclusions and legacy mixed-family HIGH configurations.
+
 ## 0.9.3
 
 - Show one visible space between the Council footer icon and label, using explicit emoji presentation to keep terminal cell width consistent.

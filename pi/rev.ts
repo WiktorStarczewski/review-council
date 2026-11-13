@@ -17,7 +17,7 @@ export default function reviewCouncil(pi) {
   const policy = () => `Review Council session default: ${mode.toUpperCase()}.\n` +
     `For every NEW Council review, including conversational and direct-skill requests, follow ${skill}.\n` +
     `When calling rev-panel-request.py, prepend "mode: ${mode === 'high' ? 'high' : 'normal'}\\n" to the review request text.\n` +
-    'ECO uses four Luna seats; HIGH uses Opus, Sol, Sonnet and Luna under the installed preset rules.\n' +
+    'ECO uses four Luna seats; HIGH uses two Sol seats and two Opus seats under the installed preset rules.\n' +
     'An explicit per-review mode or roster overrides this default without changing the session setting.\n' +
     'Reuse an initialized review\'s frozen roster; never rebuild it because the session mode changed.\n' +
     'This setting does not itself request or authorize a review.';

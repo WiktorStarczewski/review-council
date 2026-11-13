@@ -2,7 +2,7 @@
 
 Normal is the default. On Cursor that panel is four Grok seats when the SDK can
 seat them, and four Luna seats otherwise. Off Cursor it is four Luna seats.
-`high effort` selects one Opus, one Sol, one Sonnet, and one Luna. An explicit
+`high effort` selects two Sol seats and two Opus seats. An explicit
 `4*luna` or `4*grok` replaces that preset. The user's permanent config is left
 untouched. Later panels read the frozen roster this config produces.
 """
@@ -126,17 +126,17 @@ def grok_config(base, count, fallback=False):
 
 
 def high_config(base):
-    """One Opus, one Sol, one Sonnet, one Luna. Pair substitution happens during roster build."""
+    """Two Sol and two Opus seats. Pair substitution happens during roster build."""
     config = dict(base)
-    for key in ('claude_seats', 'claude_seat', 'panel_fallback', 'panel_grok_fallback'):
+    for key in ('claude_models', 'claude_seats', 'claude_seat', 'panel_fallback', 'panel_grok_fallback'):
         config.pop(key, None)
     _without_sdk(config)
     config['panel_mode'] = 'high'
     config['panel_family'] = 'high'
-    config['codex_models'] = ['latest-sol', 'latest-luna']
+    config['codex_models'] = ['latest-sol'] * 2
     if 'codex_effort' not in config:
         config['codex_effort'] = 'xhigh'
-    config['claude_models'] = ['opus', 'sonnet']
+    config['claude_seats'] = 2
     config['extras'] = False
     config['min_labs'] = 1
     config['exclude'] = _exclude(config, HIGH_CLEAR, {'gemini', 'cursor-sdk'})

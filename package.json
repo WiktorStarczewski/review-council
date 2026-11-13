@@ -1,6 +1,6 @@
 {
   "name": "review-council",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "description": "Independent multi-model review and fixes for Pi",
   "license": "MIT",
   "repository": "https://github.com/WiktorStarczewski/review-council",

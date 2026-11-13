@@ -143,7 +143,7 @@ origin/main"*, *"... for one round, read-only, on my uncommitted changes"*, or *
 the SDK and wallet branches as a dependency stack"*.
 
 In Pi, use `/council`, `/council uncommitted --read-only`, or `/council <PR URL>`.
-Select ECO (four Luna reviewers, the default) or HIGH (Opus, Sol, Sonnet and Luna)
+Select ECO (four Luna reviewers, the default) or HIGH (two Sol and two Opus reviewers)
 with `/council eco` or `/council high`; `/council status` reports the selection.
 The package binds its own Pi workflow, even if a shared Codex `rev` skill exists.
 

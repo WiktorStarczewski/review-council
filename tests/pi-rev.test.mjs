@@ -140,6 +140,7 @@ test('mode policy covers conversational reviews and defers to explicit and froze
   assert.equal(await h.emit('before_agent_start', event), undefined);
   assert.equal(event.systemPromptOptions.sections.other, 'unchanged');
   const policy = event.systemPromptOptions.sections.review_council;
+  assert.match(policy, /HIGH uses two Sol seats and two Opus seats/);
   assert.match(policy, /mode: high/);
   assert.match(policy, /explicit.*override/i);
   assert.match(policy, /frozen roster/i);

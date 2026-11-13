@@ -1401,6 +1401,11 @@ def claude_pin_conflict(cfg, count):
         model = pin.get('model') if isinstance(pin, dict) else None
         if isinstance(model, str) and model and not opus_model(model):
             return seat, 'pinned model %s is outside the Opus family' % model
+        effort = pin.get('effort') if isinstance(pin, dict) else None
+        if cfg.get('panel_mode') == 'high' and isinstance(effort, str) \
+                and effort and effort != CLAUDE_EFFORT:
+            return seat, 'pinned effort %s does not match required effort %s' \
+                         % (effort, CLAUDE_EFFORT)
     return None
 
 
@@ -1596,6 +1601,12 @@ def enforce_exact_seats(cfg, seats, excluded):
         strict_class, strict_reason = strict_winner(
             strict_class, strict_reason, 'config', reason)
     valid_positive = ('claude_models' not in cfg and valid_claude and raw_claude > 0)
+    high_count = valid_positive and cfg.get('panel_mode') == 'high'
+    if high_count and claude_disabled:
+        reason = ('claude_seats conflicts with claude_seat: false' if cfg.get('claude_seat') is False
+                  else 'claude_seats conflicts with REVIEW_COUNCIL_CLAUDE_SEAT=0')
+        append_exclusion(excluded, 'claude_seats', 'strict: ' + reason)
+        strict_class, strict_reason = strict_winner(strict_class, strict_reason, 'config', reason)
     if valid_positive and not claude_disabled:
         adapter = anthropic_adapter(cfg)
         pin_conflict = claude_pin_conflict(cfg, raw_claude)
@@ -1610,7 +1621,8 @@ def enforce_exact_seats(cfg, seats, excluded):
         matched.update(s['seat'] for s in seats
                        if s['adapter'] == adapter and not s['extra']
                        and not s.get('padded') and s['seat'] in required_names
-                       and opus_model(s.get('model')))
+                       and opus_model(s.get('model'))
+                       and (not high_count or s.get('effort') == CLAUDE_EFFORT))
         if len(matched) != raw_claude:
             summary = 'claude_seats requires %d matching seat(s), %d survived' \
                       % (raw_claude, len(matched))
@@ -1701,8 +1713,10 @@ def _seat_family(seat):
         suffix = codex_suffix(model)
         if suffix in ('sol', 'luna'):
             return suffix
-    if adapter in ('claude', 'agent') and model in ('opus', 'sonnet'):
-        return model
+    if adapter in ('claude', 'agent') and opus_model(model):
+        return 'opus'
+    if adapter in ('claude', 'agent') and model == 'sonnet':
+        return 'sonnet'
     return None
 
 
@@ -1716,27 +1730,30 @@ def _fresh_seat_name(base, seats, clones):
 
 
 def _high_required_names(cfg):
-    """Family to the seat name enforce_exact_seats will require for a high panel."""
+    """Family to every seat name enforce_exact_seats requires for a high panel."""
     names = {}
     allowed, error = codex_models_setting(cfg)
     if allowed and not error:
         for slug, seat_name in zip(allowed, codex_seat_names([(slug, None) for slug in allowed])):
             family = codex_suffix(slug)
-            if family in ('sol', 'luna') and family not in names:
-                names[family] = seat_name
+            if family in ('sol', 'luna'):
+                names.setdefault(family, []).append(seat_name)
     claude, error = claude_models_setting(cfg)
     if claude and not error:
         for model, seat_name in zip(claude, claude_model_seat_names(claude)):
-            if model not in names:
-                names[model] = seat_name
+            names.setdefault(model, []).append(seat_name)
+    elif claude is None and not error and 'claude_seats' in cfg:
+        count, error = claude_seat_count(cfg)
+        if count and not error:
+            names['opus'] = [seat['seat'] for seat in opus_seats('agent', count)]
     return names
 
 
 def substitute_high_pairs(kept, excluded, cfg):
-    """Opus and Sol cover each other, and Sonnet and Luna cover each other.
+    """Sol/Opus and legacy Sonnet/Luna seats cover their missing partner seats.
 
-    A missing side is a core seat cloned from the survivor, with substitutes_for
-    set to the required name. If both sides are down, nothing is invented.
+    Each missing required name gets a core clone with substitutes_for set to
+    that name. If both families are down, nothing is invented.
     """
     if cfg.get('panel_mode') != 'high':
         return
@@ -1750,26 +1767,26 @@ def substitute_high_pairs(kept, excluded, cfg):
             present[family] = seat
     clones = []
     for family, partner in pairs:
-        if family in present or partner not in present or family not in expected:
+        if partner not in present:
             continue
-        name = expected[family]
-        if name in dropped or family in dropped:
-            continue
-        if any(seat.get('substitutes_for') == name for seat in kept):
-            continue
-        if any(entry.get('cli') in (name, family) and entry.get('reason') == 'excluded by config'
-               for entry in excluded):
-            continue
-        source = present[partner]
-        seat_name = _fresh_seat_name(source['seat'] + '-for-' + family, kept, clones)
-        clone = dict(source)
-        clone.pop('padded', None)
-        clone['extra'] = False
-        clone['seat'] = seat_name
-        clone['substitutes_for'] = name
-        clones.append(clone)
-        present[family] = clone
-        append_exclusion(excluded, name, 'unavailable; %s substitutes' % seat_name)
+        for name in expected.get(family, ()):
+            if name in dropped or family in dropped:
+                continue
+            if any(seat.get('seat') == name or seat.get('substitutes_for') == name
+                   for seat in kept if not seat.get('extra')):
+                continue
+            if any(entry.get('cli') in (name, family) and entry.get('reason') == 'excluded by config'
+                   for entry in excluded):
+                continue
+            source = present[partner]
+            seat_name = _fresh_seat_name(source['seat'] + '-for-' + family, kept, clones)
+            clone = dict(source)
+            clone.pop('padded', None)
+            clone['extra'] = False
+            clone['seat'] = seat_name
+            clone['substitutes_for'] = name
+            clones.append(clone)
+            append_exclusion(excluded, name, 'unavailable; %s substitutes' % seat_name)
     kept.extend(clones)
 
 
