@@ -71,7 +71,7 @@ pr_review_expected() {
 > **No correctness or security defects remain.** Nothing blocking from this review; one design point is yours to decide.
 
 2 panels · 3 findings: 1 fixed in [acme/repo#9](https://github.com/acme/repo/pull/9), 1 for you, 1 rejected · gates 3/3 green, 42 tests
-Panel: GPT-5.6 Sol · Claude Sonnet 5, each at maximum effort
+Panel: GPT-5.6 Sol · Claude Sonnet 5
 Orchestrator: GPT-6.1 Sol
 
 ### Decisions for you
@@ -434,6 +434,35 @@ test_pr_review_render() {
   assert_eq "PR review renderer reports its output" \
     "$(cat "$T/pr-render.out")" "$session/pr-review.md"
   assert_nogrep "PR review renderer emits no diagnostics" "$T/pr-render.err" '.'
+
+  local replacements="$T/pr-render-replacements" replacement_expected="$T/pr-replacements-expected.md"
+  mkdir -p "$replacements"
+  pr_review_input > "$replacements/pr-review.json"
+  python3 - "$replacements/pr-review.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data['panel'] = ['Claude Sonnet 4.6 (claude-sonnet-4-6), high']
+data['coverage'] = ['Panels: simplicity · final verification; 4 valid Sonnet 4.6/high replacement runs cover all four verification bundles; failed originals excluded']
+path.write_text(json.dumps(data))
+PY
+  pr_review_expected | sed \
+    -e 's/^Panel: .*$/Panel: Claude Sonnet 4.6 (claude-sonnet-4-6), high/' \
+    -e 's/^- Panels: .*$/- Panels: simplicity · final verification; 4 valid Sonnet 4.6\/high replacement runs cover all four verification bundles; failed originals excluded/' \
+    > "$replacement_expected"
+  python3 "$SCRIPTS/rev-pr-review.py" render "$replacements" --date 2026-09-15 \
+    > "$T/pr-replacements.out" 2> "$T/pr-replacements.err"
+  assert_eq "high-effort replacement review renders cleanly" "$?" 0
+  assert_exit "high-effort replacement review matches honest canonical body" 0 \
+    cmp -s "$replacement_expected" "$replacements/pr-review.md"
+  assert_nogrep "high-effort replacement review never claims maximum effort" \
+    "$replacements/pr-review.md" 'maximum effort'
+  assert_eq "high-effort replacement renderer reports its output" \
+    "$(cat "$T/pr-replacements.out")" "$replacements/pr-review.md"
+  assert_nogrep "high-effort replacement renderer emits no diagnostics" "$T/pr-replacements.err" '.'
 }
 
 test_pr_review_escapes_html_contexts() {

@@ -73,9 +73,13 @@ Rules:
 - `rejected` counts rejected findings. The total finding count is calculated from
   fixes, decisions, and rejections.
 - `panels` counts completed panels, not reviewer seats or provider calls.
-- `panel` names the actual core models from `roster.json` in roster order. Include
-  only models that produced valid results. The fixed suffix says every listed model
-  ran at maximum effort, so do not list a lower-effort seat.
+- `panel` names the actual valid selected executor models with their recorded effort,
+  in original assignment order. Include canonical replacements instead of failed
+  originals; do not credit invalid executions or infer maximum effort.
+- Use `coverage` to state selected run counts and bundle coverage separately from
+  panel counts: four valid replacement runs covering four verification bundles do
+  not mean four panels. Keep frozen `roster.json` degradation disclosures separate
+  from the actual selected executor identities; do not rewrite the frozen roster.
 - `orchestrator` names the model that orchestrated this review. Use the exact model
   identity from the active session; do not infer it from the panel roster.
 - The rendered report places `Orchestrator: <model>` immediately below the panel model

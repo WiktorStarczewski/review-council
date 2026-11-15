@@ -208,7 +208,7 @@ def render(data, date):
         f"> **{headline}** {detail}",
         "",
         f"{panels} panels · {total} findings: {fixed_phrase}, {decisions_count} for you, {rejected} rejected · gates {gates}",
-        "Panel: " + " · ".join(panel) + ", each at maximum effort",
+        "Panel: " + " · ".join(panel),
         "Orchestrator: " + orchestrator,
         "",
         "### Decisions for you",
