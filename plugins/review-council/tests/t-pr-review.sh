@@ -71,7 +71,7 @@ pr_review_expected() {
 > **No correctness or security defects remain.** Nothing blocking from this review; one design point is yours to decide.
 
 2 panels · 3 findings: 1 fixed in [acme/repo#9](https://github.com/acme/repo/pull/9), 1 for you, 1 rejected · gates 3/3 green, 42 tests
-Panel: GPT-5.6 Sol · Claude Sonnet 5, each at maximum effort
+Panel: GPT-5.6 Sol · Claude Sonnet 5
 Orchestrator: GPT-6.1 Sol
 
 ### Decisions for you
