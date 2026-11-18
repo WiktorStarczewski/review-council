@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.9.5
+
+- Guide Codex reviewers to use smaller source-read batches within the existing turn, aggregate read and evidence limits.
+
 ## 0.9.4
 
 - Set new HIGH reviews to two Sol seats and two Opus seats across hosts. ECO, explicit per-review overrides and initialized frozen rosters remain unchanged.
