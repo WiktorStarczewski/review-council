@@ -14,7 +14,7 @@ import sys
 LIB_DIR = Path(__file__).resolve().parent
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
-from review_limits import CODEX_REVIEW_TURN_CALL_LIMIT
+from review_limits import codex_review_turn_call_limit_for_model
 
 OUTPUT_BYTES = 32 * 1024
 PROOF_TURN_BYTES = 60 * 1024
@@ -572,7 +572,7 @@ def main():
     parser.add_argument('--stage-dir')
     parser.add_argument('--thread-id-stream')
     parser.add_argument('--review-budget')
-    parser.add_argument('--review-turn-call-limit', action='store_true')
+    parser.add_argument('--review-turn-call-limit')
     parser.add_argument('--stage-read-count')
     parser.add_argument('--required-post-index-read')
     parser.add_argument('--required-post-index-target')
@@ -582,8 +582,8 @@ def main():
     parser.add_argument('--root')
     parser.add_argument('--session')
     args = parser.parse_args()
-    if args.review_turn_call_limit:
-        print(CODEX_REVIEW_TURN_CALL_LIMIT)
+    if args.review_turn_call_limit is not None:
+        print(codex_review_turn_call_limit_for_model(args.review_turn_call_limit))
         return 0
     if args.review_budget:
         try:
