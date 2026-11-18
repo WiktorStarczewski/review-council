@@ -582,7 +582,7 @@ def main():
     parser.add_argument('--root')
     parser.add_argument('--session')
     args = parser.parse_args()
-    if args.review_turn_call_limit is not None:
+    if args.review_turn_call_limit:
         print(CODEX_REVIEW_TURN_CALL_LIMIT)
         return 0
     if args.review_budget:
