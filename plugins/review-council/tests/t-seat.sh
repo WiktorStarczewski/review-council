@@ -543,7 +543,7 @@ PY
   seat_env_reset "$_path"
 }
 
-test_seat_codex_luna_paces_reads_without_rejecting_five_short_commands() {
+test_seat_codex_luna_allows_five_commands_per_review_turn() {
   local _path="$PATH"; seat_env
   local L="$T/seat-codex-luna-five-calls" S="$T/seat-codex-sol-three-calls"
   mkdir -p "$L" "$S"
