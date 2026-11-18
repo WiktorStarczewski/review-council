@@ -9,6 +9,8 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+      - name: Luna bounded review turn regression
+        run: bash plugins/review-council/tests/run-tests.sh seat_codex_luna_bounds_commands_per_review_turn
       - name: Semantic result rejection regressions
         run: bash plugins/review-council/tests/run-tests.sh evidence_semantic_rejection
       - name: Exact retry interruption replacement regression
