@@ -3474,11 +3474,7 @@ from pathlib import Path
 
 limits_path, manifest_path, seat, prompt_path = sys.argv[1:]
 limits = runpy.run_path(limits_path)
-turn_call_limit = limits.get('codex_review_turn_call_limit_for_model')
-assert callable(turn_call_limit), 'Codex turn call limit is not model-specific'
-assert turn_call_limit('gpt-6.1-luna') == 2, turn_call_limit('gpt-6.1-luna')
-assert turn_call_limit('gpt-5.6-sol') == 2, turn_call_limit('gpt-5.6-sol')
-assert turn_call_limit(None) == 2, turn_call_limit(None)
+assert limits['CODEX_REVIEW_TURN_CALL_LIMIT'] == 2
 manifest_file = Path(Path(manifest_path).read_text().strip())
 manifest = __import__('json').loads(manifest_file.read_text())
 assignment = manifest['assignments'][seat]
