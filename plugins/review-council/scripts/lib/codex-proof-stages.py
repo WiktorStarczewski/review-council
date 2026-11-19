@@ -85,7 +85,7 @@ def direct_path(value, session, expected_name=None):
     return path
 
 
-def grouped(items, limit, visible, standalone=None):
+def grouped(items, limit, visible, standalone=None, turn_bytes=PROOF_TURN_BYTES):
     if not 1 <= limit <= 2:
         raise StageError('Codex proof batch limit must be one or two')
     stages = []
@@ -102,7 +102,7 @@ def grouped(items, limit, visible, standalone=None):
                 pending = []
                 size = 0
             stages.append([item])
-        elif pending and (len(pending) >= limit or size + amount > PROOF_TURN_BYTES):
+        elif pending and (len(pending) >= limit or size + amount > turn_bytes):
             stages.append(pending)
             pending = [item]
             size = amount
@@ -434,9 +434,13 @@ def prepared_stages(prompt, seat, model, stage_dir):
         if len(limit_rows) != 1:
             raise StageError('prompt patch chunk batch limit is missing or repeated')
         patch_limit = int(limit_rows[0].group(1))
+        # A chunk pair read twice in its turn is only an audit advisory while the turn stays
+        # within 32 KiB; past that the audit voids the turn and counts its reads past the batch
+        # limit, so larger chunks are read one per turn, where a repeat can still be repaired.
         stages.extend([{'kind': 'patch chunks', 'files': group}
                        for group in grouped(verified_chunks, patch_limit,
-                                            lambda item: item['visible'])])
+                                            lambda item: item['visible'],
+                                            turn_bytes=OUTPUT_BYTES // 2)])
     elif patch_mode in ('full', 'windows'):
         patch_path = direct_path(assignment.get('patch'), session)
         raw = artifact_bytes(session, artifacts, patch_path.name,

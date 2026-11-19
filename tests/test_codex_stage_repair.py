@@ -290,6 +290,33 @@ class StageRepairTests(unittest.TestCase):
         self.assertEqual(len(transcript), 2)
         self.assertIn('evidence-proof-batch-too-large', transcript[-1][1])
 
+    def test_patch_chunks_are_staged_alone_when_a_repeated_pair_would_overflow_a_turn(self):
+        seat = self.seat()
+        plan = json.loads((seat.stage_dir / 'stage-plan.json').read_text())['stages']
+        chunks = [stage for stage in plan if stage['kind'] == 'patch chunks']
+        self.assertGreater(len(chunks), 2)
+        self.assertEqual({len(stage['reads']) for stage in chunks}, {1})
+
+    def test_a_repeated_patch_chunk_is_read_again_and_the_audit_accepts_it(self):
+        seat = self.seat()
+        transcript = self.drive(seat, stage_slips={1: lambda listed: listed + listed})
+        self.assertEqual(transcript[-1], ['done'])
+        repair = transcript[1]
+        self.assertIn('repair', Path(repair[1]).read_text().splitlines()[0])
+        self.assertEqual(reads(repair[1]), self.plan_reads(seat)[0])
+        code, violations, advisories = self.finish_and_audit(seat)
+        self.assertEqual((code, violations), (0, []))
+        self.assertIn('tool-turn-output-too-large', advisories)
+
+    def test_a_patch_chunk_read_ahead_is_kept_and_not_asked_for_again(self):
+        seat = self.seat()
+        planned = self.plan_reads(seat)
+        transcript = self.drive(seat, stage_slips={1: lambda listed: listed + planned[1]})
+        self.assertEqual(transcript[-1], ['done'])
+        self.assertEqual(len(transcript), len(planned))
+        self.assertEqual(reads(transcript[1][1]), planned[2])
+        self.assertEqual(self.finish_and_audit(seat)[:2], (0, []))
+
     def test_reads_out_of_order_are_refused(self):
         seat = self.seat()
         stage = self.first_stage(seat, 2, 'required source segments')
