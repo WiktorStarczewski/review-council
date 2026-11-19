@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Enforce bounded reviewer reads as a hook or audit an adapter NDJSON stream."""
 import argparse
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -37,6 +38,21 @@ ADVISORY_CODES = PACING_CODES | {
     'unsupported-source-batch', 'source-batch-lines-too-large', 'overlapping-source-batch',
     'source-batch-output-mismatch',
 }
+# A finding may cite a range that only the still-unread evidence covers, so its code is a gap too.
+READABLE_GAP_CODES = {
+    'missing-evidence-index', 'missing-source-packet', 'missing-assigned-patch-chunk',
+    'missing-assigned-patch-range', 'missing-required-source-segment',
+    'missing-required-source-read', 'missing-required-source-range', 'no-recognized-review-tools',
+    'unsubstantiated-finding-range',
+}
+STOP_GATE_BLOCKS = 3
+STOP_GATE_LISTED = 12
+READ_GATE_VERSION = 2
+PROOF_KINDS = ('chunk', 'segment', 'index')
+# claude 2.1.121 reports a PreToolUse exit-2 block only as this result; 2.1.328 adds tool_result_meta.
+LEGACY_HOOK_DENIAL = re.compile(
+    r'PreToolUse:[A-Za-z]+ hook error: \[[^\]\r\n]*/review-read-audit\.py hook [^\]\r\n]*\]: '
+    r'review read blocked: [a-z0-9-]+(?:; [^\r\n]*)?\n?')
 CLAUDE_EMPTY_READ = '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>'
 READ_TOOLS = {'read', 'read_file'}
 SEARCH_TOOLS = {'grep', 'search_file_content', 'search_files', 'code_search'}
@@ -1537,17 +1553,29 @@ def extract_outputs(adapter, event):
     elif adapter == 'claude' and event.get('type') == 'user':
         found = []
         metadata = event.get('tool_result_meta')
+        legacy = 'tool_result_meta' not in event
         metadata = metadata if isinstance(metadata, list) else []
-        for block in (event.get('message') or {}).get('content', []):
-            if isinstance(block, dict) and block.get('type') == 'tool_result':
-                matches = [row for row in metadata if isinstance(row, dict)
-                           and row.get('id') == block.get('tool_use_id')]
-                non_execution = (len(matches) == 1
-                                 and matches[0].get('non_execution_kind') == 'permission-rule')
-                found.append((block.get('tool_use_id'), block.get('is_error') is not True,
-                              block.get('content'), non_execution))
+        blocks = [block for block in (event.get('message') or {}).get('content', [])
+                  if isinstance(block, dict) and block.get('type') == 'tool_result']
+        for block in blocks:
+            matches = [row for row in metadata if isinstance(row, dict)
+                       and row.get('id') == block.get('tool_use_id')]
+            non_execution = (len(matches) == 1
+                             and matches[0].get('non_execution_kind') == 'permission-rule')
+            if legacy:
+                non_execution = len(blocks) == 1 and legacy_hook_denial(
+                    block, event.get('tool_use_result'))
+            found.append((block.get('tool_use_id'), block.get('is_error') is not True,
+                          block.get('content'), non_execution))
         return found
     return []
+
+
+def legacy_hook_denial(block, echoed):
+    """Whether a claude CLI without tool_result_meta reports that this hook blocked the call."""
+    content = block.get('content')
+    return (isinstance(content, str) and echoed == 'Error: ' + content
+            and LEGACY_HOOK_DENIAL.fullmatch(content) is not None)
 
 
 def claude_nonexecuted_exploration(adapter, name, data, output):
@@ -1838,6 +1866,346 @@ def complete_packet_read(name, data, packet, root):
                 and paths_opened_by_call(name, data, root) == [packet])
     except (OSError, ValueError):
         return False
+
+
+def partial_whole_read(name, data, root, session):
+    """Return the violation and path of a native call that cannot credit a whole-read artifact."""
+    raw_path = tool_path(data)
+    if name.lower() not in READ_TOOLS | SEARCH_TOOLS or raw_path is None:
+        return None
+    target = resolved(raw_path, root)
+    if target.parent != session or complete_packet_read(name, data, target, root):
+        return None
+    if PATCH_CHUNK_NAME.fullmatch(target.name):
+        found = violation('partial-patch-chunk', name)
+    elif SOURCE_PACKET_NAME.fullmatch(target.name):
+        found = violation('partial-source-packet', name)
+    elif SOURCE_SEGMENT_NAME.fullmatch(target.name):
+        found = violation('partial-required-source-segment', name)
+    else:
+        return None
+    return found, target
+
+
+def read_gate_header(prompt, session):
+    """Return a seat's whole-read evidence in manifest order, for the call-time read gate."""
+    prompt = Path(prompt).resolve()
+    session = Path(session).resolve()
+    _, manifest_hash = evidence_manifest_declaration(prompt.read_text().splitlines())
+    if manifest_hash is None:
+        raise ValueError('the prompt declares no evidence manifest')
+    matches = [path for path in session.glob('r*-evidence.manifest.json')
+               if path.is_file() and digest(path) == manifest_hash]
+    if len(matches) != 1:
+        raise ValueError('evidence manifest hash does not resolve uniquely')
+    manifest = json.loads(matches[0].read_text())
+    prefix = 'r' + manifest['label'] + '-'
+    if not prompt.name.startswith(prefix) or not prompt.name.endswith('.prompt.md'):
+        raise ValueError('prompt name does not identify manifest seat')
+    seat = prompt.name[len(prefix):-len('.prompt.md')]
+    assignment = manifest['assignments'][seat]
+    context = manifest['source_context']['seats'][seat]
+    chunks = (manifest['patch_sets'][assignment['patch_set']]['chunks']
+              if assignment['patch_read_mode'] == 'chunks' else [])
+    module = _load_evidence_module()
+    return {
+        'gate': READ_GATE_VERSION,
+        'chunks': [str(session / row['artifact']) for row in chunks],
+        'packets': [str(session / shard['artifact']) for shard in context['shards']],
+        'segments': [str(session / segment['artifact'])
+                     for required in context['required_source_ranges']
+                     for segment in required['segments']],
+        'index': str(session / f"r{manifest['label']}-evidence.md"),
+        'proof_batch': module.read_batch_limit('claude'),
+        'segment_batch': module.source_segment_batch_limit('claude'),
+    }
+
+
+def read_gate_init(args):
+    """Start an attempt's read-gate state: the evidence order, and no credited read yet."""
+    try:
+        header = read_gate_header(args.prompt, args.session)
+    except (AttributeError, ImportError, KeyError, OSError, TypeError, ValueError) as error:
+        print(f'read gate off: {error}', file=sys.stderr)
+        return 1
+    publish(args.state, header)
+    return 0
+
+
+def read_gate_state(path):
+    """Return the gate header and its credits, (path, call id) in order, or None to fail open."""
+    try:
+        lines = Path(path).read_bytes().split(b'\n')
+        rows = [json.loads(line) for line in lines[:-1]]
+    except (OSError, ValueError):
+        return None
+    if (lines[-1] or not rows or not isinstance(rows[0], dict)
+            or rows[0].get('gate') != READ_GATE_VERSION):
+        return None
+    credits = []
+    for row in rows[1:]:
+        if not isinstance(row, dict) or not isinstance(row.get('credit'), str):
+            return None
+        credits.append((row['credit'], row.get('id')))
+    return rows[0], credits
+
+
+def read_gate_append(path, row):
+    # One O_APPEND write per row; no O_CREAT, so a missing state stays missing and the gate open.
+    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND)
+    try:
+        os.write(descriptor, (json.dumps(row, sort_keys=True, separators=(',', ':')) + '\n').encode())
+    finally:
+        os.close(descriptor)
+
+
+def proof_kind(name, data, target, header, root):
+    """Classify a call as the ordered proof read the audit paces: a chunk, segment or index read."""
+    if name.lower() not in READ_TOOLS or target is None:
+        return None
+    path = str(target)
+    if path in header['chunks'] or path in header['segments']:
+        if not complete_packet_read(name, data, target, root):
+            return None
+        return 'chunk' if path in header['chunks'] else 'segment'
+    if path == header['index'] and (
+            complete_packet_read(name, data, target, root) or bounded_complete_index_read(
+                name, data, target, root, file_line_count(target))):
+        return 'index'
+    return None
+
+
+def claude_turn(raw, call_id):
+    """Return the earlier calls of the stream turn holding `call_id`, with their outputs.
+
+    Reads back from the end of the stream only as far as that turn's start. None when the call is
+    not in the stream yet.
+    """
+    if not isinstance(call_id, str) or not call_id:
+        return None
+    with open(raw, 'rb') as stream:
+        end = stream.seek(0, os.SEEK_END)
+        span = 1 << 18
+        while True:
+            start = max(0, end - span)
+            stream.seek(start)
+            lines = stream.read(end - start).split(b'\n')[1 if start else 0:-1]
+            events = [json.loads(line) for line in lines if line.strip()]
+            outputs = {}
+            for event in events:
+                for output_id, success, value, non_execution in extract_outputs('claude', event):
+                    outputs[output_id] = {'success': success, 'value': value,
+                                          'non_execution': non_execution}
+            turn, calls, bounded = None, [], False
+            for event in events:
+                if event.get('type') != 'assistant':
+                    continue
+                message = event.get('message') or {}
+                if message.get('id') != turn:
+                    bounded = turn is not None or start == 0
+                    turn, calls = message.get('id'), []
+                for block in message.get('content') or []:
+                    if not isinstance(block, dict) or block.get('type') != 'tool_use':
+                        continue
+                    if block.get('id') == call_id:
+                        if bounded:
+                            return [(row.get('id'), row.get('name', ''), row.get('input') or {},
+                                     outputs.get(row.get('id'))) for row in calls]
+                        break
+                    calls.append(block)
+            if start == 0:
+                return None
+            span *= 4
+
+
+def read_gate_credits(raw, header, rows, root, session, complete):
+    """Return the audit's credit per gated read, {path: call id}, its voided calls and the stream.
+
+    The audit voids every call of a turn whose output passes OUTPUT_BYTES without an exempt shape,
+    assessing again while that voids a new credit (`assessed`); the next read of that file then
+    earns the credit. Only settled turns are judged, never the turn of the stream's last call nor
+    one holding a read the audit may credit that the gate has no credit for, so the gate voids no
+    credit the audit keeps.
+    """
+    calls, outputs = {}, {}
+    for number, line in enumerate(Path(raw).read_bytes().split(b'\n')[:-1], 1):
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        turn = (event.get('turn_id') or event.get('turnId') or event.get('message_id')
+                or (event.get('message') or {}).get('id') or f'event-{number}')
+        for call_id, name, data in extract_calls('claude', event):
+            calls.setdefault(call_id, (name, data, str(turn)))
+        for call_id, success, value, non_execution in extract_outputs('claude', event):
+            if call_id in calls:
+                outputs.setdefault(call_id, {'success': success, 'value': value,
+                                             'bytes': output_bytes(value),
+                                             'non_execution': non_execution})
+    for call_id in [call_id for call_id, (name, data, _) in calls.items() if call_id in outputs
+                    and claude_nonexecuted_exploration('claude', name, data, outputs[call_id])]:
+        del calls[call_id], outputs[call_id]
+    if any(call_id is None for _, call_id in rows):
+        first = {}
+        for path, call_id in rows:
+            first.setdefault(path, call_id)
+        return first, set(), calls, outputs
+    credited_by = {}
+    for path, call_id in rows:
+        credited_by.setdefault(call_id, path)
+    turns = {}
+    for call_id, (_, _, turn) in calls.items():
+        turns.setdefault(turn, []).append(call_id)
+
+    def unrecorded(call_id):
+        name, data, _ = calls[call_id]
+        path, output = tool_path(data), outputs.get(call_id)
+        return (call_id not in credited_by and path is not None and output is not None
+                and output['success']
+                and proof_kind(name, data, resolved(path, root), header, root) is not None)
+
+    open_turn = calls[next(reversed(calls))][2] if calls else None
+    judged = [turn for turn, call_ids in turns.items()
+              if turn != open_turn and not any(map(unrecorded, call_ids))]
+    voided = set()
+    while True:
+        seen, proofs, segments, credited = set(), set(), set(), set()
+        for call_id in calls:
+            path = credited_by.get(call_id)
+            if path is None or call_id in voided:
+                continue
+            if path in header['chunks'] or path in header['segments']:
+                if path in seen:
+                    continue
+                seen.add(path)
+            credited.add(call_id)
+            if path not in header['packets']:
+                proofs.add(call_id)
+            if path in header['segments']:
+                segments.add(call_id)
+        rejected = set()
+        for turn in judged:
+            output_calls = [call_id for call_id in turns[turn] if call_id in outputs]
+            size = sum(outputs[call_id]['bytes'] for call_id in output_calls)
+            if (size <= OUTPUT_BYTES
+                    or (len(output_calls) == 1 and byte_exempt(
+                        *calls[output_calls[0]][:2], root, session, complete))
+                    or ordered_proof_turn_exempt(header['proof_batch'], output_calls, proofs, size)
+                    or source_only_segment_turn('claude', turns[turn], outputs, segments,
+                                                header['segment_batch'])):
+                continue
+            rejected.update(turns[turn])
+        if not rejected & credited:
+            break
+        voided |= rejected & credited
+    kept = {}
+    for call_id in [*calls, *credited_by]:
+        if call_id in credited_by and call_id not in voided:
+            kept.setdefault(credited_by[call_id], call_id)
+    return kept, voided | rejected, calls, outputs
+
+
+def stream_requested(calls, outputs, voided, paths, root):
+    """Whether a call names one of `paths` and is still pending, or ran and was not voided."""
+    wanted = set(paths)
+    for call_id, (_, data, _) in calls.items():
+        path, output = tool_path(data), outputs.get(call_id)
+        if (path is not None and str(resolved(path, root)) in wanted
+                and (output is None or (output['success'] and call_id not in voided))):
+            return True
+    return False
+
+
+def next_required_read(header, credited):
+    items = [*header['chunks'], *header['packets'], *header['segments'], header['index']]
+    following = next((item for item in items if item not in credited), None)
+    return f'; read {following} next' if following else ''
+
+
+def read_gate_reason(args, name, data, call_id, root, complete=None):
+    """Return the violation and remedy for a call the audit cannot credit in order, else None.
+
+    The gate fails open: without its state, the call's stream turn or a definite gap, the call is
+    allowed and the post-run audit decides as it would without the gate.
+    """
+    if not getattr(args, 'gate', None) or not getattr(args, 'raw', None):
+        return None
+    state = read_gate_state(args.gate)
+    if state is None:
+        return None
+    header, rows = state
+    raw_path = tool_path(data)
+    target = resolved(raw_path, root) if raw_path is not None else None
+    kind = proof_kind(name, data, target, header, root)
+    turn = claude_turn(args.raw, call_id)
+    if kind is None and not turn:
+        return None
+    credited, voided, calls, outputs = read_gate_credits(
+        args.raw, header, rows, root, Path(args.session).resolve(), complete)
+    turn_ids = {row[0] for row in turn or []}
+    kinds = []
+    seen = {path for path, credit in credited.items() if credit not in turn_ids}
+    for _, prior_name, prior_data, output in turn or []:
+        if output is not None and claude_nonexecuted_exploration(
+                'claude', prior_name, prior_data, output):
+            continue
+        prior_path = tool_path(prior_data)
+        prior_target = resolved(prior_path, root) if prior_path is not None else None
+        prior_kind = proof_kind(prior_name, prior_data, prior_target, header, root)
+        if output is not None and not output['success']:
+            prior_kind = None
+        if prior_kind in ('chunk', 'segment'):
+            if str(prior_target) in seen:
+                prior_kind = None
+            seen.add(str(prior_target))
+        kinds.append(prior_kind)
+    # The audit credits a chunk or segment once and only advises on a repeat, which is no proof read.
+    if kind in ('chunk', 'segment') and str(target) in seen:
+        kind = None
+    if kind in ('chunk', 'segment'):
+        chunk = kind == 'chunk'
+        sequence = header['chunks'] if chunk else header['segments']
+        gaps = [path for path in sequence[:sequence.index(str(target))] if path not in credited]
+        if gaps and not stream_requested(calls, outputs, voided, gaps, root):
+            return (violation('reordered-patch-chunks' if chunk
+                              else 'reordered-required-source-segments', name),
+                    f'read {gaps[0]} next, then continue in prompt order')
+    if turn is None or any(credit is None for _, credit in rows):
+        return None
+    proofs = sum(prior in PROOF_KINDS for prior in kinds)
+    if kind is not None:
+        source_only = kind == 'segment' and all(prior == 'segment' for prior in kinds) \
+            and len(kinds) + 1 <= header['segment_batch']
+        if proofs + 1 > header['proof_batch'] and not source_only:
+            return (violation('evidence-proof-batch-too-large', name),
+                    f'this turn already holds {proofs} ordered proof reads; read {target} in a'
+                    ' later turn')
+    elif proofs > header['proof_batch']:
+        return (violation('evidence-proof-batch-too-large', name),
+                f'this turn holds {proofs} required source segment reads, which must be its only'
+                ' calls; make this call in a later turn' + next_required_read(header, credited))
+    return None
+
+
+def read_gate_credit(args, event, name, data, root):
+    """Record a delivered whole read that the audit would credit, from PostToolUse."""
+    if not getattr(args, 'gate', None) or name.lower() not in READ_TOOLS:
+        return
+    state = read_gate_state(args.gate)
+    if state is None:
+        return
+    header = state[0]
+    target = resolved(tool_path(data), root)
+    kind = proof_kind(name, data, target, header, root)
+    if (kind is None and str(target) in header['packets']
+            and complete_packet_read(name, data, target, root)):
+        kind = 'packet'
+    if kind is None:
+        return
+    visible, _ = claude_hook_output(name, event.get('tool_response'))
+    if kind == 'segment' and len(visible.encode()) > OUTPUT_BYTES:
+        return
+    if delivered_matches_bytes('claude', name, visible, target.read_bytes(), 1):
+        read_gate_append(args.gate, {'credit': str(target), 'id': event.get('tool_use_id')})
 
 
 def line_range_bytes(path, start, end, cache=None):
@@ -2590,6 +2958,7 @@ def prompt_plan_search_commands(prompt, root, session):
 def hook(args):
     name = ''
     data = {}
+    remedy = ''
     try:
         event = json.load(sys.stdin)
         name = event.get('tool_name', '')
@@ -2605,10 +2974,23 @@ def hook(args):
         failures = validate_call(
             name, data, roots, root, session, authorized, complete, {}, dependency,
             plan_search_commands=plan_search_commands)
+        partial = None if failures else partial_whole_read(name, data, root, session)
+        if partial is not None:
+            failures = [partial[0]]
+            remedy = f'; read {partial[1]} completely in one Read call with no offset or limit'
+        elif not failures:
+            try:
+                gated = read_gate_reason(
+                    args, name, data, event.get('tool_use_id'), root, complete)
+            except Exception:
+                gated = None
+            if gated is not None:
+                failures = [gated[0]]
+                remedy = '; ' + gated[1]
     except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
         failures = [violation('invalid-hook-payload', 'unknown')]
     if failures:
-        reason = 'review read blocked: ' + failures[0]['code']
+        reason = 'review read blocked: ' + failures[0]['code'] + remedy
         print(reason, file=sys.stderr)
         if name.lower() in SHELL_TOOLS:
             command = data.get('command')
@@ -2660,6 +3042,13 @@ def post_hook(args):
                 blocked = excessive_results or (
                     size > OUTPUT_BYTES and not byte_exempt(
                         name, data, root, session, complete))
+        if not blocked:
+            try:
+                read_gate_credit(args, event, name, data, root)
+            except Exception:
+                # An unrecorded credit could later deny a read in order, so stop gating instead.
+                with contextlib.suppress(Exception):
+                    read_gate_append(args.gate, {'broken': True})
     except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
         blocked = True
     if blocked:
@@ -2667,6 +3056,107 @@ def post_hook(args):
         print(reason, file=sys.stderr)
         READONLY_POLICY.emit_terminal_stop(reason)
         return 0
+    return 0
+
+
+def settled_claude_stream(raw, target):
+    """Copy the complete events of a live stream, without tool calls that have no result yet.
+
+    Returns whether a StructuredOutput call was accepted, which ends a --json-schema run.
+    """
+    events = [json.loads(line) for line in Path(raw).read_bytes().split(b'\n')[:-1]
+              if line.strip()]
+    results = {block.get('tool_use_id'): block for event in events if event.get('type') == 'user'
+               for block in (event.get('message') or {}).get('content') or []
+               if isinstance(block, dict) and block.get('type') == 'tool_result'}
+    submitted = any(
+        isinstance(block, dict) and block.get('type') == 'tool_use'
+        and block.get('name') == 'StructuredOutput' and block.get('id') in results
+        and results[block['id']].get('is_error') is not True
+        for event in events if event.get('type') == 'assistant'
+        for block in (event.get('message') or {}).get('content') or [])
+    with open(target, 'w', encoding='utf-8') as stream:
+        for event in events:
+            content = (event.get('message') or {}).get('content')
+            if event.get('type') == 'assistant' and isinstance(content, list):
+                content = [block for block in content if not (
+                    isinstance(block, dict) and block.get('type') == 'tool_use'
+                    and block.get('id') not in results)]
+                if not content:
+                    continue
+                event = dict(event, message=dict(event['message'], content=content))
+            stream.write(json.dumps(event) + '\n')
+    return submitted
+
+
+def stop_gate_reason(args, event):
+    stopping = event.get('hook_event_name') == 'Stop'
+    if not stopping and event.get('tool_name') != 'StructuredOutput':
+        return None
+    submitted = event.get('tool_input')
+    # The prompt asks a seat out of capacity for this result; sending it back defeats that reserve.
+    if (isinstance(submitted, dict) and isinstance(submitted.get('summary'), str)
+            and submitted['summary'].startswith('INCOMPLETE PROOF')):
+        return None
+    try:
+        state = json.loads(Path(args.state).read_text())
+    except FileNotFoundError:
+        state = {'blocks': 0}
+    blocks = state.get('blocks') if isinstance(state, dict) else None
+    if type(blocks) is not int or not 0 <= blocks < STOP_GATE_BLOCKS:
+        return None
+    progress = {}
+    with tempfile.TemporaryDirectory(prefix='review-stop-gate-') as directory:
+        result = Path(directory) / 'result.json'
+        # The submitted object is the result stream-summary.py publishes, so the replay applies
+        # the post-run audit's citation salvage. A Stop carries no result.
+        result.write_text(json.dumps({'findings': []} if stopping else submitted) + '\n')
+        raw = Path(directory) / 'stream.ndjson'
+        if settled_claude_stream(args.raw, raw) and stopping:
+            return None
+        with contextlib.redirect_stdout(sys.stderr):
+            _, unique = assessed(argparse.Namespace(
+                adapter=args.adapter, raw=str(raw), prompt=args.prompt, root=args.root,
+                session=args.session, seat=args.seat, deps=args.deps, result=str(result),
+                out=str(Path(directory) / 'audit.json')), progress)
+    missing = progress.get('missing') or []
+    if (not unique or not missing or not progress.get('recoverable')
+            or not set(progress.get('fatal', [])) <= READABLE_GAP_CODES):
+        return None
+    continuation = event.get('stop_hook_active') is True if stopping else blocks > 0
+    if continuation and state.get('missing') == missing:
+        return None
+    publish(args.state, {'blocks': blocks + 1, 'missing': missing})
+    listed = missing[:STOP_GATE_LISTED]
+    more = len(missing) - len(listed)
+    return (
+        f'review stop blocked ({blocks + 1} of {STOP_GATE_BLOCKS}): the read audit will reject '
+        'this review because required evidence is unread. Read these next, in this order: '
+        + '; '.join(listed)
+        + (f'; then the {more} further missing reads in prompt order' if more else '')
+        + '. Read each listed session file completely in one Read call with no offset or limit,'
+        ' keeping to the batch limits in your prompt, then return your complete result again'
+        ' with StructuredOutput.')
+
+
+def stop_hook(args):
+    """Gate a Claude seat's end, its StructuredOutput call or its Stop, on the audit's own replay.
+
+    Any error allows the end, so the post-run audit decides exactly as it would without the gate.
+    """
+    try:
+        event = json.load(sys.stdin)
+        event = event if isinstance(event, dict) else {}
+        reason = stop_gate_reason(args, event)
+    except Exception:
+        return 0
+    if reason is None:
+        return 0
+    if event.get('hook_event_name') == 'Stop':
+        print(json.dumps({'decision': 'block', 'reason': reason},
+                         sort_keys=True, separators=(',', ':')))
+    else:
+        READONLY_POLICY.emit_pretool_deny(reason)
     return 0
 
 
@@ -2690,22 +3180,52 @@ def roster_model_for_seat(session, seat=None):
         return None
 
 
-def audit(args):
+def assessed(args, progress=None):
     # A call raising any violation but a pacing count earns no credit. Credit granted before its
     # violation surfaced (an oversized turn is judged last) is revoked by assessing again. Only
     # newly revoked calls continue the loop, so it ends after at most one pass per call.
     blocked = set()
     while True:
-        result, unique, revoked = assess(args, blocked)
+        result, unique, revoked = assess(args, blocked, progress)
         if revoked <= blocked:
-            break
+            return result, unique
         blocked |= revoked
+
+
+def audit(args):
+    result, unique = assessed(args)
     publish(args.out, result)
     return 2 if unique else 0
 
 
-def assess(args, blocked):
+def uncovered_ranges(ranges, total_lines):
+    gaps = []
+    cursor = 1
+    for start, end in sorted(set(ranges)):
+        if end < start:
+            continue
+        if start > cursor:
+            gaps.append((cursor, start - 1))
+        cursor = max(cursor, end + 1)
+    if cursor <= total_lines:
+        gaps.append((cursor, total_lines))
+    return gaps
+
+
+def required_source_item(target, boundary=None):
+    if target is not None:
+        return (f"original source {target['path']} lines {target['line_start']}-{target['line_end']}"
+                ' with a bounded Read (offset and limit)')
+    if boundary is not None:
+        return f'original source {boundary} with a bounded Read (offset and limit)'
+    return None
+
+
+def assess(args, blocked, progress=None):
+    """Audit one transcript; `progress` receives the missing reads in protocol order."""
     blocked = set(blocked)
+    missing = []
+    recoverable = True
     credited = set()
     root = Path(args.root).resolve()
     session = Path(args.session).resolve()
@@ -3169,6 +3689,7 @@ def assess(args, blocked):
                         exact_evidence_index_calls.add(call_id)
             if not exact_evidence_index_calls:
                 failures.append(violation('missing-evidence-index', args.adapter))
+                missing.append((3, str(evidence_index)))
             opened_packets = set()
             for call_id, (name, data, _) in calls.items():
                 if call_id not in outputs:
@@ -3196,6 +3717,7 @@ def assess(args, blocked):
             for path in assigned_paths:
                 if path not in opened_packets:
                     failures.append(violation('missing-source-packet', args.adapter))
+                    missing.append((1, str(path)))
             for path in sorted(opened_packets):
                 shard = assigned_paths[path]
                 packet_shards += 1
@@ -3275,6 +3797,9 @@ def assess(args, blocked):
                     failures.append(violation('reordered-patch-chunks', args.adapter))
                 if observed != expected_order:
                     failures.append(violation('missing-assigned-patch-chunk', args.adapter))
+                    missing.extend((0, str(session / row['artifact'])) for row in expected_chunks
+                                   if row['index'] not in observed)
+                    recoverable = recoverable and observed == expected_order[:len(observed)]
                 assigned_patch_reads = len(exact_calls)
                 patch_proof_calls = assigned_patch_reads
                 patch_proof_turns = len({turn for _, turn, _ in exact_calls})
@@ -3317,6 +3842,8 @@ def assess(args, blocked):
                             failures.append(violation('assigned-patch-output-mismatch', name))
                 if not ranges_cover_file(verified_patch_ranges, assigned_patch_lines):
                     failures.append(violation('missing-assigned-patch-range', args.adapter))
+                    missing.extend((0, f'{assigned_patch} lines {start}-{end}') for start, end
+                                   in uncovered_ranges(verified_patch_ranges, assigned_patch_lines))
                 elif not ranges_cover_file_in_order(verified_patch_ranges, assigned_patch_lines):
                     failures.append(violation('evidence-read-order', args.adapter))
                 assigned_patch_ranges = [
@@ -3407,6 +3934,9 @@ def assess(args, blocked):
                         failures.append(violation('reordered-required-source-segments', args.adapter))
                     if observed != expected_order:
                         failures.append(violation('missing-required-source-segment', args.adapter))
+                        missing.extend((2, str(session / segment['artifact']))
+                                       for segment in expected_segments
+                                       if segment['index'] not in observed)
                     if observed == expected_order:
                         required_source_range_proofs.append({
                             key: required[key] for key in (
@@ -3417,6 +3947,13 @@ def assess(args, blocked):
                     failures.append(violation('invalid-required-source-identity', args.adapter))
             if observed_required_segments != sorted(observed_required_segments):
                 failures.append(violation('reordered-required-source-segments', args.adapter))
+            # A gap before a credited segment is final: reading it later is out of order.
+            expected_segment_order = [
+                (required_index, segment.get('index'))
+                for required_index, required in enumerate(required_source_ranges)
+                for segment in required['segments']]
+            recoverable = recoverable and observed_required_segments == expected_segment_order[
+                :len(observed_required_segments)]
             for turn in {turn for _, turn in paced_segment_calls}:
                 turn_calls = turns.get(turn, [])
                 source_only_batch = source_only_segment_turn(
@@ -3476,9 +4013,20 @@ def assess(args, blocked):
             post_index_source_ranges = sorted(
                 {tuple(row.items()): row for row in post_index_source_ranges}.values(),
                 key=lambda row: (row['path'], row['line_start'], row['line_end'], row['origin']))
-            failures.extend(source_read_requirement_violations(
+            source_failures = source_read_requirement_violations(
                 context, boundary_paths, tool_ranges, args.adapter, snapshot_tree,
-                post_index_source_ranges))
+                post_index_source_ranges)
+            failures.extend(source_failures)
+            if source_failures:
+                # Without a current-tree target, any component boundary read in the snapshot
+                # counts; the prompt names the first, and a deleted one cannot be read.
+                readable = sorted(path for path in boundary_paths if frozen_entries.get(
+                    snapshot_tree, {}).get(path, ('',))[0] in ('100644', '100755'))
+                item = required_source_item(
+                    evidence_module.repository_source_target(context, snapshot_tree)
+                    if snapshot_tree is not None else None, next(iter(readable), None))
+                if item is not None:
+                    missing.append((4, item))
         except (KeyError, OSError, TypeError, ValueError):
             failures.append(violation('invalid-source-context', args.adapter))
 
@@ -3497,6 +4045,7 @@ def assess(args, blocked):
                 }
                 if not index_calls:
                     failures.append(violation('missing-evidence-index', args.adapter))
+                    missing.append((3, str(evidence_index)))
                 call_positions = {call_id: position for position, call_id in enumerate(calls)}
                 index_position = min((call_positions[call_id] for call_id in index_calls),
                                      default=None)
@@ -3517,6 +4066,7 @@ def assess(args, blocked):
                 if not _load_evidence_module().source_target_covered(
                         target, post_index_source_ranges):
                     failures.append(violation('missing-required-source-read', args.adapter))
+                    missing.append((4, required_source_item(target)))
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
             failures.append(violation('missing-required-source-read', args.adapter))
 
@@ -3645,6 +4195,7 @@ def assess(args, blocked):
         if item not in unique:
             unique.append(item)
     advisories = []
+    fatal = unique
     if manifest is not None:
         codex_fatal = {
             'duplicate-required-source-segment', 'evidence-proof-batch-too-large',
@@ -3665,6 +4216,12 @@ def assess(args, blocked):
         advisories = list(unique)
         unique = []
         citation_reaudit = True
+    if progress is not None:
+        progress.update({
+            'missing': [item for _, item in sorted(missing, key=lambda row: row[0])],
+            'recoverable': recoverable,
+            'fatal': [item.get('code') for item in fatal] if unique else [],
+        })
     result = {
         'schema_version': 2,
         'status': 'invalid' if unique else 'valid',
@@ -3724,11 +4281,28 @@ def main():
     hooks.add_argument('--session', required=True)
     hooks.add_argument('--prompt')
     hooks.add_argument('--deps')
+    hooks.add_argument('--raw')
+    hooks.add_argument('--gate')
     post_hooks = commands.add_parser('post-hook')
     post_hooks.add_argument('--root', required=True)
     post_hooks.add_argument('--session', required=True)
     post_hooks.add_argument('--prompt')
     post_hooks.add_argument('--deps')
+    post_hooks.add_argument('--gate')
+    gates = commands.add_parser('read-gate-init')
+    gates.add_argument('--prompt', required=True)
+    gates.add_argument('--root', required=True)
+    gates.add_argument('--session', required=True)
+    gates.add_argument('--state', required=True)
+    stops = commands.add_parser('stop-hook')
+    stops.add_argument('--adapter', default='claude', choices=('claude',))
+    stops.add_argument('--raw', required=True)
+    stops.add_argument('--prompt', required=True)
+    stops.add_argument('--root', required=True)
+    stops.add_argument('--session', required=True)
+    stops.add_argument('--state', required=True)
+    stops.add_argument('--seat')
+    stops.add_argument('--deps')
     prompts = commands.add_parser('validate-prompt')
     prompts.add_argument('--root', required=True)
     prompts.add_argument('--session', required=True)
@@ -3751,6 +4325,10 @@ def main():
         return hook(args)
     if args.command == 'post-hook':
         return post_hook(args)
+    if args.command == 'stop-hook':
+        return stop_hook(args)
+    if args.command == 'read-gate-init':
+        return read_gate_init(args)
     if args.command == 'validate-prompt':
         try:
             return validate_prompt(args)

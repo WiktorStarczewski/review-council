@@ -1173,6 +1173,8 @@ print('passed=1 failed=0')
         cli.write_text('''#!/usr/bin/env python3
 import json, os, sys
 from pathlib import Path
+if sys.argv[1:] == ['--version']:
+    sys.exit(print('2.1.328 (Claude Code)'))
 Path(os.environ['CAPTURE']).write_text(json.dumps(sys.argv[1:]))
 print(json.dumps({'type':'assistant','message':{'content':[{'type':'tool_use','name':'Read','input':{}}]}}))
 print(json.dumps({'type':'result','is_error':False,'subtype':'success',
@@ -1209,9 +1211,16 @@ print(json.dumps({'type':'result','is_error':False,'subtype':'success',
         self.assertNotIn('$schema', schema)
         self.assertIn('findings', schema['properties'])
         settings = json.loads(args[args.index('--settings') + 1])
-        for phase in ('PreToolUse', 'PostToolUse'):
-            self.assertEqual({row['matcher'] for row in settings['hooks'][phase]},
-                             {'Read', 'Grep'})
+        self.assertEqual({row['matcher'] for row in settings['hooks']['PreToolUse']},
+                         {'Read', 'Grep', 'StructuredOutput'})
+        self.assertEqual({row['matcher'] for row in settings['hooks']['PostToolUse']},
+                         {'Read', 'Grep'})
+        gates = [row['hooks'] for row in settings['hooks']['PreToolUse']
+                 if row['matcher'] == 'StructuredOutput'] + [
+                     row['hooks'] for row in settings['hooks']['Stop']]
+        self.assertEqual(len(gates), 2)
+        self.assertEqual(gates[0], gates[1])
+        self.assertIn(' stop-hook --adapter claude ', gates[0][0]['command'])
         self.assertNotIn('readonly-bash-guard.py', json.dumps(settings))
         audit_commands = [
             hook['command']
@@ -1231,6 +1240,8 @@ print(json.dumps({'type':'result','is_error':False,'subtype':'success',
         cli.write_text('''#!/usr/bin/env python3
 import json, os, sys
 from pathlib import Path
+if sys.argv[1:] == ['--version']:
+    sys.exit(print('2.1.328 (Claude Code)'))
 Path(os.environ['CAPTURE']).write_text(json.dumps(sys.argv[1:]))
 print(json.dumps({'type':'result','is_error':False,'subtype':'success',
                   'structured_output':json.loads(Path(os.environ['FINDINGS']).read_text())}))

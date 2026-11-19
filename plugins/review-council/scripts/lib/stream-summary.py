@@ -88,7 +88,10 @@ for raw in sys.stdin:
         elif t == 'error':
             emit(f"error: {clip(e.get('message', e))}")
     elif kind == 'claude':
-        if t == 'assistant':
+        if t == 'system' and e.get('subtype') == 'init':
+            emit(f"init claude_code_version={e.get('claude_code_version') or '-'} "
+                 f"model={e.get('model') or '-'}")
+        elif t == 'assistant':
             for block in (e.get('message') or {}).get('content', []):
                 if block.get('type') == 'tool_use' and block.get('name') in ('Read', 'Glob', 'Grep', 'Bash'):
                     emit(f"tool_call {block.get('name', '')}: {clip(json.dumps(block.get('input', {})))}")

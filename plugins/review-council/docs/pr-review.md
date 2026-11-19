@@ -75,7 +75,9 @@ Rules:
 - `panels` counts completed panels, not reviewer seats or provider calls.
 - `panel` names the actual core models from `roster.json` in roster order. Include
   only models that produced valid results. The fixed suffix says every listed model
-  ran at maximum effort, so do not list a lower-effort seat.
+  ran at maximum effort, so do not list a lower-effort seat. For a `claude` CLI seat,
+  name the model on its log's `init claude_code_version=<version> model=<model>`
+  line, the model that actually ran, not the roster's alias.
 - `orchestrator` names the model that orchestrated this review. Use the exact model
   identity from the active session; do not infer it from the panel roster.
 - The rendered report places `Orchestrator: <model>` immediately below the panel model

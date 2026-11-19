@@ -51,6 +51,9 @@ PANEL = 3                            # seats a round needs; a thinner roster is 
 LOGIN_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_LOGIN_TIMEOUT', '20'))   # a wedged status command must not hang session start
 PROBE_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_PROBE_TIMEOUT', '60'))
 CODEX_VERSION_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_CODEX_VERSION_TIMEOUT', '5'))
+CLAUDE_VERSION_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_CLAUDE_VERSION_TIMEOUT', '10'))
+# The oldest claude CLI the Claude seat's read and stop gates are verified on.
+CLAUDE_CLI_MIN_VERSION = '2.1.328'
 CODEX_CATALOG_REFRESH_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_CATALOG_REFRESH_TIMEOUT', '30'))
 _ACTIVE_PROCESSES = {}
 _ACTIVE_LOCK = threading.RLock()
@@ -1022,6 +1025,48 @@ def claude_cli_reason():
     if rc != 0 or not isinstance(status, dict) or status.get('loggedIn') is not True:
         return 'not signed in'
     return None
+
+
+def parse_claude_cli_version(text):
+    match = re.match(r'(\d+)\.(\d+)\.(\d+)(?:\s|$)', (text or '').strip())
+    return '.'.join(match.groups()) if match else None
+
+
+def claude_cli_version_key(version):
+    return tuple(int(part) for part in version.split('.'))
+
+
+def claude_cli_identity(path=None):
+    """Return the resolved claude binary, the version it reports, and an error or None."""
+    found = path or shutil.which('claude')
+    if found is None:
+        return None, None, 'claude CLI not found on PATH'
+    found = os.path.realpath(found)
+    environment = {k: v for k, v in os.environ.items() if k not in CLAUDE_SESSION_ENV}
+    rc, out, _ = run([found, '--version'], CLAUDE_VERSION_TIMEOUT, environment)
+    version = parse_claude_cli_version(out) if rc == 0 else None
+    return found, version, None if version else 'claude CLI at %s reports no version' % found
+
+
+def claude_launch_cli(roster_path):
+    """Return the claude binary a seat runs and its version, refusing one the gates do not support.
+
+    A roster written before binaries were recorded resolves PATH once, here at launch.
+    """
+    with open(roster_path, encoding='utf-8') as stream:
+        recorded = json.load(stream).get('claude_cli')
+    path = None
+    if recorded is not None:
+        path = recorded.get('path') if isinstance(recorded, dict) else None
+        if not isinstance(path, str) or not os.path.isabs(path):
+            raise ValueError('roster claude_cli has no absolute path')
+    found, version, error = claude_cli_identity(path)
+    if error:
+        raise ValueError(error)
+    if claude_cli_version_key(version) < claude_cli_version_key(CLAUDE_CLI_MIN_VERSION):
+        raise ValueError('claude CLI %s at %s is older than %s'
+                         % (version, found, CLAUDE_CLI_MIN_VERSION))
+    return found, version
 
 
 def build_claude_cli_reason():
@@ -2137,6 +2182,14 @@ def usage(message):
 
 
 def main(argv):
+    if len(argv) == 2 and argv[0] == '--claude-cli':
+        try:
+            path, version = claude_launch_cli(argv[1])
+        except (AttributeError, OSError, ValueError) as error:
+            sys.stderr.write('%s\n' % error)
+            return 1
+        sys.stdout.write('%s\n%s\n' % (path, version))
+        return 0
     if len(argv) == 3 and argv[0] == '--classify-log':
         try:
             with open(argv[2], encoding='utf-8', errors='replace') as stream:
@@ -2195,6 +2248,10 @@ def main(argv):
         roster, adapter_of, strict_class = build(do_probe, quota_failed_seats, review_mode=review_mode)
     if write:
         roster['result_receipts'] = result_receipt_policy(write)
+        if any(row.get('adapter') == 'claude' for row in roster['seats']):
+            path, version, _ = claude_cli_identity()
+            if path is not None:
+                roster['claude_cli'] = {'path': path, 'version': version}
     text = json.dumps(roster, indent=2, ensure_ascii=False) + '\n'
     if write:
         try:

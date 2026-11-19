@@ -2910,6 +2910,7 @@ PY
     mkdir -p "$T/claude-seat"
     cat > "$T/claude-seat/claude" <<'SH'
 #!/bin/bash
+[ "${1:-}" = --version ] && { echo '2.1.328 (Claude Code)'; exit 0; }
 printf '%s\n' "$@" > "$SHIM_ARGS_FILE"
 cat >/dev/null
 python3 - "$SHIM_FIXTURE_DIR/findings-valid.json" <<'PY'
@@ -4267,7 +4268,7 @@ import importlib.util, signal, sys, types
 spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
 audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
 passes = []
-def assess(args, blocked):
+def assess(args, blocked, progress=None):
     passes.append(set(blocked))
     return {'status': 'valid'}, False, {'c1'}
 audit.assess = assess
