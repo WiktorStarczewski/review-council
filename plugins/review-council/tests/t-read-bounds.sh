@@ -4174,7 +4174,7 @@ FATAL = {
     'missing-required-source-segment', 'partial-required-source-segment',
     'reordered-required-source-segments', 'redirected-required-source-segment',
     'unassigned-required-source-segment', 'required-source-output-mismatch',
-    'missing-required-source-range', 'missing-required-source-read',
+    'missing-required-source-range', 'missing-required-source-read', 'partial-evidence-index',
     'missing-plan-cluster-search', 'missing-plan-cluster-source',
     'unsubstantiated-finding-range', 'invalid-plan-finding-range',
     # independence and scope

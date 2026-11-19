@@ -48,6 +48,7 @@ SOURCE_PACKET_NAME = re.compile(r'^r[0-9A-Za-z._-]+-source-context-[1-9][0-9]*\.
 SOURCE_SEGMENT_NAME = re.compile(
     r'^r[0-9A-Za-z._-]+-[0-9A-Za-z._-]+-source-segment-[0-9]{3}-[0-9]{3}\.txt$')
 PATCH_CHUNK_NAME = re.compile(r'^r[0-9A-Za-z._-]+-patch-p[0-9]{2}-[0-9]{3}\.txt$')
+EVIDENCE_INDEX_NAME = re.compile(r'^r[0-9A-Za-z._-]+-evidence\.md$')
 FULL_ARTIFACT = re.compile(r'^r[0-9A-Za-z._-]+(?:-[0-9A-Za-z._-]+)?\.prompt\.md$|^r[0-9A-Za-z._-]+-(?:evidence|instructions|plan)\.md$')
 SESSION_ARTIFACT = re.compile(r'^r[0-9A-Za-z._-]+(?:-[0-9A-Za-z._-]+)?(?:\.prompt\.md|\.patch)$|^r[0-9A-Za-z._-]+-(?:evidence|instructions|plan)\.(?:md|json)$')
 EVIDENCE_MANIFEST_PREFIX = 'Evidence manifest SHA-256:'
@@ -1840,6 +1841,32 @@ def complete_packet_read(name, data, packet, root):
         return False
 
 
+def partial_whole_read(name, data, root, session):
+    """Return the violation and path of a native call that cannot credit a whole-read artifact."""
+    raw_path = tool_path(data)
+    if name.lower() not in READ_TOOLS | SEARCH_TOOLS or raw_path is None:
+        return None
+    target = resolved(raw_path, root)
+    if target.parent != session or complete_packet_read(name, data, target, root):
+        return None
+    if PATCH_CHUNK_NAME.fullmatch(target.name):
+        found = violation('partial-patch-chunk', name)
+    elif SOURCE_PACKET_NAME.fullmatch(target.name):
+        found = violation('partial-source-packet', name)
+    elif SOURCE_SEGMENT_NAME.fullmatch(target.name):
+        found = violation('partial-required-source-segment', name)
+    elif EVIDENCE_INDEX_NAME.fullmatch(target.name):
+        try:
+            if bounded_complete_index_read(name, data, target, root, file_line_count(target)):
+                return None
+        except OSError:
+            pass
+        found = violation('partial-evidence-index', name)
+    else:
+        return None
+    return found, target
+
+
 def line_range_bytes(path, start, end, cache=None):
     _, lines = cached_file(path, cache)
     return byte_range_lines(lines, start, end)
@@ -2590,6 +2617,7 @@ def prompt_plan_search_commands(prompt, root, session):
 def hook(args):
     name = ''
     data = {}
+    remedy = ''
     try:
         event = json.load(sys.stdin)
         name = event.get('tool_name', '')
@@ -2605,10 +2633,14 @@ def hook(args):
         failures = validate_call(
             name, data, roots, root, session, authorized, complete, {}, dependency,
             plan_search_commands=plan_search_commands)
+        partial = None if failures else partial_whole_read(name, data, root, session)
+        if partial is not None:
+            failures = [partial[0]]
+            remedy = f'; read {partial[1]} completely in one Read call with no offset or limit'
     except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
         failures = [violation('invalid-hook-payload', 'unknown')]
     if failures:
-        reason = 'review read blocked: ' + failures[0]['code']
+        reason = 'review read blocked: ' + failures[0]['code'] + remedy
         print(reason, file=sys.stderr)
         if name.lower() in SHELL_TOOLS:
             command = data.get('command')
