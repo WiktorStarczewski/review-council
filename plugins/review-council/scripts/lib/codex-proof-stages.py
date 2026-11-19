@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Plan bounded Codex turns for immutable, prepared review evidence."""
 import argparse
+import contextlib
 import hashlib
 import importlib.util
 import json
@@ -10,6 +11,7 @@ import re
 import shlex
 import stat
 import sys
+import tempfile
 
 LIB_DIR = Path(__file__).resolve().parent
 if str(LIB_DIR) not in sys.path:
@@ -19,6 +21,8 @@ from review_limits import codex_review_turn_call_limit_for_model
 OUTPUT_BYTES = 32 * 1024
 PROOF_TURN_BYTES = 60 * 1024
 SOURCE_SEGMENT_VISIBLE_LIMIT = 16 * 1024
+STAGE_PLAN = 'stage-plan.json'
+STAGE_STATE = 'stage-state.json'
 
 
 class StageError(ValueError):
@@ -123,14 +127,6 @@ def review_budget(prompt):
     if len(matches) != 1 or matches[0] < 1:
         raise StageError('review prompt has no unique repository-call budget')
     return matches[0]
-
-
-def stage_read_count(prompt):
-    count = sum(line.startswith('Read exactly: ')
-                for line in Path(prompt).read_text(encoding='utf-8').splitlines())
-    if not 1 <= count <= 2:
-        raise StageError('prepared proof stage does not contain one or two reads')
-    return count
 
 
 def read_audit_module():
@@ -467,8 +463,8 @@ def prepared_stages(prompt, seat, model, stage_dir):
                     raise StageError('one assigned patch line exceeds the hard output limit')
                 first, last = start + 1, end
                 command = shlex.join(['sed', '-n', f'{first},{last}p', str(patch_path)])
-                stages.append({'kind': 'patch window', 'files': [{'path': patch_path,
-                                                                   'command': command}]})
+                stages.append({'kind': 'patch window', 'files': [{
+                    'path': patch_path, 'command': command, 'window': [first, last]}]})
                 start = end
     elif patch_mode != 'empty':
         raise StageError('unsupported assigned patch read mode')
@@ -552,16 +548,186 @@ def prepared_stages(prompt, seat, model, stage_dir):
 
     stage_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     for index, stage in enumerate(stages, 1):
-        stage_prompt = [
-            f'Prepared evidence read stage {index} of {len(stages)} ({stage["kind"]}).',
-            'Read exactly the listed prepared artifact(s), in order, with one native shell tool call per line.',
-            'Do not search, read anything else, review the change, or combine commands.',
-            'After all reads succeed, respond exactly READ_STAGE_COMPLETE and stop.',
-        ]
-        stage_prompt.extend('Read exactly: ' + item['command'] for item in stage['files'])
-        (stage_dir / f'stage-{index:04d}.prompt').write_text(
-            '\n'.join(stage_prompt) + '\n', encoding='utf-8')
+        (stage_dir / f'stage-{index:04d}.prompt').write_text(stage_prompt_text(
+            index, len(stages), stage['kind'], [item['command'] for item in stage['files']]),
+            encoding='utf-8')
+    write_json(stage_dir / STAGE_PLAN, {'stages': [
+        {'kind': stage['kind'], 'reads': [
+            {'command': item['command'], 'path': str(Path(item['path']).resolve()),
+             'window': item.get('window')} for item in stage['files']]}
+        for stage in stages]})
     return stages
+
+
+def stage_prompt_text(number, total, kind, commands, repair=None):
+    heading = f'Prepared evidence read stage {number} of {total} ({kind})'
+    lines = [heading + (f', repair turn {repair}.' if repair else '.')]
+    if repair:
+        lines.append('The previous turn did not deliver the read below. Do not reread anything else.')
+    lines.extend([
+        'Read exactly the listed prepared artifact(s), in order, with one native shell tool call per line.',
+        'Do not search, read anything else, review the change, or combine commands.',
+        'After all reads succeed, respond exactly READ_STAGE_COMPLETE and stop.',
+    ])
+    lines.extend('Read exactly: ' + command for command in commands)
+    return '\n'.join(lines) + '\n'
+
+
+def write_json(path, value):
+    path = Path(path)
+    fd, temporary = tempfile.mkstemp(prefix='.' + path.name + '.', dir=path.parent)
+    with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+        json.dump(value, stream, sort_keys=True)
+    os.replace(temporary, path)
+
+
+def repair_turn_limit(stage_count):
+    """The repair turns one attempt may spend: a tenth of its stages, and at least four."""
+    return max(4, -(-stage_count // 10))
+
+
+def read_label(read):
+    window = read.get('window')
+    name = Path(read['path']).name
+    return f'{name} lines {window[0]}-{window[1]}' if window else name
+
+
+def read_bytes(read, session, audit):
+    raw = safe_read(read['path'], session, 32 * 1024 * 1024)
+    if not read.get('window'):
+        return raw
+    first, last = read['window']
+    return b''.join(audit.split_lf_lines(raw)[first - 1:last])
+
+
+def exact_stage_turn(turn, reads, root, session, audit):
+    """Whether the turn ran exactly these planned reads, each delivering the prepared bytes."""
+    turn_stats(turn, root, session)
+    rows = sorted(codex_call_rows(turn).values(), key=lambda row: row['order'])
+    if len(rows) != len(reads):
+        return False
+    total = 0
+    for row, read in zip(rows, reads):
+        try:
+            words = shlex.split(audit.unwrap_shell(row['command']))
+        except ValueError:
+            return False
+        text = audit.output_text(row['output'])
+        if (not row['success'] or text is None or words != shlex.split(read['command'])
+                or not audit.delivered_matches_bytes(
+                    'codex', 'command_execution', row['output'],
+                    read_bytes(read, session, audit), 1)):
+            return False
+        total += len(text.encode())
+    return total <= PROOF_TURN_BYTES
+
+
+def audit_credited_reads(plan, raw, prompt, root, session, seat, deps, audit):
+    """Replay the post-run audit over the stream so far: the planned reads it credits, or why
+    no later read can make the stream pass."""
+    progress = {}
+    with tempfile.TemporaryDirectory(prefix='codex-stage-audit-') as directory:
+        result = Path(directory) / 'result.json'
+        result.write_text('{"findings":[]}\n', encoding='utf-8')
+        with contextlib.redirect_stdout(sys.stderr):
+            _, unique = audit.assessed(argparse.Namespace(
+                adapter='codex', raw=str(raw), prompt=str(prompt), root=str(root),
+                session=str(session), seat=seat, deps=deps, result=str(result),
+                out=str(Path(directory) / 'audit.json')), progress)
+    rejected = sorted(set(progress.get('fatal') or []) - audit.READABLE_GAP_CODES)
+    if unique and rejected:
+        return None, 'the read audit rejects this stream (' + ', '.join(rejected) + ')'
+    if unique and not progress.get('recoverable', False):
+        return None, ('it read a prepared artifact ahead of an unread one, which the read audit'
+                      ' cannot accept')
+    missing = [item for item in progress.get('missing') or [] if isinstance(item, str)]
+    gaps = [(match.group(1), int(match.group(2)), int(match.group(3))) for match in (
+        re.fullmatch(r'(.+) lines ([0-9]+)-([0-9]+)', item) for item in missing) if match]
+    # A read the audit lists nowhere still needs a call that opened it, so a replay that stops
+    # early can never skip a planned read.
+    opened = {str(path) for row in codex_call_rows(raw).values() if row['success']
+              for path in audit.paths_opened_by_call(
+                  'command_execution', {'command': row['command']}, root)}
+    credited = set()
+    for stage in plan:
+        for read in stage['reads']:
+            window = read.get('window')
+            if read['path'] not in opened:
+                continue
+            if window and any(path == read['path'] and start <= window[1] and window[0] <= end
+                              for path, start, end in gaps):
+                continue
+            if not window and read['path'] in missing:
+                continue
+            credited.add(read['command'])
+    return credited, None
+
+
+def stage_step(stage_dir, raw, turn, prompt, seat, root, session, deps=None):
+    """Judge the last prepared-evidence turn, then name the next turn: ('run', prompt, note),
+    ('done',) or ('refuse', reason)."""
+    stage_dir, root, session = Path(stage_dir), Path(root).resolve(), Path(session).resolve()
+    try:
+        plan = json.loads((stage_dir / STAGE_PLAN).read_text(encoding='utf-8'))['stages']
+    except (OSError, KeyError, TypeError, ValueError) as error:
+        raise StageError('prepared evidence stage plan is unavailable') from error
+    state_path = stage_dir / STAGE_STATE
+    if state_path.exists():
+        state = json.loads(state_path.read_text(encoding='utf-8'))
+    else:
+        state = {'issued': -1, 'pending': None, 'credited': [], 'repairs': 0,
+                 'stage_repairs': {}}
+    audit = read_audit_module()
+    total = len(plan)
+    credited = set(state['credited'])
+    pending = state['pending']
+    if pending is not None:
+        reads = pending['reads']
+        if exact_stage_turn(turn, reads, root, session, audit):
+            credited.update(read['command'] for read in reads)
+        else:
+            credited, reason = audit_credited_reads(
+                plan, raw, prompt, root, session, seat, deps, audit)
+            if reason:
+                return ('refuse', f"prepared evidence stage {pending['stage'] + 1} of {total}"
+                        ' cannot be repaired: ' + reason)
+        state['pending'] = None
+    state['credited'] = sorted(credited)
+    for index, stage in enumerate(plan):
+        remaining = [read for read in stage['reads'] if read['command'] not in credited]
+        if remaining:
+            break
+    else:
+        write_json(state_path, state)
+        return ('done',)
+    where = f'prepared evidence stage {index + 1} of {total}'
+    note = None
+    repair = None
+    if index <= state['issued']:
+        count = state['stage_repairs'].get(str(index), 0)
+        label = read_label(remaining[0])
+        if count >= len(stage['reads']) + 1:
+            return ('refuse', f'{where} is still missing {label} after {count} repair turns')
+        limit = repair_turn_limit(total)
+        if state['repairs'] >= limit:
+            return ('refuse', f'{where} is missing {label}, and this attempt has used all'
+                    f' {limit} of its repair turns')
+        repair = count + 1
+        state['stage_repairs'][str(index)] = repair
+        state['repairs'] += 1
+        remaining = remaining[:1]
+        note = (f'{where}: repair turn {repair} reads {label}, which the read audit has not'
+                ' credited yet')
+    else:
+        state['issued'] = index
+    state['turns'] = state.get('turns', 0) + 1
+    path = stage_dir / f"turn-{state['turns']:04d}.prompt"
+    path.write_text(stage_prompt_text(index + 1, total, stage['kind'],
+                                      [read['command'] for read in remaining], repair),
+                    encoding='utf-8')
+    state['pending'] = {'stage': index, 'reads': remaining}
+    write_json(state_path, state)
+    return ('run', str(path)) + ((note,) if note else ())
 
 
 def main():
@@ -573,7 +739,10 @@ def main():
     parser.add_argument('--thread-id-stream')
     parser.add_argument('--review-budget')
     parser.add_argument('--review-turn-call-limit')
-    parser.add_argument('--stage-read-count')
+    parser.add_argument('--stage-step')
+    parser.add_argument('--raw')
+    parser.add_argument('--turn')
+    parser.add_argument('--deps')
     parser.add_argument('--required-post-index-read')
     parser.add_argument('--required-post-index-target')
     parser.add_argument('--review-status')
@@ -592,10 +761,13 @@ def main():
             print('codex proof staging: ' + str(error), file=sys.stderr)
             return 1
         return 0
-    if args.stage_read_count:
+    if args.stage_step:
         try:
-            print(stage_read_count(args.stage_read_count))
-        except (OSError, UnicodeError, StageError) as error:
+            if not all((args.raw, args.turn, args.prompt, args.seat, args.root, args.session)):
+                raise StageError('a prepared evidence step needs its stream, prompt and roots')
+            print('\t'.join(stage_step(args.stage_step, args.raw, args.turn, args.prompt,
+                                       args.seat, args.root, args.session, args.deps)))
+        except (OSError, UnicodeError, StageError, KeyError, TypeError, ValueError) as error:
             print('codex proof staging: ' + str(error), file=sys.stderr)
             return 1
         return 0

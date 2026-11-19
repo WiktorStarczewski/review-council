@@ -578,6 +578,111 @@ test_seat_codex_luna_allows_five_commands_per_review_turn() {
   seat_env_reset "$_path"
 }
 
+# A real prepared Codex assignment: about 20 KiB patch chunks, packets and 8 KiB source segments.
+seat_codex_prepared_session() {
+  local R=$1 S=$2
+  mkrepo "$R"; mkdir -p "$R/src" "$S"
+  python3 - "$R" <<'PY' || return
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+sources = []
+for index in range(6):
+    sources.append(f'def fn{index:02d}(value=None):\n    return "{"x" * 10000}"\n')
+    (root / 'src' / f'use{index:02d}.py').write_text(
+        f'from src.lib import fn{index:02d}\n\ndef use{index:02d}():\n'
+        f'    return fn{index:02d}("{"y" * 8000}")\n')
+(root / 'src/lib.py').write_text('\n'.join(sources))
+PY
+  git -C "$R" add . && git -C "$R" commit -qm base || return
+  local base; base=$(git -C "$R" rev-parse HEAD)
+  python3 - "$R/src/lib.py" <<'PY' || return
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+path.write_text(path.read_text().replace('return "x', 'return "y', 6))
+PY
+  printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+    "$base" "$R" > "$S/scope.env"
+  printf 'src/lib.py\n' > "$S/files.txt"; : > "$S/untracked.txt"
+  printf '%s\n' '{"seats":[{"seat":"codex-luna","adapter":"codex","model":"gpt-6-luna","effort":"xhigh"},{"seat":"codex-luna-2","adapter":"codex","model":"gpt-6-luna","effort":"xhigh"},{"seat":"codex-luna-3","adapter":"codex","model":"gpt-6-luna","effort":"xhigh"},{"seat":"codex-luna-4","adapter":"codex","model":"gpt-6-luna","effort":"xhigh"}]}' > "$S/roster.json"
+  local manifest bundle
+  manifest=$(REV_PATCH_CHUNKS=1 REV_SOURCE_CONTEXT=1 \
+    python3 "$SCRIPTS/rev-evidence.py" prepare "$S" 1 --phase discovery 2>/dev/null) || return
+  bundle=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["assignments"]["codex-luna"]["bundle"])' "$manifest") || return
+  "$SCRIPTS/rev-prompt.sh" "$S" 1 codex-luna "$bundle" stage-repair --evidence "$manifest" \
+    >/dev/null 2>&1
+}
+
+# Prints the first paired segment stage's number, its second read, and the post-index target read.
+seat_codex_paired_stage() {
+  python3 - "$SCRIPTS/lib/codex-proof-stages.py" "$1" "$2" <<'PY'
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+helper, prompt, stages = sys.argv[1:]
+subprocess.run([sys.executable, helper, '--prompt', prompt, '--seat', 'codex-luna',
+                '--model', 'gpt-6-luna', '--stage-dir', stages], check=True,
+               capture_output=True)
+for path in sorted(Path(stages).glob('stage-*.prompt')):
+    reads = [line[len('Read exactly: '):] for line in path.read_text().splitlines()
+             if line.startswith('Read exactly: ')]
+    if len(reads) == 2 and '(required source segments)' in path.read_text().splitlines()[0]:
+        print(int(re.search(r'stage-(\d+)', path.name).group(1)))
+        print(reads[1])
+        break
+target = re.search(r'^Required post-index original-source target: (\S+):(\d+)-(\d+) ',
+                   Path(prompt).read_text(), re.M)
+print(f'sed -n {target.group(2)},{target.group(3)}p {target.group(1)}')
+PY
+}
+
+test_seat_codex_repairs_a_prepared_evidence_under_read() {
+  ( local _path="$PATH"; seat_env
+    local R="$T/stage-repair-root" S="$T/stage-repair-session" D="$T/stage-repair-dup" plan stage second target calls
+    seat_codex_prepared_session "$R" "$S" || { fail "prepared Codex session fixture"; return; }
+    plan=$(seat_codex_paired_stage "$S/r1-codex-luna.prompt.md" "$T/stage-repair-plan") \
+      || { fail "prepared Codex stage plan"; return; }
+    stage=$(printf '%s\n' "$plan" | sed -n 1p)
+    second=$(printf '%s\n' "$plan" | sed -n 2p)
+    target=$(printf '%s\n' "$plan" | sed -n 3p)
+    mkdir -p "$S/calls"; : > "$S/calls.log"
+    SHIM_MODE=staged-audit SHIM_STAGE_SLIP="$stage:under" SHIM_POST_INDEX_COMMAND="$target" \
+      SHIM_STAGE_DIR="$S/calls" SHIM_CALLS_FILE="$S/calls.log" SEAT=codex-luna MODEL=gpt-6-luna \
+      EFFORT=xhigh MODE=prompt ROOT="$R" PROMPT="$S/r1-codex-luna.prompt.md" \
+      SCHEMA="$SK/schema/findings.schema.json" OUT="$S/r1-codex-luna.json" \
+      LOG="$S/r1-codex-luna.log" RAW="$S/r1-codex-luna.stream.ndjson" BASE=abc \
+      bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
+    assert_eq "an in-order under-read stage does not fail the seat" "$?" 0
+    assert_eq "the repair turn reads exactly the missing artifact" \
+      "$(grep '^Read exactly: ' "$S/calls/call-$((stage + 1)).stdin")" "Read exactly: $second"
+    assert_grep "the seat log names the repair" "$S/r1-codex-luna.log" \
+      "^codex adapter: .*repair.*$(basename "$second")"
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+      --raw "$S/r1-codex-luna.stream.ndjson" --prompt "$S/r1-codex-luna.prompt.md" --root "$R" \
+      --session "$S" --seat codex-luna --out "$S/r1-codex-luna.read-audit.json" >/dev/null 2>&1
+    assert_eq "the post-run audit accepts the repaired stream" "$?" 0
+
+    calls=$(wc -l < "$S/calls.log" | tr -d ' ')
+    rm -rf "$S/calls"; mkdir -p "$S/calls"; : > "$S/calls.log"
+    rm -f "$S/r1-codex-luna.stream.ndjson" "$S/r1-codex-luna.json" "$S/r1-codex-luna.log"
+    SHIM_MODE=staged-audit SHIM_STAGE_SLIP="$stage:dup" SHIM_POST_INDEX_COMMAND="$target" \
+      SHIM_STAGE_DIR="$S/calls" SHIM_CALLS_FILE="$S/calls.log" SEAT=codex-luna MODEL=gpt-6-luna \
+      EFFORT=xhigh MODE=prompt ROOT="$R" PROMPT="$S/r1-codex-luna.prompt.md" \
+      SCHEMA="$SK/schema/findings.schema.json" OUT="$S/r1-codex-luna.json" \
+      LOG="$S/r1-codex-luna.log" RAW="$S/r1-codex-luna.stream.ndjson" BASE=abc \
+      bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
+    assert_eq "a repeated required source segment still fails the seat" "$?" 1
+    assert_eq "the refusal spends no further turn" "$(wc -l < "$S/calls.log" | tr -d ' ')" "$stage"
+    assert_grep "the seat log names the audit's reason" "$S/r1-codex-luna.log" \
+      '^codex adapter: .*duplicate-required-source-segment'
+    assert_exit "the repaired run used one more turn than the plan" 0 test "$calls" -gt "$stage"
+    seat_env_reset "$_path"
+  )
+}
+
 test_seat_codex_failure_reason_reaches_the_seat_log() {
   local _path="$PATH"; seat_env
   local S="$T/seat-codex-failure-reason"; seat_roster "$S"

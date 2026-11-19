@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Write a Codex seat adapter's own refusal, such as an exceeded review-turn budget or a prepared-evidence failure, to the seat log as well as to stderr, so the session can name why the seat failed. Those lines never classify a seat as signed out or out of quota.
+- Repair a Codex seat's prepared-evidence read stage instead of failing the seat when a turn does not run exactly its listed reads. The adapter replays the post-run read audit over the stream so far: a read the audit has not credited, such as one the turn skipped, gets a repair turn that reads only it, and a read the audit already credited is not asked for again. A shape the audit accepts, such as a repeated evidence index or a stray command, continues, and a stream it can no longer accept, such as a repeated required source segment, fails the seat at once with the audit's codes. A stage gets at most one more repair turn than it has reads, and an attempt a tenth of its stage count, at least four.
 
 ## 0.9.6
 

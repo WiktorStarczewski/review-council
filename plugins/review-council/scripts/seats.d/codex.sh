@@ -133,25 +133,27 @@ else
 
   THREAD_ID=""
   if [ "$STAGE_COUNT" -gt 0 ]; then
-    for ((stage=1; stage<=STAGE_COUNT; stage++)); do
-      printf -v stage_name 'stage-%04d.prompt' "$stage"
-      STAGE_PROMPT="$STAGE_DIR/$stage_name"
-      EXPECTED_STAGE_READS=$(stage_helper --stage-read-count "$STAGE_PROMPT") || exit 1
-      run_codex_turn "$STAGE_PROMPT" || exit $?
-      STAGE_STATS=$(stage_helper --turn-stats "$TURN_RAW" \
-        --root "$AUDIT_ROOT" --session "$SESSION_DIR") || exit 1
-      IFS=$'\t' read -r STAGE_READS STAGE_BYTES STAGE_EXPANSION_READS <<< "$STAGE_STATS"
-      if [ "$STAGE_READS" -ne "$EXPECTED_STAGE_READS" ] \
-          || [ "$STAGE_BYTES" -gt 61440 ] || [ "$STAGE_EXPANSION_READS" -ne 0 ]; then
-        adapter_fail "prepared proof turn omitted reads or exceeded its output budget"
-      fi
-      if [ "$stage" = 1 ]; then
-        THREAD_ID=$(stage_helper --thread-id-stream "$RAW") || exit 1
-      else
-        RESUMED_THREAD_ID=$(stage_helper --thread-id-stream "$RAW") || exit 1
-        if [ "$RESUMED_THREAD_ID" != "$THREAD_ID" ]; then
-          adapter_fail "prepared evidence resumed a different thread"
-        fi
+    # The helper judges each prepared-evidence turn by the read audit's own replay and names the
+    # next turn: the next stage, a bounded repair of a read the audit has not credited, or a refusal.
+    STEP_ARGS=(--stage-step "$STAGE_DIR" --raw "$RAW" --turn "$STAGE_DIR/current-turn.ndjson"
+      --prompt "$PROMPT" --seat "$SEAT" --root "$AUDIT_ROOT" --session "$SESSION_DIR")
+    [ -z "${REV_DEPS_DIR:-}" ] || STEP_ARGS+=(--deps "$REV_DEPS_DIR")
+    while :; do
+      STAGE_STEP=$(stage_helper "${STEP_ARGS[@]}") || exit 1
+      IFS=$'\t' read -r STEP_ACTION STEP_PROMPT STEP_NOTE <<< "$STAGE_STEP"
+      case "$STEP_ACTION" in
+        done) break;;
+        run) [ -n "$STEP_PROMPT" ] || adapter_fail "invalid prepared evidence step";;
+        refuse) adapter_fail "${STEP_PROMPT:-prepared evidence step refused}";;
+        *) adapter_fail "invalid prepared evidence step";;
+      esac
+      [ -z "$STEP_NOTE" ] || printf 'codex adapter: %s\n' "$STEP_NOTE" >> "$LOG"
+      run_codex_turn "$STEP_PROMPT" || exit $?
+      RESUMED_THREAD_ID=$(stage_helper --thread-id-stream "$RAW") || exit 1
+      if [ -z "$THREAD_ID" ]; then
+        THREAD_ID=$RESUMED_THREAD_ID
+      elif [ "$RESUMED_THREAD_ID" != "$THREAD_ID" ]; then
+        adapter_fail "prepared evidence resumed a different thread"
       fi
     done
   fi
