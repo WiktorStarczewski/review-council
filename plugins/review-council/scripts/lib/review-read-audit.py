@@ -47,7 +47,7 @@ READABLE_GAP_CODES = {
 }
 STOP_GATE_BLOCKS = 3
 STOP_GATE_LISTED = 12
-READ_GATE_VERSION = 1
+READ_GATE_VERSION = 2
 PROOF_KINDS = ('chunk', 'segment', 'index')
 # claude 2.1.121 reports a PreToolUse exit-2 block only as this result; 2.1.328 adds tool_result_meta.
 LEGACY_HOOK_DENIAL = re.compile(
@@ -1912,8 +1912,7 @@ def read_gate_header(prompt, session):
         'gate': READ_GATE_VERSION,
         'chunks': [str(session / row['artifact']) for row in chunks],
         'packets': [str(session / shard['artifact']) for shard in context['shards']],
-        'segments': [[str(session / segment['artifact']),
-                      f"{required['path']} lines {segment['line_start']}-{segment['line_end']}"]
+        'segments': [str(session / segment['artifact'])
                      for required in context['required_source_ranges']
                      for segment in required['segments']],
         'index': str(session / f"r{manifest['label']}-evidence.md"),
@@ -1965,7 +1964,7 @@ def proof_kind(name, data, target, header, root):
     if name.lower() not in READ_TOOLS or target is None:
         return None
     path = str(target)
-    if path in header['chunks'] or path in {row[0] for row in header['segments']}:
+    if path in header['chunks'] or path in header['segments']:
         if not complete_packet_read(name, data, target, root):
             return None
         return 'chunk' if path in header['chunks'] else 'segment'
@@ -2037,8 +2036,7 @@ def stream_requested(raw, paths, root):
 
 
 def next_required_read(header, credited):
-    items = [*header['chunks'], *header['packets'], *(row[0] for row in header['segments']),
-             header['index']]
+    items = [*header['chunks'], *header['packets'], *header['segments'], header['index']]
     following = next((item for item in items if item not in credited), None)
     return f'; read {following} next' if following else ''
 
@@ -2058,28 +2056,11 @@ def read_gate_reason(args, name, data, call_id, root):
     raw_path = tool_path(data)
     target = resolved(raw_path, root) if raw_path is not None else None
     kind = proof_kind(name, data, target, header, root)
-    if kind in ('chunk', 'segment'):
-        chunk = kind == 'chunk'
-        sequence = header['chunks'] if chunk else [row[0] for row in header['segments']]
-        if str(target) in credited:
-            source = dict(header['segments']).get(str(target))
-            return (violation('duplicate-patch-chunk' if chunk
-                              else 'duplicate-required-source-segment', name),
-                    f'{target} is already read and credited'
-                    + (f'; for another look at that code use a bounded Read of {source}'
-                       if source else '') + next_required_read(header, credited))
-        gaps = [path for path in sequence[:sequence.index(str(target))] if path not in credited]
-        if gaps and not stream_requested(args.raw, gaps, root):
-            return (violation('reordered-patch-chunks' if chunk
-                              else 'reordered-required-source-segments', name),
-                    f'read {gaps[0]} next, then continue in prompt order')
     turn = claude_turn(args.raw, call_id)
-    if turn is None or None in credited.values():
-        return None
-    turn_ids = {row[0] for row in turn}
+    turn_ids = {row[0] for row in turn or []}
     kinds = []
     seen = {path for path, credit in credited.items() if credit not in turn_ids}
-    for _, prior_name, prior_data, output in turn:
+    for _, prior_name, prior_data, output in turn or []:
         if output is not None and claude_nonexecuted_exploration(
                 'claude', prior_name, prior_data, output):
             continue
@@ -2093,6 +2074,19 @@ def read_gate_reason(args, name, data, call_id, root):
                 prior_kind = None
             seen.add(str(prior_target))
         kinds.append(prior_kind)
+    # The audit credits a chunk or segment once and only advises on a repeat, which is no proof read.
+    if kind in ('chunk', 'segment') and str(target) in seen:
+        kind = None
+    if kind in ('chunk', 'segment'):
+        chunk = kind == 'chunk'
+        sequence = header['chunks'] if chunk else header['segments']
+        gaps = [path for path in sequence[:sequence.index(str(target))] if path not in credited]
+        if gaps and not stream_requested(args.raw, gaps, root):
+            return (violation('reordered-patch-chunks' if chunk
+                              else 'reordered-required-source-segments', name),
+                    f'read {gaps[0]} next, then continue in prompt order')
+    if turn is None or None in credited.values():
+        return None
     proofs = sum(prior in PROOF_KINDS for prior in kinds)
     if kind is not None:
         source_only = kind == 'segment' and all(prior == 'segment' for prior in kinds) \

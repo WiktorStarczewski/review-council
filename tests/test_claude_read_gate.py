@@ -530,6 +530,33 @@ class ClaudeCallGateTests(unittest.TestCase):
         self.read_in_turns(self.chunks, 2)
         self.read_in_turns(self.packets, 1)
 
+    def stop_reason(self):
+        fixture = self.fixture
+        args = argparse.Namespace(
+            adapter='claude', raw=str(self.raw), prompt=str(fixture.prompt),
+            root=str(fixture.root), session=str(fixture.session), seat=None, deps=None,
+            state=str(self.work / 'r1-sol.stop-gate'))
+        with contextlib.redirect_stderr(io.StringIO()):
+            return self.audit.stop_gate_reason(args, {
+                'hook_event_name': 'PreToolUse', 'tool_name': 'StructuredOutput',
+                'tool_input': {'summary': 'checked', 'findings': []}})
+
+    @staticmethod
+    def codes(audit):
+        return {row['code'] for row in audit['violations'] + audit['advisories']}
+
+    def assert_valid(self):
+        status, audit = self.audit_stream()
+        self.assertEqual((status, audit['status'], audit['violations']), (0, 'valid', []))
+        return audit
+
+    def read_voided_with(self, path):
+        """Read `path` beside the prompt and a packet, a turn over 32 KiB the audit voids."""
+        self.next_turn()
+        self.assertIsNone(self.read(path))
+        self.assertIsNone(self.read(Path(self.fixture.prompt)))
+        self.assertIsNone(self.read(self.packets[0]))
+
     def test_init_records_the_manifest_order_and_no_credit(self):
         self.assertEqual(self.initialize().returncode, 0)
         rows = [json.loads(line) for line in self.gate.read_text().splitlines()]
@@ -537,8 +564,7 @@ class ClaudeCallGateTests(unittest.TestCase):
         header = rows[0]
         self.assertEqual(header['chunks'], [str(path.resolve()) for path in self.chunks])
         self.assertEqual(header['packets'], [str(path.resolve()) for path in self.packets])
-        self.assertEqual([row[0] for row in header['segments']],
-                         [str(path.resolve()) for path in self.segments])
+        self.assertEqual(header['segments'], [str(path.resolve()) for path in self.segments])
         self.assertEqual(header['index'], str(self.index.resolve()))
 
     def test_every_call_of_an_in_order_review_is_allowed_and_the_audit_is_valid(self):
@@ -573,19 +599,84 @@ class ClaudeCallGateTests(unittest.TestCase):
         self.assertIn('reordered-patch-chunks', reason)
         self.assertIn(f'read {self.chunks[1].resolve()} next', reason)
 
-    def test_a_second_read_of_a_credited_segment_is_denied(self):
+    def test_a_second_read_is_denied_only_beside_a_full_segment_batch(self):
         self.evidence_through_packets()
         self.read_in_turns(self.segments[:2], 2)
         self.next_turn()
+        # The audit only advises on a repeated read, so a lone one is allowed.
+        self.assertIsNone(self.read(self.segments[0]))
+        self.assertIsNone(self.read(self.chunks[0]))
+        self.next_turn()
+        for path in self.segments[2:5]:
+            self.assertIsNone(self.read(path))
+        # A repeat is no required segment read, so the audit rejects it beside three of them.
         reason = self.read(self.segments[0])
-        self.assertIsNotNone(reason)
-        self.assertIn('duplicate-required-source-segment', reason)
-        required, segment = self.ranges[0]
-        self.assertIn(f"{required['path']} lines {segment['line_start']}-{segment['line_end']}",
-                      reason)
-        self.assertIn(f'read {self.segments[2].resolve()} next', reason)
-        reason = self.read(self.chunks[0])
-        self.assertIn('duplicate-patch-chunk', reason)
+        self.assertIn('evidence-proof-batch-too-large', reason)
+        self.assertIn(f'read {self.segments[5].resolve()} next', reason)
+        self.read_in_turns(self.segments[5:], 4)
+        self.read_in_turns([self.index], 1)
+        self.assertIn('duplicate-required-source-segment', self.codes(self.assert_valid()))
+
+    def test_a_lone_second_read_of_a_credited_segment_or_chunk_is_allowed(self):
+        self.evidence_through_packets()
+        self.read_in_turns(self.segments, 4)
+        self.read_in_turns([self.index], 1)
+        self.read_in_turns([self.segments[0]], 1)
+        self.read_in_turns([self.chunks[-1]], 1)
+        self.assertLessEqual({'duplicate-required-source-segment', 'duplicate-patch-chunk'},
+                             self.codes(self.assert_valid()))
+
+    def test_the_last_segment_of_a_turn_the_audit_voids_can_be_read_again(self):
+        self.evidence_through_packets()
+        self.read_in_turns(self.segments[:-1], 1)
+        self.read_in_turns([self.index], 1)
+        self.read_voided_with(self.segments[-1])
+        status, audit = self.audit_stream()
+        self.assertEqual(status, 2)
+        self.assertIn('tool-turn-output-too-large', self.codes(audit))
+        reason = self.stop_reason()
+        self.assertIn(f'in this order: {self.segments[-1].resolve()}. Read each', reason)
+        self.read_in_turns([self.segments[-1]], 1)
+        self.assert_valid()
+
+    def test_the_last_patch_chunk_of_a_turn_the_audit_voids_can_be_read_again(self):
+        self.read_in_turns(self.chunks[:-1], 2)
+        self.next_turn()
+        for path in (self.chunks[-1], *self.packets[:2]):
+            self.assertIsNone(self.read(path))
+        self.read_in_turns(self.packets[2:], 1)
+        self.read_in_turns(self.segments, 4)
+        self.read_in_turns([self.index], 1)
+        status, audit = self.audit_stream()
+        self.assertEqual(status, 2)
+        self.assertIn('tool-turn-output-too-large', self.codes(audit))
+        listed = [self.chunks[-1], *self.packets[:2]]
+        reason = self.stop_reason()
+        self.assertIn('in this order: ' + '; '.join(str(path.resolve()) for path in listed)
+                      + '. Read each', reason)
+        self.read_in_turns(listed, 1)
+        self.assert_valid()
+
+    def test_no_denial_names_a_source_file_missing_from_the_snapshot_tree(self):
+        snapshot = self.fixture.manifest['snapshot_tree']
+        absent = {required['path'] for required, _ in self.ranges
+                  if required['blob_tree'] != snapshot
+                  and not (self.fixture.root / required['path']).exists()}
+        self.assertTrue(absent)
+        self.evidence_through_packets()
+        self.read_in_turns(self.segments[:2], 2)
+        self.next_turn()
+        reasons = [self.read(self.segments[0]), self.read(self.segments[3])]
+        self.next_turn()
+        for path in self.segments[2:5]:
+            self.assertIsNone(self.read(path))
+        reasons += [self.read(self.index), self.grep(self.fixture.root / 'keep.txt'),
+                    self.call('Read', {'file_path': str(self.segments[5]), 'limit': 3}, ''),
+                    self.stop_reason()]
+        self.assertGreaterEqual(len([reason for reason in reasons if reason]), 5)
+        for reason in filter(None, reasons):
+            for path in absent:
+                self.assertNotIn(path, reason)
 
     def test_a_proof_read_beyond_the_turn_batch_limit_is_denied(self):
         self.next_turn()
