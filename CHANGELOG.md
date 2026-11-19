@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Write a Codex seat adapter's own refusal, such as an exceeded review-turn budget or a prepared-evidence failure, to the seat log as well as to stderr, so the session can name why the seat failed. Those lines never classify a seat as signed out or out of quota.
+
 ## 0.9.6
 
 - Refuse a Claude seat's partial Read or Grep of a patch chunk, source packet or required source segment when it is made, naming the whole-file read the audit needs.

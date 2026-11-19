@@ -578,6 +578,20 @@ test_seat_codex_luna_allows_five_commands_per_review_turn() {
   seat_env_reset "$_path"
 }
 
+test_seat_codex_failure_reason_reaches_the_seat_log() {
+  local _path="$PATH"; seat_env
+  local S="$T/seat-codex-failure-reason"; seat_roster "$S"
+  printf '%s\n' 'use at most 16 repository tool calls before stopping this assignment.' > "$S/p.md"
+  SHIM_MODE=multi-call SHIM_REVIEW_CALLS=3 \
+    "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" > "$S/out" 2> "$S/err"
+  assert_eq "an adapter refusal is an unusable seat" "$?" 2
+  assert_grep "the seat log names the adapter's refusal" "$S/r1-codex-sol.log" \
+    '^codex adapter: review turn exceeded its command-call budget$'
+  assert_grep "the orchestrator still sees the refusal on stderr" "$S/err" \
+    'codex adapter: review turn exceeded its command-call budget'
+  seat_env_reset "$_path"
+}
+
 test_seat_codex() {
   local _path="$PATH"; seat_env
   local S="$T/seat-codex"; seat_roster "$S"; seat_codex_prompt "$S/p.md"; : > "$T/args.env"

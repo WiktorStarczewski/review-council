@@ -944,6 +944,16 @@ class CodexTests(unittest.TestCase):
                 if seats:
                     self.assertEqual(seats[0]['adapter'], 'claude')
 
+    def test_codex_adapter_reasons_in_the_seat_log_are_not_provider_failures(self):
+        log = ('codex adapter: prepared evidence stage 3 of 9 is still missing '
+               'r1-codex-luna-source-segment-401-001.txt\n'
+               'codex proof staging: prepared artifact hash differs from the evidence manifest: '
+               'r1-patch-p01-429.txt\n')
+        self.assertEqual(self.roster.classify_provider_failure('codex', summary_log=log),
+                         ('other', 'unclassified provider failure'))
+        self.assertEqual(self.roster.classify_provider_failure(
+            'codex', summary_log=log + 'error: Not logged in; run codex login\n')[0], 'auth')
+
     def test_bundle_is_self_contained(self):
         output = module(REPO / 'scripts/build-codex-plugin.py').build(self.root / 'review-council')
         self.assertTrue((output / 'scripts/seats.d/claude.sh').stat().st_mode & 0o111)

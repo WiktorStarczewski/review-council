@@ -15,13 +15,18 @@
 #   - a non-git root (a read-only panel on a document) needs --skip-git-repo-check.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
+# rev-seat.sh keeps this script's stderr out of the seat log, so a refusal names itself in both.
+adapter_fail() {
+  printf 'codex adapter: %s\n' "$1" >> "${LOG:-/dev/null}"
+  printf 'codex adapter: %s\n' "$1" >&2
+  exit 1
+}
 SUMMARY="$HERE/../lib/stream-summary.py"
 STAGES_HELPER="$HERE/../lib/codex-proof-stages.py"
-[ -n "${EFFORT:-}" ] || { echo "codex adapter: missing receipted effort" >&2; exit 1; }
+[ -n "${EFFORT:-}" ] || adapter_fail "missing receipted effort"
 INSTRUCTIONS="$(cd "$HERE/../lib" && pwd)/reviewer-instructions.md"
 if [ "${MODE:-}" != review ] && { [ ! -f "$INSTRUCTIONS" ] || [ ! -r "$INSTRUCTIONS" ] || [ ! -s "$INSTRUCTIONS" ]; }; then
-  echo "codex adapter: missing reviewer instructions" >&2
-  exit 1
+  adapter_fail "missing reviewer instructions"
 fi
 GITCHECK=""
 git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || GITCHECK="--skip-git-repo-check"
@@ -70,12 +75,21 @@ if [ "${MODE:-}" = review ]; then
   rc=${PIPESTATUS[0]}
 else
   STAGE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/review-council-codex-stages.XXXXXX") || exit 1
+  stage_helper() {
+    local status
+    python3 "$STAGES_HELPER" "$@" 2> "$STAGE_DIR/helper.err"; status=$?
+    if [ -s "$STAGE_DIR/helper.err" ]; then
+      cat "$STAGE_DIR/helper.err" >&2
+      cat "$STAGE_DIR/helper.err" >> "$LOG"
+    fi
+    return "$status"
+  }
   AUDIT_ROOT=$(cd "$ROOT" && pwd -P) || exit 1
   SESSION_DIR=$(cd "$(dirname "$PROMPT")" && pwd -P) || exit 1
-  STAGE_COUNT=$(python3 "$STAGES_HELPER" --prompt "$PROMPT" --seat "$SEAT" \
+  STAGE_COUNT=$(stage_helper --prompt "$PROMPT" --seat "$SEAT" \
     --model "$MODEL" --stage-dir "$STAGE_DIR") || exit 1
   case "$STAGE_COUNT" in
-    ''|*[!0-9]*) echo "codex adapter: invalid proof stage count" >&2; exit 1;;
+    ''|*[!0-9]*) adapter_fail "invalid proof stage count";;
   esac
   run_codex_turn() {
     local input=$1 schema=${2:-} output=${3:-} rc
@@ -122,23 +136,21 @@ else
     for ((stage=1; stage<=STAGE_COUNT; stage++)); do
       printf -v stage_name 'stage-%04d.prompt' "$stage"
       STAGE_PROMPT="$STAGE_DIR/$stage_name"
-      EXPECTED_STAGE_READS=$(python3 "$STAGES_HELPER" --stage-read-count "$STAGE_PROMPT") || exit 1
+      EXPECTED_STAGE_READS=$(stage_helper --stage-read-count "$STAGE_PROMPT") || exit 1
       run_codex_turn "$STAGE_PROMPT" || exit $?
-      STAGE_STATS=$(python3 "$STAGES_HELPER" --turn-stats "$TURN_RAW" \
+      STAGE_STATS=$(stage_helper --turn-stats "$TURN_RAW" \
         --root "$AUDIT_ROOT" --session "$SESSION_DIR") || exit 1
       IFS=$'\t' read -r STAGE_READS STAGE_BYTES STAGE_EXPANSION_READS <<< "$STAGE_STATS"
       if [ "$STAGE_READS" -ne "$EXPECTED_STAGE_READS" ] \
           || [ "$STAGE_BYTES" -gt 61440 ] || [ "$STAGE_EXPANSION_READS" -ne 0 ]; then
-        echo "codex adapter: prepared proof turn omitted reads or exceeded its output budget" >&2
-        exit 1
+        adapter_fail "prepared proof turn omitted reads or exceeded its output budget"
       fi
       if [ "$stage" = 1 ]; then
-        THREAD_ID=$(python3 "$STAGES_HELPER" --thread-id-stream "$RAW") || exit 1
+        THREAD_ID=$(stage_helper --thread-id-stream "$RAW") || exit 1
       else
-        RESUMED_THREAD_ID=$(python3 "$STAGES_HELPER" --thread-id-stream "$RAW") || exit 1
+        RESUMED_THREAD_ID=$(stage_helper --thread-id-stream "$RAW") || exit 1
         if [ "$RESUMED_THREAD_ID" != "$THREAD_ID" ]; then
-          echo "codex adapter: prepared evidence resumed a different thread" >&2
-          exit 1
+          adapter_fail "prepared evidence resumed a different thread"
         fi
       fi
     done
@@ -147,18 +159,18 @@ else
     cat > "$STAGE_DIR/review-turn.schema.json" <<'EOF'
 {"type":"object","required":["status","next_step"],"properties":{"status":{"type":"string","enum":["continue","ready"]},"next_step":{"type":"string"}},"additionalProperties":false}
 EOF
-    REVIEW_READ_BUDGET=$(python3 "$STAGES_HELPER" --review-budget "$PROMPT") || exit 1
+    REVIEW_READ_BUDGET=$(stage_helper --review-budget "$PROMPT") || exit 1
     case "$REVIEW_READ_BUDGET" in
-      ''|*[!0-9]*) echo "codex adapter: invalid review read budget" >&2; exit 1;;
+      ''|*[!0-9]*) adapter_fail "invalid review read budget";;
     esac
-    REVIEW_TURN_CALL_LIMIT=$(python3 "$STAGES_HELPER" \
+    REVIEW_TURN_CALL_LIMIT=$(stage_helper \
       --review-turn-call-limit "$MODEL") || exit 1
     case "$REVIEW_TURN_CALL_LIMIT" in
-      ''|*[!0-9]*) echo "codex adapter: invalid review turn call limit" >&2; exit 1;;
+      ''|*[!0-9]*) adapter_fail "invalid review turn call limit";;
     esac
     MAX_REVIEW_TURNS=$((REVIEW_READ_BUDGET + 1))
-    REQUIRED_POST_INDEX=$(python3 "$STAGES_HELPER" --required-post-index-read "$PROMPT") || exit 1
-    REQUIRED_POST_INDEX_TARGET=$(python3 "$STAGES_HELPER" \
+    REQUIRED_POST_INDEX=$(stage_helper --required-post-index-read "$PROMPT") || exit 1
+    REQUIRED_POST_INDEX_TARGET=$(stage_helper \
       --required-post-index-target "$PROMPT") || exit 1
     REVIEW_READS=0
     REVIEW_TARGET_READS=0
@@ -208,41 +220,38 @@ EOF
       rm -f "$TURN_OUT"
       run_codex_turn "$REVIEW_PROMPT" "$STAGE_DIR/review-turn.schema.json" \
         "$TURN_OUT" || exit $?
-      RESUMED_THREAD_ID=$(python3 "$STAGES_HELPER" --thread-id-stream "$RAW") || exit 1
+      RESUMED_THREAD_ID=$(stage_helper --thread-id-stream "$RAW") || exit 1
       if [ -z "$THREAD_ID" ]; then
         THREAD_ID=$RESUMED_THREAD_ID
       elif [ "$RESUMED_THREAD_ID" != "$THREAD_ID" ]; then
-        echo "codex adapter: source review resumed a different thread" >&2
-        exit 1
+        adapter_fail "source review resumed a different thread"
       fi
-      TURN_STATS=$(python3 "$STAGES_HELPER" --turn-stats "$TURN_RAW" \
+      TURN_STATS=$(stage_helper --turn-stats "$TURN_RAW" \
         --root "$AUDIT_ROOT" --session "$SESSION_DIR") || exit 1
       IFS=$'\t' read -r TURN_CALLS TURN_BYTES TURN_READS <<< "$TURN_STATS"
       case "$TURN_CALLS:$TURN_BYTES:$TURN_READS" in
-        *[!0-9:]*|:*) echo "codex adapter: invalid review turn metrics" >&2; exit 1;;
+        *[!0-9:]*|:*) adapter_fail "invalid review turn metrics";;
       esac
       if [ "$TURN_CALLS" -gt "$REVIEW_TURN_CALL_LIMIT" ]; then
-        echo "codex adapter: review turn exceeded its command-call budget" >&2
-        exit 1
+        adapter_fail "review turn exceeded its command-call budget"
       fi
       if [ "$TURN_BYTES" -gt 32768 ] \
           || [ "$((REVIEW_READS + TURN_READS))" -gt "$REVIEW_READ_BUDGET" ] \
           || { [ "$NO_MORE_READS" = 1 ] && [ "$TURN_CALLS" -ne 0 ]; }; then
-        echo "codex adapter: review turn exceeded its read or output budget" >&2
-        exit 1
+        adapter_fail "review turn exceeded its read or output budget"
       fi
       REVIEW_READS=$((REVIEW_READS + TURN_READS))
-      REVIEW_STATE=$(python3 "$STAGES_HELPER" --review-status "$TURN_OUT") || exit 1
+      REVIEW_STATE=$(stage_helper --review-status "$TURN_OUT") || exit 1
       case "$REVIEW_STATE" in
         ready)
           if [ "$REQUIRED_POST_INDEX" = 1 ]; then
-            REVIEW_TARGET_PROOF=$(python3 "$STAGES_HELPER" \
+            REVIEW_TARGET_PROOF=$(stage_helper \
               --post-index-target-read-count "$RAW" --prompt "$PROMPT" \
               --root "$AUDIT_ROOT" --session "$SESSION_DIR") || exit 1
             IFS=$'\t' read -r REVIEW_TARGET_READS REVIEW_INDEX_READS \
               <<< "$REVIEW_TARGET_PROOF"
             case "$REVIEW_TARGET_READS:$REVIEW_INDEX_READS" in
-              ''|*[!0-9:]*|:*|*:) echo "codex adapter: invalid post-index source proof state" >&2; exit 1;;
+              ''|*[!0-9:]*|:*|*:) adapter_fail "invalid post-index source proof state";;
             esac
           fi
           if [ "$REQUIRED_POST_INDEX" = 1 ] && [ "$REVIEW_TARGET_READS" -eq 0 ]; then
@@ -257,7 +266,7 @@ EOF
           fi
           ;;
         continue$'\t'*) NEXT_STEP=${REVIEW_STATE#continue$'\t'};;
-        *) echo "codex adapter: invalid bounded review state" >&2; exit 1;;
+        *) adapter_fail "invalid bounded review state";;
       esac
       if [ "$review_turn" -ge "$MAX_REVIEW_TURNS" ] || [ "$NO_MORE_READS" = 1 ]; then
         break
@@ -279,18 +288,16 @@ EOF
       } > "$FINAL_PROMPT"
     fi
     run_codex_turn "$FINAL_PROMPT" "$SCHEMA" "$OUT" || exit $?
-    RESUMED_THREAD_ID=$(python3 "$STAGES_HELPER" --thread-id-stream "$RAW") || exit 1
+    RESUMED_THREAD_ID=$(stage_helper --thread-id-stream "$RAW") || exit 1
     if [ "$RESUMED_THREAD_ID" != "$THREAD_ID" ]; then
-      echo "codex adapter: findings resumed a different thread" >&2
-      exit 1
+      adapter_fail "findings resumed a different thread"
     fi
-    FINAL_TURN_STATS=$(python3 "$STAGES_HELPER" --turn-stats "$TURN_RAW" \
+    FINAL_TURN_STATS=$(stage_helper --turn-stats "$TURN_RAW" \
       --root "$AUDIT_ROOT" --session "$SESSION_DIR") || exit 1
     IFS=$'\t' read -r FINAL_TURN_CALLS FINAL_TURN_BYTES FINAL_TURN_READS <<< "$FINAL_TURN_STATS"
     if [ "$FINAL_TURN_CALLS" -ne 0 ] || [ "$FINAL_TURN_BYTES" -ne 0 ] \
         || [ "$FINAL_TURN_READS" -ne 0 ]; then
-      echo "codex adapter: final findings turn used repository tools" >&2
-      exit 1
+      adapter_fail "final findings turn used repository tools"
     fi
     rc=0
 fi
