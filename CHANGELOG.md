@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Refuse a Claude seat's partial Read or Grep of a patch chunk, source packet, required source segment or evidence index when it is made, naming the whole-file read the audit needs.
+- Send a Claude seat back, at most three times per attempt, when it returns StructuredOutput or stops while missing required reads could still pass the audit, listing the next ones in protocol order. The post-run audit is unchanged.
+
 ## 0.9.5
 
 - Guide Codex reviewers to use smaller source-read batches within the existing turn, aggregate read and evidence limits.
