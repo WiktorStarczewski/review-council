@@ -294,6 +294,17 @@ class ClaudeReadGateTests(unittest.TestCase):
         self.assertEqual(decision['decision'], 'block')
         self.assertIn(named, decision['reason'])
 
+    def test_structured_output_gate_never_sends_back_an_incomplete_proof(self):
+        raw = self.transcript(omitted=[*self.segments[3:], self.index])
+        incomplete = {'summary': 'INCOMPLETE PROOF: segments 4 onward and the index are unread.',
+                      'findings': []}
+        with patch.object(self.audit, 'assessed', wraps=self.audit.assessed) as replay:
+            self.assertIsNone(self.submit(raw, result=incomplete))
+            replay.assert_not_called()
+        self.assertFalse(self.state.exists())
+        self.assertIn('(1 of 3)', self.submit(raw, result={
+            'summary': 'Reviewed. INCOMPLETE PROOF is not claimed.', 'findings': []}))
+
     def test_structured_output_gate_audits_the_submitted_result(self):
         fixture = SourceFixture(self.directory / 'salvage', 'current', adapter='claude')
         raw, result_path, audit_path = fixture.claude_transcript()

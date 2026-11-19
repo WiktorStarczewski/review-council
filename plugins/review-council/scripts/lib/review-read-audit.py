@@ -2744,6 +2744,11 @@ def stop_gate_reason(args, event):
     stopping = event.get('hook_event_name') == 'Stop'
     if not stopping and event.get('tool_name') != 'StructuredOutput':
         return None
+    submitted = event.get('tool_input')
+    # The prompt asks a seat out of capacity for this result; sending it back defeats that reserve.
+    if (isinstance(submitted, dict) and isinstance(submitted.get('summary'), str)
+            and submitted['summary'].startswith('INCOMPLETE PROOF')):
+        return None
     try:
         state = json.loads(Path(args.state).read_text())
     except FileNotFoundError:
@@ -2756,8 +2761,7 @@ def stop_gate_reason(args, event):
         result = Path(directory) / 'result.json'
         # The submitted object is the result stream-summary.py publishes, so the replay applies
         # the post-run audit's citation salvage. A Stop carries no result.
-        result.write_text(json.dumps(
-            {'findings': []} if stopping else event.get('tool_input')) + '\n')
+        result.write_text(json.dumps({'findings': []} if stopping else submitted) + '\n')
         raw = Path(directory) / 'stream.ndjson'
         if settled_claude_stream(args.raw, raw) and stopping:
             return None
