@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.6
+
 - Refuse a Claude seat's partial Read or Grep of a patch chunk, source packet or required source segment when it is made, naming the whole-file read the audit needs.
 - Send a Claude seat back, at most three times per attempt, when the audit of the result it submits with StructuredOutput, or of its stop, would fail only for required reads it can still make, listing the next ones in protocol order. A required original-source read is listed by a file the current tree holds. A finding that cites evidence the seat has not read yet counts as such a gap. An INCOMPLETE PROOF result is never sent back. The post-run audit is unchanged.
 - Refuse a Claude seat's required read that the audit cannot credit in order when it is made: a patch chunk or required source segment ahead of an unread one, or an ordered proof read past the per-turn batch limit. A repeated read of a credited chunk or segment, which the audit only advises on, is refused only beside more than two required segment reads in one turn, where the audit rejects it. The denial names the next required read. A per-attempt state file, started empty at each launch and fed by PostToolUse from the delivered output, records the credited reads, and a read the audit voids because its finished turn returned more than 32 KiB counts as unread, as it does in the audit. Without the state file the call is allowed and the audit decides.
