@@ -38,10 +38,12 @@ ADVISORY_CODES = PACING_CODES | {
     'unsupported-source-batch', 'source-batch-lines-too-large', 'overlapping-source-batch',
     'source-batch-output-mismatch',
 }
+# A finding may cite a range that only the still-unread evidence covers, so its code is a gap too.
 READABLE_GAP_CODES = {
     'missing-evidence-index', 'missing-source-packet', 'missing-assigned-patch-chunk',
     'missing-assigned-patch-range', 'missing-required-source-segment',
     'missing-required-source-read', 'missing-required-source-range', 'no-recognized-review-tools',
+    'unsubstantiated-finding-range',
 }
 STOP_GATE_BLOCKS = 3
 STOP_GATE_LISTED = 12

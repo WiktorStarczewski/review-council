@@ -360,6 +360,37 @@ class ClaudeReadGateTests(unittest.TestCase):
         self.assertIn(f"{target['path']} lines {target['line_start']}-{target['line_end']}",
                       self.submit(raw, fixture=fixture))
 
+    def test_structured_output_gate_sends_back_a_finding_that_cites_unread_evidence(self):
+        fixture = SourceFixture(self.directory / 'unread-packet', 'current', adapter='claude')
+        packet = fixture.session / fixture.context['shards'][0]['artifact']
+        raw, result_path, audit_path = fixture.claude_transcript(omitted_artifacts=(packet.name,))
+        cited = fixture.context['shards'][0]['ranges'][0]
+        submitted = {'summary': 'checked', 'findings': [{
+            'severity': 'P2', 'file': cited['path'], 'line_start': cited['line_start'],
+            'line_end': cited['line_end'], 'claim': 'claim', 'evidence': 'evidence',
+            'suggested_fix': 'fix', 'confidence': 0.5}]}
+        reason = self.submit(raw, fixture=fixture, result=submitted)
+        self.assertIsNotNone(reason)
+        self.assertIn(str(packet.resolve()), reason)
+        self.state.unlink()
+        self.write(raw, self.events(raw) + [
+            {'type': 'assistant', 'message': {'id': 'late-packet', 'content': [
+                {'type': 'tool_use', 'id': 'late-packet-read', 'name': 'Read',
+                 'input': {'file_path': str(packet)}}]}},
+            {'type': 'user', 'message': {'content': [
+                {'type': 'tool_result', 'tool_use_id': 'late-packet-read',
+                 'content': packet.read_text()}]}}])
+        self.assertIsNone(self.submit(raw, fixture=fixture, result=submitted))
+        result_path.write_text(json.dumps(submitted))
+        process = subprocess.run(
+            [os.sys.executable, str(SCRIPTS / 'lib/review-read-audit.py'), 'audit',
+             '--adapter', 'claude', '--raw', str(raw), '--prompt', str(fixture.prompt),
+             '--root', str(fixture.root), '--session', str(fixture.session),
+             '--out', str(audit_path)],
+            env=fixture.env, text=True, capture_output=True)
+        self.assertEqual((process.returncode, json.loads(audit_path.read_text())['status']),
+                         (0, 'valid'))
+
     def test_stop_hook_command_line_prints_only_the_decision(self):
         raw = self.transcript(omitted=[*self.segments[3:], self.index])
         command = [os.sys.executable, str(SCRIPTS / 'lib/review-read-audit.py'), 'stop-hook',
