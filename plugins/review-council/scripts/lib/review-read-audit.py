@@ -2754,7 +2754,10 @@ def stop_gate_reason(args, event):
     progress = {}
     with tempfile.TemporaryDirectory(prefix='review-stop-gate-') as directory:
         result = Path(directory) / 'result.json'
-        result.write_text('{"findings": []}\n')
+        # The submitted object is the result stream-summary.py publishes, so the replay applies
+        # the post-run audit's citation salvage. A Stop carries no result.
+        result.write_text(json.dumps(
+            {'findings': []} if stopping else event.get('tool_input')) + '\n')
         raw = Path(directory) / 'stream.ndjson'
         if settled_claude_stream(args.raw, raw) and stopping:
             return None

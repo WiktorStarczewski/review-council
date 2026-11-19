@@ -65,10 +65,10 @@ class ClaudeReadGateTests(unittest.TestCase):
         self.assertEqual(status, 0)
         return json.loads(stdout.getvalue()) if stdout.getvalue().strip() else None
 
-    def submit(self, raw, tool='StructuredOutput'):
-        decision = self.stop(raw, payload=json.dumps({
+    def submit(self, raw, tool='StructuredOutput', *, fixture=None, result=None):
+        decision = self.stop(raw, fixture=fixture, payload=json.dumps({
             'hook_event_name': 'PreToolUse', 'tool_name': tool,
-            'tool_input': {'summary': 'done', 'findings': []}}))
+            'tool_input': result or {'summary': 'done', 'findings': []}}))
         if decision is None:
             return None
         specific = decision['hookSpecificOutput']
@@ -293,6 +293,32 @@ class ClaudeReadGateTests(unittest.TestCase):
         decision = self.stop(raw, fixture=fixture, prompt=legacy)
         self.assertEqual(decision['decision'], 'block')
         self.assertIn(named, decision['reason'])
+
+    def test_structured_output_gate_audits_the_submitted_result(self):
+        fixture = SourceFixture(self.directory / 'salvage', 'current', adapter='claude')
+        raw, result_path, audit_path = fixture.claude_transcript()
+        cited = fixture.context['shards'][0]['ranges'][0]
+        submitted = {'summary': 'checked', 'findings': [{
+            'severity': 'P2', 'file': cited['path'], 'line_start': cited['line_start'],
+            'line_end': cited['line_end'], 'claim': 'claim', 'evidence': 'evidence',
+            'suggested_fix': 'fix', 'confidence': 0.5}]}
+        result_path.write_text(json.dumps(submitted))
+        process = subprocess.run(
+            [os.sys.executable, str(SCRIPTS / 'lib/review-read-audit.py'), 'audit',
+             '--adapter', 'claude', '--raw', str(raw), '--prompt', str(fixture.prompt),
+             '--root', str(fixture.root), '--session', str(fixture.session),
+             '--out', str(audit_path)],
+            env=fixture.env, text=True, capture_output=True)
+        audit = json.loads(audit_path.read_text())
+        self.assertEqual((process.returncode, audit['status'], audit.get('citation_reaudit')),
+                         (0, 'valid', True))
+        self.assertEqual([item['code'] for item in audit['advisories']],
+                         ['missing-required-source-read'])
+        self.assertIsNone(self.submit(raw, fixture=fixture, result=submitted))
+        self.assertFalse(self.state.exists())
+        target = fixture.target()
+        self.assertIn(f"{target['path']} lines {target['line_start']}-{target['line_end']}",
+                      self.submit(raw, fixture=fixture))
 
     def test_stop_hook_command_line_prints_only_the_decision(self):
         raw = self.transcript(omitted=[*self.segments[3:], self.index])

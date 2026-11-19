@@ -3,7 +3,7 @@
 ## Unreleased
 
 - Refuse a Claude seat's partial Read or Grep of a patch chunk, source packet, required source segment or evidence index when it is made, naming the whole-file read the audit needs.
-- Send a Claude seat back, at most three times per attempt, when it returns StructuredOutput or stops while missing required reads could still pass the audit, listing the next ones in protocol order. The post-run audit is unchanged.
+- Send a Claude seat back, at most three times per attempt, when the audit of the result it submits with StructuredOutput, or of its stop, would fail only for required reads it can still make, listing the next ones in protocol order. The post-run audit is unchanged.
 
 ## 0.9.5
 
