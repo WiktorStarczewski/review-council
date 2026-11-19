@@ -1173,6 +1173,8 @@ print('passed=1 failed=0')
         cli.write_text('''#!/usr/bin/env python3
 import json, os, sys
 from pathlib import Path
+if sys.argv[1:] == ['--version']:
+    sys.exit(print('2.1.328 (Claude Code)'))
 Path(os.environ['CAPTURE']).write_text(json.dumps(sys.argv[1:]))
 print(json.dumps({'type':'assistant','message':{'content':[{'type':'tool_use','name':'Read','input':{}}]}}))
 print(json.dumps({'type':'result','is_error':False,'subtype':'success',
@@ -1238,6 +1240,8 @@ print(json.dumps({'type':'result','is_error':False,'subtype':'success',
         cli.write_text('''#!/usr/bin/env python3
 import json, os, sys
 from pathlib import Path
+if sys.argv[1:] == ['--version']:
+    sys.exit(print('2.1.328 (Claude Code)'))
 Path(os.environ['CAPTURE']).write_text(json.dumps(sys.argv[1:]))
 print(json.dumps({'type':'result','is_error':False,'subtype':'success',
                   'structured_output':json.loads(Path(os.environ['FINDINGS']).read_text())}))

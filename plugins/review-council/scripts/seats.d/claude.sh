@@ -10,6 +10,11 @@ MAX_TURNS=$(PYTHONPATH="$HERE/../lib" python3 -c \
 SESSION_ENV=$(cd "$HERE/../lib" && python3 -c \
   'from roster import CLAUDE_SESSION_ENV; print(" ".join(CLAUDE_SESSION_ENV))') || exit 1
 unset $SESSION_ENV
+# The binary preflight recorded in the roster, never whichever claude is first on PATH now.
+CLAUDE_CLI=$(python3 "$HERE/../lib/roster.py" --claude-cli "$SESSION/roster.json" 2>&1) || {
+  printf 'claude adapter: %s\n' "$CLAUDE_CLI" | tee -a "$LOG" >&2; exit 1; }
+CLAUDE_BIN=$(printf '%s\n' "$CLAUDE_CLI" | sed -n 1p)
+printf 'claude CLI %s at %s\n' "$(printf '%s\n' "$CLAUDE_CLI" | sed -n 2p)" "$CLAUDE_BIN" >> "$LOG"
 STOP_STATE="${OUT%.json}.stop-gate"
 READ_GATE="${OUT%.json}.read-gate"
 rm -f "$STOP_STATE" "$READ_GATE"
@@ -55,7 +60,7 @@ PY
 ) || exit 1
 CONTINUATION='Continue the noninteractive review without waiting for user input. While required review work remains, every nonfinal assistant message must include the next allowed Read or Grep call. Never end a response with progress text alone. A progress note may accompany a tool call.'
 set -o pipefail
-( cd "$ROOT" && claude -p --model "$MODEL" --effort "$EFFORT" --max-turns "$MAX_TURNS" \
+( cd "$ROOT" && "$CLAUDE_BIN" -p --model "$MODEL" --effort "$EFFORT" --max-turns "$MAX_TURNS" \
     --permission-mode bypassPermissions --tools 'Read,Grep' \
     --disallowedTools 'Write,Edit,NotebookEdit' --setting-sources '' \
     --strict-mcp-config --settings "$SETTINGS" --no-session-persistence \

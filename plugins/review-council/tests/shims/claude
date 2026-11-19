@@ -8,6 +8,7 @@
 if [ "${1:-}" = auth ] && [ "${2:-}" = status ]; then
   echo '{"loggedIn":true}'; exit 0
 fi
+[ "${1:-}" = --version ] && { echo '2.1.328 (Claude Code)'; exit 0; }
 if [ -n "${SHIM_CLAUDE_ARGS_FILE:-}" ]; then
   printf '%s\n' "$@" >> "$SHIM_CLAUDE_ARGS_FILE"
   printf 'REV_STACK_LEG=%s\nNO_PUSH=%s\nNO_SQUASH=%s\ncwd=%s\nCLAUDECODE=%s\nCLAUDE_CODE_SESSION_ID=%s\nCLAUDE_CONFIG_DIR=%s\n' \

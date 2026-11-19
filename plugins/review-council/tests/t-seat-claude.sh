@@ -9,6 +9,7 @@ test_seat_claude_cli_scrubs_parent_session() {
 JSON
     cat > "$B/bin/claude" <<'SH'
 #!/bin/bash
+[ "${1:-}" = --version ] && { echo '2.1.328 (Claude Code)'; exit 0; }
 printf '%s\n' "$@" > "$SEAT_CLAUDE_ARGS"
 env | cut -d= -f1 | sort > "$SEAT_CLAUDE_ARGS.env"
 printf 'REV_ACTIVE=%s\ncwd=%s\n' "${REV_ACTIVE:-unset}" "$PWD" >> "$SEAT_CLAUDE_ARGS.env"
@@ -90,5 +91,52 @@ for event, tools in (('PreToolUse', ('Read', 'Grep')), ('PostToolUse', ('Read', 
             assert option['--raw'] == session + '/r1-sonnet.stream.ndjson', option
 PY
     assert_exit "the rendered prompt reaches the child on stdin" 0 cmp -s "$B/prompt.md" "$B/args.stdin"
+  )
+}
+
+test_seat_claude_cli_runs_the_pinned_binary() {
+  ( local B="$T/seat-claude-pin" R="$T/seat-claude-pin-repo"; mkrepo "$R"; mkdir -p "$B/session"
+    local S="$B/session" dir P
+    printf 'Assigned scope: full\n' > "$B/prompt.md"
+    P=$(cd "$B" && pwd -P)
+    for dir in pinned impostor stale; do
+      mkdir -p "$B/$dir"
+      cat > "$B/$dir/claude" <<'SH'
+#!/bin/bash
+case "$0" in */stale/*) version=2.1.121;; */impostor/*) version=2.1.400;; *) version=2.1.328;; esac
+[ "${1:-}" = --version ] && { printf '%s (Claude Code)\n' "$version"; exit 0; }
+printf '%s\n' "$0" >> "$PIN_CALLS"
+cat > /dev/null
+printf '%s\n' '{"type":"system","subtype":"init","claude_code_version":"'"$version"'","model":"claude-haiku-5-5"}'
+cat "$SEAT_CLAUDE_STREAM"
+SH
+      chmod +x "$B/$dir/claude"
+    done
+    export PATH="$B/impostor:$PATH" REV_REPO="$R" PIN_CALLS="$B/calls" \
+           SEAT_CLAUDE_STREAM="$FX/provider-contract-claude.ndjson"
+    pin_roster() {
+      printf '{"seats":[{"seat":"opus","lab":"anthropic","adapter":"claude","model":"opus","effort":"max","extra":false}],"excluded":[],"claude_cli":{"path":"%s","version":"%s"}}\n' \
+        "$B/$1/claude" "$2" > "$S/roster.json"
+    }
+    pin_roster pinned 2.1.328
+    "$SCRIPTS/rev-seat.sh" opus "$S" 1 "$B/prompt.md" > "$B/out.txt" 2> "$B/err.txt"
+    assert_eq "a pinned claude seat exits 0" "$?" 0
+    assert_eq "the seat runs the recorded binary, not the first claude on PATH" \
+      "$(cat "$B/calls")" "$P/pinned/claude"
+    assert_grep "the seat log names the CLI it checked" "$S/r1-opus.log" \
+      "^claude CLI 2.1.328 at $P/pinned/claude\$"
+    assert_grep "the seat log records the version and model that ran" "$S/r1-opus.log" \
+      '^init claude_code_version=2.1.328 model=claude-haiku-5-5$'
+
+    : > "$B/calls"
+    pin_roster stale 2.1.121
+    rm -f "$S"/r1-opus.*
+    "$SCRIPTS/rev-seat.sh" opus "$S" 1 "$B/prompt.md" > "$B/out.txt" 2> "$B/err.txt"
+    assert_eq "an old claude CLI fails the seat" "$?" 2
+    assert_eq "an old claude CLI never runs the review" "$(cat "$B/calls")" ""
+    assert_grep "the refusal names the version, path and minimum" "$B/err.txt" \
+      "claude CLI 2.1.121 at $P/stale/claude is older than 2.1.328\$"
+    assert_grep "the seat log keeps the refusal" "$S/r1-opus.log" \
+      "^claude adapter: claude CLI 2.1.121 at $P/stale/claude is older than 2.1.328\$"
   )
 }

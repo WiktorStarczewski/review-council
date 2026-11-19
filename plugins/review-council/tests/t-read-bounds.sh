@@ -2910,6 +2910,7 @@ PY
     mkdir -p "$T/claude-seat"
     cat > "$T/claude-seat/claude" <<'SH'
 #!/bin/bash
+[ "${1:-}" = --version ] && { echo '2.1.328 (Claude Code)'; exit 0; }
 printf '%s\n' "$@" > "$SHIM_ARGS_FILE"
 cat >/dev/null
 python3 - "$SHIM_FIXTURE_DIR/findings-valid.json" <<'PY'
