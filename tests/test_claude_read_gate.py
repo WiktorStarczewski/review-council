@@ -678,5 +678,112 @@ class ClaudeCallGateTests(unittest.TestCase):
         self.assertNotIn(str(self.segments[0].resolve()), [row.get('credit') for row in credits])
 
 
+class ClaudeDeniedCallTests(unittest.TestCase):
+    """A call the PreToolUse hook denied never ran, so the audit does not count it."""
+
+    HOOK = ('python3 /plugin/scripts/seats.d/../lib/review-read-audit.py hook --root /repo '
+            '--session /session --prompt /session/r1-sol.prompt.md')
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory(prefix='claude-denied-call-')
+        cls.fixture = SourceFixture(Path(cls.temp.name) / 'denied', 'deleted', adapter='claude',
+                                    compact_segment_lines=1500)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temp.cleanup()
+
+    def audit_with(self, *calls):
+        fixture = self.fixture
+        raw, result, out = fixture.claude_transcript()
+        events = [json.loads(line) for line in raw.read_text().splitlines()]
+        for number, (data, outcome) in enumerate(calls):
+            call_id = f'grep-{number}'
+            events.append({'type': 'assistant', 'message': {'id': f'turn-grep-{number}', 'content': [
+                {'type': 'tool_use', 'id': call_id, 'name': 'Grep', 'input': data}]}})
+            events.append(outcome(call_id))
+        raw.write_text(''.join(json.dumps(event) + '\n' for event in events))
+        result.write_text(json.dumps({'summary': 'checked', 'findings': []}))
+        process = subprocess.run(
+            [os.sys.executable, str(SCRIPTS / 'lib/review-read-audit.py'), 'audit',
+             '--adapter', 'claude', '--raw', str(raw), '--prompt', str(fixture.prompt),
+             '--root', str(fixture.root), '--session', str(fixture.session), '--out', str(out)],
+            env=fixture.env, text=True, capture_output=True)
+        audit = json.loads(out.read_text())
+        codes = {row['code'] for row in audit['violations'] + audit['advisories']}
+        return process.returncode, audit['tool_calls'], codes
+
+    def denial(self, code, *, meta, echo=True, hook=None):
+        message = f'PreToolUse:Grep hook error: [{hook or self.HOOK}]: review read blocked: {code}\n'
+
+        def outcome(call_id):
+            event = {'type': 'user', 'message': {'content': [
+                {'type': 'tool_result', 'tool_use_id': call_id, 'content': message,
+                 'is_error': True}]}}
+            if meta:  # claude 2.1.328 confirms the hook rejection beside the result
+                event['tool_result_meta'] = [{
+                    'id': call_id, 'non_execution_kind': 'permission-rule',
+                    'permission_decision': {'decision': 'reject', 'source': 'hook'}}]
+            elif echo:  # claude 2.1.121 only echoes the error text as the tool use result
+                event['tool_use_result'] = 'Error: ' + message
+            return event
+        return outcome
+
+    @staticmethod
+    def executed(content):
+        def outcome(call_id):
+            return {'type': 'user', 'message': {'content': [
+                {'type': 'tool_result', 'tool_use_id': call_id, 'content': content}]},
+                'tool_use_result': {'mode': 'content', 'content': content}}
+        return outcome
+
+    def bounded_retry(self):
+        return ({'pattern': 'def', 'path': str(self.fixture.root / 'keep.txt'),
+                 'output_mode': 'content', 'head_limit': 5}, self.executed(''))
+
+    def test_a_denied_call_in_either_cli_format_is_not_counted(self):
+        session_search = {'pattern': 'def', 'path': str(self.fixture.session),
+                          'output_mode': 'files_with_matches'}
+        unbounded = {'pattern': 'def', 'path': str(self.fixture.root / 'keep.txt'),
+                     'output_mode': 'content'}
+        for meta in (True, False):
+            with self.subTest(meta=meta):
+                status, calls, codes = self.audit_with(
+                    (session_search, self.denial('unnamed-session-artifact', meta=meta)),
+                    (unbounded, self.denial('unbounded-search', meta=meta)),
+                    self.bounded_retry())
+                self.assertEqual((status, codes), (0, set()))
+                self.assertEqual(calls, len(self.fixture.claude_transcript()[0].read_text()
+                                            .splitlines()) // 2 + 1)
+
+    def test_a_call_that_ran_or_an_unconfirmed_denial_still_counts(self):
+        unbounded = {'pattern': 'def', 'path': str(self.fixture.root / 'keep.txt'),
+                     'output_mode': 'content'}
+        session_search = {'pattern': 'def', 'path': str(self.fixture.session),
+                          'output_mode': 'files_with_matches'}
+        _, _, codes = self.audit_with((unbounded, self.executed('keep.txt:1:def\n')))
+        self.assertIn('unbounded-search', codes)
+        denied = self.denial('unnamed-session-artifact', meta=False)
+
+        def succeeded(call_id):
+            event = denied(call_id)
+            del event['message']['content'][0]['is_error']
+            return event
+
+        def shared(call_id):
+            event = denied(call_id)
+            event['message']['content'].append(dict(event['message']['content'][0],
+                                                    tool_use_id='elsewhere'))
+            return event
+        for outcome in (self.denial('unnamed-session-artifact', meta=False, echo=False),
+                        self.denial('unnamed-session-artifact', meta=False,
+                                    hook='python3 /elsewhere/other-hook.py'),
+                        succeeded, shared):
+            status, _, codes = self.audit_with((session_search, outcome))
+            self.assertEqual(status, 2)
+            self.assertIn('unnamed-session-artifact', codes)
+
+
 if __name__ == '__main__':
     unittest.main()

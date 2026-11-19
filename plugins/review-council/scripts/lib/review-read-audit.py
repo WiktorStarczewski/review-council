@@ -49,6 +49,10 @@ STOP_GATE_BLOCKS = 3
 STOP_GATE_LISTED = 12
 READ_GATE_VERSION = 1
 PROOF_KINDS = ('chunk', 'segment', 'index')
+# claude 2.1.121 reports a PreToolUse exit-2 block only as this result; 2.1.328 adds tool_result_meta.
+LEGACY_HOOK_DENIAL = re.compile(
+    r'PreToolUse:[A-Za-z]+ hook error: \[[^\]\r\n]*/review-read-audit\.py hook [^\]\r\n]*\]: '
+    r'review read blocked: [a-z0-9-]+(?:; [^\r\n]*)?\n?')
 CLAUDE_EMPTY_READ = '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>'
 READ_TOOLS = {'read', 'read_file'}
 SEARCH_TOOLS = {'grep', 'search_file_content', 'search_files', 'code_search'}
@@ -1549,17 +1553,29 @@ def extract_outputs(adapter, event):
     elif adapter == 'claude' and event.get('type') == 'user':
         found = []
         metadata = event.get('tool_result_meta')
+        legacy = 'tool_result_meta' not in event
         metadata = metadata if isinstance(metadata, list) else []
-        for block in (event.get('message') or {}).get('content', []):
-            if isinstance(block, dict) and block.get('type') == 'tool_result':
-                matches = [row for row in metadata if isinstance(row, dict)
-                           and row.get('id') == block.get('tool_use_id')]
-                non_execution = (len(matches) == 1
-                                 and matches[0].get('non_execution_kind') == 'permission-rule')
-                found.append((block.get('tool_use_id'), block.get('is_error') is not True,
-                              block.get('content'), non_execution))
+        blocks = [block for block in (event.get('message') or {}).get('content', [])
+                  if isinstance(block, dict) and block.get('type') == 'tool_result']
+        for block in blocks:
+            matches = [row for row in metadata if isinstance(row, dict)
+                       and row.get('id') == block.get('tool_use_id')]
+            non_execution = (len(matches) == 1
+                             and matches[0].get('non_execution_kind') == 'permission-rule')
+            if legacy:
+                non_execution = len(blocks) == 1 and legacy_hook_denial(
+                    block, event.get('tool_use_result'))
+            found.append((block.get('tool_use_id'), block.get('is_error') is not True,
+                          block.get('content'), non_execution))
         return found
     return []
+
+
+def legacy_hook_denial(block, echoed):
+    """Whether a claude CLI without tool_result_meta reports that this hook blocked the call."""
+    content = block.get('content')
+    return (isinstance(content, str) and echoed == 'Error: ' + content
+            and LEGACY_HOOK_DENIAL.fullmatch(content) is not None)
 
 
 def claude_nonexecuted_exploration(adapter, name, data, output):
