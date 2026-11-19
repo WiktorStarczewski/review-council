@@ -56,7 +56,6 @@ SOURCE_PACKET_NAME = re.compile(r'^r[0-9A-Za-z._-]+-source-context-[1-9][0-9]*\.
 SOURCE_SEGMENT_NAME = re.compile(
     r'^r[0-9A-Za-z._-]+-[0-9A-Za-z._-]+-source-segment-[0-9]{3}-[0-9]{3}\.txt$')
 PATCH_CHUNK_NAME = re.compile(r'^r[0-9A-Za-z._-]+-patch-p[0-9]{2}-[0-9]{3}\.txt$')
-EVIDENCE_INDEX_NAME = re.compile(r'^r[0-9A-Za-z._-]+-evidence\.md$')
 FULL_ARTIFACT = re.compile(r'^r[0-9A-Za-z._-]+(?:-[0-9A-Za-z._-]+)?\.prompt\.md$|^r[0-9A-Za-z._-]+-(?:evidence|instructions|plan)\.md$')
 SESSION_ARTIFACT = re.compile(r'^r[0-9A-Za-z._-]+(?:-[0-9A-Za-z._-]+)?(?:\.prompt\.md|\.patch)$|^r[0-9A-Za-z._-]+-(?:evidence|instructions|plan)\.(?:md|json)$')
 EVIDENCE_MANIFEST_PREFIX = 'Evidence manifest SHA-256:'
@@ -1863,13 +1862,6 @@ def partial_whole_read(name, data, root, session):
         found = violation('partial-source-packet', name)
     elif SOURCE_SEGMENT_NAME.fullmatch(target.name):
         found = violation('partial-required-source-segment', name)
-    elif EVIDENCE_INDEX_NAME.fullmatch(target.name):
-        try:
-            if bounded_complete_index_read(name, data, target, root, file_line_count(target)):
-                return None
-        except OSError:
-            pass
-        found = violation('partial-evidence-index', name)
     else:
         return None
     return found, target

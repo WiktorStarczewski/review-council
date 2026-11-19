@@ -115,8 +115,7 @@ class ClaudeReadGateTests(unittest.TestCase):
     def test_hook_denies_reads_the_audit_cannot_credit_as_whole(self):
         cases = [(self.chunks[0], 'partial-patch-chunk'),
                  (self.packets[0], 'partial-source-packet'),
-                 (self.segments[0], 'partial-required-source-segment'),
-                 (self.index, 'partial-evidence-index')]
+                 (self.segments[0], 'partial-required-source-segment')]
         for path, code in cases:
             remedy = (f'review read blocked: {code}; read {path.resolve()} completely in one '
                       'Read call with no offset or limit')
@@ -144,6 +143,36 @@ class ClaudeReadGateTests(unittest.TestCase):
         status, stderr = self.hook('Read', {'file_path': str(self.fixture.root / 'keep.txt')})
         self.assertEqual(status, 2)
         self.assertIn('review read blocked: unbounded-read', stderr)
+
+    def test_bounded_and_grep_index_reads_after_a_complete_read_are_allowed(self):
+        lines = self.index.read_text().splitlines(keepends=True)
+        pattern = lines[0].strip()
+        calls = [('Read', {'file_path': str(self.index), 'offset': 1, 'limit': 3},
+                  ''.join(lines[:3])),
+                 ('Grep', {'pattern': pattern, 'path': str(self.index), 'output_mode': 'content',
+                           'head_limit': 5}, lines[0])]
+        for name, data, _ in calls:
+            with self.subTest(tool=name):
+                self.assertEqual(self.hook(name, data), (0, ''))
+        raw = self.transcript()
+        events = self.events(raw)
+        for number, (name, data, output) in enumerate(calls):
+            call_id = f'index-again-{number}'
+            events += [
+                {'type': 'assistant', 'message': {'id': 'turn-' + call_id, 'content': [
+                    {'type': 'tool_use', 'id': call_id, 'name': name, 'input': data}]}},
+                {'type': 'user', 'message': {'content': [
+                    {'type': 'tool_result', 'tool_use_id': call_id, 'content': output}]}}]
+        self.write(raw, events)
+        process = subprocess.run(
+            [os.sys.executable, str(SCRIPTS / 'lib/review-read-audit.py'), 'audit',
+             '--adapter', 'claude', '--raw', str(raw), '--prompt', str(self.fixture.prompt),
+             '--root', str(self.fixture.root), '--session', str(self.fixture.session),
+             '--out', str(self.state.with_name('audit.json'))],
+            env=self.fixture.env, text=True, capture_output=True)
+        audit = json.loads(self.state.with_name('audit.json').read_text())
+        self.assertEqual((process.returncode, audit['violations']), (0, []))
+        self.assertEqual(audit['tool_calls'], len(self.events(raw)) // 2)
 
     def test_a_denied_partial_read_leaves_the_audit_verdict_unchanged(self):
         raw = self.transcript()
