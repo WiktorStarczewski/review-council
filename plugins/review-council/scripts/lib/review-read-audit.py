@@ -47,6 +47,8 @@ READABLE_GAP_CODES = {
 }
 STOP_GATE_BLOCKS = 3
 STOP_GATE_LISTED = 12
+READ_GATE_VERSION = 1
+PROOF_KINDS = ('chunk', 'segment', 'index')
 CLAUDE_EMPTY_READ = '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>'
 READ_TOOLS = {'read', 'read_file'}
 SEARCH_TOOLS = {'grep', 'search_file_content', 'search_files', 'code_search'}
@@ -1869,6 +1871,249 @@ def partial_whole_read(name, data, root, session):
     return found, target
 
 
+def read_gate_header(prompt, session):
+    """Return a seat's whole-read evidence in manifest order, for the call-time read gate."""
+    prompt = Path(prompt).resolve()
+    session = Path(session).resolve()
+    _, manifest_hash = evidence_manifest_declaration(prompt.read_text().splitlines())
+    if manifest_hash is None:
+        raise ValueError('the prompt declares no evidence manifest')
+    matches = [path for path in session.glob('r*-evidence.manifest.json')
+               if path.is_file() and digest(path) == manifest_hash]
+    if len(matches) != 1:
+        raise ValueError('evidence manifest hash does not resolve uniquely')
+    manifest = json.loads(matches[0].read_text())
+    prefix = 'r' + manifest['label'] + '-'
+    if not prompt.name.startswith(prefix) or not prompt.name.endswith('.prompt.md'):
+        raise ValueError('prompt name does not identify manifest seat')
+    seat = prompt.name[len(prefix):-len('.prompt.md')]
+    assignment = manifest['assignments'][seat]
+    context = manifest['source_context']['seats'][seat]
+    chunks = (manifest['patch_sets'][assignment['patch_set']]['chunks']
+              if assignment['patch_read_mode'] == 'chunks' else [])
+    module = _load_evidence_module()
+    return {
+        'gate': READ_GATE_VERSION,
+        'chunks': [str(session / row['artifact']) for row in chunks],
+        'packets': [str(session / shard['artifact']) for shard in context['shards']],
+        'segments': [[str(session / segment['artifact']),
+                      f"{required['path']} lines {segment['line_start']}-{segment['line_end']}"]
+                     for required in context['required_source_ranges']
+                     for segment in required['segments']],
+        'index': str(session / f"r{manifest['label']}-evidence.md"),
+        'proof_batch': module.read_batch_limit('claude'),
+        'segment_batch': module.source_segment_batch_limit('claude'),
+    }
+
+
+def read_gate_init(args):
+    """Start an attempt's read-gate state: the evidence order, and no credited read yet."""
+    try:
+        header = read_gate_header(args.prompt, args.session)
+    except (AttributeError, ImportError, KeyError, OSError, TypeError, ValueError) as error:
+        print(f'read gate off: {error}', file=sys.stderr)
+        return 1
+    publish(args.state, header)
+    return 0
+
+
+def read_gate_state(path):
+    """Return the gate header and the call that credited each read, or None to fail open."""
+    try:
+        lines = Path(path).read_bytes().split(b'\n')
+        rows = [json.loads(line) for line in lines[:-1]]
+    except (OSError, ValueError):
+        return None
+    if (lines[-1] or not rows or not isinstance(rows[0], dict)
+            or rows[0].get('gate') != READ_GATE_VERSION):
+        return None
+    credited = {}
+    for row in rows[1:]:
+        if not isinstance(row, dict) or not isinstance(row.get('credit'), str):
+            return None
+        credited.setdefault(row['credit'], row.get('id'))
+    return rows[0], credited
+
+
+def read_gate_append(path, row):
+    # One O_APPEND write per row; no O_CREAT, so a missing state stays missing and the gate open.
+    descriptor = os.open(path, os.O_WRONLY | os.O_APPEND)
+    try:
+        os.write(descriptor, (json.dumps(row, sort_keys=True, separators=(',', ':')) + '\n').encode())
+    finally:
+        os.close(descriptor)
+
+
+def proof_kind(name, data, target, header, root):
+    """Classify a call as the ordered proof read the audit paces: a chunk, segment or index read."""
+    if name.lower() not in READ_TOOLS or target is None:
+        return None
+    path = str(target)
+    if path in header['chunks'] or path in {row[0] for row in header['segments']}:
+        if not complete_packet_read(name, data, target, root):
+            return None
+        return 'chunk' if path in header['chunks'] else 'segment'
+    if path == header['index'] and (
+            complete_packet_read(name, data, target, root) or bounded_complete_index_read(
+                name, data, target, root, file_line_count(target))):
+        return 'index'
+    return None
+
+
+def claude_turn(raw, call_id):
+    """Return the earlier calls of the stream turn holding `call_id`, with their outputs.
+
+    Reads back from the end of the stream only as far as that turn's start. None when the call is
+    not in the stream yet.
+    """
+    if not isinstance(call_id, str) or not call_id:
+        return None
+    with open(raw, 'rb') as stream:
+        end = stream.seek(0, os.SEEK_END)
+        span = 1 << 18
+        while True:
+            start = max(0, end - span)
+            stream.seek(start)
+            lines = stream.read(end - start).split(b'\n')[1 if start else 0:-1]
+            events = [json.loads(line) for line in lines if line.strip()]
+            outputs = {}
+            for event in events:
+                for output_id, success, value, non_execution in extract_outputs('claude', event):
+                    outputs[output_id] = {'success': success, 'value': value,
+                                          'non_execution': non_execution}
+            turn, calls, bounded = None, [], False
+            for event in events:
+                if event.get('type') != 'assistant':
+                    continue
+                message = event.get('message') or {}
+                if message.get('id') != turn:
+                    bounded = turn is not None or start == 0
+                    turn, calls = message.get('id'), []
+                for block in message.get('content') or []:
+                    if not isinstance(block, dict) or block.get('type') != 'tool_use':
+                        continue
+                    if block.get('id') == call_id:
+                        if bounded:
+                            return [(row.get('id'), row.get('name', ''), row.get('input') or {},
+                                     outputs.get(row.get('id'))) for row in calls]
+                        break
+                    calls.append(block)
+            if start == 0:
+                return None
+            span *= 4
+
+
+def stream_requested(raw, paths, root):
+    """Whether the stream holds a pending or successful call naming one of `paths`."""
+    wanted = set(paths)
+    calls, outputs = set(), {}
+    for line in Path(raw).read_bytes().split(b'\n')[:-1]:
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        for call_id, _, data in extract_calls('claude', event):
+            path = tool_path(data)
+            if path is not None and str(resolved(path, root)) in wanted:
+                calls.add(call_id)
+        for call_id, success, _, _ in extract_outputs('claude', event):
+            outputs[call_id] = success
+    return any(outputs.get(call_id) is not False for call_id in calls)
+
+
+def next_required_read(header, credited):
+    items = [*header['chunks'], *header['packets'], *(row[0] for row in header['segments']),
+             header['index']]
+    following = next((item for item in items if item not in credited), None)
+    return f'; read {following} next' if following else ''
+
+
+def read_gate_reason(args, name, data, call_id, root):
+    """Return the violation and remedy for a call the audit cannot credit in order, else None.
+
+    The gate fails open: without its state, the call's stream turn or a definite gap, the call is
+    allowed and the post-run audit decides as it would without the gate.
+    """
+    if not getattr(args, 'gate', None) or not getattr(args, 'raw', None):
+        return None
+    state = read_gate_state(args.gate)
+    if state is None:
+        return None
+    header, credited = state
+    raw_path = tool_path(data)
+    target = resolved(raw_path, root) if raw_path is not None else None
+    kind = proof_kind(name, data, target, header, root)
+    if kind in ('chunk', 'segment'):
+        chunk = kind == 'chunk'
+        sequence = header['chunks'] if chunk else [row[0] for row in header['segments']]
+        if str(target) in credited:
+            source = dict(header['segments']).get(str(target))
+            return (violation('duplicate-patch-chunk' if chunk
+                              else 'duplicate-required-source-segment', name),
+                    f'{target} is already read and credited'
+                    + (f'; for another look at that code use a bounded Read of {source}'
+                       if source else '') + next_required_read(header, credited))
+        gaps = [path for path in sequence[:sequence.index(str(target))] if path not in credited]
+        if gaps and not stream_requested(args.raw, gaps, root):
+            return (violation('reordered-patch-chunks' if chunk
+                              else 'reordered-required-source-segments', name),
+                    f'read {gaps[0]} next, then continue in prompt order')
+    turn = claude_turn(args.raw, call_id)
+    if turn is None or None in credited.values():
+        return None
+    turn_ids = {row[0] for row in turn}
+    kinds = []
+    seen = {path for path, credit in credited.items() if credit not in turn_ids}
+    for _, prior_name, prior_data, output in turn:
+        if output is not None and claude_nonexecuted_exploration(
+                'claude', prior_name, prior_data, output):
+            continue
+        prior_path = tool_path(prior_data)
+        prior_target = resolved(prior_path, root) if prior_path is not None else None
+        prior_kind = proof_kind(prior_name, prior_data, prior_target, header, root)
+        if output is not None and not output['success']:
+            prior_kind = None
+        if prior_kind in ('chunk', 'segment'):
+            if str(prior_target) in seen:
+                prior_kind = None
+            seen.add(str(prior_target))
+        kinds.append(prior_kind)
+    proofs = sum(prior in PROOF_KINDS for prior in kinds)
+    if kind is not None:
+        source_only = kind == 'segment' and all(prior == 'segment' for prior in kinds) \
+            and len(kinds) + 1 <= header['segment_batch']
+        if proofs + 1 > header['proof_batch'] and not source_only:
+            return (violation('evidence-proof-batch-too-large', name),
+                    f'this turn already holds {proofs} ordered proof reads; read {target} in a'
+                    ' later turn')
+    elif proofs > header['proof_batch']:
+        return (violation('evidence-proof-batch-too-large', name),
+                f'this turn holds {proofs} required source segment reads, which must be its only'
+                ' calls; make this call in a later turn' + next_required_read(header, credited))
+    return None
+
+
+def read_gate_credit(args, event, name, data, root):
+    """Record a delivered whole read that the audit would credit, from PostToolUse."""
+    if not getattr(args, 'gate', None) or name.lower() not in READ_TOOLS:
+        return
+    state = read_gate_state(args.gate)
+    if state is None:
+        return
+    header = state[0]
+    target = resolved(tool_path(data), root)
+    kind = proof_kind(name, data, target, header, root)
+    if (kind is None and str(target) in header['packets']
+            and complete_packet_read(name, data, target, root)):
+        kind = 'packet'
+    if kind is None:
+        return
+    visible, _ = claude_hook_output(name, event.get('tool_response'))
+    if kind == 'segment' and len(visible.encode()) > OUTPUT_BYTES:
+        return
+    if delivered_matches_bytes('claude', name, visible, target.read_bytes(), 1):
+        read_gate_append(args.gate, {'credit': str(target), 'id': event.get('tool_use_id')})
+
+
 def line_range_bytes(path, start, end, cache=None):
     _, lines = cached_file(path, cache)
     return byte_range_lines(lines, start, end)
@@ -2639,6 +2884,14 @@ def hook(args):
         if partial is not None:
             failures = [partial[0]]
             remedy = f'; read {partial[1]} completely in one Read call with no offset or limit'
+        elif not failures:
+            try:
+                gated = read_gate_reason(args, name, data, event.get('tool_use_id'), root)
+            except Exception:
+                gated = None
+            if gated is not None:
+                failures = [gated[0]]
+                remedy = '; ' + gated[1]
     except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
         failures = [violation('invalid-hook-payload', 'unknown')]
     if failures:
@@ -2694,6 +2947,13 @@ def post_hook(args):
                 blocked = excessive_results or (
                     size > OUTPUT_BYTES and not byte_exempt(
                         name, data, root, session, complete))
+        if not blocked:
+            try:
+                read_gate_credit(args, event, name, data, root)
+            except Exception:
+                # An unrecorded credit could later deny a read in order, so stop gating instead.
+                with contextlib.suppress(Exception):
+                    read_gate_append(args.gate, {'broken': True})
     except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError):
         blocked = True
     if blocked:
@@ -3918,11 +4178,19 @@ def main():
     hooks.add_argument('--session', required=True)
     hooks.add_argument('--prompt')
     hooks.add_argument('--deps')
+    hooks.add_argument('--raw')
+    hooks.add_argument('--gate')
     post_hooks = commands.add_parser('post-hook')
     post_hooks.add_argument('--root', required=True)
     post_hooks.add_argument('--session', required=True)
     post_hooks.add_argument('--prompt')
     post_hooks.add_argument('--deps')
+    post_hooks.add_argument('--gate')
+    gates = commands.add_parser('read-gate-init')
+    gates.add_argument('--prompt', required=True)
+    gates.add_argument('--root', required=True)
+    gates.add_argument('--session', required=True)
+    gates.add_argument('--state', required=True)
     stops = commands.add_parser('stop-hook')
     stops.add_argument('--adapter', default='claude', choices=('claude',))
     stops.add_argument('--raw', required=True)
@@ -3956,6 +4224,8 @@ def main():
         return post_hook(args)
     if args.command == 'stop-hook':
         return stop_hook(args)
+    if args.command == 'read-gate-init':
+        return read_gate_init(args)
     if args.command == 'validate-prompt':
         try:
             return validate_prompt(args)

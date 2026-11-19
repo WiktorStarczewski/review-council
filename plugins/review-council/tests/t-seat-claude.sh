@@ -27,6 +27,7 @@ SH
     local var
     for var in "${scrubbed[@]}" "${kept[@]}"; do export "$var=parent-$var"; done
     printf '{"blocks":3}\n' > "$S/r1-sonnet.stop-gate"
+    printf '{"gate":1}\n{"credit":"stale","id":"old"}\n' > "$S/r1-sonnet.read-gate"
     "$SCRIPTS/rev-seat.sh" sonnet "$S" 1 "$B/prompt.md" > "$B/out.txt" 2> "$B/err.txt"
     assert_eq "a nested claude CLI seat exits 0" "$?" 0
     assert_grep "the nested seat returns a schema-valid result" "$B/out.txt" '^seat=sonnet round=1 exit=0 findings=0$'
@@ -68,6 +69,25 @@ assert option['--adapter'] == 'claude', option
 assert option['--raw'] == session + '/r1-sonnet.stream.ndjson', option
 assert option['--state'] == session + '/r1-sonnet.stop-gate', option
 assert option['--seat'] == 'sonnet' and option['--session'] == session, option
+PY
+    assert_exit "a prompt without an evidence manifest leaves no read-gate state" 1 \
+      test -e "$S/r1-sonnet.read-gate"
+    assert_grep "the read gate was started for this prompt" "$S/r1-sonnet.log" \
+      '^read gate off: the prompt declares no evidence manifest$'
+    assert_exit "the read hooks share this attempt's read-gate state" 0 python3 - "$B/args" "$S" <<'PY'
+import json, shlex, sys
+args = open(sys.argv[1]).read().split('\n')
+session = sys.argv[2]
+settings = json.loads(args[args.index('--settings') + 1])['hooks']
+for event, tools in (('PreToolUse', ('Read', 'Grep')), ('PostToolUse', ('Read', 'Grep'))):
+    for tool in tools:
+        rows = [row for row in settings[event] if row.get('matcher') == tool]
+        assert len(rows) == 1, (event, tool, settings)
+        words = shlex.split(rows[0]['hooks'][0]['command'])
+        option = {words[index]: words[index + 1] for index in range(3, len(words) - 1, 2)}
+        assert option['--gate'] == session + '/r1-sonnet.read-gate', (event, option)
+        if event == 'PreToolUse':
+            assert option['--raw'] == session + '/r1-sonnet.stream.ndjson', option
 PY
     assert_exit "the rendered prompt reaches the child on stdin" 0 cmp -s "$B/prompt.md" "$B/args.stdin"
   )

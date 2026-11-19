@@ -11,12 +11,15 @@ SESSION_ENV=$(cd "$HERE/../lib" && python3 -c \
   'from roster import CLAUDE_SESSION_ENV; print(" ".join(CLAUDE_SESSION_ENV))') || exit 1
 unset $SESSION_ENV
 STOP_STATE="${OUT%.json}.stop-gate"
-rm -f "$STOP_STATE"
+READ_GATE="${OUT%.json}.read-gate"
+rm -f "$STOP_STATE" "$READ_GATE"
+python3 "$HERE/../lib/review-read-audit.py" read-gate-init --prompt "$PROMPT" --root "$ROOT" \
+  --session "$SESSION" --state "$READ_GATE" 2>>"$LOG" || rm -f "$READ_GATE"
 SETTINGS=$(python3 - "$HERE/../lib/review-read-audit.py" \
-  "$ROOT" "$SESSION" "$PROMPT" "${REV_DEPS_DIR:-}" "$RAW" "$STOP_STATE" "${SEAT:-}" <<'PY'
+  "$ROOT" "$SESSION" "$PROMPT" "${REV_DEPS_DIR:-}" "$RAW" "$STOP_STATE" "${SEAT:-}" "$READ_GATE" <<'PY'
 import json, shlex, sys
-bounded = 'python3 ' + shlex.quote(sys.argv[1]) + ' hook --root ' + shlex.quote(sys.argv[2]) + ' --session ' + shlex.quote(sys.argv[3]) + ' --prompt ' + shlex.quote(sys.argv[4])
-post = 'python3 ' + shlex.quote(sys.argv[1]) + ' post-hook --root ' + shlex.quote(sys.argv[2]) + ' --session ' + shlex.quote(sys.argv[3]) + ' --prompt ' + shlex.quote(sys.argv[4])
+bounded = 'python3 ' + shlex.quote(sys.argv[1]) + ' hook --root ' + shlex.quote(sys.argv[2]) + ' --session ' + shlex.quote(sys.argv[3]) + ' --prompt ' + shlex.quote(sys.argv[4]) + ' --raw ' + shlex.quote(sys.argv[6]) + ' --gate ' + shlex.quote(sys.argv[9])
+post = 'python3 ' + shlex.quote(sys.argv[1]) + ' post-hook --root ' + shlex.quote(sys.argv[2]) + ' --session ' + shlex.quote(sys.argv[3]) + ' --prompt ' + shlex.quote(sys.argv[4]) + ' --gate ' + shlex.quote(sys.argv[9])
 stop = 'python3 ' + shlex.quote(sys.argv[1]) + ' stop-hook --adapter claude --raw ' + shlex.quote(sys.argv[6]) + ' --prompt ' + shlex.quote(sys.argv[4]) + ' --root ' + shlex.quote(sys.argv[2]) + ' --session ' + shlex.quote(sys.argv[3]) + ' --state ' + shlex.quote(sys.argv[7])
 if sys.argv[8]:
     stop += ' --seat ' + shlex.quote(sys.argv[8])

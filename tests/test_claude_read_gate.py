@@ -404,5 +404,279 @@ class ClaudeReadGateTests(unittest.TestCase):
         self.assertEqual(json.loads(process.stdout)['decision'], 'block')
 
 
+class ClaudeCallGateTests(unittest.TestCase):
+    """A required read the audit cannot credit in order is refused when it is made."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory(prefix='claude-call-gate-')
+        cls.directory = Path(cls.temp.name)
+        cls.fixture = SourceFixture(
+            cls.directory / 'segments', 'deleted', adapter='claude', compact_segment_lines=1500)
+        cls.audit = load_read_audit()
+        fixture = cls.fixture
+        assignment = fixture.manifest['assignments'][fixture.seat]
+        cls.chunks = [fixture.session / row['artifact'] for row in
+                      fixture.manifest['patch_sets'][assignment['patch_set']]['chunks']]
+        cls.packets = [fixture.session / shard['artifact'] for shard in fixture.context['shards']]
+        cls.ranges = [(required, segment) for required in fixture.context['required_source_ranges']
+                      for segment in required['segments']]
+        cls.segments = [fixture.session / segment['artifact'] for _, segment in cls.ranges]
+        cls.index = fixture.session / f'r{fixture.label}-evidence.md'
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.temp.cleanup()
+
+    def setUp(self):
+        work = tempfile.TemporaryDirectory(prefix='claude-call-gate-run-')
+        self.addCleanup(work.cleanup)
+        self.work = Path(work.name)
+        self.raw = self.work / 'r1-sol.stream.ndjson'
+        self.gate = self.work / 'r1-sol.read-gate'
+        self.raw.write_text('')
+        self.turn = 0
+        self.calls = 0
+        self.initialize()
+
+    def initialize(self):
+        fixture = self.fixture
+        return subprocess.run(
+            [os.sys.executable, str(SCRIPTS / 'lib/review-read-audit.py'), 'read-gate-init',
+             '--prompt', str(fixture.prompt), '--root', str(fixture.root),
+             '--session', str(fixture.session), '--state', str(self.gate)],
+            env=fixture.env, text=True, capture_output=True)
+
+    def args(self):
+        fixture = self.fixture
+        return argparse.Namespace(root=str(fixture.root), session=str(fixture.session),
+                                  prompt=str(fixture.prompt), deps=None, raw=str(self.raw),
+                                  gate=str(self.gate))
+
+    def append(self, *events):
+        with open(self.raw, 'a') as stream:
+            for event in events:
+                stream.write(json.dumps(event) + '\n')
+
+    def next_turn(self):
+        self.turn += 1
+
+    def run_hook(self, function, event):
+        stderr = io.StringIO()
+        with patch('sys.stdin', io.StringIO(json.dumps(event))), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+            status = function(self.args())
+        return status, stderr.getvalue()
+
+    def call(self, name, data, output, *, pending=False):
+        """Make one call as the CLI does: tool_use, PreToolUse, then the result and PostToolUse."""
+        self.calls += 1
+        call_id = f'toolu-{self.turn}-{self.calls}'
+        self.append({'type': 'assistant', 'message': {'id': f'turn-{self.turn}', 'content': [
+            {'type': 'tool_use', 'id': call_id, 'name': name, 'input': data}]}})
+        if pending:
+            return None
+        status, stderr = self.run_hook(self.audit.hook, {
+            'hook_event_name': 'PreToolUse', 'tool_name': name, 'tool_input': data,
+            'tool_use_id': call_id})
+        if status == 2:
+            message = f'PreToolUse:{name} hook error: [python3 review-read-audit.py hook]: {stderr}'
+            self.append({'type': 'user', 'message': {'content': [
+                {'type': 'tool_result', 'tool_use_id': call_id, 'content': message,
+                 'is_error': True}]},
+                'tool_result_meta': [{'id': call_id, 'non_execution_kind': 'permission-rule'}]})
+            return stderr.strip()
+        self.assertEqual((status, stderr), (0, ''))
+        self.append({'type': 'user', 'message': {'content': [
+            {'type': 'tool_result', 'tool_use_id': call_id, 'content': output}]}})
+        if name == 'Read':
+            lines = len(output.split('\n'))
+            response = {'type': 'text', 'file': {
+                'filePath': data['file_path'], 'content': output, 'numLines': lines,
+                'startLine': data.get('offset', 1), 'totalLines': lines}}
+        else:
+            response = {'mode': 'content', 'content': output, 'numLines': output.count('\n')}
+        self.assertEqual(self.run_hook(self.audit.post_hook, {
+            'hook_event_name': 'PostToolUse', 'tool_name': name, 'tool_input': data,
+            'tool_use_id': call_id, 'tool_response': response}), (0, ''))
+        return None
+
+    def read(self, path, **kwargs):
+        return self.call('Read', {'file_path': str(path)}, path.read_text(), **kwargs)
+
+    def grep(self, path):
+        return self.call('Grep', {'pattern': 'def', 'path': str(path), 'output_mode': 'content',
+                                  'head_limit': 5}, 'def x\n')
+
+    def read_in_turns(self, paths, size):
+        for start in range(0, len(paths), size):
+            self.next_turn()
+            for path in paths[start:start + size]:
+                self.assertIsNone(self.read(path))
+
+    def audit_stream(self):
+        out = self.work / 'audit.json'
+        result = self.work / 'result.json'
+        result.write_text(json.dumps({'summary': 'checked', 'findings': []}))
+        process = subprocess.run(
+            [os.sys.executable, str(SCRIPTS / 'lib/review-read-audit.py'), 'audit',
+             '--adapter', 'claude', '--raw', str(self.raw), '--prompt', str(self.fixture.prompt),
+             '--root', str(self.fixture.root), '--session', str(self.fixture.session),
+             '--result', str(result), '--out', str(out)],
+            env=self.fixture.env, text=True, capture_output=True)
+        return process.returncode, json.loads(out.read_text())
+
+    def evidence_through_packets(self):
+        self.read_in_turns(self.chunks, 2)
+        self.read_in_turns(self.packets, 1)
+
+    def test_init_records_the_manifest_order_and_no_credit(self):
+        self.assertEqual(self.initialize().returncode, 0)
+        rows = [json.loads(line) for line in self.gate.read_text().splitlines()]
+        self.assertEqual(len(rows), 1)
+        header = rows[0]
+        self.assertEqual(header['chunks'], [str(path.resolve()) for path in self.chunks])
+        self.assertEqual(header['packets'], [str(path.resolve()) for path in self.packets])
+        self.assertEqual([row[0] for row in header['segments']],
+                         [str(path.resolve()) for path in self.segments])
+        self.assertEqual(header['index'], str(self.index.resolve()))
+
+    def test_every_call_of_an_in_order_review_is_allowed_and_the_audit_is_valid(self):
+        self.evidence_through_packets()
+        self.read_in_turns(self.segments, 4)
+        self.read_in_turns([self.index], 1)
+        self.next_turn()
+        self.assertIsNone(self.grep(self.fixture.root / 'keep.txt'))
+        status, audit = self.audit_stream()
+        self.assertEqual((status, audit['violations']), (0, []))
+
+    def test_a_required_segment_ahead_of_an_unread_one_is_denied(self):
+        self.evidence_through_packets()
+        self.read_in_turns(self.segments[:2], 2)
+        reason = self.read(self.segments[3])
+        self.assertIsNotNone(reason)
+        self.assertIn('reordered-required-source-segments', reason)
+        self.assertIn(f'read {self.segments[2].resolve()} next', reason)
+        self.assertEqual(reason.count('\n'), 0)
+        # The denied call never ran, so this turn is still a batch of required segments only.
+        self.assertIsNone(self.read(self.segments[2]))
+        self.assertIsNone(self.read(self.segments[3]))
+        self.read_in_turns(self.segments[4:], 4)
+        self.read_in_turns([self.index], 1)
+        status, audit = self.audit_stream()
+        self.assertEqual((status, audit['violations']), (0, []))
+
+    def test_a_patch_chunk_ahead_of_an_unread_one_is_denied(self):
+        self.read_in_turns(self.chunks[:1], 1)
+        self.next_turn()
+        reason = self.read(self.chunks[2])
+        self.assertIn('reordered-patch-chunks', reason)
+        self.assertIn(f'read {self.chunks[1].resolve()} next', reason)
+
+    def test_a_second_read_of_a_credited_segment_is_denied(self):
+        self.evidence_through_packets()
+        self.read_in_turns(self.segments[:2], 2)
+        self.next_turn()
+        reason = self.read(self.segments[0])
+        self.assertIsNotNone(reason)
+        self.assertIn('duplicate-required-source-segment', reason)
+        required, segment = self.ranges[0]
+        self.assertIn(f"{required['path']} lines {segment['line_start']}-{segment['line_end']}",
+                      reason)
+        self.assertIn(f'read {self.segments[2].resolve()} next', reason)
+        reason = self.read(self.chunks[0])
+        self.assertIn('duplicate-patch-chunk', reason)
+
+    def test_a_proof_read_beyond_the_turn_batch_limit_is_denied(self):
+        self.next_turn()
+        self.assertIsNone(self.read(self.chunks[0]))
+        self.assertIsNone(self.read(self.chunks[1]))
+        reason = self.read(self.chunks[2])
+        self.assertIn('evidence-proof-batch-too-large', reason)
+        self.assertIn(f'{self.chunks[2].resolve()} in a later turn', reason)
+        self.read_in_turns(self.chunks[2:], 2)
+        self.read_in_turns(self.packets, 1)
+        self.next_turn()
+        for path in self.segments[:4]:
+            self.assertIsNone(self.read(path))
+        self.assertIn('evidence-proof-batch-too-large', self.read(self.segments[4]))
+        reason = self.grep(self.fixture.root / 'keep.txt')
+        self.assertIn('evidence-proof-batch-too-large', reason)
+        self.assertIn(f'read {self.segments[4].resolve()} next', reason)
+        self.next_turn()
+        self.assertIsNone(self.read(self.segments[4]))
+        self.assertIsNone(self.read(self.segments[5]))
+        self.assertIn('evidence-proof-batch-too-large', self.read(self.index))
+        self.next_turn()
+        self.assertIsNone(self.read(self.segments[6]))
+        self.assertIsNone(self.read(self.index))
+        self.next_turn()
+        self.assertIsNone(self.grep(self.fixture.root / 'keep.txt'))
+        status, audit = self.audit_stream()
+        self.assertEqual((status, audit['violations']), (0, []))
+
+    def test_a_predecessor_still_in_flight_in_the_same_turn_allows_the_read(self):
+        self.evidence_through_packets()
+        self.next_turn()
+        self.read(self.segments[0], pending=True)
+        self.assertIsNone(self.read(self.segments[1]))
+
+    def test_a_repeated_read_in_one_turn_is_not_a_second_proof_read(self):
+        self.evidence_through_packets()
+        self.next_turn()
+        self.read(self.segments[0], pending=True)
+        self.assertIsNone(self.read(self.segments[0]))
+        self.assertIsNone(self.read(self.index))
+
+    def test_the_gate_fails_open_without_trustworthy_state(self):
+        self.evidence_through_packets()
+        self.next_turn()
+        self.gate.unlink()
+        self.assertIsNone(self.read(self.segments[2]))
+        self.gate.write_text('{')
+        self.assertIsNone(self.read(self.segments[4]))
+
+    def test_a_credit_the_post_hook_missed_is_found_in_the_stream(self):
+        self.evidence_through_packets()
+        header = self.gate.read_text()
+        self.read_in_turns(self.segments[:1], 1)
+        self.gate.write_text(header)
+        self.next_turn()
+        self.assertIsNone(self.read(self.segments[1]))
+
+    def test_credits_without_call_ids_leave_the_turn_batch_ungated(self):
+        with open(self.gate, 'a') as stream:
+            stream.write(json.dumps({'credit': str(self.chunks[4].resolve())}) + '\n')
+        self.next_turn()
+        for path in self.chunks[:3]:
+            self.assertIsNone(self.read(path))
+
+    def test_the_turn_is_read_back_past_a_large_result(self):
+        self.append(
+            {'type': 'assistant', 'message': {'id': 'old', 'content': [
+                {'type': 'tool_use', 'id': 'a', 'name': 'Read', 'input': {'file_path': 'x'}}]}},
+            {'type': 'user', 'message': {'content': [
+                {'type': 'tool_result', 'tool_use_id': 'a', 'content': 'old'}]}},
+            {'type': 'assistant', 'message': {'id': 'now', 'content': [
+                {'type': 'tool_use', 'id': 'b', 'name': 'Read', 'input': {'file_path': 'y'}}]}},
+            {'type': 'user', 'message': {'content': [
+                {'type': 'tool_result', 'tool_use_id': 'b', 'content': 'z' * (1 << 19)}]}},
+            {'type': 'assistant', 'message': {'id': 'now', 'content': [
+                {'type': 'tool_use', 'id': 'c', 'name': 'Grep', 'input': {'path': 'y'}}]}})
+        turn = self.audit.claude_turn(str(self.raw), 'c')
+        self.assertEqual([row[:2] for row in turn], [('b', 'Read')])
+        self.assertIsNone(self.audit.claude_turn(str(self.raw), 'missing'))
+
+    def test_a_delivered_output_that_differs_earns_no_credit(self):
+        self.evidence_through_packets()
+        self.next_turn()
+        self.call('Read', {'file_path': str(self.segments[0])}, 'tampered\n')
+        self.assertIsNone(self.read(self.segments[1]))
+        credits = [json.loads(line) for line in self.gate.read_text().splitlines()[1:]]
+        self.assertEqual([row['credit'] for row in credits if 'credit' in row][-1:],
+                         [str(self.segments[1].resolve())])
+        self.assertNotIn(str(self.segments[0].resolve()), [row.get('credit') for row in credits])
+
+
 if __name__ == '__main__':
     unittest.main()
