@@ -39,12 +39,12 @@ def load_read_audit():
 class SourceFixture:
     def __init__(self, directory, mode, oversized_lines=180, oversized_line_bytes=None,
                  compact_segment_lines=None, compact_segment_line_bytes=16,
-                 adapter='codex'):
+                 adapter='codex', source_context='1'):
         self.root = directory / 'repo'
         self.session = directory / 'session'
         self.root.mkdir(parents=True)
         self.session.mkdir()
-        self.env = dict(os.environ, REV_PATCH_CHUNKS='1', REV_SOURCE_CONTEXT='1')
+        self.env = dict(os.environ, REV_PATCH_CHUNKS='1', REV_SOURCE_CONTEXT=source_context)
         self.git('init', '-q')
         self.git('config', 'user.name', 'Test')
         self.git('config', 'user.email', 'test@invalid')

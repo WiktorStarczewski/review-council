@@ -323,6 +323,18 @@ class ClaudeReadGateTests(unittest.TestCase):
         self.assertEqual(decision['decision'], 'block')
         self.assertIn(named, decision['reason'])
 
+    def test_stop_gate_names_the_boundary_file_without_source_context(self):
+        # The component boundary holds the deleted aa_retired.py and the current zz_current.py.
+        fixture = SourceFixture(self.directory / 'boundary', 'mixed', adapter='claude',
+                                source_context='0')
+        line = next(line for line in fixture.prompt.read_text().splitlines()
+                    if line.startswith('Required post-index original-source boundary: '))
+        boundary = line.rsplit(': ', 1)[1]
+        self.assertTrue((fixture.root / boundary).is_file())
+        reason = self.stop(self.transcript(fixture=fixture), fixture=fixture)['reason']
+        self.assertIn(f'original source {boundary} with a bounded Read (offset and limit)', reason)
+        self.assertNotIn('aa_retired.py', reason)
+
     def test_structured_output_gate_never_sends_back_an_incomplete_proof(self):
         raw = self.transcript(omitted=[*self.segments[3:], self.index])
         incomplete = {'summary': 'INCOMPLETE PROOF: segments 4 onward and the index are unread.',

@@ -3212,11 +3212,13 @@ def uncovered_ranges(ranges, total_lines):
     return gaps
 
 
-def required_source_item(target):
-    if target is None:
-        return 'a bounded original-source Read of a required source range'
-    return (f"original source {target['path']} lines {target['line_start']}-{target['line_end']}"
-            ' with a bounded Read (offset and limit)')
+def required_source_item(target, boundary=None):
+    if target is not None:
+        return (f"original source {target['path']} lines {target['line_start']}-{target['line_end']}"
+                ' with a bounded Read (offset and limit)')
+    if boundary is not None:
+        return f'original source {boundary} with a bounded Read (offset and limit)'
+    return None
 
 
 def assess(args, blocked, progress=None):
@@ -4016,9 +4018,15 @@ def assess(args, blocked, progress=None):
                 post_index_source_ranges)
             failures.extend(source_failures)
             if source_failures:
-                missing.append((4, required_source_item(
+                # Without a current-tree target, any component boundary read in the snapshot
+                # counts; the prompt names the first, and a deleted one cannot be read.
+                readable = sorted(path for path in boundary_paths if frozen_entries.get(
+                    snapshot_tree, {}).get(path, ('',))[0] in ('100644', '100755'))
+                item = required_source_item(
                     evidence_module.repository_source_target(context, snapshot_tree)
-                    if snapshot_tree is not None else None)))
+                    if snapshot_tree is not None else None, next(iter(readable), None))
+                if item is not None:
+                    missing.append((4, item))
         except (KeyError, OSError, TypeError, ValueError):
             failures.append(violation('invalid-source-context', args.adapter))
 
