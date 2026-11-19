@@ -1933,7 +1933,7 @@ def read_gate_init(args):
 
 
 def read_gate_state(path):
-    """Return the gate header and the call that credited each read, or None to fail open."""
+    """Return the gate header and its credits, (path, call id) in order, or None to fail open."""
     try:
         lines = Path(path).read_bytes().split(b'\n')
         rows = [json.loads(line) for line in lines[:-1]]
@@ -1942,12 +1942,12 @@ def read_gate_state(path):
     if (lines[-1] or not rows or not isinstance(rows[0], dict)
             or rows[0].get('gate') != READ_GATE_VERSION):
         return None
-    credited = {}
+    credits = []
     for row in rows[1:]:
         if not isinstance(row, dict) or not isinstance(row.get('credit'), str):
             return None
-        credited.setdefault(row['credit'], row.get('id'))
-    return rows[0], credited
+        credits.append((row['credit'], row.get('id')))
+    return rows[0], credits
 
 
 def read_gate_append(path, row):
@@ -2018,21 +2018,101 @@ def claude_turn(raw, call_id):
             span *= 4
 
 
-def stream_requested(raw, paths, root):
-    """Whether the stream holds a pending or successful call naming one of `paths`."""
-    wanted = set(paths)
-    calls, outputs = set(), {}
-    for line in Path(raw).read_bytes().split(b'\n')[:-1]:
+def read_gate_credits(raw, header, rows, root, session, complete):
+    """Return the audit's credit per gated read, {path: call id}, its voided calls and the stream.
+
+    The audit voids every call of a turn whose output passes OUTPUT_BYTES without an exempt shape,
+    assessing again while that voids a new credit (`assessed`); the next read of that file then
+    earns the credit. Only settled turns are judged, never the turn of the stream's last call nor
+    one holding a read the audit may credit that the gate has no credit for, so the gate voids no
+    credit the audit keeps.
+    """
+    calls, outputs = {}, {}
+    for number, line in enumerate(Path(raw).read_bytes().split(b'\n')[:-1], 1):
         if not line.strip():
             continue
         event = json.loads(line)
-        for call_id, _, data in extract_calls('claude', event):
-            path = tool_path(data)
-            if path is not None and str(resolved(path, root)) in wanted:
-                calls.add(call_id)
-        for call_id, success, _, _ in extract_outputs('claude', event):
-            outputs[call_id] = success
-    return any(outputs.get(call_id) is not False for call_id in calls)
+        turn = (event.get('turn_id') or event.get('turnId') or event.get('message_id')
+                or (event.get('message') or {}).get('id') or f'event-{number}')
+        for call_id, name, data in extract_calls('claude', event):
+            calls.setdefault(call_id, (name, data, str(turn)))
+        for call_id, success, value, non_execution in extract_outputs('claude', event):
+            if call_id in calls:
+                outputs.setdefault(call_id, {'success': success, 'value': value,
+                                             'bytes': output_bytes(value),
+                                             'non_execution': non_execution})
+    for call_id in [call_id for call_id, (name, data, _) in calls.items() if call_id in outputs
+                    and claude_nonexecuted_exploration('claude', name, data, outputs[call_id])]:
+        del calls[call_id], outputs[call_id]
+    if any(call_id is None for _, call_id in rows):
+        first = {}
+        for path, call_id in rows:
+            first.setdefault(path, call_id)
+        return first, set(), calls, outputs
+    credited_by = {}
+    for path, call_id in rows:
+        credited_by.setdefault(call_id, path)
+    turns = {}
+    for call_id, (_, _, turn) in calls.items():
+        turns.setdefault(turn, []).append(call_id)
+
+    def unrecorded(call_id):
+        name, data, _ = calls[call_id]
+        path, output = tool_path(data), outputs.get(call_id)
+        return (call_id not in credited_by and path is not None and output is not None
+                and output['success']
+                and proof_kind(name, data, resolved(path, root), header, root) is not None)
+
+    open_turn = calls[next(reversed(calls))][2] if calls else None
+    judged = [turn for turn, call_ids in turns.items()
+              if turn != open_turn and not any(map(unrecorded, call_ids))]
+    voided = set()
+    while True:
+        seen, proofs, segments, credited = set(), set(), set(), set()
+        for call_id in calls:
+            path = credited_by.get(call_id)
+            if path is None or call_id in voided:
+                continue
+            if path in header['chunks'] or path in header['segments']:
+                if path in seen:
+                    continue
+                seen.add(path)
+            credited.add(call_id)
+            if path not in header['packets']:
+                proofs.add(call_id)
+            if path in header['segments']:
+                segments.add(call_id)
+        rejected = set()
+        for turn in judged:
+            output_calls = [call_id for call_id in turns[turn] if call_id in outputs]
+            size = sum(outputs[call_id]['bytes'] for call_id in output_calls)
+            if (size <= OUTPUT_BYTES
+                    or (len(output_calls) == 1 and byte_exempt(
+                        *calls[output_calls[0]][:2], root, session, complete))
+                    or ordered_proof_turn_exempt(header['proof_batch'], output_calls, proofs, size)
+                    or source_only_segment_turn('claude', turns[turn], outputs, segments,
+                                                header['segment_batch'])):
+                continue
+            rejected.update(turns[turn])
+        if not rejected & credited:
+            break
+        voided |= rejected & credited
+    kept = {}
+    for call_id in [*calls, *credited_by]:
+        if call_id in credited_by and call_id not in voided:
+            kept.setdefault(credited_by[call_id], call_id)
+    return kept, voided | rejected, calls, outputs
+
+
+def stream_requested(calls, outputs, voided, paths, root):
+    """Whether a call names one of `paths` and is still pending, or ran and was not voided."""
+    wanted = set(paths)
+    for call_id, (_, data, _) in calls.items():
+        path, output = tool_path(data), outputs.get(call_id)
+        if (path is not None and str(resolved(path, root)) in wanted
+                and (output is None or (output['success'] and call_id not in voided))):
+            return True
+    return False
 
 
 def next_required_read(header, credited):
@@ -2041,7 +2121,7 @@ def next_required_read(header, credited):
     return f'; read {following} next' if following else ''
 
 
-def read_gate_reason(args, name, data, call_id, root):
+def read_gate_reason(args, name, data, call_id, root, complete=None):
     """Return the violation and remedy for a call the audit cannot credit in order, else None.
 
     The gate fails open: without its state, the call's stream turn or a definite gap, the call is
@@ -2052,11 +2132,15 @@ def read_gate_reason(args, name, data, call_id, root):
     state = read_gate_state(args.gate)
     if state is None:
         return None
-    header, credited = state
+    header, rows = state
     raw_path = tool_path(data)
     target = resolved(raw_path, root) if raw_path is not None else None
     kind = proof_kind(name, data, target, header, root)
     turn = claude_turn(args.raw, call_id)
+    if kind is None and not turn:
+        return None
+    credited, voided, calls, outputs = read_gate_credits(
+        args.raw, header, rows, root, Path(args.session).resolve(), complete)
     turn_ids = {row[0] for row in turn or []}
     kinds = []
     seen = {path for path, credit in credited.items() if credit not in turn_ids}
@@ -2081,11 +2165,11 @@ def read_gate_reason(args, name, data, call_id, root):
         chunk = kind == 'chunk'
         sequence = header['chunks'] if chunk else header['segments']
         gaps = [path for path in sequence[:sequence.index(str(target))] if path not in credited]
-        if gaps and not stream_requested(args.raw, gaps, root):
+        if gaps and not stream_requested(calls, outputs, voided, gaps, root):
             return (violation('reordered-patch-chunks' if chunk
                               else 'reordered-required-source-segments', name),
                     f'read {gaps[0]} next, then continue in prompt order')
-    if turn is None or None in credited.values():
+    if turn is None or any(credit is None for _, credit in rows):
         return None
     proofs = sum(prior in PROOF_KINDS for prior in kinds)
     if kind is not None:
@@ -2896,7 +2980,8 @@ def hook(args):
             remedy = f'; read {partial[1]} completely in one Read call with no offset or limit'
         elif not failures:
             try:
-                gated = read_gate_reason(args, name, data, event.get('tool_use_id'), root)
+                gated = read_gate_reason(
+                    args, name, data, event.get('tool_use_id'), root, complete)
             except Exception:
                 gated = None
             if gated is not None:

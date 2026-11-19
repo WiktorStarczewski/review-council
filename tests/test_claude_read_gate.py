@@ -657,6 +657,99 @@ class ClaudeCallGateTests(unittest.TestCase):
         self.read_in_turns(listed, 1)
         self.assert_valid()
 
+    def test_a_segment_past_one_whose_credit_the_audit_voids_is_denied(self):
+        self.evidence_through_packets()
+        self.read_in_turns(self.segments[:5], 4)
+        self.read_voided_with(self.segments[5])
+        self.next_turn()
+        reason = self.read(self.segments[6])
+        self.assertIn('reordered-required-source-segments', reason or '')
+        self.assertIn(f'read {self.segments[5].resolve()} next', reason)
+        self.assertIsNone(self.read(self.segments[5]))
+        self.assertIsNone(self.read(self.segments[6]))
+        self.read_in_turns([self.index], 1)
+        self.assert_valid()
+
+    def test_a_read_whose_credit_the_audit_voids_counts_again_in_the_turn_batch(self):
+        self.evidence_through_packets()
+        self.read_in_turns(self.segments[:5], 4)
+        self.read_voided_with(self.segments[5])
+        self.next_turn()
+        self.assertIsNone(self.read(self.segments[5]))
+        self.assertIsNone(self.read(self.segments[6]))
+        self.assertIn('evidence-proof-batch-too-large', self.read(self.index) or '')
+        self.read_in_turns([self.index], 1)
+        self.assert_valid()
+
+    def finish_after_chunks(self):
+        self.read_in_turns(self.packets, 1)
+        self.read_in_turns(self.segments, 4)
+        self.read_in_turns([self.index], 1)
+        self.assert_valid()
+
+    def test_a_chunk_past_one_whose_credit_the_audit_voids_is_denied(self):
+        self.read_in_turns(self.chunks[:2], 2)
+        self.next_turn()
+        # A packet is no ordered proof read, so this pair is not exempt from the 32 KiB turn limit.
+        self.assertIsNone(self.read(self.chunks[2]))
+        self.assertIsNone(self.read(self.packets[0]))
+        self.next_turn()
+        self.assertIn(f'read {self.chunks[2].resolve()} next', self.read(self.chunks[3]) or '')
+        self.read_in_turns(self.chunks[2:], 1)
+        self.finish_after_chunks()
+
+    def test_the_credit_view_assesses_again_as_the_audit_does(self):
+        self.read_in_turns(self.chunks[:2], 2)
+        self.next_turn()
+        self.assertIsNone(self.read(self.chunks[2]))
+        self.assertIsNone(self.read(Path(self.fixture.prompt)))
+        # A repeat is no proof read, so this pair is voided too, and then so is the repeat itself.
+        self.read_in_turns(self.chunks[2:4], 2)
+        self.next_turn()
+        self.assertIn(f'read {self.chunks[2].resolve()} next', self.read(self.chunks[4]) or '')
+        self.read_in_turns(self.chunks[2:], 1)
+        self.finish_after_chunks()
+
+    def test_a_turn_holding_a_read_the_gate_did_not_record_keeps_its_credits(self):
+        self.next_turn()
+        self.assertIsNone(self.read(self.chunks[0]))
+        header = self.gate.read_text()
+        # Two chunks pass 32 KiB, an exempt pair only while both count as ordered proof reads.
+        self.assertIsNone(self.read(self.chunks[1]))
+        self.gate.write_text(header)
+        self.read_in_turns(self.chunks[2:], 2)
+        self.read_in_turns(self.packets, 1)
+        self.read_in_turns(self.segments, 4)
+        self.read_in_turns([self.index], 1)
+        self.assert_valid()
+
+    def test_a_lone_whole_read_over_32_kib_keeps_its_credit(self):
+        index, large = str(self.index.resolve()), 'x' * (40 * 1024)
+        read = {'type': 'tool_use', 'name': 'Read', 'input': {'file_path': index}}
+        grep = {'type': 'tool_use', 'name': 'Grep', 'input': {'pattern': 'x', 'path': index}}
+        self.append(
+            {'type': 'assistant', 'message': {'id': 'lone', 'content': [dict(read, id='a')]}},
+            {'type': 'user', 'message': {'content': [
+                {'type': 'tool_result', 'tool_use_id': 'a', 'content': large}]}},
+            {'type': 'assistant', 'message': {'id': 'pair', 'content': [
+                dict(read, id='b'), dict(grep, id='c')]}},
+            {'type': 'user', 'message': {'content': [
+                {'type': 'tool_result', 'tool_use_id': 'b', 'content': large},
+                {'type': 'tool_result', 'tool_use_id': 'c', 'content': 'x'}]}},
+            {'type': 'assistant', 'message': {'id': 'open', 'content': [dict(grep, id='d')]}})
+        root, session = self.fixture.root.resolve(), self.fixture.session.resolve()
+        _, complete = self.audit.prompt_permissions(self.fixture.prompt, root, session)
+        header = json.loads(self.gate.read_text().splitlines()[0])
+        credits, voided, _, _ = self.audit.read_gate_credits(
+            str(self.raw), header, [(index, 'b'), (index, 'a')], root, session, complete)
+        self.assertEqual((credits, voided), ({index: 'a'}, {'b', 'c'}))
+
+    def test_the_open_turn_is_not_judged_before_it_ends(self):
+        self.evidence_through_packets()
+        self.read_in_turns(self.segments[:5], 4)
+        self.read_voided_with(self.segments[5])
+        self.assertIsNone(self.read(self.segments[6]))
+
     def test_no_denial_names_a_source_file_missing_from_the_snapshot_tree(self):
         snapshot = self.fixture.manifest['snapshot_tree']
         absent = {required['path'] for required, _ in self.ranges
