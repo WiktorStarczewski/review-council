@@ -4267,7 +4267,7 @@ import importlib.util, signal, sys, types
 spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
 audit = importlib.util.module_from_spec(spec); spec.loader.exec_module(audit)
 passes = []
-def assess(args, blocked):
+def assess(args, blocked, progress=None):
     passes.append(set(blocked))
     return {'status': 'valid'}, False, {'c1'}
 audit.assess = assess

@@ -26,6 +26,7 @@ SH
                 CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX)
     local var
     for var in "${scrubbed[@]}" "${kept[@]}"; do export "$var=parent-$var"; done
+    printf '{"blocks":3}\n' > "$S/r1-sonnet.stop-gate"
     "$SCRIPTS/rev-seat.sh" sonnet "$S" 1 "$B/prompt.md" > "$B/out.txt" 2> "$B/err.txt"
     assert_eq "a nested claude CLI seat exits 0" "$?" 0
     assert_grep "the nested seat returns a schema-valid result" "$B/out.txt" '^seat=sonnet round=1 exit=0 findings=0$'
@@ -47,6 +48,26 @@ index = args.index('--setting-sources')
 assert args[index + 1] == '', args
 assert '--strict-mcp-config' in args, args
 assert args[args.index('--model') + 1] == 'sonnet' and args[args.index('--effort') + 1] == 'max', args
+PY
+    assert_exit "each attempt starts a fresh stop-gate count" 1 test -e "$S/r1-sonnet.stop-gate"
+    assert_exit "the stop gate replays this attempt's raw stream" 0 python3 - "$B/args" "$S" <<'PY'
+import json, shlex, sys
+args = open(sys.argv[1]).read().split('\n')
+session = sys.argv[2]
+settings = json.loads(args[args.index('--settings') + 1])['hooks']
+hooks = settings['Stop']
+assert len(hooks) == 1 and len(hooks[0]['hooks']) == 1, hooks
+submit = [row for row in settings['PreToolUse'] if row.get('matcher') == 'StructuredOutput']
+assert len(submit) == 1 and submit[0]['hooks'] == hooks[0]['hooks'], settings
+command = hooks[0]['hooks'][0]['command']
+assert command.endswith(' || true'), command
+words = shlex.split(command[:-len(' || true')])
+assert words[1].endswith('/lib/review-read-audit.py') and words[2] == 'stop-hook', words
+option = {words[index]: words[index + 1] for index in range(3, len(words) - 1, 2)}
+assert option['--adapter'] == 'claude', option
+assert option['--raw'] == session + '/r1-sonnet.stream.ndjson', option
+assert option['--state'] == session + '/r1-sonnet.stop-gate', option
+assert option['--seat'] == 'sonnet' and option['--session'] == session, option
 PY
     assert_exit "the rendered prompt reaches the child on stdin" 0 cmp -s "$B/prompt.md" "$B/args.stdin"
   )

@@ -50,6 +50,32 @@ class ClaudeReadGateTests(unittest.TestCase):
             status = self.audit.hook(args)
         return status, stderr.getvalue()
 
+    def stop(self, raw, *, active=False, fixture=None, payload=None, prompt=None):
+        fixture = fixture or self.fixture
+        args = argparse.Namespace(
+            adapter='claude', raw=str(raw), prompt=str(prompt or fixture.prompt),
+            root=str(fixture.root),
+            session=str(fixture.session), seat=None, deps=None, state=str(self.state))
+        event = payload if payload is not None else json.dumps(
+            {'hook_event_name': 'Stop', 'stop_hook_active': active})
+        stdout = io.StringIO()
+        with patch('sys.stdin', io.StringIO(event)), contextlib.redirect_stdout(stdout), \
+                contextlib.redirect_stderr(io.StringIO()):
+            status = self.audit.stop_hook(args)
+        self.assertEqual(status, 0)
+        return json.loads(stdout.getvalue()) if stdout.getvalue().strip() else None
+
+    def submit(self, raw, tool='StructuredOutput'):
+        decision = self.stop(raw, payload=json.dumps({
+            'hook_event_name': 'PreToolUse', 'tool_name': tool,
+            'tool_input': {'summary': 'done', 'findings': []}}))
+        if decision is None:
+            return None
+        specific = decision['hookSpecificOutput']
+        self.assertEqual((specific['hookEventName'], specific['permissionDecision']),
+                         ('PreToolUse', 'deny'))
+        return specific['permissionDecisionReason']
+
     def transcript(self, omitted=(), fixture=None):
         raw, _, _ = (fixture or self.fixture).claude_transcript(
             omitted_artifacts=tuple(path.name for path in omitted))
@@ -132,6 +158,154 @@ class ClaudeReadGateTests(unittest.TestCase):
             env=self.fixture.env, text=True, capture_output=True)
         audit = json.loads(self.state.with_name('audit.json').read_text())
         self.assertEqual((process.returncode, audit['violations']), (0, []))
+
+    def test_stop_gate_lists_the_next_missing_reads_in_protocol_order(self):
+        raw = self.transcript(omitted=[*self.segments[3:], self.index])
+        decision = self.stop(raw)
+        self.assertEqual(decision['decision'], 'block')
+        reason = decision['reason']
+        self.assertIn('read audit', reason)
+        self.assertIn('completely in one Read call with no offset or limit', reason)
+        self.assertIn('StructuredOutput', reason)
+        positions = [reason.index(str(path.resolve())) for path in [*self.segments[3:], self.index]]
+        self.assertEqual(positions, sorted(positions))
+        for path in self.segments[:3]:
+            self.assertNotIn(str(path.resolve()), reason)
+        self.assertEqual(json.loads(self.state.read_text())['blocks'], 1)
+        self.assertNotIn('\n', reason)
+
+    def test_structured_output_is_denied_while_required_reads_remain(self):
+        raw = self.transcript(omitted=[*self.segments[5:], self.index])
+        reason = self.submit(raw)
+        positions = [reason.index(str(path.resolve())) for path in [*self.segments[5:], self.index]]
+        self.assertEqual(positions, sorted(positions))
+        self.assertIn('return your complete result again with StructuredOutput', reason)
+        self.assertIsNone(self.submit(raw))
+        self.assertIsNone(self.submit(raw, tool='Read'))
+        self.assertEqual(json.loads(self.state.read_text())['blocks'], 1)
+        self.assertIn('(2 of 3)', self.submit(self.transcript(omitted=[self.segments[6], self.index])))
+        last_segment_only = self.transcript(omitted=[self.segments[6]])
+        self.assertIn('(3 of 3)', self.stop(last_segment_only)['reason'])
+        self.assertIsNone(self.submit(last_segment_only))
+        self.assertIsNone(self.submit(self.transcript()))
+
+    def test_structured_output_gate_replays_only_settled_events(self):
+        raw = self.transcript(omitted=[*self.segments[5:], self.index])
+        events = self.events(raw) + [{'type': 'assistant', 'message': {
+            'id': 'final-turn', 'content': [
+                {'type': 'tool_use', 'id': 'final-output', 'name': 'StructuredOutput',
+                 'input': {'summary': 'done', 'findings': []}}]}}]
+        self.write(raw, events)
+        with open(raw, 'a') as stream:
+            stream.write('{"type": "assistant", "message": {"id": "partial')
+        reason = self.submit(raw)
+        self.assertIn(str(self.segments[5].resolve()), reason)
+        self.assertIn(str(self.index.resolve()), reason)
+
+    def test_stop_after_an_accepted_structured_output_skips_the_replay(self):
+        raw = self.transcript(omitted=[*self.segments[5:], self.index])
+        submission = [
+            {'type': 'assistant', 'message': {'id': 'final-turn', 'content': [
+                {'type': 'tool_use', 'id': 'final-output', 'name': 'StructuredOutput',
+                 'input': {'summary': 'done', 'findings': []}}]}},
+            {'type': 'user', 'message': {'content': [
+                {'type': 'tool_result', 'tool_use_id': 'final-output',
+                 'content': 'Structured output provided successfully'}]}}]
+        self.write(raw, self.events(raw) + submission)
+        with patch.object(self.audit, 'assessed', wraps=self.audit.assessed) as replay:
+            self.assertIsNone(self.stop(raw))
+            replay.assert_not_called()
+        self.assertFalse(self.state.exists())
+        submission[1]['message']['content'][0]['is_error'] = True
+        self.write(raw, self.events(raw)[:-1] + submission[1:])
+        self.assertEqual(self.stop(raw)['decision'], 'block')
+
+    def test_stop_gate_allows_a_complete_review(self):
+        self.assertIsNone(self.stop(self.transcript()))
+        self.assertIsNone(self.stop(self.transcript(), active=True))
+        self.assertFalse(self.state.exists())
+
+    def test_stop_gate_blocks_at_most_three_times_per_attempt(self):
+        missing = list(self.segments[2:])
+        for blocks in range(1, 4):
+            raw = self.transcript(omitted=[*missing, self.index])
+            decision = self.stop(raw, active=blocks > 1)
+            self.assertEqual(decision['decision'], 'block')
+            self.assertEqual(json.loads(self.state.read_text())['blocks'], blocks)
+            missing.pop(0)
+        raw = self.transcript(omitted=[*missing, self.index])
+        self.assertIsNone(self.stop(raw, active=True))
+        self.assertEqual(json.loads(self.state.read_text())['blocks'], 3)
+
+    def test_stop_gate_allows_a_continuation_that_made_no_progress(self):
+        raw = self.transcript(omitted=[*self.segments[4:], self.index])
+        self.assertEqual(self.stop(raw)['decision'], 'block')
+        self.assertIsNone(self.stop(raw, active=True))
+        self.assertEqual(json.loads(self.state.read_text())['blocks'], 1)
+        self.assertEqual(self.stop(raw, active=False)['decision'], 'block')
+
+    def test_stop_gate_allows_gaps_that_more_reads_cannot_repair(self):
+        raw = self.transcript(omitted=[self.segments[1]])
+        process = subprocess.run(
+            [os.sys.executable, str(SCRIPTS / 'lib/review-read-audit.py'), 'audit',
+             '--adapter', 'claude', '--raw', str(raw), '--prompt', str(self.fixture.prompt),
+             '--root', str(self.fixture.root), '--session', str(self.fixture.session),
+             '--out', str(self.state.with_name('audit.json'))],
+            env=self.fixture.env, text=True, capture_output=True)
+        self.assertEqual(process.returncode, 2)
+        self.assertIsNone(self.stop(raw))
+        raw = self.transcript(omitted=[*self.segments[3:], self.index])
+        events = self.events(raw)
+        segment = self.segments[0]
+        call = next(block for event in events if event['type'] == 'assistant'
+                    for block in event['message']['content']
+                    if block['input'].get('file_path') == str(segment))
+        call['input']['limit'] = 2
+        self.write(raw, events)
+        self.assertIsNone(self.stop(raw))
+        self.assertFalse(self.state.exists())
+
+    def test_stop_gate_errors_never_block_the_stop(self):
+        raw = self.transcript(omitted=[*self.segments[3:], self.index])
+        self.assertIsNone(self.stop(raw, payload='{'))
+        self.assertIsNone(self.stop(self.directory / 'missing.ndjson'))
+        with patch.object(self.audit, 'assess', side_effect=RuntimeError('boom')):
+            self.assertIsNone(self.stop(raw))
+        self.state.write_text('{')
+        self.assertIsNone(self.stop(raw))
+        self.state.unlink()
+        self.state.mkdir()
+        self.assertIsNone(self.stop(raw))
+
+    def test_stop_gate_names_the_required_post_index_source_target(self):
+        fixture = SourceFixture(self.directory / 'target', 'current', adapter='claude')
+        raw = self.transcript(fixture=fixture)
+        target = fixture.target()
+        named = f"{target['path']} lines {target['line_start']}-{target['line_end']}"
+        decision = self.stop(raw, fixture=fixture)
+        self.assertEqual(decision['decision'], 'block')
+        self.assertIn(named, decision['reason'])
+        self.state.unlink()
+        legacy = fixture.session / 'legacy.prompt.md'
+        legacy.write_text(''.join(
+            line for line in fixture.prompt.read_text().splitlines(keepends=True)
+            if not line.startswith('Evidence manifest SHA-256:')))
+        decision = self.stop(raw, fixture=fixture, prompt=legacy)
+        self.assertEqual(decision['decision'], 'block')
+        self.assertIn(named, decision['reason'])
+
+    def test_stop_hook_command_line_prints_only_the_decision(self):
+        raw = self.transcript(omitted=[*self.segments[3:], self.index])
+        command = [os.sys.executable, str(SCRIPTS / 'lib/review-read-audit.py'), 'stop-hook',
+                   '--adapter', 'claude', '--raw', str(raw), '--prompt', str(self.fixture.prompt),
+                   '--root', str(self.fixture.root), '--session', str(self.fixture.session),
+                   '--state', str(self.state)]
+        process = subprocess.run(
+            command, input=json.dumps({'hook_event_name': 'Stop', 'stop_hook_active': False}),
+            env=self.fixture.env, text=True, capture_output=True)
+        self.assertEqual(process.returncode, 0)
+        self.assertEqual(json.loads(process.stdout)['decision'], 'block')
+
 
 if __name__ == '__main__':
     unittest.main()

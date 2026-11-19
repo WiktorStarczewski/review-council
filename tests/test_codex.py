@@ -1209,9 +1209,16 @@ print(json.dumps({'type':'result','is_error':False,'subtype':'success',
         self.assertNotIn('$schema', schema)
         self.assertIn('findings', schema['properties'])
         settings = json.loads(args[args.index('--settings') + 1])
-        for phase in ('PreToolUse', 'PostToolUse'):
-            self.assertEqual({row['matcher'] for row in settings['hooks'][phase]},
-                             {'Read', 'Grep'})
+        self.assertEqual({row['matcher'] for row in settings['hooks']['PreToolUse']},
+                         {'Read', 'Grep', 'StructuredOutput'})
+        self.assertEqual({row['matcher'] for row in settings['hooks']['PostToolUse']},
+                         {'Read', 'Grep'})
+        gates = [row['hooks'] for row in settings['hooks']['PreToolUse']
+                 if row['matcher'] == 'StructuredOutput'] + [
+                     row['hooks'] for row in settings['hooks']['Stop']]
+        self.assertEqual(len(gates), 2)
+        self.assertEqual(gates[0], gates[1])
+        self.assertIn(' stop-hook --adapter claude ', gates[0][0]['command'])
         self.assertNotIn('readonly-bash-guard.py', json.dumps(settings))
         audit_commands = [
             hook['command']

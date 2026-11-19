@@ -10,23 +10,34 @@ MAX_TURNS=$(PYTHONPATH="$HERE/../lib" python3 -c \
 SESSION_ENV=$(cd "$HERE/../lib" && python3 -c \
   'from roster import CLAUDE_SESSION_ENV; print(" ".join(CLAUDE_SESSION_ENV))') || exit 1
 unset $SESSION_ENV
+STOP_STATE="${OUT%.json}.stop-gate"
+rm -f "$STOP_STATE"
 SETTINGS=$(python3 - "$HERE/../lib/review-read-audit.py" \
-  "$ROOT" "$SESSION" "$PROMPT" "${REV_DEPS_DIR:-}" <<'PY'
+  "$ROOT" "$SESSION" "$PROMPT" "${REV_DEPS_DIR:-}" "$RAW" "$STOP_STATE" "${SEAT:-}" <<'PY'
 import json, shlex, sys
 bounded = 'python3 ' + shlex.quote(sys.argv[1]) + ' hook --root ' + shlex.quote(sys.argv[2]) + ' --session ' + shlex.quote(sys.argv[3]) + ' --prompt ' + shlex.quote(sys.argv[4])
 post = 'python3 ' + shlex.quote(sys.argv[1]) + ' post-hook --root ' + shlex.quote(sys.argv[2]) + ' --session ' + shlex.quote(sys.argv[3]) + ' --prompt ' + shlex.quote(sys.argv[4])
+stop = 'python3 ' + shlex.quote(sys.argv[1]) + ' stop-hook --adapter claude --raw ' + shlex.quote(sys.argv[6]) + ' --prompt ' + shlex.quote(sys.argv[4]) + ' --root ' + shlex.quote(sys.argv[2]) + ' --session ' + shlex.quote(sys.argv[3]) + ' --state ' + shlex.quote(sys.argv[7])
+if sys.argv[8]:
+    stop += ' --seat ' + shlex.quote(sys.argv[8])
 if sys.argv[5]:
     bounded += ' --deps ' + shlex.quote(sys.argv[5])
     post += ' --deps ' + shlex.quote(sys.argv[5])
+    stop += ' --deps ' + shlex.quote(sys.argv[5])
+# Exit 2 blocks, so no stop-gate failure may exit 2. A --json-schema run ends at its
+# StructuredOutput call without a Stop that can resume it, so the gate also checks that call.
+stop = [{'type': 'command', 'command': stop + ' || true', 'timeout': 300}]
 bounded_pre = [
     {'matcher': 'Read', 'hooks': [{'type': 'command', 'command': bounded}]},
     {'matcher': 'Grep', 'hooks': [{'type': 'command', 'command': bounded}]},
+    {'matcher': 'StructuredOutput', 'hooks': stop},
 ]
 bounded_post = [
     {'matcher': tool, 'hooks': [{'type': 'command', 'command': post}]}
     for tool in ('Read', 'Grep')
 ]
-print(json.dumps({'hooks': {'PreToolUse': bounded_pre, 'PostToolUse': bounded_post}}))
+print(json.dumps({'hooks': {
+    'PreToolUse': bounded_pre, 'PostToolUse': bounded_post, 'Stop': [{'hooks': stop}]}}))
 PY
 ) || exit 1
 # Claude's validator does not load the draft-2020-12 meta-schema. This schema
