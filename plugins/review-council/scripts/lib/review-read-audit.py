@@ -3358,9 +3358,10 @@ def stop_hook(args):
     def expired(_signum, _frame):
         raise StopGateDeadline
 
+    previous = None
     try:
         if budget:
-            signal.signal(signal.SIGALRM, expired)
+            previous = signal.signal(signal.SIGALRM, expired)
             signal.setitimer(signal.ITIMER_REAL, budget)
         try:
             event = json.load(sys.stdin)
@@ -3369,6 +3370,7 @@ def stop_hook(args):
         finally:
             if budget:
                 signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, signal.SIG_DFL if previous is None else previous)
     except StopGateDeadline:
         ending = 'Stop' if event.get('hook_event_name') == 'Stop' else 'StructuredOutput call'
         note = (f'review stop gate: the read-audit replay ran past its {budget:.0f} s budget of'
