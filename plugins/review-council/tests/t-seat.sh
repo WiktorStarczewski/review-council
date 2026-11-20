@@ -380,6 +380,15 @@ assert 'Use at most two source reads per investigation turn' in first_review_pro
 assert 'Next evidence question:' in next_review_prompt and 'src/two.ts' in next_review_prompt, next_review_prompt
 assert 'searches as well as reads: plan at most 5 and return continue' in next_review_prompt, next_review_prompt
 assert 'or other test runner in these turns' in next_review_prompt, next_review_prompt
+assert 'Of that allowance, 0 of 4 repository tool calls are used and 4 remain.' in first_review_prompt, first_review_prompt
+assert ('The previous turn ran 1 of its 6 allowed command_execution calls and returned 0.1 KiB of its 32 KiB.'
+        in next_review_prompt), next_review_prompt
+assert 'Of that allowance, 1 of 4 repository tool calls are used and 3 remain.' in next_review_prompt, next_review_prompt
+exhausted_prompt = (root / 'calls' / 'call-12.stdin').read_text(encoding='utf-8')
+assert 'allowance is exhausted' in exhausted_prompt, exhausted_prompt
+assert ('The previous turn ran 1 of its 6 allowed command_execution calls and returned 0.1 KiB of its 32 KiB.'
+        in exhausted_prompt), exhausted_prompt
+assert 'All 4 repository tool calls are used.' in exhausted_prompt, exhausted_prompt
 required_review_prompt = (root / 'calls' / 'call-10.stdin').read_text(encoding='utf-8')
 assert 'Next evidence question:' in required_review_prompt and 'src/three.ts' in required_review_prompt, required_review_prompt
 assert 'Return the final findings JSON' in final_prompt, final_prompt
