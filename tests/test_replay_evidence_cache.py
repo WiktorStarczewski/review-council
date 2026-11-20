@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -125,6 +126,37 @@ class ClaudeStopGateCacheTests(unittest.TestCase):
         decision = self.stop(raw, self.work / 'cached.stop-gate', self.cache)
         self.assertEqual(self.counter.calls, 0, 'the warmed validation was not reused')
         self.assertEqual(decision, self.stop(raw, self.work / 'plain.stop-gate'))
+
+
+class StopGateDeadlineTests(unittest.TestCase):
+    def setUp(self):
+        work = tempfile.TemporaryDirectory(prefix='replay-deadline-')
+        self.addCleanup(work.cleanup)
+        self.work = Path(work.name)
+        self.audit = load_read_audit()
+
+    def test_a_replay_past_its_budget_allows_the_end_with_a_note_in_the_seat_log(self):
+        log = self.work / 'seat.log'
+        args = argparse.Namespace(
+            adapter='claude', raw=str(self.work / 'raw'), prompt=str(self.work / 'prompt'),
+            root=str(self.work), session=str(self.work), seat=None, deps=None,
+            state=str(self.work / 'state'), evidence_cache=None, log=str(log), timeout=1)
+        event = json.dumps({'hook_event_name': 'PreToolUse', 'tool_name': 'StructuredOutput',
+                            'tool_input': {'summary': 'done', 'findings': []}})
+
+        def slow(*_):
+            time.sleep(4)
+            return 'review stop blocked (1 of 3): too late to matter'
+
+        stdout = io.StringIO()
+        started = time.monotonic()
+        with patch.object(self.audit, 'stop_gate_reason', slow), \
+                patch('sys.stdin', io.StringIO(event)), contextlib.redirect_stdout(stdout):
+            self.assertEqual(self.audit.stop_hook(args), 0)
+        self.assertLess(time.monotonic() - started, 3, 'the hook outlived its budget')
+        self.assertEqual(stdout.getvalue(), '')
+        self.assertIn('allowed unchecked', log.read_text() if log.exists() else '',
+                      'the seat log does not say the gate failed open')
 
 
 class InProcessSeat(Seat):
