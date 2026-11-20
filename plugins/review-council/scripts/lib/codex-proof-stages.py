@@ -660,7 +660,8 @@ def catalog_window(model):
 def context_capacity(stage_dir, prompt, model):
     """('fits', projected, limit), ('raise', projected, limit, window), ('over', reason) or
     ('unknown', reason) for the context a seat holds before review: the staged reads and their
-    turns, then the assignment prompt. 'raise' needs the switch and the catalog's larger window."""
+    turns, then the assignment prompt. 'raise' needs the catalog's larger window and the switch
+    unset, empty or 1; any other value keeps the refusal."""
     known, unknown = catalog_window(model)
     if unknown:
         return ('unknown', unknown)
@@ -685,7 +686,7 @@ def context_capacity(stage_dir, prompt, model):
         return ('fits', str(projected), str(limit))
     reason = (f'the assignment needs ~{projected} tokens of context before review, over {limit}'
               f" ({CONTEXT_SHARE_PERCENT}% of {model}'s {usable} usable)")
-    if maximum is not None and os.environ.get(RAISED_WINDOW_SWITCH) == '1':
+    if maximum is not None and os.environ.get(RAISED_WINDOW_SWITCH, '1') in ('', '1'):
         raised = math.floor(maximum * percent / 100) * CONTEXT_SHARE_PERCENT // 100
         if projected <= raised:
             return ('raise', str(projected), str(raised), str(maximum))

@@ -756,9 +756,9 @@ test_seat_codex_review_turn_reads_a_hashless_prompt_copy() {
   )
 }
 
-test_seat_codex_runs_at_the_maximum_window_only_when_enabled() {
+test_seat_codex_runs_at_the_maximum_window_unless_switched_off() {
   ( local _path="$PATH"; seat_env
-    local R="$T/raised-root" S="$T/raised-session" target run
+    local R="$T/raised-root" S="$T/raised-session" target run switch
     seat_codex_prepared_session "$R" "$S" || { fail "prepared Codex session fixture"; return; }
     target=$(sed -n 's/^Required post-index original-source target: \([^:]*\):\([0-9]*\)-\([0-9]*\) .*/sed -n \2,\3p \1/p' \
       "$S/r1-codex-luna.prompt.md")
@@ -767,7 +767,8 @@ test_seat_codex_runs_at_the_maximum_window_only_when_enabled() {
         "$([ "$run" = short ] && echo 30000 || echo 1000000)" > "$T/raised-$run.json"
       mkdir -p "$S/calls-$run"; : > "$S/calls-$run.log"
       rm -f "$S/r1-codex-luna.stream.ndjson" "$S/r1-codex-luna.json"
-      REVIEW_COUNCIL_CODEX_MAX_CONTEXT_WINDOW=$([ "$run" = off ] && echo 0 || echo 1) \
+      switch=(); [ "$run" != off ] || switch=(REVIEW_COUNCIL_CODEX_MAX_CONTEXT_WINDOW=0)
+      env -u REVIEW_COUNCIL_CODEX_MAX_CONTEXT_WINDOW ${switch[@]+"${switch[@]}"} \
         REVIEW_COUNCIL_CODEX_MODELS_CACHE="$T/raised-$run.json" SHIM_MODE=staged-audit \
         SHIM_POST_INDEX_COMMAND="$target" SHIM_STAGE_DIR="$S/calls-$run" \
         SHIM_CALLS_FILE="$S/calls-$run.log" SEAT=codex-luna MODEL=gpt-6-luna EFFORT=xhigh \
@@ -777,10 +778,10 @@ test_seat_codex_runs_at_the_maximum_window_only_when_enabled() {
         > "$S/out" 2> "$S/err"
       printf '%s\n' "$?" > "$S/$run.exit"
     done
-    assert_eq "without the switch an oversized seat still refuses" "$(cat "$S/off.exit")" 1
+    assert_eq "with the switch off an oversized seat still refuses" "$(cat "$S/off.exit")" 1
     assert_eq "the refusal comes before any codex call" "$(wc -l < "$S/calls-off.log" | tr -d ' ')" 0
-    assert_nogrep "the default refusal does not mention the maximum" "$S/off.log" 'maximum'
-    assert_eq "with the switch the seat runs at the larger window" "$(cat "$S/on.exit")" 0
+    assert_nogrep "the switched-off refusal does not mention the maximum" "$S/off.log" 'maximum'
+    assert_eq "by default the seat runs at the larger window" "$(cat "$S/on.exit")" 0
     assert_eq "every codex call passes the larger window" \
       "$(grep -lx 'model_context_window=1000000' "$S"/calls-on/call-*.args | wc -l | tr -d ' ')" \
       "$(wc -l < "$S/calls-on.log" | tr -d ' ')"

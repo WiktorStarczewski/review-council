@@ -109,20 +109,23 @@ class CapacityTests(unittest.TestCase):
         self.assertEqual(module.context_tokens(b'0123456789abcdef' * 4, 2.8), 64)
         self.assertEqual(module.context_tokens(b'x ' + b'f' * 31, 3.0), 11)
 
-    def test_the_switch_raises_the_window_only_when_its_maximum_holds_the_evidence(self):
+    def test_the_window_is_raised_when_its_maximum_holds_the_evidence_unless_switched_off(self):
         projected = self.projected()
         maximum = -(-projected * 100 // 55)
         row = dict(self.row(maximum // 2, 100), max_context_window=maximum)
-        default = self.capacity([row])
-        self.assertEqual(default[0], 'over', default)
-        for switch in (None, '0', 'yes'):
+        for switch in (None, '', '1'):
             with self.subTest(switch=switch):
-                self.assertEqual(self.capacity([row], switch=switch), default)
-        raised = self.capacity([row], switch='1')
-        self.assertEqual(raised[0], 'raise', raised)
-        self.assertEqual((int(raised[1]), int(raised[2]), int(raised[3])),
-                         (projected, projected, maximum))
-        short = self.capacity([dict(row, max_context_window=maximum - 2)], switch='1')
+                raised = self.capacity([row], switch=switch)
+                self.assertEqual(raised[0], 'raise', raised)
+                self.assertEqual((int(raised[1]), int(raised[2]), int(raised[3])),
+                                 (projected, projected, maximum))
+        refused = self.capacity([row], switch='0')
+        self.assertEqual(refused[0], 'over', refused)
+        self.assertNotIn('maximum', refused[1])
+        for switch in ('no', 'yes'):
+            with self.subTest(switch=switch):
+                self.assertEqual(self.capacity([row], switch=switch), refused)
+        short = self.capacity([dict(row, max_context_window=maximum - 2)])
         self.assertEqual(short[0], 'over', short)
         self.assertIn(f'at its {maximum - 2}-token maximum window', short[1])
         for name, value in (('no maximum', None), ('maximum at the default', maximum // 2),
@@ -132,7 +135,7 @@ class CapacityTests(unittest.TestCase):
                 plain.pop('max_context_window')
                 if value is not None:
                     plain['max_context_window'] = value
-                self.assertEqual(self.capacity([plain], switch='1'), default)
+                self.assertEqual(self.capacity([plain]), refused)
 
     def test_an_unknown_window_launches_as_before(self):
         cases = {
