@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.9.7
+
+- Write a Codex seat adapter's own refusal, such as an exceeded review-turn budget or a prepared-evidence failure, to the seat log as well as to stderr, so the session can name why the seat failed. Those lines never classify a seat as signed out or out of quota.
+- Repair a Codex seat's prepared-evidence read stage instead of failing the seat when a turn does not run exactly its listed reads. The adapter replays the post-run read audit over the stream so far: a read the audit has not credited, such as one the turn skipped, gets a repair turn that reads only it, and a read the audit already credited is not asked for again. A shape the audit accepts, such as a repeated evidence index or a stray command, continues, and a stream it can no longer accept, such as a repeated required source segment, fails the seat at once with the audit's codes. A stage gets at most one more repair turn than it has reads, and an attempt a tenth of its stage count, at least four.
+- Stage a Codex seat's prepared patch chunks one per turn unless the pair, read twice, still fits the audit's 32 KiB turn output. A repeated read in a pair of typical 20 KiB or larger chunks voided its turn and could never pass the audit; read alone, a repeated chunk gets a repair turn and a read-ahead chunk is kept. Large patches take one more prepared-evidence turn per former pair.
+- Repair a fix-plan gate Codex seat's prepared-evidence stages as other seats' are. The stage replay no longer refuses a plan seat for the cluster searches and sources its review turns read after every stage, or for its first-call contract while the stream has no call yet, so an empty first stage, a read-ahead patch chunk or a repeated evidence index continues as the post-run audit allows.
+
 ## 0.9.6
 
 - Refuse a Claude seat's partial Read or Grep of a patch chunk, source packet or required source segment when it is made, naming the whole-file read the audit needs.

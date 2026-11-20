@@ -147,7 +147,7 @@ case "${SHIM_MODE:-ok}" in
     printf '%s\n' '{"type":"turn.completed"}'
     exit 0
     ;;
-  staged)
+  staged|staged-audit)
     printf '%s\n' '{"type":"thread.started","thread_id":"fixture-thread"}'
     printf '%s\n' '{"type":"turn.started"}'
     TURN_SCHEMA=""
@@ -157,8 +157,32 @@ case "${SHIM_MODE:-ok}" in
       elif [ "$a" = --output-schema ]; then want_schema=1
       fi
     done
-    case "${TURN_SCHEMA##*/}" in
-      review-turn.schema.json)
+    case "${SHIM_MODE}:${TURN_SCHEMA##*/}" in
+      staged-audit:review-turn.schema.json)
+        # One post-index read of the required original-source target, then ready.
+        if [ -n "${SHIM_POST_INDEX_COMMAND:-}" ] && [ ! -e "$SHIM_STAGE_DIR/post-index-read" ]; then
+          : > "$SHIM_STAGE_DIR/post-index-read"
+          python3 - "$SHIM_POST_INDEX_COMMAND" <<'PY'
+import json
+import os
+import subprocess
+import sys
+
+command = sys.argv[1]
+output = subprocess.run(['bash', '-c', command], cwd=os.environ['ROOT'],
+                        capture_output=True, text=True).stdout
+item = {'id': 'post-index-read', 'type': 'command_execution', 'command': command}
+print(json.dumps({'type': 'item.started', 'item': item}))
+print(json.dumps({'type': 'item.completed', 'item': dict(item, aggregated_output=output,
+                                                           exit_code=0)}))
+PY
+        fi
+        printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT"
+        ;;
+      staged-audit:findings.schema.json)
+        printf '%s\n' '{"summary":"checked","findings":[]}' > "$OUT"
+        ;;
+      staged:review-turn.schema.json)
         case "$CALL_NUMBER" in
           8)
             printf '%s\n' \
@@ -188,7 +212,7 @@ case "${SHIM_MODE:-ok}" in
           *) echo "unexpected review turn $CALL_NUMBER" >&2; exit 1;;
         esac
         ;;
-      findings.schema.json) fixture_output "$SHIM_FIXTURE_DIR/findings-valid.json";;
+      staged:findings.schema.json) fixture_output "$SHIM_FIXTURE_DIR/findings-valid.json";;
       *)
         if [ -n "$CALL_NUMBER" ] && [ -n "${SHIM_STAGE_DIR:-}" ]; then
       python3 - "$SHIM_STAGE_DIR/call-$CALL_NUMBER.stdin" "$CALL_NUMBER" <<'PY'
@@ -202,21 +226,31 @@ prompt = open(sys.argv[1], encoding='utf-8').read()
 call_number = sys.argv[2]
 session = Path(os.environ['SHIM_STAGE_DIR']).resolve().parent
 root = Path(os.environ['ROOT']).resolve()
-for index, line in enumerate(prompt.splitlines(), 1):
-    if line.startswith('Read exactly: '):
-        command = line[len('Read exactly: '):]
-        words = shlex.split(command)
-        if len(words) != 3 or words[:2] != ['cat', '--']:
-            raise SystemExit(f'unexpected staged read command: {command}')
-        target = Path(words[2]).resolve(strict=True)
-        if not any(target == base or base in target.parents for base in (root, session)):
-            raise SystemExit(f'staged read escaped the test roots: {target}')
-        output = target.read_text(encoding='utf-8')
-        print(json.dumps({'type': 'item.started', 'item': {
-            'id': f'stage-{call_number}-{index}', 'type': 'command_execution', 'command': command}}))
-        print(json.dumps({'type': 'item.completed', 'item': {
-            'id': f'stage-{call_number}-{index}', 'type': 'command_execution', 'command': command,
-            'aggregated_output': output, 'exit_code': 0}}))
+commands = [line[len('Read exactly: '):] for line in prompt.splitlines()
+            if line.startswith('Read exactly: ')]
+# SHIM_STAGE_SLIP=<call>:<under|none|dup>[,...] makes a stage turn skip or repeat its last read.
+slips = dict(entry.split(':', 1) for entry in os.environ.get('SHIM_STAGE_SLIP', '').split(',')
+             if entry)
+slip = slips.get(call_number)
+if slip == 'under':
+    commands = commands[:-1]
+elif slip == 'none':
+    commands = []
+elif slip == 'dup':
+    commands = commands + commands[-1:]
+for index, command in enumerate(commands, 1):
+    words = shlex.split(command)
+    if len(words) != 3 or words[:2] != ['cat', '--']:
+        raise SystemExit(f'unexpected staged read command: {command}')
+    target = Path(words[2]).resolve(strict=True)
+    if not any(target == base or base in target.parents for base in (root, session)):
+        raise SystemExit(f'staged read escaped the test roots: {target}')
+    output = target.read_text(encoding='utf-8')
+    print(json.dumps({'type': 'item.started', 'item': {
+        'id': f'stage-{call_number}-{index}', 'type': 'command_execution', 'command': command}}))
+    print(json.dumps({'type': 'item.completed', 'item': {
+        'id': f'stage-{call_number}-{index}', 'type': 'command_execution', 'command': command,
+        'aggregated_output': output, 'exit_code': 0}}))
 PY
         fi
         printf '%s\n' '{"type":"item.completed","item":{"id":"stage-answer","type":"agent_message","text":"READ_STAGE_COMPLETE"}}'
