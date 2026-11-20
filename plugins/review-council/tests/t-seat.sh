@@ -683,6 +683,39 @@ test_seat_codex_repairs_a_prepared_evidence_under_read() {
   )
 }
 
+test_seat_codex_refuses_evidence_over_its_context_window() {
+  ( local _path="$PATH"; seat_env
+    local R="$T/capacity-root" S="$T/capacity-session" target
+    seat_codex_prepared_session "$R" "$S" || { fail "prepared Codex session fixture"; return; }
+    target=$(sed -n 's/^Required post-index original-source target: \([^:]*\):\([0-9]*\)-\([0-9]*\) .*/sed -n \2,\3p \1/p' \
+      "$S/r1-codex-luna.prompt.md")
+    printf '%s\n' '{"client_version":"0.0.0-test","models":[{"slug":"gpt-6-luna","visibility":"list","context_window":20000,"effective_context_window_percent":95}]}' \
+      > "$T/capacity-small.json"
+    mkdir -p "$S/calls"; : > "$S/calls.log"
+    REVIEW_COUNCIL_CODEX_MODELS_CACHE="$T/capacity-small.json" SHIM_MODE=staged-audit \
+      SHIM_POST_INDEX_COMMAND="$target" SHIM_STAGE_DIR="$S/calls" SHIM_CALLS_FILE="$S/calls.log" \
+      "$SCRIPTS/rev-seat.sh" codex-luna "$S" 1 "$S/r1-codex-luna.prompt.md" > "$S/out" 2> "$S/err"
+    assert_eq "evidence over the model's context window makes an unusable seat" "$?" 2
+    assert_eq "the refusal comes before any codex call" "$(wc -l < "$S/calls.log" | tr -d ' ')" 0
+    assert_grep "the seat log names the projection and the limit" "$S/r1-codex-luna.log" \
+      "^codex adapter: .*needs ~[0-9]+ tokens .*over 10450 \(55% of gpt-6-luna's 19000 usable\)$"
+
+    printf '%s\n' '{"client_version":"0.0.0-test","models":[{"slug":"gpt-6-sol","visibility":"list","context_window":20000,"effective_context_window_percent":95}]}' \
+      > "$T/capacity-unlisted.json"
+    mkdir -p "$S/calls-unknown"; : > "$S/calls-unknown.log"
+    REVIEW_COUNCIL_CODEX_MODELS_CACHE="$T/capacity-unlisted.json" SHIM_MODE=staged-audit \
+      SHIM_POST_INDEX_COMMAND="$target" SHIM_STAGE_DIR="$S/calls-unknown" \
+      SHIM_CALLS_FILE="$S/calls-unknown.log" SEAT=codex-luna MODEL=gpt-6-luna EFFORT=xhigh \
+      MODE=prompt ROOT="$R" PROMPT="$S/r1-codex-luna.prompt.md" \
+      SCHEMA="$SK/schema/findings.schema.json" OUT="$S/unknown.json" LOG="$S/unknown.log" \
+      RAW="$S/unknown.stream.ndjson" BASE=abc bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
+    assert_eq "a model the cache does not list launches as before" "$?" 0
+    assert_grep "the seat log says the capacity is unknown" "$S/unknown.log" \
+      '^codex adapter: context capacity unknown \(.*gpt-6-luna.*\)$'
+    seat_env_reset "$_path"
+  )
+}
+
 test_seat_codex_failure_reason_reaches_the_seat_log() {
   local _path="$PATH"; seat_env
   local S="$T/seat-codex-failure-reason"; seat_roster "$S"

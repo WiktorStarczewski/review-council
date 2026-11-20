@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Refuse a Codex seat before its first model call when its prepared evidence, their read turns and its assignment prompt are projected to fill more than 55% of the usable context window its model's row in the Codex model cache gives. Codex compacts an overflowing thread without a stream event, so the read audit could pass a seat that had lost evidence. The seat log names the projected and allowed tokens, and the refusal is a recorded seat failure, so the assignment is replaced as after any other. A model the cache does not list, or lists without a valid window, launches as before with one log line saying its capacity is unknown.
+
 ## 0.9.7
 
 - Write a Codex seat adapter's own refusal, such as an exceeded review-turn budget or a prepared-evidence failure, to the seat log as well as to stderr, so the session can name why the seat failed. Those lines never classify a seat as signed out or out of quota.
