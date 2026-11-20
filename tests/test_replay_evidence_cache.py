@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import tempfile
@@ -182,10 +183,12 @@ class StopGateDeadlineTests(unittest.TestCase):
 
         stdout = io.StringIO()
         started = time.monotonic()
+        handler = signal.getsignal(signal.SIGALRM)
         with patch.object(self.audit, 'stop_gate_reason', slow), \
                 patch('sys.stdin', io.StringIO(event)), contextlib.redirect_stdout(stdout):
             self.assertEqual(self.audit.stop_hook(args), 0)
         self.assertLess(time.monotonic() - started, 3, 'the hook outlived its budget')
+        self.assertIs(signal.getsignal(signal.SIGALRM), handler)
         self.assertEqual(stdout.getvalue(), '')
         self.assertIn('allowed unchecked', log.read_text() if log.exists() else '',
                       'the seat log does not say the gate failed open')
