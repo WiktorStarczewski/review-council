@@ -65,6 +65,33 @@ class BlobBatchTests(unittest.TestCase):
         self.assertLessEqual(len(commands), 1,
                              f'{len(commands)} git processes read {len(entries)} blobs')
 
+    def test_repeated_object_queries_start_one_git_process_each(self):
+        names = sorted(self.bodies)[:10]
+        entries = self.evidence.Repository(self.session).entries(self.tree)
+
+        def queries():
+            # The read audit's required-source lookups, once per assess pass, each pass with a
+            # fresh repository view.
+            answers = []
+            for _ in range(3):
+                repository = self.evidence.Repository(self.session)
+                for name in names:
+                    answers.append(repository.git('ls-tree', '-z', self.tree, '--', name))
+                    answers.append(repository.git('cat-file', 'blob', entries[name][1]))
+            return answers
+
+        answers, commands = self.started(queries)
+        expected = []
+        for name in names:
+            expected.append(subprocess.run(
+                ['git', '-C', str(self.root), 'ls-tree', '-z', self.tree, '--', name],
+                env=self.env, check=True, capture_output=True).stdout)
+            expected.append(self.bodies[name])
+        self.assertEqual(answers, expected * 3)
+        lookups = [command for command in commands if 'rev-parse' not in command]
+        self.assertLessEqual(len(lookups), len(names) + 1,
+                             f'{len(lookups)} git processes answered {len(answers)} object queries')
+
     def test_a_missing_or_non_blob_object_fails_as_the_one_shot_read_does(self):
         repository = self.evidence.Repository(self.session)
         missing = ('100644', '0' * 40)
