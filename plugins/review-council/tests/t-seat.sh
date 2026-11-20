@@ -379,7 +379,7 @@ assert 'at most 6 command_execution calls total' in first_review_prompt, first_r
 assert 'Use at most two source reads per investigation turn' in first_review_prompt, first_review_prompt
 assert 'Next evidence question:' in next_review_prompt and 'src/two.ts' in next_review_prompt, next_review_prompt
 assert 'searches as well as reads: plan at most 5 and return continue' in next_review_prompt, next_review_prompt
-assert 'or other test runner in these turns' in next_review_prompt, next_review_prompt
+assert 'is not a test, lint or typecheck run: the read-only policy refuses them' in next_review_prompt, next_review_prompt
 assert 'Of that allowance, 0 of 4 repository tool calls are used and 4 remain.' in first_review_prompt, first_review_prompt
 assert ('The previous turn ran 1 of its 6 allowed command_execution calls and returned 0.1 KiB of its 32 KiB.'
         in next_review_prompt), next_review_prompt
@@ -577,8 +577,30 @@ test_seat_codex_luna_allows_five_commands_per_review_turn() {
     "$(head -n 1 "$L/calls/call-1.stdin" | grep -c '^This review runs in bounded explicit turns\. The turn rules after the assignment below ')" 1
   assert_grep "Luna plans one call under its cap, searches included" "$L/calls/call-1.stdin" \
     'Every command counts toward that limit, searches as well as reads: plan at most 5 and return continue'
-  assert_grep "the review prompt rules out interpreters and test runners" "$L/calls/call-1.stdin" \
-    'Run no `node`, `python3`, `yarn`, `npm`, `npx` or other test runner in these turns'
+  assert_grep "the review prompt names the programs the read-only policy refuses" "$L/calls/call-1.stdin" \
+    'Do not run `node`, `python3` or another interpreter, `make`, bare `tsc`, or a `yarn`, `npm`, `pnpm` or `npx` command that is not a test, lint or typecheck run: the read-only policy refuses them'
+  assert_grep "the review prompt counts a permitted test command toward the turn caps" "$L/calls/call-1.stdin" \
+    'A permitted test, lint or typecheck command still counts toward the per-turn command limit, and its output toward the 32 KiB\.'
+  python3 - "$SCRIPTS/lib/readonly-bash-guard.py" <<'PY'
+import importlib.util
+import sys
+
+spec = importlib.util.spec_from_file_location('guard', sys.argv[1])
+guard = importlib.util.module_from_spec(spec); spec.loader.exec_module(guard)
+def refused(command):
+    try:
+        guard.validate(command)
+    except guard.Blocked:
+        return True
+    return False
+assert all(refused(command) for command in (
+    'node --test src/lib.py', 'python3 -c 1', 'make test', 'tsc --noEmit', 'yarn ts',
+    'npm run build', 'npx tsx src/a.ts')), 'a program the rule names is not refused'
+assert not any(refused(command) for command in (
+    'yarn test', 'npm run lint', 'pnpm typecheck', 'npx tsc --noEmit', 'npx jest src',
+    'pytest -q')), 'a permitted test, lint or typecheck run is refused'
+PY
+  assert_eq "the rule's refused and permitted examples match the read-only policy" "$?" 0
   assert_grep "the review prompt spells the search limiter with its space" "$L/calls/call-1.stdin" \
     'Keep the space in every result limiter, as in `\| head -80`\.'
 

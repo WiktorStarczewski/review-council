@@ -200,7 +200,7 @@ EOF
     REVIEW_TURN_PLAN=$REVIEW_TURN_CALL_LIMIT
     [ "$REVIEW_TURN_CALL_LIMIT" -le 2 ] || REVIEW_TURN_PLAN=$((REVIEW_TURN_CALL_LIMIT - 1))
     TURN_COUNT_RULE="Every command counts toward that limit, searches as well as reads: plan at most ${REVIEW_TURN_PLAN} and return continue once you have run them."
-    TURN_COMMAND_RULE='Run no `node`, `python3`, `yarn`, `npm`, `npx` or other test runner in these turns: one command the read-only policy refuses makes the read audit reject the whole review. Keep the space in every result limiter, as in `| head -80`.'
+    TURN_COMMAND_RULE='Do not run `node`, `python3` or another interpreter, `make`, bare `tsc`, or a `yarn`, `npm`, `pnpm` or `npx` command that is not a test, lint or typecheck run: the read-only policy refuses them, and one refused command can fail the whole review. A permitted test, lint or typecheck command still counts toward the per-turn command limit, and its output toward the 32 KiB. Keep the space in every result limiter, as in `| head -80`.'
     REVIEW_READS=0
     REVIEW_TARGET_READS=0
     REVIEW_READY=0
