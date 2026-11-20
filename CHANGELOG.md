@@ -4,6 +4,7 @@
 
 - Refuse a Codex seat before its first model call when its prepared evidence, their read turns and its assignment prompt are projected to fill more than 55% of the usable context window its model's row in the Codex model cache gives. Codex compacts an overflowing thread without a stream event, so the read audit could pass a seat that had lost evidence. The seat log names the projected and allowed tokens, and the refusal is a recorded seat failure, so the assignment is replaced as after any other. A model the cache does not list, or lists without a valid window, launches as before with one log line saying its capacity is unknown.
 - Stage a Codex seat's required source segments one per turn. In a pair, reading ahead into the next segment made three proof reads in one turn, which the audit never accepts; read alone, a skipped segment gets a repair turn and a read-ahead of exactly the next segment is kept. Seats take one more prepared-evidence turn per former pair.
+- Treat a lone repeated required source segment in a Codex seat's stream as an audit advisory, as for Claude seats, so the seat continues instead of failing; this replaces the 0.9.7 rule that such a repeat fails the seat at once. The repeat still earns no credit and no proof-read count, and its bytes still count toward the turn's output limits, so three new proof reads in one turn, or a repeat that takes a paired turn past 32 KiB, still fail the audit.
 
 ## 0.9.7
 

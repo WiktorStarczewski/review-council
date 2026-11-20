@@ -631,13 +631,30 @@ class RequiredSourceProofTests(unittest.TestCase):
         self.assertIn('reordered-required-source-segments',
                       [row['code'] for row in audit['violations']])
 
-    def test_codex_rejects_repeated_required_segment_in_a_paired_turn(self):
+    def test_codex_advises_on_a_lone_repeated_required_segment_in_a_turn(self):
         fixture = self.fixture('deleted')
         rc, audit = fixture.audit(
             group_required_segments=1, repeat_first_grouped_segment=True)
-        self.assertEqual(rc, 2)
+        self.assertEqual((rc, audit['violations']), (0, []))
         self.assertIn('duplicate-required-source-segment',
-                      [row['code'] for row in audit['violations']])
+                      [row['code'] for row in audit['advisories']])
+
+    def test_codex_counts_a_repeated_segment_against_its_turn_output(self):
+        for lines, bounded in ((None, False), (600, True)):
+            with self.subTest(compact_segment_lines=lines):
+                options = {'compact_segment_lines': lines} if lines else {}
+                fixture = SourceFixture(self.directory / str(lines), 'deleted', **options)
+                rc, audit = fixture.audit(
+                    group_required_segments=2, repeat_first_grouped_segment=True)
+                violations = {row['code'] for row in audit['violations']}
+                if bounded:
+                    self.assertEqual((rc, violations), (0, set()))
+                    self.assertIn('duplicate-required-source-segment',
+                                  [row['code'] for row in audit['advisories']])
+                else:
+                    self.assertEqual(rc, 2)
+                    self.assertLessEqual({'evidence-proof-batch-too-large',
+                                          'tool-turn-output-too-large'}, violations)
 
     def test_codex_rejects_two_source_context_packet_reads_in_one_turn(self):
         fixture = self.fixture('deleted')

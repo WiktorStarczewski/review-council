@@ -1302,9 +1302,11 @@ def turn(*calls):
         events.append({'type':'item.completed','item':{'id':call_id,'type':'command_execution','command':command_text,
                                                        'aggregated_output':output,'exit_code':0}})
     events.append({'type':'turn.completed'})
-if mode in ('sibling', 'paced', 'paced-altered', 'paced-oversized'):
+if mode in ('sibling', 'paced', 'paced-altered', 'paced-oversized', 'paced-repeat'):
     # Severity: the first segment shares its turn with an oversized prompt read, or the first two
-    # segments share one turn, with or without that read.
+    # segments share one turn, with or without that read. A repeat of the first takes that turn
+    # out of the paired-read exemption from the 32 KiB turn limit, so the audit voids it and
+    # counts its three segment reads.
     first, second = segments[0], segments[1]
     calls = [('source-' + str(row['index']), "cat '" + str(session / row['artifact']) + "'",
               (session / row['artifact']).read_text()) for row in (first, second)]
@@ -1316,6 +1318,8 @@ if mode in ('sibling', 'paced', 'paced-altered', 'paced-oversized'):
         turn(calls[1])
     elif mode == 'paced-oversized':
         turn(*calls, oversized)
+    elif mode == 'paced-repeat':
+        turn(*calls, ('source-repeat',) + calls[0][1:])
     else:
         turn(*calls)
     segments = segments[2:]
@@ -1407,6 +1411,7 @@ sibling|invalid;violations=missing-required-source-range@codex,missing-required-
 paced|valid;violations=-;advisories=-
 paced-altered|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,required-source-output-mismatch@command_execution;advisories=-
 paced-oversized|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,tool-output-too-large@command_execution,tool-turn-output-too-large@codex;advisories=-
+paced-repeat|invalid;violations=evidence-proof-batch-too-large@codex,evidence-read-order@audit,missing-required-source-range@codex,missing-required-source-segment@codex,required-source-segment-batch-too-large@codex,tool-turn-output-too-large@codex;advisories=-
 CASES
 
     write_required_transcript live-window
@@ -1513,9 +1518,10 @@ PY
         --out "$S/r9-sol.read-audit.json" >/dev/null 2>&1
       local audit_rc=$?
       if [ "$mode" = duplicate ]; then
-        assert_eq "duplicate completed Codex source read is rejected" "$audit_rc" 2
-        assert_grep "duplicate completed Codex source read has a stable violation" \
-          "$S/r9-sol.read-audit.json" '"code":"duplicate-required-source-segment"'
+        assert_eq "a lone repeated Codex source read is not fatal" "$audit_rc" 0
+        assert_eq "a lone repeated Codex source read is an advisory" \
+          "$(severity_verdict "$S/r9-sol.read-audit.json")" \
+          "$(severity_expect valid - duplicate-required-source-segment@command_execution,evidence-read-order@audit)"
         continue
       fi
       assert_eq "$mode required source artifact is rejected" "$audit_rc" 2

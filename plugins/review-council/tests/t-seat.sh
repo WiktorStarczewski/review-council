@@ -674,10 +674,19 @@ test_seat_codex_repairs_a_prepared_evidence_under_read() {
       SCHEMA="$SK/schema/findings.schema.json" OUT="$S/r1-codex-luna.json" \
       LOG="$S/r1-codex-luna.log" RAW="$S/r1-codex-luna.stream.ndjson" BASE=abc \
       bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
-    assert_eq "a repeated required source segment still fails the seat" "$?" 1
-    assert_eq "the refusal spends no further turn" "$(wc -l < "$S/calls.log" | tr -d ' ')" "$stage"
-    assert_grep "the seat log names the audit's reason" "$S/r1-codex-luna.log" \
-      '^codex adapter: .*duplicate-required-source-segment'
+    assert_eq "a repeated required source segment does not fail the seat" "$?" 0
+    assert_eq "the repeat needs no repair turn" "$(wc -l < "$S/calls.log" | tr -d ' ')" \
+      "$((calls - 1))"
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+      --raw "$S/r1-codex-luna.stream.ndjson" --prompt "$S/r1-codex-luna.prompt.md" --root "$R" \
+      --session "$S" --seat codex-luna --out "$S/r1-codex-luna.read-audit.json" >/dev/null 2>&1
+    assert_eq "the post-run audit accepts the repeated read" "$?" 0
+    assert_eq "the repeat is only an audit advisory" "$(python3 -c '
+import json, sys
+audit = json.load(open(sys.argv[1]))
+print(sorted({row["code"] for row in audit["violations"]}),
+      "duplicate-required-source-segment" in {row["code"] for row in audit["advisories"]})
+' "$S/r1-codex-luna.read-audit.json")" "[] True"
     assert_exit "the repaired run used one more turn than the plan" 0 test "$calls" -gt "$stage"
     seat_env_reset "$_path"
   )

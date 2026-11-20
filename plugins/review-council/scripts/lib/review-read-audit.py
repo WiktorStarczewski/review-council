@@ -4197,10 +4197,8 @@ def assess(args, blocked, progress=None):
     advisories = []
     fatal = unique
     if manifest is not None:
-        codex_fatal = {
-            'duplicate-required-source-segment', 'evidence-proof-batch-too-large',
-            'source-packet-batch-too-large',
-        }
+        # A repeated segment earns no credit and no proof-read count, so alone it only advises.
+        codex_fatal = {'evidence-proof-batch-too-large', 'source-packet-batch-too-large'}
         claude_fatal = {'evidence-proof-batch-too-large'}
         fatal = [item for item in unique
                  if item.get('code') not in ADVISORY_CODES

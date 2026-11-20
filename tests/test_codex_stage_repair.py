@@ -384,13 +384,16 @@ class StageRepairTests(unittest.TestCase):
         self.assertEqual(len(transcript), index_stage + 1)
         self.assertEqual(self.finish_and_audit(seat)[:2], (0, []))
 
-    def test_a_repeated_required_source_segment_is_refused_with_the_audit_codes(self):
+    def test_a_repeated_required_source_segment_continues_with_the_audit_advisory(self):
         seat = self.seat()
+        planned = self.plan_reads(seat)
         stage = self.first_stage(seat, 1, 'required source segments')
-        transcript = self.drive(seat, {stage: lambda listed: listed + listed[-1:]})
-        self.assertEqual(transcript[-1][0], 'refuse')
-        self.assertEqual(len(transcript), stage + 1)
-        self.assertIn('duplicate-required-source-segment', transcript[-1][1])
+        transcript = self.drive(seat, {stage: lambda listed: listed + listed})
+        self.assertEqual(transcript[-1], ['done'])
+        self.assertEqual(len(transcript), len(planned) + 1)
+        code, violations, advisories = self.finish_and_audit(seat)
+        self.assertEqual((code, violations), (0, []))
+        self.assertIn('duplicate-required-source-segment', advisories)
 
     def test_a_repeated_source_packet_is_refused_with_the_audit_codes(self):
         seat = self.seat()
