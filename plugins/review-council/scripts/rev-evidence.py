@@ -4,7 +4,7 @@ import argparse
 import ast
 from bisect import bisect_right
 from collections import Counter
-from contextlib import contextmanager, redirect_stdout
+from contextlib import contextmanager, redirect_stdout, suppress
 from difflib import SequenceMatcher
 import hashlib
 import importlib.util
@@ -23,6 +23,7 @@ import sys
 import tempfile
 import time
 import posixpath
+import weakref
 
 LIB_DIR = Path(__file__).resolve().parent / 'lib'
 if str(LIB_DIR) not in sys.path:
@@ -73,6 +74,7 @@ DIFF = ['diff', '--no-ext-diff', '--no-textconv', '--no-renames',
         '--no-indent-heuristic', '--diff-algorithm=myers', '--no-color',
         '--unified=3', '--binary', '--src-prefix=a/', '--dst-prefix=b/']
 OVERSIZED_BLOB = object()
+OBJECT_ID = re.compile(r'[0-9a-f]{40}|[0-9a-f]{64}')
 ACTIVE_PLAN_SEARCHES = set()
 SOURCE_CONTEXT_RECONSTRUCTION_MEMO: dict[tuple[str, ...], dict] = {}
 
@@ -1096,6 +1098,17 @@ def split_patch(patch, paths):
     return result
 
 
+def close_blob_reader(process):
+    if process is None:
+        return
+    for stream in (process.stdin, process.stdout):
+        with suppress(OSError):
+            stream.close()
+    if process.poll() is None:
+        process.kill()
+    process.wait()
+
+
 class Repository:
     def __init__(self, session):
         self.session = session
@@ -1122,6 +1135,7 @@ class Repository:
         self.env.update(GIT_OBJECT_DIRECTORY=str(self.objects),
                         GIT_ALTERNATE_OBJECT_DIRECTORIES=git_quote(str(objects)))
         self.blob_cache = {}
+        self.blob_reader = None
 
     def scoped(self, path):
         return within(path, self.selected)
@@ -1300,8 +1314,38 @@ class Repository:
         if not entry or entry[0] == '160000':
             return b''
         if entry[1] not in self.blob_cache:
-            self.blob_cache[entry[1]] = self.git('cat-file', 'blob', entry[1])
+            body = self.batch_blob(entry[1])
+            self.blob_cache[entry[1]] = (
+                self.git('cat-file', 'blob', entry[1]) if body is None else body)
         return self.blob_cache[entry[1]]
+
+    def batch_blob(self, oid):
+        """A blob through one long-lived `git cat-file --batch`, or None for anything else, which
+        the one-shot `git cat-file blob` then answers or refuses exactly as before."""
+        if not isinstance(oid, str) or not OBJECT_ID.fullmatch(oid):
+            return None
+        process = self.blob_reader
+        try:
+            if process is None:
+                process = self.blob_reader = subprocess.Popen(
+                    ['git', '-C', str(self.root), 'cat-file', '--batch'], env=self.env,
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                weakref.finalize(self, close_blob_reader, process)
+            process.stdin.write(oid.encode() + b'\n')
+            process.stdin.flush()
+            fields = process.stdout.readline().split()
+            if fields == [oid.encode(), b'missing']:
+                return None
+            if len(fields) != 3 or fields[0] != oid.encode() or not fields[2].isdigit():
+                raise ValueError('invalid batch blob response')
+            body = process.stdout.read(int(fields[2]))
+            if len(body) != int(fields[2]) or process.stdout.read(1) != b'\n':
+                raise ValueError('incomplete batch blob')
+        except (OSError, ValueError):
+            self.blob_reader = None
+            close_blob_reader(process)
+            return None
+        return body if fields[1] == b'blob' else None
 
     def preload(self, entries, max_bytes=2_000_000):
         for path, body in self.iter_blobs(entries, max_bytes=max_bytes):
