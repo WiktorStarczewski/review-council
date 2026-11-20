@@ -35,6 +35,7 @@ READ_BYTES_PER_TOKEN = 2.8
 PACKET_BYTES_PER_TOKEN = 2.4
 PROMPT_BYTES_PER_TOKEN = 3.0
 CONTEXT_SHARE_PERCENT = 55
+RAISED_WINDOW_SWITCH = 'REVIEW_COUNCIL_CODEX_MAX_CONTEXT_WINDOW'
 HEX_RUN = re.compile(rb'[0-9a-f]{32,}')
 IDENTITY_LINE = re.compile(
     rb'(?:[0-9]+\. )?(?:Required source range: |Patch-proven source range: |Required source segment '
@@ -633,9 +634,9 @@ def context_tokens(raw, bytes_per_token):
     return (len(raw) - hex_bytes) / bytes_per_token + hex_bytes
 
 
-def usable_context_window(model):
-    """(usable tokens, None) from the model's row in the Codex model cache that the roster reads,
-    or (None, why it is unknown)."""
+def catalog_window(model):
+    """((context window, effective percent, larger max_context_window or None), None) from the
+    model's row in the Codex model cache that the roster reads, or (None, why it is unknown)."""
     from roster import codex_catalog_path
     path = codex_catalog_path()
     try:
@@ -652,15 +653,19 @@ def usable_context_window(model):
     if (type(window) is not int or window <= 0 or type(percent) not in (int, float)
             or not 0 < percent <= 100):
         return None, f'{model} has no valid context window in {path}'
-    return math.floor(window * percent / 100), None
+    maximum = rows[0].get('max_context_window')
+    return (window, percent, maximum if type(maximum) is int and maximum > window else None), None
 
 
 def context_capacity(stage_dir, prompt, model):
-    """('fits', projected, limit), ('over', reason) or ('unknown', reason) for the context a seat
-    holds before review: the staged reads and their turns, then the assignment prompt."""
-    usable, unknown = usable_context_window(model)
+    """('fits', projected, limit), ('raise', projected, limit, window), ('over', reason) or
+    ('unknown', reason) for the context a seat holds before review: the staged reads and their
+    turns, then the assignment prompt. 'raise' needs the switch and the catalog's larger window."""
+    known, unknown = catalog_window(model)
     if unknown:
         return ('unknown', unknown)
+    window, percent, maximum = known
+    usable = math.floor(window * percent / 100)
     plan_path = Path(stage_dir) / STAGE_PLAN
     stages = (json.loads(plan_path.read_text(encoding='utf-8'))['stages']
               if plan_path.exists() else [])
@@ -676,10 +681,16 @@ def context_capacity(stage_dir, prompt, model):
     projected = math.ceil(projected + context_tokens(
         compact_review_prompt(Path(prompt).read_bytes()), PROMPT_BYTES_PER_TOKEN))
     limit = usable * CONTEXT_SHARE_PERCENT // 100
-    if projected > limit:
-        return ('over', f'the assignment needs ~{projected} tokens of context before review, over'
-                f" {limit} ({CONTEXT_SHARE_PERCENT}% of {model}'s {usable} usable)")
-    return ('fits', str(projected), str(limit))
+    if projected <= limit:
+        return ('fits', str(projected), str(limit))
+    reason = (f'the assignment needs ~{projected} tokens of context before review, over {limit}'
+              f" ({CONTEXT_SHARE_PERCENT}% of {model}'s {usable} usable)")
+    if maximum is not None and os.environ.get(RAISED_WINDOW_SWITCH) == '1':
+        raised = math.floor(maximum * percent / 100) * CONTEXT_SHARE_PERCENT // 100
+        if projected <= raised:
+            return ('raise', str(projected), str(raised), str(maximum))
+        reason += f', and over {raised} at its {maximum}-token maximum window'
+    return ('over', reason)
 
 
 def exact_stage_turn(turn, reads, root, session, audit):

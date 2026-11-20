@@ -94,9 +94,17 @@ else
   # Codex compacts an overflowing thread silently and the stream audit cannot see evidence it
   # dropped, so a seat that cannot hold its evidence refuses before any paid call.
   CAPACITY=$(stage_helper --capacity "$STAGE_DIR" --prompt "$PROMPT" --model "$MODEL") || exit 1
-  IFS=$'\t' read -r CAPACITY_VERDICT CAPACITY_DETAIL <<< "$CAPACITY"
+  IFS=$'\t' read -r CAPACITY_VERDICT CAPACITY_DETAIL CAPACITY_LIMIT CAPACITY_WINDOW <<< "$CAPACITY"
+  WINDOW_ARGS=()
   case "$CAPACITY_VERDICT" in
     fits) ;;
+    raise)
+      case "$CAPACITY_DETAIL:$CAPACITY_LIMIT:$CAPACITY_WINDOW" in
+        *[!0-9:]*|:*|*::*|*:) adapter_fail "invalid raised context window";;
+      esac
+      WINDOW_ARGS=(-c "model_context_window=$CAPACITY_WINDOW")
+      printf 'codex adapter: running %s at its %s-token maximum context window: the assignment needs ~%s tokens before review, within %s\n' \
+        "$MODEL" "$CAPACITY_WINDOW" "$CAPACITY_DETAIL" "$CAPACITY_LIMIT" >> "$LOG";;
     over) adapter_fail "$CAPACITY_DETAIL";;
     unknown) printf 'codex adapter: context capacity unknown (%s)\n' "$CAPACITY_DETAIL" >> "$LOG";;
     *) adapter_fail "invalid context capacity verdict";;
@@ -109,7 +117,7 @@ else
       ( cd "$ROOT" && CODEX_HOME="$PRIVATE_HOME" codex exec --ignore-user-config \
         -s read-only -C "$ROOT" -m "$MODEL" \
         -c model_reasoning_effort="$EFFORT" -c project_doc_max_bytes=0 \
-        -c model_instructions_file="$INSTRUCTIONS" \
+        -c model_instructions_file="$INSTRUCTIONS" ${WINDOW_ARGS[@]+"${WINDOW_ARGS[@]}"} \
         --json --output-schema "$schema" -o "$output" $GITCHECK - < "$input" ) \
         2>>"$LOG" | tee "$TURN_RAW" | tee -a "$RAW" \
         | python3 -u "$SUMMARY" codex "$output" >> "$LOG"
@@ -117,7 +125,7 @@ else
       ( cd "$ROOT" && CODEX_HOME="$PRIVATE_HOME" codex exec --ignore-user-config \
         -s read-only -C "$ROOT" -m "$MODEL" \
         -c model_reasoning_effort="$EFFORT" -c project_doc_max_bytes=0 \
-        -c model_instructions_file="$INSTRUCTIONS" \
+        -c model_instructions_file="$INSTRUCTIONS" ${WINDOW_ARGS[@]+"${WINDOW_ARGS[@]}"} \
         --json $GITCHECK - < "$input" ) 2>>"$LOG" \
         | tee "$TURN_RAW" | tee -a "$RAW" \
         | python3 -u "$SUMMARY" codex "$OUT" >> "$LOG"
@@ -125,6 +133,7 @@ else
       ( cd "$ROOT" && CODEX_HOME="$PRIVATE_HOME" codex exec resume \
         --ignore-user-config -m "$MODEL" -c model_reasoning_effort="$EFFORT" \
         -c project_doc_max_bytes=0 -c model_instructions_file="$INSTRUCTIONS" \
+        ${WINDOW_ARGS[@]+"${WINDOW_ARGS[@]}"} \
         -c 'sandbox_mode="read-only"' --json --output-schema "$schema" \
         -o "$output" $GITCHECK "$THREAD_ID" - < "$input" ) 2>>"$LOG" \
         | tee "$TURN_RAW" | tee -a "$RAW" \
@@ -133,6 +142,7 @@ else
       ( cd "$ROOT" && CODEX_HOME="$PRIVATE_HOME" codex exec resume \
         --ignore-user-config -m "$MODEL" -c model_reasoning_effort="$EFFORT" \
         -c project_doc_max_bytes=0 -c model_instructions_file="$INSTRUCTIONS" \
+        ${WINDOW_ARGS[@]+"${WINDOW_ARGS[@]}"} \
         -c 'sandbox_mode="read-only"' --json $GITCHECK "$THREAD_ID" - < "$input" ) \
         2>>"$LOG" | tee "$TURN_RAW" | tee -a "$RAW" \
         | python3 -u "$SUMMARY" codex "$OUT" >> "$LOG"
