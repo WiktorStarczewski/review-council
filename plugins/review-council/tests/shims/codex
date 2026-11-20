@@ -176,6 +176,16 @@ print(json.dumps({'type': 'item.started', 'item': item}))
 print(json.dumps({'type': 'item.completed', 'item': dict(item, aggregated_output=output,
                                                            exit_code=0)}))
 PY
+          # SHIM_REVIEW_EXTRA_COMMAND is recorded beside that read as a command that never started.
+          [ -z "${SHIM_REVIEW_EXTRA_COMMAND:-}" ] || python3 - "$SHIM_REVIEW_EXTRA_COMMAND" <<'PY'
+import json
+import sys
+
+item = {'id': 'review-extra', 'type': 'command_execution', 'command': sys.argv[1]}
+print(json.dumps({'type': 'item.started', 'item': item}))
+print(json.dumps({'type': 'item.completed', 'item': dict(item, aggregated_output='',
+                                                           exit_code=127)}))
+PY
         fi
         printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT"
         ;;

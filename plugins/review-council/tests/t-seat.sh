@@ -756,6 +756,35 @@ test_seat_codex_review_turn_reads_a_hashless_prompt_copy() {
   )
 }
 
+test_seat_codex_refuses_a_review_command_the_read_audit_rejects() {
+  ( local _path="$PATH"; seat_env
+    local R="$T/refused-command-root" S="$T/refused-command-session" target
+    seat_codex_prepared_session "$R" "$S" || { fail "prepared Codex session fixture"; return; }
+    target=$(sed -n 's/^Required post-index original-source target: \([^:]*\):\([0-9]*\)-\([0-9]*\) .*/sed -n \2,\3p \1/p' \
+      "$S/r1-codex-luna.prompt.md")
+    mkdir -p "$S/calls"; : > "$S/calls.log"
+    SHIM_MODE=staged-audit SHIM_POST_INDEX_COMMAND="$target" \
+      SHIM_REVIEW_EXTRA_COMMAND='rg -n fn03 src | head-80' SHIM_STAGE_DIR="$S/calls" \
+      SHIM_CALLS_FILE="$S/calls.log" SEAT=codex-luna MODEL=gpt-6-luna EFFORT=xhigh MODE=prompt \
+      ROOT="$R" PROMPT="$S/r1-codex-luna.prompt.md" SCHEMA="$SK/schema/findings.schema.json" \
+      OUT="$S/r1-codex-luna.json" LOG="$S/r1-codex-luna.log" RAW="$S/r1-codex-luna.stream.ndjson" \
+      BASE=abc bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
+    assert_eq "a review turn running a command the read audit rejects fails the seat" "$?" 1
+    assert_grep "the seat log names the audit's code" "$S/r1-codex-luna.log" \
+      '^codex adapter: review turn ran a command the read audit rejects \(unsupported-shell-command\)$'
+    assert_eq "no findings turn runs after the refused turn" \
+      "$(grep -l 'findings.schema.json' "$S"/calls/call-*.args | wc -l | tr -d ' ')" 0
+    printf '%s\n' '{"summary":"checked","findings":[]}' > "$S/r1-codex-luna.json"
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+      --raw "$S/r1-codex-luna.stream.ndjson" --prompt "$S/r1-codex-luna.prompt.md" --root "$R" \
+      --session "$S" --seat codex-luna --out "$S/r1-codex-luna.read-audit.json" >/dev/null 2>&1
+    assert_eq "the post-run audit rejects the same stream" "$?" 2
+    assert_grep "for the same code" "$S/r1-codex-luna.read-audit.json" \
+      '"code":"unsupported-shell-command"'
+    seat_env_reset "$_path"
+  )
+}
+
 test_seat_codex_runs_at_the_maximum_window_unless_switched_off() {
   ( local _path="$PATH"; seat_env
     local R="$T/raised-root" S="$T/raised-session" target run switch

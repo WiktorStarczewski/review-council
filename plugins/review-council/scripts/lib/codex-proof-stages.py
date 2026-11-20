@@ -369,6 +369,31 @@ def turn_stats(path, root, session):
     return len(calls), total, expansions
 
 
+def review_turn_refusal(turn, prompt, root, session, deps=None):
+    """The first code by which the read audit rejects a command this review turn ran, or None.
+    rev-seat keeps a review without an evidence manifest whatever its audit finds, and the audit
+    only advises on its advisory codes, so neither refuses."""
+    audit = read_audit_module()
+    root, session = Path(root).resolve(), Path(session).resolve()
+    try:
+        scoped, _ = audit.evidence_manifest_declaration(
+            Path(prompt).read_text(encoding='utf-8').splitlines())
+    except (OSError, UnicodeError) as error:
+        raise StageError('review prompt is unavailable') from error
+    if not scoped:
+        return None
+    authorized, complete = audit.prompt_permissions(prompt, root, session)
+    roots = audit.allowed_roots(root, session, deps)
+    dependency = Path(deps).resolve() if deps else None
+    for row in sorted(codex_call_rows(turn).values(), key=lambda row: row['order']):
+        for item in audit.validate_call(
+                'command_execution', {'command': row['command']}, roots, root, session,
+                authorized, complete, {}, dependency, read_limit=audit.CODEX_SOURCE_READ_LINES):
+            if item['code'] not in audit.ADVISORY_CODES:
+                return item['code']
+    return None
+
+
 def prepared_stages(prompt, seat, model, stage_dir):
     session = prompt.parent.resolve(strict=True)
     lines = prompt.read_text(encoding='utf-8').splitlines()
@@ -847,6 +872,7 @@ def main():
     parser.add_argument('--required-post-index-target')
     parser.add_argument('--review-status')
     parser.add_argument('--turn-stats')
+    parser.add_argument('--turn-refusal')
     parser.add_argument('--post-index-target-read-count')
     parser.add_argument('--root')
     parser.add_argument('--session')
@@ -916,6 +942,16 @@ def main():
             calls, output_bytes, expansions = turn_stats(
                 args.turn_stats, args.root, args.session)
             print(f'{calls}\t{output_bytes}\t{expansions}')
+        except (OSError, UnicodeError, StageError) as error:
+            print('codex proof staging: ' + str(error), file=sys.stderr)
+            return 1
+        return 0
+    if args.turn_refusal:
+        try:
+            if not args.prompt or not args.root or not args.session:
+                raise StageError('a review turn check needs the prompt and review roots')
+            print(review_turn_refusal(args.turn_refusal, args.prompt, args.root, args.session,
+                                      args.deps) or '')
         except (OSError, UnicodeError, StageError) as error:
             print('codex proof staging: ' + str(error), file=sys.stderr)
             return 1

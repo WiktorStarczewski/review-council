@@ -194,6 +194,8 @@ EOF
     REQUIRED_POST_INDEX=$(stage_helper --required-post-index-read "$PROMPT") || exit 1
     REQUIRED_POST_INDEX_TARGET=$(stage_helper \
       --required-post-index-target "$PROMPT") || exit 1
+    REFUSAL_ARGS=(--prompt "$PROMPT" --root "$AUDIT_ROOT" --session "$SESSION_DIR")
+    [ -z "${REV_DEPS_DIR:-}" ] || REFUSAL_ARGS+=(--deps "$REV_DEPS_DIR")
     REVIEW_READS=0
     REVIEW_TARGET_READS=0
     REVIEW_READY=0
@@ -254,6 +256,11 @@ EOF
       case "$TURN_CALLS:$TURN_BYTES:$TURN_READS" in
         *[!0-9:]*|:*) adapter_fail "invalid review turn metrics";;
       esac
+      # A command the read audit rejects fails the stream whatever the seat reads next.
+      TURN_REFUSAL=$(stage_helper --turn-refusal "$TURN_RAW" "${REFUSAL_ARGS[@]}") || exit 1
+      if [ -n "$TURN_REFUSAL" ]; then
+        adapter_fail "review turn ran a command the read audit rejects ($TURN_REFUSAL)"
+      fi
       if [ "$TURN_CALLS" -gt "$REVIEW_TURN_CALL_LIMIT" ]; then
         adapter_fail "review turn exceeded its command-call budget"
       fi

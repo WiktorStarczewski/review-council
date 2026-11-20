@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Fail a Codex seat at the review turn that runs a command the read audit rejects, such as a program the read-only policy refuses (`node --test`, `yarn ts`, or `head-80` without its space) or a path outside the review's scope, and name the audit's code in the seat log. The audit rejects such a stream whatever the seat reads next; three Luna seats that ran one kept reviewing for 3 to 12 more turns and 0.9M to 6.8M more input tokens before their audit failed. A command the audit only advises on still continues, as does any command in a review without an evidence manifest, whose result the seat keeps whatever its audit finds.
+
 ## 0.9.9
 
 - Prove a required source range whose snapshot lines all lie in the new side of the seat's own assigned patch hunks by those patch lines, and prepare no source segments for it. The prompt lists it as a patch-proven range with the patch lines that hold it, and the read audit credits the range, and a finding citing it, only once the seat's exact reads of the patch chunks or windows holding those lines are credited; the manifest validators recompute that coverage byte for byte from the assigned patch. A range with any line outside the hunks keeps all its segments. This applies to every adapter; on the 637 KB C7 review it removes 8 to 61 ranges and 31-316 KB of segments per Luna seat.
