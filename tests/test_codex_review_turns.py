@@ -79,7 +79,7 @@ class ReviewTurnRefusalTests(unittest.TestCase):
         """The post-run audit's return code and violation codes once the seat finishes."""
         self.turn(seat, [], FINDINGS)
         (self.session / f'{seat.label}-{SEAT}.json').write_text(FINDINGS + '\n')
-        out = self.base / 'audit.json'
+        out = self.session / f'{seat.label}-{SEAT}.read-audit.json'
         proc = subprocess.run(
             [sys.executable, str(AUDIT), 'audit', '--adapter', 'codex', '--raw', str(seat.raw),
              '--prompt', str(self.prompt), '--root', str(self.root),
