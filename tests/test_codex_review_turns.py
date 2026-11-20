@@ -1,4 +1,5 @@
-"""Codex review turns: the adapter refuses a command at once exactly when the read audit would."""
+"""Codex review turns: the adapter refuses a command at once exactly when the read audit would,
+and credits a read exactly when the audit does."""
 import json
 from pathlib import Path
 import shlex
@@ -75,6 +76,14 @@ class ReviewTurnRefusalTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return proc.stdout.strip()
 
+    def helper(self, *args):
+        proc = subprocess.run(
+            [sys.executable, str(HELPER), *args, '--prompt', str(self.prompt),
+             '--root', str(self.root), '--session', str(self.session)],
+            capture_output=True, text=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        return proc.stdout.strip()
+
     def audit(self, seat):
         """The post-run audit's return code and violation codes once the seat finishes."""
         self.turn(seat, [], FINDINGS)
@@ -109,6 +118,38 @@ class ReviewTurnRefusalTests(unittest.TestCase):
                          ('npx tsc --noEmit', '', 0)], READY)
         self.assertEqual(self.refusal(seat.turn), '')
         self.assertEqual(self.audit(seat), (0, []))
+
+    def test_a_target_read_the_audit_voids_counts_only_once_a_later_turn_reads_it_again(self):
+        # Over 32 KiB in one turn (tool-turn-output-too-large), or batched with a second read
+        # (unsupported-source-batch): the audit credits neither read, though both deliver it.
+        big = [self.target, 'sed -n 1,5p src/lib.py', 'sed -n 13,17p src/lib.py']
+        for reads in (big, [f'{self.target}; {self.target}']):
+            with self.subTest(reads=reads):
+                seat = self.seat()
+                self.turn(seat, reads, READY)
+                self.assertEqual(self.helper('--post-index-target-read-count', str(seat.raw)),
+                                 '0\t1')
+                returncode, codes = self.audit(seat)
+                self.assertEqual(returncode, 2)
+                self.assertIn('missing-required-source-read', codes)
+                seat = self.seat()
+                self.turn(seat, reads, READY)
+                self.turn(seat, [self.target], READY)
+                self.assertEqual(self.helper('--post-index-target-read-count', str(seat.raw)),
+                                 '1\t1')
+                self.assertEqual(self.audit(seat), (0, []))
+
+    def test_ranges_read_only_where_the_audit_credits_nothing_are_listed(self):
+        seat = self.seat()
+        self.turn(seat, [self.target, 'sed -n 1,5p src/lib.py', 'sed -n 13,17p src/lib.py'], READY)
+        listed = 'src/lib.py:10-11, src/lib.py:1-5, src/lib.py:13-17'
+        self.assertEqual(self.helper('--voided-ranges', str(seat.turn)), listed)
+        self.assertEqual(self.helper('--voided-ranges', str(seat.raw)), listed)
+        self.turn(seat, [self.target, 'sed -n 1,2p src/lib.py', 'sed -n 1,3p src/use00.py; '
+                         'sed -n 1,1p src/use00.py'], READY)
+        self.assertEqual(self.helper('--voided-ranges', str(seat.turn)), 'src/use00.py:1-3')
+        self.assertEqual(self.helper('--voided-ranges', str(seat.raw)),
+                         'src/lib.py:1-5, src/lib.py:13-17, src/use00.py:1-3')
 
     def test_a_review_without_an_evidence_manifest_is_never_refused(self):
         legacy = self.session / 'legacy.prompt.md'

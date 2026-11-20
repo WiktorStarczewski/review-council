@@ -887,6 +887,47 @@ print(audit["status"], len(audit["violations"]), len(audit["advisories"]))
   )
 }
 
+test_seat_codex_voids_a_review_turn_over_32_kib_and_continues() {
+  ( local _path="$PATH"; seat_env
+    local R="$T/void-turn-root" S="$T/void-turn-session" target reread final
+    seat_codex_prepared_session "$R" "$S" || { fail "prepared Codex session fixture"; return; }
+    target=$(sed -n 's/^Required post-index original-source target: \([^:]*\):\([0-9]*\)-\([0-9]*\) .*/sed -n \2,\3p \1/p' \
+      "$S/r1-codex-luna.prompt.md")
+    mkdir -p "$S/calls"; : > "$S/calls.log"
+    SHIM_MODE=staged-audit SHIM_POST_INDEX_COMMAND="$target" SHIM_REVIEW_REREAD=1 \
+      SHIM_REVIEW_EXTRA_READS=$'sed -n 1,5p src/lib.py\nsed -n 13,17p src/lib.py' \
+      SHIM_STAGE_DIR="$S/calls" SHIM_CALLS_FILE="$S/calls.log" SEAT=codex-luna MODEL=gpt-6-luna \
+      EFFORT=xhigh MODE=prompt ROOT="$R" PROMPT="$S/r1-codex-luna.prompt.md" \
+      SCHEMA="$SK/schema/findings.schema.json" OUT="$S/r1-codex-luna.json" \
+      LOG="$S/r1-codex-luna.log" RAW="$S/r1-codex-luna.stream.ndjson" BASE=abc \
+      bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
+    assert_eq "a review turn over 32 KiB continues and the seat finalizes" "$?" 0
+    assert_grep "the seat log names the voided turn and its ranges" "$S/r1-codex-luna.log" \
+      '^codex adapter: review turn 1 returned [0-9]+ bytes, over 32 KiB, so the read audit credits none of its reads \(src/lib\.py:10-11, src/lib\.py:1-5, src/lib\.py:13-17\); the review continues$'
+    reread=$(grep -l '^Next evidence question:' "$S"/calls/call-*.stdin)
+    assert_eq "the voided target read is asked for again in one more turn" \
+      "$(printf '%s\n' "$reread" | grep -c .)" 1
+    assert_grep "that turn names the voided reads" "$reread" \
+      "The read audit credits no read or search from that turn, because it returned over 32 KiB: no finding may cite a range only that turn read \(src/lib\.py:10-11, src/lib\.py:1-5, src/lib\.py:13-17\) unless a later turn of at most 32 KiB reads it again\."
+    assert_grep "and asks for the exact required target" "$reread" \
+      'Read the exact required original-source target src/lib\.py:10-11 in a later explicit turn before finalizing\.'
+    final=$(grep -l 'findings.schema.json' "$S"/calls/call-*.args)
+    final=${final%.args}.stdin
+    assert_grep "the findings turn lists the ranges no credited read covers" "$final" \
+      '^The read audit credits none of these ranges, which this review read only in a turn over 32 KiB or by a command it flags: src/lib\.py:1-5, src/lib\.py:13-17\. Cite them only where the prepared evidence covers them\.$'
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+      --raw "$S/r1-codex-luna.stream.ndjson" --prompt "$S/r1-codex-luna.prompt.md" --root "$R" \
+      --session "$S" --seat codex-luna --out "$S/r1-codex-luna.read-audit.json" >/dev/null 2>&1
+    assert_eq "the post-run audit accepts the same stream" "$?" 0
+    assert_eq "voiding the oversized turn only by its advisory" "$(python3 -c '
+import json, sys
+audit = json.load(open(sys.argv[1]))
+print(audit["status"], len(audit["violations"]), sorted({row["code"] for row in audit["advisories"]}))
+' "$S/r1-codex-luna.read-audit.json" 2>&1)" "valid 0 ['tool-turn-output-too-large']"
+    seat_env_reset "$_path"
+  )
+}
+
 test_seat_codex_review_turn_refusal_is_a_hard_audit_failure() {
   ( local _path="$PATH"; seat_env
     local R="$T/refused-turn-root" S="$T/refused-turn-session" target calls

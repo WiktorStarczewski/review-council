@@ -255,7 +255,46 @@ def codex_call_rows(path):
     return calls
 
 
-def post_index_target_read_count(path, prompt, root, session):
+def audit_voided_calls(calls, keys, prompt, root, session, deps, audit):
+    """Of these calls, the ones whose reads the read audit credits nothing: each in an explicit
+    turn over 32 KiB (tool-turn-output-too-large; a Codex turn's only exemption, an ordered turn of
+    prepared artifacts, holds no repository read) and each it raises any code on."""
+    sizes = {}
+    for row in calls.values():
+        sizes[row['turn']] = sizes.get(row['turn'], 0) + audit.output_bytes(row['output'])
+    authorized, complete = audit.prompt_permissions(prompt, root, session)
+    roots = audit.allowed_roots(root, session, deps)
+    dependency = Path(deps).resolve() if deps else None
+    return {key for key in keys if sizes[calls[key]['turn']] > OUTPUT_BYTES or audit.validate_call(
+        'command_execution', {'command': calls[key]['command']}, roots, root, session,
+        authorized, complete, {}, dependency, read_limit=audit.CODEX_SOURCE_READ_LINES)}
+
+
+def voided_ranges(path, prompt, root, session, deps=None):
+    """The repository source ranges this stream read only in calls the read audit credits
+    nothing, in the order read."""
+    audit = read_audit_module()
+    root, session = Path(root).resolve(), Path(session).resolve()
+    reads = []
+    calls = codex_call_rows(path)
+    for key, call in sorted(calls.items(), key=lambda row: row[1]['order']):
+        if call['success']:
+            ranges, _ = audit.shell_source_ranges(
+                call['command'], root, session=session, line_limit=audit.CODEX_SOURCE_READ_LINES)
+            if ranges:
+                reads.append((key, ranges))
+    voided = audit_voided_calls(calls, [key for key, _ in reads], prompt, root, session, deps,
+                                audit)
+    credited = [row for key, ranges in reads if key not in voided for row in ranges]
+    covered = audit._load_evidence_module().source_target_covered
+    listed = []
+    for row in (row for key, ranges in reads if key in voided for row in ranges):
+        if not covered(row, credited + listed):
+            listed.append(row)
+    return [f"{row['path']}:{row['line_start']}-{row['line_end']}" for row in listed]
+
+
+def post_index_target_read_count(path, prompt, root, session, deps=None):
     audit = read_audit_module()
     root = Path(root).resolve()
     session = Path(session).resolve()
@@ -279,10 +318,13 @@ def post_index_target_read_count(path, prompt, root, session):
     if not index_reads:
         return 0, 0
     _, index_call = index_reads[0]
+    later = [key for key, call in ordered if call['success'] and call['turn'] > index_call['turn']
+             and call['order'] > index_call['order']]
+    voided = audit_voided_calls(calls, later, prompt, root, session, deps, audit)
     post_index_ranges = []
-    for _, call in ordered:
-        if not call['success'] or call['turn'] <= index_call['turn'] \
-                or call['order'] <= index_call['order']:
+    for key in later:
+        call = calls[key]
+        if key in voided:
             continue
         ranges, _ = audit.shell_source_ranges(
             call['command'], root, session=session,
@@ -894,6 +936,7 @@ def main():
     parser.add_argument('--turn-stats')
     parser.add_argument('--turn-refusal')
     parser.add_argument('--post-index-target-read-count')
+    parser.add_argument('--voided-ranges')
     parser.add_argument('--root')
     parser.add_argument('--session')
     args = parser.parse_args()
@@ -988,8 +1031,19 @@ def main():
             if not args.prompt or not args.root or not args.session:
                 raise StageError('post-index target proof requires the prompt and review roots')
             target_read, index_read = post_index_target_read_count(
-                args.post_index_target_read_count, args.prompt, args.root, args.session)
+                args.post_index_target_read_count, args.prompt, args.root, args.session,
+                args.deps)
             print(f'{target_read}\t{index_read}')
+        except (OSError, UnicodeError, StageError) as error:
+            print('codex proof staging: ' + str(error), file=sys.stderr)
+            return 1
+        return 0
+    if args.voided_ranges:
+        try:
+            if not args.prompt or not args.root or not args.session:
+                raise StageError('voided review reads need the prompt and review roots')
+            print(', '.join(voided_ranges(args.voided_ranges, args.prompt, args.root,
+                                          args.session, args.deps)))
         except (OSError, UnicodeError, StageError) as error:
             print('codex proof staging: ' + str(error), file=sys.stderr)
             return 1

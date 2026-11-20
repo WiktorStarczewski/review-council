@@ -202,6 +202,7 @@ EOF
     [ "$REVIEW_TURN_CALL_LIMIT" -le 2 ] || REVIEW_TURN_PLAN=$((REVIEW_TURN_CALL_LIMIT - 1))
     TURN_COUNT_RULE="Every command counts toward that limit, searches as well as reads: plan at most ${REVIEW_TURN_PLAN} and return continue once you have run them."
     TURN_COMMAND_RULE=$(stage_helper --turn-command-rule) || exit 1
+    TURN_OUTPUT_RULE="The read audit credits no read or search from a turn over 32 KiB."
     REVIEW_READS=0
     REVIEW_TARGET_READS=0
     REVIEW_READY=0
@@ -212,7 +213,7 @@ EOF
       READS_USED="Of that allowance, ${REVIEW_READS} of ${REVIEW_READ_BUDGET} repository tool calls are used and $((REVIEW_READ_BUDGET - REVIEW_READS)) remain."
       if [ "$review_turn" -gt 1 ]; then
         KIB_TENTHS=$(((TURN_BYTES * 10 + 1023) / 1024))
-        LAST_TURN="The previous turn ran ${TURN_CALLS} of its ${REVIEW_TURN_CALL_LIMIT} allowed command_execution calls and returned $((KIB_TENTHS / 10)).$((KIB_TENTHS % 10)) KiB of its 32 KiB.${TURN_PACE}"
+        LAST_TURN="The previous turn ran ${TURN_CALLS} of its ${REVIEW_TURN_CALL_LIMIT} allowed command_execution calls and returned $((KIB_TENTHS / 10)).$((KIB_TENTHS % 10)) KiB of its 32 KiB.${TURN_PACE}${TURN_VOID}"
       fi
       if [ "$review_turn" = 1 ]; then
         printf '%s\n\n' "This review runs in bounded explicit turns. The turn rules after the assignment below govern how you spend its repository-call allowance and what each turn returns: at most ${REVIEW_TURN_CALL_LIMIT} command_execution calls per turn, searches included, and a status JSON instead of findings until a later prompt asks for them." \
@@ -231,7 +232,7 @@ EOF
         fi
         cat >> "$REVIEW_PROMPT" <<EOF
 
-Keep post-index repository investigation within bounded explicit turns. Each explicit turn permits at most ${REVIEW_TURN_CALL_LIMIT} command_execution calls total, of any kind, and no more than 32 KiB of combined output. ${TURN_COUNT_RULE} Use at most two source reads per investigation turn and target at most 12 KiB per read. Return continue before reading additional ranges. ${TURN_COMMAND_RULE} The assignment's aggregate in-scope repository-read allowance applies across the full review and all explicit turns; it does not reset at a turn boundary. ${READS_USED} If more evidence is needed after this turn, return status "continue" with one concrete next evidence question in next_step. If the evidence is sufficient to finish, return status "ready" with an empty next_step. Do not return findings in these bounded turns.
+Keep post-index repository investigation within bounded explicit turns. Each explicit turn permits at most ${REVIEW_TURN_CALL_LIMIT} command_execution calls total, of any kind, and no more than 32 KiB of combined output. ${TURN_OUTPUT_RULE} ${TURN_COUNT_RULE} Use at most two source reads per investigation turn and target at most 12 KiB per read. Return continue before reading additional ranges. ${TURN_COMMAND_RULE} The assignment's aggregate in-scope repository-read allowance applies across the full review and all explicit turns; it does not reset at a turn boundary. ${READS_USED} If more evidence is needed after this turn, return status "continue" with one concrete next evidence question in next_step. If the evidence is sufficient to finish, return status "ready" with an empty next_step. Do not return findings in these bounded turns.
 EOF
       elif [ "$REVIEW_READS" -ge "$REVIEW_READ_BUDGET" ]; then
         NO_MORE_READS=1
@@ -247,7 +248,7 @@ EOF
       else
         {
           cat <<EOF
-Continue the same assigned review using the prepared evidence and prior review reasoning in this conversation. Do not reread prepared artifacts. This explicit turn permits at most ${REVIEW_TURN_CALL_LIMIT} command_execution calls total, of any kind, and at most 32 KiB of combined output. ${TURN_COUNT_RULE} Use at most two source reads per investigation turn and target at most 12 KiB per read. Return continue before reading additional ranges. ${TURN_COMMAND_RULE} The assignment's aggregate in-scope repository-read allowance applies across the full review and all explicit turns; it does not reset at a turn boundary. ${READS_USED} ${LAST_TURN} If more evidence is needed, return status "continue" and one concrete next evidence question in next_step. If ready to finish, return status "ready" with an empty next_step. Do not return findings yet.
+Continue the same assigned review using the prepared evidence and prior review reasoning in this conversation. Do not reread prepared artifacts. This explicit turn permits at most ${REVIEW_TURN_CALL_LIMIT} command_execution calls total, of any kind, and at most 32 KiB of combined output. ${TURN_OUTPUT_RULE} ${TURN_COUNT_RULE} Use at most two source reads per investigation turn and target at most 12 KiB per read. Return continue before reading additional ranges. ${TURN_COMMAND_RULE} The assignment's aggregate in-scope repository-read allowance applies across the full review and all explicit turns; it does not reset at a turn boundary. ${READS_USED} ${LAST_TURN} If more evidence is needed, return status "continue" and one concrete next evidence question in next_step. If ready to finish, return status "ready" with an empty next_step. Do not return findings yet.
 
 Next evidence question:
 EOF
@@ -285,8 +286,14 @@ EOF
       if [ "$NO_MORE_READS" = 1 ] && [ "$TURN_CALLS" -ne 0 ]; then
         adapter_fail "review turn used tools after the assignment's repository-call allowance was used up"
       fi
+      # A turn over 32 KiB earns no read credit in the read audit, which only advises on it, so
+      # the seat continues knowing that a finding cannot cite what only that turn read.
+      TURN_VOID=""
       if [ "$TURN_BYTES" -gt 32768 ]; then
-        adapter_fail "review turn exceeded its output budget"
+        TURN_VOIDED=$(stage_helper --voided-ranges "$TURN_RAW" "${REFUSAL_ARGS[@]}") || exit 1
+        printf 'codex adapter: review turn %s returned %s bytes, over 32 KiB, so the read audit credits none of its reads%s; the review continues\n' \
+          "$review_turn" "$TURN_BYTES" "${TURN_VOIDED:+ ($TURN_VOIDED)}" >> "$LOG"
+        TURN_VOID=" The read audit credits no read or search from that turn, because it returned over 32 KiB: no finding may cite a range only that turn read${TURN_VOIDED:+ ($TURN_VOIDED)} unless a later turn of at most 32 KiB reads it again."
       fi
       # The read audit has no per-turn call rule, so the call limit only paces the seat.
       TURN_PACE=""
@@ -301,8 +308,7 @@ EOF
         ready)
           if [ "$REQUIRED_POST_INDEX" = 1 ]; then
             REVIEW_TARGET_PROOF=$(stage_helper \
-              --post-index-target-read-count "$RAW" --prompt "$PROMPT" \
-              --root "$AUDIT_ROOT" --session "$SESSION_DIR") || exit 1
+              --post-index-target-read-count "$RAW" "${REFUSAL_ARGS[@]}") || exit 1
             IFS=$'\t' read -r REVIEW_TARGET_READS REVIEW_INDEX_READS \
               <<< "$REVIEW_TARGET_PROOF"
             case "$REVIEW_TARGET_READS:$REVIEW_INDEX_READS" in
@@ -342,6 +348,9 @@ EOF
         printf '%s\n' "$NEXT_STEP"
       } > "$FINAL_PROMPT"
     fi
+    VOIDED_RANGES=$(stage_helper --voided-ranges "$RAW" "${REFUSAL_ARGS[@]}") || exit 1
+    [ -z "$VOIDED_RANGES" ] || printf '\n%s\n' "The read audit credits none of these ranges, which this review read only in a turn over 32 KiB or by a command it flags: ${VOIDED_RANGES}. Cite them only where the prepared evidence covers them." \
+      >> "$FINAL_PROMPT"
     run_codex_turn "$FINAL_PROMPT" "$SCHEMA" "$OUT" || exit $?
     RESUMED_THREAD_ID=$(stage_helper --thread-id-stream "$RAW") || exit 1
     if [ "$RESUMED_THREAD_ID" != "$THREAD_ID" ]; then

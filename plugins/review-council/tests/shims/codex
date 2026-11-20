@@ -160,26 +160,30 @@ case "${SHIM_MODE:-ok}" in
     done
     case "${SHIM_MODE}:${TURN_SCHEMA##*/}" in
       staged-audit:review-turn.schema.json)
-        # One post-index read of the required original-source target, then ready.
-        if [ -n "${SHIM_POST_INDEX_COMMAND:-}" ] && [ ! -e "$SHIM_STAGE_DIR/post-index-read" ]; then
-          : > "$SHIM_STAGE_DIR/post-index-read"
-          # SHIM_REVIEW_EXTRA_READS runs, one per line, after that read in the same turn.
-          python3 - "$SHIM_POST_INDEX_COMMAND" "${SHIM_REVIEW_EXTRA_READS:-}" <<'PY'
+        # Runs each command, one per line, as a completed read; the first takes the id given.
+        emit_reads() {
+          python3 - "$@" <<'PY'
 import json
 import os
 import subprocess
 import sys
 
-commands = [sys.argv[1], *(line for line in sys.argv[2].splitlines() if line)]
+commands = [line for line in sys.argv[2].splitlines() if line]
 for index, command in enumerate(commands):
     output = subprocess.run(['bash', '-c', command], cwd=os.environ['ROOT'],
                             capture_output=True, text=True).stdout
-    item = {'id': 'post-index-read' if index == 0 else f'review-read-{index}',
+    item = {'id': sys.argv[1] if index == 0 else f'review-read-{index}',
             'type': 'command_execution', 'command': command}
     print(json.dumps({'type': 'item.started', 'item': item}))
     print(json.dumps({'type': 'item.completed', 'item': dict(item, aggregated_output=output,
                                                                exit_code=0)}))
 PY
+        }
+        # One post-index read of the required original-source target, then ready.
+        if [ -n "${SHIM_POST_INDEX_COMMAND:-}" ] && [ ! -e "$SHIM_STAGE_DIR/post-index-read" ]; then
+          : > "$SHIM_STAGE_DIR/post-index-read"
+          # SHIM_REVIEW_EXTRA_READS runs, one per line, after that read in the same turn.
+          emit_reads post-index-read "$SHIM_POST_INDEX_COMMAND"$'\n'"${SHIM_REVIEW_EXTRA_READS:-}"
           # SHIM_REVIEW_EXTRA_COMMAND is recorded beside that read as a command that never started.
           [ -z "${SHIM_REVIEW_EXTRA_COMMAND:-}" ] || python3 - "$SHIM_REVIEW_EXTRA_COMMAND" <<'PY'
 import json
@@ -196,6 +200,11 @@ PY
             printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT"
           fi
         else
+          # SHIM_REVIEW_REREAD reads the target once more in the next review turn.
+          if [ -n "${SHIM_REVIEW_REREAD:-}" ] && [ ! -e "$SHIM_STAGE_DIR/post-index-reread" ]; then
+            : > "$SHIM_STAGE_DIR/post-index-reread"
+            emit_reads post-index-reread "$SHIM_POST_INDEX_COMMAND"
+          fi
           printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT"
         fi
         ;;
