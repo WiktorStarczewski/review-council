@@ -909,8 +909,10 @@ test_seat_codex_voids_a_review_turn_over_32_kib_and_continues() {
       "$(printf '%s\n' "$reread" | grep -c .)" 1
     assert_grep "that turn names the voided reads" "$reread" \
       "The read audit credits no read or search from that turn, because it returned over 32 KiB: no finding may cite a range only that turn read \(src/lib\.py:10-11, src/lib\.py:1-5, src/lib\.py:13-17\) unless a later turn of at most 32 KiB reads it again\."
-    assert_grep "and asks for the exact required target" "$reread" \
-      'Read the exact required original-source target src/lib\.py:10-11 in a later explicit turn before finalizing\.'
+    assert_grep "and asks for the exact required target the read audit has not credited" "$reread" \
+      'Before finalizing, read what the read audit has not credited yet, in explicit turns of at most 32 KiB: the exact required original-source target src/lib\.py:10-11\.'
+    assert_grep "the seat log says why the review continues" "$S/r1-codex-luna.log" \
+      '^codex adapter: review turn 1 returned ready before the read audit credited every required read; the review continues$'
     final=$(grep -l 'findings.schema.json' "$S"/calls/call-*.args)
     final=${final%.args}.stdin
     assert_grep "the findings turn lists the ranges no credited read covers" "$final" \

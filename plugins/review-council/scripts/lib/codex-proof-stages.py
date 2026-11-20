@@ -173,27 +173,6 @@ def turn_command_rule():
             ' succeeds. Keep the space in every result limiter, as in `| head -80`.')
 
 
-def required_post_index_read(prompt):
-    audit = read_audit_module()
-    try:
-        return audit.parse_required_post_index_source_target(
-            Path(prompt).read_text(encoding='utf-8').splitlines()) is not None
-    except (OSError, UnicodeError, ValueError) as error:
-        raise StageError(str(error)) from error
-
-
-def required_post_index_target_description(prompt):
-    audit = read_audit_module()
-    try:
-        target = audit.parse_required_post_index_source_target(
-            Path(prompt).read_text(encoding='utf-8').splitlines())
-    except (OSError, UnicodeError, ValueError) as error:
-        raise StageError(str(error)) from error
-    if target is None:
-        return ''
-    return f"{target['path']}:{target['line_start']}-{target['line_end']}"
-
-
 def audited_success(event, audit):
     """Whether the read audit pairs this completed command with its explicit turn, as it does
     only for a successful execution: only then does the output count toward the turn's 32 KiB,
@@ -303,51 +282,6 @@ def voided_ranges(path, prompt, root, session, deps=None):
         if not covered(row, credited + listed):
             listed.append(row)
     return [f"{row['path']}:{row['line_start']}-{row['line_end']}" for row in listed]
-
-
-def post_index_target_read_count(path, prompt, root, session, deps=None):
-    audit = read_audit_module()
-    root = Path(root).resolve()
-    session = Path(session).resolve()
-    try:
-        prompt_lines = Path(prompt).read_text(encoding='utf-8').splitlines()
-        target = audit.parse_required_post_index_source_target(prompt_lines)
-        if target is None:
-            return 0, 0
-        audit.validate_required_post_index_source_target(target, root)
-        index = audit.required_evidence_index_path(prompt_lines, session)
-        calls = codex_call_rows(path, audit)
-    except (OSError, UnicodeError, ValueError) as error:
-        raise StageError(str(error)) from error
-    ordered = sorted(calls.items(), key=lambda row: row[1]['order'])
-    index_reads = [
-        (call_id, call) for call_id, call in ordered
-        if call['success'] and audit.evidence_index_call_matches(
-            'codex', 'command_execution', {'command': call['command']},
-            call['output'], index, root)
-    ]
-    if not index_reads:
-        return 0, 0
-    _, index_call = index_reads[0]
-    later = [key for key, call in ordered if call['success'] and call['turn'] > index_call['turn']
-             and call['order'] > index_call['order']]
-    voided = audit_voided_calls(calls, later, prompt, root, session, deps, audit)
-    post_index_ranges = []
-    for key in later:
-        call = calls[key]
-        if key in voided:
-            continue
-        ranges, _ = audit.shell_source_ranges(
-            call['command'], root, session=session,
-            line_limit=audit.CODEX_SOURCE_READ_LINES)
-        if not audit.delivered_matches_source_ranges(
-                'codex', 'command_execution', call['output'], ranges, root):
-            continue
-        post_index_ranges.extend(ranges)
-        if audit._load_evidence_module().source_target_covered(
-                target, post_index_ranges):
-            return 1, 1
-    return 0, 1
 
 
 def review_status(path):
@@ -802,9 +736,10 @@ def exact_stage_turn(turn, reads, root, session, audit):
     return total <= PROOF_TURN_BYTES
 
 
-def audit_credited_reads(plan, raw, prompt, root, session, seat, deps, audit):
-    """Replay the post-run audit over the stream so far: the planned reads it credits, or why
-    no later read can make the stream pass."""
+def replayed_audit(raw, prompt, root, session, seat, deps, audit):
+    """The post-run audit replayed over the stream so far with no findings: its result, its
+    violations, and its progress (the reads it misses in protocol order, whether they can still
+    be read, and its fatal codes)."""
     progress = {}
     with tempfile.TemporaryDirectory(prefix='codex-stage-audit-') as directory:
         result = Path(directory) / 'result.json'
@@ -814,6 +749,84 @@ def audit_credited_reads(plan, raw, prompt, root, session, seat, deps, audit):
                 adapter='codex', raw=str(raw), prompt=str(prompt), root=str(root),
                 session=str(session), seat=seat, deps=deps, result=str(result),
                 out=str(Path(directory) / 'audit.json')), progress)
+    return assessment, unique, progress
+
+
+def plan_cluster_gaps(assessment, prompt, root, session, audit):
+    """Each assigned plan cluster source location and sibling search command the replayed audit
+    holds no proof for."""
+    prompt = Path(prompt).resolve()
+    _, manifest_hash = audit.evidence_manifest_declaration(
+        prompt.read_text(encoding='utf-8').splitlines())
+    manifest, _, seat, _ = audit.load_evidence_manifest(
+        session, manifest_hash, prompt, root, replay_plan_searches=False)
+    clusters = manifest['plan']['clusters']
+    assigned = set(manifest['assignments'][seat].get(
+        'plan_clusters', [cluster['id'] for cluster in clusters]))
+    proven = {(row['cluster'], row['path'], row['line_start'], row['line_end'])
+              for row in assessment['plan_cluster_source_proofs']}
+    searched = {row['cluster'] for row in assessment['plan_cluster_search_proofs']}
+    module = audit._load_evidence_module()
+    gaps = []
+    for cluster in clusters:
+        if cluster['id'] not in assigned:
+            continue
+        if cluster['id'] not in searched:
+            gaps.append(f"the {cluster['id']} sibling search, run unchanged: "
+                        f"{audit.compiled_plan_search_command(cluster, module)}")
+        for row in cluster['paths']:
+            if (cluster['id'], row['path'], row['line_start'], row['line_end']) in proven:
+                continue
+            gaps.append(f"{row['path']}:{row['line_start']}-{row['line_end']}"
+                        if row['line_start'] is not None else f"a bounded read of {row['path']}")
+    return gaps
+
+
+def review_gaps(raw, prompt, root, session, seat, deps=None):
+    """The next evidence question naming each read the post-run audit, replayed over the review
+    so far, still misses and a later read can supply, or '' when the review may finalize: nothing
+    such is missing, or the audit rejects the stream whatever is read next and so judges it."""
+    audit = read_audit_module()
+    root, session = Path(root).resolve(), Path(session).resolve()
+    assessment, unique, progress = replayed_audit(raw, prompt, root, session, seat, deps, audit)
+    readable = (audit.READABLE_GAP_CODES | STAGING_GAP_CODES) - {'unsubstantiated-finding-range'}
+    codes = {row.get('code') for row in unique}
+    # rev-seat keeps a review without an evidence manifest whatever its audit finds.
+    if not codes & readable or assessment.get('evidence_scoped') and (
+            set(progress.get('fatal') or []) - readable
+            or not progress.get('recoverable', True)):
+        return ''
+    indexes = {line[len('Evidence navigation index: '):]
+               for line in Path(prompt).read_text(encoding='utf-8').splitlines()
+               if line.startswith('Evidence navigation index: ')}
+    items = []
+    for item in progress.get('missing') or []:
+        source = re.fullmatch(r'original source (.+?)(?: lines ([0-9]+)-([0-9]+))?'
+                              r' with a bounded Read \(offset and limit\)', item)
+        if source and source.group(2):
+            items.append('the exact required original-source target '
+                         f'{source.group(1)}:{source.group(2)}-{source.group(3)}')
+        elif source:
+            items.append(f'a bounded original-source read of {source.group(1)}')
+        elif item in indexes:
+            items.append(f'the complete evidence navigation index {item}')
+        else:
+            items.append(item)
+    if codes & STAGING_GAP_CODES:
+        items.extend(plan_cluster_gaps(assessment, prompt, root, session, audit))
+    if not items:
+        return ''
+    step = ('Before finalizing, read what the read audit has not credited yet, in explicit turns'
+            ' of at most 32 KiB: ' + '; '.join(dict.fromkeys(items)) + '.')
+    if any(item in indexes for item in progress.get('missing') or []):
+        step += ' Read the evidence navigation index first, and original source in a later turn.'
+    return step
+
+
+def audit_credited_reads(plan, raw, prompt, root, session, seat, deps, audit):
+    """Replay the post-run audit over the stream so far: the planned reads it credits, or why
+    no later read can make the stream pass."""
+    assessment, unique, progress = replayed_audit(raw, prompt, root, session, seat, deps, audit)
     gaps = audit.READABLE_GAP_CODES | STAGING_GAP_CODES
     if not assessment.get('tool_calls'):
         # Only the stream's first call can satisfy or break the plan first-call contract.
@@ -930,12 +943,10 @@ def main():
     parser.add_argument('--raw')
     parser.add_argument('--turn')
     parser.add_argument('--deps')
-    parser.add_argument('--required-post-index-read')
-    parser.add_argument('--required-post-index-target')
     parser.add_argument('--review-status')
     parser.add_argument('--turn-stats')
     parser.add_argument('--turn-refusal')
-    parser.add_argument('--post-index-target-read-count')
+    parser.add_argument('--review-gaps')
     parser.add_argument('--voided-ranges')
     parser.add_argument('--root')
     parser.add_argument('--session')
@@ -983,20 +994,6 @@ def main():
             print('codex proof staging: ' + str(error), file=sys.stderr)
             return 1
         return 0
-    if args.required_post_index_read:
-        try:
-            print('1' if required_post_index_read(args.required_post_index_read) else '0')
-        except (OSError, UnicodeError, StageError) as error:
-            print('codex proof staging: ' + str(error), file=sys.stderr)
-            return 1
-        return 0
-    if args.required_post_index_target:
-        try:
-            print(required_post_index_target_description(args.required_post_index_target))
-        except (OSError, UnicodeError, StageError) as error:
-            print('codex proof staging: ' + str(error), file=sys.stderr)
-            return 1
-        return 0
     if args.review_status:
         try:
             status, next_step = review_status(args.review_status)
@@ -1026,15 +1023,13 @@ def main():
             print('codex proof staging: ' + str(error), file=sys.stderr)
             return 1
         return 0
-    if args.post_index_target_read_count:
+    if args.review_gaps:
         try:
-            if not args.prompt or not args.root or not args.session:
-                raise StageError('post-index target proof requires the prompt and review roots')
-            target_read, index_read = post_index_target_read_count(
-                args.post_index_target_read_count, args.prompt, args.root, args.session,
-                args.deps)
-            print(f'{target_read}\t{index_read}')
-        except (OSError, UnicodeError, StageError) as error:
+            if not all((args.prompt, args.seat, args.root, args.session)):
+                raise StageError('a review gap check needs the prompt, the seat and review roots')
+            print(review_gaps(args.review_gaps, args.prompt, args.root, args.session, args.seat,
+                              args.deps))
+        except (OSError, UnicodeError, StageError, KeyError, TypeError, ValueError) as error:
             print('codex proof staging: ' + str(error), file=sys.stderr)
             return 1
         return 0

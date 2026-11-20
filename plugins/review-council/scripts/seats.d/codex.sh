@@ -192,9 +192,6 @@ EOF
       ''|*[!0-9]*) adapter_fail "invalid review turn call limit";;
     esac
     MAX_REVIEW_TURNS=$((REVIEW_READ_BUDGET + 1))
-    REQUIRED_POST_INDEX=$(stage_helper --required-post-index-read "$PROMPT") || exit 1
-    REQUIRED_POST_INDEX_TARGET=$(stage_helper \
-      --required-post-index-target "$PROMPT") || exit 1
     REFUSAL_ARGS=(--prompt "$PROMPT" --root "$AUDIT_ROOT" --session "$SESSION_DIR")
     [ -z "${REV_DEPS_DIR:-}" ] || REFUSAL_ARGS+=(--deps "$REV_DEPS_DIR")
     # Luna seats most often overshot the call cap by exactly one, so a cap above two plans one less.
@@ -204,7 +201,6 @@ EOF
     TURN_COMMAND_RULE=$(stage_helper --turn-command-rule) || exit 1
     TURN_OUTPUT_RULE="The read audit credits no read or search from a turn over 32 KiB."
     REVIEW_READS=0
-    REVIEW_TARGET_READS=0
     REVIEW_READY=0
     NEXT_STEP=""
     for ((review_turn=1; review_turn<=MAX_REVIEW_TURNS; review_turn++)); do
@@ -307,25 +303,17 @@ EOF
       REVIEW_STATE=$(stage_helper --review-status "$TURN_OUT") || exit 1
       case "$REVIEW_STATE" in
         ready)
-          if [ "$REQUIRED_POST_INDEX" = 1 ]; then
-            REVIEW_TARGET_PROOF=$(stage_helper \
-              --post-index-target-read-count "$RAW" "${REFUSAL_ARGS[@]}") || exit 1
-            IFS=$'\t' read -r REVIEW_TARGET_READS REVIEW_INDEX_READS \
-              <<< "$REVIEW_TARGET_PROOF"
-            case "$REVIEW_TARGET_READS:$REVIEW_INDEX_READS" in
-              ''|*[!0-9:]*|:*|*:) adapter_fail "invalid post-index source proof state";;
-            esac
-          fi
-          if [ "$REQUIRED_POST_INDEX" = 1 ] && [ "$REVIEW_TARGET_READS" -eq 0 ]; then
-            if [ "$REVIEW_INDEX_READS" -eq 0 ]; then
-              NEXT_STEP="Read the complete evidence navigation index named in the original assignment, then read the exact required original-source target $REQUIRED_POST_INDEX_TARGET in a later turn before finalizing."
-            else
-              NEXT_STEP="Read the exact required original-source target $REQUIRED_POST_INDEX_TARGET in a later explicit turn before finalizing."
-            fi
-          else
+          # The read audit, replayed over the stream so far, names each proof it has not credited,
+          # such as a site read only in a voided turn, and the seat reads it before finalizing.
+          REVIEW_GAPS=$(stage_helper --review-gaps "$RAW" --seat "$SEAT" \
+            "${REFUSAL_ARGS[@]}") || exit 1
+          if [ -z "$REVIEW_GAPS" ]; then
             REVIEW_READY=1
             break
           fi
+          NEXT_STEP=$REVIEW_GAPS
+          printf 'codex adapter: review turn %s returned ready before the read audit credited every required read; the review continues\n' \
+            "$review_turn" >> "$LOG"
           ;;
         continue$'\t'*) NEXT_STEP=${REVIEW_STATE#continue$'\t'};;
         *) adapter_fail "invalid bounded review state";;

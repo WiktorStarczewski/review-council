@@ -1,6 +1,7 @@
 """Codex review turns: the adapter refuses a command at once exactly when the read audit would,
 and credits a read exactly when the audit does."""
 import json
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -8,7 +9,8 @@ import sys
 import tempfile
 import unittest
 
-from test_codex_stage_repair import AUDIT, HELPER, MODEL, SEAT, Seat, build_session, reads
+from test_codex_stage_repair import (AUDIT, HELPER, MODEL, REPO, SCRIPTS, SEAT, Seat,
+                                     build_plan_session, build_session, reads)
 
 READY = '{"status":"ready","next_step":""}'
 FINDINGS = '{"summary":"checked","findings":[]}'
@@ -32,6 +34,7 @@ class ReviewTurnRefusalTests(unittest.TestCase):
                       if line.startswith('Required post-index original-source target: '))
         path, lines = target.split(': ', 1)[1].split(' ', 1)[0].rsplit(':', 1)
         cls.target = 'sed -n {},{}p {}'.format(*lines.split('-'), path)
+        cls.location = f'{path}:{lines}'
 
     @classmethod
     def tearDownClass(cls):
@@ -86,6 +89,10 @@ class ReviewTurnRefusalTests(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return proc.stdout.strip()
 
+    def gaps(self, seat):
+        """The adapter's next evidence question when the seat returns ready, or ''."""
+        return self.helper('--review-gaps', str(seat.raw), '--seat', SEAT)
+
     def audit(self, seat):
         """The post-run audit's return code and violation codes once the seat finishes."""
         self.turn(seat, [], FINDINGS)
@@ -129,16 +136,15 @@ class ReviewTurnRefusalTests(unittest.TestCase):
             with self.subTest(reads=reads):
                 seat = self.seat()
                 self.turn(seat, reads, READY)
-                self.assertEqual(self.helper('--post-index-target-read-count', str(seat.raw)),
-                                 '0\t1')
+                self.assertIn(f'the exact required original-source target {self.location}',
+                              self.gaps(seat))
                 returncode, codes = self.audit(seat)
                 self.assertEqual(returncode, 2)
                 self.assertIn('missing-required-source-read', codes)
                 seat = self.seat()
                 self.turn(seat, reads, READY)
                 self.turn(seat, [self.target], READY)
-                self.assertEqual(self.helper('--post-index-target-read-count', str(seat.raw)),
-                                 '1\t1')
+                self.assertEqual(self.gaps(seat), '')
                 self.assertEqual(self.audit(seat), (0, []))
 
     def delivered(self):
@@ -156,14 +162,15 @@ class ReviewTurnRefusalTests(unittest.TestCase):
         self.assertEqual((calls, int(size)), ('2', len(self.delivered().encode())))
         self.assertEqual(self.helper('--voided-ranges', str(seat.turn)), '')
         self.assertEqual(self.helper('--voided-ranges', str(seat.raw)), '')
-        self.assertEqual(self.helper('--post-index-target-read-count', str(seat.raw)), '1\t1')
+        self.assertEqual(self.gaps(seat), '')
         self.assertEqual(self.audit(seat), (0, []))
 
     def test_a_read_whose_command_failed_earns_no_credit(self):
         seat = self.seat()
         self.turn(seat, [(self.target, self.delivered(), 0, 'failed')], READY)
         self.assertEqual(self.helper('--turn-stats', str(seat.turn)).split('\t')[:2], ['1', '0'])
-        self.assertEqual(self.helper('--post-index-target-read-count', str(seat.raw)), '0\t1')
+        self.assertIn(f'the exact required original-source target {self.location}',
+                      self.gaps(seat))
         returncode, codes = self.audit(seat)
         self.assertEqual(returncode, 2)
         self.assertIn('missing-required-source-read', codes)
@@ -186,6 +193,56 @@ class ReviewTurnRefusalTests(unittest.TestCase):
         seat = self.seat()
         self.turn(seat, [('node --test src/lib.py', '', 1)], READY)
         self.assertEqual(self.refusal(seat.turn, legacy), '')
+
+
+class PlanReviewTurnTests(unittest.TestCase):
+    """A plan seat run through the Codex adapter, with the test shim as the Codex CLI."""
+
+    def test_a_voided_turn_holding_the_only_site_reads_is_asked_for_them_again(self):
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root, session, prompts = build_plan_session(base / 'plan')
+            prompt = prompts['sol']
+            windows = [line.split(': ', 1)[1] for line in prompt.read_text().splitlines()
+                       if line.startswith('Mandatory cluster source window: ')]
+            reads = ['sed -n {},{}p {}'.format(*lines.split('-'), path)
+                     for path, lines in (window.rsplit(':', 1) for window in windows)]
+            calls = base / 'calls'
+            calls.mkdir()
+            (base / 'tmp').mkdir()
+            raw, log = session / 'r1p-sol.stream.ndjson', session / 'r1p-sol.log'
+            env = dict(
+                os.environ, PATH=f"{REPO / 'plugins/review-council/tests/shims'}:"
+                + os.environ['PATH'], TMPDIR=str(base / 'tmp'),
+                CODEX_HOME=str(base / 'codex-home'), SHIM_MODE='staged-audit',
+                SHIM_STAGE_DIR=str(calls), SHIM_CALLS_FILE=str(base / 'calls.log'),
+                SHIM_POST_INDEX_COMMAND='\n'.join(reads), SHIM_REVIEW_REREAD='1',
+                # A successful typecheck's 40 KB voids the first review turn's site reads.
+                SHIM_REVIEW_EXTRA_COMMAND='npx tsc --noEmit', SHIM_REVIEW_EXTRA_EXIT='0',
+                SHIM_REVIEW_EXTRA_BYTES='40000', SEAT='sol', MODEL=MODEL, EFFORT='xhigh',
+                MODE='prompt', ROOT=str(root), PROMPT=str(prompt),
+                SCHEMA=str(REPO / 'plugins/review-council/schema/findings.schema.json'),
+                OUT=str(session / 'r1p-sol.json'), LOG=str(log), RAW=str(raw), BASE='abc')
+            env.pop('REV_DEPS_DIR', None)
+            proc = subprocess.run(['bash', str(SCRIPTS / 'seats.d/codex.sh')], env=env,
+                                  capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr + log.read_text())
+            self.assertRegex(log.read_text(), r'review turn 1 returned [0-9]+ bytes, over 32 KiB,'
+                             r' so the read audit credits none of its reads')
+            out = session / 'r1p-sol.read-audit.json'
+            audited = subprocess.run(
+                [sys.executable, str(AUDIT), 'audit', '--adapter', 'codex', '--raw', str(raw),
+                 '--prompt', str(prompt), '--root', str(root), '--session', str(session),
+                 '--seat', 'sol', '--out', str(out)], capture_output=True, text=True)
+            audit = json.loads(out.read_text())
+            self.assertEqual((audited.returncode, sorted({row['code'] for row in audit[
+                'violations']})), (0, []))
+            self.assertEqual(len(audit['plan_cluster_source_proofs']), 4)
+            asked = [path.read_text() for path in sorted(calls.glob('call-*.stdin'))
+                     if 'Next evidence question:' in path.read_text()]
+            self.assertEqual(len(asked), 1)
+            for window in windows:
+                self.assertIn(window, asked[0])
 
 
 if __name__ == '__main__':
