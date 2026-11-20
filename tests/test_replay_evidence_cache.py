@@ -127,6 +127,38 @@ class ClaudeStopGateCacheTests(unittest.TestCase):
         self.assertEqual(self.counter.calls, 0, 'the warmed validation was not reused')
         self.assertEqual(decision, self.stop(raw, self.work / 'plain.stop-gate'))
 
+    def test_a_replay_waits_for_a_running_warm_up_and_reuses_its_entry(self):
+        fixture = self.fixture
+        # The warm-up signals on stdout, which opens no file inside the validation it records.
+        helper = (
+            'import argparse, importlib.util, sys, time\n'
+            "spec = importlib.util.spec_from_file_location('warm', sys.argv[1])\n"
+            'audit = importlib.util.module_from_spec(spec)\n'
+            'spec.loader.exec_module(audit)\n'
+            'evidence = audit._load_evidence_module()\n'
+            'inner = evidence.validated_manifest\n'
+            'def slow(*args, **kwargs):\n'
+            '    if not slow.started:\n'
+            '        slow.started = True\n'
+            "        print('started', flush=True)\n"
+            '        time.sleep(2)\n'
+            '    return inner(*args, **kwargs)\n'
+            'slow.started = False\n'
+            'evidence.validated_manifest = slow\n'
+            'sys.exit(audit.evidence_cache(argparse.Namespace(prompt=sys.argv[2], root=sys.argv[3],'
+            ' session=sys.argv[4], cache=sys.argv[5])))\n')
+        warm = subprocess.Popen(
+            [sys.executable, '-c', helper, str(AUDIT), str(fixture.prompt), str(fixture.root),
+             str(fixture.session), str(self.cache)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(warm.kill)
+        self.assertEqual(warm.stdout.readline(), 'started\n')
+        raw = self.transcript()
+        decision = self.stop(raw, self.work / 'cached.stop-gate', self.cache)
+        self.assertEqual(warm.wait(30), 0, warm.stderr.read())
+        self.assertEqual(self.counter.calls, 0, 'the replay validated instead of waiting')
+        self.assertEqual(decision, self.stop(raw, self.work / 'plain.stop-gate'))
+
 
 class StopGateDeadlineTests(unittest.TestCase):
     def setUp(self):
