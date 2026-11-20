@@ -379,7 +379,7 @@ assert 'at most 6 command_execution calls total' in first_review_prompt, first_r
 assert 'Use at most two source reads per investigation turn' in first_review_prompt, first_review_prompt
 assert 'Next evidence question:' in next_review_prompt and 'src/two.ts' in next_review_prompt, next_review_prompt
 assert 'searches as well as reads: plan at most 5 and return continue' in next_review_prompt, next_review_prompt
-assert 'is not a test, lint or typecheck run: the read-only policy refuses them' in next_review_prompt, next_review_prompt
+assert 'alone or before a `:`, so `yarn ts` and `yarn jest` are refused' in next_review_prompt, next_review_prompt
 assert 'Of that allowance, 0 of 4 repository tool calls are used and 4 remain.' in first_review_prompt, first_review_prompt
 assert ('The previous turn ran 1 of its 6 allowed command_execution calls and returned 0.1 KiB of its 32 KiB.'
         in next_review_prompt), next_review_prompt
@@ -578,12 +578,18 @@ test_seat_codex_luna_allows_five_commands_per_review_turn() {
   assert_grep "Luna plans one call under its cap, searches included" "$L/calls/call-1.stdin" \
     'Every command counts toward that limit, searches as well as reads: plan at most 5 and return continue'
   assert_grep "the review prompt names the programs the read-only policy refuses" "$L/calls/call-1.stdin" \
-    'Do not run `node`, `python3` or another interpreter, `make`, bare `tsc`, or a `yarn`, `npm`, `pnpm` or `npx` command that is not a test, lint or typecheck run: the read-only policy refuses them'
+    'no `node`, `python3` or other interpreter, no `make` and no bare `tsc`\.'
+  assert_grep "the review prompt states the policy's package-script name rule" "$L/calls/call-1.stdin" \
+    'A `yarn`, `npm` or `pnpm` script runs only when it is named [a-z, -]+, alone or before a `:`, so `yarn ts` and `yarn jest` are refused'
+  assert_grep "the review prompt names the only npx tools the policy runs" "$L/calls/call-1.stdin" \
+    '`npx` runs only `jest`, `vitest run`, `tsc --noEmit`, `eslint`, `mocha` or `prettier --check`; and no runner takes `--fix`, `--write` or `-u`\.'
   assert_grep "the review prompt counts a permitted test command toward the turn caps" "$L/calls/call-1.stdin" \
     'A permitted test, lint or typecheck command still counts toward the per-turn command limit, and its output toward the 32 KiB\.'
-  python3 - "$SCRIPTS/lib/readonly-bash-guard.py" <<'PY'
+  python3 - "$SCRIPTS/lib/readonly-bash-guard.py" "$L/calls/call-1.stdin" <<'PY'
 import importlib.util
+import re
 import sys
+from pathlib import Path
 
 spec = importlib.util.spec_from_file_location('guard', sys.argv[1])
 guard = importlib.util.module_from_spec(spec); spec.loader.exec_module(guard)
@@ -593,14 +599,22 @@ def refused(command):
     except guard.Blocked:
         return True
     return False
+prompt = Path(sys.argv[2]).read_text()
+listed = re.search(r'script runs only when it is named ([a-z, -]+), alone or before', prompt).group(1)
+names = listed.replace(' or ', ', ').split(', ')
+assert names == re.fullmatch(r'\^\(([a-z|-]+)\)\(:\|\$\)', guard.SCRIPT_READ_NAMES.pattern).group(1).split('|'), names
+assert not any(refused(f'{runner} {name}') or refused(f'npm run {name}:unit')
+               for runner in ('yarn', 'pnpm') for name in names), 'a listed script name is refused'
 assert all(refused(command) for command in (
     'node --test src/lib.py', 'python3 -c 1', 'make test', 'tsc --noEmit', 'yarn ts',
-    'npm run build', 'npx tsx src/a.ts')), 'a program the rule names is not refused'
+    'yarn jest', 'npm run build', 'npx tsx src/a.ts', 'npx vitest src',
+    'npx playwright test', 'npx eslint --fix src', 'npx prettier --check --write src',
+    'yarn test -u')), 'a program the rule refuses runs'
 assert not any(refused(command) for command in (
-    'yarn test', 'npm run lint', 'pnpm typecheck', 'npx tsc --noEmit', 'npx jest src',
-    'pytest -q')), 'a permitted test, lint or typecheck run is refused'
+    'npx jest src', 'npx vitest run src', 'npx tsc --noEmit', 'npx eslint src', 'npx mocha',
+    'npx prettier --check src', 'pytest -q')), 'a runner the rule permits is refused'
 PY
-  assert_eq "the rule's refused and permitted examples match the read-only policy" "$?" 0
+  assert_eq "the rule's script names and examples match the read-only policy" "$?" 0
   assert_grep "the review prompt spells the search limiter with its space" "$L/calls/call-1.stdin" \
     'Keep the space in every result limiter, as in `\| head -80`\.'
 

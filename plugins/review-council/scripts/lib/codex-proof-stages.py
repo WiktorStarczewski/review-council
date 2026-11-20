@@ -154,6 +154,25 @@ def read_audit_module():
     return audit
 
 
+def turn_command_rule():
+    """The review-turn rule for commands, naming the package scripts the read-only policy runs
+    from its own pattern so that the rule cannot drift from what the read audit rejects."""
+    guard = read_audit_module().READONLY_POLICY
+    match = re.fullmatch(r'\^\(([a-z|-]+)\)\(:\|\$\)', guard.SCRIPT_READ_NAMES.pattern)
+    if match is None:
+        raise StageError('the read-only policy has no recognizable package-script names')
+    names = match.group(1).split('|')
+    return ('Run no program the read-only policy refuses, since one refused command can fail the'
+            ' whole review: no `node`, `python3` or other interpreter, no `make` and no bare'
+            ' `tsc`. A `yarn`, `npm` or `pnpm` script runs only when it is named '
+            f'{", ".join(names[:-1])} or {names[-1]}, alone or before a `:`, so `yarn ts` and'
+            ' `yarn jest` are refused; `npx` runs only `jest`, `vitest run`, `tsc --noEmit`,'
+            ' `eslint`, `mocha` or `prettier --check`; and no runner takes `--fix`, `--write`'
+            ' or `-u`. A permitted test, lint or typecheck command still counts toward the'
+            ' per-turn command limit, and its output toward the 32 KiB. Keep the space in every'
+            ' result limiter, as in `| head -80`.')
+
+
 def required_post_index_read(prompt):
     audit = read_audit_module()
     try:
@@ -862,6 +881,7 @@ def main():
     parser.add_argument('--thread-id-stream')
     parser.add_argument('--review-budget')
     parser.add_argument('--review-turn-call-limit')
+    parser.add_argument('--turn-command-rule', action='store_true')
     parser.add_argument('--stage-step')
     parser.add_argument('--capacity')
     parser.add_argument('--compact-prompt')
@@ -879,6 +899,13 @@ def main():
     args = parser.parse_args()
     if args.review_turn_call_limit is not None:
         print(codex_review_turn_call_limit_for_model(args.review_turn_call_limit))
+        return 0
+    if args.turn_command_rule:
+        try:
+            print(turn_command_rule())
+        except StageError as error:
+            print('codex proof staging: ' + str(error), file=sys.stderr)
+            return 1
         return 0
     if args.review_budget:
         try:
