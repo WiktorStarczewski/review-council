@@ -584,7 +584,7 @@ test_seat_codex_luna_allows_five_commands_per_review_turn() {
   assert_grep "the review prompt names the only npx tools the policy runs" "$L/calls/call-1.stdin" \
     '`npx` runs only `jest`, `vitest run`, `tsc --noEmit`, `eslint`, `mocha` or `prettier --check`; and no runner takes `--fix`, `--write` or `-u`\.'
   assert_grep "the review prompt counts a permitted test command toward the turn caps" "$L/calls/call-1.stdin" \
-    'A permitted test, lint or typecheck command still counts toward the per-turn command limit, and its output toward the 32 KiB\.'
+    'A permitted test, lint or typecheck command still counts toward the per-turn command limit, and its output counts toward the 32 KiB only when it succeeds\.'
   python3 - "$SCRIPTS/lib/readonly-bash-guard.py" "$L/calls/call-1.stdin" <<'PY'
 import importlib.util
 import re
@@ -924,6 +924,43 @@ import json, sys
 audit = json.load(open(sys.argv[1]))
 print(audit["status"], len(audit["violations"]), sorted({row["code"] for row in audit["advisories"]}))
 ' "$S/r1-codex-luna.read-audit.json" 2>&1)" "valid 0 ['tool-turn-output-too-large']"
+    seat_env_reset "$_path"
+  )
+}
+
+test_seat_codex_keeps_the_reads_beside_a_failed_command_over_32_kib() {
+  ( local _path="$PATH"; seat_env
+    local R="$T/failed-command-root" S="$T/failed-command-session" target next final
+    seat_codex_prepared_session "$R" "$S" || { fail "prepared Codex session fixture"; return; }
+    target=$(sed -n 's/^Required post-index original-source target: \([^:]*\):\([0-9]*\)-\([0-9]*\) .*/sed -n \2,\3p \1/p' \
+      "$S/r1-codex-luna.prompt.md")
+    mkdir -p "$S/calls"; : > "$S/calls.log"
+    SHIM_MODE=staged-audit SHIM_POST_INDEX_COMMAND="$target" SHIM_REVIEW_FIRST_STATUS=continue \
+      SHIM_REVIEW_EXTRA_COMMAND='yarn test src/lib.test.ts' SHIM_REVIEW_EXTRA_EXIT=1 \
+      SHIM_REVIEW_EXTRA_BYTES=49152 SHIM_STAGE_DIR="$S/calls" SHIM_CALLS_FILE="$S/calls.log" \
+      SEAT=codex-luna MODEL=gpt-6-luna EFFORT=xhigh MODE=prompt ROOT="$R" \
+      PROMPT="$S/r1-codex-luna.prompt.md" SCHEMA="$SK/schema/findings.schema.json" \
+      OUT="$S/r1-codex-luna.json" LOG="$S/r1-codex-luna.log" RAW="$S/r1-codex-luna.stream.ndjson" \
+      BASE=abc bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
+    assert_eq "a failing test run over 32 KiB beside the target read does not fail the seat" "$?" 0
+    assert_nogrep "the seat log voids no turn" "$S/r1-codex-luna.log" 'over 32 KiB'
+    next=$(grep -l '^Next evidence question:' "$S"/calls/call-*.stdin)
+    assert_eq "one review turn follows the seat's continue" "$(printf '%s\n' "$next" | grep -c .)" 1
+    assert_grep "it measures only the successful output against the 32 KiB" "$next" \
+      'The previous turn ran 2 of its 6 allowed command_execution calls and returned [0-9]\.[0-9] KiB of its 32 KiB\.'
+    assert_nogrep "and credits that turn's reads" "$next" 'credits no read or search from that turn'
+    final=$(grep -l 'findings.schema.json' "$S"/calls/call-*.args)
+    final=${final%.args}.stdin
+    assert_nogrep "the findings turn lists no uncredited range" "$final" 'The read audit credits none'
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+      --raw "$S/r1-codex-luna.stream.ndjson" --prompt "$S/r1-codex-luna.prompt.md" --root "$R" \
+      --session "$S" --seat codex-luna --out "$S/r1-codex-luna.read-audit.json" >/dev/null 2>&1
+    assert_eq "the post-run audit accepts the same stream" "$?" 0
+    assert_eq "advising only on the failed run's own size" "$(python3 -c '
+import json, sys
+audit = json.load(open(sys.argv[1]))
+print(audit["status"], len(audit["violations"]), sorted({row["code"] for row in audit["advisories"]}))
+' "$S/r1-codex-luna.read-audit.json" 2>&1)" "valid 0 ['tool-output-too-large', 'tool-turn-output-too-large']"
     seat_env_reset "$_path"
   )
 }

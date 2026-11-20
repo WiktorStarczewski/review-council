@@ -169,8 +169,8 @@ def turn_command_rule():
             ' `yarn jest` are refused; `npx` runs only `jest`, `vitest run`, `tsc --noEmit`,'
             ' `eslint`, `mocha` or `prettier --check`; and no runner takes `--fix`, `--write`'
             ' or `-u`. A permitted test, lint or typecheck command still counts toward the'
-            ' per-turn command limit, and its output toward the 32 KiB. Keep the space in every'
-            ' result limiter, as in `| head -80`.')
+            ' per-turn command limit, and its output counts toward the 32 KiB only when it'
+            ' succeeds. Keep the space in every result limiter, as in `| head -80`.')
 
 
 def required_post_index_read(prompt):
@@ -194,7 +194,15 @@ def required_post_index_target_description(prompt):
     return f"{target['path']}:{target['line_start']}-{target['line_end']}"
 
 
-def codex_call_rows(path):
+def audited_success(event, audit):
+    """Whether the read audit pairs this completed command with its explicit turn, as it does
+    only for a successful execution: only then does the output count toward the turn's 32 KiB,
+    and only then can the command's reads earn credit."""
+    return audit.extract_outputs('codex', event)[0][1]
+
+
+def codex_call_rows(path, audit=None):
+    audit = audit or read_audit_module()
     calls = {}
     turn = None
     turn_sequence = 0
@@ -245,7 +253,7 @@ def codex_call_rows(path):
                     if 'aggregated_output' not in item and 'output' not in item:
                         raise StageError('Codex review turn omitted a command output')
                     call['output'] = item.get('aggregated_output', item.get('output'))
-                    call['success'] = item.get('exit_code') == 0
+                    call['success'] = audited_success(event, audit)
     except OSError as error:
         raise StageError('Codex review stream is unavailable') from error
     if turn is not None or any(
@@ -257,17 +265,20 @@ def codex_call_rows(path):
 
 def audit_voided_calls(calls, keys, prompt, root, session, deps, audit):
     """Of these calls, the ones whose reads the read audit credits nothing: each in an explicit
-    turn over 32 KiB (tool-turn-output-too-large; a Codex turn's only exemption, an ordered turn of
-    prepared artifacts, holds no repository read) and each it raises any code on."""
+    turn whose successful calls return over 32 KiB (tool-turn-output-too-large; a Codex turn's
+    only exemption, an ordered turn of prepared artifacts, holds no repository read) and each it
+    raises any code on."""
     sizes = {}
     for row in calls.values():
-        sizes[row['turn']] = sizes.get(row['turn'], 0) + audit.output_bytes(row['output'])
+        if row['success']:
+            sizes[row['turn']] = sizes.get(row['turn'], 0) + audit.output_bytes(row['output'])
     authorized, complete = audit.prompt_permissions(prompt, root, session)
     roots = audit.allowed_roots(root, session, deps)
     dependency = Path(deps).resolve() if deps else None
-    return {key for key in keys if sizes[calls[key]['turn']] > OUTPUT_BYTES or audit.validate_call(
-        'command_execution', {'command': calls[key]['command']}, roots, root, session,
-        authorized, complete, {}, dependency, read_limit=audit.CODEX_SOURCE_READ_LINES)}
+    return {key for key in keys if sizes.get(calls[key]['turn'], 0) > OUTPUT_BYTES
+            or audit.validate_call(
+                'command_execution', {'command': calls[key]['command']}, roots, root, session,
+                authorized, complete, {}, dependency, read_limit=audit.CODEX_SOURCE_READ_LINES)}
 
 
 def voided_ranges(path, prompt, root, session, deps=None):
@@ -276,7 +287,7 @@ def voided_ranges(path, prompt, root, session, deps=None):
     audit = read_audit_module()
     root, session = Path(root).resolve(), Path(session).resolve()
     reads = []
-    calls = codex_call_rows(path)
+    calls = codex_call_rows(path, audit)
     for key, call in sorted(calls.items(), key=lambda row: row[1]['order']):
         if call['success']:
             ranges, _ = audit.shell_source_ranges(
@@ -305,7 +316,7 @@ def post_index_target_read_count(path, prompt, root, session, deps=None):
             return 0, 0
         audit.validate_required_post_index_source_target(target, root)
         index = audit.required_evidence_index_path(prompt_lines, session)
-        calls = codex_call_rows(path)
+        calls = codex_call_rows(path, audit)
     except (OSError, UnicodeError, ValueError) as error:
         raise StageError(str(error)) from error
     ordered = sorted(calls.items(), key=lambda row: row[1]['order'])
@@ -365,18 +376,6 @@ def turn_stats(path, root, session):
     starts = 0
     completions = 0
     active_turn = False
-
-    def visible_bytes(value):
-        if value is None:
-            return 0
-        if isinstance(value, str):
-            return len(value.encode())
-        if isinstance(value, list):
-            return sum(visible_bytes(
-                item.get('text', item.get('content', item)) if isinstance(item, dict) else item)
-                       for item in value)
-        return len(json.dumps(value, sort_keys=True, separators=(',', ':')).encode())
-
     audit = read_audit_module()
 
     try:
@@ -417,8 +416,9 @@ def turn_stats(path, root, session):
                             raise StageError('Codex review turn repeated a command output')
                         if 'aggregated_output' not in item and 'output' not in item:
                             raise StageError('Codex review turn omitted a command output')
-                        output = item.get('aggregated_output', item.get('output'))
-                        total += visible_bytes(output)
+                        if audited_success(event, audit):
+                            total += audit.output_bytes(
+                                item.get('aggregated_output', item.get('output')))
                         outputs.add(call_id)
     except OSError as error:
         raise StageError('Codex review-turn stream is unavailable') from error
@@ -446,7 +446,7 @@ def review_turn_refusal(turn, prompt, root, session, deps=None):
     authorized, complete = audit.prompt_permissions(prompt, root, session)
     roots = audit.allowed_roots(root, session, deps)
     dependency = Path(deps).resolve() if deps else None
-    for row in sorted(codex_call_rows(turn).values(), key=lambda row: row['order']):
+    for row in sorted(codex_call_rows(turn, audit).values(), key=lambda row: row['order']):
         for item in audit.validate_call(
                 'command_execution', {'command': row['command']}, roots, root, session,
                 authorized, complete, {}, dependency, read_limit=audit.CODEX_SOURCE_READ_LINES):
@@ -783,7 +783,7 @@ def context_capacity(stage_dir, prompt, model):
 def exact_stage_turn(turn, reads, root, session, audit):
     """Whether the turn ran exactly these planned reads, each delivering the prepared bytes."""
     turn_stats(turn, root, session)
-    rows = sorted(codex_call_rows(turn).values(), key=lambda row: row['order'])
+    rows = sorted(codex_call_rows(turn, audit).values(), key=lambda row: row['order'])
     if len(rows) != len(reads):
         return False
     total = 0
@@ -829,7 +829,7 @@ def audit_credited_reads(plan, raw, prompt, root, session, seat, deps, audit):
         re.fullmatch(r'(.+) lines ([0-9]+)-([0-9]+)', item) for item in missing) if match]
     # A read the audit lists nowhere still needs a call that opened it, so a replay that stops
     # early can never skip a planned read.
-    opened = {str(path) for row in codex_call_rows(raw).values() if row['success']
+    opened = {str(path) for row in codex_call_rows(raw, audit).values() if row['success']
               for path in audit.paths_opened_by_call(
                   'command_execution', {'command': row['command']}, root)}
     credited = set()

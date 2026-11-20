@@ -286,8 +286,9 @@ EOF
       if [ "$NO_MORE_READS" = 1 ] && [ "$TURN_CALLS" -ne 0 ]; then
         adapter_fail "review turn used tools after the assignment's repository-call allowance was used up"
       fi
-      # A turn over 32 KiB earns no read credit in the read audit, which only advises on it, so
-      # the seat continues knowing that a finding cannot cite what only that turn read.
+      # A turn whose successful commands return over 32 KiB earns no read credit in the read
+      # audit, which only advises on it, so the seat continues knowing that a finding cannot
+      # cite what only that turn read.
       TURN_VOID=""
       if [ "$TURN_BYTES" -gt 32768 ]; then
         TURN_VOIDED=$(stage_helper --voided-ranges "$TURN_RAW" "${REFUSAL_ARGS[@]}") || exit 1

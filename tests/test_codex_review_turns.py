@@ -45,8 +45,8 @@ class ReviewTurnRefusalTests(unittest.TestCase):
         return seat
 
     def turn(self, seat, commands, answer):
-        """One explicit turn: a string runs as a command; a (command, output, exit code) tuple
-        is recorded without running."""
+        """One explicit turn: a string runs as a command; a (command, output, exit code[,
+        status]) tuple is recorded without running."""
         events = [{'type': 'turn.started'}]
         for command in commands:
             if isinstance(command, str):
@@ -57,8 +57,10 @@ class ReviewTurnRefusalTests(unittest.TestCase):
                     'command': '/bin/zsh -lc ' + shlex.quote(command[0])}
             events.append({'type': 'item.started',
                            'item': dict(item, aggregated_output='', exit_code=None)})
-            events.append({'type': 'item.completed',
-                           'item': dict(item, aggregated_output=command[1], exit_code=command[2])})
+            completed = dict(item, aggregated_output=command[1], exit_code=command[2])
+            if len(command) > 3:
+                completed['status'] = command[3]
+            events.append({'type': 'item.completed', 'item': completed})
         seat.turns += 1
         events.append({'type': 'item.completed', 'item': {
             'id': f'answer_{seat.turns}', 'type': 'agent_message', 'text': answer}})
@@ -138,6 +140,33 @@ class ReviewTurnRefusalTests(unittest.TestCase):
                 self.assertEqual(self.helper('--post-index-target-read-count', str(seat.raw)),
                                  '1\t1')
                 self.assertEqual(self.audit(seat), (0, []))
+
+    def delivered(self):
+        return subprocess.run(['bash', '-c', self.target], cwd=self.root, check=True,
+                              capture_output=True, text=True).stdout
+
+    def test_a_failed_command_over_32_kib_leaves_the_reads_beside_it_credited(self):
+        # The audit pairs only a successful execution with its turn, so a failing test run's
+        # output counts toward no turn's 32 KiB.
+        failing = ''.join(f'FAIL src/lib.test.ts case {index}: expected y received x\n'
+                          for index in range(1000))
+        seat = self.seat()
+        self.turn(seat, [self.target, ('yarn test src/lib.test.ts', failing, 1)], READY)
+        calls, size, _ = self.helper('--turn-stats', str(seat.turn)).split('\t')
+        self.assertEqual((calls, int(size)), ('2', len(self.delivered().encode())))
+        self.assertEqual(self.helper('--voided-ranges', str(seat.turn)), '')
+        self.assertEqual(self.helper('--voided-ranges', str(seat.raw)), '')
+        self.assertEqual(self.helper('--post-index-target-read-count', str(seat.raw)), '1\t1')
+        self.assertEqual(self.audit(seat), (0, []))
+
+    def test_a_read_whose_command_failed_earns_no_credit(self):
+        seat = self.seat()
+        self.turn(seat, [(self.target, self.delivered(), 0, 'failed')], READY)
+        self.assertEqual(self.helper('--turn-stats', str(seat.turn)).split('\t')[:2], ['1', '0'])
+        self.assertEqual(self.helper('--post-index-target-read-count', str(seat.raw)), '0\t1')
+        returncode, codes = self.audit(seat)
+        self.assertEqual(returncode, 2)
+        self.assertIn('missing-required-source-read', codes)
 
     def test_ranges_read_only_where_the_audit_credits_nothing_are_listed(self):
         seat = self.seat()
