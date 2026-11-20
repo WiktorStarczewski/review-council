@@ -333,7 +333,15 @@ if [ "$ADAPTER" = codex ] && [ "$MODE" = review ] && [ -s "$OUT" ] && ! python3 
   python3 "$HERE/lib/codex-review-to-findings.py" "$BASEN.native.txt" "$OUT" --root "$ROOT" >>"$LOG" 2>&1 || true
 fi
 
-if [ "$rc" -eq 0 ] && [ -s "$OUT" ]; then
+# A Codex seat that stopped at a review turn running a command the read audit rejects exits 8 and
+# names the code last in its log. Its stream fails the audit whatever came next, so it is audited
+# as it stands and, like any hard audit failure, replaced rather than retried.
+REFUSED_CODE=""
+if [ "$ADAPTER" = codex ] && [ "$rc" -eq 8 ]; then
+  REFUSED_CODE=$(tail -n 1 "$LOG" | sed -n 's/^codex adapter: review turn ran a command the read audit rejects (\([a-z0-9-]*\))$/\1/p')
+fi
+
+if { [ "$rc" -eq 0 ] && [ -s "$OUT" ]; } || [ -n "$REFUSED_CODE" ]; then
   AUDIT_ARGS=(audit --adapter "$ADAPTER" --raw "$RAW" --prompt "$PROMPT" \
     --root "$ROOT" --session "$SESSION" --seat "$SEAT" --out "$AUDITF")
   [ -z "${REV_DEPS_DIR:-}" ] || AUDIT_ARGS+=(--deps "$REV_DEPS_DIR")

@@ -812,7 +812,7 @@ test_seat_codex_refuses_a_review_command_the_read_audit_rejects() {
       ROOT="$R" PROMPT="$S/r1-codex-luna.prompt.md" SCHEMA="$SK/schema/findings.schema.json" \
       OUT="$S/r1-codex-luna.json" LOG="$S/r1-codex-luna.log" RAW="$S/r1-codex-luna.stream.ndjson" \
       BASE=abc bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
-    assert_eq "a review turn running a command the read audit rejects fails the seat" "$?" 1
+    assert_eq "a review turn running a command the read audit rejects ends the seat with the refusal code" "$?" 8
     assert_grep "the seat log names the audit's code" "$S/r1-codex-luna.log" \
       '^codex adapter: review turn ran a command the read audit rejects \(unsupported-shell-command\)$'
     assert_eq "no findings turn runs after the refused turn" \
@@ -824,6 +824,42 @@ test_seat_codex_refuses_a_review_command_the_read_audit_rejects() {
     assert_eq "the post-run audit rejects the same stream" "$?" 2
     assert_grep "for the same code" "$S/r1-codex-luna.read-audit.json" \
       '"code":"unsupported-shell-command"'
+    seat_env_reset "$_path"
+  )
+}
+
+test_seat_codex_review_turn_refusal_is_a_hard_audit_failure() {
+  ( local _path="$PATH"; seat_env
+    local R="$T/refused-turn-root" S="$T/refused-turn-session" target calls
+    seat_codex_prepared_session "$R" "$S" || { fail "prepared Codex session fixture"; return; }
+    target=$(sed -n 's/^Required post-index original-source target: \([^:]*\):\([0-9]*\)-\([0-9]*\) .*/sed -n \2,\3p \1/p' \
+      "$S/r1-codex-luna.prompt.md")
+    mkdir -p "$S/calls"; : > "$S/calls.log"
+    SHIM_MODE=exitcode SHIM_EXIT_CODE=8 SHIM_CALLS_FILE="$S/calls.log" \
+      "$SCRIPTS/rev-seat.sh" codex-luna "$S" 1 "$S/r1-codex-luna.prompt.md" > "$S/out" 2> "$S/err"
+    assert_eq "a CLI exit 8 with no refusal is an unusable seat" "$?" 2
+    assert_exit "and leaves no read audit, so its exact retry runs" 1 test -e "$S/r1-codex-luna.read-audit.json"
+    : > "$S/calls.log"
+    SHIM_MODE=staged-audit SHIM_POST_INDEX_COMMAND="$target" \
+      SHIM_REVIEW_EXTRA_COMMAND='node --test src/lib.py' SHIM_STAGE_DIR="$S/calls" \
+      SHIM_CALLS_FILE="$S/calls.log" \
+      "$SCRIPTS/rev-seat.sh" codex-luna "$S" 1 "$S/r1-codex-luna.prompt.md" > "$S/out" 2> "$S/err"
+    assert_eq "a refused review turn is an unusable seat" "$?" 2
+    assert_eq "rev-seat audits the refused stream as a hard evidence failure" "$(python3 -c '
+import json, sys
+audit = json.load(open(sys.argv[1]))
+print(audit["status"], audit["evidence_scoped"],
+      "unsupported-shell-command" in {row["code"] for row in audit["violations"]})
+' "$S/r1-codex-luna.read-audit.json" 2>&1)" "invalid True True"
+    assert_grep "the seat log names the replacement rule" "$S/r1-codex-luna.log" \
+      '^bounded-read audit rejected full-scope evidence review; replace this assignment on another eligible seat; never relaunch this seat under this label$'
+    calls=$(wc -l < "$S/calls.log" | tr -d ' ')
+    SHIM_MODE=staged-audit SHIM_POST_INDEX_COMMAND="$target" SHIM_STAGE_DIR="$S/calls" \
+      SHIM_CALLS_FILE="$S/calls.log" \
+      "$SCRIPTS/rev-seat.sh" codex-luna "$S" 1 "$S/r1-codex-luna.prompt.md" > "$S/out" 2> "$S/err"
+    assert_eq "the exact relaunch is refused" "$?" 2
+    assert_grep "as a hard evidence audit failure" "$S/err" 'failed a hard evidence audit'
+    assert_eq "before any provider call" "$(wc -l < "$S/calls.log" | tr -d ' ')" "$calls"
     seat_env_reset "$_path"
   )
 }

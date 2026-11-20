@@ -4,7 +4,8 @@
 # Called by rev-seat.sh with the adapter environment contract:
 #   SEAT MODEL EFFORT MODE ROOT PROMPT SCHEMA OUT LOG RAW BASE
 # Streams the CLI's events to $RAW, one summarised line each to $LOG, leaves findings JSON at $OUT,
-# and exits with the CLI's own exit code. Validation, retries and failure classification are the
+# and exits with the CLI's own exit code, or 8 after a review turn that ran a command the read audit
+# rejects, its last log line naming the code. Validation, retries and failure classification are the
 # wrapper's job - this file is only the invocation and the quirks that come with it.
 #
 # Quirks that live here:
@@ -19,7 +20,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 adapter_fail() {
   printf 'codex adapter: %s\n' "$1" >> "${LOG:-/dev/null}"
   printf 'codex adapter: %s\n' "$1" >&2
-  exit 1
+  exit "${2:-1}"
 }
 SUMMARY="$HERE/../lib/stream-summary.py"
 STAGES_HELPER="$HERE/../lib/codex-proof-stages.py"
@@ -269,10 +270,11 @@ EOF
       case "$TURN_CALLS:$TURN_BYTES:$TURN_READS" in
         *[!0-9:]*|:*) adapter_fail "invalid review turn metrics";;
       esac
-      # A command the read audit rejects fails the stream whatever the seat reads next.
+      # A command the read audit rejects fails the stream whatever the seat reads next, so
+      # rev-seat.sh audits the stream so far and the assignment is replaced, not retried.
       TURN_REFUSAL=$(stage_helper --turn-refusal "$TURN_RAW" "${REFUSAL_ARGS[@]}") || exit 1
       if [ -n "$TURN_REFUSAL" ]; then
-        adapter_fail "review turn ran a command the read audit rejects ($TURN_REFUSAL)"
+        adapter_fail "review turn ran a command the read audit rejects ($TURN_REFUSAL)" 8
       fi
       if [ "$TURN_CALLS" -gt "$REVIEW_TURN_CALL_LIMIT" ]; then
         adapter_fail "review turn exceeded its command-call budget"

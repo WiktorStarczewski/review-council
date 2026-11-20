@@ -40,6 +40,7 @@ case "${SHIM_MODE:-ok}" in
   notauth)    echo '{"type":"error","message":"Not logged in; run codex login"}'; exit 1;;
   ratelimit)  echo '{"type":"error","message":"You have hit your usage limit (429)"}'; exit 1;;
   interrupted) exit 130;;
+  exitcode)   exit "${SHIM_EXIT_CODE:-1}";;
   empty)      echo '{"type":"turn.completed"}'; exit 0;;
   unusable_with_tool)
     printf '%s\n' \
