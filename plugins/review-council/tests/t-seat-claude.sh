@@ -70,6 +70,7 @@ assert option['--adapter'] == 'claude', option
 assert option['--raw'] == session + '/r1-sonnet.stream.ndjson', option
 assert option['--state'] == session + '/r1-sonnet.stop-gate', option
 assert option['--seat'] == 'sonnet' and option['--session'] == session, option
+assert option['--evidence-cache'] == session + '/r1-sonnet.evidence-cache', option
 PY
     assert_exit "a prompt without an evidence manifest leaves no read-gate state" 1 \
       test -e "$S/r1-sonnet.read-gate"

@@ -36,12 +36,17 @@ PRIVATE_HOME=$(python3 "$HOME_HELPER" path codex "$OUT") || exit 1
 LEASE_READY=$(mktemp "${TMPDIR:-/tmp}/review-council-codex-ready.XXXXXX") || exit 1
 LEASE_PID=""
 STAGE_DIR=""
+WARM_PID=""
 cleanup_home() {
   local status=$?
   trap - EXIT HUP INT TERM
   if [ -n "$LEASE_PID" ]; then
     kill -TERM "$LEASE_PID" >/dev/null 2>&1 || true
     wait "$LEASE_PID" >/dev/null 2>&1 || true
+  fi
+  if [ -n "$WARM_PID" ]; then
+    kill -TERM "$WARM_PID" >/dev/null 2>&1 || true
+    wait "$WARM_PID" >/dev/null 2>&1 || true
   fi
   [ -z "$STAGE_DIR" ] || rm -rf "$STAGE_DIR"
   rm -f "$LEASE_READY"
@@ -145,6 +150,10 @@ else
   if [ "$STAGE_COUNT" -gt 0 ]; then
     # The helper judges each prepared-evidence turn by the read audit's own replay and names the
     # next turn: the next stage, a bounded repair of a read the audit has not credited, or a refusal.
+    # A slow step replays the audit, so the evidence is validated once, while the seat reads.
+    python3 "$STAGES_HELPER" --warm-evidence "$STAGE_DIR" --prompt "$PROMPT" --root "$AUDIT_ROOT" \
+      --session "$SESSION_DIR" </dev/null >/dev/null 2>>"$LOG" &
+    WARM_PID=$!
     STEP_ARGS=(--stage-step "$STAGE_DIR" --raw "$RAW" --turn "$STAGE_DIR/current-turn.ndjson"
       --prompt "$PROMPT" --seat "$SEAT" --root "$AUDIT_ROOT" --session "$SESSION_DIR")
     [ -z "${REV_DEPS_DIR:-}" ] || STEP_ARGS+=(--deps "$REV_DEPS_DIR")

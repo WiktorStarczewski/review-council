@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Validate a seat's evidence manifest once per attempt for the read audit's in-run replays, the Claude stop gate and each Codex slow prepared-evidence step, instead of on every replay. The seat validates it in the background from launch, and a replay reuses that result only while every file the validation opened and every directory it listed is unchanged. On a 637 KB patch the stop gate took more than its 300 s hook timeout, so the CLI accepted the result unchecked; it now takes about a second, and a Codex slow step takes about 3 s instead of about a minute. The post-run audit still validates in full.
+
 ## 0.9.8
 
 - Refuse a Codex seat before its first model call when its prepared evidence, their read turns and its assignment prompt are projected to fill more than 55% of the usable context window its model's row in the Codex model cache gives. Codex compacts an overflowing thread without a stream event, so the read audit could pass a seat that had lost evidence. The seat log names the projected and allowed tokens, and the refusal is a recorded seat failure, so the assignment is replaced as after any other. A model the cache does not list, or lists without a valid window, launches as before with one log line saying its capacity is unknown.

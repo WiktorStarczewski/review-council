@@ -40,6 +40,8 @@ class ClaudeStopGateCacheTests(unittest.TestCase):
         cls.fixture = SourceFixture(Path(cls.temp.name) / 'segments', 'deleted', adapter='claude')
         cls.audit = load_read_audit()
         cls.index = cls.fixture.session / f'r{cls.fixture.label}-evidence.md'
+        cls.segment = cls.fixture.session / cls.fixture.context['required_source_ranges'][-1][
+            'segments'][-1]['artifact']
 
     @classmethod
     def tearDownClass(cls):
@@ -71,7 +73,8 @@ class ClaudeStopGateCacheTests(unittest.TestCase):
         return stdout.getvalue()
 
     def transcript(self):
-        raw, _, _ = self.fixture.claude_transcript(omitted_artifacts=(self.index.name,))
+        raw, _, _ = self.fixture.claude_transcript(
+            omitted_artifacts=(self.segment.name, self.index.name))
         return raw
 
     def test_stop_gate_replays_in_one_attempt_validate_the_evidence_once(self):

@@ -23,6 +23,7 @@ OUTPUT_BYTES = 32 * 1024
 PROOF_TURN_BYTES = 60 * 1024
 STAGE_PLAN = 'stage-plan.json'
 STAGE_STATE = 'stage-state.json'
+EVIDENCE_CACHE = 'evidence-cache.json'
 # A plan seat proves its cluster searches and sources in review turns, after every stage.
 STAGING_GAP_CODES = {'missing-plan-cluster-search', 'missing-plan-cluster-source'}
 # The context a staged seat holds before its first review turn, fitted on completed Codex streams
@@ -686,7 +687,7 @@ def exact_stage_turn(turn, reads, root, session, audit):
     return total <= PROOF_TURN_BYTES
 
 
-def audit_credited_reads(plan, raw, prompt, root, session, seat, deps, audit):
+def audit_credited_reads(plan, raw, prompt, root, session, seat, deps, audit, cache=None):
     """Replay the post-run audit over the stream so far: the planned reads it credits, or why
     no later read can make the stream pass."""
     progress = {}
@@ -697,7 +698,8 @@ def audit_credited_reads(plan, raw, prompt, root, session, seat, deps, audit):
             assessment, unique = audit.assessed(argparse.Namespace(
                 adapter='codex', raw=str(raw), prompt=str(prompt), root=str(root),
                 session=str(session), seat=seat, deps=deps, result=str(result),
-                out=str(Path(directory) / 'audit.json')), progress)
+                out=str(Path(directory) / 'audit.json'),
+                evidence_cache=None if cache is None else str(cache)), progress)
     gaps = audit.READABLE_GAP_CODES | STAGING_GAP_CODES
     if not assessment.get('tool_calls'):
         # Only the stream's first call can satisfy or break the plan first-call contract.
@@ -755,7 +757,7 @@ def stage_step(stage_dir, raw, turn, prompt, seat, root, session, deps=None):
             credited.update(read['command'] for read in reads)
         else:
             credited, reason = audit_credited_reads(
-                plan, raw, prompt, root, session, seat, deps, audit)
+                plan, raw, prompt, root, session, seat, deps, audit, stage_dir / EVIDENCE_CACHE)
             if reason:
                 return ('refuse', f"prepared evidence stage {pending['stage'] + 1} of {total}"
                         ' cannot be repaired: ' + reason)
@@ -808,6 +810,7 @@ def main():
     parser.add_argument('--review-budget')
     parser.add_argument('--review-turn-call-limit')
     parser.add_argument('--stage-step')
+    parser.add_argument('--warm-evidence')
     parser.add_argument('--capacity')
     parser.add_argument('--raw')
     parser.add_argument('--turn')
@@ -840,6 +843,14 @@ def main():
             print('codex proof staging: ' + str(error), file=sys.stderr)
             return 1
         return 0
+    if args.warm_evidence:
+        if not all((args.prompt, args.root, args.session)):
+            print('codex proof staging: warming the evidence needs the prompt and roots',
+                  file=sys.stderr)
+            return 1
+        return read_audit_module().evidence_cache(argparse.Namespace(
+            prompt=args.prompt, root=args.root, session=args.session,
+            cache=str(Path(args.warm_evidence) / EVIDENCE_CACHE)))
     if args.capacity:
         try:
             if not args.prompt or not args.model:
