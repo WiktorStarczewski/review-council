@@ -255,6 +255,7 @@ t-seat.sh::test_seat_codex_refuses_evidence_over_its_context_window	2	normal
 t-seat.sh::test_seat_codex_resumes_unprepared_reviews	2	normal
 t-seat.sh::test_seat_codex_review_turn_reads_a_hashless_prompt_copy	2	normal
 t-seat.sh::test_seat_codex_refuses_a_review_command_the_read_audit_rejects	2	normal
+t-seat.sh::test_seat_codex_continues_a_review_turn_over_its_call_limit	2	normal
 t-seat.sh::test_seat_codex_review_turn_refusal_is_a_hard_audit_failure	2	normal
 t-seat.sh::test_seat_codex_runs_at_the_maximum_window_unless_switched_off	2	normal
 t-seat.sh::test_seat_codex_prepared_proof_batches_respect_per_read_and_turn_limits	1	normal

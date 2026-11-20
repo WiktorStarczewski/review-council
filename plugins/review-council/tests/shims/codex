@@ -163,19 +163,22 @@ case "${SHIM_MODE:-ok}" in
         # One post-index read of the required original-source target, then ready.
         if [ -n "${SHIM_POST_INDEX_COMMAND:-}" ] && [ ! -e "$SHIM_STAGE_DIR/post-index-read" ]; then
           : > "$SHIM_STAGE_DIR/post-index-read"
-          python3 - "$SHIM_POST_INDEX_COMMAND" <<'PY'
+          # SHIM_REVIEW_EXTRA_READS runs, one per line, after that read in the same turn.
+          python3 - "$SHIM_POST_INDEX_COMMAND" "${SHIM_REVIEW_EXTRA_READS:-}" <<'PY'
 import json
 import os
 import subprocess
 import sys
 
-command = sys.argv[1]
-output = subprocess.run(['bash', '-c', command], cwd=os.environ['ROOT'],
-                        capture_output=True, text=True).stdout
-item = {'id': 'post-index-read', 'type': 'command_execution', 'command': command}
-print(json.dumps({'type': 'item.started', 'item': item}))
-print(json.dumps({'type': 'item.completed', 'item': dict(item, aggregated_output=output,
-                                                           exit_code=0)}))
+commands = [sys.argv[1], *(line for line in sys.argv[2].splitlines() if line)]
+for index, command in enumerate(commands):
+    output = subprocess.run(['bash', '-c', command], cwd=os.environ['ROOT'],
+                            capture_output=True, text=True).stdout
+    item = {'id': 'post-index-read' if index == 0 else f'review-read-{index}',
+            'type': 'command_execution', 'command': command}
+    print(json.dumps({'type': 'item.started', 'item': item}))
+    print(json.dumps({'type': 'item.completed', 'item': dict(item, aggregated_output=output,
+                                                               exit_code=0)}))
 PY
           # SHIM_REVIEW_EXTRA_COMMAND is recorded beside that read as a command that never started.
           [ -z "${SHIM_REVIEW_EXTRA_COMMAND:-}" ] || python3 - "$SHIM_REVIEW_EXTRA_COMMAND" <<'PY'
@@ -187,8 +190,14 @@ print(json.dumps({'type': 'item.started', 'item': item}))
 print(json.dumps({'type': 'item.completed', 'item': dict(item, aggregated_output='',
                                                            exit_code=127)}))
 PY
+          if [ "${SHIM_REVIEW_FIRST_STATUS:-ready}" = continue ]; then
+            printf '%s\n' '{"status":"continue","next_step":"Check the remaining caller."}' > "$OUT"
+          else
+            printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT"
+          fi
+        else
+          printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT"
         fi
-        printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT"
         ;;
       staged-audit:findings.schema.json)
         printf '%s\n' '{"summary":"checked","findings":[]}' > "$OUT"

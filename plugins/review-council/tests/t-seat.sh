@@ -623,15 +623,27 @@ PY
     MODE=prompt ROOT="$T" PROMPT="$S/p.md" SCHEMA="$SHIM_FIXTURE_DIR/findings.schema.json" \
     OUT="$S/result.json" LOG="$S/adapter.log" RAW="$S/raw.ndjson" BASE=abc \
     bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
-  assert_eq "Sol still enforces its two-call per-turn cap" "$?" 1
-  assert_eq "Sol stops after rejecting its oversized review turn" \
-    "$(wc -l < "$S/calls.log" | tr -d ' ')" 1
+  assert_eq "Sol continues a review turn over its two-call pacing limit" "$?" 0
+  assert_eq "Sol finalizes after the three-call review turn" \
+    "$(wc -l < "$S/calls.log" | tr -d ' ')" 2
   assert_grep "Sol review prompt states the two-call turn cap" \
     "$S/calls/call-1.stdin" 'at most 2 command_execution calls total'
   assert_grep "Sol plans its whole two-call cap" "$S/calls/call-1.stdin" \
     'plan at most 2 and return continue'
-  assert_grep "Sol rejection names the exceeded turn budget" "$S/err" \
-    'review turn exceeded its command-call budget'
+  assert_grep "the seat log records the pacing overrun" "$S/adapter.log" \
+    '^codex adapter: review turn 1 ran 3 command calls, over its pacing limit of 2; the read audit has no per-turn call rule, so the review continues$'
+
+  printf '%s\n' 'use at most 1 repository tool calls before stopping this assignment.' > "$S/p.md"
+  : > "$S/calls.log"
+  SHIM_MODE=multi-call SHIM_REVIEW_CALLS=3 SHIM_CALLS_FILE="$S/calls.log" \
+    SHIM_STAGE_DIR="$S/calls" SEAT=codex-sol MODEL=gpt-5.6-sol EFFORT=max \
+    MODE=prompt ROOT="$T" PROMPT="$S/p.md" SCHEMA="$SHIM_FIXTURE_DIR/findings.schema.json" \
+    OUT="$S/result.json" LOG="$S/adapter.log" RAW="$S/raw.ndjson" BASE=abc \
+    bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
+  assert_eq "a review turn past the assignment's repository-call allowance still fails" "$?" 1
+  assert_eq "and no findings turn follows it" "$(wc -l < "$S/calls.log" | tr -d ' ')" 1
+  assert_grep "the refusal names the exceeded allowance" "$S/err" \
+    "^codex adapter: review turn exceeded the assignment's repository-call allowance$"
   seat_env_reset "$_path"
 }
 
@@ -842,6 +854,39 @@ test_seat_codex_refuses_a_review_command_the_read_audit_rejects() {
   )
 }
 
+test_seat_codex_continues_a_review_turn_over_its_call_limit() {
+  ( local _path="$PATH"; seat_env
+    local R="$T/paced-turn-root" S="$T/paced-turn-session" target
+    seat_codex_prepared_session "$R" "$S" || { fail "prepared Codex session fixture"; return; }
+    target=$(sed -n 's/^Required post-index original-source target: \([^:]*\):\([0-9]*\)-\([0-9]*\) .*/sed -n \2,\3p \1/p' \
+      "$S/r1-codex-luna.prompt.md")
+    mkdir -p "$S/calls"; : > "$S/calls.log"
+    SHIM_MODE=staged-audit SHIM_POST_INDEX_COMMAND="$target" SHIM_REVIEW_FIRST_STATUS=continue \
+      SHIM_REVIEW_EXTRA_READS=$'sed -n 1,1p src/lib.py\nsed -n 4,4p src/lib.py\nsed -n 7,7p src/lib.py\nsed -n 13,13p src/lib.py\nsed -n 1,1p src/use00.py\nsed -n 1,1p src/use01.py' \
+      SHIM_STAGE_DIR="$S/calls" SHIM_CALLS_FILE="$S/calls.log" SEAT=codex-luna MODEL=gpt-6-luna \
+      EFFORT=xhigh MODE=prompt ROOT="$R" PROMPT="$S/r1-codex-luna.prompt.md" \
+      SCHEMA="$SK/schema/findings.schema.json" OUT="$S/r1-codex-luna.json" \
+      LOG="$S/r1-codex-luna.log" RAW="$S/r1-codex-luna.stream.ndjson" BASE=abc \
+      bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
+    assert_eq "a Luna review turn of seven small calls continues and finalizes" "$?" 0
+    assert_grep "the seat log records the pacing overrun" "$S/r1-codex-luna.log" \
+      '^codex adapter: review turn 1 ran 7 command calls, over its pacing limit of 6; the read audit has no per-turn call rule, so the review continues$'
+    assert_eq "the next review turn shows the measured overrun" "$(grep -l \
+      'The previous turn ran 7 of its 6 allowed command_execution calls and returned [0-9.]* KiB of its 32 KiB\. That is over the per-turn limit: keep this turn within 6\.' \
+      "$S"/calls/call-*.stdin | wc -l | tr -d ' ')" 1
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+      --raw "$S/r1-codex-luna.stream.ndjson" --prompt "$S/r1-codex-luna.prompt.md" --root "$R" \
+      --session "$S" --seat codex-luna --out "$S/r1-codex-luna.read-audit.json" >/dev/null 2>&1
+    assert_eq "the post-run audit accepts the same stream" "$?" 0
+    assert_eq "with no violation or advisory" "$(python3 -c '
+import json, sys
+audit = json.load(open(sys.argv[1]))
+print(audit["status"], len(audit["violations"]), len(audit["advisories"]))
+' "$S/r1-codex-luna.read-audit.json" 2>&1)" "valid 0 0"
+    seat_env_reset "$_path"
+  )
+}
+
 test_seat_codex_review_turn_refusal_is_a_hard_audit_failure() {
   ( local _path="$PATH"; seat_env
     local R="$T/refused-turn-root" S="$T/refused-turn-session" target calls
@@ -925,14 +970,14 @@ test_seat_codex_runs_at_the_maximum_window_unless_switched_off() {
 test_seat_codex_failure_reason_reaches_the_seat_log() {
   local _path="$PATH"; seat_env
   local S="$T/seat-codex-failure-reason"; seat_roster "$S"
-  printf '%s\n' 'use at most 16 repository tool calls before stopping this assignment.' > "$S/p.md"
+  printf '%s\n' 'use at most 1 repository tool calls before stopping this assignment.' > "$S/p.md"
   SHIM_MODE=multi-call SHIM_REVIEW_CALLS=3 \
     "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" > "$S/out" 2> "$S/err"
   assert_eq "an adapter refusal is an unusable seat" "$?" 2
   assert_grep "the seat log names the adapter's refusal" "$S/r1-codex-sol.log" \
-    '^codex adapter: review turn exceeded its command-call budget$'
+    "^codex adapter: review turn exceeded the assignment's repository-call allowance$"
   assert_grep "the orchestrator still sees the refusal on stderr" "$S/err" \
-    'codex adapter: review turn exceeded its command-call budget'
+    "codex adapter: review turn exceeded the assignment's repository-call allowance"
   seat_env_reset "$_path"
 }
 

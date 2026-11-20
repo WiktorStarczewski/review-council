@@ -212,7 +212,7 @@ EOF
       READS_USED="Of that allowance, ${REVIEW_READS} of ${REVIEW_READ_BUDGET} repository tool calls are used and $((REVIEW_READ_BUDGET - REVIEW_READS)) remain."
       if [ "$review_turn" -gt 1 ]; then
         KIB_TENTHS=$(((TURN_BYTES * 10 + 1023) / 1024))
-        LAST_TURN="The previous turn ran ${TURN_CALLS} of its ${REVIEW_TURN_CALL_LIMIT} allowed command_execution calls and returned $((KIB_TENTHS / 10)).$((KIB_TENTHS % 10)) KiB of its 32 KiB."
+        LAST_TURN="The previous turn ran ${TURN_CALLS} of its ${REVIEW_TURN_CALL_LIMIT} allowed command_execution calls and returned $((KIB_TENTHS / 10)).$((KIB_TENTHS % 10)) KiB of its 32 KiB.${TURN_PACE}"
       fi
       if [ "$review_turn" = 1 ]; then
         printf '%s\n\n' "This review runs in bounded explicit turns. The turn rules after the assignment below govern how you spend its repository-call allowance and what each turn returns: at most ${REVIEW_TURN_CALL_LIMIT} command_execution calls per turn, searches included, and a status JSON instead of findings until a later prompt asks for them." \
@@ -276,13 +276,24 @@ EOF
       if [ -n "$TURN_REFUSAL" ]; then
         adapter_fail "review turn ran a command the read audit rejects ($TURN_REFUSAL)" 8
       fi
-      if [ "$TURN_CALLS" -gt "$REVIEW_TURN_CALL_LIMIT" ]; then
-        adapter_fail "review turn exceeded its command-call budget"
+      # The repository-call allowance, no tools once it is used up, the turn count and a
+      # tool-free findings turn bound what a seat spends. The read audit only advises on the
+      # allowance, so these are the adapter's own limits on the run, not proof rules.
+      if [ "$((REVIEW_READS + TURN_READS))" -gt "$REVIEW_READ_BUDGET" ]; then
+        adapter_fail "review turn exceeded the assignment's repository-call allowance"
       fi
-      if [ "$TURN_BYTES" -gt 32768 ] \
-          || [ "$((REVIEW_READS + TURN_READS))" -gt "$REVIEW_READ_BUDGET" ] \
-          || { [ "$NO_MORE_READS" = 1 ] && [ "$TURN_CALLS" -ne 0 ]; }; then
-        adapter_fail "review turn exceeded its read or output budget"
+      if [ "$NO_MORE_READS" = 1 ] && [ "$TURN_CALLS" -ne 0 ]; then
+        adapter_fail "review turn used tools after the assignment's repository-call allowance was used up"
+      fi
+      if [ "$TURN_BYTES" -gt 32768 ]; then
+        adapter_fail "review turn exceeded its output budget"
+      fi
+      # The read audit has no per-turn call rule, so the call limit only paces the seat.
+      TURN_PACE=""
+      if [ "$TURN_CALLS" -gt "$REVIEW_TURN_CALL_LIMIT" ]; then
+        printf 'codex adapter: review turn %s ran %s command calls, over its pacing limit of %s; the read audit has no per-turn call rule, so the review continues\n' \
+          "$review_turn" "$TURN_CALLS" "$REVIEW_TURN_CALL_LIMIT" >> "$LOG"
+        TURN_PACE=" That is over the per-turn limit: keep this turn within ${REVIEW_TURN_CALL_LIMIT}."
       fi
       REVIEW_READS=$((REVIEW_READS + TURN_READS))
       REVIEW_STATE=$(stage_helper --review-status "$TURN_OUT") || exit 1
