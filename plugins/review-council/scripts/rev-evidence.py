@@ -75,6 +75,7 @@ DIFF = ['diff', '--no-ext-diff', '--no-textconv', '--no-renames',
         '--unified=3', '--binary', '--src-prefix=a/', '--dst-prefix=b/']
 OVERSIZED_BLOB = object()
 OBJECT_ID = re.compile(r'[0-9a-f]{40}|[0-9a-f]{64}')
+OBJECT_QUERIES = {}
 ACTIVE_PLAN_SEARCHES = set()
 SOURCE_CONTEXT_RECONSTRUCTION_MEMO: dict[tuple[str, ...], dict] = {}
 
@@ -1098,6 +1099,19 @@ def split_patch(patch, paths):
     return result
 
 
+def object_query(args):
+    """`cat-file blob` or `ls-tree` of objects named by hash, optionally limited to paths."""
+    if not args or args[0] not in ('cat-file', 'ls-tree'):
+        return False
+    operands = list(args[1:])
+    if '--' in operands:
+        operands = operands[:operands.index('--')]
+    names = [word for word in operands if not word.startswith('-')]
+    if args[0] == 'cat-file':
+        return len(names) == 2 and names[0] == 'blob' and bool(OBJECT_ID.fullmatch(names[1]))
+    return len(names) == 1 and bool(OBJECT_ID.fullmatch(names[0]))
+
+
 def close_blob_reader(process):
     if process is None:
         return
@@ -1141,10 +1155,24 @@ class Repository:
         return within(path, self.selected)
 
     def git(self, *args, data=None, env=None):
+        key = None
+        if data is None and env is None and object_query(args):
+            # A tree or blob named by hash answers the same until the object stores change.
+            key = (str(self.root), self.env['GIT_OBJECT_DIRECTORY'],
+                   self.env['GIT_ALTERNATE_OBJECT_DIRECTORIES'], args)
+            if key in OBJECT_QUERIES:
+                return OBJECT_QUERIES[key]
+            if args[:2] == ('cat-file', 'blob'):
+                body = self.batch_blob(args[2])
+                if body is not None:
+                    OBJECT_QUERIES[key] = body
+                    return body
         result = subprocess.run(['git', '-C', str(self.root), *args], input=data,
                                 env=env or self.env, capture_output=True)
         if result.returncode:
             raise ValueError('git ' + args[0] + ': ' + result.stderr.decode(errors='replace').strip())
+        if key is not None:
+            OBJECT_QUERIES[key] = result.stdout
         return result.stdout
 
     def tree(self, ref):
