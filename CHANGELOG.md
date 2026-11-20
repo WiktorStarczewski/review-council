@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Validate a seat's evidence manifest once per attempt for the read audit's in-run replays, the Claude stop gate and each Codex slow prepared-evidence step, instead of on every replay. The seat validates it in the background from launch, and a replay reuses that result only while every file the validation opened and every directory it listed is unchanged. On a 637 KB patch the stop gate took more than its 300 s hook timeout, so the CLI accepted the result unchecked; it now takes about a second, and a Codex slow step takes about 3 s instead of about a minute. The post-run audit still validates in full.
+- Answer a Claude seat's stop gate within 90% of its 300 s hook timeout. A replay still running then allows the StructuredOutput call or Stop unchecked, as the CLI's timeout did, and the seat log now says so instead of the gate timing out silently.
 
 ## 0.9.8
 

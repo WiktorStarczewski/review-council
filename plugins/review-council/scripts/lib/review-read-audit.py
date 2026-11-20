@@ -11,6 +11,7 @@ from pathlib import Path
 import posixpath
 import re
 import shlex
+import signal
 import stat
 import sys
 import tempfile
@@ -49,6 +50,8 @@ READABLE_GAP_CODES = {
 }
 STOP_GATE_BLOCKS = 3
 STOP_GATE_LISTED = 12
+# The stop gate answers within this share of its hook timeout, before the CLI gives up on it.
+STOP_GATE_BUDGET_SHARE = 0.9
 READ_GATE_VERSION = 2
 EVIDENCE_CACHE_VERSION = 1
 GIT_OBJECT_COMMANDS = {'cat-file', 'diff', 'ls-tree', 'rev-parse'}
@@ -3338,15 +3341,45 @@ def stop_gate_reason(args, event):
         ' with StructuredOutput.')
 
 
+class StopGateDeadline(BaseException):
+    """The replay ran past its budget; no handler inside the audit may absorb it."""
+
+
 def stop_hook(args):
     """Gate a Claude seat's end, its StructuredOutput call or its Stop, on the audit's own replay.
 
     Any error allows the end, so the post-run audit decides exactly as it would without the gate.
+    A replay that would outlast the hook timeout allows it too, and says so in the seat log.
     """
+    timeout = getattr(args, 'timeout', None)
+    budget = timeout * STOP_GATE_BUDGET_SHARE if timeout else None
+    event = {}
+
+    def expired(_signum, _frame):
+        raise StopGateDeadline
+
     try:
-        event = json.load(sys.stdin)
-        event = event if isinstance(event, dict) else {}
-        reason = stop_gate_reason(args, event)
+        if budget:
+            signal.signal(signal.SIGALRM, expired)
+            signal.setitimer(signal.ITIMER_REAL, budget)
+        try:
+            event = json.load(sys.stdin)
+            event = event if isinstance(event, dict) else {}
+            reason = stop_gate_reason(args, event)
+        finally:
+            if budget:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+    except StopGateDeadline:
+        ending = 'Stop' if event.get('hook_event_name') == 'Stop' else 'StructuredOutput call'
+        note = (f'review stop gate: the read-audit replay ran past its {budget:.0f} s budget of'
+                f' the {timeout} s hook timeout, so this {ending} was allowed unchecked; the'
+                ' post-run audit still decides\n')
+        try:
+            with open(args.log, 'a', encoding='utf-8') as stream:
+                stream.write(note)
+        except (OSError, TypeError):
+            sys.stderr.write(note)
+        return 0
     except Exception:
         return 0
     if reason is None:
@@ -4502,6 +4535,8 @@ def main():
     stops.add_argument('--seat')
     stops.add_argument('--deps')
     stops.add_argument('--evidence-cache')
+    stops.add_argument('--log')
+    stops.add_argument('--timeout', type=int)
     caches = commands.add_parser('evidence-cache')
     caches.add_argument('--prompt', required=True)
     caches.add_argument('--root', required=True)
