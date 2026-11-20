@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -20,11 +21,21 @@ from review_limits import codex_review_turn_call_limit_for_model
 
 OUTPUT_BYTES = 32 * 1024
 PROOF_TURN_BYTES = 60 * 1024
-SOURCE_SEGMENT_VISIBLE_LIMIT = 16 * 1024
 STAGE_PLAN = 'stage-plan.json'
 STAGE_STATE = 'stage-state.json'
 # A plan seat proves its cluster searches and sources in review turns, after every stage.
 STAGING_GAP_CODES = {'missing-plan-cluster-search', 'missing-plan-cluster-source'}
+# The context a staged seat holds before its first review turn, fitted on completed Codex streams
+# (projected over actual: median 1.10, minimum 0.85). Review turns then added a median 33K and at
+# most 126K tokens, so staging may fill only 55% of the model's usable window.
+CONTEXT_BASE_TOKENS = 17_000
+CONTEXT_READ_TOKENS = 120
+CONTEXT_STAGE_TURN_TOKENS = 300
+READ_BYTES_PER_TOKEN = 2.8
+PACKET_BYTES_PER_TOKEN = 2.4
+PROMPT_BYTES_PER_TOKEN = 3.0
+CONTEXT_SHARE_PERCENT = 55
+HEX_RUN = re.compile(rb'[0-9a-f]{32,}')
 
 
 class StageError(ValueError):
@@ -87,7 +98,7 @@ def direct_path(value, session, expected_name=None):
     return path
 
 
-def grouped(items, limit, visible, standalone=None, turn_bytes=PROOF_TURN_BYTES):
+def grouped(items, limit, visible, turn_bytes=PROOF_TURN_BYTES):
     if not 1 <= limit <= 2:
         raise StageError('Codex proof batch limit must be one or two')
     stages = []
@@ -97,14 +108,7 @@ def grouped(items, limit, visible, standalone=None, turn_bytes=PROOF_TURN_BYTES)
         amount = visible(item)
         if amount < 0 or amount > OUTPUT_BYTES:
             raise StageError('one prepared proof read exceeds the hard output limit')
-        alone = standalone(item) if standalone else False
-        if alone:
-            if pending:
-                stages.append(pending)
-                pending = []
-                size = 0
-            stages.append([item])
-        elif pending and (len(pending) >= limit or size + amount > turn_bytes):
+        if pending and (len(pending) >= limit or size + amount > turn_bytes):
             stages.append(pending)
             pending = [item]
             size = amount
@@ -513,10 +517,7 @@ def prepared_stages(prompt, seat, model, stage_dir):
                                  row.get('raw_bytes'), OUTPUT_BYTES)
             expected_segments.append((index, len(segments), command_file(path), len(raw),
                                       row['predicted_visible_bytes'], row['content_sha256']))
-            segment_files.append({'path': path, 'visible': row['predicted_visible_bytes'],
-                                  'oversized': (row['line_start'] == row['line_end']
-                                                and row['predicted_visible_bytes']
-                                                > SOURCE_SEGMENT_VISIBLE_LIMIT)})
+            segment_files.append({'path': path, 'visible': row['predicted_visible_bytes']})
     observed_segments = []
     for match in segment_lines:
         try:
@@ -538,8 +539,10 @@ def prepared_stages(prompt, seat, model, stage_dir):
         if segment_limits:
             raise StageError('prompt contains an unassigned source segment batch limit')
     if segment_files:
-        for group in grouped(segment_files, 2, lambda item: item['visible'],
-                             lambda item: item['oversized']):
+        # In a segment pair a read-ahead makes three proof reads, past the audit's batch limit of
+        # two, and can never be repaired, so segments are read one per turn; that limit still
+        # lets a turn read exactly the next segment ahead.
+        for group in grouped(segment_files, 1, lambda item: item['visible']):
             stages.append({'kind': 'required source segments',
                            'files': [{'path': item['path'], 'command': command_file(item['path'])}
                                      for item in group]})
@@ -604,6 +607,61 @@ def read_bytes(read, session, audit):
         return raw
     first, last = read['window']
     return b''.join(audit.split_lf_lines(raw)[first - 1:last])
+
+
+def context_tokens(raw, bytes_per_token):
+    """Estimated tokens for text; a hash or other long hex run costs about one token per byte."""
+    hex_bytes = sum(len(run) for run in HEX_RUN.findall(raw))
+    return (len(raw) - hex_bytes) / bytes_per_token + hex_bytes
+
+
+def usable_context_window(model):
+    """(usable tokens, None) from the model's row in the Codex model cache that the roster reads,
+    or (None, why it is unknown)."""
+    from roster import codex_catalog_path
+    path = codex_catalog_path()
+    try:
+        with open(path, encoding='utf-8') as source:
+            models = json.load(source).get('models')
+    except (OSError, UnicodeError, ValueError, AttributeError):
+        return None, f'no readable Codex model cache at {path} for {model}'
+    rows = [row for row in models if isinstance(row, dict) and row.get('slug') == model] \
+        if isinstance(models, list) else []
+    if len(rows) != 1:
+        return None, f'{model} is not listed once in {path}'
+    window = rows[0].get('context_window')
+    percent = rows[0].get('effective_context_window_percent')
+    if (type(window) is not int or window <= 0 or type(percent) not in (int, float)
+            or not 0 < percent <= 100):
+        return None, f'{model} has no valid context window in {path}'
+    return math.floor(window * percent / 100), None
+
+
+def context_capacity(stage_dir, prompt, model):
+    """('fits', projected, limit), ('over', reason) or ('unknown', reason) for the context a seat
+    holds before review: the staged reads and their turns, then the assignment prompt."""
+    usable, unknown = usable_context_window(model)
+    if unknown:
+        return ('unknown', unknown)
+    plan_path = Path(stage_dir) / STAGE_PLAN
+    stages = (json.loads(plan_path.read_text(encoding='utf-8'))['stages']
+              if plan_path.exists() else [])
+    session = Path(prompt).parent.resolve(strict=True)
+    audit = read_audit_module()
+    projected = CONTEXT_BASE_TOKENS + CONTEXT_STAGE_TURN_TOKENS * len(stages)
+    for stage in stages:
+        rate = (PACKET_BYTES_PER_TOKEN if stage['kind'] == 'source context packet'
+                else READ_BYTES_PER_TOKEN)
+        for read in stage['reads']:
+            projected += (context_tokens(read_bytes(read, session, audit), rate)
+                          + CONTEXT_READ_TOKENS)
+    projected = math.ceil(projected + context_tokens(Path(prompt).read_bytes(),
+                                                     PROMPT_BYTES_PER_TOKEN))
+    limit = usable * CONTEXT_SHARE_PERCENT // 100
+    if projected > limit:
+        return ('over', f'the assignment needs ~{projected} tokens of context before review, over'
+                f" {limit} ({CONTEXT_SHARE_PERCENT}% of {model}'s {usable} usable)")
+    return ('fits', str(projected), str(limit))
 
 
 def exact_stage_turn(turn, reads, root, session, audit):
@@ -750,6 +808,7 @@ def main():
     parser.add_argument('--review-budget')
     parser.add_argument('--review-turn-call-limit')
     parser.add_argument('--stage-step')
+    parser.add_argument('--capacity')
     parser.add_argument('--raw')
     parser.add_argument('--turn')
     parser.add_argument('--deps')
@@ -777,6 +836,15 @@ def main():
                 raise StageError('a prepared evidence step needs its stream, prompt and roots')
             print('\t'.join(stage_step(args.stage_step, args.raw, args.turn, args.prompt,
                                        args.seat, args.root, args.session, args.deps)))
+        except (OSError, UnicodeError, StageError, KeyError, TypeError, ValueError) as error:
+            print('codex proof staging: ' + str(error), file=sys.stderr)
+            return 1
+        return 0
+    if args.capacity:
+        try:
+            if not args.prompt or not args.model:
+                raise StageError('a context capacity check needs the prompt and the model')
+            print('\t'.join(context_capacity(args.capacity, args.prompt, args.model)))
         except (OSError, UnicodeError, StageError, KeyError, TypeError, ValueError) as error:
             print('codex proof staging: ' + str(error), file=sys.stderr)
             return 1

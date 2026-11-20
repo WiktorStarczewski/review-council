@@ -614,8 +614,8 @@ PY
     >/dev/null 2>&1
 }
 
-# Prints the first paired segment stage's number, its second read, and the post-index target read.
-seat_codex_paired_stage() {
+# Prints the first segment stage's number, its last read, and the post-index target read.
+seat_codex_segment_stage() {
   python3 - "$SCRIPTS/lib/codex-proof-stages.py" "$1" "$2" <<'PY'
 import re
 import subprocess
@@ -629,9 +629,9 @@ subprocess.run([sys.executable, helper, '--prompt', prompt, '--seat', 'codex-lun
 for path in sorted(Path(stages).glob('stage-*.prompt')):
     reads = [line[len('Read exactly: '):] for line in path.read_text().splitlines()
              if line.startswith('Read exactly: ')]
-    if len(reads) == 2 and '(required source segments)' in path.read_text().splitlines()[0]:
+    if '(required source segments)' in path.read_text().splitlines()[0]:
         print(int(re.search(r'stage-(\d+)', path.name).group(1)))
-        print(reads[1])
+        print(reads[-1])
         break
 target = re.search(r'^Required post-index original-source target: (\S+):(\d+)-(\d+) ',
                    Path(prompt).read_text(), re.M)
@@ -641,12 +641,12 @@ PY
 
 test_seat_codex_repairs_a_prepared_evidence_under_read() {
   ( local _path="$PATH"; seat_env
-    local R="$T/stage-repair-root" S="$T/stage-repair-session" D="$T/stage-repair-dup" plan stage second target calls
+    local R="$T/stage-repair-root" S="$T/stage-repair-session" D="$T/stage-repair-dup" plan stage missing target calls
     seat_codex_prepared_session "$R" "$S" || { fail "prepared Codex session fixture"; return; }
-    plan=$(seat_codex_paired_stage "$S/r1-codex-luna.prompt.md" "$T/stage-repair-plan") \
+    plan=$(seat_codex_segment_stage "$S/r1-codex-luna.prompt.md" "$T/stage-repair-plan") \
       || { fail "prepared Codex stage plan"; return; }
     stage=$(printf '%s\n' "$plan" | sed -n 1p)
-    second=$(printf '%s\n' "$plan" | sed -n 2p)
+    missing=$(printf '%s\n' "$plan" | sed -n 2p)
     target=$(printf '%s\n' "$plan" | sed -n 3p)
     mkdir -p "$S/calls"; : > "$S/calls.log"
     SHIM_MODE=staged-audit SHIM_STAGE_SLIP="$stage:under" SHIM_POST_INDEX_COMMAND="$target" \
@@ -657,9 +657,9 @@ test_seat_codex_repairs_a_prepared_evidence_under_read() {
       bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
     assert_eq "an in-order under-read stage does not fail the seat" "$?" 0
     assert_eq "the repair turn reads exactly the missing artifact" \
-      "$(grep '^Read exactly: ' "$S/calls/call-$((stage + 1)).stdin")" "Read exactly: $second"
+      "$(grep '^Read exactly: ' "$S/calls/call-$((stage + 1)).stdin")" "Read exactly: $missing"
     assert_grep "the seat log names the repair" "$S/r1-codex-luna.log" \
-      "^codex adapter: .*repair.*$(basename "$second")"
+      "^codex adapter: .*repair.*$(basename "$missing")"
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
       --raw "$S/r1-codex-luna.stream.ndjson" --prompt "$S/r1-codex-luna.prompt.md" --root "$R" \
       --session "$S" --seat codex-luna --out "$S/r1-codex-luna.read-audit.json" >/dev/null 2>&1
@@ -674,11 +674,53 @@ test_seat_codex_repairs_a_prepared_evidence_under_read() {
       SCHEMA="$SK/schema/findings.schema.json" OUT="$S/r1-codex-luna.json" \
       LOG="$S/r1-codex-luna.log" RAW="$S/r1-codex-luna.stream.ndjson" BASE=abc \
       bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
-    assert_eq "a repeated required source segment still fails the seat" "$?" 1
-    assert_eq "the refusal spends no further turn" "$(wc -l < "$S/calls.log" | tr -d ' ')" "$stage"
-    assert_grep "the seat log names the audit's reason" "$S/r1-codex-luna.log" \
-      '^codex adapter: .*duplicate-required-source-segment'
+    assert_eq "a repeated required source segment does not fail the seat" "$?" 0
+    assert_eq "the repeat needs no repair turn" "$(wc -l < "$S/calls.log" | tr -d ' ')" \
+      "$((calls - 1))"
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+      --raw "$S/r1-codex-luna.stream.ndjson" --prompt "$S/r1-codex-luna.prompt.md" --root "$R" \
+      --session "$S" --seat codex-luna --out "$S/r1-codex-luna.read-audit.json" >/dev/null 2>&1
+    assert_eq "the post-run audit accepts the repeated read" "$?" 0
+    assert_eq "the repeat is only an audit advisory" "$(python3 -c '
+import json, sys
+audit = json.load(open(sys.argv[1]))
+print(sorted({row["code"] for row in audit["violations"]}),
+      "duplicate-required-source-segment" in {row["code"] for row in audit["advisories"]})
+' "$S/r1-codex-luna.read-audit.json")" "[] True"
     assert_exit "the repaired run used one more turn than the plan" 0 test "$calls" -gt "$stage"
+    seat_env_reset "$_path"
+  )
+}
+
+test_seat_codex_refuses_evidence_over_its_context_window() {
+  ( local _path="$PATH"; seat_env
+    local R="$T/capacity-root" S="$T/capacity-session" target
+    seat_codex_prepared_session "$R" "$S" || { fail "prepared Codex session fixture"; return; }
+    target=$(sed -n 's/^Required post-index original-source target: \([^:]*\):\([0-9]*\)-\([0-9]*\) .*/sed -n \2,\3p \1/p' \
+      "$S/r1-codex-luna.prompt.md")
+    printf '%s\n' '{"client_version":"0.0.0-test","models":[{"slug":"gpt-6-luna","visibility":"list","context_window":20000,"effective_context_window_percent":95}]}' \
+      > "$T/capacity-small.json"
+    mkdir -p "$S/calls"; : > "$S/calls.log"
+    REVIEW_COUNCIL_CODEX_MODELS_CACHE="$T/capacity-small.json" SHIM_MODE=staged-audit \
+      SHIM_POST_INDEX_COMMAND="$target" SHIM_STAGE_DIR="$S/calls" SHIM_CALLS_FILE="$S/calls.log" \
+      "$SCRIPTS/rev-seat.sh" codex-luna "$S" 1 "$S/r1-codex-luna.prompt.md" > "$S/out" 2> "$S/err"
+    assert_eq "evidence over the model's context window makes an unusable seat" "$?" 2
+    assert_eq "the refusal comes before any codex call" "$(wc -l < "$S/calls.log" | tr -d ' ')" 0
+    assert_grep "the seat log names the projection and the limit" "$S/r1-codex-luna.log" \
+      "^codex adapter: .*needs ~[0-9]+ tokens .*over 10450 \(55% of gpt-6-luna's 19000 usable\)$"
+
+    printf '%s\n' '{"client_version":"0.0.0-test","models":[{"slug":"gpt-6-sol","visibility":"list","context_window":20000,"effective_context_window_percent":95}]}' \
+      > "$T/capacity-unlisted.json"
+    mkdir -p "$S/calls-unknown"; : > "$S/calls-unknown.log"
+    REVIEW_COUNCIL_CODEX_MODELS_CACHE="$T/capacity-unlisted.json" SHIM_MODE=staged-audit \
+      SHIM_POST_INDEX_COMMAND="$target" SHIM_STAGE_DIR="$S/calls-unknown" \
+      SHIM_CALLS_FILE="$S/calls-unknown.log" SEAT=codex-luna MODEL=gpt-6-luna EFFORT=xhigh \
+      MODE=prompt ROOT="$R" PROMPT="$S/r1-codex-luna.prompt.md" \
+      SCHEMA="$SK/schema/findings.schema.json" OUT="$S/unknown.json" LOG="$S/unknown.log" \
+      RAW="$S/unknown.stream.ndjson" BASE=abc bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
+    assert_eq "a model the cache does not list launches as before" "$?" 0
+    assert_grep "the seat log says the capacity is unknown" "$S/unknown.log" \
+      '^codex adapter: context capacity unknown \(.*gpt-6-luna.*\)$'
     seat_env_reset "$_path"
   )
 }

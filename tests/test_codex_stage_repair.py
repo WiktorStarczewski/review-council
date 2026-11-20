@@ -234,6 +234,19 @@ def name(command):
     return Path(shlex.split(command)[-1]).name
 
 
+def paired_segments(plan):
+    """Required source segments two per stage, the shape small patch chunks still take, to test
+    the repairs a stage with two reads gets."""
+    stages = []
+    for stage in plan['stages']:
+        if (stage['kind'] == 'required source segments' and stages
+                and stages[-1]['kind'] == stage['kind'] and len(stages[-1]['reads']) == 1):
+            stages[-1] = dict(stages[-1], reads=stages[-1]['reads'] + stage['reads'])
+        else:
+            stages.append(stage)
+    return dict(plan, stages=stages)
+
+
 class StageRepairTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -335,7 +348,7 @@ class StageRepairTests(unittest.TestCase):
         self.assertEqual(self.finish_and_audit(seat)[:2], (0, []))
 
     def test_an_in_order_under_read_gets_a_repair_turn_for_exactly_the_missing_read(self):
-        seat = self.seat()
+        seat = self.seat(plan=paired_segments)
         stage = self.first_stage(seat, 2, 'required source segments')
         planned = self.plan_reads(seat)
         transcript = self.drive(seat, {stage: lambda listed: listed[:1]})
@@ -350,7 +363,7 @@ class StageRepairTests(unittest.TestCase):
         self.assertEqual(self.finish_and_audit(seat)[:2], (0, []))
 
     def test_a_stage_with_no_reads_is_repaired_one_read_per_turn(self):
-        seat = self.seat()
+        seat = self.seat(plan=paired_segments)
         stage = self.first_stage(seat, 2, 'required source segments')
         planned = self.plan_reads(seat)
         transcript = self.drive(seat, {stage: lambda listed: []})
@@ -371,13 +384,16 @@ class StageRepairTests(unittest.TestCase):
         self.assertEqual(len(transcript), index_stage + 1)
         self.assertEqual(self.finish_and_audit(seat)[:2], (0, []))
 
-    def test_a_repeated_required_source_segment_is_refused_with_the_audit_codes(self):
+    def test_a_repeated_required_source_segment_continues_with_the_audit_advisory(self):
         seat = self.seat()
-        stage = self.first_stage(seat, 2, 'required source segments')
-        transcript = self.drive(seat, {stage: lambda listed: listed + listed[-1:]})
-        self.assertEqual(transcript[-1][0], 'refuse')
-        self.assertEqual(len(transcript), stage + 1)
-        self.assertIn('duplicate-required-source-segment', transcript[-1][1])
+        planned = self.plan_reads(seat)
+        stage = self.first_stage(seat, 1, 'required source segments')
+        transcript = self.drive(seat, {stage: lambda listed: listed + listed})
+        self.assertEqual(transcript[-1], ['done'])
+        self.assertEqual(len(transcript), len(planned) + 1)
+        code, violations, advisories = self.finish_and_audit(seat)
+        self.assertEqual((code, violations), (0, []))
+        self.assertIn('duplicate-required-source-segment', advisories)
 
     def test_a_repeated_source_packet_is_refused_with_the_audit_codes(self):
         seat = self.seat()
@@ -431,10 +447,32 @@ class StageRepairTests(unittest.TestCase):
 
     def test_reads_out_of_order_are_refused(self):
         seat = self.seat()
-        stage = self.first_stage(seat, 2, 'required source segments')
-        transcript = self.drive(seat, {stage: lambda listed: listed[::-1]})
+        stage = self.first_stage(seat, 1, 'required source segments')
+        following = self.plan_reads(seat)[stage][0]
+        transcript = self.drive(seat, {stage: lambda listed: [following] + listed})
         self.assertEqual(transcript[-1][0], 'refuse')
         self.assertIn('reordered-required-source-segments', transcript[-1][1])
+
+    def test_required_source_segments_are_staged_one_per_turn(self):
+        seat = self.seat()
+        plan = json.loads((seat.stage_dir / 'stage-plan.json').read_text())['stages']
+        segments = [stage for stage in plan if stage['kind'] == 'required source segments']
+        self.assertGreaterEqual(len(segments), 3)
+        self.assertEqual({len(stage['reads']) for stage in segments}, {1})
+
+    def test_a_required_source_segment_read_ahead_is_kept_and_not_asked_for_again(self):
+        seat = self.seat()
+        planned = self.plan_reads(seat)
+        flat = [read for stage in planned for read in stage]
+        stage = next(index for index, listed in enumerate(planned, 1)
+                     if 'source-segment' in listed[0])
+        ahead = flat[flat.index(planned[stage - 1][-1]) + 1]
+        self.assertIn('source-segment', ahead)
+        transcript = self.drive(seat, {stage: lambda listed: listed + [ahead]})
+        self.assertEqual(transcript[-1], ['done'])
+        self.assertEqual(len(transcript), len(planned))
+        self.assertNotIn(ahead, [read for step in transcript[stage:-1] for read in reads(step[1])])
+        self.assertEqual(self.finish_and_audit(seat)[:2], (0, []))
 
     def test_a_read_ahead_the_audit_credits_is_not_asked_for_again(self):
         seat = self.seat(functions=5)
@@ -447,7 +485,7 @@ class StageRepairTests(unittest.TestCase):
         self.assertEqual(self.finish_and_audit(seat)[:2], (0, []))
 
     def test_repairs_end_when_a_stage_keeps_slipping(self):
-        seat = self.seat()
+        seat = self.seat(plan=paired_segments)
         stage = self.first_stage(seat, 2, 'required source segments')
         slips = {turn: (lambda listed: []) for turn in range(stage, stage + 10)}
         transcript = self.drive(seat, slips)

@@ -251,6 +251,7 @@ t-seat.sh::test_seat_codex	1	normal
 t-seat.sh::test_seat_codex_luna_allows_five_commands_per_review_turn	2	normal
 t-seat.sh::test_seat_codex_failure_reason_reaches_the_seat_log	1	normal
 t-seat.sh::test_seat_codex_repairs_a_prepared_evidence_under_read	2	normal
+t-seat.sh::test_seat_codex_refuses_evidence_over_its_context_window	2	normal
 t-seat.sh::test_seat_codex_resumes_unprepared_reviews	2	normal
 t-seat.sh::test_seat_codex_prepared_proof_batches_respect_per_read_and_turn_limits	1	normal
 t-seat.sh::test_seat_codex_prepares_window_mode_patch_reads	1	normal

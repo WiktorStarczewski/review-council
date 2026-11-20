@@ -91,6 +91,16 @@ else
   case "$STAGE_COUNT" in
     ''|*[!0-9]*) adapter_fail "invalid proof stage count";;
   esac
+  # Codex compacts an overflowing thread silently and the stream audit cannot see evidence it
+  # dropped, so a seat that cannot hold its evidence refuses before any paid call.
+  CAPACITY=$(stage_helper --capacity "$STAGE_DIR" --prompt "$PROMPT" --model "$MODEL") || exit 1
+  IFS=$'\t' read -r CAPACITY_VERDICT CAPACITY_DETAIL <<< "$CAPACITY"
+  case "$CAPACITY_VERDICT" in
+    fits) ;;
+    over) adapter_fail "$CAPACITY_DETAIL";;
+    unknown) printf 'codex adapter: context capacity unknown (%s)\n' "$CAPACITY_DETAIL" >> "$LOG";;
+    *) adapter_fail "invalid context capacity verdict";;
+  esac
   run_codex_turn() {
     local input=$1 schema=${2:-} output=${3:-} rc
     TURN_RAW="$STAGE_DIR/current-turn.ndjson"
