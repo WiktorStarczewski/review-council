@@ -116,6 +116,14 @@ class CodeSourcePromotionTests(unittest.TestCase):
             self.assertEqual(hashlib.sha256(raw).hexdigest(), required['content_sha256'])
             segments = b''.join((fixture.session / segment['artifact']).read_bytes()
                                 for segment in required['segments'])
+            if 'patch_proof' in required:
+                patch = Path(fixture.manifest['assignments'][fixture.seat]['patch']).read_bytes()
+                lines = evidence.split_lf_lines((fixture.root / required['path']).read_bytes())
+                self.assertEqual((segments, evidence.patch_proof_span(
+                    evidence.patch_new_side_index(patch), required, lines)),
+                    (b'', (required['patch_proof']['patch_line_start'],
+                           required['patch_proof']['patch_line_end'])))
+                continue
             self.assertEqual(segments, raw)
         for capacity in fixture.manifest['task_capacity']['seats'].values():
             self.assertLessEqual(capacity['mandatory_repository_reads'], 12)

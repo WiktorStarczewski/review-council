@@ -2868,6 +2868,16 @@ def source_only_segment_turn(adapter, turn_calls, outputs, required_segment_call
         adapter, turn_calls, outputs, required_segment_call_ids, limit)
 
 
+def intervals_cover(intervals, start, end):
+    """Whether half-open `intervals` together cover [start, end)."""
+    cursor = start
+    for left, right in sorted(intervals):
+        if left > cursor:
+            break
+        cursor = max(cursor, right)
+    return cursor >= end
+
+
 def required_range_covered(required, ranges):
     cursor = required['line_start']
     for row in sorted((row for row in ranges if row['path'] == required['path']
@@ -3644,6 +3654,7 @@ def assess(args, blocked, progress=None):
     required_source_ranges = []
     required_source_role = None
     required_source_range_proofs = []
+    patch_source_ranges = []
     plan_sha256 = None
     plan_cluster_search_proofs = []
     plan_cluster_source_proofs = []
@@ -3809,6 +3820,17 @@ def assess(args, blocked, progress=None):
                 for turn in {turn for _, turn in paced_chunk_calls}:
                     if sum(call_turn == turn for _, call_turn in paced_chunk_calls) > batch_limit:
                         failures.append(violation('patch-chunk-batch-too-large', args.adapter))
+                patch_line_offsets = [0]
+                for line in assigned_patch_line_index:
+                    patch_line_offsets.append(patch_line_offsets[-1] + len(line))
+                credited_chunks = [
+                    (row['byte_start'], row['byte_end']) for row in expected_chunks
+                    if row['index'] in observed and (session / row['artifact']).read_bytes()
+                    == assigned_patch_raw[row['byte_start']:row['byte_end']]]
+
+                def patch_lines_read(start, end):
+                    return intervals_cover(credited_chunks, patch_line_offsets[start - 1],
+                                           patch_line_offsets[end])
             else:
                 verified_patch_ranges = []
                 proof_call_ids = set()
@@ -3852,7 +3874,13 @@ def assess(args, blocked, progress=None):
                 ]
                 patch_proof_calls = len(proof_call_ids)
                 patch_proof_turns = len(proof_turns)
+                credited_windows = [(start, end + 1) for start, end in verified_patch_ranges
+                                    if end >= start]
 
+                def patch_lines_read(start, end):
+                    return intervals_cover(credited_windows, start, end + 1)
+
+            patch_index = None
             observed_required_segments = []
             required_segment_call_ids = set()
             observed_by_required = {index: [] for index in range(len(required_source_ranges))}
@@ -3920,6 +3948,26 @@ def assess(args, blocked, progress=None):
                         blob_line_index, required['line_start'], required['line_end'])
                     if hashlib.sha256(expected_required).hexdigest() != required['content_sha256']:
                         raise ValueError('required source content hash mismatch')
+                    if 'patch_proof' in required:
+                        if patch_index is None:
+                            patch_index = evidence_module.patch_new_side_index(assigned_patch_raw)
+                        proof = required['patch_proof']
+                        span = (proof['patch_line_start'], proof['patch_line_end'])
+                        if (required['segments']
+                                or required['blob_tree'] != snapshot_tree
+                                or evidence_module.patch_proof_span(
+                                    patch_index, required, blob_line_index) != span):
+                            raise ValueError('patch-proven source range differs from the patch')
+                        if patch_lines_read(*span):
+                            required_source_range_proofs.append({
+                                key: required[key] for key in (
+                                    'path', 'line_start', 'line_end', 'blob_tree', 'blob_oid',
+                                    'content_sha256')
+                            })
+                            patch_source_ranges.append({
+                                'path': required['path'], 'line_start': required['line_start'],
+                                'line_end': required['line_end'], 'origin': 'patch'})
+                        continue
                     expected_segments = required['segments']
                     observed = observed_by_required[required_index]
                     for segment in expected_segments:
@@ -4090,7 +4138,7 @@ def assess(args, blocked, progress=None):
             blocked.update(turns.get(turn, []))
 
     source_ranges = []
-    for row in [*packet_ranges, *tool_ranges]:
+    for row in [*packet_ranges, *tool_ranges, *patch_source_ranges]:
         if row not in source_ranges:
             source_ranges.append(row)
     source_ranges.sort(key=lambda row: (row['path'], row['line_start'], row['line_end'], row['origin']))

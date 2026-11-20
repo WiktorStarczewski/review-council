@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Prove a required source range whose snapshot lines all lie in the new side of the seat's own assigned patch hunks by those patch lines, and prepare no source segments for it. The prompt lists it as a patch-proven range with the patch lines that hold it, and the read audit credits the range, and a finding citing it, only once the seat's exact reads of the patch chunks or windows holding those lines are credited; the manifest validators recompute that coverage byte for byte from the assigned patch. A range with any line outside the hunks keeps all its segments. This applies to every adapter; on the 637 KB C7 review it removes 8 to 61 ranges and 31-316 KB of segments per Luna seat.
+
 ## 0.9.8
 
 - Refuse a Codex seat before its first model call when its prepared evidence, their read turns and its assignment prompt are projected to fill more than 55% of the usable context window its model's row in the Codex model cache gives. Codex compacts an overflowing thread without a stream event, so the read audit could pass a seat that had lost evidence. The seat log names the projected and allowed tokens, and the refusal is a recorded seat failure, so the assignment is replaced as after any other. A model the cache does not list, or lists without a valid window, launches as before with one log line saying its capacity is unknown.

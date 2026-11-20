@@ -533,8 +533,8 @@ def prepared_stages(prompt, seat, model, stage_dir):
         raise StageError('prompt source segments differ from the assigned evidence manifest')
     segment_limits = [int(match.group(1)) for match in all_matches(
         lines, r'Required source segment batch limit: ([0-9]+)')]
-    if segment_limits != [2] * len(required):
-        if required:
+    if segment_limits != [2] * sum(bool(row.get('segments')) for row in required):
+        if any(row.get('segments') for row in required):
             raise StageError('prompt source segment batch limits are missing or changed')
         if segment_limits:
             raise StageError('prompt contains an unassigned source segment batch limit')
