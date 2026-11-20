@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -35,7 +36,7 @@ class CapacityTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.temp.cleanup()
 
-    def capacity(self, models=None, raw=None):
+    def capacity(self, models=None, raw=None, stage_dir=None, prompt=None):
         cache = self.base / 'models_cache.json'
         if raw is not None:
             cache.write_text(raw)
@@ -44,8 +45,8 @@ class CapacityTests(unittest.TestCase):
         else:
             cache.write_text(json.dumps({'client_version': '0.0.0-test', 'models': models}))
         proc = subprocess.run(
-            [sys.executable, str(HELPER), '--capacity', str(self.stage_dir),
-             '--prompt', str(self.prompt), '--model', MODEL],
+            [sys.executable, str(HELPER), '--capacity', str(stage_dir or self.stage_dir),
+             '--prompt', str(prompt or self.prompt), '--model', MODEL],
             env=dict(os.environ, REVIEW_COUNCIL_CODEX_MODELS_CACHE=str(cache)),
             capture_output=True, text=True)
         self.assertEqual(proc.returncode, 0, proc.stderr)
@@ -55,8 +56,8 @@ class CapacityTests(unittest.TestCase):
         return {'slug': slug, 'visibility': 'list', 'context_window': window,
                 'effective_context_window_percent': percent}
 
-    def projected(self):
-        verdict = self.capacity([self.row(10_000_000, 100)])
+    def projected(self, **paths):
+        verdict = self.capacity([self.row(10_000_000, 100)], **paths)
         self.assertEqual(verdict[0], 'fits', verdict)
         return int(verdict[1])
 
@@ -90,6 +91,17 @@ class CapacityTests(unittest.TestCase):
         self.assertGreater(len(plan), 3)
         projected = self.projected()
         self.assertGreater(projected, 17_000 + evidence / 3.0 + len(self.prompt.read_bytes()) / 4.0)
+        padded = self.session / 'padded.prompt.md'
+        padded.write_bytes(self.prompt.read_bytes() + b'z' * 3000 + b'0123456789abcdef' * 4)
+        self.assertIn(self.projected(prompt=padded) - projected, (1063, 1064, 1065))
+        shorter = self.base / 'shorter-stages'
+        shutil.copytree(self.stage_dir, shorter)
+        index = plan[-1]
+        self.assertEqual(index['kind'], 'evidence navigation index')
+        (shorter / 'stage-plan.json').write_text(json.dumps({'stages': plan[:-1]}))
+        index_tokens = module.context_tokens(Path(index['reads'][0]['path']).read_bytes(), 2.8)
+        self.assertLessEqual(abs(projected - self.projected(stage_dir=shorter)
+                                 - (300 + 120 + index_tokens)), 1)
         self.assertEqual(module.context_tokens(b'a' * 28, 2.8), 10)
         self.assertEqual(module.context_tokens(b'0123456789abcdef' * 4, 2.8), 64)
         self.assertEqual(module.context_tokens(b'x ' + b'f' * 31, 3.0), 11)

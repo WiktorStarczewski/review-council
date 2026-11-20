@@ -616,8 +616,8 @@ def context_tokens(raw, bytes_per_token):
 
 
 def usable_context_window(model):
-    """(usable tokens, None) from the model's row in the Codex model cache the seat's codex sizes
-    its thread from, or (None, why it is unknown)."""
+    """(usable tokens, None) from the model's row in the Codex model cache that the roster reads,
+    or (None, why it is unknown)."""
     from roster import codex_catalog_path
     path = codex_catalog_path()
     try:
