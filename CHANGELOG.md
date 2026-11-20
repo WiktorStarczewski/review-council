@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Prove a required source range whose snapshot lines all lie in the new side of the seat's own assigned patch hunks by those patch lines, and prepare no source segments for it. The prompt lists it as a patch-proven range with the patch lines that hold it, and the read audit credits the range, and a finding citing it, only once the seat's exact reads of the patch chunks or windows holding those lines are credited; the manifest validators recompute that coverage byte for byte from the assigned patch. A range with any line outside the hunks keeps all its segments. This applies to every adapter; on the 637 KB C7 review it removes 8 to 61 ranges and 31-316 KB of segments per Luna seat.
+- Print each required source range once in a seat prompt, in its evidence section, instead of repeating it in the numbered required-reads list, for every adapter. A Codex seat's first review turn reads a copy of its assignment prompt without the tree, blob and content SHA-256 values on its evidence lines, which it never checks; the read audit and the stage plan keep reading the receipted prompt file, and the context capacity check projects the copy the seat reads. On the C7 Luna seats the prompt a seat reads shrinks by 53-65% of its projected tokens.
 
 ## 0.9.8
 

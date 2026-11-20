@@ -542,10 +542,11 @@ import sys
 lines = open(sys.argv[1], encoding='utf-8').read().splitlines()
 has_source_context_packets = any(line.startswith('Source context packet: ') for line in lines)
 has_required_source_segments = any(line.startswith('Required source segment ') for line in lines)
+# The evidence section below lists every required source range in order; repeating each one
+# here doubled the largest prompts.
 prefixes = (
     'First assigned-patch action: ',
     'First source-context action: ',
-    'Required source range: ',
     'Required post-index original-source target: ',
     'Required post-index original-source boundary: ',
     'Optional post-index original-source target: ',

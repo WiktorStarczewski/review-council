@@ -36,6 +36,14 @@ PACKET_BYTES_PER_TOKEN = 2.4
 PROMPT_BYTES_PER_TOKEN = 3.0
 CONTEXT_SHARE_PERCENT = 55
 HEX_RUN = re.compile(rb'[0-9a-f]{32,}')
+IDENTITY_LINE = re.compile(
+    rb'(?:[0-9]+\. )?(?:Required source range: |Patch-proven source range: |Required source segment '
+    rb'|Assigned patch chunk |Canonical assigned patch: '
+    rb'|(?:Required|Optional) post-index original-source target: )')
+IDENTITY_HASH = re.compile(
+    rb' (?:tree|blob) [0-9a-f]{40}(?:[0-9a-f]{24})?(?![0-9a-f])'
+    rb'| (?:content )?SHA-256 [0-9a-f]{64}(?![0-9a-f])')
+REASON_HASH = re.compile(rb'("[a-z-]+):[0-9a-f]{64}"')
 
 
 class StageError(ValueError):
@@ -609,6 +617,16 @@ def read_bytes(read, session, audit):
     return b''.join(audit.split_lf_lines(raw)[first - 1:last])
 
 
+def compact_review_prompt(raw):
+    """The assignment prompt a Codex seat reads in review turn 1, without the tree, blob and
+    content hashes on its evidence lines; the audit and the stage plan keep the receipted file."""
+    lines = raw.split(b'\n')
+    for index, line in enumerate(lines):
+        if IDENTITY_LINE.match(line):
+            lines[index] = REASON_HASH.sub(rb'\1"', IDENTITY_HASH.sub(b'', line))
+    return b'\n'.join(lines)
+
+
 def context_tokens(raw, bytes_per_token):
     """Estimated tokens for text; a hash or other long hex run costs about one token per byte."""
     hex_bytes = sum(len(run) for run in HEX_RUN.findall(raw))
@@ -655,8 +673,8 @@ def context_capacity(stage_dir, prompt, model):
         for read in stage['reads']:
             projected += (context_tokens(read_bytes(read, session, audit), rate)
                           + CONTEXT_READ_TOKENS)
-    projected = math.ceil(projected + context_tokens(Path(prompt).read_bytes(),
-                                                     PROMPT_BYTES_PER_TOKEN))
+    projected = math.ceil(projected + context_tokens(
+        compact_review_prompt(Path(prompt).read_bytes()), PROMPT_BYTES_PER_TOKEN))
     limit = usable * CONTEXT_SHARE_PERCENT // 100
     if projected > limit:
         return ('over', f'the assignment needs ~{projected} tokens of context before review, over'
@@ -809,6 +827,7 @@ def main():
     parser.add_argument('--review-turn-call-limit')
     parser.add_argument('--stage-step')
     parser.add_argument('--capacity')
+    parser.add_argument('--compact-prompt')
     parser.add_argument('--raw')
     parser.add_argument('--turn')
     parser.add_argument('--deps')
@@ -846,6 +865,13 @@ def main():
                 raise StageError('a context capacity check needs the prompt and the model')
             print('\t'.join(context_capacity(args.capacity, args.prompt, args.model)))
         except (OSError, UnicodeError, StageError, KeyError, TypeError, ValueError) as error:
+            print('codex proof staging: ' + str(error), file=sys.stderr)
+            return 1
+        return 0
+    if args.compact_prompt:
+        try:
+            sys.stdout.buffer.write(compact_review_prompt(Path(args.compact_prompt).read_bytes()))
+        except OSError as error:
             print('codex proof staging: ' + str(error), file=sys.stderr)
             return 1
         return 0

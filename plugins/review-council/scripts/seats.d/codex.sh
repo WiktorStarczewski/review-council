@@ -192,7 +192,7 @@ EOF
       REVIEW_PROMPT="$STAGE_DIR/review-$review_turn.prompt"
       NO_MORE_READS=0
       if [ "$review_turn" = 1 ]; then
-        cat "$PROMPT" > "$REVIEW_PROMPT" || exit 1
+        stage_helper --compact-prompt "$PROMPT" > "$REVIEW_PROMPT" || exit 1
         if [ "$STAGE_COUNT" -gt 0 ]; then
           cat >> "$REVIEW_PROMPT" <<'EOF'
 

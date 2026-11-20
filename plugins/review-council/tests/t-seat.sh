@@ -725,6 +725,37 @@ test_seat_codex_refuses_evidence_over_its_context_window() {
   )
 }
 
+test_seat_codex_review_turn_reads_a_hashless_prompt_copy() {
+  ( local _path="$PATH"; seat_env
+    local R="$T/hashless-root" S="$T/hashless-session" target before review
+    seat_codex_prepared_session "$R" "$S" || { fail "prepared Codex session fixture"; return; }
+    target=$(sed -n 's/^Required post-index original-source target: \([^:]*\):\([0-9]*\)-\([0-9]*\) .*/sed -n \2,\3p \1/p' \
+      "$S/r1-codex-luna.prompt.md")
+    before=$(shasum -a 256 "$S/r1-codex-luna.prompt.md")
+    mkdir -p "$S/calls"; : > "$S/calls.log"
+    SHIM_MODE=staged-audit SHIM_POST_INDEX_COMMAND="$target" SHIM_STAGE_DIR="$S/calls" \
+      SHIM_CALLS_FILE="$S/calls.log" SEAT=codex-luna MODEL=gpt-6-luna EFFORT=xhigh MODE=prompt \
+      ROOT="$R" PROMPT="$S/r1-codex-luna.prompt.md" SCHEMA="$SK/schema/findings.schema.json" \
+      OUT="$S/r1-codex-luna.json" LOG="$S/r1-codex-luna.log" RAW="$S/r1-codex-luna.stream.ndjson" \
+      BASE=abc bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
+    assert_eq "a seat reading the hashless copy completes" "$?" 0
+    review=$(grep -lx '# Reviewer contract' "$S"/calls/call-*.stdin)
+    assert_eq "one review turn carries the assignment prompt" "$(printf '%s\n' "$review" | grep -c .)" 1
+    assert_nogrep "the review turn sees no content hash" "$review" 'SHA-256 [0-9a-f]{64}'
+    assert_nogrep "the review turn sees no tree or blob identity" "$review" ' (tree|blob) [0-9a-f]{40}'
+    assert_grep "the review turn keeps every evidence read" "$review" \
+      '^Required source segment 1/1: run cat -- .* visible bytes [0-9]+$'
+    assert_grep "the receipted prompt keeps its hashes" "$S/r1-codex-luna.prompt.md" \
+      '^Required source segment 1/1: .* content SHA-256 [0-9a-f]{64}$'
+    assert_eq "the receipted prompt is unchanged" "$(shasum -a 256 "$S/r1-codex-luna.prompt.md")" "$before"
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+      --raw "$S/r1-codex-luna.stream.ndjson" --prompt "$S/r1-codex-luna.prompt.md" --root "$R" \
+      --session "$S" --seat codex-luna --out "$S/r1-codex-luna.read-audit.json" >/dev/null 2>&1
+    assert_eq "the post-run audit validates against the receipted prompt" "$?" 0
+    seat_env_reset "$_path"
+  )
+}
+
 test_seat_codex_failure_reason_reaches_the_seat_log() {
   local _path="$PATH"; seat_env
   local S="$T/seat-codex-failure-reason"; seat_roster "$S"
