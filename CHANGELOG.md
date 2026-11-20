@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- State a Codex seat's bounded review-turn rules before its assignment in the first review turn, as the rules that govern the assignment's repository-call plan and what each turn returns, and in every review turn count searches toward the per-turn command cap, plan one command under a cap above two, run no interpreter or test runner, and keep the space in `| head -80`. Luna seats most often overshot the cap by exactly one (28 of 39 refusals), counted only their source reads against it, made 25 of their 48 review-turn refusals in the first review turn, and ran `node --test`, `yarn ts` or `head-80` in four attempts.
+
 - Fail a Codex seat at the review turn that runs a command the read audit rejects, such as a program the read-only policy refuses (`node --test`, `yarn ts`, or `head-80` without its space) or a path outside the review's scope, and name the audit's code in the seat log. The audit rejects such a stream whatever the seat reads next; three Luna seats that ran one kept reviewing for 3 to 12 more turns and 0.9M to 6.8M more input tokens before their audit failed. A command the audit only advises on still continues, as does any command in a review without an evidence manifest, whose result the seat keeps whatever its audit finds.
 
 ## 0.9.9

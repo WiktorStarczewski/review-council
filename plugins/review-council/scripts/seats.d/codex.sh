@@ -196,6 +196,11 @@ EOF
       --required-post-index-target "$PROMPT") || exit 1
     REFUSAL_ARGS=(--prompt "$PROMPT" --root "$AUDIT_ROOT" --session "$SESSION_DIR")
     [ -z "${REV_DEPS_DIR:-}" ] || REFUSAL_ARGS+=(--deps "$REV_DEPS_DIR")
+    # Luna seats most often overshot the call cap by exactly one, so a cap above two plans one less.
+    REVIEW_TURN_PLAN=$REVIEW_TURN_CALL_LIMIT
+    [ "$REVIEW_TURN_CALL_LIMIT" -le 2 ] || REVIEW_TURN_PLAN=$((REVIEW_TURN_CALL_LIMIT - 1))
+    TURN_COUNT_RULE="Every command counts toward that limit, searches as well as reads: plan at most ${REVIEW_TURN_PLAN} and return continue once you have run them."
+    TURN_COMMAND_RULE='Run no `node`, `python3`, `yarn`, `npm`, `npx` or other test runner in these turns: one command the read-only policy refuses makes the read audit reject the whole review. Keep the space in every result limiter, as in `| head -80`.'
     REVIEW_READS=0
     REVIEW_TARGET_READS=0
     REVIEW_READY=0
@@ -204,7 +209,9 @@ EOF
       REVIEW_PROMPT="$STAGE_DIR/review-$review_turn.prompt"
       NO_MORE_READS=0
       if [ "$review_turn" = 1 ]; then
-        stage_helper --compact-prompt "$PROMPT" > "$REVIEW_PROMPT" || exit 1
+        printf '%s\n\n' "This review runs in bounded explicit turns. The turn rules after the assignment below govern how you spend its repository-call allowance and what each turn returns: at most ${REVIEW_TURN_CALL_LIMIT} command_execution calls per turn, searches included, and a status JSON instead of findings until a later prompt asks for them." \
+          > "$REVIEW_PROMPT"
+        stage_helper --compact-prompt "$PROMPT" >> "$REVIEW_PROMPT" || exit 1
         if [ "$STAGE_COUNT" -gt 0 ]; then
           cat >> "$REVIEW_PROMPT" <<'EOF'
 
@@ -218,7 +225,7 @@ EOF
         fi
         cat >> "$REVIEW_PROMPT" <<EOF
 
-Keep post-index repository investigation within bounded explicit turns. Each explicit turn permits at most ${REVIEW_TURN_CALL_LIMIT} command_execution calls total, of any kind, and no more than 32 KiB of combined output. Use at most two source reads per investigation turn and target at most 12 KiB per read. Return continue before reading additional ranges. The assignment's aggregate in-scope repository-read allowance applies across the full review and all explicit turns; it does not reset at a turn boundary. If more evidence is needed after this turn, return status "continue" with one concrete next evidence question in next_step. If the evidence is sufficient to finish, return status "ready" with an empty next_step. Do not return findings in these bounded turns.
+Keep post-index repository investigation within bounded explicit turns. Each explicit turn permits at most ${REVIEW_TURN_CALL_LIMIT} command_execution calls total, of any kind, and no more than 32 KiB of combined output. ${TURN_COUNT_RULE} Use at most two source reads per investigation turn and target at most 12 KiB per read. Return continue before reading additional ranges. ${TURN_COMMAND_RULE} The assignment's aggregate in-scope repository-read allowance applies across the full review and all explicit turns; it does not reset at a turn boundary. If more evidence is needed after this turn, return status "continue" with one concrete next evidence question in next_step. If the evidence is sufficient to finish, return status "ready" with an empty next_step. Do not return findings in these bounded turns.
 EOF
       elif [ "$REVIEW_READS" -ge "$REVIEW_READ_BUDGET" ]; then
         NO_MORE_READS=1
@@ -233,7 +240,7 @@ EOF
       else
         {
           cat <<EOF
-Continue the same assigned review using the prepared evidence and prior review reasoning in this conversation. Do not reread prepared artifacts. This explicit turn permits at most ${REVIEW_TURN_CALL_LIMIT} command_execution calls total, of any kind, and at most 32 KiB of combined output. Use at most two source reads per investigation turn and target at most 12 KiB per read. Return continue before reading additional ranges. The assignment's aggregate in-scope repository-read allowance applies across the full review and all explicit turns; it does not reset at a turn boundary. If more evidence is needed, return status "continue" and one concrete next evidence question in next_step. If ready to finish, return status "ready" with an empty next_step. Do not return findings yet.
+Continue the same assigned review using the prepared evidence and prior review reasoning in this conversation. Do not reread prepared artifacts. This explicit turn permits at most ${REVIEW_TURN_CALL_LIMIT} command_execution calls total, of any kind, and at most 32 KiB of combined output. ${TURN_COUNT_RULE} Use at most two source reads per investigation turn and target at most 12 KiB per read. Return continue before reading additional ranges. ${TURN_COMMAND_RULE} The assignment's aggregate in-scope repository-read allowance applies across the full review and all explicit turns; it does not reset at a turn boundary. If more evidence is needed, return status "continue" and one concrete next evidence question in next_step. If ready to finish, return status "ready" with an empty next_step. Do not return findings yet.
 
 Next evidence question:
 EOF

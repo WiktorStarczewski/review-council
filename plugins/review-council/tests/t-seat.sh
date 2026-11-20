@@ -378,6 +378,8 @@ assert 'already been read in earlier explicit turns' in first_review_prompt, fir
 assert 'at most 6 command_execution calls total' in first_review_prompt, first_review_prompt
 assert 'Use at most two source reads per investigation turn' in first_review_prompt, first_review_prompt
 assert 'Next evidence question:' in next_review_prompt and 'src/two.ts' in next_review_prompt, next_review_prompt
+assert 'searches as well as reads: plan at most 5 and return continue' in next_review_prompt, next_review_prompt
+assert 'or other test runner in these turns' in next_review_prompt, next_review_prompt
 required_review_prompt = (root / 'calls' / 'call-10.stdin').read_text(encoding='utf-8')
 assert 'Next evidence question:' in required_review_prompt and 'src/three.ts' in required_review_prompt, required_review_prompt
 assert 'Return the final findings JSON' in final_prompt, final_prompt
@@ -562,6 +564,14 @@ test_seat_codex_luna_allows_five_commands_per_review_turn() {
   assert_grep "Luna review prompt states the six-call turn cap" \
     "$L/calls/call-1.stdin" 'at most 6 command_execution calls total'
   assert_grep "Luna still returns the findings schema" "$L/result.json" '"findings": ?\['
+  assert_eq "the bounded-turn rules open the first review prompt, before the assignment" \
+    "$(head -n 1 "$L/calls/call-1.stdin" | grep -c '^This review runs in bounded explicit turns\. The turn rules after the assignment below ')" 1
+  assert_grep "Luna plans one call under its cap, searches included" "$L/calls/call-1.stdin" \
+    'Every command counts toward that limit, searches as well as reads: plan at most 5 and return continue'
+  assert_grep "the review prompt rules out interpreters and test runners" "$L/calls/call-1.stdin" \
+    'Run no `node`, `python3`, `yarn`, `npm`, `npx` or other test runner in these turns'
+  assert_grep "the review prompt spells the search limiter with its space" "$L/calls/call-1.stdin" \
+    'Keep the space in every result limiter, as in `\| head -80`\.'
 
   SHIM_MODE=multi-call SHIM_REVIEW_CALLS=3 SHIM_CALLS_FILE="$S/calls.log" \
     SHIM_STAGE_DIR="$S/calls" SEAT=codex-sol MODEL=gpt-5.6-sol EFFORT=max \
@@ -573,6 +583,8 @@ test_seat_codex_luna_allows_five_commands_per_review_turn() {
     "$(wc -l < "$S/calls.log" | tr -d ' ')" 1
   assert_grep "Sol review prompt states the two-call turn cap" \
     "$S/calls/call-1.stdin" 'at most 2 command_execution calls total'
+  assert_grep "Sol plans its whole two-call cap" "$S/calls/call-1.stdin" \
+    'plan at most 2 and return continue'
   assert_grep "Sol rejection names the exceeded turn budget" "$S/err" \
     'review turn exceeded its command-call budget'
   seat_env_reset "$_path"
