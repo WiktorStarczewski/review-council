@@ -496,6 +496,92 @@ def source_segment_turn_count(required_source_ranges, batch_limit, byte_limit=No
     return turns + int(batch_count > 0)
 
 
+PATCH_HUNK_HEADER = re.compile(rb'@@ -[0-9]+(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@')
+
+
+def patch_new_side_index(raw):
+    """Map each `diff --git` header line of a patch to {new-side line: (patch line, bytes)}.
+
+    A block this parser cannot read exactly, or a header that repeats, maps to None."""
+    lines = split_lf_lines(raw)
+    blocks = {}
+    index = 0
+    while index < len(lines):
+        header = lines[index]
+        index += 1
+        if not header.startswith(b'diff --git '):
+            continue
+        mapped = {}
+        in_hunks = False
+        while index < len(lines) and not lines[index].startswith(b'diff --git '):
+            match = PATCH_HUNK_HEADER.match(lines[index])
+            if match is None:
+                if in_hunks:
+                    mapped = None
+                index += 1
+                continue
+            in_hunks = True
+            index += 1
+            old_left = int(match.group(1) or b'1')
+            new_left = int(match.group(3) or b'1')
+            position = int(match.group(2))
+            last_new = None
+            while mapped is not None and index < len(lines) and (
+                    old_left or new_left or lines[index].startswith(b'\\')):
+                line = lines[index]
+                kind = line[:1]
+                if not line.endswith(b'\n') or kind not in (b' ', b'-', b'+', b'\\'):
+                    mapped = None
+                    break
+                index += 1
+                if kind == b'\\':
+                    if last_new is not None:
+                        patch_line, content = mapped[last_new]
+                        mapped[last_new] = (patch_line, content[:-1])
+                    last_new = None
+                    continue
+                if kind in (b' ', b'-'):
+                    old_left -= 1
+                if kind in (b' ', b'+'):
+                    new_left -= 1
+                    mapped[position] = (index, line[1:])
+                    last_new = position
+                    position += 1
+                else:
+                    last_new = None
+                if old_left < 0 or new_left < 0:
+                    mapped = None
+            if old_left or new_left:
+                mapped = None
+            if mapped is None:
+                break
+        blocks[header] = None if header in blocks else mapped
+    return blocks
+
+
+def patch_proof_span(index, row, source_lines):
+    """The first and last assigned-patch lines whose new side is exactly `row`'s snapshot lines."""
+    header = (b'diff --git ' + diff_quote('a/' + row['path']) + b' '
+              + diff_quote('b/' + row['path']) + b'\n')
+    mapped = index.get(header)
+    if not mapped:
+        return None
+    covered = [mapped.get(line) for line in range(row['line_start'], row['line_end'] + 1)]
+    if not covered or None in covered or b''.join(content for _, content in covered) != b''.join(
+            source_lines[row['line_start'] - 1:row['line_end']]):
+        return None
+    return covered[0][0], covered[-1][0]
+
+
+def patch_proof(index, row, source_lines):
+    span = patch_proof_span(index, row, source_lines)
+    if span is None or not row.get('segments'):
+        return None
+    first = row['segments'][0]
+    return {'patch_line_start': span[0], 'patch_line_end': span[1],
+            'target': {key: first[key] for key in ('line_start', 'line_end', 'content_sha256')}}
+
+
 def patch_sets_for(scopes, patch_bodies, prefix, setting):
     sets = {}
     artifacts = {}
@@ -4666,6 +4752,8 @@ def repository_source_target(packet, snapshot):
         segment = row['segments'][0]
         row = dict(row, **{key: segment[key] for key in (
             'line_start', 'line_end', 'content_sha256')})
+    elif row.get('patch_proof'):
+        row = dict(row, **row['patch_proof']['target'])
     return row
 
 
@@ -4774,8 +4862,12 @@ def source_payload_metrics(snapshot, base_tree, seat, index, count, values, cont
 
 
 def plan_source_context(snapshot, base_tree, evidence, components, assigned, owner, prefix,
-                        source_inputs, enabled=True, plan_clusters=None):
-    """Plan canonical ranges and packing from frozen inputs without artifact bodies."""
+                        source_inputs, enabled=True, plan_clusters=None, patch_bodies=None):
+    """Plan canonical ranges and packing from frozen inputs without artifact bodies.
+
+    A required range whose snapshot lines all lie in the new side of the seat's own assigned
+    patch is proven by those patch lines, which the seat must read in full, so it gets no
+    source segments."""
     entries, base_entries, blobs, blob_lines = source_inputs
     source_lines_cache = dict(blob_lines)
     hunks_by_path = {}
@@ -5214,6 +5306,17 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
             required_ranges,
             key=lambda row: (row['path'], row['blob_tree'], row['line_start'],
                              row['line_end'], row['priority']))
+        patch_index = (patch_new_side_index(patch_bodies[seat])
+                       if patch_bodies is not None else {})
+        for required in required_ranges:
+            kind, choice = source_choice(required['path'], required['blob_tree'])
+            if (required['blob_tree'] != snapshot or kind != 'source' or choice[2] != snapshot
+                    or choice[0] != (required['blob_mode'], required['blob_oid'])):
+                continue
+            proof = patch_proof(patch_index, required, choice[1])
+            if proof is not None:
+                required['patch_proof'] = proof
+                required['segments'] = []
         for range_index, required in enumerate(required_ranges, 1):
             for segment in required['segments']:
                 name = (f'{prefix}-{seat}-source-segment-{range_index:03d}-'
@@ -5238,13 +5341,13 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
 
 
 def source_context(repo, snapshot, base_tree, evidence, components, assigned, owner, prefix,
-                   enabled=True, plan_clusters=None):
+                   enabled=True, plan_clusters=None, patch_bodies=None):
     if enabled:
         evidence = source_context_evidence(repo, snapshot, evidence)
     inputs = (source_context_inputs(repo, snapshot, base_tree, evidence, components, plan_clusters)
               if enabled else ({}, {}, {}, {}))
     context = plan_source_context(snapshot, base_tree, evidence, components, assigned, owner,
-                                  prefix, inputs, enabled, plan_clusters)
+                                  prefix, inputs, enabled, plan_clusters, patch_bodies)
     blobs = inputs[2]
     lines = dict(inputs[3])
 
@@ -5432,6 +5535,18 @@ def task_capacity_errors(capacity):
     return errors
 
 
+def assigned_patch_bodies(session, manifest):
+    bodies = {}
+    for seat, assignment in manifest['assignments'].items():
+        path = Path(assignment['patch'])
+        if path.parent.resolve() != Path(session).resolve() or path.is_symlink():
+            raise ValueError('assigned patch is outside the evidence session: ' + seat)
+        bodies[seat] = path.read_bytes()
+        if digest(bodies[seat]) != assignment['patch_sha256']:
+            raise ValueError('assigned patch changed after prepare: ' + seat)
+    return bodies
+
+
 def validate_source_context_bytes(repo, session, manifest, entries_by_tree=None, blob_lines=None):
     """Bind recorded source packet ranges to their exact snapshot blobs."""
     context = manifest['source_context']
@@ -5456,6 +5571,7 @@ def validate_source_context_bytes(repo, session, manifest, entries_by_tree=None,
             raise ValueError('source context blob identity mismatch: ' + row['path'])
         return b''.join(blob_lines[key][row['line_start'] - 1:row['line_end']])
 
+    patch_indexes = {}
     for seat, packet in context['seats'].items():
         for shard in packet['shards']:
             payload = read_json(session / shard['artifact'])
@@ -5470,7 +5586,8 @@ def validate_source_context_bytes(repo, session, manifest, entries_by_tree=None,
             source_entry = {
                 key: value for key, value in row.items()
                 if key not in ('required_payload_bytes',
-                               'required_payload_predicted_visible_bytes', 'segments')}
+                               'required_payload_predicted_visible_bytes', 'segments',
+                               'patch_proof')}
             source_entry['content'] = ''
             payload_bytes, visible_bytes = source_payload_metrics(
                 context['snapshot_tree'], context['base_tree'], seat, 1, 1, [source_entry],
@@ -5481,6 +5598,17 @@ def validate_source_context_bytes(repo, session, manifest, entries_by_tree=None,
             key = (row['blob_mode'], row['blob_oid'])
             canonical = partition_source_segments(
                 blob_lines[key], row['line_start'], row['line_end'])
+            if 'patch_proof' in row:
+                if seat not in patch_indexes:
+                    patch_indexes[seat] = patch_new_side_index(
+                        assigned_patch_bodies(session, {'assignments': {
+                            seat: manifest['assignments'][seat]}})[seat])
+                if (patch_proof(patch_indexes[seat], dict(row, segments=canonical),
+                                blob_lines[key]) != row['patch_proof']
+                        or digest(parent) != row['content_sha256']):
+                    raise ValueError('patch-proven source range does not match the assigned '
+                                     'patch: ' + row['path'])
+                continue
             recorded = [{key: value for key, value in segment.items() if key != 'artifact'}
                         for segment in row['segments']]
             if recorded != canonical:
@@ -5562,7 +5690,8 @@ def validate_source_context_snapshot(repo, session, manifest, canonical_changes=
             canonical = plan_source_context(
                 manifest['snapshot_tree'], manifest['base_tree'], canonical_facts,
                 manifest['components'], ordered_assignments, manifest['mechanical_owner'],
-                'r' + manifest['label'], inputs, True, clusters)
+                'r' + manifest['label'], inputs, True, clusters,
+                assigned_patch_bodies(session, manifest))
         else:
             canonical = cached['canonical']
         identity_keys = ('path', 'blob_tree', 'blob_oid', 'blob_mode', 'line_start',
@@ -5934,6 +6063,7 @@ def validate_source_context(session, manifest, evidence):
         range_keys = {'path', 'line_start', 'line_end', 'reasons', 'component_ids', 'hunk_binding_sha256',
                       'blob_oid', 'blob_mode', 'blob_tree', 'content_sha256', 'priority',
                       'required_payload_bytes', 'required_payload_predicted_visible_bytes', 'segments'}
+        patch_proof_keys = {'patch_line_start', 'patch_line_end', 'target'}
         if (not isinstance(required, list)
                 or required != sorted(required, key=lambda row: (
                     row.get('path', ''), row.get('blob_tree', ''), row.get('line_start', 0),
@@ -5950,13 +6080,14 @@ def validate_source_context(session, manifest, evidence):
             payload_entry = {
                 key: value for key, value in row.items()
                 if key not in ('required_payload_bytes',
-                               'required_payload_predicted_visible_bytes', 'segments')}
+                               'required_payload_predicted_visible_bytes', 'segments',
+                               'patch_proof')}
             payload_entry['content'] = ''
             payload_lines = patch_display_lines(encoded({
                 'schema_version': 1, 'snapshot_tree': context['snapshot_tree'],
                 'base_tree': context['base_tree'], 'seat': seat, 'shard_index': 1,
                 'shard_count': 1, 'entries': [payload_entry]}))
-            if (not isinstance(row, dict) or set(row) != range_keys
+            if (not isinstance(row, dict) or set(row) - {'patch_proof'} != range_keys
                     or not within(row.get('path'), manifest['scope'])
                     or type(row.get('line_start')) is not int or type(row.get('line_end')) is not int
                     or row['line_start'] < 1 or row['line_end'] < row['line_start']
@@ -5981,6 +6112,25 @@ def validate_source_context(session, manifest, evidence):
             segments = row['segments']
             segment_keys = {'index', 'line_start', 'line_end', 'raw_bytes',
                             'predicted_visible_bytes', 'content_sha256', 'artifact'}
+            if 'patch_proof' in row:
+                proof = row['patch_proof']
+                target = proof.get('target') if isinstance(proof, dict) else None
+                if (segments != [] or row['blob_tree'] != context['snapshot_tree']
+                        or not isinstance(proof, dict) or set(proof) != patch_proof_keys
+                        or type(proof['patch_line_start']) is not int
+                        or type(proof['patch_line_end']) is not int
+                        or not 1 <= proof['patch_line_start'] <= proof['patch_line_end']
+                        <= assignment['patch_lines']
+                        or not isinstance(target, dict)
+                        or set(target) != {'line_start', 'line_end', 'content_sha256'}
+                        or target['line_start'] != row['line_start']
+                        or type(target['line_end']) is not int
+                        or not row['line_start'] <= target['line_end'] <= row['line_end']
+                        or not re.fullmatch(r'[0-9a-f]{64}', str(target['content_sha256']))):
+                    raise ValueError('invalid patch-proven source range: ' + seat)
+                seen_ranges.setdefault((seat, row['path'], row['blob_tree']), []).append(
+                    (row['line_start'], row['line_end']))
+                continue
             if (not isinstance(segments, list) or not segments
                     or [segment.get('index') for segment in segments] != list(range(1, len(segments) + 1))
                     or segments[0].get('line_start') != row['line_start']
@@ -6833,7 +6983,7 @@ def audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, r
             or type(row.get('line_start')) is not int or type(row.get('line_end')) is not int
             or row['line_start'] < 1 or row['line_end'] < row['line_start']
             or (row.get('origin') == 'tool' and row['line_end'] - row['line_start'] + 1 > 240)
-            or row.get('origin') not in ('packet', 'tool') for row in ranges)):
+            or row.get('origin') not in ('packet', 'tool', 'patch') for row in ranges)):
         raise ValueError('invalid read audit source ranges: ' + seat)
     canonical = sorted(ranges, key=lambda row: (row['path'], row['line_start'], row['line_end'], row['origin']))
     identities = {(row['path'], row['line_start'], row['line_end'], row['origin']) for row in ranges}
@@ -6871,9 +7021,16 @@ def audit_gate(manifest, manifest_hash, phase, seat, stem, assignment, prompt, r
     } for row in context['required_source_ranges']), key=proof_order)
     if any(proof not in expected_proofs for proof in proofs):
         raise ValueError('required source range proof identity mismatch: ' + seat)
+    patch_keys = {(row['path'], row['line_start'], row['line_end'])
+                  for row in ranges if row['origin'] == 'patch'}
+    if patch_keys != {(row['path'], row['line_start'], row['line_end'])
+                      for row in context['required_source_ranges'] if 'patch_proof' in row
+                      and {key: row[key] for key in proof_keys} in proofs}:
+        raise ValueError('read audit patch-proven ranges do not match their proofs: ' + seat)
     required_covered = sum(
         proof in proofs and (required['blob_tree'] != manifest['snapshot_tree']
-                            or source_target_covered(required, tool_ranges))
+                            or source_target_covered(required, tool_ranges)
+                            or 'patch_proof' in required)
         for required, proof in zip(sorted(context['required_source_ranges'], key=proof_order),
                                    expected_proofs))
     historical_segments = sum(
@@ -7839,7 +7996,7 @@ def _prepare_locked(args, session):
     prepare_stage('source-context')
     data['source_context'], source_artifacts = source_context(
         repo, snapshot, base_tree, data, components, scopes, owner, prefix, source_context_enabled,
-        plan_clusters)
+        plan_clusters, patch_bodies)
     patch_chunks_effective_mode = chunk_mode
     prepare_stage('capacity')
     budget_evidence = None if plan_clusters is not None else data
@@ -8195,10 +8352,17 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
         for shard in context['shards']:
             print('Source context packet: ' + str(Path(manifest['session']) / shard['artifact']))
         for row in context['required_source_ranges']:
-            print('Required source range: ' + row['path'] + ':' + str(row['line_start']) + '-'
-                  + str(row['line_end']) + ' tree ' + row['blob_tree'] + ' blob ' + row['blob_oid']
-                  + ' content SHA-256 '
-                  + row['content_sha256'] + ' reasons ' + json.dumps(row['reasons'], ensure_ascii=True))
+            identity = (row['path'] + ':' + str(row['line_start']) + '-'
+                        + str(row['line_end']) + ' tree ' + row['blob_tree'] + ' blob ' + row['blob_oid']
+                        + ' content SHA-256 '
+                        + row['content_sha256'] + ' reasons ' + json.dumps(row['reasons'], ensure_ascii=True))
+            if row.get('patch_proof'):
+                print('Patch-proven source range: ' + identity + '; assigned patch lines '
+                      + str(row['patch_proof']['patch_line_start']) + '-'
+                      + str(row['patch_proof']['patch_line_end'])
+                      + ' deliver these exact lines, so it has no source segment to read.')
+                continue
+            print('Required source range: ' + identity)
             total = len(row['segments'])
             for segment in row['segments']:
                 path = str(Path(manifest['session']) / segment['artifact'])

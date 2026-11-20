@@ -209,6 +209,12 @@ class BenchQualityTests(unittest.TestCase):
             dict(self.source("b.py", 10, 12), origin="tool")] * 3
         self.assertEqual(self.score()["quality_score"], 100)
 
+    def test_patch_proven_ranges_are_audited_exposure(self):
+        self.audit["source_ranges"] = [
+            dict(self.source("a.py", 1, 6), origin="patch"),
+            dict(self.source("b.py", 9, 12), origin="tool")]
+        self.assertEqual(self.score()["quality_score"], 100)
+
     def test_current_packets_qualified_and_base_or_forged_excluded(self):
         self.audit["source_ranges"] = [
             dict(row, origin="packet") for row in (

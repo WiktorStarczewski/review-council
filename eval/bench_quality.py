@@ -120,7 +120,7 @@ def _audit(value):
         raise ValueError("audit source ranges must be a list")
     for row in rows:
         _source(row, {"origin"})
-        if row["origin"] not in ("tool", "packet"):
+        if row["origin"] not in ("tool", "packet", "patch"):
             raise ValueError("unrecognized source range origin")
     return value
 
@@ -181,7 +181,7 @@ def _exposure(provenance, identities, audit):
     if not isinstance(packets, list):
         raise ValueError("qualified packet ranges must be a list")
     rows = (audit or {}).get("source_ranges", [])
-    ranges = [_source(row, {"origin"}) for row in rows if row["origin"] == "tool"]
+    ranges = [_source(row, {"origin"}) for row in rows if row["origin"] in ("tool", "patch")]
     delivered_packets = [_source(row, {"origin"}) for row in rows if row["origin"] == "packet"]
     for row in packets:
         source = _source(row, {"blob_tree"})

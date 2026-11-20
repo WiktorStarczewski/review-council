@@ -29,7 +29,7 @@ except Exception:
     sys.exit(1)
 ' "$1"
 }
-UPD_LINE="review-council 0.9.9 available: claude plugin update review-council"
+UPD_LINE="review-council 99.0.0 available: claude plugin update review-council"
 
 test_update_newer_version_prints_the_line() {
   ( local D="$T/upd-newer"; mk_upd_root "$D/root" 0.1.1; mk_upd_cfg "$D/config.json" '{ "check_updates": true }'
@@ -106,7 +106,7 @@ test_update_bad_inputs_are_silent() {  # malformed remote JSON, missing/garbled 
 
 test_update_fresh_cache_is_honoured() {  # a cache younger than the TTL is used even when the URL is dead
   ( local D="$T/upd-cache-fresh"; mk_upd_root "$D/root" 0.1.1; mk_upd_cfg "$D/config.json" '{ "check_updates": true }'
-    mk_upd_cache "$D/cache" 0.9.9 60
+    mk_upd_cache "$D/cache" 99.0.0 60
     REVIEW_COUNCIL_CONFIG="$D/config.json" REVIEW_COUNCIL_CACHE_DIR="$D/cache" \
       REVIEW_COUNCIL_UPDATE_URL="file://$D/no-such-file.json" \
       python3 "$UPD" "$D/root" > "$D/out.txt" 2>&1; local rc=$?
@@ -117,7 +117,7 @@ test_update_fresh_cache_is_honoured() {  # a cache younger than the TTL is used 
 
 test_update_stale_cache_is_not_used() {  # past the TTL the cache is ignored; a dead URL then means silence
   ( local D="$T/upd-cache-stale"; mk_upd_root "$D/root" 0.1.1; mk_upd_cfg "$D/config.json" '{ "check_updates": true }'
-    mk_upd_cache "$D/cache" 0.9.9 3600
+    mk_upd_cache "$D/cache" 99.0.0 3600
     REVIEW_COUNCIL_CONFIG="$D/config.json" REVIEW_COUNCIL_CACHE_DIR="$D/cache" REVIEW_COUNCIL_UPDATE_TTL=1 \
       REVIEW_COUNCIL_UPDATE_URL="file://$D/no-such-file.json" \
       python3 "$UPD" "$D/root" > "$D/out.txt" 2>&1; local rc=$?
@@ -137,7 +137,7 @@ test_update_writes_the_cache() {
       REVIEW_COUNCIL_UPDATE_URL="file://$FX/plugin-newer.json" python3 "$UPD" "$D/root" > /dev/null 2>&1
     [ -f "$D/cache/update-check.json" ] && ok "creates the cache file" || { fail "creates the cache file" "no $D/cache/update-check.json"; return; }
     assert_eq "caches the fetched version" \
-      "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["latest"])' "$D/cache/update-check.json")" "0.9.9"
+      "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["latest"])' "$D/cache/update-check.json")" "99.0.0"
     assert_exit "records a numeric checked_at" 0 python3 -c \
       'import json,sys,time; d=json.load(open(sys.argv[1])); sys.exit(0 if abs(time.time()-float(d["checked_at"]))<300 else 1)' "$D/cache/update-check.json"
   )
@@ -152,7 +152,7 @@ test_update_hook_appends_the_line() {  # the real hook, real plugin root, shims 
     local ctx; ctx=$(upd_hook_ctx "$D/out.json") || { fail "hook output is still valid JSON" "$(cat "$D/out.json")"; return; }
     ok "hook output is still valid JSON"
     printf '%s' "$ctx" > "$D/ctx.txt"
-    assert_grep "the update line is its own line in additionalContext" "$D/ctx.txt" "^review-council 0\.9\.9 available: claude plugin update review-council\$"
+    assert_grep "the update line is its own line in additionalContext" "$D/ctx.txt" "^review-council 99\.0\.0 available: claude plugin update review-council\$"
     assert_grep "the roster line is still there" "$D/ctx.txt" '^review-council seats:'
     assert_eq "the update line comes last" "$(tail -1 "$D/ctx.txt")" "$UPD_LINE"
   )
@@ -208,7 +208,7 @@ test_update_hook_ignores_a_foreign_plugin_root() {  # CLAUDE_PLUGIN_ROOT can car
     local ctx; ctx=$(upd_hook_ctx "$D/out.json") || { fail "valid JSON with a foreign CLAUDE_PLUGIN_ROOT" "$(cat "$D/out.json")"; return; }
     printf '%s' "$ctx" > "$D/ctx.txt"
     assert_nogrep "the decoy root's script is never executed" "$D/ctx.txt" 'INJECTED'
-    assert_grep "the hook's own update check still ran" "$D/ctx.txt" "^review-council 0\.9\.9 available: claude plugin update review-council\$"
+    assert_grep "the hook's own update check still ran" "$D/ctx.txt" "^review-council 99\.0\.0 available: claude plugin update review-council\$"
   )
 }
 
