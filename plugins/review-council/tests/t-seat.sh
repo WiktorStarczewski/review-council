@@ -725,6 +725,81 @@ test_seat_codex_refuses_evidence_over_its_context_window() {
   )
 }
 
+test_seat_codex_review_turn_reads_a_hashless_prompt_copy() {
+  ( local _path="$PATH"; seat_env
+    local R="$T/hashless-root" S="$T/hashless-session" target before review
+    seat_codex_prepared_session "$R" "$S" || { fail "prepared Codex session fixture"; return; }
+    target=$(sed -n 's/^Required post-index original-source target: \([^:]*\):\([0-9]*\)-\([0-9]*\) .*/sed -n \2,\3p \1/p' \
+      "$S/r1-codex-luna.prompt.md")
+    before=$(shasum -a 256 "$S/r1-codex-luna.prompt.md")
+    mkdir -p "$S/calls"; : > "$S/calls.log"
+    SHIM_MODE=staged-audit SHIM_POST_INDEX_COMMAND="$target" SHIM_STAGE_DIR="$S/calls" \
+      SHIM_CALLS_FILE="$S/calls.log" SEAT=codex-luna MODEL=gpt-6-luna EFFORT=xhigh MODE=prompt \
+      ROOT="$R" PROMPT="$S/r1-codex-luna.prompt.md" SCHEMA="$SK/schema/findings.schema.json" \
+      OUT="$S/r1-codex-luna.json" LOG="$S/r1-codex-luna.log" RAW="$S/r1-codex-luna.stream.ndjson" \
+      BASE=abc bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
+    assert_eq "a seat reading the hashless copy completes" "$?" 0
+    review=$(grep -lx '# Reviewer contract' "$S"/calls/call-*.stdin)
+    assert_eq "one review turn carries the assignment prompt" "$(printf '%s\n' "$review" | grep -c .)" 1
+    assert_nogrep "the review turn sees no content hash" "$review" 'SHA-256 [0-9a-f]{64}'
+    assert_nogrep "the review turn sees no tree or blob identity" "$review" ' (tree|blob) [0-9a-f]{40}'
+    assert_grep "the review turn keeps every evidence read" "$review" \
+      '^Required source segment 1/1: run cat -- .* visible bytes [0-9]+$'
+    assert_grep "the receipted prompt keeps its hashes" "$S/r1-codex-luna.prompt.md" \
+      '^Required source segment 1/1: .* content SHA-256 [0-9a-f]{64}$'
+    assert_eq "the receipted prompt is unchanged" "$(shasum -a 256 "$S/r1-codex-luna.prompt.md")" "$before"
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+      --raw "$S/r1-codex-luna.stream.ndjson" --prompt "$S/r1-codex-luna.prompt.md" --root "$R" \
+      --session "$S" --seat codex-luna --out "$S/r1-codex-luna.read-audit.json" >/dev/null 2>&1
+    assert_eq "the post-run audit validates against the receipted prompt" "$?" 0
+    seat_env_reset "$_path"
+  )
+}
+
+test_seat_codex_runs_at_the_maximum_window_unless_switched_off() {
+  ( local _path="$PATH"; seat_env
+    local R="$T/raised-root" S="$T/raised-session" target run switch
+    seat_codex_prepared_session "$R" "$S" || { fail "prepared Codex session fixture"; return; }
+    target=$(sed -n 's/^Required post-index original-source target: \([^:]*\):\([0-9]*\)-\([0-9]*\) .*/sed -n \2,\3p \1/p' \
+      "$S/r1-codex-luna.prompt.md")
+    for run in off short on; do
+      printf '{"models":[{"slug":"gpt-6-luna","visibility":"list","context_window":20000,"effective_context_window_percent":95,"max_context_window":%s}]}\n' \
+        "$([ "$run" = short ] && echo 30000 || echo 1000000)" > "$T/raised-$run.json"
+      mkdir -p "$S/calls-$run"; : > "$S/calls-$run.log"
+      rm -f "$S/r1-codex-luna.stream.ndjson" "$S/r1-codex-luna.json"
+      switch=(); [ "$run" != off ] || switch=(REVIEW_COUNCIL_CODEX_MAX_CONTEXT_WINDOW=0)
+      env -u REVIEW_COUNCIL_CODEX_MAX_CONTEXT_WINDOW ${switch[@]+"${switch[@]}"} \
+        REVIEW_COUNCIL_CODEX_MODELS_CACHE="$T/raised-$run.json" SHIM_MODE=staged-audit \
+        SHIM_POST_INDEX_COMMAND="$target" SHIM_STAGE_DIR="$S/calls-$run" \
+        SHIM_CALLS_FILE="$S/calls-$run.log" SEAT=codex-luna MODEL=gpt-6-luna EFFORT=xhigh \
+        MODE=prompt ROOT="$R" PROMPT="$S/r1-codex-luna.prompt.md" \
+        SCHEMA="$SK/schema/findings.schema.json" OUT="$S/r1-codex-luna.json" LOG="$S/$run.log" \
+        RAW="$S/r1-codex-luna.stream.ndjson" BASE=abc bash "$SCRIPTS/seats.d/codex.sh" \
+        > "$S/out" 2> "$S/err"
+      printf '%s\n' "$?" > "$S/$run.exit"
+    done
+    assert_eq "with the switch off an oversized seat still refuses" "$(cat "$S/off.exit")" 1
+    assert_eq "the refusal comes before any codex call" "$(wc -l < "$S/calls-off.log" | tr -d ' ')" 0
+    assert_nogrep "the switched-off refusal does not mention the maximum" "$S/off.log" 'maximum'
+    assert_eq "by default the seat runs at the larger window" "$(cat "$S/on.exit")" 0
+    assert_eq "every codex call passes the larger window" \
+      "$(grep -lx 'model_context_window=1000000' "$S"/calls-on/call-*.args | wc -l | tr -d ' ')" \
+      "$(wc -l < "$S/calls-on.log" | tr -d ' ')"
+    assert_exit "the run made codex calls" 0 test "$(wc -l < "$S/calls-on.log" | tr -d ' ')" -gt 3
+    assert_grep "the seat log names the raised window" "$S/on.log" \
+      "^codex adapter: running gpt-6-luna at its 1000000-token maximum context window: the assignment needs ~[0-9]+ tokens before review, within 522500$"
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
+      --raw "$S/r1-codex-luna.stream.ndjson" --prompt "$S/r1-codex-luna.prompt.md" --root "$R" \
+      --session "$S" --seat codex-luna --out "$S/r1-codex-luna.read-audit.json" >/dev/null 2>&1
+    assert_eq "the post-run audit accepts the raised-window run" "$?" 0
+    assert_eq "a maximum too small for the evidence still refuses" "$(cat "$S/short.exit")" 1
+    assert_grep "the refusal names the maximum window" "$S/short.log" \
+      'over 15675 at its 30000-token maximum window$'
+    assert_eq "no codex call ran at a short maximum" "$(wc -l < "$S/calls-short.log" | tr -d ' ')" 0
+    seat_env_reset "$_path"
+  )
+}
+
 test_seat_codex_failure_reason_reaches_the_seat_log() {
   local _path="$PATH"; seat_env
   local S="$T/seat-codex-failure-reason"; seat_roster "$S"

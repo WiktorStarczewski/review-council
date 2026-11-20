@@ -205,7 +205,7 @@ class SourceFixture:
         else:
             patch = Path(assignment['patch'])
             patch_lines = patch.read_text().splitlines(keepends=True)
-            read_limit = load_evidence().CODEX_READ_LINES
+            read_limit = getattr(self, 'patch_window_lines', load_evidence().CODEX_READ_LINES)
             for offset in range(0, len(patch_lines), read_limit):
                 start = offset + 1
                 end = min(len(patch_lines), start + read_limit - 1)

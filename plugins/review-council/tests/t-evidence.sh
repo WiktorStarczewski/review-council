@@ -829,6 +829,9 @@ def write_agent_audit(session, label, seat):
                      for shard in packet['shards'] for row in shard['ranges']
                      if row['blob_tree'] == manifest['snapshot_tree']]
     tool_ranges = []
+    patch_proven = [{'path': row['path'], 'line_start': row['line_start'],
+                     'line_end': row['line_end'], 'origin': 'patch'}
+                    for row in packet['required_source_ranges'] if 'patch_proof' in row]
     source_calls = 0
     source_bytes = 0
     source_output_sizes = []
@@ -864,7 +867,8 @@ def write_agent_audit(session, label, seat):
     findings = json.loads((session / f'r{label}-{seat}.json').read_text())['findings']
     missing = [finding for finding in findings if not any(
         row['path'] == finding['file'] and row['line_start'] <= finding['line_end']
-        and finding['line_start'] <= row['line_end'] for row in packet_ranges + tool_ranges)]
+        and finding['line_start'] <= row['line_end']
+        for row in packet_ranges + tool_ranges + patch_proven)]
     for finding in missing:
         assert finding['file'] in entries, 'historical-only findings cannot earn current citation proof'
         lines = module.split_lf_lines(repository.blob(entries[finding['file']]))
@@ -876,7 +880,7 @@ def write_agent_audit(session, label, seat):
             size = len(b''.join(lines[first - 1:last]))
             source_calls += 1; source_bytes += size; source_output_sizes.append(size)
     ranges = sorted({(row['path'], row['line_start'], row['line_end'], row['origin'])
-                     for row in packet_ranges + tool_ranges})
+                     for row in packet_ranges + tool_ranges + patch_proven})
     ranges = [{'path': path, 'line_start': start, 'line_end': end, 'origin': origin}
               for path, start, end, origin in ranges]
     post_index_ranges = [row for row in ranges if row['origin'] == 'tool' and row in post_index_ranges]
@@ -2954,13 +2958,10 @@ def budget_omissions_are_segmented_or_retained():
             assert not required_ids & retained_ids
             for row in required:
                 assert row['path'] == 'unit_0.py' and row['line_start'] == 1
-                assert row['line_end'] == 262 and row['segments']
-                cursor = row['line_start']
-                for segment in row['segments']:
-                    assert segment['line_start'] == cursor
-                    assert segment['predicted_visible_bytes'] <= 16384
-                    cursor = segment['line_end'] + 1
-                assert cursor == row['line_end'] + 1
+                assert row['line_end'] == 262
+                # unit_0.py is a new file, so its added lines prove the whole range.
+                assert row['segments'] == [] and row['patch_proof']['target']['line_start'] == 1
+                assert row['patch_proof']['target']['line_end'] < row['line_end']
             for row in retained:
                 if any(reason.startswith('gate:') for reason in row['reasons']):
                     assert row['path'] == 'package.json' and row['line_start'] == row['line_end'] == 1

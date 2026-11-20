@@ -467,8 +467,10 @@ async function probeFixture(directory, selected) {
   const source = value => Array.from({length:110},(_,index) =>
     `def qualification_${String(index).padStart(3,'0')}():\n    return "${value}-${nonce}-${'x'.repeat(320)}"\n\n`).join('')
     + 'def qualification_required_source():\n'
+    // A run of unchanged lines outside every hunk keeps this range from being proven by the patch,
+    // so the probe still reads required source segments through the real reader.
     + Array.from({length:180},(_,index) =>
-      `    value_${index} = "${value}-${nonce}-${'x'.repeat(96)}"\n`).join('')
+      `    value_${index} = "${index >= 80 && index < 100 ? 'unchanged' : value}-${nonce}-${'x'.repeat(96)}"\n`).join('')
     + '    return value_179\n';
   writeFileSync(join(root,'sample.py'),source('before'),{mode:0o600});
   await git('add','sample.py');
