@@ -23,6 +23,8 @@ PROOF_TURN_BYTES = 60 * 1024
 SOURCE_SEGMENT_VISIBLE_LIMIT = 16 * 1024
 STAGE_PLAN = 'stage-plan.json'
 STAGE_STATE = 'stage-state.json'
+# A plan seat proves its cluster searches and sources in review turns, after every stage.
+STAGING_GAP_CODES = {'missing-plan-cluster-search', 'missing-plan-cluster-source'}
 
 
 class StageError(ValueError):
@@ -634,11 +636,15 @@ def audit_credited_reads(plan, raw, prompt, root, session, seat, deps, audit):
         result = Path(directory) / 'result.json'
         result.write_text('{"findings":[]}\n', encoding='utf-8')
         with contextlib.redirect_stdout(sys.stderr):
-            _, unique = audit.assessed(argparse.Namespace(
+            assessment, unique = audit.assessed(argparse.Namespace(
                 adapter='codex', raw=str(raw), prompt=str(prompt), root=str(root),
                 session=str(session), seat=seat, deps=deps, result=str(result),
                 out=str(Path(directory) / 'audit.json')), progress)
-    rejected = sorted(set(progress.get('fatal') or []) - audit.READABLE_GAP_CODES)
+    gaps = audit.READABLE_GAP_CODES | STAGING_GAP_CODES
+    if not assessment.get('tool_calls'):
+        # Only the stream's first call can satisfy or break the plan first-call contract.
+        gaps = gaps | {'invalid-plan-first-call'}
+    rejected = sorted(set(progress.get('fatal') or []) - gaps)
     if unique and rejected:
         return None, 'the read audit rejects this stream (' + ', '.join(rejected) + ')'
     if unique and not progress.get('recoverable', False):

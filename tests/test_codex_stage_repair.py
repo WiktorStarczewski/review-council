@@ -1,4 +1,5 @@
 """Codex prepared-evidence stage repair: the adapter's stage decisions replay the read audit."""
+import hashlib
 import importlib.util
 import json
 import os
@@ -77,12 +78,108 @@ def build_session(base, functions=6):
     return root.resolve(), session.resolve(), Path(rendered.stdout.strip()).resolve()
 
 
+PLAN = """## C-01 - keep service results stable
+Findings: F-001 (P1)
+Rule: Apply the helper result exactly once at every service entry.
+Sites: src/service.ts:1-2 (found by: rg --hidden --no-ignore --glob '!.git/**' --null -n -- 'run(Service|Alias)' .)
+Excluded: src/sibling.ts - runAlias applies no helper result, so the rule cannot reach it
+Must not: Change unrelated exports.
+Test: tests/service.test.ts:1-2
+Interacts with: none.
+Prediction: reverting the guard fails tests/service.test.ts at "service" (assert on runService()), because the doubled helper result changes the return value.
+## C-02 - keep helper callers visible
+Findings: F-002 (P1)
+Rule: Check every helper caller before changing the helper result.
+Sites: src/helper.ts:1 (found by: grep --exclude-dir=.git --null -r -n -- 'helper' .)
+Excluded: src/service.ts - the service entry caller is owned by C-01
+Must not: Skip callers outside the service entry.
+Test: tests/service.test.ts:1-2
+Interacts with: C-01.
+Prediction: reverting the guard fails tests/service.test.ts at "service" (assert on runService()), because an unchecked caller re-applies the changed helper result.
+"""
+PLAN_LENSES = {'sol': 'plan-completeness', 'terra': 'plan-soundness', 'opus': 'plan-simplicity',
+               'sonnet': 'plan-tests'}
+
+
+def build_plan_session(base):
+    """The t-plan-evidence fix-plan panel, its Codex seats carrying a model: sol reads two patch
+    chunks and terra one patch window, then the index. Without source packets, as in the real
+    plan seats, every cluster source is read in a review turn after all stages."""
+    root, session = base / 'repo', base / 'session'
+    (root / 'src').mkdir(parents=True)
+    (root / 'tests').mkdir()
+    session.mkdir()
+    config = base / 'gitconfig'
+    config.write_text('[user]\n\tname = t\n\temail = t@t\n[commit]\n\tgpgsign = false\n'
+                      '[init]\n\tdefaultBranch = main\n')
+    env = dict(os.environ, GIT_CONFIG_GLOBAL=str(config), GIT_CONFIG_NOSYSTEM='1')
+    env.pop('REV_DEPS_DIR', None)
+
+    def git(*args):
+        return subprocess.run(['git', '-C', str(root), *args], check=True, env=env,
+                              capture_output=True, text=True).stdout
+
+    git('init', '-q')
+    (root / 'src/helper.ts').write_text('export function helper() { return 1; }\n')
+    (root / 'src/service.ts').write_text(
+        'import { helper } from "./helper";\nexport function runService() { return helper(); }\n')
+    (root / 'src/sibling.ts').write_text('export function runAlias() { return 1; }\n')
+    (root / 'tests/service.test.ts').write_text(
+        'import { runService } from "../src/service";\ntest("service", () => runService());\n')
+    (root / 'src/unrelated.ts').write_text(
+        ''.join(f'export const unrelated{index} = {index};\n' for index in range(600)))
+    git('add', '.')
+    git('commit', '-qm', 'plan base')
+    base_sha = git('rev-parse', 'HEAD').strip()
+    for relative, old, new in (('src/helper.ts', 'return 1', 'return 2'),
+                               ('src/service.ts', 'helper();', 'helper() + 1;'),
+                               ('tests/service.test.ts', 'runService());', 'runService() + 1);'),
+                               ('src/unrelated.ts', ' = ', ' = 1000 + ')):
+        path = root / relative
+        path.write_text(path.read_text().replace(old, new))
+    (session / 'scope.env').write_text(
+        f"REV_BASE='{base_sha}'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\n"
+        f"REV_ROOT='{root}'\nREV_SCOPE='branch'\n")
+    (session / 'files.txt').write_text(
+        'src/helper.ts\nsrc/service.ts\nsrc/unrelated.ts\ntests/service.test.ts\n')
+    (session / 'untracked.txt').write_text('')
+    seats = [{'seat': name, 'adapter': 'codex', 'model': MODEL, 'effort': 'xhigh'}
+             for name in ('sol', 'terra')] + [{'seat': name, 'adapter': 'claude'}
+                                              for name in ('opus', 'sonnet')]
+    (session / 'roster.json').write_text(json.dumps({'seats': seats}) + '\n')
+    plan = session / 'fix-plan.md'
+    plan.write_text(PLAN)
+    assignments = [item for seat, lens in PLAN_LENSES.items()
+                   for item in ('--assignment', f'{seat}={lens}')]
+    prepared = subprocess.run(
+        [sys.executable, str(SCRIPTS / 'rev-evidence.py'), 'prepare', str(session), '1p',
+         '--phase', 'plan', '--plan', str(plan), '--plan-sha256',
+         hashlib.sha256(plan.read_bytes()).hexdigest(), '--full-seat', 'sol', *assignments],
+        env=dict(env, REV_PATCH_CHUNKS='auto', REV_SOURCE_CONTEXT='0'),
+        capture_output=True, text=True)
+    if prepared.returncode:
+        raise AssertionError(prepared.stderr)
+    manifest = prepared.stdout.strip()
+    prompts = {}
+    for seat in ('sol', 'terra'):
+        rendered = subprocess.run(
+            [str(SCRIPTS / 'rev-prompt.sh'), str(session), '1p', seat, PLAN_LENSES[seat], 'plan',
+             '--plan', str(session / 'r1p-plan.md'), '--evidence', manifest],
+            env=env, capture_output=True, text=True)
+        if rendered.returncode:
+            raise AssertionError(rendered.stderr)
+        prompts[seat] = Path(rendered.stdout.strip()).resolve()
+    return root.resolve(), session.resolve(), prompts
+
+
 class Seat:
     """A scripted Codex seat that follows each stage prompt unless told to slip."""
 
-    def __init__(self, root, session, prompt, stage_dir):
+    def __init__(self, root, session, prompt, stage_dir, name=SEAT):
         self.root, self.session, self.prompt, self.stage_dir = root, session, prompt, stage_dir
-        self.raw = session / f'r1-{SEAT}.stream.ndjson'
+        self.name = name
+        self.label = prompt.name[:-len(f'-{name}.prompt.md')]
+        self.raw = session / f'{self.label}-{name}.stream.ndjson'
         self.turn = stage_dir / 'current-turn.ndjson'
         self.turns = 0
         self.ids = 0
@@ -92,7 +189,7 @@ class Seat:
         proc = subprocess.run(
             [sys.executable, str(HELPER), '--stage-step', str(self.stage_dir),
              '--raw', str(self.raw), '--turn', str(self.turn), '--prompt', str(self.prompt),
-             '--seat', SEAT, '--root', str(self.root), '--session', str(self.session)],
+             '--seat', self.name, '--root', str(self.root), '--session', str(self.session)],
             capture_output=True, text=True)
         if proc.returncode:
             raise AssertionError('stage step failed: ' + proc.stdout + proc.stderr)
@@ -165,6 +262,17 @@ class StageRepairTests(unittest.TestCase):
                 (stage_dir / 'stage-plan.json').read_text()))))
         return Seat(root, session, prompt, stage_dir)
 
+    def plan_seat(self, name):
+        if 'plan' not in self.fixtures:
+            self.fixtures['plan'] = build_plan_session(self.base / 'plan')
+        root, session, prompts = self.fixtures['plan']
+        stage_dir = Path(tempfile.mkdtemp(dir=self.base))
+        listed = subprocess.run(
+            [sys.executable, str(HELPER), '--prompt', str(prompts[name]), '--seat', name,
+             '--model', MODEL, '--stage-dir', str(stage_dir)], capture_output=True, text=True)
+        self.assertEqual(listed.returncode, 0, listed.stderr)
+        return Seat(root, session, prompts[name], stage_dir, name)
+
     def drive(self, seat, slips=None, stage_slips=None, limit=60):
         """Follow every step, running other commands on the turns `slips` names by number, or on
         the first turn of the stages `stage_slips` names."""
@@ -189,21 +297,25 @@ class StageRepairTests(unittest.TestCase):
 
     def finish_and_audit(self, seat):
         """Complete the review as the adapter would and return the post-run audit verdict."""
-        target = [line for line in seat.prompt.read_text().splitlines()
-                  if line.startswith('Required post-index original-source target: ')]
-        self.assertEqual(len(target), 1)
-        location = target[0].split(': ', 1)[1].split(' ', 1)[0]
-        path, lines = location.rsplit(':', 1)
-        first, last = lines.split('-')
-        seat.run([f'sed -n {first},{last}p {path}'], answer='{"status":"ready","next_step":""}')
+        targets = [line.split(': ', 1)[1].split(' ', 1)[0]
+                   for line in seat.prompt.read_text().splitlines()
+                   if line.startswith(('Required post-index original-source target: ',
+                                       'Mandatory cluster source window: '))]
+        self.assertTrue(targets)
+        commands = []
+        for location in targets:
+            path, lines = location.rsplit(':', 1)
+            first, last = lines.split('-')
+            commands.append(f'sed -n {first},{last}p {path}')
+        seat.run(commands, answer='{"status":"ready","next_step":""}')
         seat.run([], answer='{"summary":"checked","findings":[]}')
-        result = seat.session / f'r1-{SEAT}.json'
+        result = seat.session / f'{seat.label}-{seat.name}.json'
         result.write_text('{"summary":"checked","findings":[]}\n')
-        out = seat.session / f'r1-{SEAT}.read-audit.json'
+        out = seat.session / f'{seat.label}-{seat.name}.read-audit.json'
         proc = subprocess.run(
             [sys.executable, str(AUDIT), 'audit', '--adapter', 'codex', '--raw', str(seat.raw),
              '--prompt', str(seat.prompt), '--root', str(seat.root),
-             '--session', str(seat.session), '--seat', SEAT, '--out', str(out)],
+             '--session', str(seat.session), '--seat', seat.name, '--out', str(out)],
             capture_output=True, text=True)
         audit = json.loads(out.read_text())
         return (proc.returncode, sorted({row['code'] for row in audit['violations']}),
@@ -354,6 +466,55 @@ class StageRepairTests(unittest.TestCase):
         repairs = [step for step in transcript
                    if step[0] == 'run' and 'repair' in Path(step[1]).read_text().splitlines()[0]]
         self.assertEqual(len(repairs), 4)
+
+    def test_a_plan_seat_that_follows_every_stage_passes_the_audit(self):
+        for name in ('sol', 'terra'):
+            with self.subTest(seat=name):
+                seat = self.plan_seat(name)
+                transcript = self.drive(seat)
+                self.assertEqual(transcript[-1], ['done'])
+                self.assertEqual(len(transcript), len(self.plan_reads(seat)) + 1)
+                self.assertEqual(self.finish_and_audit(seat)[:2], (0, []))
+
+    def test_a_plan_seat_first_stage_that_reads_nothing_is_repaired(self):
+        for name in ('sol', 'terra'):
+            with self.subTest(seat=name):
+                seat = self.plan_seat(name)
+                planned = self.plan_reads(seat)
+                transcript = self.drive(seat, {1: lambda listed: []})
+                self.assertEqual(transcript[1][0], 'run', transcript[1])
+                self.assertIn('repair', Path(transcript[1][1]).read_text().splitlines()[0])
+                self.assertEqual(reads(transcript[1][1]), planned[0])
+                self.assertEqual(transcript[-1], ['done'])
+                self.assertEqual(self.finish_and_audit(seat)[:2], (0, []))
+
+    def test_a_plan_seat_patch_chunk_read_ahead_is_kept(self):
+        seat = self.plan_seat('sol')
+        planned = self.plan_reads(seat)
+        self.assertEqual([len(stage) for stage in planned[:2]], [1, 1])
+        transcript = self.drive(seat, stage_slips={1: lambda listed: listed + planned[1]})
+        self.assertEqual(transcript[-1], ['done'])
+        self.assertEqual(len(transcript), len(planned))
+        self.assertEqual(reads(transcript[1][1]), planned[2])
+        self.assertEqual(self.finish_and_audit(seat)[:2], (0, []))
+
+    def test_a_plan_seat_repeated_index_does_not_fail_the_seat(self):
+        for name in ('sol', 'terra'):
+            with self.subTest(seat=name):
+                seat = self.plan_seat(name)
+                planned = self.plan_reads(seat)
+                transcript = self.drive(seat, stage_slips={
+                    len(planned): lambda listed: listed + listed})
+                self.assertEqual(transcript[-1], ['done'])
+                self.assertEqual(len(transcript), len(planned) + 1)
+                self.assertEqual(self.finish_and_audit(seat)[:2], (0, []))
+
+    def test_a_plan_seat_first_call_outside_the_contract_is_refused(self):
+        seat = self.plan_seat('terra')
+        transcript = self.drive(seat, {1: lambda listed: ['ls src']})
+        self.assertEqual(transcript[-1][0], 'refuse')
+        self.assertEqual(len(transcript), 2)
+        self.assertIn('invalid-plan-first-call', transcript[-1][1])
 
 
 if __name__ == '__main__':
