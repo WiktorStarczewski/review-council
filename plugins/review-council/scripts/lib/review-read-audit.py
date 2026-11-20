@@ -2,6 +2,7 @@
 """Enforce bounded reviewer reads as a hook or audit an adapter NDJSON stream."""
 import argparse
 import contextlib
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -10,9 +11,11 @@ from pathlib import Path
 import posixpath
 import re
 import shlex
+import signal
 import stat
 import sys
 import tempfile
+import time
 
 LIB_DIR = Path(__file__).resolve().parent
 if str(LIB_DIR) not in sys.path:
@@ -47,7 +50,12 @@ READABLE_GAP_CODES = {
 }
 STOP_GATE_BLOCKS = 3
 STOP_GATE_LISTED = 12
+# The stop gate answers within this share of its hook timeout, before the CLI gives up on it.
+STOP_GATE_BUDGET_SHARE = 0.9
 READ_GATE_VERSION = 2
+EVIDENCE_CACHE_VERSION = 1
+GIT_OBJECT_COMMANDS = {'cat-file', 'diff', 'ls-tree', 'rev-parse'}
+GIT_OBJECT_NAME = re.compile(r'(?:[0-9a-f]{40}|[0-9a-f]{64})(?:\^\{tree\})?')
 PROOF_KINDS = ('chunk', 'segment', 'index')
 # claude 2.1.121 reports a PreToolUse exit-2 block only as this result; 2.1.328 adds tool_result_meta.
 LEGACY_HOOK_DENIAL = re.compile(
@@ -108,6 +116,8 @@ READONLY_POLICY = load_readonly_policy()
 if READONLY_POLICY.READ_CMDS != (SOURCE_COMMANDS | UNSUPPORTED_FILE_COMMANDS | METADATA_COMMANDS):
     raise RuntimeError('read-only shell command classification is incomplete')
 _EVIDENCE_MODULE = None
+_EVIDENCE_READS = []
+_EVIDENCE_HOOK = []
 
 
 def _load_evidence_module():
@@ -1637,15 +1647,19 @@ def publish(path, data):
 
 
 def load_evidence_manifest(session, declared_hash, prompt, root, *, fresh=False,
-                           replay_plan_searches=True):
+                           replay_plan_searches=True, cache=None):
     matches = [path for path in session.glob('r*-evidence.manifest.json')
                if path.is_file() and digest(path) == declared_hash]
     if len(matches) != 1:
         raise ValueError('evidence manifest hash does not resolve uniquely')
     path = matches[0]
     module = _load_evidence_module()
-    manifest, manifest_hash = module.validated_manifest(
-        path, fresh=fresh, replay_plan_searches=replay_plan_searches)
+    if cache is None:
+        manifest, manifest_hash = module.validated_manifest(
+            path, fresh=fresh, replay_plan_searches=replay_plan_searches)
+    else:
+        manifest, manifest_hash = cached_validated_manifest(
+            module, path, cache, fresh=fresh, replay_plan_searches=replay_plan_searches)
     repository = module.Repository(session)
     if repository.root != root:
         raise ValueError('evidence repository root mismatch')
@@ -1657,6 +1671,193 @@ def load_evidence_manifest(session, declared_hash, prompt, root, *, fresh=False,
     if seat not in manifest['assignments']:
         raise ValueError('prompt seat is absent from evidence manifest')
     return manifest, manifest_hash, seat, repository
+
+
+def _path_state(path):
+    try:
+        metadata = os.lstat(path)
+    except OSError:
+        return None
+    kind = stat.S_IFMT(metadata.st_mode)
+    changed = metadata.st_mtime_ns if kind in (stat.S_IFREG, stat.S_IFLNK) else None
+    return [kind, metadata.st_nlink, metadata.st_size, changed]
+
+
+def _file_binding(path, state):
+    if state is None:
+        return ['absent']
+    if state[0] == stat.S_IFLNK:
+        return ['link', os.readlink(path)] + (
+            [digest(path)] if os.path.isfile(path) else [])
+    if state[0] == stat.S_IFREG:
+        return ['file', state[1], state[2], digest(path)]
+    return ['kind', state[0]]
+
+
+def _directory_binding(path):
+    try:
+        with os.scandir(path) as entries:
+            return sorted([entry.name] + _path_state(entry.path)[:2] for entry in entries)
+    except (OSError, TypeError):
+        return None
+
+
+def _object_read_command(argv):
+    """Whether a command reads only Git objects named by hash, or is the findings validator over
+    its standard input: either returns the same bytes for as long as its inputs are unchanged."""
+    words = [os.fsdecode(word) for word in ([argv] if isinstance(argv, (str, bytes)) else argv)]
+    if (len(words) == 3 and words[2] == '/dev/stdin'
+            and Path(words[1]).resolve() == LIB_DIR / 'validate-findings.py'):
+        return True
+    if len(words) < 4 or Path(words[0]).name != 'git' or words[1] != '-C':
+        return False
+    rest = words[3:]
+    while len(rest) > 1 and rest[0] == '-c':
+        rest = rest[2:]
+    if not rest or rest[0] not in GIT_OBJECT_COMMANDS:
+        return False
+    operands = rest[1:]
+    if '--' in operands:
+        operands = operands[:operands.index('--')]
+    if rest[0] == 'rev-parse' and operands in (['--git-path', 'objects'],):
+        return True
+    names = [word for word in operands if not word.startswith('-')]
+    return ((rest[0] != 'rev-parse' or '--verify' in operands)
+            and all(GIT_OBJECT_NAME.fullmatch(word) or (rest[0], word) == ('cat-file', 'blob')
+                    for word in names))
+
+
+def _evidence_read_event(event, args):
+    if not _EVIDENCE_READS:
+        return
+    reads = _EVIDENCE_READS[-1]
+    try:
+        if event == 'open' and isinstance(args[0], (str, bytes, os.PathLike)):
+            path = os.path.abspath(os.fsdecode(args[0]))
+            if path not in reads['files']:
+                reads['files'][path] = _path_state(path)
+        elif event in ('os.listdir', 'os.scandir'):
+            target = '.' if args[0] is None else args[0]
+            if isinstance(target, int):
+                reads['cacheable'] = False
+            else:
+                reads['directories'].add(os.path.abspath(os.fsdecode(target)))
+        elif event == 'subprocess.Popen':
+            reads['cacheable'] = reads['cacheable'] and _object_read_command(args[1])
+        elif event in ('os.system', 'os.spawn', 'os.exec'):
+            reads['cacheable'] = False
+    except Exception:
+        reads['cacheable'] = False
+
+
+def _evidence_cache_identity(path, fresh, replay_plan_searches):
+    plugin = LIB_DIR.parent.parent
+    code = hashlib.sha256()
+    for source in sorted([*plugin.glob('scripts/*.py'), *plugin.glob('scripts/lib/*.py'),
+                          *plugin.glob('schema/*.json')]):
+        code.update(str(source.relative_to(plugin)).encode() + b'\0' + source.read_bytes() + b'\0')
+    return {'version': EVIDENCE_CACHE_VERSION, 'manifest': str(path), 'fresh': fresh,
+            'replay_plan_searches': replay_plan_searches, 'code_sha256': code.hexdigest(),
+            'environment': sorted([key, value] for key, value in os.environ.items()
+                                  if key.startswith(('REV_', 'REVIEW_COUNCIL_')))}
+
+
+def _evidence_cache_hit(cache, identity):
+    try:
+        entry = json.loads(Path(cache).read_text())
+        if entry['identity'] != identity:
+            return None
+        for path, *binding in entry['files']:
+            if _file_binding(path, _path_state(path)) != binding:
+                return None
+        for path, listing in entry['directories']:
+            if _directory_binding(path) != listing:
+                return None
+        return entry['manifest_sha256']
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+
+
+def _evidence_cache_entry(identity, manifest_hash, reads):
+    if not reads['cacheable']:
+        return None
+    files = []
+    try:
+        for path, opened in sorted(reads['files'].items()):
+            if '__pycache__' in Path(path).parts:
+                continue
+            state = _path_state(path)
+            if state != opened:
+                return None
+            files.append([path] + _file_binding(path, state))
+        directories = [[path, _directory_binding(path)] for path in sorted(reads['directories'])]
+    except OSError:
+        return None
+    return {'identity': identity, 'manifest_sha256': manifest_hash, 'files': files,
+            'directories': directories}
+
+
+def cached_validated_manifest(module, path, cache, *, fresh=False, replay_plan_searches=True):
+    """Validate a manifest once per attempt for the in-run replays, exactly as the audit would.
+
+    The entry binds the bytes of every file the validation opened and every directory it listed,
+    so any changed input is validated again. Only a passing validation is kept; a cache fault
+    falls back to validating.
+    """
+    def validate():
+        return module.validated_manifest(
+            path, fresh=fresh, replay_plan_searches=replay_plan_searches)
+
+    if not hasattr(sys, 'addaudithook'):
+        return validate()
+    try:
+        identity = _evidence_cache_identity(path, fresh, replay_plan_searches)
+        lock = os.open(str(cache) + '.lock', os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return validate()
+    try:
+        # The seat's warm-up holds this while it validates; a replay waits for its entry.
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        except OSError:
+            return validate()
+        manifest_hash = _evidence_cache_hit(cache, identity)
+        if manifest_hash is not None:
+            return module.read_json(path), manifest_hash
+        if not _EVIDENCE_HOOK:
+            sys.addaudithook(_evidence_read_event)
+            _EVIDENCE_HOOK.append(True)
+        reads = {'files': {}, 'directories': set(), 'cacheable': True}
+        _EVIDENCE_READS.append(reads)
+        try:
+            manifest, manifest_hash = validate()
+        finally:
+            _EVIDENCE_READS.pop()
+        entry = _evidence_cache_entry(identity, manifest_hash, reads)
+        if entry is not None:
+            with contextlib.suppress(OSError):
+                publish(cache, entry)
+        return manifest, manifest_hash
+    finally:
+        os.close(lock)
+
+
+def evidence_cache(args):
+    """Validate a seat's evidence into its attempt cache while the seat reads."""
+    started = time.monotonic()
+    try:
+        prompt = Path(args.prompt).resolve()
+        _, declared = evidence_manifest_declaration(prompt.read_text().splitlines())
+        if declared is None:
+            raise ValueError('the prompt declares no evidence manifest')
+        load_evidence_manifest(Path(args.session).resolve(), declared, prompt,
+                               Path(args.root).resolve(), cache=args.cache)
+    except (AttributeError, ImportError, KeyError, OSError, TypeError, ValueError) as error:
+        print(f'read audit evidence cache: not filled ({error})', file=sys.stderr)
+        return 0
+    print(f'read audit evidence cache: evidence validated in '
+          f'{time.monotonic() - started:.0f} s', file=sys.stderr)
+    return 0
 
 
 def compiled_plan_search_command(cluster, module):
@@ -3128,7 +3329,8 @@ def stop_gate_reason(args, event):
             _, unique = assessed(argparse.Namespace(
                 adapter=args.adapter, raw=str(raw), prompt=args.prompt, root=args.root,
                 session=args.session, seat=args.seat, deps=args.deps, result=str(result),
-                out=str(Path(directory) / 'audit.json')), progress)
+                out=str(Path(directory) / 'audit.json'),
+                evidence_cache=getattr(args, 'evidence_cache', None)), progress)
     missing = progress.get('missing') or []
     if (not unique or not missing or not progress.get('recoverable')
             or not set(progress.get('fatal', [])) <= READABLE_GAP_CODES):
@@ -3149,15 +3351,47 @@ def stop_gate_reason(args, event):
         ' with StructuredOutput.')
 
 
+class StopGateDeadline(BaseException):
+    """The replay ran past its budget; no handler inside the audit may absorb it."""
+
+
 def stop_hook(args):
     """Gate a Claude seat's end, its StructuredOutput call or its Stop, on the audit's own replay.
 
     Any error allows the end, so the post-run audit decides exactly as it would without the gate.
+    A replay that would outlast the hook timeout allows it too, and says so in the seat log.
     """
+    timeout = getattr(args, 'timeout', None)
+    budget = timeout * STOP_GATE_BUDGET_SHARE if timeout else None
+    event = {}
+
+    def expired(_signum, _frame):
+        raise StopGateDeadline
+
+    previous = None
     try:
-        event = json.load(sys.stdin)
-        event = event if isinstance(event, dict) else {}
-        reason = stop_gate_reason(args, event)
+        if budget:
+            previous = signal.signal(signal.SIGALRM, expired)
+            signal.setitimer(signal.ITIMER_REAL, budget)
+        try:
+            event = json.load(sys.stdin)
+            event = event if isinstance(event, dict) else {}
+            reason = stop_gate_reason(args, event)
+        finally:
+            if budget:
+                signal.setitimer(signal.ITIMER_REAL, 0)
+                signal.signal(signal.SIGALRM, signal.SIG_DFL if previous is None else previous)
+    except StopGateDeadline:
+        ending = 'Stop' if event.get('hook_event_name') == 'Stop' else 'StructuredOutput call'
+        note = (f'review stop gate: the read-audit replay ran past its {budget:.0f} s budget of'
+                f' the {timeout} s hook timeout, so this {ending} was allowed unchecked; the'
+                ' post-run audit still decides\n')
+        try:
+            with open(args.log, 'a', encoding='utf-8') as stream:
+                stream.write(note)
+        except (OSError, TypeError):
+            sys.stderr.write(note)
+        return 0
     except Exception:
         return 0
     if reason is None:
@@ -3437,7 +3671,8 @@ def assess(args, blocked, progress=None):
     if declared_manifest_hash is not None:
         try:
             manifest, manifest_hash, seat, evidence_repository = load_evidence_manifest(
-                session, declared_manifest_hash, prompt, root)
+                session, declared_manifest_hash, prompt, root,
+                cache=getattr(args, 'evidence_cache', None))
         except (AttributeError, ImportError, KeyError, OSError, TypeError, ValueError,
                 json.JSONDecodeError):
             failures.append(violation('invalid-source-context', args.adapter))
@@ -4349,6 +4584,14 @@ def main():
     stops.add_argument('--state', required=True)
     stops.add_argument('--seat')
     stops.add_argument('--deps')
+    stops.add_argument('--evidence-cache')
+    stops.add_argument('--log')
+    stops.add_argument('--timeout', type=int)
+    caches = commands.add_parser('evidence-cache')
+    caches.add_argument('--prompt', required=True)
+    caches.add_argument('--root', required=True)
+    caches.add_argument('--session', required=True)
+    caches.add_argument('--cache', required=True)
     prompts = commands.add_parser('validate-prompt')
     prompts.add_argument('--root', required=True)
     prompts.add_argument('--session', required=True)
@@ -4375,6 +4618,8 @@ def main():
         return stop_hook(args)
     if args.command == 'read-gate-init':
         return read_gate_init(args)
+    if args.command == 'evidence-cache':
+        return evidence_cache(args)
     if args.command == 'validate-prompt':
         try:
             return validate_prompt(args)
