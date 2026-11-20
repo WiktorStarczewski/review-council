@@ -614,8 +614,8 @@ PY
     >/dev/null 2>&1
 }
 
-# Prints the first paired segment stage's number, its second read, and the post-index target read.
-seat_codex_paired_stage() {
+# Prints the first segment stage's number, its last read, and the post-index target read.
+seat_codex_segment_stage() {
   python3 - "$SCRIPTS/lib/codex-proof-stages.py" "$1" "$2" <<'PY'
 import re
 import subprocess
@@ -629,9 +629,9 @@ subprocess.run([sys.executable, helper, '--prompt', prompt, '--seat', 'codex-lun
 for path in sorted(Path(stages).glob('stage-*.prompt')):
     reads = [line[len('Read exactly: '):] for line in path.read_text().splitlines()
              if line.startswith('Read exactly: ')]
-    if len(reads) == 2 and '(required source segments)' in path.read_text().splitlines()[0]:
+    if '(required source segments)' in path.read_text().splitlines()[0]:
         print(int(re.search(r'stage-(\d+)', path.name).group(1)))
-        print(reads[1])
+        print(reads[-1])
         break
 target = re.search(r'^Required post-index original-source target: (\S+):(\d+)-(\d+) ',
                    Path(prompt).read_text(), re.M)
@@ -641,12 +641,12 @@ PY
 
 test_seat_codex_repairs_a_prepared_evidence_under_read() {
   ( local _path="$PATH"; seat_env
-    local R="$T/stage-repair-root" S="$T/stage-repair-session" D="$T/stage-repair-dup" plan stage second target calls
+    local R="$T/stage-repair-root" S="$T/stage-repair-session" D="$T/stage-repair-dup" plan stage missing target calls
     seat_codex_prepared_session "$R" "$S" || { fail "prepared Codex session fixture"; return; }
-    plan=$(seat_codex_paired_stage "$S/r1-codex-luna.prompt.md" "$T/stage-repair-plan") \
+    plan=$(seat_codex_segment_stage "$S/r1-codex-luna.prompt.md" "$T/stage-repair-plan") \
       || { fail "prepared Codex stage plan"; return; }
     stage=$(printf '%s\n' "$plan" | sed -n 1p)
-    second=$(printf '%s\n' "$plan" | sed -n 2p)
+    missing=$(printf '%s\n' "$plan" | sed -n 2p)
     target=$(printf '%s\n' "$plan" | sed -n 3p)
     mkdir -p "$S/calls"; : > "$S/calls.log"
     SHIM_MODE=staged-audit SHIM_STAGE_SLIP="$stage:under" SHIM_POST_INDEX_COMMAND="$target" \
@@ -657,9 +657,9 @@ test_seat_codex_repairs_a_prepared_evidence_under_read() {
       bash "$SCRIPTS/seats.d/codex.sh" > "$S/out" 2> "$S/err"
     assert_eq "an in-order under-read stage does not fail the seat" "$?" 0
     assert_eq "the repair turn reads exactly the missing artifact" \
-      "$(grep '^Read exactly: ' "$S/calls/call-$((stage + 1)).stdin")" "Read exactly: $second"
+      "$(grep '^Read exactly: ' "$S/calls/call-$((stage + 1)).stdin")" "Read exactly: $missing"
     assert_grep "the seat log names the repair" "$S/r1-codex-luna.log" \
-      "^codex adapter: .*repair.*$(basename "$second")"
+      "^codex adapter: .*repair.*$(basename "$missing")"
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex \
       --raw "$S/r1-codex-luna.stream.ndjson" --prompt "$S/r1-codex-luna.prompt.md" --root "$R" \
       --session "$S" --seat codex-luna --out "$S/r1-codex-luna.read-audit.json" >/dev/null 2>&1

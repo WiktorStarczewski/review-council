@@ -21,7 +21,6 @@ from review_limits import codex_review_turn_call_limit_for_model
 
 OUTPUT_BYTES = 32 * 1024
 PROOF_TURN_BYTES = 60 * 1024
-SOURCE_SEGMENT_VISIBLE_LIMIT = 16 * 1024
 STAGE_PLAN = 'stage-plan.json'
 STAGE_STATE = 'stage-state.json'
 # A plan seat proves its cluster searches and sources in review turns, after every stage.
@@ -99,7 +98,7 @@ def direct_path(value, session, expected_name=None):
     return path
 
 
-def grouped(items, limit, visible, standalone=None, turn_bytes=PROOF_TURN_BYTES):
+def grouped(items, limit, visible, turn_bytes=PROOF_TURN_BYTES):
     if not 1 <= limit <= 2:
         raise StageError('Codex proof batch limit must be one or two')
     stages = []
@@ -109,14 +108,7 @@ def grouped(items, limit, visible, standalone=None, turn_bytes=PROOF_TURN_BYTES)
         amount = visible(item)
         if amount < 0 or amount > OUTPUT_BYTES:
             raise StageError('one prepared proof read exceeds the hard output limit')
-        alone = standalone(item) if standalone else False
-        if alone:
-            if pending:
-                stages.append(pending)
-                pending = []
-                size = 0
-            stages.append([item])
-        elif pending and (len(pending) >= limit or size + amount > turn_bytes):
+        if pending and (len(pending) >= limit or size + amount > turn_bytes):
             stages.append(pending)
             pending = [item]
             size = amount
@@ -525,10 +517,7 @@ def prepared_stages(prompt, seat, model, stage_dir):
                                  row.get('raw_bytes'), OUTPUT_BYTES)
             expected_segments.append((index, len(segments), command_file(path), len(raw),
                                       row['predicted_visible_bytes'], row['content_sha256']))
-            segment_files.append({'path': path, 'visible': row['predicted_visible_bytes'],
-                                  'oversized': (row['line_start'] == row['line_end']
-                                                and row['predicted_visible_bytes']
-                                                > SOURCE_SEGMENT_VISIBLE_LIMIT)})
+            segment_files.append({'path': path, 'visible': row['predicted_visible_bytes']})
     observed_segments = []
     for match in segment_lines:
         try:
@@ -550,8 +539,10 @@ def prepared_stages(prompt, seat, model, stage_dir):
         if segment_limits:
             raise StageError('prompt contains an unassigned source segment batch limit')
     if segment_files:
-        for group in grouped(segment_files, 2, lambda item: item['visible'],
-                             lambda item: item['oversized']):
+        # In a segment pair a read-ahead makes three proof reads, past the audit's batch limit of
+        # two, and can never be repaired, so segments are read one per turn; that limit still
+        # lets a turn read exactly the next segment ahead.
+        for group in grouped(segment_files, 1, lambda item: item['visible']):
             stages.append({'kind': 'required source segments',
                            'files': [{'path': item['path'], 'command': command_file(item['path'])}
                                      for item in group]})
