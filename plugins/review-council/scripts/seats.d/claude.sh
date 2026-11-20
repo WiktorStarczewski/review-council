@@ -17,15 +17,24 @@ CLAUDE_BIN=$(printf '%s\n' "$CLAUDE_CLI" | sed -n 1p)
 printf 'claude CLI %s at %s\n' "$(printf '%s\n' "$CLAUDE_CLI" | sed -n 2p)" "$CLAUDE_BIN" >> "$LOG"
 STOP_STATE="${OUT%.json}.stop-gate"
 READ_GATE="${OUT%.json}.read-gate"
-rm -f "$STOP_STATE" "$READ_GATE"
+EVIDENCE_CACHE="${OUT%.json}.evidence-cache"
+rm -f "$STOP_STATE" "$READ_GATE" "$EVIDENCE_CACHE" "$EVIDENCE_CACHE.lock"
 python3 "$HERE/../lib/review-read-audit.py" read-gate-init --prompt "$PROMPT" --root "$ROOT" \
   --session "$SESSION" --state "$READ_GATE" 2>>"$LOG" || rm -f "$READ_GATE"
+# The stop gate replays the read audit, whose evidence validation alone can outlast the hook
+# timeout; validating it while the seat reads lets the replay reuse the result.
+python3 "$HERE/../lib/review-read-audit.py" evidence-cache --prompt "$PROMPT" --root "$ROOT" \
+  --session "$SESSION" --cache "$EVIDENCE_CACHE" </dev/null >/dev/null 2>>"$LOG" &
+WARM_PID=$!
+trap 'kill "$WARM_PID" 2>/dev/null; rm -f "$EVIDENCE_CACHE" "$EVIDENCE_CACHE.lock"' EXIT
 SETTINGS=$(python3 - "$HERE/../lib/review-read-audit.py" \
-  "$ROOT" "$SESSION" "$PROMPT" "${REV_DEPS_DIR:-}" "$RAW" "$STOP_STATE" "${SEAT:-}" "$READ_GATE" <<'PY'
+  "$ROOT" "$SESSION" "$PROMPT" "${REV_DEPS_DIR:-}" "$RAW" "$STOP_STATE" "${SEAT:-}" "$READ_GATE" \
+  "$EVIDENCE_CACHE" "$LOG" <<'PY'
 import json, shlex, sys
+timeout = 300
 bounded = 'python3 ' + shlex.quote(sys.argv[1]) + ' hook --root ' + shlex.quote(sys.argv[2]) + ' --session ' + shlex.quote(sys.argv[3]) + ' --prompt ' + shlex.quote(sys.argv[4]) + ' --raw ' + shlex.quote(sys.argv[6]) + ' --gate ' + shlex.quote(sys.argv[9])
 post = 'python3 ' + shlex.quote(sys.argv[1]) + ' post-hook --root ' + shlex.quote(sys.argv[2]) + ' --session ' + shlex.quote(sys.argv[3]) + ' --prompt ' + shlex.quote(sys.argv[4]) + ' --gate ' + shlex.quote(sys.argv[9])
-stop = 'python3 ' + shlex.quote(sys.argv[1]) + ' stop-hook --adapter claude --raw ' + shlex.quote(sys.argv[6]) + ' --prompt ' + shlex.quote(sys.argv[4]) + ' --root ' + shlex.quote(sys.argv[2]) + ' --session ' + shlex.quote(sys.argv[3]) + ' --state ' + shlex.quote(sys.argv[7])
+stop = 'python3 ' + shlex.quote(sys.argv[1]) + ' stop-hook --adapter claude --raw ' + shlex.quote(sys.argv[6]) + ' --prompt ' + shlex.quote(sys.argv[4]) + ' --root ' + shlex.quote(sys.argv[2]) + ' --session ' + shlex.quote(sys.argv[3]) + ' --state ' + shlex.quote(sys.argv[7]) + ' --evidence-cache ' + shlex.quote(sys.argv[10]) + ' --log ' + shlex.quote(sys.argv[11]) + ' --timeout ' + str(timeout)
 if sys.argv[8]:
     stop += ' --seat ' + shlex.quote(sys.argv[8])
 if sys.argv[5]:
@@ -34,7 +43,7 @@ if sys.argv[5]:
     stop += ' --deps ' + shlex.quote(sys.argv[5])
 # Exit 2 blocks, so no stop-gate failure may exit 2. A --json-schema run ends at its
 # StructuredOutput call without a Stop that can resume it, so the gate also checks that call.
-stop = [{'type': 'command', 'command': stop + ' || true', 'timeout': 300}]
+stop = [{'type': 'command', 'command': stop + ' || true', 'timeout': timeout}]
 bounded_pre = [
     {'matcher': 'Read', 'hooks': [{'type': 'command', 'command': bounded}]},
     {'matcher': 'Grep', 'hooks': [{'type': 'command', 'command': bounded}]},
