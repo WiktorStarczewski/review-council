@@ -120,6 +120,18 @@ preserve_audit_invalid_result() {
   else rm -f "$OUT" "$AUDIT_INVALID_OUT"
   fi
 }
+log_audit_violations() {  # names the audit's violation codes in the seat log; silent when the audit file is unreadable
+  python3 - "$AUDITF" >> "$LOG" 2>/dev/null <<'PY' || true
+import json
+import sys
+
+with open(sys.argv[1], encoding='utf-8') as stream:
+    violations = json.load(stream)['violations']
+codes = sorted({row['code'] for row in violations if isinstance(row, dict) and isinstance(row.get('code'), str)})
+if codes:
+    print('bounded-read audit violations: ' + ','.join(codes))
+PY
+}
 
 RESERVED=0
 PUBLISH_UNRESERVED_EXIT=0
@@ -375,11 +387,13 @@ PY
   )
   AUDIT_META_RC=$?
   if [ "$AUDIT_META_RC" -ne 0 ]; then
+    log_audit_violations
     echo "bounded-read audit metadata is missing, malformed, or inconsistent; $REPLACE_RULE" >> "$LOG"
     preserve_audit_invalid_result
     finish 2
   fi
   if [ "$AUDIT_RC" -ne 0 ]; then
+    log_audit_violations
     case "$AUDIT_SCOPE" in
       full)
         echo "bounded-read audit rejected full-scope evidence review; $REPLACE_RULE" >> "$LOG"

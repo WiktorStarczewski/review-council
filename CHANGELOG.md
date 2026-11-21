@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Name why a seat failed in its log: a seat whose bounded-read audit rejects it now logs `bounded-read audit violations: <codes>` (sorted, unique) before the replacement line, and a Claude seat whose result carries a `terminal_reason` other than `completed`, such as `hook_stopped`, ends its summary with `terminal_reason=<value>`. Both were computed but only in the audit JSON and the raw stream, so a failed seat needed manual forensics; no exit code or existing log sentence changes.
+
 ## 0.9.11
 
 - Keep a Codex seat reviewing when it returns ready while the read audit, replayed over its stream so far with no findings, still lacks a read that a later turn can supply: a plan cluster source or sibling search, the required original-source read or target, or the evidence navigation index. The next turn names each uncredited location or exact search command and the seat log says why the review continues, within the same review-turn count and repository-call allowance; once those are used up, the findings turn reports an incomplete proof and the post-run audit judges the stream. A stream the audit would reject whatever is read next finalizes at once. This replaces the check of the required post-index target alone, which let a plan seat whose 17 site reads fell in one review turn over 32 KiB finalize and fail its audit instead of reading them again.
