@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Count a read a Codex seat repeats inside one turn as one proof read in the post-run read audit, as the PreToolUse read gate already does. The batch limits counted calls, so a source packet run twice in one turn, an evidence index run three times, or a patch chunk or required segment repeated three times raised a fatal pacing code and refused the seat at once, instead of costing at most a repair turn; a live Luna attempt was refused on a 5.8 KB packet `cat` run four times in one turn, and Luna repeats a read in about one stage in four. A byte-identical repeat of a credited patch chunk is also no longer charged as a second read toward the 32 KiB turn limit while the turn stays within the paired-read limits, so a doubled chunk no longer voids the first read and spends a repair turn. Two different packets, chunks or segments in one turn still exceed the limits.
+
 ## 0.9.11
 
 - Keep a Codex seat reviewing when it returns ready while the read audit, replayed over its stream so far with no findings, still lacks a read that a later turn can supply: a plan cluster source or sibling search, the required original-source read or target, or the evidence navigation index. The next turn names each uncredited location or exact search command and the seat log says why the review continues, within the same review-turn count and repository-call allowance; once those are used up, the findings turn reports an incomplete proof and the post-run audit judges the stream. A stream the audit would reject whatever is read next finalizes at once. This replaces the check of the required post-index target alone, which let a plan seat whose 17 site reads fell in one review turn over 32 KiB finalize and fail its audit instead of reading them again.
