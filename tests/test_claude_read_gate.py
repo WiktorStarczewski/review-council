@@ -403,6 +403,56 @@ class ClaudeReadGateTests(unittest.TestCase):
         self.assertEqual((process.returncode, json.loads(audit_path.read_text())['status']),
                          (0, 'valid'))
 
+    def test_structured_output_gate_sends_back_a_finding_that_cites_unread_source(self):
+        fixture = SourceFixture(self.directory / 'unread-source', 'current', adapter='claude')
+        raw, result_path, audit_path = fixture.claude_transcript()
+        target = fixture.target()
+        target_read = {'type': 'tool_use', 'id': 'target-read', 'name': 'Read', 'input': {
+            'file_path': str(fixture.root / target['path']), 'offset': target['line_start'],
+            'limit': target['line_end'] - target['line_start'] + 1}}
+        self.write(raw, self.events(raw) + [
+            {'type': 'assistant', 'message': {'id': 'target-turn', 'content': [target_read]}},
+            {'type': 'user', 'message': {'content': [
+                {'type': 'tool_result', 'tool_use_id': 'target-read',
+                 'content': fixture.current_bytes(target)}]}}])
+
+        def finding(path, start, end):
+            return {'summary': 'checked', 'findings': [{
+                'severity': 'P2', 'file': path, 'line_start': start, 'line_end': end,
+                'claim': 'claim', 'evidence': 'evidence', 'suggested_fix': 'fix',
+                'confidence': 0.5}]}
+
+        packet = fixture.context['shards'][0]['ranges'][0]
+        self.assertIsNone(self.submit(raw, fixture=fixture, result=finding(
+            packet['path'], packet['line_start'], packet['line_end'])))
+        self.assertFalse(self.state.exists())
+
+        submitted = finding('keep.txt', 1, 1)
+        reason = self.submit(raw, fixture=fixture, result=submitted)
+        self.assertIsNotNone(reason)
+        self.assertIn('keep.txt lines 1-1', reason)
+        self.assertIn('bounded Read', reason)
+        self.assertNotIn('no offset or limit', reason)
+        self.assertEqual(json.loads(self.state.read_text())['blocks'], 1)
+        self.write(raw, self.events(raw) + [
+            {'type': 'assistant', 'message': {'id': 'late-source', 'content': [
+                {'type': 'tool_use', 'id': 'late-source-read', 'name': 'Read',
+                 'input': {'file_path': str(fixture.root / 'keep.txt'),
+                           'offset': 1, 'limit': 1}}]}},
+            {'type': 'user', 'message': {'content': [
+                {'type': 'tool_result', 'tool_use_id': 'late-source-read',
+                 'content': (fixture.root / 'keep.txt').read_text()}]}}])
+        self.assertIsNone(self.submit(raw, fixture=fixture, result=submitted))
+        result_path.write_text(json.dumps(submitted))
+        process = subprocess.run(
+            [os.sys.executable, str(SCRIPTS / 'lib/review-read-audit.py'), 'audit',
+             '--adapter', 'claude', '--raw', str(raw), '--prompt', str(fixture.prompt),
+             '--root', str(fixture.root), '--session', str(fixture.session),
+             '--out', str(audit_path)],
+            env=fixture.env, text=True, capture_output=True)
+        self.assertEqual((process.returncode, json.loads(audit_path.read_text())['status']),
+                         (0, 'valid'))
+
     def test_stop_hook_command_line_prints_only_the_decision(self):
         raw = self.transcript(omitted=[*self.segments[3:], self.index])
         command = [os.sys.executable, str(SCRIPTS / 'lib/review-read-audit.py'), 'stop-hook',
