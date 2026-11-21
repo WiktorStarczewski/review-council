@@ -34,14 +34,35 @@ Open a pull request with a concise description of current behavior. After the in
 normal review is clean and all required CI checks pass on the current head, squash-merge
 the pull request.
 
+Before tagging, the `CHANGELOG.md` entries for the release must sit under a
+`## 0.9.0` heading (moved out of `## Unreleased`). The release notes are taken from that
+section, so a tag without it cannot be published.
+
 From a clean checkout of the merged commit, publish the signed release:
 
 ```bash
 git tag -s review-council--v0.9.0 -m "review-council 0.9.0" "$MERGE_COMMIT"
 git push origin review-council--v0.9.0
 git verify-tag review-council--v0.9.0
+```
+
+Pushing the signed tag starts the `release` workflow, which creates the GitHub Release
+from the `## 0.9.0` section of `CHANGELOG.md` and marks it Latest when it is the highest
+stable version. A release that has no GitHub Release is not published. If the workflow is
+unavailable, create the release by hand with the same notes:
+
+```bash
+awk -v heading="## 0.9.0" '$0 == heading { f = 1; next } f && /^## / { exit } f { print }' \
+  CHANGELOG.md > notes.md
 gh release create review-council--v0.9.0 --verify-tag \
-  --title "review-council 0.9.0" --generate-notes
+  --title "review-council 0.9.0" --notes-file notes.md
+```
+
+Verify the release exists and the highest version is marked Latest:
+
+```bash
+gh release view review-council--v0.9.0
+gh release list --limit 3
 ```
 
 Reinstall `review-council@review-council` for Claude and Codex, and run
