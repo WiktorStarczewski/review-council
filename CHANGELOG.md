@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Anchor a test hunk that deletes lines at the end of a file on the last surviving line, so evidence preparation no longer refuses the panel with "required code proof lies outside source" and the capacity count no longer includes a mandatory read past the end of the file.
 - Publish a GitHub Release automatically for every `review-council--v*` tag from its CHANGELOG section, and require the release check in the release procedure.
 
 ## 0.9.13

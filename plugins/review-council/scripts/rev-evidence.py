@@ -1586,6 +1586,7 @@ class Repository:
                 if not safe_empty:
                     unsafe.append(path)
             else:
+                line_count = len(split_lf_lines(right_blob)) if right_blob is not None else 0
                 for i, match in enumerate(matches):
                     hbody = text[match.end():matches[i + 1].start() if i + 1 < len(matches) else len(text)]
                     atom = {'kind': kind, 'path': path, 'body': hbody}
@@ -1600,7 +1601,11 @@ class Repository:
                                                            'added_lines': group_added})
                             group_base = []; group_added = []
                         if line.startswith(('+', '-')):
-                            changed_lines.append(old_position if kind == 'delete' else new_position)
+                            # A tail deletion leaves new_position one past the last line; anchor it on
+                            # the last surviving line, as a mid-file deletion anchors on the next one.
+                            # An emptied file keeps its line 0, which proof windows skip.
+                            changed_lines.append(
+                                old_position if kind == 'delete' else min(new_position, line_count))
                         if line.startswith('-'):
                             base_changed_lines.append(old_position)
                             group_base.append(old_position)
