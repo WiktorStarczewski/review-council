@@ -841,48 +841,53 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 import workhorse
 session = Path(sys.argv[2])
-workhorse._candidates = lambda host, include_cursor=True: (None, {
+specs = {
     'cursor-grok': None,
     'luna': None,
     'sol': {'adapter': 'codex', 'model': 'gpt-6-sol', 'effort': 'high', 'lab': 'openai'},
     'sonnet': {'adapter': 'claude', 'model': 'sonnet', 'effort': 'high', 'lab': 'anthropic'},
     'opus': {'adapter': 'claude', 'model': 'opus', 'effort': 'high', 'lab': 'anthropic'},
-})
+}
+available = dict(specs)
+workhorse._candidates = lambda host, include_cursor=True: (None, available)
 (session / 'roster.json').write_text(json.dumps({'seats': [
-    {'seat': 'escalate-sonnet', 'adapter': 'claude', 'model': 'sonnet', 'effort': 'high',
-     'lab': 'anthropic', 'extra': False}]}))
+    {'seat': 'codex-luna', 'adapter': 'codex', 'model': 'gpt-6-luna', 'effort': 'high',
+     'lab': 'openai', 'extra': False}]}))
 
-def record(tokens, reads, target=None):
-    row = {'mandatory_repository_reads': reads, 'repository_source_target': target}
-    if tokens is not None:
-        row['projected_context_tokens'] = tokens
+def record(tokens, reads):
+    for stale in session.glob('r*-codex-luna.capacity-refusal'):
+        stale.unlink()
     (session / 'r2-evidence.manifest.json').write_text(json.dumps({
-        'assignments': {'escalate-sonnet': {}},
-        'task_capacity': {'seats': {'escalate-sonnet': row}}}))
+        'task_capacity': {'seats': {'codex-luna': {
+            'mandatory_repository_reads': reads, 'repository_source_target': None}}}}))
+    if tokens is not None:
+        (session / 'r2-codex-luna.capacity-refusal').write_text(json.dumps({
+            'schema_version': 1, 'projected_tokens': tokens}))
 
-record(500_000, 4)
-chosen = workhorse.escalate(session, 'escalate-sonnet')
-assert chosen['seat'] == 'escalate-opus', 'Sol holds 455620 tokens and cannot take 500000: ' + str(chosen)
+def chosen(**gone):
+    available.clear()
+    available.update({family: None if family in gone else spec for family, spec in specs.items()})
+    return workhorse.escalate(session, 'codex-luna')['seat']
 
-record(700_000, 4)
-try:
-    workhorse.escalate(session, 'escalate-sonnet')
-except ValueError as error:
-    assert 'no eligible family can hold this assignment' in str(error), str(error)
-else:
-    raise AssertionError('700000 tokens fit no family')
+def refused(**gone):
+    try:
+        chosen(**gone)
+    except ValueError as error:
+        assert 'no eligible family can hold this assignment' in str(error), str(error)
+    else:
+        raise AssertionError('no family should hold this assignment')
 
-record(1_000, 25)
-try:
-    workhorse.escalate(session, 'escalate-sonnet')
-except ValueError as error:
-    assert 'no eligible family can hold this assignment' in str(error), str(error)
-else:
-    raise AssertionError('25 direct reads exceed every 16-read family')
+record(847_423, 2)
+assert chosen(sonnet=1) == 'escalate-opus', 'Sol holds 455620 tokens and cannot take 847423'
+refused(sonnet=1, opus=1)
+assert chosen() == 'escalate-sonnet', 'a Claude seat has no staged context cap'
 
-record(1_000, 4)
-assert workhorse.escalate(session, 'escalate-sonnet')['seat'] == 'escalate-sol', \
-    'a small assignment still takes the next family'
+record(None, 25)
+refused()
+
+record(None, 4)
+assert chosen() == 'escalate-sonnet', 'a small assignment still takes the next family'
+assert chosen(sonnet=1) == 'escalate-sol', 'and Sol when it fits'
 PY
     assert_eq "escalation skips a family that cannot hold the failed assignment" "$?" 0
   )

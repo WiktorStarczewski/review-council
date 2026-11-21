@@ -13,9 +13,6 @@ NO_TARGET_REPOSITORY_EXPANSION_CALL_LIMIT = (
     REPOSITORY_EXPANSION_CALL_LIMIT + REPOSITORY_REFUTATION_CALL_RESERVE
 )
 CLAUDE_MAX_TURNS = 160
-# A Claude seat's context is not read from a catalog; this is the 1M-token window at the 55% share
-# a staged Codex seat may fill before review.
-CLAUDE_CONTEXT_BUDGET_TOKENS = 550_000
 PROVIDER_TURN_RESERVE = 2
 
 

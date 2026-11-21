@@ -23,7 +23,7 @@ LIB = Path(__file__).resolve().parent
 if str(LIB) not in sys.path:
     sys.path.insert(0, str(LIB))
 
-from review_limits import CLAUDE_CONTEXT_BUDGET_TOKENS, mandatory_repository_read_limit_for_seat
+from review_limits import mandatory_repository_read_limit_for_seat
 from roster import (AUTH_FAILURE, CLAUDE_SESSION_ENV, QUOTA_FAILURE, claude_cli_reason,
                     codex_catalog, codex_catalog_path, codex_suffix, reasoning_efforts)
 
@@ -269,10 +269,15 @@ def _stages_module():
 
 
 def family_context_budget(adapter, model):
-    """Pre-review context tokens a seat on this model holds, or None when it is not known."""
+    """Pre-review context tokens a staged Codex seat holds, or None when it is not capped.
+
+    Only the Codex adapter stages its reads before review and refuses an over-budget prompt;
+    a Claude seat reads on demand and has no such cap (a Sonnet seat completed an ~847K-token
+    assignment that Luna and Sol both refused).
+    """
     if adapter == 'codex':
         return _stages_module().context_budget(model)
-    return CLAUDE_CONTEXT_BUDGET_TOKENS
+    return None
 
 
 def _recorded_files(session, pattern):
@@ -288,9 +293,9 @@ def _recorded_files(session, pattern):
 def failed_assignment_load(session, seat):
     """Recorded load of a failed assignment: any of `tokens`, `reads` and `target`.
 
-    The newest manifest that registers the seat supplies its repository reads and, when
-    recorded, its projected context. Without a projection, the seat's own capacity refusal
-    supplies it. Unreadable or absent records constrain nothing.
+    The newest manifest that registers the seat supplies its repository reads. The seat's own
+    capacity refusal, the only record of a projected context, supplies its tokens. Unreadable
+    or absent records constrain nothing.
     """
     load = {}
     for path in _recorded_files(session, 'r*-evidence.manifest.json'):
@@ -304,21 +309,18 @@ def failed_assignment_load(session, seat):
         if type(row.get('mandatory_repository_reads')) is int:
             load['reads'] = row['mandatory_repository_reads']
             load['target'] = row.get('repository_source_target')
-        if type(row.get('projected_context_tokens')) is int:
-            load['tokens'] = row['projected_context_tokens']
         break
-    if 'tokens' not in load:
-        name = re.compile(r'r[A-Za-z0-9._]+-' + re.escape(seat) + r'\.capacity-refusal')
-        for path in _recorded_files(session, 'r*-' + seat + '.capacity-refusal'):
-            if not name.fullmatch(path.name):
-                continue
-            try:
-                tokens = json.loads(path.read_text(encoding='utf-8'))['projected_tokens']
-            except (OSError, UnicodeError, ValueError, KeyError, TypeError):
-                continue
-            if type(tokens) is int:
-                load['tokens'] = tokens
-                break
+    name = re.compile(r'r[A-Za-z0-9._]+-' + re.escape(seat) + r'\.capacity-refusal')
+    for path in _recorded_files(session, 'r*-' + seat + '.capacity-refusal'):
+        if not name.fullmatch(path.name):
+            continue
+        try:
+            tokens = json.loads(path.read_text(encoding='utf-8'))['projected_tokens']
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+            continue
+        if type(tokens) is int:
+            load['tokens'] = tokens
+            break
     return load
 
 
