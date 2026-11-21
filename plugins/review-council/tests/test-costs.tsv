@@ -21,6 +21,7 @@ t-evidence.sh::test_evidence_hardening_routing	25	normal
 t-evidence.sh::test_evidence_hardening_scale_receipts	25	normal
 t-evidence.sh::test_evidence_hardening_structure	25	normal
 t-evidence.sh::test_malformed_manifest_seals_inputs	1	normal
+t-evidence.sh::test_over_budget_assignment_is_split_into_capacity_shares	40	normal
 t-evidence.sh::test_prepare_and_input_install_are_serialized	4	normal
 t-evidence.sh::test_evidence_provider_contract_binding	1	normal
 t-evidence.sh::test_evidence_source_identity_match	2	normal
