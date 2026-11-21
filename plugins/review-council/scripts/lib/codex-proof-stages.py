@@ -17,7 +17,11 @@ import tempfile
 LIB_DIR = Path(__file__).resolve().parent
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
-from review_limits import codex_review_turn_call_limit_for_model
+from context_budget import (CONTEXT_BASE_TOKENS, CONTEXT_READ_TOKENS, CONTEXT_SHARE_PERCENT,
+                            CONTEXT_STAGE_TURN_TOKENS, PACKET_BYTES_PER_TOKEN,
+                            PROMPT_BYTES_PER_TOKEN, READ_BYTES_PER_TOKEN,
+                            compact_review_prompt, context_tokens, model_limits)
+from review_limits import MANIFEST_MAX_BYTES, codex_review_turn_call_limit_for_model
 
 OUTPUT_BYTES = 32 * 1024
 PROOF_TURN_BYTES = 60 * 1024
@@ -26,26 +30,6 @@ STAGE_STATE = 'stage-state.json'
 EVIDENCE_CACHE = 'evidence-cache.json'
 # A plan seat proves its cluster searches and sources in review turns, after every stage.
 STAGING_GAP_CODES = {'missing-plan-cluster-search', 'missing-plan-cluster-source'}
-# The context a staged seat holds before its first review turn, fitted on completed Codex streams
-# (projected over actual: median 1.10, minimum 0.85). Review turns then added a median 33K and at
-# most 126K tokens, so staging may fill only 55% of the model's usable window.
-CONTEXT_BASE_TOKENS = 17_000
-CONTEXT_READ_TOKENS = 120
-CONTEXT_STAGE_TURN_TOKENS = 300
-READ_BYTES_PER_TOKEN = 2.8
-PACKET_BYTES_PER_TOKEN = 2.4
-PROMPT_BYTES_PER_TOKEN = 3.0
-CONTEXT_SHARE_PERCENT = 55
-RAISED_WINDOW_SWITCH = 'REVIEW_COUNCIL_CODEX_MAX_CONTEXT_WINDOW'
-HEX_RUN = re.compile(rb'[0-9a-f]{32,}')
-IDENTITY_LINE = re.compile(
-    rb'(?:[0-9]+\. )?(?:Required source range: |Patch-proven source range: |Required source segment '
-    rb'|Assigned patch chunk |Canonical assigned patch: '
-    rb'|(?:Required|Optional) post-index original-source target: )')
-IDENTITY_HASH = re.compile(
-    rb' (?:tree|blob) [0-9a-f]{40}(?:[0-9a-f]{24})?(?![0-9a-f])'
-    rb'| (?:content )?SHA-256 [0-9a-f]{64}(?![0-9a-f])')
-REASON_HASH = re.compile(rb'("[a-z-]+):[0-9a-f]{64}"')
 
 
 class StageError(ValueError):
@@ -412,7 +396,7 @@ def prepared_stages(prompt, seat, model, stage_dir):
     if not re.fullmatch(r'r[A-Za-z0-9_.-]+', label):
         raise StageError('prepared prompt name does not bind a review round')
     manifest_path = session / (label + '-evidence.manifest.json')
-    manifest_raw = safe_read(manifest_path, session, 16 * 1024 * 1024)
+    manifest_raw = safe_read(manifest_path, session, MANIFEST_MAX_BYTES)
     if sha256(manifest_raw) != digests[0]:
         raise StageError('prepared prompt evidence manifest hash changed')
     try:
@@ -644,55 +628,14 @@ def read_bytes(read, session, audit):
     return b''.join(audit.split_lf_lines(raw)[first - 1:last])
 
 
-def compact_review_prompt(raw):
-    """The assignment prompt a Codex seat reads in review turn 1, without the tree, blob and
-    content hashes on its evidence lines; the audit and the stage plan keep the receipted file."""
-    lines = raw.split(b'\n')
-    for index, line in enumerate(lines):
-        if IDENTITY_LINE.match(line):
-            lines[index] = REASON_HASH.sub(rb'\1"', IDENTITY_HASH.sub(b'', line))
-    return b'\n'.join(lines)
-
-
-def context_tokens(raw, bytes_per_token):
-    """Estimated tokens for text; a hash or other long hex run costs about one token per byte."""
-    hex_bytes = sum(len(run) for run in HEX_RUN.findall(raw))
-    return (len(raw) - hex_bytes) / bytes_per_token + hex_bytes
-
-
-def catalog_window(model):
-    """((context window, effective percent, larger max_context_window or None), None) from the
-    model's row in the Codex model cache that the roster reads, or (None, why it is unknown)."""
-    from roster import codex_catalog_path
-    path = codex_catalog_path()
-    try:
-        with open(path, encoding='utf-8') as source:
-            models = json.load(source).get('models')
-    except (OSError, UnicodeError, ValueError, AttributeError):
-        return None, f'no readable Codex model cache at {path} for {model}'
-    rows = [row for row in models if isinstance(row, dict) and row.get('slug') == model] \
-        if isinstance(models, list) else []
-    if len(rows) != 1:
-        return None, f'{model} is not listed once in {path}'
-    window = rows[0].get('context_window')
-    percent = rows[0].get('effective_context_window_percent')
-    if (type(window) is not int or window <= 0 or type(percent) not in (int, float)
-            or not 0 < percent <= 100):
-        return None, f'{model} has no valid context window in {path}'
-    maximum = rows[0].get('max_context_window')
-    return (window, percent, maximum if type(maximum) is int and maximum > window else None), None
-
-
 def context_capacity(stage_dir, prompt, model):
-    """('fits', projected, limit), ('raise', projected, limit, window), ('over', reason) or
+    """('fits', projected, limit), ('raise', projected, limit, window), ('over', reason, projected, limit) or
     ('unknown', reason) for the context a seat holds before review: the staged reads and their
     turns, then the assignment prompt. 'raise' needs the catalog's larger window and the switch
     unset, empty or 1; any other value keeps the refusal."""
-    known, unknown = catalog_window(model)
+    limits, unknown = model_limits(model)
     if unknown:
         return ('unknown', unknown)
-    window, percent, maximum = known
-    usable = math.floor(window * percent / 100)
     plan_path = Path(stage_dir) / STAGE_PLAN
     stages = (json.loads(plan_path.read_text(encoding='utf-8'))['stages']
               if plan_path.exists() else [])
@@ -707,17 +650,44 @@ def context_capacity(stage_dir, prompt, model):
                           + CONTEXT_READ_TOKENS)
     projected = math.ceil(projected + context_tokens(
         compact_review_prompt(Path(prompt).read_bytes()), PROMPT_BYTES_PER_TOKEN))
-    limit = usable * CONTEXT_SHARE_PERCENT // 100
+    limit = limits['limit']
     if projected <= limit:
         return ('fits', str(projected), str(limit))
     reason = (f'the assignment needs ~{projected} tokens of context before review, over {limit}'
-              f" ({CONTEXT_SHARE_PERCENT}% of {model}'s {usable} usable)")
-    if maximum is not None and os.environ.get(RAISED_WINDOW_SWITCH, '1') in ('', '1'):
-        raised = math.floor(maximum * percent / 100) * CONTEXT_SHARE_PERCENT // 100
-        if projected <= raised:
-            return ('raise', str(projected), str(raised), str(maximum))
-        reason += f', and over {raised} at its {maximum}-token maximum window'
-    return ('over', reason)
+              f" ({CONTEXT_SHARE_PERCENT}% of {model}'s {limits['usable']} usable)")
+    if limits['raised'] is not None:
+        if projected <= limits['raised']:
+            return ('raise', str(projected), str(limits['raised']), str(limits['maximum']))
+        reason += (f", and over {limits['raised']} at its {limits['maximum']}-token maximum window")
+        limit = limits['raised']
+    return ('over', reason, str(projected), str(limit))
+
+
+def context_budget(model):
+    """Largest pre-review context a seat on this model accepts, or None when the cache does not say."""
+    limits, unknown = model_limits(model)
+    if unknown:
+        return None
+    return limits['raised'] or limits['limit']
+
+
+def write_capacity_refusal(path, prompt, model, projected, budget, reason):
+    """Record that this exact prompt can never fit this model, so the assignment is not relaunched."""
+    path = Path(path)
+    record = {'schema_version': 1, 'model': model, 'prompt_sha256': sha256(Path(prompt).read_bytes()),
+              'projected_tokens': int(projected), 'budget_tokens': int(budget), 'reason': reason}
+    descriptor, temporary = tempfile.mkstemp(prefix='.capacity-refusal-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+            json.dump(record, stream, indent=2, sort_keys=True)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        if os.path.lexists(temporary):
+            os.unlink(temporary)
+        raise
 
 
 def exact_stage_turn(turn, reads, root, session, audit):
@@ -948,6 +918,10 @@ def main():
     parser.add_argument('--stage-step')
     parser.add_argument('--warm-evidence')
     parser.add_argument('--capacity')
+    parser.add_argument('--capacity-refusal')
+    parser.add_argument('--projected')
+    parser.add_argument('--budget')
+    parser.add_argument('--reason')
     parser.add_argument('--compact-prompt')
     parser.add_argument('--raw')
     parser.add_argument('--turn')
@@ -1001,6 +975,16 @@ def main():
                 raise StageError('a context capacity check needs the prompt and the model')
             print('\t'.join(context_capacity(args.capacity, args.prompt, args.model)))
         except (OSError, UnicodeError, StageError, KeyError, TypeError, ValueError) as error:
+            print('codex proof staging: ' + str(error), file=sys.stderr)
+            return 1
+        return 0
+    if args.capacity_refusal:
+        try:
+            if not all((args.prompt, args.model, args.projected, args.budget, args.reason)):
+                raise StageError('a capacity refusal needs the prompt, model, projection, budget and reason')
+            write_capacity_refusal(args.capacity_refusal, args.prompt, args.model,
+                                   args.projected, args.budget, args.reason)
+        except (OSError, UnicodeError, StageError, ValueError) as error:
             print('codex proof staging: ' + str(error), file=sys.stderr)
             return 1
         return 0

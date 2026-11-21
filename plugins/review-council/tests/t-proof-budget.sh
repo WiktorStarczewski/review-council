@@ -240,3 +240,73 @@ PY
     assert_eq "verify accepts a panel that omitted an unsplittable line" "$?" 0
   )
 }
+
+# Prepares a 30-line test file rewritten to the python expression $2 (over the list `base`), then
+# requires every proof row for it to stay inside the new file's $3 lines and to cover lines $4.
+eof_tail_case() {
+  local label="$1" expression="$2" last="$3" covered="$4"
+  local R="$T/eof-$label-root" S="$T/eof-$label-session"
+  mkrepo "$R"; mkdir -p "$R/tests" "$S"
+  python3 - "$R/tests/test_tail.py" <<'PY'
+from pathlib import Path
+import sys
+Path(sys.argv[1]).write_text(''.join(f'line {n}\n' for n in range(1, 31)))
+PY
+  git -C "$R" add . && git -C "$R" commit -qm "eof base"
+  local base; base=$(git -C "$R" rev-parse HEAD)
+  python3 - "$R/tests/test_tail.py" "$expression" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+base = path.read_text().splitlines()
+path.write_text(''.join(line + '\n' for line in eval(sys.argv[2])))
+PY
+  printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+    "$base" "$R" > "$S/scope.env"
+  printf '%s\n' tests/test_tail.py > "$S/files.txt"
+  : > "$S/untracked.txt"
+  printf '%s\n' '{"seats":[{"seat":"sol","adapter":"codex"},{"seat":"terra","adapter":"codex"},{"seat":"opus","adapter":"claude"},{"seat":"sonnet","adapter":"claude"}]}' > "$S/roster.json"
+  REV_PATCH_CHUNKS=auto REV_SOURCE_CONTEXT=1 \
+    python3 "$SCRIPTS/rev-evidence.py" prepare "$S" "$label" --phase discovery \
+    > "$T/eof-$label.out" 2> "$T/eof-$label.err"
+  local status=$?
+  if [ "$status" -ne 0 ]; then
+    cat "$T/eof-$label.out" "$T/eof-$label.err" >&2
+  fi
+  assert_eq "$label: a test hunk anchored at end of file launches" "$status" 0
+  [ "$status" -eq 0 ] || return 0
+  local manifest="$S/r$label-evidence.manifest.json"
+  python3 - "$manifest" "$last" "$covered" <<'PY'
+import json
+from pathlib import Path
+import sys
+manifest = json.loads(Path(sys.argv[1]).read_text())
+last = int(sys.argv[2]); covered = [int(n) for n in sys.argv[3].split()]
+path = 'tests/test_tail.py'
+rows = [row for seat in manifest['source_context']['seats'].values()
+        for row in seat['required_source_ranges']]
+rows += [row for seat in manifest['task_capacity']['seats'].values()
+         for row in seat['mandatory_window_rows']]
+rows = [row for row in rows if row['path'] == path]
+assert rows, manifest['task_capacity']
+assert all(1 <= row['line_start'] <= row['line_end'] <= last for row in rows), rows
+for line in covered:
+    assert any(row['line_start'] <= line <= row['line_end'] for row in rows), (line, rows)
+PY
+  assert_eq "$label: every proof row stays inside the new file and covers the change" "$?" 0
+  python3 "$SCRIPTS/rev-evidence.py" verify "$manifest" \
+    > "$T/eof-$label-verify.out" 2> "$T/eof-$label-verify.err"
+  assert_eq "$label: verify accepts the prepared panel" "$?" 0
+}
+
+test_eof_edit_and_tail_deletion_stays_launchable() {
+  ( eof_tail_case tailedit "base[:24] + ['line 25 edited'] + base[25:27]" 27 "25 27" )
+}
+
+test_eof_pure_tail_deletion_stays_launchable() {
+  ( eof_tail_case taildelete "base[:27]" 27 "27" )
+}
+
+test_eof_appended_lines_stay_launchable() {
+  ( eof_tail_case tailappend "base + ['line 31', 'line 32']" 32 "31 32" )
+}

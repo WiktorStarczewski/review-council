@@ -2279,6 +2279,75 @@ PY
   assert_eq "unknown and legacy Grok tools fail closed while terminal schema output is allowed" "$?" 0
 }
 
+# A compaction replaces everything the seat read with a summary, so the reads the audit credited no
+# longer back the verdict: the audit must refuse a Claude stream that contains one.
+test_claude_context_compaction_voids_the_read_audit() {
+  ( local R="$T/compact-root" S="$T/compact-session"
+    mkdir -p "$R/src" "$S"
+    printf 'x\n' > "$R/src/x.ts"
+    printf 'Assigned scope: full\n' > "$S/prompt.md"
+    python3 - "$S" <<'PY'
+import json, sys
+session = sys.argv[1]
+events = []
+for index in range(1, 5):
+    call = 'a%d' % index
+    events.append({'type': 'assistant', 'message': {'content': [
+        {'type': 'tool_use', 'id': call, 'name': 'Read',
+         'input': {'file_path': 'src/x.ts', 'offset': 1, 'limit': 120}}]}})
+    events.append({'type': 'user', 'message': {'content': [
+        {'type': 'tool_result', 'tool_use_id': call, 'content': 'x\n'}]}})
+boundary = {'type': 'system', 'subtype': 'compact_boundary', 'compact_metadata': {
+    'trigger': 'auto', 'pre_tokens': 966861, 'post_tokens': 8301,
+    'cumulative_dropped_tokens': 958560}}
+def write(name, rows):
+    with open('%s/%s.ndjson' % (session, name), 'w') as stream:
+        for row in rows:
+            stream.write(json.dumps(row) + '\n')
+write('control', events)
+write('compacted', events[:6] + [boundary] + events[6:])
+write('bare-boundary', events[:6] + [{'type': 'system', 'subtype': 'compact_boundary'}] + events[6:])
+write('other-system', events[:6] + [{'type': 'system', 'subtype': 'init'}] + events[6:])
+write('non-object', events[:6] + [[]] + events[6:])
+PY
+    local adapter
+    for adapter in claude agent; do
+      python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter "$adapter" --raw "$S/control.ndjson" \
+        --prompt "$S/prompt.md" --root "$R" --session "$S" --out "$S/control-audit.json" >/dev/null 2>&1
+      assert_eq "$adapter stream without a compaction stays valid" "$?" 0
+      assert_grep "$adapter control audit is valid" "$S/control-audit.json" '"status":"valid"'
+      python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter "$adapter" --raw "$S/other-system.ndjson" \
+        --prompt "$S/prompt.md" --root "$R" --session "$S" --out "$S/other-audit.json" >/dev/null 2>&1
+      assert_eq "$adapter ordinary system event is not a compaction" "$?" 0
+      python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter "$adapter" --raw "$S/compacted.ndjson" \
+        --prompt "$S/prompt.md" --root "$R" --session "$S" --out "$S/compacted-audit.json" >/dev/null 2>&1
+      assert_eq "$adapter stream with an auto compaction fails closed" "$?" 2
+      assert_grep "$adapter compaction audit is invalid" "$S/compacted-audit.json" '"status":"invalid"'
+      assert_grep "$adapter compaction has a stable violation code" "$S/compacted-audit.json" \
+        '"code":"context-compacted"'
+      assert_grep "$adapter compaction violation names both token counts" "$S/compacted-audit.json" \
+        '"detail":"[^"]*pre_tokens 966861[^"]*post_tokens 8301'
+      python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter "$adapter" --raw "$S/bare-boundary.ndjson" \
+        --prompt "$S/prompt.md" --root "$R" --session "$S" --out "$S/bare-audit.json" >/dev/null 2>&1
+      assert_eq "$adapter compaction without metadata still fails closed" "$?" 2
+      assert_grep "$adapter metadata-free compaction is named" "$S/bare-audit.json" '"code":"context-compacted"'
+      python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter "$adapter" --raw "$S/non-object.ndjson" \
+        --prompt "$S/prompt.md" --root "$R" --session "$S" --out "$S/shape-audit.json" >/dev/null 2>&1
+      assert_eq "$adapter non-object line still fails as a transcript shape, not a crash" "$?" 2
+      assert_grep "$adapter non-object line keeps its shape violation" "$S/shape-audit.json" \
+        '"code":"unsupported-transcript-shape"'
+    done
+
+    python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex --raw "$S/compacted.ndjson" \
+      --prompt "$S/prompt.md" --root "$R" --session "$S" --out "$S/codex-audit.json" >/dev/null 2>&1
+    assert_nogrep "compaction rule is scoped to Claude streams" "$S/codex-audit.json" 'context-compacted'
+
+    python3 "$SCRIPTS/lib/stream-summary.py" claude "$S/summary-out.json" < "$S/compacted.ndjson" > "$S/summary.log"
+    assert_grep "seat log line names the compaction and its token counts" "$S/summary.log" \
+      '^compacted trigger=auto pre_tokens=966861 post_tokens=8301$'
+  )
+}
+
 test_claude_hook_line_counts_and_nonexecuted_exploration() {
   ( local R="$T/claude-hook-root" S="$T/claude-hook-session"
     mkdir -p "$R/src" "$S"
@@ -4266,6 +4335,8 @@ FATAL = {
     'unsupported-shell-command', 'unrecognized-review-tool', 'unsupported-shell-input-redirection',
     'unsupported-shell-shape', 'missing-read-path', 'missing-shell-command',
     'ambiguous-assigned-patch-read',
+    # the transcript no longer backs the reads it certified
+    'context-compacted',
 }
 ADVISORY = {
     'discovery-output-too-large', 'duplicate-patch-chunk', 'duplicate-required-source-segment',

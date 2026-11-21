@@ -111,7 +111,13 @@ else
       WINDOW_ARGS=(-c "model_context_window=$CAPACITY_WINDOW")
       printf 'codex adapter: running %s at its %s-token maximum context window: the assignment needs ~%s tokens before review, within %s\n' \
         "$MODEL" "$CAPACITY_WINDOW" "$CAPACITY_DETAIL" "$CAPACITY_LIMIT" >> "$LOG";;
-    over) adapter_fail "$CAPACITY_DETAIL";;
+    over)
+      # The refusal repeats for the same prompt on this model, so record it: rev-attempt then
+      # treats the assignment as failed for good and the orchestrator replaces it.
+      stage_helper --capacity-refusal "${OUT%.json}.capacity-refusal" --prompt "$PROMPT" \
+        --model "$MODEL" --projected "$CAPACITY_LIMIT" --budget "$CAPACITY_WINDOW" \
+        --reason "$CAPACITY_DETAIL" || true
+      adapter_fail "$CAPACITY_DETAIL";;
     unknown) printf 'codex adapter: context capacity unknown (%s)\n' "$CAPACITY_DETAIL" >> "$LOG";;
     *) adapter_fail "invalid context capacity verdict";;
   esac

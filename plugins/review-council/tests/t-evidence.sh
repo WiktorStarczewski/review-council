@@ -1516,7 +1516,7 @@ def verification_source_context_change(change):
         for seat, assignment in manifest['assignments'].items():
             if component['id'] not in assignment['components']:
                 continue
-            packet = manifest['source_context']['seats'][seat]
+            packet = module.expand_manifest(manifest)['source_context']['seats'][seat]
             rows = [row for shard in packet['shards'] for row in shard['ranges']]
             rows += packet['required_source_ranges'] + packet['omitted_source_ranges']
             expected_tree = reviewed['base_tree'] if change == 'deleted' else snapshot
@@ -1622,7 +1622,7 @@ def verification_nested_instruction_restoration(large=False):
         for seat, assignment in manifest['assignments'].items():
             if component['id'] not in assignment['components']:
                 continue
-            context = manifest['source_context']['seats'][seat]
+            context = module.expand_manifest(manifest)['source_context']['seats'][seat]
             rows = [row for shard in context['shards'] for row in shard['ranges']]
             rows += context['required_source_ranges'] + context['omitted_source_ranges']
             rows = [row for row in rows if row['path'] == 'src/main.py'
@@ -1862,7 +1862,8 @@ def source_context_packets():
         (session / 'scope.env').write_text('\n'.join('REV_BASE=' + base if row.startswith('REV_BASE=') else row for row in scope_text.splitlines()) + '\n')
         write('main.py', (root / 'main.py').read_text().replace('value + 1', 'value + 10')
               .replace('value + 2', 'value + 20').replace('value + 3', 'value + 30'))
-        m = prepare(); context = m['source_context']
+        m = prepare(); assert m['source_context']['schema_version'] == 4
+        m = module.expand_manifest(m); context = m['source_context']
         assert context['schema_version'] == 3 and context['enabled'] is True and context['snapshot_tree'] == m['snapshot_tree']
         assert 'object_repository' not in context
         assert context['max_shard_bytes'] == 16384
@@ -1929,7 +1930,8 @@ def source_context_packets():
         def restore():
             for path, raw in original.items(): path.write_bytes(raw)
         def reseal(transform):
-            manifest = json.loads(manifest_path.read_text()); evidence = json.loads(evidence_path.read_text())
+            manifest = module.expand_manifest(json.loads(manifest_path.read_text()))
+            evidence = json.loads(evidence_path.read_text())
             seat = owner; shard_meta = manifest['source_context']['seats'][seat]['shards'][0]
             artifact = session / shard_meta['artifact']; payload = json.loads(artifact.read_text())
             metadata_update = transform(manifest, payload) or {}
@@ -1947,7 +1949,7 @@ def source_context_packets():
                                                     'words': len(artifact.read_bytes().split())}
             manifest['artifacts'][evidence_path.name] = {'sha256': module.digest(evidence_path.read_bytes()),
                                                         'words': len(evidence_path.read_bytes().split())}
-            manifest_path.write_bytes(module.encoded(manifest))
+            manifest_path.write_bytes(module.manifest_bytes(manifest))
 
         def replace_content_with_valid_hash(manifest, payload):
             entry = payload['entries'][0]
@@ -2941,7 +2943,7 @@ def budget_omissions_are_segmented_or_retained():
                               for index in range(values))
                     + f'    return value_{values - 1}\n')
             write(f'unit_{unit}.py', body)
-        manifest = prepare('budget-omissions')
+        manifest = module.expand_manifest(prepare('budget-omissions'))
         omitted = [packet for packet in manifest['source_context']['seats'].values()
                    if packet['omitted']['declaration']]
         assert omitted
@@ -3222,6 +3224,27 @@ def empty_source_context():
                    for row in [*entries, *packet['required_source_ranges']])
         finish('empty-context')
 
+def eof_deletion_anchors_a_surviving_line():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('tail_test.py', 'a\nb\nc\n'); write('grow_test.py', 'a\n'); write('empty_test.py', 'a\nb\n')
+        write('mixed_test.py', 'x1\nx2\nx3\nx4\nx5\nx6\n')
+        git('add', '.'); git('commit', '-qm', 'eof base')
+        base = git('rev-parse', 'HEAD'); scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('tail_test.py', 'a\n'); write('grow_test.py', 'a\nb\nc\n')
+        write('mixed_test.py', 'y1\nx2\nx3\nx4\n')
+        write('empty_test.py', '')
+        repo = module.Repository(session.resolve()); tree, _ = repo.snapshot()
+        _, hunks, _, _ = repo.changes(repo.tree(base), tree)
+        by_path = {hunk['path']: hunk for hunk in hunks}
+        assert by_path['tail_test.py']['changed_lines'] == [1], by_path['tail_test.py']
+        assert by_path['tail_test.py']['base_changed_lines'] == [2, 3], by_path['tail_test.py']
+        assert by_path['grow_test.py']['changed_lines'] == [2, 3], by_path['grow_test.py']
+        assert by_path['mixed_test.py']['changed_lines'] == [1, 4], by_path['mixed_test.py']
+        assert by_path['empty_test.py']['changed_lines'] == [0], by_path['empty_test.py']
+
 def bounded_work_and_memory():
     import tracemalloc
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -3353,8 +3376,9 @@ def seat_local_recovery():
             'assignment_sha256': module.digest(module.encoded(parent['assignments']['terra'])),
             'bundle': bundles[1], 'adapter': 'codex',
             'model': 'gpt-5.6-luna', 'effort': 'high',
-            'patch_chunks_mode': 'auto', 'source_context_enabled': True}
-        assert child['assignments']['sol']['scope'] == 'full'
+            'patch_chunks_mode': 'auto', 'source_context_enabled': True,
+            'mirrors_parent': True}
+        assert child['assignments']['sol']['scope'] == parent['assignments']['terra']['scope'] == 'semantic'
         assert child['patch_chunks_mode'] == parent['patch_chunks_mode'] == 'auto'
         assert child['source_context']['enabled'] is parent['source_context']['enabled'] is True
         call('prepare', session, 'parentx', '--phase', 'repair', *child_args,
@@ -3503,7 +3527,7 @@ def replacement_runs_on_another_seat():
         child = prepare('4x', 'repair', *child_args)
         assert list(child['assignments']) == ['terra'], child['assignments']
         assert child['assignments']['terra']['bundle'] == parent['assignments']['sol']['bundle']
-        assert child['assignments']['terra']['scope'] == 'full'
+        assert child['assignments']['terra']['scope'] == parent['assignments']['sol']['scope'] == 'semantic'
         assert child['parent_assignment']['seat'] == 'sol'
         assert child['parent_assignment']['adapter'] == 'claude'
         assert prepare('4x', 'repair', *child_args) == child, 'the same replacement re-prepares'
@@ -3586,6 +3610,113 @@ def replacement_runs_on_another_seat():
         assert child['assignments'][executor]['scope'] == 'full'
         assert child['assignments'][executor]['full_state'] is True
         assert child['assignments'][executor]['bundle'] == bundle
+
+def fail_parent_launch(session, call, label, seat):
+    path = session / f'r{label}-evidence.manifest.json'
+    prompt = session / f'r{label}-{seat}.prompt.md'
+    prompt.write_text(call('render', path, seat, env={'REV_SOURCE_CONTEXT': '0'}))
+    for code in ('1', '2'):
+        assert reserve_launch(session, label, seat, prompt).returncode == 0
+        assert record_launch(session, label, seat, prompt, code).returncode == 0
+    (session / f'r{label}-{seat}.exit').write_text('2\n')
+    (session / f'r{label}-{seat}.audit-invalid.json').write_text('{"summary":"kept","findings":[]}\n')
+
+def replacement_reproduces_a_specialist_assignment():
+    no_context = {'REV_SOURCE_CONTEXT': '0'}
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        rows = (('sol', 'codex', 'gpt-5.6-luna'), ('terra', 'codex', 'gpt-5.6-luna'),
+                ('opus', 'claude', 'opus'), ('sonnet', 'claude', 'sonnet'))
+        (session / 'roster.json').write_text(json.dumps({'seats': [
+            {'seat': seat, 'extra': False, 'adapter': adapter, 'model': model, 'effort': 'high'}
+            for seat, adapter, model in rows]}))
+        for i in range(25):
+            write(f'tests/test_{i:02d}.py', f'def test_{i:02d}():\n    assert True\n')
+        git('add', '.'); git('commit', '-qm', 'tests baseline'); base = git('rev-parse', 'HEAD')
+        text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if line.startswith('REV_BASE=') else line
+            for line in text.splitlines()) + '\n')
+        for i in range(25):
+            write(f'tests/test_{i:02d}.py', f'def test_{i:02d}():\n    assert False\n')
+        parent = prepare('p', 'discovery', env=no_context)
+        before = parent['assignments']['terra']
+        assert before['scope'] == 'semantic' and before['components'], before
+        assert len(parent['components']) == 25
+        fail_parent_launch(session, call, 'p', 'terra')
+        # The claude executor cannot read all 25 edited tests; its parent read only its own share.
+        child = prepare('px', 'repair', '--assignment', 'sonnet=simplicity',
+                        '--parent-assignment', 'p:terra', env=no_context)
+        row = child['assignments']['sonnet']
+        assert child['parent_assignment']['mirrors_parent'] is True
+        assert row['scope'] == before['scope'] and row['full_state'] is False
+        assert row['components'] == before['components']
+        assert (row['patch_sha256'], row['patch_bytes'], row['patch_lines']) == (
+            before['patch_sha256'], before['patch_bytes'], before['patch_lines'])
+        assert Path(row['patch']).name == 'rpx-sonnet.patch'
+        assert [c['id'] for c in child['components']] == [c['id'] for c in parent['components']]
+        assert [c['id'] for c in child['components'] if c['specialists']] == before['components']
+        assert child['task_capacity']['seats']['sonnet']['mandatory_repository_reads'] == (
+            parent['task_capacity']['seats']['terra']['mandatory_repository_reads'])
+        child_path = session / 'rpx-evidence.manifest.json'
+        call('verify', child_path, env=no_context)
+        original_manifest = child_path.read_bytes()
+        original_evidence = (session / 'rpx-evidence.json').read_bytes()
+        def forge(change):
+            manifest = json.loads(original_manifest); evidence = json.loads(original_evidence)
+            change(manifest['assignments']['sonnet']); change(evidence['assignments']['sonnet'])
+            raw = module.encoded(evidence)
+            (session / 'rpx-evidence.json').write_bytes(raw)
+            manifest['artifacts']['rpx-evidence.json'] = {
+                'sha256': module.digest(raw), 'words': len(raw.split())}
+            child_path.write_bytes(module.encoded(manifest))
+        every = [component['id'] for component in child['components']]
+        forge(lambda assignment: assignment.update(components=every))
+        call('verify', child_path, good=False, env=no_context,
+             error='repair child does not match its parent assignment')
+        forge(lambda assignment: assignment.update(components=list(reversed(before['components']))))
+        call('verify', child_path, good=False, env=no_context,
+             error='repair child does not match its parent assignment')
+        child_path.write_bytes(original_manifest)
+        (session / 'rpx-evidence.json').write_bytes(original_evidence)
+        call('verify', child_path, env=no_context)
+        standalone = prepare('s', 'repair', '--assignment', 'sol=simplicity', env=no_context)
+        assert standalone['assignments']['sol']['scope'] == 'full'
+        assert 'parent_assignment' not in standalone
+
+def replacement_reproduces_a_full_owner_over_a_delta():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        (session / 'roster.json').write_text(json.dumps({'seats': [
+            {'seat': seat, 'extra': False, 'adapter': 'claude',
+             'model': 'opus' if seat == 'opus' else 'sonnet', 'effort': 'high'} for seat in seats]}))
+        write('src/core.ts', 'export function alpha() { return 1; }\n')
+        write('src/other.ts', 'export function other() { return 1; }\n')
+        write('tests/multi.test.ts',
+              'import { alpha } from "../src/core";\nimport { other } from "../src/other";\n'
+              'test("both", () => alpha() + other());\n')
+        write('large.py', ''.join(f'value_{i} = {i}\n' for i in range(1200)))
+        first = prepare()
+        finish('1')
+        for name in ('src/core.ts', 'src/other.ts'):
+            write(name, (root / name).read_text().replace('1', '2', 1))
+        write('tests/multi.test.ts', (root / 'tests/multi.test.ts').read_text() + '// changed\n')
+        later = prepare('2', 'verification', *assign)
+        owner = later['mechanical_owner']
+        assert later['assignments'][owner]['scope'] == 'full', later['fallback_reason']
+        assert any(a['scope'] == 'delta' for a in later['assignments'].values())
+        assert len(later['components']) < len(first['components'])
+        fail_parent_launch(session, call, '2', owner)
+        child = prepare('2x', 'repair', '--assignment', 'opus=' + later['assignments'][owner]['bundle'],
+                        '--parent-assignment', '2:' + owner)
+        row = child['assignments']['opus']
+        assert row['scope'] == 'full' and row['full_state'] is True
+        assert row['components'] == later['assignments'][owner]['components']
+        assert [c['id'] for c in child['components']] == [c['id'] for c in later['components']]
+        parent_facts = json.loads((session / 'r2-evidence.json').read_text())
+        child_facts = json.loads((session / 'r2x-evidence.json').read_text())
+        assert child_facts.get('source_context_hunks') == parent_facts.get('source_context_hunks')
+        assert child['task_capacity']['seats']['opus']['mandatory_repository_reads'] == (
+            later['task_capacity']['seats'][owner]['mandatory_repository_reads'])
+        call('verify', session / 'r2x-evidence.manifest.json')
 
 def replacement_accepts_only_durable_provider_exit_3():
     for code in ('3', '4'):
@@ -5092,6 +5223,66 @@ def binary_files_are_hash_pointers():
         for patch_set in manifest['patch_sets'].values():
             assert len(patch_set['chunks']) <= 1
 
+def manifest_interns_component_id_sets():
+    ids = [f'{index:064x}' for index in range(85)]
+    def row(index):
+        return {'path': f'src/unit_{index}.py', 'line_start': 1, 'line_end': 4,
+                'reasons': ['declaration:changed-line-anchor'], 'component_ids': list(ids),
+                'hunk_binding_sha256': '0' * 64, 'blob_oid': '1' * 40, 'blob_mode': '100644',
+                'blob_tree': '2' * 40, 'content_sha256': '3' * 64, 'priority': index}
+    packet = {'role': 'integration', 'components': ids, 'hunk_sha256': [], 'shards': [],
+              'omitted': {}, 'omitted_source_ranges': [row(index) for index in range(1500)],
+              'required_source_ranges': [], 'source_read_required': True}
+    manifest = {'schema_version': 2, 'source_context': {
+        'schema_version': 3, 'enabled': True, 'snapshot_tree': '2' * 40, 'base_tree': '4' * 40,
+        'max_shard_bytes': 16384, 'packet_batch_limit': 1, 'seats': {'codex-luna': packet}}}
+    before = json.dumps(manifest, sort_keys=True)
+    raw = module.manifest_bytes(manifest)
+    assert len(raw) < 2 * 1024 * 1024, len(raw)
+    wire = json.loads(raw)
+    assert wire['source_context']['schema_version'] == 4, wire['source_context']['schema_version']
+    wire_packet = wire['source_context']['seats']['codex-luna']
+    assert wire_packet['component_sets'] == [ids], wire_packet['component_sets']
+    assert all('component_ids' not in row and row['component_set'] == 0
+               for row in wire_packet['omitted_source_ranges'])
+    assert module.expand_manifest(wire) == manifest
+    assert json.dumps(manifest, sort_keys=True) == before, 'encoding must not mutate its input'
+
+def manifest_writer_refuses_an_oversized_manifest():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        with tempfile.TemporaryDirectory(prefix='bounded-manifest-') as tmp:
+            copy = Path(tmp) / 'scripts'
+            shutil.copytree(script.parent, copy, ignore=shutil.ignore_patterns('__pycache__'))
+            limits = copy / 'lib' / 'review_limits.py'
+            limits.chmod(0o644)
+            with limits.open('a') as stream:
+                stream.write('\nMANIFEST_MAX_BYTES = 4096\n')
+            run_env = dict(os.environ, REV_PATCH_CHUNKS='auto', REV_SOURCE_CONTEXT='1')
+            refused = subprocess.run(
+                [sys.executable, str(copy / 'rev-evidence.py'), 'prepare', str(session), 'big',
+                 '--phase', 'discovery'], capture_output=True, text=True, env=run_env, timeout=60)
+            assert refused.returncode == 2, (refused.returncode, refused.stdout, refused.stderr)
+            assert 'evidence manifest' in refused.stderr and ' over ' in refused.stderr, refused.stderr
+            assert 'largest' in refused.stderr, refused.stderr
+            assert not (session / 'rbig-evidence.manifest.json').exists()
+            assert not (session / 'rbig-evidence.json').exists()
+        prepare('under')
+        size = (session / 'runder-evidence.manifest.json').stat().st_size
+        assert size <= module.MANIFEST_MAX_BYTES, (size, module.MANIFEST_MAX_BYTES)
+
+def schema_three_source_context_manifest_still_validates():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        prepare(); mpath = session / 'r1-evidence.manifest.json'; wire_raw = mpath.read_bytes()
+        wire = json.loads(wire_raw)
+        assert wire['source_context']['schema_version'] == 4, wire['source_context']['schema_version']
+        current, _ = module.validated_manifest(mpath, fresh=False, offline=True)
+        assert current['source_context']['schema_version'] == 3
+        expanded = module.expand_manifest(wire)
+        mpath.write_bytes(module.encoded(expanded))
+        legacy, _ = module.validated_manifest(mpath, fresh=False, offline=True)
+        assert legacy == current
+        mpath.write_bytes(wire_raw)
+
 cases = (
     storage_redirects, quoted_paths, changed_symbols, empty_patch_needs_no_fake_read,
     binary_files_are_hash_pointers,
@@ -5122,11 +5313,14 @@ cases = (
     source_context_prefers_named_production_and_maps_gates, complete_declaration_context,
     budget_omissions_are_segmented_or_retained, innermost_declarations_and_bounded_anchors,
     high_confidence_component_union, components_ownership_and_instructions,
-    instruction_override_precedence, empty_source_context, bounded_work_and_memory,
+    instruction_override_precedence, empty_source_context, eof_deletion_anchors_a_surviving_line,
+    bounded_work_and_memory,
     receipt_read_audits, seat_local_recovery, narrow_seat_requires_proven_reads,
     full_seat_requires_proven_reads, unenforced_agent_seat_binds_only_its_prompt,
     unenforced_audit_is_opt_in, unenforced_audit_cache_is_keyed_on_every_input,
     nested_walks_reuse_cached_audits, replacement_runs_on_another_seat,
+    replacement_reproduces_a_specialist_assignment,
+    replacement_reproduces_a_full_owner_over_a_delta,
     replacement_accepts_only_durable_provider_exit_3,
     replacement_requires_quota_disabled_escalation_record,
     replacement_accepts_only_a_recorded_owned_provider_cancellation,
@@ -5150,6 +5344,8 @@ cases = (
     component_and_full_tampering, offline_structure_and_predecessor_walk,
     local_ignored_instructions, overlapping_boundaries_keep_prior_owner_routing,
     current_coverage_receipts, current_coverage_replacements_and_refs,
+    manifest_interns_component_id_sets, manifest_writer_refuses_an_oversized_manifest,
+    schema_three_source_context_manifest_still_validates,
 )
 groups = {
     'semantic_rejection': (semantic_rejection_revokes_sealed_coverage,
@@ -5163,7 +5359,9 @@ groups = {
         conservative_mechanical_classification, bounded_navigation_markdown,
         binary_files_are_hash_pointers,
         opaque_transitions, opaque_mode_transition, invalid_manifests,
-        phase_and_predecessor_integrity,
+        phase_and_predecessor_integrity, manifest_interns_component_id_sets,
+        manifest_writer_refuses_an_oversized_manifest,
+        schema_three_source_context_manifest_still_validates,
     ),
     'source_context_memo': (
         source_context_inputs_batches_uncached_blobs, source_context_memo_validation_guards,
@@ -5200,7 +5398,7 @@ groups = {
         complete_declaration_context, budget_omissions_are_segmented_or_retained,
         innermost_declarations_and_bounded_anchors, high_confidence_component_union,
         components_ownership_and_instructions, instruction_override_precedence,
-        empty_source_context,
+        empty_source_context, eof_deletion_anchors_a_surviving_line,
     ),
     'scale_receipts': (
         wallet_scale, bounded_work_and_memory, receipt_read_audits,
@@ -5211,6 +5409,8 @@ groups = {
     ),
     'replacement': (
         replacement_runs_on_another_seat, replacement_accepts_only_durable_provider_exit_3,
+        replacement_reproduces_a_specialist_assignment,
+        replacement_reproduces_a_full_owner_over_a_delta,
         replacement_requires_quota_disabled_escalation_record,
         replacement_accepts_only_a_recorded_owned_provider_cancellation,
         record_provider_cancellation_binds_the_finished_attempts,
@@ -5288,6 +5488,164 @@ test_evidence_current_coverage() {
 
 test_evidence_semantic_rejection() {
   REV_EVIDENCE_GROUP=semantic_rejection evidence_hardening
+}
+
+# The full-state owner holds the whole cumulative patch and every component, so its context cost
+# grows with the pull request while a specialist's does not. Preparation must not hand that owner to
+# a model whose window cannot hold it: the owner is split into component-granular shares that each fit.
+test_over_budget_assignment_is_split_into_capacity_shares() {
+  ( local R="$T/share-root" S="$T/share-session" base
+    mkrepo "$R"; mkdir -p "$R/src" "$S"
+    python3 - "$R" <<'PY' || return
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+for index in range(12):
+    (root / 'src' / f'm{index:02d}.py').write_text(f'def module_{index:02d}():\n    return 0\n')
+PY
+    git -C "$R" add . && git -C "$R" commit -qm "modules" || return
+    base=$(git -C "$R" rev-parse HEAD)
+    python3 - "$R" <<'PY' || return
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+for index in range(12):
+    body = ''.join(f'    value_{line:03d} = "{index:02d}-{line:03d}-' + 'x' * 70 + '"\n' for line in range(330))
+    (root / 'src' / f'm{index:02d}.py').write_text(
+        f'def module_{index:02d}():\n' + body + '    return value_000\n')
+PY
+    printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+      "$base" "$R" > "$S/scope.env"
+    python3 -c 'print("\n".join(f"src/m{i:02d}.py" for i in range(12)))' > "$S/files.txt"; : > "$S/untracked.txt"
+    printf '%s\n' '{"seats":[{"seat":"codex-luna","adapter":"codex","model":"gpt-6-luna","effort":"xhigh"},{"seat":"codex-luna-2","adapter":"codex","model":"gpt-6-luna","effort":"xhigh"},{"seat":"codex-luna-3","adapter":"codex","model":"gpt-6-luna","effort":"xhigh"},{"seat":"codex-luna-4","adapter":"codex","model":"gpt-6-luna","effort":"xhigh"}]}' > "$S/roster.json"
+    printf '%s\n' '{"chain":["luna","sonnet","sol","opus"],"host":"claude","mode":"normal","panel_family":"luna","roster":"normal","version":1}' > "$S/panel-request.json"
+    python3 - "$SCRIPTS" "$S" "$T" <<'PY'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+scripts, session, tmp = map(Path, sys.argv[1:4])
+MODEL = 'gpt-6-luna'
+OWNER = 'codex-luna'
+SPECIALISTS = ['codex-luna-2', 'codex-luna-3', 'codex-luna-4']
+evidence = str(scripts / 'rev-evidence.py')
+helper = str(scripts / 'lib' / 'codex-proof-stages.py')
+
+
+def cache(name, window, slug=MODEL):
+    path = tmp / name
+    path.write_text(json.dumps({'client_version': '0.0.0-test', 'models': [{
+        'slug': slug, 'visibility': 'list', 'context_window': window,
+        'effective_context_window_percent': 100}]}))
+    return path
+
+
+def run(argv, models, good=True):
+    env = dict(os.environ, REV_PATCH_CHUNKS='auto', REV_SOURCE_CONTEXT='1',
+               REVIEW_COUNCIL_CODEX_MODELS_CACHE=str(models))
+    env.pop('REVIEW_COUNCIL_CODEX_MAX_CONTEXT_WINDOW', None)
+    done = subprocess.run([str(part) for part in argv], capture_output=True, text=True, env=env)
+    assert (done.returncode == 0) == good, (argv, done.returncode, done.stdout, done.stderr)
+    return done
+
+
+def prepare(label, models, good=True):
+    done = run([sys.executable, evidence, 'prepare', session, label, '--phase', 'discovery'],
+               models, good)
+    if not good:
+        return done
+    return json.loads((session / f'r{label}-evidence.manifest.json').read_text())
+
+
+def render(label, seats, models):
+    manifest = session / f'r{label}-evidence.manifest.json'
+    for seat in seats:
+        run([scripts / 'rev-prompt.sh', session, label, seat, 'simplicity', 'capacity-shares',
+             '--evidence', manifest], models)
+
+
+def verdict(label, seat, models):
+    prompt = session / f'r{label}-{seat}.prompt.md'
+    stages = tmp / f'share-stages-{label}-{seat}'
+    run([sys.executable, helper, '--prompt', prompt, '--seat', seat, '--model', MODEL,
+         '--stage-dir', stages], models)
+    done = run([sys.executable, helper, '--capacity', stages, '--prompt', prompt,
+                '--model', MODEL], models)
+    return done.stdout.strip().split('\t')
+
+
+roomy = cache('share-cache-roomy.json', 100_000_000)
+whole = prepare('unsplit', roomy)
+assert 'shares' not in whole, 'a pull request that fits its model must not be split'
+assert set(whole['assignments']) == {OWNER, *SPECIALISTS}
+assert whole['mechanical_owner'] == OWNER and whole['assignments'][OWNER]['full_state']
+render('unsplit', whole['assignments'], roomy)
+projected = {}
+for seat in whole['assignments']:
+    kind, tokens, _ = verdict('unsplit', seat, roomy)
+    assert kind == 'fits', (seat, kind)
+    projected[seat] = int(tokens)
+limit = projected[OWNER] * 10 // 13
+assert max(projected[seat] for seat in SPECIALISTS) * 10 <= limit * 8, \
+    ('fixture: every specialist must fit the window the owner overflows', projected, limit)
+
+tight = cache('share-cache-tight.json', -(-limit * 100 // 55))
+manifest = prepare('shared', tight)
+shares = manifest['shares'][OWNER]
+share_seats = shares['seats']
+assert len(share_seats) >= 2 and all(seat.startswith(OWNER + '-s') for seat in share_seats), share_seats
+assert set(manifest['assignments']) == {*SPECIALISTS, *share_seats}, 'the owner is replaced by its shares'
+component_ids = [component['id'] for component in manifest['components']]
+assert len(component_ids) == 12 and set(shares['components']) == set(component_ids)
+claimed = [cid for seat in share_seats for cid in manifest['assignments'][seat]['components']]
+assert sorted(claimed) == sorted(component_ids), 'shares partition the owner components exactly'
+claimed_paths = [path for seat in share_seats for path in manifest['assignments'][seat]['share_paths']]
+assert sorted(claimed_paths) == manifest['paths'], 'shares partition the owner paths exactly'
+for seat in share_seats:
+    assignment = manifest['assignments'][seat]
+    assert (assignment['scope'], assignment['full_state'], assignment['share_of']) == ('share', False, OWNER)
+    assert assignment['bundle'] == whole['assignments'][OWNER]['bundle']
+for seat in SPECIALISTS:
+    assert (manifest['assignments'][seat]['patch_sha256']
+            == whole['assignments'][seat]['patch_sha256']), 'specialist assignments do not change'
+run([sys.executable, evidence, 'verify', session / 'rshared-evidence.manifest.json'], tight)
+
+launch = run([sys.executable, evidence, 'seats', session / 'rshared-evidence.manifest.json'],
+             tight).stdout.splitlines()
+rows = [line.split('\t') for line in launch]
+assert sorted(row[0] for row in rows) == sorted(manifest['assignments']), rows
+assert {row[1] for row in rows} == {OWNER, *SPECIALISTS}, rows
+render('shared', manifest['assignments'], tight)
+for seat in manifest['assignments']:
+    kind, tokens, seat_limit = verdict('shared', seat, tight)
+    assert kind in ('fits', 'raise') and int(tokens) <= int(seat_limit), (seat, kind, tokens, seat_limit)
+    assert int(seat_limit) >= limit
+    assert manifest['task_capacity']['seats'][seat]['projected_context_tokens'] >= int(tokens), seat
+
+path = session / 'rshared-evidence.manifest.json'
+original = path.read_bytes()
+tampered = json.loads(original)
+tampered['assignments'][share_seats[0]]['components'] = tampered['assignments'][share_seats[0]]['components'][1:]
+path.write_bytes((json.dumps(tampered, sort_keys=True, ensure_ascii=True, indent=2) + '\n').encode())
+run([sys.executable, evidence, 'verify', path], tight, good=False)
+path.write_bytes(original)
+
+unlisted = cache('share-cache-unlisted.json', 20_000, slug='gpt-6-sol')
+unknown = prepare('unknown', unlisted)
+assert 'shares' not in unknown and set(unknown['assignments']) == {OWNER, *SPECIALISTS}, \
+    'a model the cache does not list is not split'
+
+tiny = cache('share-cache-tiny.json', 40_000)
+refused = prepare('tiny', tiny, good=False)
+assert 'tokens of context' in refused.stderr and 'cannot be split' in refused.stderr, refused.stderr
+assert OWNER in refused.stderr and 'src/m' in refused.stderr, refused.stderr
+diagnostic = json.loads((session / 'prepare-diagnostic-tiny.json').read_text())
+assert diagnostic['refusals'] and diagnostic['refusals'][0]['seat'] == OWNER, diagnostic
+PY
+    assert_eq "an over-budget full-state owner is split into capacity shares that fit" "$?" 0
+  )
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

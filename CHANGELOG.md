@@ -2,7 +2,21 @@
 
 ## Unreleased
 
+## 0.9.14
+
+- Anchor a test hunk that deletes lines at the end of a file on the last surviving line, so evidence preparation no longer refuses the panel with "required code proof lies outside source" and the capacity count no longer includes a mandatory read past the end of the file.
+
+- Bound the evidence manifest at one 16 MiB limit shared by `prepare` and the Codex seat reader, and store each seat's component id sets once in the manifest (`source_context` schema 4, schema 3 still accepted) instead of repeating them in every range row. A very large PR published a 19 MB manifest that every Codex seat refused at launch while Claude seats read it; the same manifest is now about 6 MB, and `prepare` refuses an over-bound manifest up front, naming its largest fields.
+
+- Make a replacement seat reproduce the scope, components, patch and source packet role of the full or semantic assignment it replaces instead of taking the full cumulative state, so a specialist replacement no longer fails prepare with `proof reads exceed repository capacity` on a large PR. A standalone repair and a replacement of a delta or closure assignment stay full-scope.
+
+- Fail the read audit with `context-compacted` when a Claude seat's stream contains a `compact_boundary` event, and log the compaction in the seat log. An auto-compaction replaces everything the seat read with a summary of about 8K tokens, yet the audit still certified the earlier reads: every full-scope replacement seat on a very large PR compacted near its last quarter and was accepted as valid.
+
+- Stop a replacement from walking the escalation chain into families that cannot hold the failed assignment: `rev-workhorse.py escalate` skips a family whose Codex context budget or direct-read limit is below the failed assignment's recorded load and fails with `no eligible family can hold this assignment` when none remains (an explicit `escalation_overrides` entry still wins), and a Codex seat's deterministic context-capacity refusal is recorded in `r<N>-<seat>.capacity-refusal` so it is terminal after one launch instead of being relaunched.
+
 - Publish a GitHub Release automatically for every `review-council--v*` tag from its CHANGELOG section, and require the release check in the release procedure.
+
+- Split a full-state owner whose assignment no seat on the replacement chain can hold into component-granular `<seat>-s<k>` capacity shares at prepare, and refuse a single component too large to split before any provider launches. The owner held the whole cumulative patch and every component, so its context grew with the pull request and its seat failed at launch, round after round, once a pull request passed about 580 KB. Each assignment's projected context and budget are recorded in `task_capacity`, `rev-evidence.py seats` lists the launch seats, and the launch check shares its arithmetic with preparation through `lib/context_budget.py`.
 
 ## 0.9.13
 
