@@ -121,6 +121,38 @@ class ReviewTurnRefusalTests(unittest.TestCase):
                 self.assertEqual(returncode, 2)
                 self.assertIn(code, codes)
 
+    def test_a_mistyped_limiter_that_never_ran_is_not_refused_and_earns_no_credit(self):
+        not_found = 'zsh:1: command not found: head-80\n'
+        seat = self.seat()
+        self.turn(seat, [self.target, ('rg -n -F fn04 src/lib.py | head-80', not_found, 127,
+                                       'failed')], READY)
+        self.assertEqual(self.refusal(seat.turn), '')
+        self.assertEqual(self.audit(seat), (0, []))
+        seat = self.seat()
+        self.turn(seat, [(self.target + ' | head-80', not_found, 127, 'failed')], READY)
+        self.assertEqual(self.refusal(seat.turn), '')
+        returncode, codes = self.audit(seat)
+        self.assertEqual(returncode, 2)
+        self.assertIn('missing-required-source-read', codes)
+        self.assertNotIn('unsupported-shell-command', codes)
+
+    def test_a_command_that_ran_or_hides_one_stays_refused_though_its_output_says_not_found(self):
+        not_found = 'zsh:1: command not found: head-80\n'
+        for command in (
+                ('rg -n fn04 src | head-80', not_found, 0),
+                ('rg -n fn04 src | head-80; rm src/lib.py', not_found, 127, 'failed'),
+                ('rg -n fn04 src | head-90', not_found, 127, 'failed'),
+                ('rg -n fn04 src | head-80', not_found + 'more\n', 127, 'failed'),
+                ('rg -n fn04 src | head-80', 'zsh:1: command not found: node\n', 127, 'failed'),
+                ('node --test src/lib.py', 'zsh:1: command not found: node\n', 127, 'failed')):
+            with self.subTest(command=command):
+                seat = self.seat()
+                self.turn(seat, [self.target, command], READY)
+                self.assertEqual(self.refusal(seat.turn), 'unsupported-shell-command')
+                returncode, codes = self.audit(seat)
+                self.assertEqual(returncode, 2)
+                self.assertIn('unsupported-shell-command', codes)
+
     def test_commands_the_audit_accepts_or_only_advises_on_are_not_refused(self):
         seat = self.seat()
         self.turn(seat, [self.target, 'rg -n fn04 src/lib.py',
