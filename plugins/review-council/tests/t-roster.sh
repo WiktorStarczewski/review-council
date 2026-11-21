@@ -892,3 +892,25 @@ SH
     assert_grep "the other CLI provider was also probed" "$B/probe-args" '^Reply with exactly OK$'
   )
 }
+
+# The Claude CLI words an exhausted account several ways; each must classify as quota, not 'other',
+# so the orchestrator stops retrying the exhausted provider and quota_fallback can engage.
+test_roster_classifies_claude_limit_phrases_as_quota() {
+  local B="$T/roster-classify-quota"; mkdir -p "$B"
+  local text want n=0
+  while IFS='|' read -r want text; do
+    n=$((n + 1))
+    printf '%s\n' "$text" > "$B/log$n"
+    assert_eq "classified $want: $text" \
+      "$(python3 "$SCRIPTS/lib/roster.py" --classify-log claude "$B/log$n")" "$want"
+  done <<'CASES'
+quota|error: You've hit your limit
+quota|error: You've hit your weekly limit
+quota|error: You've hit your session limit
+quota|error: You're out of extra usage
+quota|error: Weekly limit reached
+quota|error: 5-hour limit reached
+other|error: could not parse the limit of the diff
+other|end usage=input 429 output 5
+CASES
+}
