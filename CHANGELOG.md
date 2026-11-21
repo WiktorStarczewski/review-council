@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Cap chain escalation by a Claude family's context window as well as a Codex family's, since a Claude seat that overflows compacts and the read audit now rejects the compacted stream; add the missing cost rows for two 0.9.14 tests, without which the test runner refuses the suite for missing metadata.
+
 ## 0.9.14
 
 - Anchor a test hunk that deletes lines at the end of a file on the last surviving line, so evidence preparation no longer refuses the panel with "required code proof lies outside source" and the capacity count no longer includes a mandatory read past the end of the file.
