@@ -366,7 +366,7 @@ for seat in sys.argv[4:]:
         capacity = manifest.get('task_capacity', {}).get('seats', {}).get(seat, {})
         call_limit = limits['repository_expansion_call_limit_for_seat'](
             context['source_read_required'], capacity.get('repository_source_target'),
-            assignment.get('model'))
+            assignment.get('model'), assignment.get('full_state', False))
         reserve = limits['repository_refutation_call_reserve_for_model'](
             assignment.get('model'))
         call_limit = capacity.get('repository_expansion_call_limit', call_limit)

@@ -3961,10 +3961,13 @@ def assess(args, blocked, progress=None):
     budget_model = None
     budget_source_required = False
     budget_source_target = None
+    budget_full_state = False
     if manifest is not None:
         try:
             context = manifest['source_context']['seats'][seat]
-            budget_model = manifest['assignments'][seat].get('model')
+            assignment = manifest['assignments'][seat]
+            budget_model = assignment.get('model')
+            budget_full_state = assignment.get('full_state', False)
             budget_source_required = context['source_read_required']
             seat_capacity = manifest.get('task_capacity', {}).get('seats', {}).get(seat, {})
             budget_source_target = seat_capacity.get('repository_source_target')
@@ -4512,7 +4515,7 @@ def assess(args, blocked, progress=None):
         if repository_expansion_call(name, data, root, session)
     ]
     expansion_limit = repository_expansion_call_limit_for_seat(
-        budget_source_required, budget_source_target, budget_model)
+        budget_source_required, budget_source_target, budget_model, budget_full_state)
     if len(expansion_calls) > expansion_limit:
         failures.append(violation('repository-expansion-call-limit', args.adapter))
     result_path = None
