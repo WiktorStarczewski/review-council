@@ -234,6 +234,7 @@ def codex_call_rows(path, audit=None):
                         raise StageError('Codex review turn omitted a command output')
                     call['output'] = item.get('aggregated_output', item.get('output'))
                     call['success'] = audited_success(event, audit)
+                    call['exit_code'] = audit.codex_exit_code('codex', event)
     except OSError as error:
         raise StageError('Codex review stream is unavailable') from error
     if turn is not None or any(
@@ -382,6 +383,10 @@ def review_turn_refusal(turn, prompt, root, session, deps=None):
     roots = audit.allowed_roots(root, session, deps)
     dependency = Path(deps).resolve() if deps else None
     for row in sorted(codex_call_rows(turn, audit).values(), key=lambda row: row['order']):
+        if audit.codex_command_not_found('codex', 'command_execution', {'command': row['command']},
+                                         {'success': row['success'], 'value': row['output'],
+                                          'exit_code': row['exit_code']}):
+            continue
         for item in audit.validate_call(
                 'command_execution', {'command': row['command']}, roots, root, session,
                 authorized, complete, {}, dependency, read_limit=audit.CODEX_SOURCE_READ_LINES):

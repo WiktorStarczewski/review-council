@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Keep a Codex seat reviewing when its command ran nothing because a pipeline stage was mistyped, such as `rg ... | head-80`: the shell exited 127 with one `command not found` line naming that word, and the command is still read-only with the word replaced by `true`. The read audit and the review-turn refusal skip such a call, which earns no read credit, instead of failing the seat's assignment for it. A command that ran, a second command, a first pipeline word such as `node`, or a not-found line naming another word stays refused. A mistyped limiter cost a Luna seat 23.6M input tokens when its attempt was replaced.
+
 ## 0.9.11
 
 - Keep a Codex seat reviewing when it returns ready while the read audit, replayed over its stream so far with no findings, still lacks a read that a later turn can supply: a plan cluster source or sibling search, the required original-source read or target, or the evidence navigation index. The next turn names each uncredited location or exact search command and the seat log says why the review continues, within the same review-turn count and repository-call allowance; once those are used up, the findings turn reports an incomplete proof and the post-run audit judges the stream. A stream the audit would reject whatever is read next finalizes at once. This replaces the check of the required post-index target alone, which let a plan seat whose 17 site reads fell in one review turn over 32 KiB finalize and fail its audit instead of reading them again.

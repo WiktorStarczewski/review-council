@@ -1614,6 +1614,44 @@ def claude_nonexecuted_exploration(adapter, name, data, output):
     return True
 
 
+CODEX_NOT_FOUND = re.compile(r'(?:/bin/)?[a-z]*sh:[0-9]+: command not found: (\S+)\n?')
+CODEX_PIPE_STAGE = r'((?<!\|)\|\s*)%s(?=\s|$|[|;&])'
+
+
+def codex_exit_code(adapter, event):
+    item = event.get('item') if adapter == 'codex' else None
+    code = item.get('exit_code') if isinstance(item, dict) else None
+    return code if type(code) is int else None
+
+
+def codex_command_not_found(adapter, name, data, output):
+    """Whether this Codex call ran nothing, since a later pipeline stage was not a command: the
+    shell exited 127 with its single not-found line naming a word that follows a `|`. The call
+    earns no credit and raises no code only if the command stays read-only with that word
+    replaced by `true`, so a refused program or a second command is still refused."""
+    if adapter != 'codex' or name != 'command_execution':
+        return False
+    if output.get('success') is not False or output.get('exit_code') != 127:
+        return False
+    visible = output_text(output.get('value'))
+    command = data.get('command')
+    if not isinstance(visible, str) or not isinstance(command, str):
+        return False
+    found = CODEX_NOT_FOUND.fullmatch(visible)
+    if found is None:
+        return False
+    replaced, count = re.subn(CODEX_PIPE_STAGE % re.escape(found.group(1)), r'\1true',
+                              unwrap_shell(command))
+    if count == 0:
+        return False
+    try:
+        READONLY_POLICY.validate(replaced, inspect_compound=True)
+        READONLY_POLICY.validate(replaced)
+    except Exception:
+        return False
+    return True
+
+
 def byte_exempt(name, data, root, session, complete=None, *, target=None):
     if name.lower() not in READ_TOOLS:
         return False
@@ -3622,7 +3660,8 @@ def assess(args, blocked, progress=None):
                         codex_output_turns[call_key] = codex_active_turn
                     outputs[call_key] = {'success': success, 'value': value,
                                          'bytes': output_bytes(value),
-                                         'non_execution': non_execution}
+                                         'non_execution': non_execution,
+                                         'exit_code': codex_exit_code(args.adapter, event)}
                     if calls[call_key][2].startswith('implicit-'):
                         implicit_output_seen = True
     except UnicodeError:
@@ -3653,7 +3692,8 @@ def assess(args, blocked, progress=None):
     skipped = {
         call_id for call_id, (name, data, _) in calls.items()
         if call_id in outputs
-        and claude_nonexecuted_exploration(args.adapter, name, data, outputs[call_id])
+        and (claude_nonexecuted_exploration(args.adapter, name, data, outputs[call_id])
+             or codex_command_not_found(args.adapter, name, data, outputs[call_id]))
     }
     for call_id in skipped:
         calls.pop(call_id, None)
