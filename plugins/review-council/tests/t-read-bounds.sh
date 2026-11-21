@@ -2319,6 +2319,81 @@ PY
     assert_grep "truncated Claude search remains over the result cap" "$S/truncated.err" \
       'discovery-output-too-large'
 
+    python3 - "$SCRIPTS/lib/review-read-audit.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+
+lines = '\n'.join('src/x.ts:' + str(index) + ':one' for index in range(1, 61))
+assert module.claude_hook_output('Grep', {'content':lines, 'mode':'content', 'numLines':60,
+                                          'totalLines':100, 'appliedLimit':60})[1] == 60
+paths = ['src/file-' + str(index) for index in range(15)]
+assert module.claude_hook_output('Grep', {'filenames':paths, 'mode':'files_with_matches',
+                                          'numFiles':15, 'totalFiles':120,
+                                          'appliedLimit':15})[1] == 15
+assert module.claude_hook_output('Grep', {'content':lines, 'mode':'content', 'numLines':60,
+                                          'totalLines':100})[1] == 100
+for bad in (True, -1, '60'):
+    try:
+        module.claude_hook_output('Grep', {'content':lines, 'mode':'content', 'numLines':60,
+                                           'totalLines':100, 'appliedLimit':bad})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('invalid appliedLimit was accepted')
+PY
+    assert_eq "Claude hook counts the visible search results when head_limit applied" "$?" 0
+
+    python3 - <<'PY' | post_bound_hook \
+      --root "$R" --session "$S" --prompt "$S/prompt.md" >/dev/null 2> "$S/limited-content.err"
+import json
+lines = '\n'.join('src/x.ts:' + str(index) + ':one' for index in range(1, 61))
+print(json.dumps({'tool_name':'Grep',
+                  'tool_input':{'pattern':'one','path':'src','head_limit':60},
+                  'tool_response':{'content':lines,'mode':'content','numLines':60,
+                                   'totalLines':100,'appliedLimit':60}}))
+PY
+    assert_eq "post-hook accepts a head-limited content search whose total exceeds the cap" "$?" 0
+
+    python3 - <<'PY' | post_bound_hook \
+      --root "$R" --session "$S" --prompt "$S/prompt.md" >/dev/null 2> "$S/limited-files.err"
+import json
+files = ['src/file-' + str(index) for index in range(15)]
+print(json.dumps({'tool_name':'Grep',
+                  'tool_input':{'pattern':'one','path':'src','head_limit':15,
+                                'output_mode':'files_with_matches'},
+                  'tool_response':{'filenames':files,'mode':'files_with_matches','numFiles':15,
+                                   'totalFiles':120,'appliedLimit':15}}))
+PY
+    assert_eq "post-hook accepts a head-limited file search whose total exceeds the cap" "$?" 0
+
+    python3 - <<'PY' | post_bound_hook \
+      --root "$R" --session "$S" --prompt "$S/prompt.md" >/dev/null 2> "$S/visible-content.err"
+import json
+lines = '\n'.join('src/x.ts:' + str(index) + ':one' for index in range(1, 91))
+print(json.dumps({'tool_name':'Grep',
+                  'tool_input':{'pattern':'one','path':'src','head_limit':80},
+                  'tool_response':{'content':lines,'mode':'content','numLines':90,
+                                   'totalLines':90,'appliedLimit':80}}))
+PY
+    assert_eq "post-hook still rejects 90 visible content lines under an applied limit" "$?" 2
+    assert_grep "visible content overflow keeps its diagnostic" "$S/visible-content.err" \
+      'discovery-output-too-large'
+
+    python3 - <<'PY' | post_bound_hook \
+      --root "$R" --session "$S" --prompt "$S/prompt.md" >/dev/null 2> "$S/visible-files.err"
+import json
+files = ['src/file-' + str(index) for index in range(81)]
+print(json.dumps({'tool_name':'Grep',
+                  'tool_input':{'pattern':'one','path':'src','head_limit':80,
+                                'output_mode':'files_with_matches'},
+                  'tool_response':{'filenames':files,'mode':'files_with_matches','numFiles':81,
+                                   'totalFiles':81,'appliedLimit':80}}))
+PY
+    assert_eq "post-hook still rejects 81 visible filenames under an applied limit" "$?" 2
+    assert_grep "visible filename overflow keeps its diagnostic" "$S/visible-files.err" \
+      'discovery-output-too-large'
+
     python3 - "$S/nonexecuted.ndjson" <<'PY'
 import json, pathlib, sys
 rows = [
