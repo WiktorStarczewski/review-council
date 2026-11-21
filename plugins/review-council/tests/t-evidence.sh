@@ -1516,7 +1516,7 @@ def verification_source_context_change(change):
         for seat, assignment in manifest['assignments'].items():
             if component['id'] not in assignment['components']:
                 continue
-            packet = manifest['source_context']['seats'][seat]
+            packet = module.expand_manifest(manifest)['source_context']['seats'][seat]
             rows = [row for shard in packet['shards'] for row in shard['ranges']]
             rows += packet['required_source_ranges'] + packet['omitted_source_ranges']
             expected_tree = reviewed['base_tree'] if change == 'deleted' else snapshot
@@ -1622,7 +1622,7 @@ def verification_nested_instruction_restoration(large=False):
         for seat, assignment in manifest['assignments'].items():
             if component['id'] not in assignment['components']:
                 continue
-            context = manifest['source_context']['seats'][seat]
+            context = module.expand_manifest(manifest)['source_context']['seats'][seat]
             rows = [row for shard in context['shards'] for row in shard['ranges']]
             rows += context['required_source_ranges'] + context['omitted_source_ranges']
             rows = [row for row in rows if row['path'] == 'src/main.py'
@@ -1862,7 +1862,8 @@ def source_context_packets():
         (session / 'scope.env').write_text('\n'.join('REV_BASE=' + base if row.startswith('REV_BASE=') else row for row in scope_text.splitlines()) + '\n')
         write('main.py', (root / 'main.py').read_text().replace('value + 1', 'value + 10')
               .replace('value + 2', 'value + 20').replace('value + 3', 'value + 30'))
-        m = prepare(); context = m['source_context']
+        m = prepare(); assert m['source_context']['schema_version'] == 4
+        m = module.expand_manifest(m); context = m['source_context']
         assert context['schema_version'] == 3 and context['enabled'] is True and context['snapshot_tree'] == m['snapshot_tree']
         assert 'object_repository' not in context
         assert context['max_shard_bytes'] == 16384
@@ -1929,7 +1930,8 @@ def source_context_packets():
         def restore():
             for path, raw in original.items(): path.write_bytes(raw)
         def reseal(transform):
-            manifest = json.loads(manifest_path.read_text()); evidence = json.loads(evidence_path.read_text())
+            manifest = module.expand_manifest(json.loads(manifest_path.read_text()))
+            evidence = json.loads(evidence_path.read_text())
             seat = owner; shard_meta = manifest['source_context']['seats'][seat]['shards'][0]
             artifact = session / shard_meta['artifact']; payload = json.loads(artifact.read_text())
             metadata_update = transform(manifest, payload) or {}
@@ -1947,7 +1949,7 @@ def source_context_packets():
                                                     'words': len(artifact.read_bytes().split())}
             manifest['artifacts'][evidence_path.name] = {'sha256': module.digest(evidence_path.read_bytes()),
                                                         'words': len(evidence_path.read_bytes().split())}
-            manifest_path.write_bytes(module.encoded(manifest))
+            manifest_path.write_bytes(module.manifest_bytes(manifest))
 
         def replace_content_with_valid_hash(manifest, payload):
             entry = payload['entries'][0]
@@ -2941,7 +2943,7 @@ def budget_omissions_are_segmented_or_retained():
                               for index in range(values))
                     + f'    return value_{values - 1}\n')
             write(f'unit_{unit}.py', body)
-        manifest = prepare('budget-omissions')
+        manifest = module.expand_manifest(prepare('budget-omissions'))
         omitted = [packet for packet in manifest['source_context']['seats'].values()
                    if packet['omitted']['declaration']]
         assert omitted
@@ -5113,6 +5115,66 @@ def binary_files_are_hash_pointers():
         for patch_set in manifest['patch_sets'].values():
             assert len(patch_set['chunks']) <= 1
 
+def manifest_interns_component_id_sets():
+    ids = [f'{index:064x}' for index in range(85)]
+    def row(index):
+        return {'path': f'src/unit_{index}.py', 'line_start': 1, 'line_end': 4,
+                'reasons': ['declaration:changed-line-anchor'], 'component_ids': list(ids),
+                'hunk_binding_sha256': '0' * 64, 'blob_oid': '1' * 40, 'blob_mode': '100644',
+                'blob_tree': '2' * 40, 'content_sha256': '3' * 64, 'priority': index}
+    packet = {'role': 'integration', 'components': ids, 'hunk_sha256': [], 'shards': [],
+              'omitted': {}, 'omitted_source_ranges': [row(index) for index in range(1500)],
+              'required_source_ranges': [], 'source_read_required': True}
+    manifest = {'schema_version': 2, 'source_context': {
+        'schema_version': 3, 'enabled': True, 'snapshot_tree': '2' * 40, 'base_tree': '4' * 40,
+        'max_shard_bytes': 16384, 'packet_batch_limit': 1, 'seats': {'codex-luna': packet}}}
+    before = json.dumps(manifest, sort_keys=True)
+    raw = module.manifest_bytes(manifest)
+    assert len(raw) < 2 * 1024 * 1024, len(raw)
+    wire = json.loads(raw)
+    assert wire['source_context']['schema_version'] == 4, wire['source_context']['schema_version']
+    wire_packet = wire['source_context']['seats']['codex-luna']
+    assert wire_packet['component_sets'] == [ids], wire_packet['component_sets']
+    assert all('component_ids' not in row and row['component_set'] == 0
+               for row in wire_packet['omitted_source_ranges'])
+    assert module.expand_manifest(wire) == manifest
+    assert json.dumps(manifest, sort_keys=True) == before, 'encoding must not mutate its input'
+
+def manifest_writer_refuses_an_oversized_manifest():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        with tempfile.TemporaryDirectory(prefix='bounded-manifest-') as tmp:
+            copy = Path(tmp) / 'scripts'
+            shutil.copytree(script.parent, copy, ignore=shutil.ignore_patterns('__pycache__'))
+            limits = copy / 'lib' / 'review_limits.py'
+            limits.chmod(0o644)
+            with limits.open('a') as stream:
+                stream.write('\nMANIFEST_MAX_BYTES = 4096\n')
+            run_env = dict(os.environ, REV_PATCH_CHUNKS='auto', REV_SOURCE_CONTEXT='1')
+            refused = subprocess.run(
+                [sys.executable, str(copy / 'rev-evidence.py'), 'prepare', str(session), 'big',
+                 '--phase', 'discovery'], capture_output=True, text=True, env=run_env, timeout=60)
+            assert refused.returncode == 2, (refused.returncode, refused.stdout, refused.stderr)
+            assert 'evidence manifest' in refused.stderr and ' over ' in refused.stderr, refused.stderr
+            assert 'largest' in refused.stderr, refused.stderr
+            assert not (session / 'rbig-evidence.manifest.json').exists()
+            assert not (session / 'rbig-evidence.json').exists()
+        prepare('under')
+        size = (session / 'runder-evidence.manifest.json').stat().st_size
+        assert size <= module.MANIFEST_MAX_BYTES, (size, module.MANIFEST_MAX_BYTES)
+
+def schema_three_source_context_manifest_still_validates():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        prepare(); mpath = session / 'r1-evidence.manifest.json'; wire_raw = mpath.read_bytes()
+        wire = json.loads(wire_raw)
+        assert wire['source_context']['schema_version'] == 4, wire['source_context']['schema_version']
+        current, _ = module.validated_manifest(mpath, fresh=False, offline=True)
+        assert current['source_context']['schema_version'] == 3
+        expanded = module.expand_manifest(wire)
+        mpath.write_bytes(module.encoded(expanded))
+        legacy, _ = module.validated_manifest(mpath, fresh=False, offline=True)
+        assert legacy == current
+        mpath.write_bytes(wire_raw)
+
 cases = (
     storage_redirects, quoted_paths, changed_symbols, empty_patch_needs_no_fake_read,
     binary_files_are_hash_pointers,
@@ -5172,6 +5234,8 @@ cases = (
     component_and_full_tampering, offline_structure_and_predecessor_walk,
     local_ignored_instructions, overlapping_boundaries_keep_prior_owner_routing,
     current_coverage_receipts, current_coverage_replacements_and_refs,
+    manifest_interns_component_id_sets, manifest_writer_refuses_an_oversized_manifest,
+    schema_three_source_context_manifest_still_validates,
 )
 groups = {
     'semantic_rejection': (semantic_rejection_revokes_sealed_coverage,
@@ -5185,7 +5249,9 @@ groups = {
         conservative_mechanical_classification, bounded_navigation_markdown,
         binary_files_are_hash_pointers,
         opaque_transitions, opaque_mode_transition, invalid_manifests,
-        phase_and_predecessor_integrity,
+        phase_and_predecessor_integrity, manifest_interns_component_id_sets,
+        manifest_writer_refuses_an_oversized_manifest,
+        schema_three_source_context_manifest_still_validates,
     ),
     'source_context_memo': (
         source_context_inputs_batches_uncached_blobs, source_context_memo_validation_guards,

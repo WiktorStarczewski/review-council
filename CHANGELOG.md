@@ -3,6 +3,8 @@
 ## Unreleased
 
 - Anchor a test hunk that deletes lines at the end of a file on the last surviving line, so evidence preparation no longer refuses the panel with "required code proof lies outside source" and the capacity count no longer includes a mandatory read past the end of the file.
+- Bound the evidence manifest at one 16 MiB limit shared by `prepare` and the Codex seat reader, and store each seat's component id sets once in the manifest (`source_context` schema 4, schema 3 still accepted) instead of repeating them in every range row. A very large PR published a 19 MB manifest that every Codex seat refused at launch while Claude seats read it; the same manifest is now about 6 MB, and `prepare` refuses an over-bound manifest up front, naming its largest fields.
+
 - Publish a GitHub Release automatically for every `review-council--v*` tag from its CHANGELOG section, and require the release check in the release procedure.
 
 ## 0.9.13
