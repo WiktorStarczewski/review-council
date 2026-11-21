@@ -1305,8 +1305,8 @@ def turn(*calls):
 if mode in ('sibling', 'paced', 'paced-altered', 'paced-oversized', 'paced-repeat'):
     # Severity: the first segment shares its turn with an oversized prompt read, or the first two
     # segments share one turn, with or without that read. A repeat of the first takes that turn
-    # out of the paired-read exemption from the 32 KiB turn limit, so the audit voids it and
-    # counts its three segment reads.
+    # out of the paired-read exemption from the 32 KiB turn limit, so the audit voids it; the
+    # repeat is not a third segment read.
     first, second = segments[0], segments[1]
     calls = [('source-' + str(row['index']), "cat '" + str(session / row['artifact']) + "'",
               (session / row['artifact']).read_text()) for row in (first, second)]
@@ -1411,7 +1411,7 @@ sibling|invalid;violations=missing-required-source-range@codex,missing-required-
 paced|valid;violations=-;advisories=-
 paced-altered|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,required-source-output-mismatch@command_execution;advisories=-
 paced-oversized|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,tool-output-too-large@command_execution,tool-turn-output-too-large@codex;advisories=-
-paced-repeat|invalid;violations=evidence-proof-batch-too-large@codex,evidence-read-order@audit,missing-required-source-range@codex,missing-required-source-segment@codex,required-source-segment-batch-too-large@codex,tool-turn-output-too-large@codex;advisories=-
+paced-repeat|invalid;violations=evidence-read-order@audit,missing-required-source-range@codex,missing-required-source-segment@codex,tool-turn-output-too-large@codex;advisories=-
 CASES
 
     write_required_transcript live-window
@@ -4011,9 +4011,9 @@ test_audit_severity_pacing_keeps_credit() {
       "$(severity_expect invalid "missing-assigned-patch-chunk@codex,missing-evidence-index@codex,$size" -)"
     severity_findings "$S" 32
     severity_transcript "$S" 32 codex "{\"repeat\":\"packet-1\",\"sibling\":\"packet-1\",\"tail\":[$clean]}"
-    assert_eq "an oversized packet batch keeps its packet pacing count" \
+    assert_eq "a repeated packet read in a voided turn is not a second packet read" \
       "$(severity_audit "$R" "$S" 32 codex)" \
-      "$(severity_expect invalid "missing-source-packet@codex,source-packet-batch-too-large@codex,$size" -)"
+      "$(severity_expect invalid "missing-source-packet@codex,$size" -)"
   )
 }
 

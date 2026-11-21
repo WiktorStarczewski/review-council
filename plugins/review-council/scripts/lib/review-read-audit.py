@@ -3886,6 +3886,12 @@ def assess(args, blocked, progress=None):
     paced_packet_calls = set()
     paced_index_calls = set()
     paced_segment_calls = []
+    # A read the model repeats inside one turn is one proof read, as the read gate already counts it.
+    paced_packet_reads = set()
+    paced_index_turns = set()
+    paced_chunk_reads = set()
+    paced_segment_reads = set()
+    repeated_chunk_calls = set()
     required_source_ranges = []
     required_source_role = None
     required_source_range_proofs = []
@@ -3918,7 +3924,7 @@ def assess(args, blocked, progress=None):
             assigned_paths = {session / shard['artifact']: shard for shard in assigned}
             evidence_index = session / f"r{manifest['label']}-evidence.md"
             evidence_index_lines = file_line_count(evidence_index)
-            for call_id, (name, data, _) in calls.items():
+            for call_id, (name, data, turn) in calls.items():
                 output = outputs.get(call_id)
                 if output is None or not output['success']:
                     continue
@@ -3929,7 +3935,9 @@ def assess(args, blocked, progress=None):
                         and delivered_matches(
                             args.adapter, name, output['value'], evidence_index,
                             1, evidence_index_lines)):
-                    paced_index_calls.add(call_id)
+                    if turn not in paced_index_turns:
+                        paced_index_turns.add(turn)
+                        paced_index_calls.add(call_id)
                     if call_id not in blocked:
                         credited.add(call_id)
                         exact_evidence_index_calls.add(call_id)
@@ -3937,7 +3945,7 @@ def assess(args, blocked, progress=None):
                 failures.append(violation('missing-evidence-index', args.adapter))
                 missing.append((3, str(evidence_index)))
             opened_packets = set()
-            for call_id, (name, data, _) in calls.items():
+            for call_id, (name, data, turn) in calls.items():
                 if call_id not in outputs:
                     continue
                 output = outputs[call_id]
@@ -3955,7 +3963,8 @@ def assess(args, blocked, progress=None):
                                 failures.append(violation('partial-source-packet', name))
                             if complete and not exact_output:
                                 failures.append(violation('source-packet-output-mismatch', name))
-                            if exact_output:
+                            if exact_output and (turn, path) not in paced_packet_reads:
+                                paced_packet_reads.add((turn, path))
                                 paced_packet_calls.add(call_id)
                             if exact_output and call_id not in blocked:
                                 credited.add(call_id)
@@ -4027,9 +4036,11 @@ def assess(args, blocked, progress=None):
                                     args.adapter, name, output['value'], path.read_bytes(), 1):
                                 failures.append(violation('assigned-patch-output-mismatch', name))
                                 continue
-                            if duplicate:
+                            if duplicate or (turn, path) in paced_chunk_reads:
+                                repeated_chunk_calls.add(call_id)
                                 failures.append(violation('duplicate-patch-chunk', name))
                                 continue
+                            paced_chunk_reads.add((turn, path))
                             paced_chunk_calls.append((call_id, turn))
                             if call_id in blocked:
                                 continue
@@ -4157,9 +4168,10 @@ def assess(args, blocked, progress=None):
                                 args.adapter, name, output['value'], raw, 1)):
                         failures.append(violation('required-source-output-mismatch', name))
                         continue
-                    if duplicate:
+                    if duplicate or (turn, identity) in paced_segment_reads:
                         failures.append(violation('duplicate-required-source-segment', name))
                         continue
+                    paced_segment_reads.add((turn, identity))
                     if evidence_module.source_segment_requires_standalone_turn(segment):
                         oversized_required_segment_calls.add(call_id)
                     paced_segment_calls.append((call_id, turn))
@@ -4363,6 +4375,7 @@ def assess(args, blocked, progress=None):
         proof_exempt = ordered_proof_turn_exempt(
             adapter_read_batch_limit, output_calls,
             exact_patch_chunk_calls
+            | repeated_chunk_calls
             | required_segment_call_ids
             | exact_evidence_index_calls,
             size) or source_only_segment_turn(
