@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Classify a seat that hits the Claude CLI's weekly, session, daily or monthly limit, runs out of extra usage, or reports a weekly, session, 5-hour or daily limit reached as a quota failure (exit 4) instead of an unclassified provider failure (exit 2). Only the plain "hit your limit" wording matched, so such a seat spent its exact retry and replacement chain on an exhausted account and quota_fallback never engaged.
+
 ## 0.9.12
 
 - Make a fresh orchestrator wait for seats, panels and CI inside one bounded foreground call (an `until` loop over the seats' exit files, or `rev-mechanical.sh ci`, each returning within about 9 minutes) instead of ending its turn, in the Claude, Codex, Pi and Cursor skills. Every turn that ended to wait reached the parent session as its own "waiting on background work" notification, dozens of them over one 4-seat round of 10 minutes or more. The turn now ends only on a seat result or permanent seat failure, a finding or a phase that needs a decision, a completed review, or a genuine block, and `rev-mechanical.sh ci` exits 124 while the run is still going instead of holding `gh run watch` open.
