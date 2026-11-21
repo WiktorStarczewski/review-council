@@ -105,7 +105,9 @@ for raw in sys.stdin:
                 if isinstance(obj, dict):
                     with open(out, 'w') as f:
                         json.dump(obj, f)
-            emit(f"end status={e.get('subtype')} turns={e.get('num_turns')}")
+            reason = e.get('terminal_reason')
+            emit(f"end status={e.get('subtype')} turns={e.get('num_turns')}"
+                 + (f" terminal_reason={clip(reason, 64)}" if reason and reason != 'completed' else ''))
         elif t == 'error':
             emit(f"error: {clip(e.get('message', e))}")
     elif kind == 'cursor-sdk':
