@@ -1603,9 +1603,9 @@ class Repository:
                         if line.startswith(('+', '-')):
                             # A tail deletion leaves new_position one past the last line; anchor it on
                             # the last surviving line, as a mid-file deletion anchors on the next one.
+                            # An emptied file keeps its line 0, which proof windows skip.
                             changed_lines.append(
-                                old_position if kind == 'delete' or not line_count
-                                else min(max(new_position, 1), line_count))
+                                old_position if kind == 'delete' else min(new_position, line_count))
                         if line.startswith('-'):
                             base_changed_lines.append(old_position)
                             group_base.append(old_position)

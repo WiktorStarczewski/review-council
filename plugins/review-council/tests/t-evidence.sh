@@ -3224,7 +3224,7 @@ def empty_source_context():
 
 def eof_deletion_anchors_a_surviving_line():
     with fixture() as (root, session, git, write, call, prepare, finish):
-        write('tail_test.py', 'a\nb\nc\n'); write('grow_test.py', 'a\n')
+        write('tail_test.py', 'a\nb\nc\n'); write('grow_test.py', 'a\n'); write('empty_test.py', 'a\nb\n')
         write('mixed_test.py', 'x1\nx2\nx3\nx4\nx5\nx6\n')
         git('add', '.'); git('commit', '-qm', 'eof base')
         base = git('rev-parse', 'HEAD'); scope_text = (session / 'scope.env').read_text()
@@ -3233,6 +3233,7 @@ def eof_deletion_anchors_a_surviving_line():
             for row in scope_text.splitlines()) + '\n')
         write('tail_test.py', 'a\n'); write('grow_test.py', 'a\nb\nc\n')
         write('mixed_test.py', 'y1\nx2\nx3\nx4\n')
+        write('empty_test.py', '')
         repo = module.Repository(session.resolve()); tree, _ = repo.snapshot()
         _, hunks, _, _ = repo.changes(repo.tree(base), tree)
         by_path = {hunk['path']: hunk for hunk in hunks}
@@ -3240,6 +3241,7 @@ def eof_deletion_anchors_a_surviving_line():
         assert by_path['tail_test.py']['base_changed_lines'] == [2, 3], by_path['tail_test.py']
         assert by_path['grow_test.py']['changed_lines'] == [2, 3], by_path['grow_test.py']
         assert by_path['mixed_test.py']['changed_lines'] == [1, 4], by_path['mixed_test.py']
+        assert by_path['empty_test.py']['changed_lines'] == [0], by_path['empty_test.py']
 
 def bounded_work_and_memory():
     import tracemalloc
