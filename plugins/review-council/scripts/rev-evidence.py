@@ -6094,7 +6094,7 @@ def validate_source_context(session, manifest, evidence):
         if not context['enabled'] and (
                 shards or packet['omitted_source_ranges'] or any(omitted.values())):
             raise ValueError('disabled source context contains packet data: ' + seat)
-        limit = 3 if seat == owner or manifest['phase'] == 'plan' else 1
+        limit = 3 if packet['role'] == 'integration' or manifest['phase'] == 'plan' else 1
         if not isinstance(shards, list) or len(shards) > limit:
             raise ValueError('source context shard count exceeded: ' + seat)
         priorities = []
