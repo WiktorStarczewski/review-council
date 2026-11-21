@@ -23,7 +23,21 @@ if not isinstance(run, (str, int)) or not str(run).strip():
 print(str(run).strip())
 PY
     ) || { echo 'rev-mechanical: state.json has no ci_run' >&2; exit 2; }
-    gh run watch "$RUN" --exit-status
+    # One bounded call: a host tool call times out near ten minutes and a turn that ends to wait
+    # reaches the parent as a notification. 124 means still running; call again.
+    POLL=${REV_CI_POLL_SECS:-30}
+    DEADLINE=$((SECONDS + ${REV_CI_WAIT_SECS:-540}))
+    while :; do
+      STATE=$(gh run view "$RUN" --json status,conclusion --jq '.status + " " + .conclusion' 2>/dev/null) || STATE=
+      set -- $STATE
+      if [ "${1:-}" = completed ]; then
+        echo "ci run $RUN: completed ${2:-}"
+        [ "${2:-}" = success ] && exit 0
+        exit 1
+      fi
+      [ "$SECONDS" -lt "$DEADLINE" ] || { echo "ci run $RUN still running (${1:-status unavailable}); call again" >&2; exit 124; }
+      sleep "$POLL"
+    done
     ;;
   publish)
     python3 "$HERE/rev-pr-review.py" render "$S"

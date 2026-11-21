@@ -247,6 +247,7 @@ t-runner.sh::test_runner_writable_fixture_copies_from_frozen_sources	1	normal
 t-scopeenv.sh::test_scopeenv	1	normal
 t-seat-claude.sh::test_seat_claude_cli_runs_the_pinned_binary	1	normal
 t-seat-claude.sh::test_seat_claude_cli_scrubs_parent_session	1	normal
+t-seat-claude.sh::test_seat_claude_stream_summary_names_a_non_completed_terminal_reason	1	normal
 t-seat.sh::test_seat_codex	1	normal
 t-seat.sh::test_seat_codex_luna_allows_five_commands_per_review_turn	2	normal
 t-seat.sh::test_seat_codex_failure_reason_reaches_the_seat_log	1	normal

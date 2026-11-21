@@ -63,6 +63,18 @@ processes. Stop only processes this review owns; verify PID start identity befor
 signalling and preserve streams and valid siblings. Relay each narrated ten-minute
 status line. Stay in the active turn until the authorized workflow is terminal or
 there is a concrete external blocker. Do not edit while reviewer reads are active.
+
+## Wait contract
+
+While any seat, panel, CI watcher or status watcher is running, wait inside ONE
+bounded foreground call and never end the turn merely to wait or to report status.
+Use a bash `until` loop over the pending seats' `$S/r$PANEL_LABEL-<seat>.exit` files
+(or the CI run's status), sleeping 30 seconds between checks; each call returns when
+a pending seat finishes or after about 9 minutes (give the call a tool timeout of at
+least 10 minutes), then you handle the result and repeat the call. End the turn only on a seat result or permanent seat failure that
+needs a decision, a finding that needs a decision, a phase or the review completing,
+or a genuine block. Relay each new status line from the watcher log between calls and
+keep going in the same turn.
 ''' + text[end:]
         text = text.replace('including Codex and Claude Code', 'including Pi, Codex and Claude Code')
     if relative == Path('phases/10-setup.md'):
@@ -114,10 +126,10 @@ there is a concrete external blocker. Do not edit while reviewer reads are activ
         text = replace_once(text,
             'Omit `--base` for documents. Use the actual tools available in this Codex\n'
             'session; do not invoke Claude\'s `Agent`, `Monitor`, or `TaskStop` APIs. Keep processes\n'
-            'attached to a tool session and wait/poll until all complete.',
+            'attached to a tool session.',
             'Omit `--base` for documents. Use Pi\'s actual lowercase tools, never Claude\'s\n'
             '`Agent`, `Monitor`, or `TaskStop` APIs. Poll the session-owned process and\n'
-            'terminal artifact map until every launch completes.')
+            'terminal artifact map until every launch completes, as the wait loop below does.')
     return text
 
 

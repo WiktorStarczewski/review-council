@@ -1456,6 +1456,11 @@ def claude_hook_output(name, value):
         truncated = value.get('truncated', False)
         if type(truncated) is not bool:
             raise ValueError('invalid search truncation marker')
+        # The CLI reports totalLines/totalFiles before head_limit and adds appliedLimit when it
+        # cuts the result, so only the visible results count then.
+        applied = value.get('appliedLimit')
+        if applied is not None and (type(applied) is not int or applied < 0):
+            raise ValueError('invalid search hook count')
         if isinstance(value.get('content'), str):
             text = value['content']
             observed = len(split_lf_text(text))
@@ -1471,7 +1476,7 @@ def claude_hook_output(name, value):
             raise ValueError('unsupported search hook response')
         if any(type(counter) is not int or counter < 0 for counter in counters):
             raise ValueError('invalid search hook count')
-        count = max([observed, *counters])
+        count = max([observed, *([] if applied is not None else counters)])
         if truncated or value.get('countIsComplete') is False:
             count = max(count, SEARCH_RESULT_SENTINEL)
         if mode is not None and not isinstance(mode, str):
@@ -1611,6 +1616,44 @@ def claude_nonexecuted_exploration(adapter, name, data, output):
             READONLY_POLICY.validate(command)
         except (READONLY_POLICY.Blocked, OSError, TypeError, ValueError):
             return False
+    return True
+
+
+CODEX_NOT_FOUND = re.compile(r'(?:/bin/)?[a-z]*sh:[0-9]+: command not found: (\S+)\n?')
+CODEX_PIPE_STAGE = r'((?<!\|)\|\s*)%s(?=\s|$|[|;&])'
+
+
+def codex_exit_code(adapter, event):
+    item = event.get('item') if adapter == 'codex' else None
+    code = item.get('exit_code') if isinstance(item, dict) else None
+    return code if type(code) is int else None
+
+
+def codex_command_not_found(adapter, name, data, output):
+    """Whether this Codex call ran nothing, since a later pipeline stage was not a command: the
+    shell exited 127 with its single not-found line naming a word that follows a `|`. The call
+    earns no credit and raises no code only if the command stays read-only with that word
+    replaced by `true`, so a refused program or a second command is still refused."""
+    if adapter != 'codex' or name != 'command_execution':
+        return False
+    if output.get('success') is not False or output.get('exit_code') != 127:
+        return False
+    visible = output_text(output.get('value'))
+    command = data.get('command')
+    if not isinstance(visible, str) or not isinstance(command, str):
+        return False
+    found = CODEX_NOT_FOUND.fullmatch(visible)
+    if found is None:
+        return False
+    replaced, count = re.subn(CODEX_PIPE_STAGE % re.escape(found.group(1)), r'\1true',
+                              unwrap_shell(command))
+    if count == 0:
+        return False
+    try:
+        READONLY_POLICY.validate(replaced, inspect_compound=True)
+        READONLY_POLICY.validate(replaced)
+    except Exception:
+        return False
     return True
 
 
@@ -3341,14 +3384,24 @@ def stop_gate_reason(args, event):
     publish(args.state, {'blocks': blocks + 1, 'missing': missing})
     listed = missing[:STOP_GATE_LISTED]
     more = len(missing) - len(listed)
+    # An original-source item is read by line range, never whole; only session files are whole.
+    bounded = [item for item in listed if item.startswith('original source ')]
+    if not bounded:
+        how = ('Read each listed session file completely in one Read call with no offset or limit,'
+               ' keeping to the batch limits in your prompt')
+    elif len(bounded) == len(listed):
+        how = ('Read each listed original source range with a bounded Read (offset and limit), or'
+               ' drop the finding that cites it')
+    else:
+        how = ('Read each listed session file completely in one Read call with no offset or limit,'
+               ' keeping to the batch limits in your prompt, and each listed original source range'
+               ' with a bounded Read (offset and limit), or drop the finding that cites it')
     return (
         f'review stop blocked ({blocks + 1} of {STOP_GATE_BLOCKS}): the read audit will reject '
         'this review because required evidence is unread. Read these next, in this order: '
         + '; '.join(listed)
         + (f'; then the {more} further missing reads in prompt order' if more else '')
-        + '. Read each listed session file completely in one Read call with no offset or limit,'
-        ' keeping to the batch limits in your prompt, then return your complete result again'
-        ' with StructuredOutput.')
+        + f'. {how}, then return your complete result again with StructuredOutput.')
 
 
 class StopGateDeadline(BaseException):
@@ -3622,7 +3675,8 @@ def assess(args, blocked, progress=None):
                         codex_output_turns[call_key] = codex_active_turn
                     outputs[call_key] = {'success': success, 'value': value,
                                          'bytes': output_bytes(value),
-                                         'non_execution': non_execution}
+                                         'non_execution': non_execution,
+                                         'exit_code': codex_exit_code(args.adapter, event)}
                     if calls[call_key][2].startswith('implicit-'):
                         implicit_output_seen = True
     except UnicodeError:
@@ -3653,7 +3707,8 @@ def assess(args, blocked, progress=None):
     skipped = {
         call_id for call_id, (name, data, _) in calls.items()
         if call_id in outputs
-        and claude_nonexecuted_exploration(args.adapter, name, data, outputs[call_id])
+        and (claude_nonexecuted_exploration(args.adapter, name, data, outputs[call_id])
+             or codex_command_not_found(args.adapter, name, data, outputs[call_id]))
     }
     for call_id in skipped:
         calls.pop(call_id, None)
@@ -3886,6 +3941,12 @@ def assess(args, blocked, progress=None):
     paced_packet_calls = set()
     paced_index_calls = set()
     paced_segment_calls = []
+    # A read the model repeats inside one turn is one proof read, as the read gate already counts it.
+    paced_packet_reads = set()
+    paced_index_turns = set()
+    paced_chunk_reads = set()
+    paced_segment_reads = set()
+    repeated_chunk_calls = set()
     required_source_ranges = []
     required_source_role = None
     required_source_range_proofs = []
@@ -3918,7 +3979,7 @@ def assess(args, blocked, progress=None):
             assigned_paths = {session / shard['artifact']: shard for shard in assigned}
             evidence_index = session / f"r{manifest['label']}-evidence.md"
             evidence_index_lines = file_line_count(evidence_index)
-            for call_id, (name, data, _) in calls.items():
+            for call_id, (name, data, turn) in calls.items():
                 output = outputs.get(call_id)
                 if output is None or not output['success']:
                     continue
@@ -3929,7 +3990,9 @@ def assess(args, blocked, progress=None):
                         and delivered_matches(
                             args.adapter, name, output['value'], evidence_index,
                             1, evidence_index_lines)):
-                    paced_index_calls.add(call_id)
+                    if turn not in paced_index_turns:
+                        paced_index_turns.add(turn)
+                        paced_index_calls.add(call_id)
                     if call_id not in blocked:
                         credited.add(call_id)
                         exact_evidence_index_calls.add(call_id)
@@ -3937,7 +4000,7 @@ def assess(args, blocked, progress=None):
                 failures.append(violation('missing-evidence-index', args.adapter))
                 missing.append((3, str(evidence_index)))
             opened_packets = set()
-            for call_id, (name, data, _) in calls.items():
+            for call_id, (name, data, turn) in calls.items():
                 if call_id not in outputs:
                     continue
                 output = outputs[call_id]
@@ -3955,7 +4018,8 @@ def assess(args, blocked, progress=None):
                                 failures.append(violation('partial-source-packet', name))
                             if complete and not exact_output:
                                 failures.append(violation('source-packet-output-mismatch', name))
-                            if exact_output:
+                            if exact_output and (turn, path) not in paced_packet_reads:
+                                paced_packet_reads.add((turn, path))
                                 paced_packet_calls.add(call_id)
                             if exact_output and call_id not in blocked:
                                 credited.add(call_id)
@@ -4027,9 +4091,11 @@ def assess(args, blocked, progress=None):
                                     args.adapter, name, output['value'], path.read_bytes(), 1):
                                 failures.append(violation('assigned-patch-output-mismatch', name))
                                 continue
-                            if duplicate:
+                            if duplicate or (turn, path) in paced_chunk_reads:
+                                repeated_chunk_calls.add(call_id)
                                 failures.append(violation('duplicate-patch-chunk', name))
                                 continue
+                            paced_chunk_reads.add((turn, path))
                             paced_chunk_calls.append((call_id, turn))
                             if call_id in blocked:
                                 continue
@@ -4157,9 +4223,10 @@ def assess(args, blocked, progress=None):
                                 args.adapter, name, output['value'], raw, 1)):
                         failures.append(violation('required-source-output-mismatch', name))
                         continue
-                    if duplicate:
+                    if duplicate or (turn, identity) in paced_segment_reads:
                         failures.append(violation('duplicate-required-source-segment', name))
                         continue
+                    paced_segment_reads.add((turn, identity))
                     if evidence_module.source_segment_requires_standalone_turn(segment):
                         oversized_required_segment_calls.add(call_id)
                     paced_segment_calls.append((call_id, turn))
@@ -4363,6 +4430,7 @@ def assess(args, blocked, progress=None):
         proof_exempt = ordered_proof_turn_exempt(
             adapter_read_batch_limit, output_calls,
             exact_patch_chunk_calls
+            | repeated_chunk_calls
             | required_segment_call_ids
             | exact_evidence_index_calls,
             size) or source_only_segment_turn(
@@ -4471,6 +4539,16 @@ def assess(args, blocked, progress=None):
                     finding_citations += 1
                 else:
                     failures.append(violation('unsubstantiated-finding-range', args.adapter))
+                    # A bounded Read of the cited lines credits them: the stop gate asks for it.
+                    cited = {'path': finding.get('file'), 'line_start': finding.get('line_start'),
+                             'line_end': finding.get('line_end')}
+                    if (isinstance(cited['path'], str) and cited['path']
+                            and type(cited['line_start']) is int
+                            and type(cited['line_end']) is int
+                            and 1 <= cited['line_start'] <= cited['line_end']):
+                        gap = (5, required_source_item(cited))
+                        if gap not in missing:
+                            missing.append(gap)
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         failures.append(violation('invalid-review-result', args.adapter))
     unique = []

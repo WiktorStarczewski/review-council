@@ -26,12 +26,12 @@ no ready receipt, so the stack treats it as incomplete and re-runs it.
 **Print mode delivers no background-task notifications.** A turn that ends "waiting
 for the seats" or "waiting for the gate run" ends the leg: `claude -p` returns at
 end-of-turn with the loop unfinished (seen live: round-4 fixes left uncommitted, no
-report). So in stack-leg mode:
+report). The **Wait contract** in `SKILL.md` applies to every run and is mandatory here:
 
 - Launch every `rev-seat.sh` row - `codex`, `gemini`, and `claude` alike - with
   `run_in_background` as usual, then **wait for them with a foreground poll** - a Bash
   call that loops `until` every `$S/r$PANEL_LABEL-<seat>.exit` for this panel exists
-  after the synchronous prelaunch removal (sleep 30 between checks, stop the call at ~9 minutes and issue
+  after the synchronous prelaunch removal (sleep 30 between checks, stop the call at ~9 minutes with Bash `timeout` 600000 and issue
   another) - never by ending your turn.
 - Run gates, commits, and everything else in the foreground.
 - Never end a turn while a seat, a gate, a fix, or a commit is pending.
@@ -87,7 +87,7 @@ seats on three different lenses, not one seat printed three times.
 
 When a Monitor event carries such a line, relay it to the user **as-is** plus at most
 one sentence saying what you are doing right now. Do this even mid-round; the user
-asked for it. Keep `state.json` honest - it is the only thing the tick can see:
+asked for it. Relaying is not a reason to end the turn. Keep `state.json` honest - it is the only thing the tick can see:
 `round`, `phase`, `seats`, `dropped`, `open.*`, `fixed`, and `agent_transcripts` for `agent` rows. If the
 loop stops early, the last relayed line says why.
 

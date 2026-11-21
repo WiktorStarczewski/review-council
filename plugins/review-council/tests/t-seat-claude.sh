@@ -143,3 +143,20 @@ SH
       "^claude adapter: claude CLI 2.1.121 at $P/stale/claude is older than 2.1.328\$"
   )
 }
+
+test_seat_claude_stream_summary_names_a_non_completed_terminal_reason() {
+  ( local B="$T/stream-summary-reason" run
+    mkdir -p "$B"
+    summarize() {
+      printf '{"type":"result","subtype":"success","is_error":false,"num_turns":3%s}\n' "$1" \
+        | python3 "$SCRIPTS/lib/stream-summary.py" claude "$B/out.json" 2>&1
+    }
+    run=$(summarize ',"terminal_reason":"hook_stopped"')
+    assert_eq "a result stopped by a hook names its terminal reason" "$run" \
+      "end status=success turns=3 terminal_reason=hook_stopped"
+    run=$(summarize ',"terminal_reason":"completed"')
+    assert_eq "a completed terminal reason adds nothing" "$run" "end status=success turns=3"
+    run=$(summarize '')
+    assert_eq "a result with no terminal reason adds nothing" "$run" "end status=success turns=3"
+  )
+}

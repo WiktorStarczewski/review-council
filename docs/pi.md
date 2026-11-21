@@ -14,7 +14,7 @@ subagent package or npm runtime dependency is required.
 For a pinned release:
 
 ```bash
-pi install git:github.com/WiktorStarczewski/review-council@review-council--v0.9.11
+pi install git:github.com/WiktorStarczewski/review-council@review-council--v0.9.12
 ```
 
 Pi manages Git package installation, updates and removal. To update an unpinned

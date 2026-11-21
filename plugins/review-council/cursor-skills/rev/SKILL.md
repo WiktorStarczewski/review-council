@@ -14,6 +14,11 @@ anything. The package builder derives that contract from the canonical review
 workflow with explicit Cursor host bindings. Its phase order, evidence, receipts,
 retry limits, scope, fix and publication requirements all apply.
 
+Follow the bundled workflow's **Wait contract**: while any seat, panel or CI watcher runs,
+wait inside one bounded foreground call of about 9 minutes at most, repeated as needed, and
+never end the turn merely to wait or to report status. Relay the 10-minute status line
+between calls without ending the turn.
+
 Use this package's scripts and schema. Native Claude Agent seats are unavailable
 on the Cursor host. An optional Grok seat uses the qualified `cursor-sdk` transport
 through `rev-seat.sh`; selecting a host never adds it to the roster. If the bundled

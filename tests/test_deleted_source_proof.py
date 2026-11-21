@@ -153,7 +153,7 @@ class SourceFixture:
               codex_turn_complete=True, codex_outputs_after_turn_complete=False,
               reverse_grouped_segments=False, repeat_first_grouped_segment=False,
               group_evidence_index=False, group_final_segment_with_index=False,
-              repeat_first_packet=False):
+              repeat_first_packet=False, pair_packets=False):
         events = []
 
         def read(command, output):
@@ -216,6 +216,10 @@ class SourceFixture:
         if repeat_first_packet and packet_paths:
             read_in_codex_turn([packet_paths[0], packet_paths[0]])
             for path in packet_paths[1:]:
+                read_artifact(path)
+        elif pair_packets and len(packet_paths) > 1:
+            read_in_codex_turn(packet_paths[:2])
+            for path in packet_paths[2:]:
                 read_artifact(path)
         else:
             for path in packet_paths:
@@ -653,12 +657,20 @@ class RequiredSourceProofTests(unittest.TestCase):
                                   [row['code'] for row in audit['advisories']])
                 else:
                     self.assertEqual(rc, 2)
-                    self.assertLessEqual({'evidence-proof-batch-too-large',
-                                          'tool-turn-output-too-large'}, violations)
+                    self.assertIn('tool-turn-output-too-large', violations)
+                    self.assertNotIn('evidence-proof-batch-too-large', violations)
 
-    def test_codex_rejects_two_source_context_packet_reads_in_one_turn(self):
+    def test_codex_counts_a_repeated_source_context_packet_read_once(self):
         fixture = self.fixture('deleted')
         rc, audit = fixture.audit(repeat_first_packet=True)
+        self.assertEqual((rc, audit['violations']), (0, []))
+        self.assertNotIn('source-packet-batch-too-large',
+                         [row['code'] for row in audit['advisories']])
+
+    def test_codex_rejects_two_distinct_source_context_packet_reads_in_one_turn(self):
+        fixture = self.fixture('deleted')
+        self.assertGreater(len(fixture.context['shards']), 1)
+        rc, audit = fixture.audit(pair_packets=True)
         self.assertEqual(rc, 2)
         self.assertIn('source-packet-batch-too-large',
                       [row['code'] for row in audit['violations']])

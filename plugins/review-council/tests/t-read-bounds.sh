@@ -1305,8 +1305,8 @@ def turn(*calls):
 if mode in ('sibling', 'paced', 'paced-altered', 'paced-oversized', 'paced-repeat'):
     # Severity: the first segment shares its turn with an oversized prompt read, or the first two
     # segments share one turn, with or without that read. A repeat of the first takes that turn
-    # out of the paired-read exemption from the 32 KiB turn limit, so the audit voids it and
-    # counts its three segment reads.
+    # out of the paired-read exemption from the 32 KiB turn limit, so the audit voids it; the
+    # repeat is not a third segment read.
     first, second = segments[0], segments[1]
     calls = [('source-' + str(row['index']), "cat '" + str(session / row['artifact']) + "'",
               (session / row['artifact']).read_text()) for row in (first, second)]
@@ -1411,7 +1411,7 @@ sibling|invalid;violations=missing-required-source-range@codex,missing-required-
 paced|valid;violations=-;advisories=-
 paced-altered|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,required-source-output-mismatch@command_execution;advisories=-
 paced-oversized|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,tool-output-too-large@command_execution,tool-turn-output-too-large@codex;advisories=-
-paced-repeat|invalid;violations=evidence-proof-batch-too-large@codex,evidence-read-order@audit,missing-required-source-range@codex,missing-required-source-segment@codex,required-source-segment-batch-too-large@codex,tool-turn-output-too-large@codex;advisories=-
+paced-repeat|invalid;violations=evidence-read-order@audit,missing-required-source-range@codex,missing-required-source-segment@codex,tool-turn-output-too-large@codex;advisories=-
 CASES
 
     write_required_transcript live-window
@@ -2317,6 +2317,81 @@ print(json.dumps({'tool_name':'Grep',
 PY
     assert_eq "Claude hook preserves the truncated-search overflow signal" "$?" 2
     assert_grep "truncated Claude search remains over the result cap" "$S/truncated.err" \
+      'discovery-output-too-large'
+
+    python3 - "$SCRIPTS/lib/review-read-audit.py" <<'PY'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('review_read_audit', sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+
+lines = '\n'.join('src/x.ts:' + str(index) + ':one' for index in range(1, 61))
+assert module.claude_hook_output('Grep', {'content':lines, 'mode':'content', 'numLines':60,
+                                          'totalLines':100, 'appliedLimit':60})[1] == 60
+paths = ['src/file-' + str(index) for index in range(15)]
+assert module.claude_hook_output('Grep', {'filenames':paths, 'mode':'files_with_matches',
+                                          'numFiles':15, 'totalFiles':120,
+                                          'appliedLimit':15})[1] == 15
+assert module.claude_hook_output('Grep', {'content':lines, 'mode':'content', 'numLines':60,
+                                          'totalLines':100})[1] == 100
+for bad in (True, -1, '60'):
+    try:
+        module.claude_hook_output('Grep', {'content':lines, 'mode':'content', 'numLines':60,
+                                           'totalLines':100, 'appliedLimit':bad})
+    except ValueError:
+        pass
+    else:
+        raise AssertionError('invalid appliedLimit was accepted')
+PY
+    assert_eq "Claude hook counts the visible search results when head_limit applied" "$?" 0
+
+    python3 - <<'PY' | post_bound_hook \
+      --root "$R" --session "$S" --prompt "$S/prompt.md" >/dev/null 2> "$S/limited-content.err"
+import json
+lines = '\n'.join('src/x.ts:' + str(index) + ':one' for index in range(1, 61))
+print(json.dumps({'tool_name':'Grep',
+                  'tool_input':{'pattern':'one','path':'src','head_limit':60},
+                  'tool_response':{'content':lines,'mode':'content','numLines':60,
+                                   'totalLines':100,'appliedLimit':60}}))
+PY
+    assert_eq "post-hook accepts a head-limited content search whose total exceeds the cap" "$?" 0
+
+    python3 - <<'PY' | post_bound_hook \
+      --root "$R" --session "$S" --prompt "$S/prompt.md" >/dev/null 2> "$S/limited-files.err"
+import json
+files = ['src/file-' + str(index) for index in range(15)]
+print(json.dumps({'tool_name':'Grep',
+                  'tool_input':{'pattern':'one','path':'src','head_limit':15,
+                                'output_mode':'files_with_matches'},
+                  'tool_response':{'filenames':files,'mode':'files_with_matches','numFiles':15,
+                                   'totalFiles':120,'appliedLimit':15}}))
+PY
+    assert_eq "post-hook accepts a head-limited file search whose total exceeds the cap" "$?" 0
+
+    python3 - <<'PY' | post_bound_hook \
+      --root "$R" --session "$S" --prompt "$S/prompt.md" >/dev/null 2> "$S/visible-content.err"
+import json
+lines = '\n'.join('src/x.ts:' + str(index) + ':one' for index in range(1, 91))
+print(json.dumps({'tool_name':'Grep',
+                  'tool_input':{'pattern':'one','path':'src','head_limit':80},
+                  'tool_response':{'content':lines,'mode':'content','numLines':90,
+                                   'totalLines':90,'appliedLimit':80}}))
+PY
+    assert_eq "post-hook still rejects 90 visible content lines under an applied limit" "$?" 2
+    assert_grep "visible content overflow keeps its diagnostic" "$S/visible-content.err" \
+      'discovery-output-too-large'
+
+    python3 - <<'PY' | post_bound_hook \
+      --root "$R" --session "$S" --prompt "$S/prompt.md" >/dev/null 2> "$S/visible-files.err"
+import json
+files = ['src/file-' + str(index) for index in range(81)]
+print(json.dumps({'tool_name':'Grep',
+                  'tool_input':{'pattern':'one','path':'src','head_limit':80,
+                                'output_mode':'files_with_matches'},
+                  'tool_response':{'filenames':files,'mode':'files_with_matches','numFiles':81,
+                                   'totalFiles':81,'appliedLimit':80}}))
+PY
+    assert_eq "post-hook still rejects 81 visible filenames under an applied limit" "$?" 2
+    assert_grep "visible filename overflow keeps its diagnostic" "$S/visible-files.err" \
       'discovery-output-too-large'
 
     python3 - "$S/nonexecuted.ndjson" <<'PY'
@@ -4011,9 +4086,9 @@ test_audit_severity_pacing_keeps_credit() {
       "$(severity_expect invalid "missing-assigned-patch-chunk@codex,missing-evidence-index@codex,$size" -)"
     severity_findings "$S" 32
     severity_transcript "$S" 32 codex "{\"repeat\":\"packet-1\",\"sibling\":\"packet-1\",\"tail\":[$clean]}"
-    assert_eq "an oversized packet batch keeps its packet pacing count" \
+    assert_eq "a repeated packet read in a voided turn is not a second packet read" \
       "$(severity_audit "$R" "$S" 32 codex)" \
-      "$(severity_expect invalid "missing-source-packet@codex,source-packet-batch-too-large@codex,$size" -)"
+      "$(severity_expect invalid "missing-source-packet@codex,$size" -)"
   )
 }
 
