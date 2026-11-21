@@ -412,3 +412,5 @@ t-evidence.sh::test_evidence_semantic_rejection	35	normal
 t-proof-budget.sh::test_eof_edit_and_tail_deletion_stays_launchable	8	normal
 t-proof-budget.sh::test_eof_pure_tail_deletion_stays_launchable	8	normal
 t-proof-budget.sh::test_eof_appended_lines_stay_launchable	8	normal
+t-read-bounds.sh::test_claude_context_compaction_voids_the_read_audit	3	normal
+t-seat.sh::test_seat_codex_manifest_bound_is_the_writers_bound	2	normal
