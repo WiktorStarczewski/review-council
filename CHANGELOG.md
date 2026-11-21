@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Make a fresh orchestrator wait for seats, panels and CI inside one bounded foreground call (an `until` loop over the seats' exit files, or `rev-mechanical.sh ci`, each returning within about 9 minutes) instead of ending its turn, in the Claude, Codex, Pi and Cursor skills. Every turn that ended to wait reached the parent session as its own "waiting on background work" notification, dozens of them over one 4-seat round of 10 minutes or more. The turn now ends only on a seat result or permanent seat failure, a finding or a phase that needs a decision, a completed review, or a genuine block, and `rev-mechanical.sh ci` exits 124 while the run is still going instead of holding `gh run watch` open.
+
 ## 0.9.11
 
 - Keep a Codex seat reviewing when it returns ready while the read audit, replayed over its stream so far with no findings, still lacks a read that a later turn can supply: a plan cluster source or sibling search, the required original-source read or target, or the evidence navigation index. The next turn names each uncredited location or exact search command and the seat log says why the review continues, within the same review-turn count and repository-call allowance; once those are used up, the findings turn reports an incomplete proof and the post-run audit judges the stream. A stream the audit would reject whatever is read next finalizes at once. This replaces the check of the required post-index target alone, which let a plan seat whose 17 site reads fell in one review turn over 32 KiB finalize and fail its audit instead of reading them again.

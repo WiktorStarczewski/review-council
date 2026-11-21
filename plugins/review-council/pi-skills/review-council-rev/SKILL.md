@@ -87,6 +87,18 @@ signalling and preserve streams and valid siblings. Relay each narrated ten-minu
 status line. Stay in the active turn until the authorized workflow is terminal or
 there is a concrete external blocker. Do not edit while reviewer reads are active.
 
+## Wait contract
+
+While any seat, panel, CI watcher or status watcher is running, wait inside ONE
+bounded foreground call and never end the turn merely to wait or to report status.
+Use a bash `until` loop over the pending seats' `$S/r$PANEL_LABEL-<seat>.exit` files
+(or the CI run's status), sleeping 30 seconds between checks; each call returns when
+a pending seat finishes or after about 9 minutes, then you handle the result and
+repeat the call. End the turn only on a seat result or permanent seat failure that
+needs a decision, a finding that needs a decision, a phase or the review completing,
+or a genuine block. Relay each new status line from the watcher log between calls and
+keep going in the same turn.
+
 ## Mechanical phases
 
 Render, publish, a CI watch, and close-out are one call, not a series of host turns:
@@ -96,5 +108,7 @@ Render, publish, a CI watch, and close-out are one call, not a series of host tu
 "$PLUGIN/scripts/rev-mechanical.sh" ci "$S"
 "$PLUGIN/scripts/rev-mechanical.sh" closeout "$S"
 ```
+
+`ci` returns within about 9 minutes; exit 124 means the run is still going, so call it again.
 
 When config sets `host_mechanical_model`, run that call under that model. Keep the strongest model for finding verification and fix planning. Seat models, efforts, coverage, audits, and receipts do not change.

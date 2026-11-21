@@ -464,8 +464,24 @@ Completed valid siblings and partial streams remain on disk.
 Pass the pinned `REV_BASE` from `scope.env`, parsed as data; do not source untrusted
 files. Omit `--base` for documents. Use Pi's actual lowercase tools, never Claude's
 `Agent`, `Monitor`, or `TaskStop` APIs. Poll the session-owned process and
-terminal artifact map until every launch completes. Do not edit during
-reviewer reads. Do not end the turn while reviewers or gates remain running.
+terminal artifact map until every launch completes, as the wait loop below does. Do not edit during reviewer reads. Do not end the turn
+while reviewers or gates remain running.
+
+Wait for seats inside ONE bounded foreground call, never by ending the turn
+(see the **Wait contract** in `SKILL.md`). `PENDING_SEATS` is the seat names in the
+pending-seat map, with this panel's `PANEL_LABEL`:
+
+```bash
+finished() { for seat in $PENDING_SEATS; do [ -e "$S/r$PANEL_LABEL-$seat.exit" ] && echo "$seat"; done; }
+deadline=$((SECONDS + 540))
+until [ -n "$(finished)" ] || [ "$SECONDS" -ge "$deadline" ]; do sleep 30; done
+finished
+```
+
+The call returns when a pending seat has its `.exit` file or after 9 minutes. Handle
+each finished seat, remove it from the map once its terminal result is recorded, and
+repeat the call while seats remain; siblings keep running during a retry. Never launch a waiter
+with `run_in_background` and then end the turn.
 The CLI runner enforces read-only review tools and validates the findings schema.
 After all processes launch, switch to collect while retaining the exact label and
 seats with `rev-state.sh "$S" phase=collect round=<N> "seats=$LAUNCHED_SEATS"`.

@@ -464,9 +464,25 @@ tests, observability. In round 7 the same seats would swap sides.
 
 ### Collect
 
-Inspect terminal results as they arrive instead of waiting for all notifications.
-Remove a seat from the pending map only after its terminal result is recorded. Do not
-edit the working tree while seats run.
+Inspect terminal results as they arrive. Wait for seats inside ONE bounded foreground call,
+never by ending the turn (see the **Wait contract** in `SKILL.md`). `PENDING_SEATS` is the seat names in the
+pending-seat map, with this panel's `PANEL_LABEL`:
+
+```bash
+finished() { for seat in $PENDING_SEATS; do [ -e "$S/r$PANEL_LABEL-$seat.exit" ] && echo "$seat"; done; }
+deadline=$((SECONDS + 540))
+until [ -n "$(finished)" ] || [ "$SECONDS" -ge "$deadline" ]; do sleep 30; done
+finished
+```
+
+The call returns when a pending seat has its `.exit` file or after 9 minutes. Handle
+each finished seat, remove it from the map once its terminal result is recorded, and
+repeat the call while seats remain; siblings keep running during a retry. Never launch a waiter
+with `run_in_background` and then end the turn.
+An `agent` seat has no `.exit` file until you write one: its result arrives as its tool
+result, so keep polling the CLI seats in the same loop, and when only Agent seats remain
+pending wait with the same bounded call (`sleep 30` until 9 minutes), never by ending the turn.
+Do not edit the working tree while seats run.
 
 - Each `rev-seat.sh` prints `seat=<s> round=<n> exit=<c> findings=<k>` when it exits.
 - The Agent returns the `agent` seat's JSON as text. Write it to `$S/r<N>-<seat>.json`
