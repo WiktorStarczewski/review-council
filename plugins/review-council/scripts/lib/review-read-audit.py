@@ -3578,7 +3578,8 @@ def assess(args, blocked, progress=None):
                 except json.JSONDecodeError:
                     failures.append(violation('malformed-transcript', args.adapter))
                     continue
-                if (args.adapter in ('claude', 'agent') and event.get('type') == 'system'
+                if (args.adapter in ('claude', 'agent') and isinstance(event, dict)
+                        and event.get('type') == 'system'
                         and event.get('subtype') == 'compact_boundary'):
                     failures.append(compaction_violation(args.adapter, event))
                 if args.adapter == 'codex':

@@ -2308,6 +2308,7 @@ write('control', events)
 write('compacted', events[:6] + [boundary] + events[6:])
 write('bare-boundary', events[:6] + [{'type': 'system', 'subtype': 'compact_boundary'}] + events[6:])
 write('other-system', events[:6] + [{'type': 'system', 'subtype': 'init'}] + events[6:])
+write('non-object', events[:6] + [[]] + events[6:])
 PY
     local adapter
     for adapter in claude agent; do
@@ -2330,6 +2331,11 @@ PY
         --prompt "$S/prompt.md" --root "$R" --session "$S" --out "$S/bare-audit.json" >/dev/null 2>&1
       assert_eq "$adapter compaction without metadata still fails closed" "$?" 2
       assert_grep "$adapter metadata-free compaction is named" "$S/bare-audit.json" '"code":"context-compacted"'
+      python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter "$adapter" --raw "$S/non-object.ndjson" \
+        --prompt "$S/prompt.md" --root "$R" --session "$S" --out "$S/shape-audit.json" >/dev/null 2>&1
+      assert_eq "$adapter non-object line still fails as a transcript shape, not a crash" "$?" 2
+      assert_grep "$adapter non-object line keeps its shape violation" "$S/shape-audit.json" \
+        '"code":"unsupported-transcript-shape"'
     done
 
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex --raw "$S/compacted.ndjson" \
