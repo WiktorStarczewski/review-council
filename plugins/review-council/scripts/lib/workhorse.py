@@ -23,6 +23,7 @@ LIB = Path(__file__).resolve().parent
 if str(LIB) not in sys.path:
     sys.path.insert(0, str(LIB))
 
+from review_limits import mandatory_repository_read_limit_for_seat
 from roster import (AUTH_FAILURE, CLAUDE_SESSION_ENV, QUOTA_FAILURE, claude_cli_reason,
                     codex_catalog, codex_catalog_path, codex_suffix, reasoning_efforts)
 
@@ -260,11 +261,89 @@ def roster_family(row):
     return None
 
 
-def choose_escalation(host, family, roster_rows, candidates, target_family=None):
+def _stages_module():
+    spec = importlib.util.spec_from_file_location(
+        'codex_proof_stages_for_escalation', LIB / 'codex-proof-stages.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def family_context_budget(adapter, model):
+    """Pre-review context tokens a staged Codex seat holds, or None when it is not capped.
+
+    Only the Codex adapter stages its reads before review and refuses an over-budget prompt;
+    a Claude seat reads on demand and has no such cap (a Sonnet seat completed an ~847K-token
+    assignment that Luna and Sol both refused).
+    """
+    if adapter == 'codex':
+        return _stages_module().context_budget(model)
+    return None
+
+
+def _recorded_files(session, pattern):
+    found = []
+    for path in Path(session).glob(pattern):
+        try:
+            found.append((path.stat().st_mtime_ns, path))
+        except OSError:
+            continue
+    return [path for _, path in sorted(found, key=lambda row: row[0], reverse=True)]
+
+
+def failed_assignment_load(session, seat):
+    """Recorded load of a failed assignment: any of `tokens`, `reads` and `target`.
+
+    The newest manifest that registers the seat supplies its repository reads. The seat's own
+    capacity refusal, the only record of a projected context, supplies its tokens. Unreadable
+    or absent records constrain nothing.
+    """
+    load = {}
+    for path in _recorded_files(session, 'r*-evidence.manifest.json'):
+        try:
+            manifest = json.loads(path.read_text(encoding='utf-8'))
+            row = manifest['task_capacity']['seats'][seat]
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+            continue
+        if not isinstance(row, dict):
+            continue
+        if type(row.get('mandatory_repository_reads')) is int:
+            load['reads'] = row['mandatory_repository_reads']
+            load['target'] = row.get('repository_source_target')
+        break
+    name = re.compile(r'r[A-Za-z0-9._]+-' + re.escape(seat) + r'\.capacity-refusal')
+    for path in _recorded_files(session, 'r*-' + seat + '.capacity-refusal'):
+        if not name.fullmatch(path.name):
+            continue
+        try:
+            tokens = json.loads(path.read_text(encoding='utf-8'))['projected_tokens']
+        except (OSError, UnicodeError, ValueError, KeyError, TypeError):
+            continue
+        if type(tokens) is int:
+            load['tokens'] = tokens
+            break
+    return load
+
+
+def holds_assignment(load, adapter, model):
+    """Whether a seat on this model can hold the recorded load, by tokens and direct reads."""
+    tokens = load.get('tokens')
+    if tokens is not None:
+        budget = family_context_budget(adapter, model)
+        if budget is not None and tokens > budget:
+            return False
+    reads = load.get('reads')
+    return reads is None or reads <= mandatory_repository_read_limit_for_seat(
+        True, load.get('target'), model)
+
+
+def choose_escalation(host, family, roster_rows, candidates, target_family=None, holds=None):
     """Next enforced family on this host's chain, preferring a seat already on the roster.
 
     `candidates` maps a family to a launch spec or None. Agent-only specs are
-    skipped: a repair executor has to be an enforced seat. Returns `(row, existing)`.
+    skipped: a repair executor has to be an enforced seat. `holds(adapter, model)` skips a
+    family that cannot take the failed assignment; an explicit `target_family` is never
+    skipped. Returns `(row, existing)`.
     """
     rows = roster_rows if isinstance(roster_rows, list) else []
     specs = candidates if isinstance(candidates, dict) else {}
@@ -279,9 +358,15 @@ def choose_escalation(host, family, roster_rows, candidates, target_family=None)
                 continue
             if roster_family(row) != nxt or row.get('adapter') not in ENFORCED_ADAPTERS:
                 continue
+            if holds is not None and target_family is None and not holds(
+                    row['adapter'], row.get('model')):
+                continue
             return dict(row), True
         spec = specs.get(nxt)
         if not isinstance(spec, dict) or spec.get('adapter') not in ENFORCED_ADAPTERS:
+            continue
+        if holds is not None and target_family is None and not holds(
+                spec['adapter'], spec['model']):
             continue
         return {
             'version': 1,
@@ -404,9 +489,22 @@ def escalate(session, seat, panel=None):
         host = read_record(record_path)['host']
     _chosen, candidates = _candidates(host, include_cursor=False)
     target_family = escalation_override(session, family)
-    chosen = choose_escalation(host, family, rows, candidates, target_family)
+    load = failed_assignment_load(session, seat)
+    skipped = []
+
+    def holds(adapter, model):
+        fits = holds_assignment(load, adapter, model)
+        if not fits:
+            skipped.append(model)
+        return fits
+
+    chosen = choose_escalation(host, family, rows, candidates, target_family, holds)
     if chosen is None:
         _clear_escalation(session)
+        if skipped:
+            raise ValueError('no eligible family can hold this assignment (~%s tokens, %s reads); '
+                             're-prepare it smaller or finish the lens another way'
+                             % (load.get('tokens', '?'), load.get('reads', '?')))
         raise ValueError('normal chain is exhausted')
     spec, existing = chosen
     if panel is not None:

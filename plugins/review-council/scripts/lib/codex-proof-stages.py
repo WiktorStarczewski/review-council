@@ -629,7 +629,7 @@ def read_bytes(read, session, audit):
 
 
 def context_capacity(stage_dir, prompt, model):
-    """('fits', projected, limit), ('raise', projected, limit, window), ('over', reason) or
+    """('fits', projected, limit), ('raise', projected, limit, window), ('over', reason, projected, limit) or
     ('unknown', reason) for the context a seat holds before review: the staged reads and their
     turns, then the assignment prompt. 'raise' needs the catalog's larger window and the switch
     unset, empty or 1; any other value keeps the refusal."""
@@ -659,7 +659,35 @@ def context_capacity(stage_dir, prompt, model):
         if projected <= limits['raised']:
             return ('raise', str(projected), str(limits['raised']), str(limits['maximum']))
         reason += (f", and over {limits['raised']} at its {limits['maximum']}-token maximum window")
-    return ('over', reason)
+        limit = limits['raised']
+    return ('over', reason, str(projected), str(limit))
+
+
+def context_budget(model):
+    """Largest pre-review context a seat on this model accepts, or None when the cache does not say."""
+    limits, unknown = model_limits(model)
+    if unknown:
+        return None
+    return limits['raised'] or limits['limit']
+
+
+def write_capacity_refusal(path, prompt, model, projected, budget, reason):
+    """Record that this exact prompt can never fit this model, so the assignment is not relaunched."""
+    path = Path(path)
+    record = {'schema_version': 1, 'model': model, 'prompt_sha256': sha256(Path(prompt).read_bytes()),
+              'projected_tokens': int(projected), 'budget_tokens': int(budget), 'reason': reason}
+    descriptor, temporary = tempfile.mkstemp(prefix='.capacity-refusal-', dir=path.parent)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+            json.dump(record, stream, indent=2, sort_keys=True)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        if os.path.lexists(temporary):
+            os.unlink(temporary)
+        raise
 
 
 def exact_stage_turn(turn, reads, root, session, audit):
@@ -890,6 +918,10 @@ def main():
     parser.add_argument('--stage-step')
     parser.add_argument('--warm-evidence')
     parser.add_argument('--capacity')
+    parser.add_argument('--capacity-refusal')
+    parser.add_argument('--projected')
+    parser.add_argument('--budget')
+    parser.add_argument('--reason')
     parser.add_argument('--compact-prompt')
     parser.add_argument('--raw')
     parser.add_argument('--turn')
@@ -943,6 +975,16 @@ def main():
                 raise StageError('a context capacity check needs the prompt and the model')
             print('\t'.join(context_capacity(args.capacity, args.prompt, args.model)))
         except (OSError, UnicodeError, StageError, KeyError, TypeError, ValueError) as error:
+            print('codex proof staging: ' + str(error), file=sys.stderr)
+            return 1
+        return 0
+    if args.capacity_refusal:
+        try:
+            if not all((args.prompt, args.model, args.projected, args.budget, args.reason)):
+                raise StageError('a capacity refusal needs the prompt, model, projection, budget and reason')
+            write_capacity_refusal(args.capacity_refusal, args.prompt, args.model,
+                                   args.projected, args.budget, args.reason)
+        except (OSError, UnicodeError, StageError, ValueError) as error:
             print('codex proof staging: ' + str(error), file=sys.stderr)
             return 1
         return 0
