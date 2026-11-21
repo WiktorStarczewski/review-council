@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Publish a GitHub Release automatically for every `review-council--v*` tag from its CHANGELOG section, and require the release check in the release procedure.
+
 ## 0.9.13
 
 - Classify a seat that hits the Claude CLI's weekly, session, daily, monthly or per-model (such as Opus) limit, runs out of extra usage, or reports a weekly, session, 5-hour, daily or per-model limit reached as a quota failure (exit 4) instead of an unclassified provider failure (exit 2). Only the plain "hit your limit" wording matched, so such a seat spent its exact retry and replacement chain on an exhausted account and quota_fallback never engaged.
