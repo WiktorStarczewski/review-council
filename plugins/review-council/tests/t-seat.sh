@@ -992,6 +992,14 @@ print(audit["status"], audit["evidence_scoped"],
 ' "$S/r1-codex-luna.read-audit.json" 2>&1)" "invalid True True"
     assert_grep "the seat log names the replacement rule" "$S/r1-codex-luna.log" \
       '^bounded-read audit rejected full-scope evidence review; replace this assignment on another eligible seat; never relaunch this seat under this label$'
+    assert_eq "the seat log lists the audit's violation codes, sorted and unique" \
+      "$(grep '^bounded-read audit violations: ' "$S/r1-codex-luna.log")" "$(python3 -c '
+import json, sys
+audit = json.load(open(sys.argv[1]))
+print("bounded-read audit violations: " + ",".join(sorted({row["code"] for row in audit["violations"]})))
+' "$S/r1-codex-luna.read-audit.json" 2>&1)"
+    assert_grep "and names the refused command's code" "$S/r1-codex-luna.log" \
+      '^bounded-read audit violations: .*unsupported-shell-command'
     calls=$(wc -l < "$S/calls.log" | tr -d ' ')
     SHIM_MODE=staged-audit SHIM_POST_INDEX_COMMAND="$target" SHIM_STAGE_DIR="$S/calls" \
       SHIM_CALLS_FILE="$S/calls.log" \
