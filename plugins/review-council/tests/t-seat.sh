@@ -794,6 +794,54 @@ test_seat_codex_refuses_evidence_over_its_context_window() {
   )
 }
 
+test_seat_codex_manifest_bound_is_the_writers_bound() {
+  ( local _path="$PATH"; seat_env
+    local R="$T/manifest-bound-root" S="$T/manifest-bound-session"
+    seat_codex_prepared_session "$R" "$S" || { fail "prepared Codex session fixture"; return; }
+    python3 - "$SCRIPTS" "$S" <<'PY'
+import importlib.util
+import hashlib
+import re
+import sys
+from pathlib import Path
+
+scripts, session = Path(sys.argv[1]), Path(sys.argv[2])
+sys.path.insert(0, str(scripts / 'lib'))
+import review_limits
+spec = importlib.util.spec_from_file_location('stages', scripts / 'lib' / 'codex-proof-stages.py')
+stages = importlib.util.module_from_spec(spec); spec.loader.exec_module(stages)
+bound = getattr(review_limits, 'MANIFEST_MAX_BYTES', None)
+assert bound == 16 * 1024 * 1024, bound
+assert getattr(stages, 'MANIFEST_MAX_BYTES', None) is bound
+assert '48 * 1024 * 1024' not in (scripts / 'lib' / 'codex-proof-stages.py').read_text()
+
+prompt = session / 'r1-codex-luna.prompt.md'
+manifest = session / 'r1-evidence.manifest.json'
+original_prompt, original_manifest = prompt.read_text(), manifest.read_bytes()
+
+def bind(size):
+    raw = original_manifest + b' ' * (size - len(original_manifest))
+    manifest.write_bytes(raw)
+    prompt.write_text(re.sub(r'(?m)^Evidence manifest SHA-256: [0-9a-f]{64}$',
+                             'Evidence manifest SHA-256: ' + hashlib.sha256(raw).hexdigest(),
+                             original_prompt))
+
+bind(bound + 1)
+try:
+    stages.prepared_stages(prompt, 'codex-luna', 'gpt-6-luna', session / 'stages-over')
+except stages.StageError as error:
+    assert 'exceeds its bounded size' in str(error), error
+else:
+    raise AssertionError('a manifest over the bound reached the stage plan')
+bind(bound)
+planned = stages.prepared_stages(prompt, 'codex-luna', 'gpt-6-luna', session / 'stages-at')
+assert planned, 'a manifest at the bound must reach its identity checks and plan stages'
+PY
+    assert_eq "a Codex seat refuses exactly the manifests the writer refuses" "$?" 0
+    seat_env_reset "$_path"
+  )
+}
+
 test_seat_codex_review_turn_reads_a_hashless_prompt_copy() {
   ( local _path="$PATH"; seat_env
     local R="$T/hashless-root" S="$T/hashless-session" target before review
