@@ -5490,6 +5490,164 @@ test_evidence_semantic_rejection() {
   REV_EVIDENCE_GROUP=semantic_rejection evidence_hardening
 }
 
+# The full-state owner holds the whole cumulative patch and every component, so its context cost
+# grows with the pull request while a specialist's does not. Preparation must not hand that owner to
+# a model whose window cannot hold it: the owner is split into component-granular shares that each fit.
+test_over_budget_assignment_is_split_into_capacity_shares() {
+  ( local R="$T/share-root" S="$T/share-session" base
+    mkrepo "$R"; mkdir -p "$R/src" "$S"
+    python3 - "$R" <<'PY' || return
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+for index in range(12):
+    (root / 'src' / f'm{index:02d}.py').write_text(f'def module_{index:02d}():\n    return 0\n')
+PY
+    git -C "$R" add . && git -C "$R" commit -qm "modules" || return
+    base=$(git -C "$R" rev-parse HEAD)
+    python3 - "$R" <<'PY' || return
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+for index in range(12):
+    body = ''.join(f'    value_{line:03d} = "{index:02d}-{line:03d}-' + 'x' * 70 + '"\n' for line in range(330))
+    (root / 'src' / f'm{index:02d}.py').write_text(
+        f'def module_{index:02d}():\n' + body + '    return value_000\n')
+PY
+    printf "REV_BASE='%s'\nREV_BRANCH='feature'\nREV_DEFAULT='main'\nREV_ROOT='%s'\nREV_SCOPE='branch'\n" \
+      "$base" "$R" > "$S/scope.env"
+    python3 -c 'print("\n".join(f"src/m{i:02d}.py" for i in range(12)))' > "$S/files.txt"; : > "$S/untracked.txt"
+    printf '%s\n' '{"seats":[{"seat":"codex-luna","adapter":"codex","model":"gpt-6-luna","effort":"xhigh"},{"seat":"codex-luna-2","adapter":"codex","model":"gpt-6-luna","effort":"xhigh"},{"seat":"codex-luna-3","adapter":"codex","model":"gpt-6-luna","effort":"xhigh"},{"seat":"codex-luna-4","adapter":"codex","model":"gpt-6-luna","effort":"xhigh"}]}' > "$S/roster.json"
+    printf '%s\n' '{"chain":["luna","sonnet","sol","opus"],"host":"claude","mode":"normal","panel_family":"luna","roster":"normal","version":1}' > "$S/panel-request.json"
+    python3 - "$SCRIPTS" "$S" "$T" <<'PY'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+scripts, session, tmp = map(Path, sys.argv[1:4])
+MODEL = 'gpt-6-luna'
+OWNER = 'codex-luna'
+SPECIALISTS = ['codex-luna-2', 'codex-luna-3', 'codex-luna-4']
+evidence = str(scripts / 'rev-evidence.py')
+helper = str(scripts / 'lib' / 'codex-proof-stages.py')
+
+
+def cache(name, window, slug=MODEL):
+    path = tmp / name
+    path.write_text(json.dumps({'client_version': '0.0.0-test', 'models': [{
+        'slug': slug, 'visibility': 'list', 'context_window': window,
+        'effective_context_window_percent': 100}]}))
+    return path
+
+
+def run(argv, models, good=True):
+    env = dict(os.environ, REV_PATCH_CHUNKS='auto', REV_SOURCE_CONTEXT='1',
+               REVIEW_COUNCIL_CODEX_MODELS_CACHE=str(models))
+    env.pop('REVIEW_COUNCIL_CODEX_MAX_CONTEXT_WINDOW', None)
+    done = subprocess.run([str(part) for part in argv], capture_output=True, text=True, env=env)
+    assert (done.returncode == 0) == good, (argv, done.returncode, done.stdout, done.stderr)
+    return done
+
+
+def prepare(label, models, good=True):
+    done = run([sys.executable, evidence, 'prepare', session, label, '--phase', 'discovery'],
+               models, good)
+    if not good:
+        return done
+    return json.loads((session / f'r{label}-evidence.manifest.json').read_text())
+
+
+def render(label, seats, models):
+    manifest = session / f'r{label}-evidence.manifest.json'
+    for seat in seats:
+        run([scripts / 'rev-prompt.sh', session, label, seat, 'simplicity', 'capacity-shares',
+             '--evidence', manifest], models)
+
+
+def verdict(label, seat, models):
+    prompt = session / f'r{label}-{seat}.prompt.md'
+    stages = tmp / f'share-stages-{label}-{seat}'
+    run([sys.executable, helper, '--prompt', prompt, '--seat', seat, '--model', MODEL,
+         '--stage-dir', stages], models)
+    done = run([sys.executable, helper, '--capacity', stages, '--prompt', prompt,
+                '--model', MODEL], models)
+    return done.stdout.strip().split('\t')
+
+
+roomy = cache('share-cache-roomy.json', 100_000_000)
+whole = prepare('unsplit', roomy)
+assert 'shares' not in whole, 'a pull request that fits its model must not be split'
+assert set(whole['assignments']) == {OWNER, *SPECIALISTS}
+assert whole['mechanical_owner'] == OWNER and whole['assignments'][OWNER]['full_state']
+render('unsplit', whole['assignments'], roomy)
+projected = {}
+for seat in whole['assignments']:
+    kind, tokens, _ = verdict('unsplit', seat, roomy)
+    assert kind == 'fits', (seat, kind)
+    projected[seat] = int(tokens)
+limit = projected[OWNER] * 10 // 13
+assert max(projected[seat] for seat in SPECIALISTS) * 10 <= limit * 8, \
+    ('fixture: every specialist must fit the window the owner overflows', projected, limit)
+
+tight = cache('share-cache-tight.json', -(-limit * 100 // 55))
+manifest = prepare('shared', tight)
+shares = manifest['shares'][OWNER]
+share_seats = shares['seats']
+assert len(share_seats) >= 2 and all(seat.startswith(OWNER + '-s') for seat in share_seats), share_seats
+assert set(manifest['assignments']) == {*SPECIALISTS, *share_seats}, 'the owner is replaced by its shares'
+component_ids = [component['id'] for component in manifest['components']]
+assert len(component_ids) == 12 and set(shares['components']) == set(component_ids)
+claimed = [cid for seat in share_seats for cid in manifest['assignments'][seat]['components']]
+assert sorted(claimed) == sorted(component_ids), 'shares partition the owner components exactly'
+claimed_paths = [path for seat in share_seats for path in manifest['assignments'][seat]['share_paths']]
+assert sorted(claimed_paths) == manifest['paths'], 'shares partition the owner paths exactly'
+for seat in share_seats:
+    assignment = manifest['assignments'][seat]
+    assert (assignment['scope'], assignment['full_state'], assignment['share_of']) == ('share', False, OWNER)
+    assert assignment['bundle'] == whole['assignments'][OWNER]['bundle']
+for seat in SPECIALISTS:
+    assert (manifest['assignments'][seat]['patch_sha256']
+            == whole['assignments'][seat]['patch_sha256']), 'specialist assignments do not change'
+run([sys.executable, evidence, 'verify', session / 'rshared-evidence.manifest.json'], tight)
+
+launch = run([sys.executable, evidence, 'seats', session / 'rshared-evidence.manifest.json'],
+             tight).stdout.splitlines()
+rows = [line.split('\t') for line in launch]
+assert sorted(row[0] for row in rows) == sorted(manifest['assignments']), rows
+assert {row[1] for row in rows} == {OWNER, *SPECIALISTS}, rows
+render('shared', manifest['assignments'], tight)
+for seat in manifest['assignments']:
+    kind, tokens, seat_limit = verdict('shared', seat, tight)
+    assert kind in ('fits', 'raise') and int(tokens) <= int(seat_limit), (seat, kind, tokens, seat_limit)
+    assert int(seat_limit) >= limit
+    assert manifest['task_capacity']['seats'][seat]['projected_context_tokens'] >= int(tokens), seat
+
+path = session / 'rshared-evidence.manifest.json'
+original = path.read_bytes()
+tampered = json.loads(original)
+tampered['assignments'][share_seats[0]]['components'] = tampered['assignments'][share_seats[0]]['components'][1:]
+path.write_bytes((json.dumps(tampered, sort_keys=True, ensure_ascii=True, indent=2) + '\n').encode())
+run([sys.executable, evidence, 'verify', path], tight, good=False)
+path.write_bytes(original)
+
+unlisted = cache('share-cache-unlisted.json', 20_000, slug='gpt-6-sol')
+unknown = prepare('unknown', unlisted)
+assert 'shares' not in unknown and set(unknown['assignments']) == {OWNER, *SPECIALISTS}, \
+    'a model the cache does not list is not split'
+
+tiny = cache('share-cache-tiny.json', 40_000)
+refused = prepare('tiny', tiny, good=False)
+assert 'tokens of context' in refused.stderr and 'cannot be split' in refused.stderr, refused.stderr
+assert OWNER in refused.stderr and 'src/m' in refused.stderr, refused.stderr
+diagnostic = json.loads((session / 'prepare-diagnostic-tiny.json').read_text())
+assert diagnostic['refusals'] and diagnostic['refusals'][0]['seat'] == OWNER, diagnostic
+PY
+    assert_eq "an over-budget full-state owner is split into capacity shares that fit" "$?" 0
+  )
+}
+
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   test_evidence_contract \
     && test_evidence_hardening_structure \

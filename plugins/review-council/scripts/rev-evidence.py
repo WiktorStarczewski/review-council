@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import io
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -38,14 +39,18 @@ from review_limits import (CLAUDE_MAX_TURNS, MANDATORY_REPOSITORY_READ_LIMIT,
                            repository_expansion_call_limit_for_seat,
                            repository_refutation_call_reserve_for_model)
 from session_inputs import session_input_lock, validate_standard_inputs
-from roster import cursor_sdk_identity, validate_cursor_sdk_qualification
-from workhorse import (CHAIN as WORKHORSE_CHAIN, ORDER as WORKHORSE_ORDER, SEAT,
-                       escalation_row, overlay_roster, plan_seat, roster_family)
+from roster import (codex_catalog, codex_catalog_path, cursor_sdk_identity,
+                    validate_cursor_sdk_qualification)
+from workhorse import (CHAIN as WORKHORSE_CHAIN, ORDER as WORKHORSE_ORDER, SEAT, escalation_row,
+                       overlay_roster, plan_seat, roster_family, select_codex_family, share_row)
+import context_budget
 
 BUNDLES = ('correctness-boundaries', 'security-state-api',
            'concurrency-resources-performance', 'tests-observability-maintenance-regression')
 PLAN_BUNDLES = ('plan-completeness', 'plan-soundness', 'plan-simplicity', 'plan-tests')
 SOURCE_CONTEXT_LIMIT = 16 * 1024
+# An owner is measured for splitting only when its patch alone would fill this share of the window.
+SHARE_MEASURE_PERCENT = 25
 SOURCE_SEGMENT_VISIBLE_LIMIT = 16 * 1024
 SOURCE_SEGMENT_SINGLE_LINE_VISIBLE_LIMIT = 32 * 1024
 SOURCE_SEGMENT_LINE_LIMIT = READ_LINES
@@ -256,9 +261,73 @@ def with_manifest_workhorse(session, roster, manifest):
     seats = set(manifest.get('assignments') or {})
     row = replacement_executor_row(manifest)
     if row is None:
-        return with_workhorse(session, roster, seats)
+        return with_manifest_shares(with_workhorse(session, roster, seats), manifest)
     roster = overlay_roster(roster, row, seats)
     return with_workhorse(session, roster, seats - {row['seat']})
+
+
+def validate_share_records(manifest):
+    """The capacity-share record of a manifest: {full-state owner: {seats, components}}, or {}."""
+    shares = manifest.get('shares')
+    if shares is None:
+        return {}
+    owner = manifest.get('mechanical_owner')
+    if (not isinstance(shares, dict) or set(shares) != {owner} or not isinstance(owner, str)
+            or manifest.get('phase') not in ('discovery', 'risk', 'verification')
+            or manifest.get('fallback_reason')):
+        raise ValueError('invalid capacity shares')
+    record = shares[owner]
+    if not isinstance(record, dict) or set(record) != {'seats', 'components'}:
+        raise ValueError('invalid capacity share record')
+    seats = record['seats']
+    components = record['components']
+    if (not isinstance(seats, list) or len(seats) < 2
+            or seats != [f'{owner}-s{index}' for index in range(1, len(seats) + 1)]
+            or any(not SAFE_NAME.fullmatch(seat) for seat in seats)
+            or not isinstance(components, list) or not components
+            or any(not isinstance(value, str) for value in components)):
+        raise ValueError('invalid capacity share record')
+    return shares
+
+
+def with_manifest_shares(roster, manifest):
+    """The launch roster of a split panel: each share runs on its full-state owner's roster row."""
+    shares = validate_share_records(manifest)
+    if not shares:
+        return roster
+    rows = list(roster['seats'])
+    for owner, record in shares.items():
+        base = next((row for row in roster['seats'] if row.get('seat') == owner), None)
+        if base is None:
+            raise ValueError('capacity share owner is absent from the roster')
+        rows.extend(share_row(base, seat) for seat in record['seats'])
+    return dict(roster, seats=rows)
+
+
+def integration_seats(assigned, owner):
+    """The seats that carry the integration role: the full-state owner, its capacity shares when
+    the owner was split, or else the first assignment of a panel that lacks its owner."""
+    if owner in assigned:
+        return {owner}
+    shares = {seat for seat, assignment in assigned.items() if assignment.get('share_of') == owner}
+    return shares or {next(iter(assigned))}
+
+
+def launch_seats(manifest, roster):
+    """(launch seat, roster seat) pairs in roster order; a split owner is replaced by its shares."""
+    assigned = manifest['assignments']
+    shares = validate_share_records(manifest)
+    rows = []
+    for row in roster['seats']:
+        seat = row.get('seat')
+        if row.get('share_of'):
+            continue
+        if seat in assigned:
+            rows.append((seat, seat))
+        elif seat in shares:
+            rows.extend((name, seat) for name in shares[seat]['seats'])
+    named = {name for name, _ in rows}
+    return rows + [(seat, seat) for seat in sorted(set(assigned) - named)]
 
 
 def executor_row_for_manifest(session, manifest, seat):
@@ -4378,6 +4447,173 @@ def components_for(patches, dependencies, chosen, owner, findings=None, prior_ow
     return sorted(result, key=lambda c: c['files'])
 
 
+def family_context_budget(family, roster):
+    """The context one chain family may fill, from its roster row or else the Codex catalog."""
+    if family in ('sonnet', 'opus'):
+        return context_budget.seat_budget_tokens('claude', family)
+    row = next((row for row in roster['seats'] if roster_family(row) == family), None)
+    if row is not None:
+        return context_budget.seat_budget_tokens(row.get('adapter'), row.get('model'))
+    try:
+        listed, error = codex_catalog(codex_catalog_path())
+        picked = None if error else select_codex_family(listed, family)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
+    return context_budget.seat_budget_tokens('codex', picked[0]) if picked else None
+
+
+def chain_context_floor(session, roster, owner_budget):
+    """The least context any seat on the replacement chain may fill. A share carries any seat's
+    assignment after a replacement, so it must fit the smallest window; unknown windows are left out."""
+    try:
+        chain = read_json(session / 'panel-request.json').get('chain')
+    except (OSError, ValueError, AttributeError):
+        chain = None
+    if not isinstance(chain, list) or any(not isinstance(family, str) for family in chain):
+        chain = list(WORKHORSE_CHAIN)
+    budgets = [owner_budget] + [budget for budget in (
+        family_context_budget(family, roster) for family in chain) if budget]
+    return min(budgets)
+
+
+def patch_chunk_sizes(size):
+    full, rest = divmod(size, PATCH_CHUNK_RAW_LIMIT)
+    return [PATCH_CHUNK_RAW_LIMIT] * full + ([rest] if rest else [])
+
+
+def component_context_costs(components, patches, packet):
+    """Tokens each component adds to a seat that holds it: its patch reads and the required source
+    segments that prove it, shared among the components of a range. Source packets are not
+    attributed: every share has its own, which the caller reserves."""
+    cost = {component['id']: 0.0 for component in components}
+    for component in components:
+        size = sum(len(patches[path]) for path in component['files'])
+        cost[component['id']] += sum(
+            context_budget.read_tokens(chunk, 'patch') for chunk in patch_chunk_sizes(size))
+    for row in packet['required_source_ranges']:
+        segments = sum(context_budget.read_tokens(segment['raw_bytes'], 'segment')
+                       for segment in row['segments'])
+        for component_id in row['component_ids']:
+            cost[component_id] += segments / len(row['component_ids'])
+    return cost
+
+
+def pack_capacity_shares(components, costs, mechanical, capacity):
+    """First-fit-decreasing packing of components into the fewest shares of at most `capacity`
+    tokens. A component prefers the first fitting share that already holds a boundary neighbour;
+    mechanical files fill the lightest share. Returns [(component ids, extra paths)] or the
+    component whose own cost exceeds `capacity`."""
+    owner_of = {path: component['id'] for component in components for path in component['files']}
+    neighbours = {component['id']: {owner_of[path] for path in component['boundary']
+                                    if path in owner_of} - {component['id']}
+                  for component in components}
+    bins = []
+    for component in sorted(components, key=lambda c: (-costs[c['id']], c['files'])):
+        cost = costs[component['id']]
+        if cost > capacity:
+            return component
+        fitting = [row for row in bins if row['used'] + cost <= capacity]
+        near = [row for row in fitting if row['ids'] & neighbours[component['id']]]
+        row = (near or fitting or [None])[0]
+        if row is None:
+            row = {'ids': set(), 'paths': [], 'used': 0.0}
+            bins.append(row)
+        row['ids'].add(component['id'])
+        row['used'] += cost
+    for path, cost in mechanical:
+        row = min(bins, key=lambda value: value['used'])
+        if row['used'] + cost > capacity:
+            row = {'ids': set(), 'paths': [], 'used': 0.0}
+            bins.append(row)
+        row['paths'].append(path)
+        row['used'] += cost
+    return [(row['ids'], row['paths']) for row in bins]
+
+
+def context_capacity_refusal(seat, projected, budget, files, cost=None):
+    """Refuse an assignment no seat on the chain can hold, naming what cannot be split further."""
+    PREPARE_PROGRESS['refusals'] = [{
+        'seat': seat, 'kind': 'context-capacity', 'budget_tokens': budget,
+        'projected_tokens': projected, 'files': files}]
+    detail = (f'; {", ".join(files)} alone needs ~{cost} tokens and cannot be split'
+              if cost is not None else '')
+    raise ValueError(f'full-state seat {seat} needs ~{projected} tokens of context before review, '
+                     f'over {budget}, the least any seat on its replacement chain may fill{detail}')
+
+
+def split_full_state_owner(session, roster, owner, scope, components, patches, categories,
+                           patch_set, measure):
+    """(shares, budget) when the full-state owner's assignment would overflow the least context any
+    seat on its replacement chain may fill, else (None, None): the owner's components and mechanical
+    files packed into the fewest capacity shares. `measure` plans the owner's source context.
+    A model whose window is unknown is never split, as the launch check never refuses it."""
+    owner_budget = context_budget.seat_budget_tokens(scope['adapter'], scope.get('model'))
+    if owner_budget is None or not components:
+        return None, None
+    budget = chain_context_floor(session, roster, owner_budget)
+    patch_tokens = scope['patch_bytes'] / context_budget.READ_BYTES_PER_TOKEN
+    if patch_tokens * 100 <= budget * SHARE_MEASURE_PERCENT:
+        return None, None
+    prepare_stage('context-budget')
+    packet = measure()['seats'][owner]
+    projected = context_budget.projected_context_tokens(
+        patch_read_sizes(scope, patch_set), [shard['bytes'] for shard in packet['shards']],
+        [segment['raw_bytes'] for row in packet['required_source_ranges']
+         for segment in row['segments']])
+    if projected <= budget:
+        return None, None
+    percent = 100 + context_budget.PROJECTION_HEADROOM_PERCENT
+    # Each share is an integration seat with up to three full source packets of its own.
+    packets = 3 * context_budget.read_tokens(SOURCE_CONTEXT_LIMIT, 'packet')
+    capacity = budget * 100 / percent - context_budget.fixed_context_tokens() - packets
+    costs = component_context_costs(components, patches, packet)
+    mechanical = sorted(
+        (path, sum(context_budget.read_tokens(chunk, 'patch')
+                   for chunk in patch_chunk_sizes(len(patch))))
+        for path, patch in patches.items() if categories[path] != 'semantic')
+    packed = pack_capacity_shares(components, costs, mechanical, capacity)
+    if isinstance(packed, dict):
+        context_capacity_refusal(owner, projected, budget, packed['files'],
+                                 math.ceil(costs[packed['id']]))
+    if len(packed) < 2:
+        return None, None
+    by_id = {component['id']: component for component in components}
+    shares = []
+    for ids, extra in packed:
+        files = {path for component_id in ids for path in by_id[component_id]['files']}
+        shares.append({
+            'components': [component['id'] for component in components if component['id'] in ids],
+            'paths': sorted(files | set(extra))})
+    return shares, budget
+
+
+def apply_capacity_shares(session, prefix, owner, scopes, patches, shares):
+    """Replace the full-state owner's assignment with one assignment per share, each holding the
+    patches of its own paths. Returns the new scopes, their patch bodies and patch artifacts."""
+    owner_scope = scopes[owner]
+    result = {}
+    bodies = {}
+    artifacts = {}
+    for seat, assignment in scopes.items():
+        if seat != owner:
+            result[seat] = assignment
+            continue
+        for index, share in enumerate(shares, 1):
+            name = f'{owner}-s{index}'
+            body = b''.join(patches[path] for path in share['paths'])
+            artifacts[f'{prefix}-{name}.patch'] = body
+            bodies[name] = body
+            result[name] = {
+                key: value for key, value in owner_scope.items()
+                if key in ('bundle', 'bundles', 'adapter', 'model', 'emphasis')}
+            result[name].update(
+                scope='share', full_state=False, components=share['components'],
+                patch=str(session / f'{prefix}-{name}.patch'), patch_sha256=digest(body),
+                patch_bytes=len(body), patch_lines=len(split_lf_lines(body)),
+                share_of=owner, share_paths=share['paths'])
+    return result, bodies, artifacts
+
+
 def plan_cluster_assignments(chosen, owner, clusters):
     specialists = [seat for seat in chosen if seat != owner]
     assigned = {seat: [] for seat in chosen}
@@ -5039,8 +5275,8 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
     hunks_by_path = {}
     for hunk in evidence['hunks']:
         hunks_by_path.setdefault(hunk['path'], []).append(hunk['sha256'])
-    integration = (None if owner is None
-                   else owner if owner in assigned else next(iter(assigned)))
+    integration = (set() if owner is None
+                   else integration_seats(assigned, owner))
     component_by_id = {component['id']: component for component in components}
     calls_by_name = {}
     for call in evidence['call_sites']:
@@ -5101,7 +5337,7 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
         hunk_ids = sorted({value for component in relevant for path in component['files']
                            for value in hunks_by_path.get(path, [])})
         if not enabled:
-            result['seats'][seat] = {'role': 'integration' if seat == integration else 'specialist',
+            result['seats'][seat] = {'role': 'integration' if seat in integration else 'specialist',
                                      'components': sorted(component_ids), 'hunk_sha256': hunk_ids,
                                      'shards': [], 'omitted': {kind: 0 for kind in SOURCE_CONTEXT_REASONS},
                                      'omitted_source_ranges': [],
@@ -5136,7 +5372,7 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
         for symbol in evidence['symbols']:
             symbol_components = mapped(symbol['path'])
             entry = entries.get(symbol['path'])
-            if (not symbol_components and seat == integration and entry
+            if (not symbol_components and seat in integration and entry
                     and entry[0] in ('100644', '100755')
                     and classify(symbol['path'], blobs[entry], entry[0]) == 'generated'):
                 symbol_components = relevant
@@ -5250,7 +5486,7 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
             if not source:
                 if source_key in nontext_paths:
                     continue
-                if seat == integration:
+                if seat in integration:
                     raise ValueError('required source range cannot be represented: ' + row['path'])
                 omitted[row['reason'].split(':', 1)[0]] += 1
                 continue
@@ -5302,7 +5538,7 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
                                       or ((path, None) in source_rows and source_rows[(path, None)][1])
                                       for path in component['files'])}
         missing = sorted(required_components - represented)
-        if seat == integration and missing:
+        if seat in integration and missing:
             details = [component['id'] + ':' + ','.join(component['files'])
                        for component in relevant if component['id'] in missing]
             raise ValueError('assigned semantic component has no representable changed-source context: '
@@ -5351,7 +5587,7 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
                                     'content_sha256': digest(content.encode()),
                                     'priority': row['priority']})
 
-        limit = 3 if seat == integration or plan_clusters is not None else 1
+        limit = 3 if seat in integration or plan_clusters is not None else 1
         shards = []; current = []; current_visible_bytes = 0
 
         def payload_metrics(index, values, count=limit):
@@ -5494,7 +5730,7 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
         # two plan seats got wrong, each stopping a few windows short of the obligation.
         mandatory_source_windows = published_mandatory_windows(
             assignment, plan_clusters, delivered)
-        result['seats'][seat] = {'role': 'integration' if seat == integration else 'specialist',
+        result['seats'][seat] = {'role': 'integration' if seat in integration else 'specialist',
                                  'components': sorted(component_ids), 'hunk_sha256': hunk_ids,
                                  'shards': shard_rows, 'omitted': omitted,
                                  'omitted_source_ranges': omitted_source_ranges,
@@ -5541,8 +5777,21 @@ def source_context(repo, snapshot, base_tree, evidence, components, assigned, ow
     return context, artifacts
 
 
+def patch_read_sizes(assignment, patch_set):
+    """Byte size of every read that delivers an assigned patch: its chunks, or equal windows."""
+    if patch_set['read_mode'] == 'chunks':
+        return [chunk['bytes'] for chunk in patch_set['chunks']]
+    calls = (assignment['patch_lines'] + patch_line_limit(assignment['adapter']) - 1) \
+        // patch_line_limit(assignment['adapter'])
+    return [-(-assignment['patch_bytes'] // calls)] * calls if calls else []
+
+
 def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
-                          evidence=None, components=None, model_budgets=True):
+                          evidence=None, components=None, model_budgets=True,
+                          context_budgets=None):
+    """The per-seat read and turn budget of every assignment. A `context_budgets` map, seat to the
+    context tokens its model may fill (or None when unknown), also records each seat's projected
+    context, so an assignment no window can hold is visible and refusable at preparation."""
     seats = {}
     for seat, assignment in assignments.items():
         patch_set = patch_sets[assignment['patch_set']]
@@ -5652,6 +5901,13 @@ def compile_task_capacity(assignments, patch_sets, context, plan_clusters=None,
             )
         if proof_partitions is not None:
             seats[seat]['proof_partitions'] = proof_partitions
+        if context_budgets is not None:
+            seats[seat]['projected_context_tokens'] = context_budget.projected_context_tokens(
+                patch_read_sizes(assignment, patch_set),
+                [shard['bytes'] for shard in packet['shards']],
+                [segment['raw_bytes'] for row in packet['required_source_ranges']
+                 for segment in row['segments']])
+            seats[seat]['context_budget_tokens'] = context_budgets.get(seat)
     return {
         'schema_version': 2 if model_budgets else 1,
         'repository_expansion_call_limit': REPOSITORY_EXPANSION_CALL_LIMIT,
@@ -5963,6 +6219,50 @@ def finding_ownership(session, manifest, generations=None):
     return [dict(found[key], owners=sorted(found[key]['owners'])) for key in sorted(found)]
 
 
+def validate_share_assignments(manifest, full, components):
+    """Capacity shares replace the full-state owner, so together they must hold every component
+    and every path of the cumulative patch exactly once, each with exactly its own patches."""
+    assigned = manifest['assignments']
+    shares = validate_share_records(manifest)
+    members = {seat for seat, assignment in assigned.items() if 'share_of' in assignment}
+    if not shares:
+        if members:
+            raise ValueError('capacity share without a share record')
+        return
+    owner = manifest['mechanical_owner']
+    record = shares[owner]
+    if (owner in assigned or members != set(record['seats'])
+            or record['components'] != [component['id'] for component in components]):
+        raise ValueError('capacity shares do not replace their full-state owner')
+    if (manifest['phase'] == 'verification'
+            and verification_specialist_mode(assigned, owner) == 'delta'):
+        raise ValueError('capacity shares do not apply to delta verification')
+    by_id = {component['id']: component for component in components}
+    semantic = set(manifest['semantic_paths'])
+    claimed_ids = []
+    claimed_paths = []
+    for seat in record['seats']:
+        assignment = assigned[seat]
+        ids = assignment.get('components')
+        paths = assignment.get('share_paths')
+        if (assignment['share_of'] != owner or assignment['scope'] != 'share'
+                or not isinstance(ids, list) or not ids or not isinstance(paths, list)
+                or any(not isinstance(value, str) for value in ids + paths)
+                or paths != sorted(set(paths)) or any(path not in full for path in paths)
+                or ids != [component['id'] for component in components if component['id'] in ids]):
+            raise ValueError('invalid capacity share: ' + seat)
+        files = {path for component_id in ids for path in by_id[component_id]['files']}
+        if not files <= set(paths) or (set(paths) - files) & semantic:
+            raise ValueError('capacity share paths do not follow its components: ' + seat)
+        if Path(assignment['patch']).read_bytes() != b''.join(full[path] for path in paths):
+            raise ValueError('capacity share patch coverage mismatch: ' + seat)
+        claimed_ids.extend(ids)
+        claimed_paths.extend(paths)
+    if (sorted(claimed_ids) != sorted(record['components']) or len(set(claimed_ids)) != len(claimed_ids)
+            or sorted(claimed_paths) != manifest['paths'] or len(set(claimed_paths)) != len(claimed_paths)):
+        raise ValueError('capacity shares do not partition their full-state owner')
+
+
 def validate_components(session, manifest, evidence):
     selected = literal_scope(scope(session)['REV_SCOPE'], Path(scope(session)['REV_ROOT']))
     if manifest.get('scope') != selected:
@@ -6011,7 +6311,8 @@ def validate_components(session, manifest, evidence):
     assigned = manifest['assignments']; owner = manifest['mechanical_owner']
     roster = read_json(session / 'roster.json')
     roster = with_manifest_workhorse(session, roster, manifest)
-    ordered = {row['seat']: assigned[row['seat']] for row in roster['seats'] if row['seat'] in assigned}
+    ordered = {row['seat']: assigned[row['seat']] for row in roster['seats']
+               if row['seat'] in assigned and not row.get('share_of')}
     adaptive = (not manifest['fallback_reason'] and manifest['phase'] not in ('repair', 'numeric')
                 and len(assigned) > 1)
     if manifest['phase'] == 'plan':
@@ -6072,7 +6373,10 @@ def validate_components(session, manifest, evidence):
         plan_owned_paths = plan_delta_paths(
             ordered, owner, manifest['plan']['clusters'], delta_assignments,
             edges, patch_basis)
+    validate_share_assignments(manifest, full, components)
     for seat, assignment in assigned.items():
+        if assignment.get('share_of') is not None:
+            continue
         ids = [c['id'] for c in components if assignment['full_state'] or seat in c['specialists']]
         if assignment.get('components') != ids:
             raise ValueError('assignment component coverage mismatch')
@@ -6130,6 +6434,7 @@ def validate_source_context(session, manifest, evidence):
     assigned = manifest['assignments']; components = manifest['components']
     component_by_id = {component['id']: component for component in components}
     owner = manifest['mechanical_owner'] if manifest['mechanical_owner'] in assigned else next(iter(assigned))
+    integration = integration_seats(assigned, manifest['mechanical_owner'])
     mirror = replacement_mirror(session, manifest)
     if mirror is not None:
         if evidence.get('source_context_hunks') != mirrored_context_hunks(mirror, context['enabled']):
@@ -6175,7 +6480,7 @@ def validate_source_context(session, manifest, evidence):
         expected_hunks = sorted({value for component in relevant for path in component['files']
                                  for value in hunk_by_path.get(path, [])})
         role = (mirror['manifest']['source_context']['seats'][mirror['seat']]['role']
-                if mirror is not None else 'integration' if seat == owner else 'specialist')
+                if mirror is not None else 'integration' if seat in integration else 'specialist')
         if (packet['role'] != role
                 or packet['components'] != expected_components or packet['hunk_sha256'] != expected_hunks):
             raise ValueError('source context assignment mismatch: ' + seat)
@@ -6780,7 +7085,8 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         if not isinstance(assignment, dict) or not isinstance(assignment.get('bundle'), str) or not assignment['bundle']:
             raise ValueError('invalid assignment structure')
         mode = assignment['scope']
-        if not SAFE_NAME.fullmatch(seat) or mode not in ('full', 'semantic', 'delta', 'closure'):
+        if (not SAFE_NAME.fullmatch(seat) or mode not in ('full', 'semantic', 'delta', 'closure', 'share')
+                or ('share_of' in assignment) is not (mode == 'share')):
             raise ValueError('invalid assignment')
         suffix = ('full' if mode == 'full' else
                   'plan-closure' if mode == 'closure' and 'plan_clusters' not in assignment else seat)
@@ -6815,13 +7121,19 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
     roster = read_json(session / 'roster.json')
     if not isinstance(roster, dict) or not isinstance(roster.get('seats'), list) or any(not isinstance(s, dict) for s in roster['seats']):
         raise ValueError('invalid roster shape')
+    shares = validate_share_records(manifest)
     roster = with_manifest_workhorse(session, roster, manifest)
     if fresh and not offline and provider_contract_input(session) != contract_binding:
         raise ValueError('provider contract input changed after prepare')
-    core = {s['seat'] for s in roster['seats'] if not s.get('extra')}
-    core_order = [s['seat'] for s in roster['seats'] if not s.get('extra')]
+    core = {s['seat'] for s in roster['seats'] if not s.get('extra') and not s.get('share_of')}
+    core_order = [s['seat'] for s in roster['seats'] if not s.get('extra') and not s.get('share_of')]
+    # A split owner is not launched; its shares are. Roles and topology still follow the owner.
+    launched = (core - set(shares)) | {seat for record in shares.values() for seat in record['seats']}
+    collapsed = {seat: assignment for seat, assignment in assigned.items()
+                 if 'share_of' not in assignment}
+    collapsed.update({seat: assigned[record['seats'][0]] for seat, record in shares.items()})
     bundles_by_seat = {seat: assignment['bundle'] for seat, assignment in assigned.items()}
-    expected_seats = set(numeric['launched_seats']) if numeric is not None else core
+    expected_seats = set(numeric['launched_seats']) if numeric is not None else launched
     if not set(assigned) <= expected_seats or (
             manifest['phase'] != 'repair' and set(assigned) != expected_seats
             and not (manifest['phase'] == 'plan' and single_seat_plan(bundles_by_seat))):
@@ -6857,8 +7169,8 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
             or any(not isinstance(x, str) for x in declared_unenforced)
             or declared_unenforced != expected_unenforced):
         raise ValueError('unenforced_seats does not match the roster')
-    validate_assignment_topology({seat: assigned[seat]['bundle'] for seat in core_order if seat in assigned},
-                                 [seat for seat in core_order if seat in assigned], manifest['phase'])
+    validate_assignment_topology({seat: collapsed[seat]['bundle'] for seat in core_order if seat in collapsed},
+                                 [seat for seat in core_order if seat in collapsed], manifest['phase'])
     if numeric is not None:
         if manifest['mechanical_owner'] != core_order[0]:
             raise ValueError('numeric integration owner changed')
@@ -6952,7 +7264,7 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         raise ValueError('parent assignment belongs only to repair evidence')
     phase = manifest['phase']; owner = manifest['mechanical_owner']; fallback = manifest['fallback_reason']
     bundles = [a['bundle'] for a in assigned.values()]
-    regression = [s for s in adapters if s in assigned and BUNDLES[-1] in assigned[s]['bundles']]
+    regression = [s for s in adapters if s in collapsed and BUNDLES[-1] in collapsed[s]['bundles']]
     if phase == 'discovery' and any(b != 'simplicity' for b in bundles):
         raise ValueError('invalid discovery bundle')
     if phase in ('risk', 'verification') and bundle_coverage({s: a['bundle'] for s, a in assigned.items()}):
@@ -6978,10 +7290,11 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
                 and not (phase == 'repair' and replacement_mirror(session, manifest) is not None)):
             raise ValueError('fallback and repair require all-full scope')
     else:
-        if owner not in assigned:
+        if owner not in collapsed:
             raise ValueError('missing full-state owner')
         other = verification_specialist_mode(assigned, owner) if phase == 'verification' else 'semantic'
-        if any(a['scope'] != ('full' if s == owner else other) for s, a in assigned.items()):
+        if any(a['scope'] != ('share' if 'share_of' in a else 'full' if s == owner else other)
+               for s, a in assigned.items()):
             raise ValueError('phase-inconsistent scope assignment')
     if manifest['snapshot_unsafe'] and not fallback:
         raise ValueError('unsafe snapshot requires full fallback')
@@ -7037,7 +7350,8 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
             actual = b''.join(patch for name, patch in changes if categories[name] == 'semantic')
             if unsafe or delta != actual:
                 raise ValueError('delta is unsafe or incomplete')
-            chosen = {row['seat']: assigned[row['seat']] for row in roster['seats'] if row['seat'] in assigned}
+            chosen = {row['seat']: assigned[row['seat']] for row in roster['seats']
+                      if row['seat'] in assigned and not row.get('share_of')}
             basis = {name: patch for name, patch in changes if categories[name] == 'semantic'}
             if manifest['components'] != components_for(basis, evidence['dependencies'], chosen, owner, previous.get('findings')):
                 raise ValueError('component ownership does not match predecessor findings')
@@ -7075,12 +7389,21 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         raise ValueError('predecessor only belongs to delta verification or schema-4 plan evidence')
     if phase == 'plan':
         validate_plan(session, manifest, evidence, fresh and not offline, replay_plan_searches)
+    stored_rows = stored_capacity.get('seats') if isinstance(stored_capacity, dict) else None
+    projected = isinstance(stored_rows, dict) and any(
+        isinstance(row, dict) and 'projected_context_tokens' in row for row in stored_rows.values())
+    context_budgets = ({seat: row.get('context_budget_tokens') for seat, row in stored_rows.items()}
+                       if projected else None)
+    if context_budgets is not None and any(
+            budget is not None and (type(budget) is not int or budget < 1)
+            for budget in context_budgets.values()):
+        raise ValueError('invalid context budget in the task capacity')
     expected_capacity = compile_task_capacity(
         assigned, manifest['patch_sets'], manifest['source_context'],
         manifest['plan']['clusters'] if phase == 'plan' else None,
         None if phase == 'plan' else evidence,
         None if phase == 'plan' else manifest['components'],
-        model_budgets=model_budgets)
+        model_budgets=model_budgets, context_budgets=context_budgets)
     if manifest.get('task_capacity') != expected_capacity:
         raise ValueError('invalid task capacity contract')
     capacity_failures = task_capacity_errors(expected_capacity)
@@ -7118,7 +7441,8 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
 def validate_panel_coverage(manifest):
     if manifest['snapshot_unsafe']:
         raise ValueError('unsupported snapshot cannot establish complete coverage')
-    if not any(a['full_state'] for a in manifest['assignments'].values()):
+    if (not any(a['full_state'] for a in manifest['assignments'].values())
+            and not validate_share_records(manifest)):
         raise ValueError('missing full-state coverage')
     phase = manifest['phase']
     bundles = [a['bundle'] for a in manifest['assignments'].values()]
@@ -7625,7 +7949,8 @@ def result_generation(session, manifest, manifest_hash, seat):
 
 
 def verification_specialist_mode(assignments, owner):
-    modes = {assignment['scope'] for seat, assignment in assignments.items() if seat != owner}
+    modes = {assignment['scope'] for seat, assignment in assignments.items()
+             if seat != owner and assignment['scope'] != 'share'}
     if len(modes) != 1 or not modes <= {'semantic', 'delta'}:
         raise ValueError('verification specialists must use one authenticated scope')
     return modes.pop()
@@ -7951,6 +8276,9 @@ def _prepare_locked(args, session):
                               if unenforced_adapter(row.get('adapter')) and row.get('seat') in chosen)
     if parent_manifest is not None:
         parent = parent_manifest['assignments'][parent_seat]
+        if parent.get('share_of') is not None:
+            raise ValueError('a capacity share cannot be replaced: a replacement takes the '
+                             'full-state scope, which no seat can hold')
         executor = next(iter(chosen)) if len(chosen) == 1 else None
         if executor == parent_seat:
             raise ValueError('replacement executor must differ from the parent seat')
@@ -8250,6 +8578,26 @@ def _prepare_locked(args, session):
                         'routing_version': 1, 'delta_mode': plan_delta_mode,
                         'delta_reason': plan_delta_reason,
                         'common_artifacts': [prefix + '-evidence.md']}
+    shares = None
+    share_budget = None
+    if (args.phase in ('discovery', 'risk', 'verification') and parent_manifest is None
+            and not fallback and not use_delta and scopes[owner]['full_state'] and len(chosen) > 1):
+        patch_map = dict(patches)
+        shares, share_budget = split_full_state_owner(
+            session, roster, owner, scopes[owner], components, patch_map, categories,
+            patch_sets[scopes[owner]['patch_set']],
+            lambda: source_context(
+                repo, snapshot, base_tree, data, components, {owner: scopes[owner]}, owner,
+                prefix, source_context_enabled, None, patch_bodies)[0])
+        if shares:
+            scopes, share_bodies, share_artifacts = apply_capacity_shares(
+                session, prefix, owner, scopes, patch_map, shares)
+            patch_bodies = {**{seat: body for seat, body in patch_bodies.items() if seat != owner},
+                            **share_bodies}
+            specialist_artifacts.update(share_artifacts)
+            patch_sets, patch_chunk_artifacts = patch_sets_for(
+                scopes, patch_bodies, prefix, chunk_mode)
+            data['assignments'] = scopes
     prepare_stage('source-context')
     data['source_context'], source_artifacts = source_context(
         repo, snapshot, base_tree, data, components, scopes,
@@ -8257,11 +8605,13 @@ def _prepare_locked(args, session):
         plan_clusters, patch_bodies)
     patch_chunks_effective_mode = chunk_mode
     prepare_stage('capacity')
+    context_budgets = {seat: context_budget.seat_budget_tokens(
+        assignment['adapter'], assignment.get('model')) for seat, assignment in scopes.items()}
     budget_evidence = None if plan_clusters is not None else data
     budget_components = None if plan_clusters is not None else components
     task_capacity = compile_task_capacity(
         scopes, patch_sets, data['source_context'], plan_clusters,
-        budget_evidence, budget_components)
+        budget_evidence, budget_components, context_budgets=context_budgets)
     capacity_failures = task_capacity_errors(task_capacity)
     if chunk_mode == 'auto' and any(
             failure.startswith('task exceeds provider turn capacity: ')
@@ -8270,7 +8620,7 @@ def _prepare_locked(args, session):
             scopes, patch_bodies, prefix, '1')
         forced_capacity = compile_task_capacity(
             scopes, forced_sets, data['source_context'], plan_clusters,
-            budget_evidence, budget_components)
+            budget_evidence, budget_components, context_budgets=context_budgets)
         if not task_capacity_errors(forced_capacity):
             patch_sets = forced_sets
             patch_chunk_artifacts = forced_artifacts
@@ -8280,6 +8630,10 @@ def _prepare_locked(args, session):
     if capacity_failures:
         PREPARE_PROGRESS['refusals'] = capacity_refusal_rows(task_capacity)
         raise ValueError(capacity_failures[0])
+    for seat, assignment in scopes.items():
+        projected = task_capacity['seats'][seat].get('projected_context_tokens')
+        if shares and assignment.get('share_of') is not None and projected > share_budget:
+            context_capacity_refusal(seat, projected, share_budget, assignment['share_paths'])
     if args.phase == 'plan':
         clusters_by_id = {cluster['id']: cluster for cluster in plan_clusters}
         for seat, assignment in scopes.items():
@@ -8332,6 +8686,10 @@ def _prepare_locked(args, session):
                 'task_capacity': task_capacity,
                 'word_counts': words, 'inputs': inputs,
                 'artifacts': {name: {'sha256': digest(raw), 'words': len(raw.split())} for name, raw in artifacts.items()}}
+    if shares:
+        manifest['shares'] = {owner: {
+            'seats': [f'{owner}-s{index}' for index in range(1, len(shares) + 1)],
+            'components': [component['id'] for component in components]}}
     if progress is not None:
         manifest['pr_progress'] = {'artifact': prefix + '-pr-progress.json',
                                    'sha256': digest(encoded(progress))}
@@ -8690,6 +9048,17 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
 def verify(args):
     manifest, mh = validated_manifest(args.manifest)
     print(str(Path(manifest['session']) / f"r{manifest['label']}-evidence.manifest.json") + ' ' + mh)
+
+
+def list_launch_seats(args):
+    """Print `<launch seat><TAB><roster seat>` for every seat to launch, a split owner's shares in
+    place of the owner. Panel TSV rows, state and wait loops take their seats from here."""
+    manifest, _ = validated_manifest(
+        args.manifest, fresh=False, offline=True, replay_plan_searches=False)
+    session = Path(manifest['session'])
+    roster = with_manifest_workhorse(session, read_json(session / 'roster.json'), manifest)
+    for launch, base in launch_seats(manifest, roster):
+        print(launch + '\t' + base)
 
 
 def same_source(args):
@@ -9210,6 +9579,7 @@ def main():
     rend_panel.add_argument('--output-dir', required=True)
     rend_panel.add_argument('--plan-source'); rend_panel.add_argument('--phase')
     check = commands.add_parser('verify'); check.add_argument('manifest')
+    launch = commands.add_parser('seats'); launch.add_argument('manifest')
     source = commands.add_parser('same-source')
     source.add_argument('parent'); source.add_argument('candidate')
     panel = commands.add_parser('verify-panel'); panel.add_argument('session'); panel.add_argument('label')
@@ -9225,7 +9595,7 @@ def main():
             raise ValueError('invalid label')
         with plan_search_signal_handlers():
             {'prepare': prepare, 'pr-progress-inspect': inspect_pr_progress, 'render': render, 'render-panel': render_panel,
-             'verify': verify, 'same-source': same_source,
+             'verify': verify, 'seats': list_launch_seats, 'same-source': same_source,
              'verify-panel': verify_panel, 'receipt': receipt, 'current-coverage': current_coverage,
              'reject-result': reject_result,
              'review-origin': review_origin}[args.command](args)

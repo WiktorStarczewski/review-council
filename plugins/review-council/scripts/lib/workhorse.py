@@ -44,6 +44,7 @@ WRITER_GROK_EFFORT = 'xhigh'
 CURSOR_BLOCK = re.compile(
     r'payment required|spend limit|rate_limit|usage_limit|hit_hard_limit',
     re.IGNORECASE)
+SHARE_SEAT = re.compile(r'(.+)-s([1-9][0-9]*)')
 CLUSTER_ID = re.compile(r'^C-[A-Za-z0-9][A-Za-z0-9-]*$')
 ABSENT_KEYS = {'version', 'host', 'family', 'available', 'reason'}
 SELECTED_KEYS = ABSENT_KEYS | {'lab', 'seat', 'adapter', 'model', 'effort'}
@@ -454,8 +455,14 @@ def advance(session):
     return write_record(session / 'workhorse.json', record, refresh=True)
 
 
+def share_row(row, seat):
+    """The launch row of a capacity share: its full-state owner's row under the share's name."""
+    return dict(row, seat=seat, share_of=row['seat'], extra=False)
+
+
 def lookup_launch(roster_path, seat):
-    """Roster row, or the workhorse or chain-escalation row when that seat is not on it."""
+    """Roster row, or the workhorse, chain-escalation or capacity-share row when that seat is not
+    on it."""
     path = Path(roster_path)
     document = _roster_document(path)
     matched = None
@@ -478,6 +485,11 @@ def lookup_launch(roster_path, seat):
     escalation = read_escalation(path.parent / 'escalation.json')
     if escalation is not None and escalation.get('seat') == seat:
         return escalation_row(path.parent)
+    share = SHARE_SEAT.fullmatch(seat)
+    owner = next((row for row in document.get('seats') or []
+                  if isinstance(row, dict) and share and row.get('seat') == share.group(1)), None)
+    if owner is not None:
+        return share_row(owner, seat)
     raise ValueError('no seat %s' % seat)
 
 

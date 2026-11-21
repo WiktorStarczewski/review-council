@@ -237,6 +237,13 @@ Build the optional flags once. SDK numeric reuses its already bound TSV byte for
 For other modes, write one `<seat>`, tab, `<lens>`, tab, `<emphasis>`
 line per launched seat, in `LAUNCHED_SEATS` order, to `$S/r$PANEL_LABEL-panel.tsv`;
 each emphasis is one line with no tab.
+When `MANIFEST` is nonempty, take the launch seats from it before writing the TSV: `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/rev-evidence.py" seats "$MANIFEST"` prints `<launch seat>`, a tab and `<roster seat>` for every
+assignment, in roster order. A full-state owner whose assignment no seat on the replacement chain
+could hold is split at preparation into `<seat>-s<k>` capacity shares. Set `LAUNCHED_SEATS` to the
+launch seats in that order, give each share its roster seat's lens and emphasis, and launch, wait on
+and collect every share as its own seat. The owner is then not launched, and a share is never
+replaced by a repair child (preparation refuses it): a share that fails its exact retry or its audit is
+treated as an assignment whose replacement chain is exhausted, and you finish it yourself.
 Render every seat before any reviewer process starts, with one `--panel` call and the
 same flag arrays for the entire panel. Append the usual `--vacuity` or `--pr` flag only
 when applicable.

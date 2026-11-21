@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 import tempfile
@@ -261,8 +262,12 @@ def roster_adapter(session: Path, seat: str):
     except (OSError, ValueError, json.JSONDecodeError, RecursionError):
         return None
     rows = roster.get('seats') if isinstance(roster, dict) else None
+    share = re.fullmatch(r'(.+)-s[1-9][0-9]*', seat)
     matches = [row for row in rows if isinstance(row, dict) and row.get('seat') == seat] \
         if isinstance(rows, list) else []
+    if not matches and share is not None and isinstance(rows, list):
+        # A capacity share runs on its full-state owner's roster row.
+        matches = [row for row in rows if isinstance(row, dict) and row.get('seat') == share.group(1)]
     if len(matches) != 1:
         return None
     adapter = matches[0].get('adapter')
