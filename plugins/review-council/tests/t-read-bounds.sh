@@ -2335,6 +2335,10 @@ PY
     python3 "$SCRIPTS/lib/review-read-audit.py" audit --adapter codex --raw "$S/compacted.ndjson" \
       --prompt "$S/prompt.md" --root "$R" --session "$S" --out "$S/codex-audit.json" >/dev/null 2>&1
     assert_nogrep "compaction rule is scoped to Claude streams" "$S/codex-audit.json" 'context-compacted'
+
+    python3 "$SCRIPTS/lib/stream-summary.py" claude "$S/summary-out.json" < "$S/compacted.ndjson" > "$S/summary.log"
+    assert_grep "seat log line names the compaction and its token counts" "$S/summary.log" \
+      '^compacted trigger=auto pre_tokens=966861 post_tokens=8301$'
   )
 }
 
@@ -4325,6 +4329,8 @@ FATAL = {
     'unsupported-shell-command', 'unrecognized-review-tool', 'unsupported-shell-input-redirection',
     'unsupported-shell-shape', 'missing-read-path', 'missing-shell-command',
     'ambiguous-assigned-patch-read',
+    # the transcript no longer backs the reads it certified
+    'context-compacted',
 }
 ADVISORY = {
     'discovery-output-too-large', 'duplicate-patch-chunk', 'duplicate-required-source-segment',

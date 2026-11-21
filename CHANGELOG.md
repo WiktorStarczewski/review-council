@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Fail the read audit with `context-compacted` when a Claude seat's stream contains a `compact_boundary` event, and log the compaction in the seat log. An auto-compaction replaces everything the seat read with a summary of about 8K tokens, yet the audit still certified the earlier reads: every full-scope replacement seat on a very large PR compacted near its last quarter and was accepted as valid.
 - Publish a GitHub Release automatically for every `review-council--v*` tag from its CHANGELOG section, and require the release check in the release procedure.
 
 ## 0.9.13

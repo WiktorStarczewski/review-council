@@ -1160,6 +1160,17 @@ def validate_call(name, data, roots, root, session, authorized=None, complete=No
     return [violation('unrecognized-review-tool', name)]
 
 
+def compaction_violation(adapter, event):
+    """The Claude CLI replaced the seat's context with a summary, discarding what the audit credited."""
+    meta = event.get('compact_metadata')
+    meta = meta if isinstance(meta, dict) else {}
+    counts = [str(meta[key]) if type(meta.get(key)) is int and meta[key] >= 0 else 'unknown'
+              for key in ('pre_tokens', 'post_tokens')]
+    found = violation('context-compacted', adapter)
+    found['detail'] = 'context compacted: pre_tokens %s, post_tokens %s' % tuple(counts)
+    return found
+
+
 def extract_calls(adapter, event):
     calls = []
     adapter = 'claude' if adapter == 'agent' else adapter
@@ -3567,6 +3578,9 @@ def assess(args, blocked, progress=None):
                 except json.JSONDecodeError:
                     failures.append(violation('malformed-transcript', args.adapter))
                     continue
+                if (args.adapter in ('claude', 'agent') and event.get('type') == 'system'
+                        and event.get('subtype') == 'compact_boundary'):
+                    failures.append(compaction_violation(args.adapter, event))
                 if args.adapter == 'codex':
                     event_type = event.get('type')
                     if event_type == 'turn.started':
