@@ -794,6 +794,100 @@ test_seat_codex_refuses_evidence_over_its_context_window() {
   )
 }
 
+test_seat_codex_capacity_refusal_is_terminal() {
+  ( local _path="$PATH"; seat_env
+    local R="$T/capacity-terminal-root" S="$T/capacity-terminal-session" target prompt token
+    seat_codex_prepared_session "$R" "$S" || { fail "prepared Codex session fixture"; return; }
+    prompt="$S/r1-codex-luna.prompt.md"
+    target=$(sed -n 's/^Required post-index original-source target: \([^:]*\):\([0-9]*\)-\([0-9]*\) .*/sed -n \2,\3p \1/p' "$prompt")
+    printf '%s\n' '{"client_version":"0.0.0-test","models":[{"slug":"gpt-6-luna","visibility":"list","context_window":20000,"effective_context_window_percent":95}]}' \
+      > "$T/capacity-terminal-small.json"
+    mkdir -p "$S/calls"; : > "$S/calls.log"
+    REVIEW_COUNCIL_CODEX_MODELS_CACHE="$T/capacity-terminal-small.json" SHIM_MODE=staged-audit \
+      SHIM_POST_INDEX_COMMAND="$target" SHIM_STAGE_DIR="$S/calls" SHIM_CALLS_FILE="$S/calls.log" \
+      "$SCRIPTS/rev-seat.sh" codex-luna "$S" 1 "$prompt" > "$S/out" 2> "$S/err"
+    assert_eq "the over-capacity seat fails once" "$?" 2
+    assert_exit "the refusal leaves a capacity-refusal record" 0 test -s "$S/r1-codex-luna.capacity-refusal"
+    assert_grep "the record names the projection and the budget" "$S/r1-codex-luna.capacity-refusal" \
+      '"projected_tokens": [0-9]+'
+    python3 - "$SCRIPTS/lib/rev-attempt.py" "$S" "$prompt" <<'PY'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('attempt', sys.argv[1])
+attempt = importlib.util.module_from_spec(spec); spec.loader.exec_module(attempt)
+session = Path(sys.argv[2])
+assert attempt.terminal_failure(session, '1', 'codex-luna', Path(sys.argv[3])), \
+    'one deterministic capacity refusal is already a terminal failure'
+assert not attempt.terminal_failure(session, '1', 'codex-luna-2', Path(sys.argv[3]))
+PY
+    assert_eq "a single capacity refusal is a recorded terminal failure" "$?" 0
+    token=0123456789abcdef0123456789abcdef
+    python3 "$SCRIPTS/lib/rev-attempt.py" reserve "$S" 1 codex-luna "$prompt" "$token" > "$S/reserve.out" 2> "$S/reserve.err"
+    assert_eq "reserve refuses to relaunch a capacity refusal" "$?" 2
+    assert_grep "the refusal tells the orchestrator to replace the assignment" "$S/reserve.err" \
+      'capacity refusal; replace the assignment'
+    seat_env_reset "$_path"
+  )
+}
+
+test_workhorse_escalation_skips_a_family_that_cannot_hold_the_assignment() {
+  ( local S="$T/chain-capacity"; mkdir -p "$S"
+    printf '%s\n' '{"client_version":"0.0.0-test","models":[{"slug":"gpt-6-sol","visibility":"list","context_window":872000,"effective_context_window_percent":95}]}' \
+      > "$T/chain-capacity-models.json"
+    REVIEW_COUNCIL_HOST=claude REVIEW_COUNCIL_CODEX_MODELS_CACHE="$T/chain-capacity-models.json" \
+      python3 - "$SCRIPTS/lib" "$S" <<'PY'
+import json, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import workhorse
+session = Path(sys.argv[2])
+workhorse._candidates = lambda host, include_cursor=True: (None, {
+    'cursor-grok': None,
+    'luna': None,
+    'sol': {'adapter': 'codex', 'model': 'gpt-6-sol', 'effort': 'high', 'lab': 'openai'},
+    'sonnet': {'adapter': 'claude', 'model': 'sonnet', 'effort': 'high', 'lab': 'anthropic'},
+    'opus': {'adapter': 'claude', 'model': 'opus', 'effort': 'high', 'lab': 'anthropic'},
+})
+(session / 'roster.json').write_text(json.dumps({'seats': [
+    {'seat': 'escalate-sonnet', 'adapter': 'claude', 'model': 'sonnet', 'effort': 'high',
+     'lab': 'anthropic', 'extra': False}]}))
+
+def record(tokens, reads, target=None):
+    row = {'mandatory_repository_reads': reads, 'repository_source_target': target}
+    if tokens is not None:
+        row['projected_context_tokens'] = tokens
+    (session / 'r2-evidence.manifest.json').write_text(json.dumps({
+        'assignments': {'escalate-sonnet': {}},
+        'task_capacity': {'seats': {'escalate-sonnet': row}}}))
+
+record(500_000, 4)
+chosen = workhorse.escalate(session, 'escalate-sonnet')
+assert chosen['seat'] == 'escalate-opus', 'Sol holds 455620 tokens and cannot take 500000: ' + str(chosen)
+
+record(700_000, 4)
+try:
+    workhorse.escalate(session, 'escalate-sonnet')
+except ValueError as error:
+    assert 'no eligible family can hold this assignment' in str(error), str(error)
+else:
+    raise AssertionError('700000 tokens fit no family')
+
+record(1_000, 25)
+try:
+    workhorse.escalate(session, 'escalate-sonnet')
+except ValueError as error:
+    assert 'no eligible family can hold this assignment' in str(error), str(error)
+else:
+    raise AssertionError('25 direct reads exceed every 16-read family')
+
+record(1_000, 4)
+assert workhorse.escalate(session, 'escalate-sonnet')['seat'] == 'escalate-sol', \
+    'a small assignment still takes the next family'
+PY
+    assert_eq "escalation skips a family that cannot hold the failed assignment" "$?" 0
+  )
+}
+
 test_seat_codex_review_turn_reads_a_hashless_prompt_copy() {
   ( local _path="$PATH"; seat_env
     local R="$T/hashless-root" S="$T/hashless-session" target before review
