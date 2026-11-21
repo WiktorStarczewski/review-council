@@ -23,6 +23,7 @@ LIB = Path(__file__).resolve().parent
 if str(LIB) not in sys.path:
     sys.path.insert(0, str(LIB))
 
+import context_budget
 from review_limits import mandatory_repository_read_limit_for_seat
 from roster import (AUTH_FAILURE, CLAUDE_SESSION_ENV, QUOTA_FAILURE, claude_cli_reason,
                     codex_catalog, codex_catalog_path, codex_suffix, reasoning_efforts)
@@ -261,24 +262,13 @@ def roster_family(row):
     return None
 
 
-def _stages_module():
-    spec = importlib.util.spec_from_file_location(
-        'codex_proof_stages_for_escalation', LIB / 'codex-proof-stages.py')
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def family_context_budget(adapter, model):
-    """Pre-review context tokens a staged Codex seat holds, or None when it is not capped.
+    """Pre-review context tokens a seat on this family may fill, or None when its window is unknown.
 
-    Only the Codex adapter stages its reads before review and refuses an over-budget prompt;
-    a Claude seat reads on demand and has no such cap (a Sonnet seat completed an ~847K-token
-    assignment that Luna and Sol both refused).
+    A Claude seat that overflows its window compacts, and the read audit rejects a compacted
+    stream, so a Claude family is capped like a Codex one.
     """
-    if adapter == 'codex':
-        return _stages_module().context_budget(model)
-    return None
+    return context_budget.seat_budget_tokens(adapter, model)
 
 
 def _recorded_files(session, pattern):

@@ -925,10 +925,12 @@ def refused(**gone):
     else:
         raise AssertionError('no family should hold this assignment')
 
-record(847_423, 2)
-assert chosen(sonnet=1) == 'escalate-opus', 'Sol holds 455620 tokens and cannot take 847423'
+record(500_000, 2)
+assert chosen(sonnet=1) == 'escalate-opus', 'Sol holds 455620 tokens and cannot take 500000'
 refused(sonnet=1, opus=1)
-assert chosen() == 'escalate-sonnet', 'a Claude seat has no staged context cap'
+assert chosen() == 'escalate-sonnet', 'a Claude seat holds 550000 tokens'
+record(847_423, 2)
+refused()  # a Claude seat compacts above 550000 tokens
 
 record(None, 25)
 refused()
