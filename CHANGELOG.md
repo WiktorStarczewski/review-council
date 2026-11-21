@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.11
+
 - Keep a Codex seat reviewing when it returns ready while the read audit, replayed over its stream so far with no findings, still lacks a read that a later turn can supply: a plan cluster source or sibling search, the required original-source read or target, or the evidence navigation index. The next turn names each uncredited location or exact search command and the seat log says why the review continues, within the same review-turn count and repository-call allowance; once those are used up, the findings turn reports an incomplete proof and the post-run audit judges the stream. A stream the audit would reject whatever is read next finalizes at once. This replaces the check of the required post-index target alone, which let a plan seat whose 17 site reads fell in one review turn over 32 KiB finalize and fail its audit instead of reading them again.
 
 - Measure a Codex review turn's 32 KiB as the read audit does, over the commands that succeeded only. The audit sets a failed command, such as a failing test run, apart from its turn, so its output no longer voids the reads beside it or counts in the turn's reported KiB; a command that exits 0 but reports a failed status earns no read credit in the adapter either, as in the audit. A failing 57 KB `yarn test` injected into a recorded Luna review turn made the adapter void two reads the audit credits.
