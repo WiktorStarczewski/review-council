@@ -1456,6 +1456,11 @@ def claude_hook_output(name, value):
         truncated = value.get('truncated', False)
         if type(truncated) is not bool:
             raise ValueError('invalid search truncation marker')
+        # The CLI reports totalLines/totalFiles before head_limit and adds appliedLimit when it
+        # cuts the result, so only the visible results count then.
+        applied = value.get('appliedLimit')
+        if applied is not None and (type(applied) is not int or applied < 0):
+            raise ValueError('invalid search hook count')
         if isinstance(value.get('content'), str):
             text = value['content']
             observed = len(split_lf_text(text))
@@ -1471,7 +1476,7 @@ def claude_hook_output(name, value):
             raise ValueError('unsupported search hook response')
         if any(type(counter) is not int or counter < 0 for counter in counters):
             raise ValueError('invalid search hook count')
-        count = max([observed, *counters])
+        count = max([observed, *([] if applied is not None else counters)])
         if truncated or value.get('countIsComplete') is False:
             count = max(count, SEARCH_RESULT_SENTINEL)
         if mode is not None and not isinstance(mode, str):

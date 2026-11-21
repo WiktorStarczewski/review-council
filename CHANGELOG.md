@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Count a Claude seat's Grep result by the lines or files it shows when the CLI reports `appliedLimit`, instead of the pre-limit `totalLines` or `totalFiles`. A seat that obeyed the prompt's `head_limit` of 80 or less was stopped with `discovery-output-too-large` whenever its pattern matched more than 80 lines anywhere, ending its stream as `hook_stopped` with no reason in the seat log; the post-run audit already counted only the visible lines. 4 of 11 recorded Sonnet streams were lost this way. A visible result over 80, a truncated marker and a response without `appliedLimit` still stop the seat, and a non-integer or negative `appliedLimit` is an unsupported hook response.
+
 ## 0.9.11
 
 - Keep a Codex seat reviewing when it returns ready while the read audit, replayed over its stream so far with no findings, still lacks a read that a later turn can supply: a plan cluster source or sibling search, the required original-source read or target, or the evidence navigation index. The next turn names each uncredited location or exact search command and the seat log says why the review continues, within the same review-turn count and repository-call allowance; once those are used up, the findings turn reports an incomplete proof and the post-run audit judges the stream. A stream the audit would reject whatever is read next finalizes at once. This replaces the check of the required post-index target alone, which let a plan seat whose 17 site reads fell in one review turn over 32 KiB finalize and fail its audit instead of reading them again.
