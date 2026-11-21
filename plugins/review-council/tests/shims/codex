@@ -40,6 +40,7 @@ case "${SHIM_MODE:-ok}" in
   notauth)    echo '{"type":"error","message":"Not logged in; run codex login"}'; exit 1;;
   ratelimit)  echo '{"type":"error","message":"You have hit your usage limit (429)"}'; exit 1;;
   interrupted) exit 130;;
+  exitcode)   exit "${SHIM_EXIT_CODE:-1}";;
   empty)      echo '{"type":"turn.completed"}'; exit 0;;
   unusable_with_tool)
     printf '%s\n' \
@@ -159,25 +160,57 @@ case "${SHIM_MODE:-ok}" in
     done
     case "${SHIM_MODE}:${TURN_SCHEMA##*/}" in
       staged-audit:review-turn.schema.json)
-        # One post-index read of the required original-source target, then ready.
-        if [ -n "${SHIM_POST_INDEX_COMMAND:-}" ] && [ ! -e "$SHIM_STAGE_DIR/post-index-read" ]; then
-          : > "$SHIM_STAGE_DIR/post-index-read"
-          python3 - "$SHIM_POST_INDEX_COMMAND" <<'PY'
+        # Runs each command, one per line, as a completed read; the first takes the id given.
+        emit_reads() {
+          python3 - "$@" <<'PY'
 import json
 import os
 import subprocess
 import sys
 
-command = sys.argv[1]
-output = subprocess.run(['bash', '-c', command], cwd=os.environ['ROOT'],
-                        capture_output=True, text=True).stdout
-item = {'id': 'post-index-read', 'type': 'command_execution', 'command': command}
+commands = [line for line in sys.argv[2].splitlines() if line]
+for index, command in enumerate(commands):
+    output = subprocess.run(['bash', '-c', command], cwd=os.environ['ROOT'],
+                            capture_output=True, text=True).stdout
+    item = {'id': sys.argv[1] if index == 0 else f'review-read-{index}',
+            'type': 'command_execution', 'command': command}
+    print(json.dumps({'type': 'item.started', 'item': item}))
+    print(json.dumps({'type': 'item.completed', 'item': dict(item, aggregated_output=output,
+                                                               exit_code=0)}))
+PY
+        }
+        # One post-index read of the required original-source target, then ready.
+        if [ -n "${SHIM_POST_INDEX_COMMAND:-}" ] && [ ! -e "$SHIM_STAGE_DIR/post-index-read" ]; then
+          : > "$SHIM_STAGE_DIR/post-index-read"
+          # SHIM_REVIEW_EXTRA_READS runs, one per line, after that read in the same turn.
+          emit_reads post-index-read "$SHIM_POST_INDEX_COMMAND"$'\n'"${SHIM_REVIEW_EXTRA_READS:-}"
+          # SHIM_REVIEW_EXTRA_COMMAND is recorded beside that read, exiting SHIM_REVIEW_EXTRA_EXIT
+          # (127: it never started) with SHIM_REVIEW_EXTRA_BYTES bytes of output.
+          [ -z "${SHIM_REVIEW_EXTRA_COMMAND:-}" ] || python3 - "$SHIM_REVIEW_EXTRA_COMMAND" \
+            "${SHIM_REVIEW_EXTRA_EXIT:-127}" "${SHIM_REVIEW_EXTRA_BYTES:-0}" <<'PY'
+import json
+import sys
+
+size = int(sys.argv[3])
+output = ('FAIL fixture case: expected y received x\n' * (size // 41 + 1))[:size]
+item = {'id': 'review-extra', 'type': 'command_execution', 'command': sys.argv[1]}
 print(json.dumps({'type': 'item.started', 'item': item}))
 print(json.dumps({'type': 'item.completed', 'item': dict(item, aggregated_output=output,
-                                                           exit_code=0)}))
+                                                           exit_code=int(sys.argv[2]))}))
 PY
+          if [ "${SHIM_REVIEW_FIRST_STATUS:-ready}" = continue ]; then
+            printf '%s\n' '{"status":"continue","next_step":"Check the remaining caller."}' > "$OUT"
+          else
+            printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT"
+          fi
+        else
+          # SHIM_REVIEW_REREAD reads the target once more in the next review turn.
+          if [ -n "${SHIM_REVIEW_REREAD:-}" ] && [ ! -e "$SHIM_STAGE_DIR/post-index-reread" ]; then
+            : > "$SHIM_STAGE_DIR/post-index-reread"
+            emit_reads post-index-reread "$SHIM_POST_INDEX_COMMAND"
+          fi
+          printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT"
         fi
-        printf '%s\n' '{"status":"ready","next_step":""}' > "$OUT"
         ;;
       staged-audit:findings.schema.json)
         printf '%s\n' '{"summary":"checked","findings":[]}' > "$OUT"

@@ -155,28 +155,34 @@ def read_audit_module():
     return audit
 
 
-def required_post_index_read(prompt):
-    audit = read_audit_module()
-    try:
-        return audit.parse_required_post_index_source_target(
-            Path(prompt).read_text(encoding='utf-8').splitlines()) is not None
-    except (OSError, UnicodeError, ValueError) as error:
-        raise StageError(str(error)) from error
+def turn_command_rule():
+    """The review-turn rule for commands, naming the package scripts the read-only policy runs
+    from its own pattern so that the rule cannot drift from what the read audit rejects."""
+    guard = read_audit_module().READONLY_POLICY
+    match = re.fullmatch(r'\^\(([a-z|-]+)\)\(:\|\$\)', guard.SCRIPT_READ_NAMES.pattern)
+    if match is None:
+        raise StageError('the read-only policy has no recognizable package-script names')
+    names = match.group(1).split('|')
+    return ('Run no program the read-only policy refuses, since one refused command can fail the'
+            ' whole review: no `node`, `python3` or other interpreter, no `make` and no bare'
+            ' `tsc`. A `yarn`, `npm` or `pnpm` script runs only when it is named '
+            f'{", ".join(names[:-1])} or {names[-1]}, alone or before a `:`, so `yarn ts` and'
+            ' `yarn jest` are refused; `npx` runs only `jest`, `vitest run`, `tsc --noEmit`,'
+            ' `eslint`, `mocha` or `prettier --check`; and no runner takes `--fix`, `--write`'
+            ' or `-u`. A permitted test, lint or typecheck command still counts toward the'
+            ' per-turn command limit, and its output counts toward the 32 KiB only when it'
+            ' succeeds. Keep the space in every result limiter, as in `| head -80`.')
 
 
-def required_post_index_target_description(prompt):
-    audit = read_audit_module()
-    try:
-        target = audit.parse_required_post_index_source_target(
-            Path(prompt).read_text(encoding='utf-8').splitlines())
-    except (OSError, UnicodeError, ValueError) as error:
-        raise StageError(str(error)) from error
-    if target is None:
-        return ''
-    return f"{target['path']}:{target['line_start']}-{target['line_end']}"
+def audited_success(event, audit):
+    """Whether the read audit pairs this completed command with its explicit turn, as it does
+    only for a successful execution: only then does the output count toward the turn's 32 KiB,
+    and only then can the command's reads earn credit."""
+    return audit.extract_outputs('codex', event)[0][1]
 
 
-def codex_call_rows(path):
+def codex_call_rows(path, audit=None):
+    audit = audit or read_audit_module()
     calls = {}
     turn = None
     turn_sequence = 0
@@ -227,7 +233,7 @@ def codex_call_rows(path):
                     if 'aggregated_output' not in item and 'output' not in item:
                         raise StageError('Codex review turn omitted a command output')
                     call['output'] = item.get('aggregated_output', item.get('output'))
-                    call['success'] = item.get('exit_code') == 0
+                    call['success'] = audited_success(event, audit)
     except OSError as error:
         raise StageError('Codex review stream is unavailable') from error
     if turn is not None or any(
@@ -237,46 +243,46 @@ def codex_call_rows(path):
     return calls
 
 
-def post_index_target_read_count(path, prompt, root, session):
+def audit_voided_calls(calls, keys, prompt, root, session, deps, audit):
+    """Of these calls, the ones whose reads the read audit credits nothing: each in an explicit
+    turn whose successful calls return over 32 KiB (tool-turn-output-too-large; a Codex turn's
+    only exemption, an ordered turn of prepared artifacts, holds no repository read) and each it
+    raises any code on."""
+    sizes = {}
+    for row in calls.values():
+        if row['success']:
+            sizes[row['turn']] = sizes.get(row['turn'], 0) + audit.output_bytes(row['output'])
+    authorized, complete = audit.prompt_permissions(prompt, root, session)
+    roots = audit.allowed_roots(root, session, deps)
+    dependency = Path(deps).resolve() if deps else None
+    return {key for key in keys if sizes.get(calls[key]['turn'], 0) > OUTPUT_BYTES
+            or audit.validate_call(
+                'command_execution', {'command': calls[key]['command']}, roots, root, session,
+                authorized, complete, {}, dependency, read_limit=audit.CODEX_SOURCE_READ_LINES)}
+
+
+def voided_ranges(path, prompt, root, session, deps=None):
+    """The repository source ranges this stream read only in calls the read audit credits
+    nothing, in the order read."""
     audit = read_audit_module()
-    root = Path(root).resolve()
-    session = Path(session).resolve()
-    try:
-        prompt_lines = Path(prompt).read_text(encoding='utf-8').splitlines()
-        target = audit.parse_required_post_index_source_target(prompt_lines)
-        if target is None:
-            return 0, 0
-        audit.validate_required_post_index_source_target(target, root)
-        index = audit.required_evidence_index_path(prompt_lines, session)
-        calls = codex_call_rows(path)
-    except (OSError, UnicodeError, ValueError) as error:
-        raise StageError(str(error)) from error
-    ordered = sorted(calls.items(), key=lambda row: row[1]['order'])
-    index_reads = [
-        (call_id, call) for call_id, call in ordered
-        if call['success'] and audit.evidence_index_call_matches(
-            'codex', 'command_execution', {'command': call['command']},
-            call['output'], index, root)
-    ]
-    if not index_reads:
-        return 0, 0
-    _, index_call = index_reads[0]
-    post_index_ranges = []
-    for _, call in ordered:
-        if not call['success'] or call['turn'] <= index_call['turn'] \
-                or call['order'] <= index_call['order']:
-            continue
-        ranges, _ = audit.shell_source_ranges(
-            call['command'], root, session=session,
-            line_limit=audit.CODEX_SOURCE_READ_LINES)
-        if not audit.delivered_matches_source_ranges(
-                'codex', 'command_execution', call['output'], ranges, root):
-            continue
-        post_index_ranges.extend(ranges)
-        if audit._load_evidence_module().source_target_covered(
-                target, post_index_ranges):
-            return 1, 1
-    return 0, 1
+    root, session = Path(root).resolve(), Path(session).resolve()
+    reads = []
+    calls = codex_call_rows(path, audit)
+    for key, call in sorted(calls.items(), key=lambda row: row[1]['order']):
+        if call['success']:
+            ranges, _ = audit.shell_source_ranges(
+                call['command'], root, session=session, line_limit=audit.CODEX_SOURCE_READ_LINES)
+            if ranges:
+                reads.append((key, ranges))
+    voided = audit_voided_calls(calls, [key for key, _ in reads], prompt, root, session, deps,
+                                audit)
+    credited = [row for key, ranges in reads if key not in voided for row in ranges]
+    covered = audit._load_evidence_module().source_target_covered
+    listed = []
+    for row in (row for key, ranges in reads if key in voided for row in ranges):
+        if not covered(row, credited + listed):
+            listed.append(row)
+    return [f"{row['path']}:{row['line_start']}-{row['line_end']}" for row in listed]
 
 
 def review_status(path):
@@ -305,18 +311,6 @@ def turn_stats(path, root, session):
     starts = 0
     completions = 0
     active_turn = False
-
-    def visible_bytes(value):
-        if value is None:
-            return 0
-        if isinstance(value, str):
-            return len(value.encode())
-        if isinstance(value, list):
-            return sum(visible_bytes(
-                item.get('text', item.get('content', item)) if isinstance(item, dict) else item)
-                       for item in value)
-        return len(json.dumps(value, sort_keys=True, separators=(',', ':')).encode())
-
     audit = read_audit_module()
 
     try:
@@ -357,8 +351,9 @@ def turn_stats(path, root, session):
                             raise StageError('Codex review turn repeated a command output')
                         if 'aggregated_output' not in item and 'output' not in item:
                             raise StageError('Codex review turn omitted a command output')
-                        output = item.get('aggregated_output', item.get('output'))
-                        total += visible_bytes(output)
+                        if audited_success(event, audit):
+                            total += audit.output_bytes(
+                                item.get('aggregated_output', item.get('output')))
                         outputs.add(call_id)
     except OSError as error:
         raise StageError('Codex review-turn stream is unavailable') from error
@@ -368,6 +363,31 @@ def turn_stats(path, root, session):
         'command_execution', {'command': command}, Path(root), Path(session))
         for command in calls.values())
     return len(calls), total, expansions
+
+
+def review_turn_refusal(turn, prompt, root, session, deps=None):
+    """The first code by which the read audit rejects a command this review turn ran, or None.
+    rev-seat keeps a review without an evidence manifest whatever its audit finds, and the audit
+    only advises on its advisory codes, so neither refuses."""
+    audit = read_audit_module()
+    root, session = Path(root).resolve(), Path(session).resolve()
+    try:
+        scoped, _ = audit.evidence_manifest_declaration(
+            Path(prompt).read_text(encoding='utf-8').splitlines())
+    except (OSError, UnicodeError) as error:
+        raise StageError('review prompt is unavailable') from error
+    if not scoped:
+        return None
+    authorized, complete = audit.prompt_permissions(prompt, root, session)
+    roots = audit.allowed_roots(root, session, deps)
+    dependency = Path(deps).resolve() if deps else None
+    for row in sorted(codex_call_rows(turn, audit).values(), key=lambda row: row['order']):
+        for item in audit.validate_call(
+                'command_execution', {'command': row['command']}, roots, root, session,
+                authorized, complete, {}, dependency, read_limit=audit.CODEX_SOURCE_READ_LINES):
+            if item['code'] not in audit.ADVISORY_CODES:
+                return item['code']
+    return None
 
 
 def prepared_stages(prompt, seat, model, stage_dir):
@@ -698,7 +718,7 @@ def context_capacity(stage_dir, prompt, model):
 def exact_stage_turn(turn, reads, root, session, audit):
     """Whether the turn ran exactly these planned reads, each delivering the prepared bytes."""
     turn_stats(turn, root, session)
-    rows = sorted(codex_call_rows(turn).values(), key=lambda row: row['order'])
+    rows = sorted(codex_call_rows(turn, audit).values(), key=lambda row: row['order'])
     if len(rows) != len(reads):
         return False
     total = 0
@@ -717,9 +737,10 @@ def exact_stage_turn(turn, reads, root, session, audit):
     return total <= PROOF_TURN_BYTES
 
 
-def audit_credited_reads(plan, raw, prompt, root, session, seat, deps, audit, cache=None):
-    """Replay the post-run audit over the stream so far: the planned reads it credits, or why
-    no later read can make the stream pass."""
+def replayed_audit(raw, prompt, root, session, seat, deps, audit, cache=None):
+    """The post-run audit replayed over the stream so far with no findings: its result, its
+    violations, and its progress (the reads it misses in protocol order, whether they can still
+    be read, and its fatal codes)."""
     progress = {}
     with tempfile.TemporaryDirectory(prefix='codex-stage-audit-') as directory:
         result = Path(directory) / 'result.json'
@@ -730,6 +751,85 @@ def audit_credited_reads(plan, raw, prompt, root, session, seat, deps, audit, ca
                 session=str(session), seat=seat, deps=deps, result=str(result),
                 out=str(Path(directory) / 'audit.json'),
                 evidence_cache=None if cache is None else str(cache)), progress)
+    return assessment, unique, progress
+
+
+def plan_cluster_gaps(assessment, prompt, root, session, audit):
+    """Each assigned plan cluster source location and sibling search command the replayed audit
+    holds no proof for."""
+    prompt = Path(prompt).resolve()
+    _, manifest_hash = audit.evidence_manifest_declaration(
+        prompt.read_text(encoding='utf-8').splitlines())
+    manifest, _, seat, _ = audit.load_evidence_manifest(
+        session, manifest_hash, prompt, root, replay_plan_searches=False)
+    clusters = manifest['plan']['clusters']
+    assigned = set(manifest['assignments'][seat].get(
+        'plan_clusters', [cluster['id'] for cluster in clusters]))
+    proven = {(row['cluster'], row['path'], row['line_start'], row['line_end'])
+              for row in assessment['plan_cluster_source_proofs']}
+    searched = {row['cluster'] for row in assessment['plan_cluster_search_proofs']}
+    module = audit._load_evidence_module()
+    gaps = []
+    for cluster in clusters:
+        if cluster['id'] not in assigned:
+            continue
+        if cluster['id'] not in searched:
+            gaps.append(f"the {cluster['id']} sibling search, run unchanged: "
+                        f"{audit.compiled_plan_search_command(cluster, module)}")
+        for row in cluster['paths']:
+            if (cluster['id'], row['path'], row['line_start'], row['line_end']) in proven:
+                continue
+            gaps.append(f"{row['path']}:{row['line_start']}-{row['line_end']}"
+                        if row['line_start'] is not None else f"a bounded read of {row['path']}")
+    return gaps
+
+
+def review_gaps(raw, prompt, root, session, seat, deps=None):
+    """The next evidence question naming each read the post-run audit, replayed over the review
+    so far, still misses and a later read can supply, or '' when the review may finalize: nothing
+    such is missing, or the audit rejects the stream whatever is read next and so judges it."""
+    audit = read_audit_module()
+    root, session = Path(root).resolve(), Path(session).resolve()
+    assessment, unique, progress = replayed_audit(raw, prompt, root, session, seat, deps, audit)
+    readable = (audit.READABLE_GAP_CODES | STAGING_GAP_CODES) - {'unsubstantiated-finding-range'}
+    codes = {row.get('code') for row in unique}
+    # rev-seat keeps a review without an evidence manifest whatever its audit finds.
+    if not codes & readable or assessment.get('evidence_scoped') and (
+            set(progress.get('fatal') or []) - readable
+            or not progress.get('recoverable', True)):
+        return ''
+    indexes = {line[len('Evidence navigation index: '):]
+               for line in Path(prompt).read_text(encoding='utf-8').splitlines()
+               if line.startswith('Evidence navigation index: ')}
+    items = []
+    for item in progress.get('missing') or []:
+        source = re.fullmatch(r'original source (.+?)(?: lines ([0-9]+)-([0-9]+))?'
+                              r' with a bounded Read \(offset and limit\)', item)
+        if source and source.group(2):
+            items.append('the exact required original-source target '
+                         f'{source.group(1)}:{source.group(2)}-{source.group(3)}')
+        elif source:
+            items.append(f'a bounded original-source read of {source.group(1)}')
+        elif item in indexes:
+            items.append(f'the complete evidence navigation index {item}')
+        else:
+            items.append(item)
+    if codes & STAGING_GAP_CODES:
+        items.extend(plan_cluster_gaps(assessment, prompt, root, session, audit))
+    if not items:
+        return ''
+    step = ('Before finalizing, read what the read audit has not credited yet, in explicit turns'
+            ' of at most 32 KiB: ' + '; '.join(dict.fromkeys(items)) + '.')
+    if any(item in indexes for item in progress.get('missing') or []):
+        step += ' Read the evidence navigation index first, and original source in a later turn.'
+    return step
+
+
+def audit_credited_reads(plan, raw, prompt, root, session, seat, deps, audit, cache=None):
+    """Replay the post-run audit over the stream so far: the planned reads it credits, or why
+    no later read can make the stream pass."""
+    assessment, unique, progress = replayed_audit(raw, prompt, root, session, seat, deps, audit,
+                                                  cache)
     gaps = audit.READABLE_GAP_CODES | STAGING_GAP_CODES
     if not assessment.get('tool_calls'):
         # Only the stream's first call can satisfy or break the plan first-call contract.
@@ -745,7 +845,7 @@ def audit_credited_reads(plan, raw, prompt, root, session, seat, deps, audit, ca
         re.fullmatch(r'(.+) lines ([0-9]+)-([0-9]+)', item) for item in missing) if match]
     # A read the audit lists nowhere still needs a call that opened it, so a replay that stops
     # early can never skip a planned read.
-    opened = {str(path) for row in codex_call_rows(raw).values() if row['success']
+    opened = {str(path) for row in codex_call_rows(raw, audit).values() if row['success']
               for path in audit.paths_opened_by_call(
                   'command_execution', {'command': row['command']}, root)}
     credited = set()
@@ -839,6 +939,7 @@ def main():
     parser.add_argument('--thread-id-stream')
     parser.add_argument('--review-budget')
     parser.add_argument('--review-turn-call-limit')
+    parser.add_argument('--turn-command-rule', action='store_true')
     parser.add_argument('--stage-step')
     parser.add_argument('--warm-evidence')
     parser.add_argument('--capacity')
@@ -846,16 +947,23 @@ def main():
     parser.add_argument('--raw')
     parser.add_argument('--turn')
     parser.add_argument('--deps')
-    parser.add_argument('--required-post-index-read')
-    parser.add_argument('--required-post-index-target')
     parser.add_argument('--review-status')
     parser.add_argument('--turn-stats')
-    parser.add_argument('--post-index-target-read-count')
+    parser.add_argument('--turn-refusal')
+    parser.add_argument('--review-gaps')
+    parser.add_argument('--voided-ranges')
     parser.add_argument('--root')
     parser.add_argument('--session')
     args = parser.parse_args()
     if args.review_turn_call_limit is not None:
         print(codex_review_turn_call_limit_for_model(args.review_turn_call_limit))
+        return 0
+    if args.turn_command_rule:
+        try:
+            print(turn_command_rule())
+        except StageError as error:
+            print('codex proof staging: ' + str(error), file=sys.stderr)
+            return 1
         return 0
     if args.review_budget:
         try:
@@ -898,20 +1006,6 @@ def main():
             print('codex proof staging: ' + str(error), file=sys.stderr)
             return 1
         return 0
-    if args.required_post_index_read:
-        try:
-            print('1' if required_post_index_read(args.required_post_index_read) else '0')
-        except (OSError, UnicodeError, StageError) as error:
-            print('codex proof staging: ' + str(error), file=sys.stderr)
-            return 1
-        return 0
-    if args.required_post_index_target:
-        try:
-            print(required_post_index_target_description(args.required_post_index_target))
-        except (OSError, UnicodeError, StageError) as error:
-            print('codex proof staging: ' + str(error), file=sys.stderr)
-            return 1
-        return 0
     if args.review_status:
         try:
             status, next_step = review_status(args.review_status)
@@ -931,13 +1025,32 @@ def main():
             print('codex proof staging: ' + str(error), file=sys.stderr)
             return 1
         return 0
-    if args.post_index_target_read_count:
+    if args.turn_refusal:
         try:
             if not args.prompt or not args.root or not args.session:
-                raise StageError('post-index target proof requires the prompt and review roots')
-            target_read, index_read = post_index_target_read_count(
-                args.post_index_target_read_count, args.prompt, args.root, args.session)
-            print(f'{target_read}\t{index_read}')
+                raise StageError('a review turn check needs the prompt and review roots')
+            print(review_turn_refusal(args.turn_refusal, args.prompt, args.root, args.session,
+                                      args.deps) or '')
+        except (OSError, UnicodeError, StageError) as error:
+            print('codex proof staging: ' + str(error), file=sys.stderr)
+            return 1
+        return 0
+    if args.review_gaps:
+        try:
+            if not all((args.prompt, args.seat, args.root, args.session)):
+                raise StageError('a review gap check needs the prompt, the seat and review roots')
+            print(review_gaps(args.review_gaps, args.prompt, args.root, args.session, args.seat,
+                              args.deps))
+        except (OSError, UnicodeError, StageError, KeyError, TypeError, ValueError) as error:
+            print('codex proof staging: ' + str(error), file=sys.stderr)
+            return 1
+        return 0
+    if args.voided_ranges:
+        try:
+            if not args.prompt or not args.root or not args.session:
+                raise StageError('voided review reads need the prompt and review roots')
+            print(', '.join(voided_ranges(args.voided_ranges, args.prompt, args.root,
+                                          args.session, args.deps)))
         except (OSError, UnicodeError, StageError) as error:
             print('codex proof staging: ' + str(error), file=sys.stderr)
             return 1

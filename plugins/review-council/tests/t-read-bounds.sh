@@ -3329,11 +3329,12 @@ assert code == 2 and {row['code'] for row in result['violations']} == {
     'missing-required-source-read'}, result
 helper = audit.with_name('codex-proof-stages.py')
 proof = subprocess.run([
-    sys.executable, str(helper), '--post-index-target-read-count',
+    sys.executable, str(helper), '--review-gaps',
     str(session / 'r27-luna.stream.ndjson'), '--prompt', str(prompt),
-    '--root', str(root), '--session', str(session),
+    '--root', str(root), '--session', str(session), '--seat', 'luna',
 ], capture_output=True, text=True)
-assert proof.returncode == 0 and proof.stdout.strip() == '0\t1', proof
+assert proof.returncode == 0 and (
+    'the exact required original-source target src/long.rs:1-250' in proof.stdout), proof
 code, result = run('long')
 assert code == 0 and not result['violations'], result
 assert result['post_index_source_ranges'] == [
@@ -3341,11 +3342,11 @@ assert result['post_index_source_ranges'] == [
     {'path': 'src/long.rs', 'line_start': 201, 'line_end': 250, 'origin': 'tool'},
 ], result['post_index_source_ranges']
 proof = subprocess.run([
-    sys.executable, str(helper), '--post-index-target-read-count',
+    sys.executable, str(helper), '--review-gaps',
     str(session / 'r27-luna.stream.ndjson'), '--prompt', str(prompt),
-    '--root', str(root), '--session', str(session),
+    '--root', str(root), '--session', str(session), '--seat', 'luna',
 ], capture_output=True, text=True)
-assert proof.returncode == 0 and proof.stdout.strip() == '1\t1', proof
+assert proof.returncode == 0 and proof.stdout.strip() == '', proof
 PY
     assert_eq "manifest-free audits require complete multi-window post-index source proof" "$?" 0
   )

@@ -4,7 +4,8 @@
 # Called by rev-seat.sh with the adapter environment contract:
 #   SEAT MODEL EFFORT MODE ROOT PROMPT SCHEMA OUT LOG RAW BASE
 # Streams the CLI's events to $RAW, one summarised line each to $LOG, leaves findings JSON at $OUT,
-# and exits with the CLI's own exit code. Validation, retries and failure classification are the
+# and exits with the CLI's own exit code, or 8 after a review turn that ran a command the read audit
+# rejects, its last log line naming the code. Validation, retries and failure classification are the
 # wrapper's job - this file is only the invocation and the quirks that come with it.
 #
 # Quirks that live here:
@@ -19,7 +20,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 adapter_fail() {
   printf 'codex adapter: %s\n' "$1" >> "${LOG:-/dev/null}"
   printf 'codex adapter: %s\n' "$1" >&2
-  exit 1
+  exit "${2:-1}"
 }
 SUMMARY="$HERE/../lib/stream-summary.py"
 STAGES_HELPER="$HERE/../lib/codex-proof-stages.py"
@@ -200,18 +201,29 @@ EOF
       ''|*[!0-9]*) adapter_fail "invalid review turn call limit";;
     esac
     MAX_REVIEW_TURNS=$((REVIEW_READ_BUDGET + 1))
-    REQUIRED_POST_INDEX=$(stage_helper --required-post-index-read "$PROMPT") || exit 1
-    REQUIRED_POST_INDEX_TARGET=$(stage_helper \
-      --required-post-index-target "$PROMPT") || exit 1
+    REFUSAL_ARGS=(--prompt "$PROMPT" --root "$AUDIT_ROOT" --session "$SESSION_DIR")
+    [ -z "${REV_DEPS_DIR:-}" ] || REFUSAL_ARGS+=(--deps "$REV_DEPS_DIR")
+    # Luna seats most often overshot the call cap by exactly one, so a cap above two plans one less.
+    REVIEW_TURN_PLAN=$REVIEW_TURN_CALL_LIMIT
+    [ "$REVIEW_TURN_CALL_LIMIT" -le 2 ] || REVIEW_TURN_PLAN=$((REVIEW_TURN_CALL_LIMIT - 1))
+    TURN_COUNT_RULE="Every command counts toward that limit, searches as well as reads: plan at most ${REVIEW_TURN_PLAN} and return continue once you have run them."
+    TURN_COMMAND_RULE=$(stage_helper --turn-command-rule) || exit 1
+    TURN_OUTPUT_RULE="The read audit credits no read or search from a turn over 32 KiB."
     REVIEW_READS=0
-    REVIEW_TARGET_READS=0
     REVIEW_READY=0
     NEXT_STEP=""
     for ((review_turn=1; review_turn<=MAX_REVIEW_TURNS; review_turn++)); do
       REVIEW_PROMPT="$STAGE_DIR/review-$review_turn.prompt"
       NO_MORE_READS=0
+      READS_USED="Of that allowance, ${REVIEW_READS} of ${REVIEW_READ_BUDGET} repository tool calls are used and $((REVIEW_READ_BUDGET - REVIEW_READS)) remain."
+      if [ "$review_turn" -gt 1 ]; then
+        KIB_TENTHS=$(((TURN_BYTES * 10 + 1023) / 1024))
+        LAST_TURN="The previous turn ran ${TURN_CALLS} of its ${REVIEW_TURN_CALL_LIMIT} allowed command_execution calls and returned $((KIB_TENTHS / 10)).$((KIB_TENTHS % 10)) KiB of its 32 KiB.${TURN_PACE}${TURN_VOID}"
+      fi
       if [ "$review_turn" = 1 ]; then
-        stage_helper --compact-prompt "$PROMPT" > "$REVIEW_PROMPT" || exit 1
+        printf '%s\n\n' "This review runs in bounded explicit turns. The turn rules after the assignment below govern how you spend its repository-call allowance and what each turn returns: at most ${REVIEW_TURN_CALL_LIMIT} command_execution calls per turn, searches included, and a status JSON instead of findings until a later prompt asks for them." \
+          > "$REVIEW_PROMPT"
+        stage_helper --compact-prompt "$PROMPT" >> "$REVIEW_PROMPT" || exit 1
         if [ "$STAGE_COUNT" -gt 0 ]; then
           cat >> "$REVIEW_PROMPT" <<'EOF'
 
@@ -225,11 +237,12 @@ EOF
         fi
         cat >> "$REVIEW_PROMPT" <<EOF
 
-Keep post-index repository investigation within bounded explicit turns. Each explicit turn permits at most ${REVIEW_TURN_CALL_LIMIT} command_execution calls total, of any kind, and no more than 32 KiB of combined output. Use at most two source reads per investigation turn and target at most 12 KiB per read. Return continue before reading additional ranges. The assignment's aggregate in-scope repository-read allowance applies across the full review and all explicit turns; it does not reset at a turn boundary. If more evidence is needed after this turn, return status "continue" with one concrete next evidence question in next_step. If the evidence is sufficient to finish, return status "ready" with an empty next_step. Do not return findings in these bounded turns.
+Keep post-index repository investigation within bounded explicit turns. Each explicit turn permits at most ${REVIEW_TURN_CALL_LIMIT} command_execution calls total, of any kind, and no more than 32 KiB of combined output. ${TURN_OUTPUT_RULE} ${TURN_COUNT_RULE} Use at most two source reads per investigation turn and target at most 12 KiB per read. Return continue before reading additional ranges. ${TURN_COMMAND_RULE} The assignment's aggregate in-scope repository-read allowance applies across the full review and all explicit turns; it does not reset at a turn boundary. ${READS_USED} If more evidence is needed after this turn, return status "continue" with one concrete next evidence question in next_step. If the evidence is sufficient to finish, return status "ready" with an empty next_step. Do not return findings in these bounded turns.
 EOF
       elif [ "$REVIEW_READS" -ge "$REVIEW_READ_BUDGET" ]; then
         NO_MORE_READS=1
         {
+          printf '%s ' "$LAST_TURN" "All ${REVIEW_READ_BUDGET} repository tool calls are used."
           cat <<'EOF'
 The assignment's aggregate in-scope repository-read allowance is exhausted across all explicit turns. Do not use tools. Review the evidence and reasoning already in this conversation. Return status "ready" with an empty next_step if you can finish; otherwise return status "continue" and name the unfinished evidence obligation. Do not return findings yet.
 
@@ -240,7 +253,7 @@ EOF
       else
         {
           cat <<EOF
-Continue the same assigned review using the prepared evidence and prior review reasoning in this conversation. Do not reread prepared artifacts. This explicit turn permits at most ${REVIEW_TURN_CALL_LIMIT} command_execution calls total, of any kind, and at most 32 KiB of combined output. Use at most two source reads per investigation turn and target at most 12 KiB per read. Return continue before reading additional ranges. The assignment's aggregate in-scope repository-read allowance applies across the full review and all explicit turns; it does not reset at a turn boundary. If more evidence is needed, return status "continue" and one concrete next evidence question in next_step. If ready to finish, return status "ready" with an empty next_step. Do not return findings yet.
+Continue the same assigned review using the prepared evidence and prior review reasoning in this conversation. Do not reread prepared artifacts. This explicit turn permits at most ${REVIEW_TURN_CALL_LIMIT} command_execution calls total, of any kind, and at most 32 KiB of combined output. ${TURN_OUTPUT_RULE} ${TURN_COUNT_RULE} Use at most two source reads per investigation turn and target at most 12 KiB per read. Return continue before reading additional ranges. ${TURN_COMMAND_RULE} The assignment's aggregate in-scope repository-read allowance applies across the full review and all explicit turns; it does not reset at a turn boundary. ${READS_USED} ${LAST_TURN} If more evidence is needed, return status "continue" and one concrete next evidence question in next_step. If ready to finish, return status "ready" with an empty next_step. Do not return findings yet.
 
 Next evidence question:
 EOF
@@ -263,38 +276,53 @@ EOF
       case "$TURN_CALLS:$TURN_BYTES:$TURN_READS" in
         *[!0-9:]*|:*) adapter_fail "invalid review turn metrics";;
       esac
-      if [ "$TURN_CALLS" -gt "$REVIEW_TURN_CALL_LIMIT" ]; then
-        adapter_fail "review turn exceeded its command-call budget"
+      # A command the read audit rejects fails the stream whatever the seat reads next, so
+      # rev-seat.sh audits the stream so far and the assignment is replaced, not retried.
+      TURN_REFUSAL=$(stage_helper --turn-refusal "$TURN_RAW" "${REFUSAL_ARGS[@]}") || exit 1
+      if [ -n "$TURN_REFUSAL" ]; then
+        adapter_fail "review turn ran a command the read audit rejects ($TURN_REFUSAL)" 8
       fi
-      if [ "$TURN_BYTES" -gt 32768 ] \
-          || [ "$((REVIEW_READS + TURN_READS))" -gt "$REVIEW_READ_BUDGET" ] \
-          || { [ "$NO_MORE_READS" = 1 ] && [ "$TURN_CALLS" -ne 0 ]; }; then
-        adapter_fail "review turn exceeded its read or output budget"
+      # The repository-call allowance, no tools once it is used up, the turn count and a
+      # tool-free findings turn bound what a seat spends. The read audit only advises on the
+      # allowance, so these are the adapter's own limits on the run, not proof rules.
+      if [ "$((REVIEW_READS + TURN_READS))" -gt "$REVIEW_READ_BUDGET" ]; then
+        adapter_fail "review turn exceeded the assignment's repository-call allowance"
+      fi
+      if [ "$NO_MORE_READS" = 1 ] && [ "$TURN_CALLS" -ne 0 ]; then
+        adapter_fail "review turn used tools after the assignment's repository-call allowance was used up"
+      fi
+      # A turn whose successful commands return over 32 KiB earns no read credit in the read
+      # audit, which only advises on it, so the seat continues knowing that a finding cannot
+      # cite what only that turn read.
+      TURN_VOID=""
+      if [ "$TURN_BYTES" -gt 32768 ]; then
+        TURN_VOIDED=$(stage_helper --voided-ranges "$TURN_RAW" "${REFUSAL_ARGS[@]}") || exit 1
+        printf 'codex adapter: review turn %s returned %s bytes, over 32 KiB, so the read audit credits none of its reads%s; the review continues\n' \
+          "$review_turn" "$TURN_BYTES" "${TURN_VOIDED:+ ($TURN_VOIDED)}" >> "$LOG"
+        TURN_VOID=" The read audit credits no read or search from that turn, because it returned over 32 KiB: no finding may cite a range only that turn read${TURN_VOIDED:+ ($TURN_VOIDED)} unless a later turn of at most 32 KiB reads it again."
+      fi
+      # The read audit has no per-turn call rule, so the call limit only paces the seat.
+      TURN_PACE=""
+      if [ "$TURN_CALLS" -gt "$REVIEW_TURN_CALL_LIMIT" ]; then
+        printf 'codex adapter: review turn %s ran %s command calls, over its pacing limit of %s; the read audit has no per-turn call rule, so the review continues\n' \
+          "$review_turn" "$TURN_CALLS" "$REVIEW_TURN_CALL_LIMIT" >> "$LOG"
+        TURN_PACE=" That is over the per-turn limit: keep this turn within ${REVIEW_TURN_CALL_LIMIT}."
       fi
       REVIEW_READS=$((REVIEW_READS + TURN_READS))
       REVIEW_STATE=$(stage_helper --review-status "$TURN_OUT") || exit 1
       case "$REVIEW_STATE" in
         ready)
-          if [ "$REQUIRED_POST_INDEX" = 1 ]; then
-            REVIEW_TARGET_PROOF=$(stage_helper \
-              --post-index-target-read-count "$RAW" --prompt "$PROMPT" \
-              --root "$AUDIT_ROOT" --session "$SESSION_DIR") || exit 1
-            IFS=$'\t' read -r REVIEW_TARGET_READS REVIEW_INDEX_READS \
-              <<< "$REVIEW_TARGET_PROOF"
-            case "$REVIEW_TARGET_READS:$REVIEW_INDEX_READS" in
-              ''|*[!0-9:]*|:*|*:) adapter_fail "invalid post-index source proof state";;
-            esac
-          fi
-          if [ "$REQUIRED_POST_INDEX" = 1 ] && [ "$REVIEW_TARGET_READS" -eq 0 ]; then
-            if [ "$REVIEW_INDEX_READS" -eq 0 ]; then
-              NEXT_STEP="Read the complete evidence navigation index named in the original assignment, then read the exact required original-source target $REQUIRED_POST_INDEX_TARGET in a later turn before finalizing."
-            else
-              NEXT_STEP="Read the exact required original-source target $REQUIRED_POST_INDEX_TARGET in a later explicit turn before finalizing."
-            fi
-          else
+          # The read audit, replayed over the stream so far, names each proof it has not credited,
+          # such as a site read only in a voided turn, and the seat reads it before finalizing.
+          REVIEW_GAPS=$(stage_helper --review-gaps "$RAW" --seat "$SEAT" \
+            "${REFUSAL_ARGS[@]}") || exit 1
+          if [ -z "$REVIEW_GAPS" ]; then
             REVIEW_READY=1
             break
           fi
+          NEXT_STEP=$REVIEW_GAPS
+          printf 'codex adapter: review turn %s returned ready before the read audit credited every required read; the review continues\n' \
+            "$review_turn" >> "$LOG"
           ;;
         continue$'\t'*) NEXT_STEP=${REVIEW_STATE#continue$'\t'};;
         *) adapter_fail "invalid bounded review state";;
@@ -318,6 +346,9 @@ EOF
         printf '%s\n' "$NEXT_STEP"
       } > "$FINAL_PROMPT"
     fi
+    VOIDED_RANGES=$(stage_helper --voided-ranges "$RAW" "${REFUSAL_ARGS[@]}") || exit 1
+    [ -z "$VOIDED_RANGES" ] || printf '\n%s\n' "The read audit credits none of these ranges, which this review read only in a turn over 32 KiB or by a command it flags: ${VOIDED_RANGES}. Cite them only where the prepared evidence covers them." \
+      >> "$FINAL_PROMPT"
     run_codex_turn "$FINAL_PROMPT" "$SCHEMA" "$OUT" || exit $?
     RESUMED_THREAD_ID=$(stage_helper --thread-id-stream "$RAW") || exit 1
     if [ "$RESUMED_THREAD_ID" != "$THREAD_ID" ]; then
