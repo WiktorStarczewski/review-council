@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.13
+
 - Classify a seat that hits the Claude CLI's weekly, session, daily, monthly or per-model (such as Opus) limit, runs out of extra usage, or reports a weekly, session, 5-hour, daily or per-model limit reached as a quota failure (exit 4) instead of an unclassified provider failure (exit 2). Only the plain "hit your limit" wording matched, so such a seat spent its exact retry and replacement chain on an exhausted account and quota_fallback never engaged.
 
 - Make the seat wait loop in the discovery phase split `PENDING_SEATS` under zsh as well as bash. The unquoted variable stayed one word under zsh, the Bash tool's shell on macOS, so no seat's `.exit` file was ever found and every wait call ran its full 9 minutes.
