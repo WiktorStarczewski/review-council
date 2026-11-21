@@ -908,6 +908,8 @@ quota|error: You've hit your limit
 quota|error: You've hit your weekly limit
 quota|error: You've hit your session limit
 quota|error: You're out of extra usage
+quota|error: You've hit your Opus limit
+quota|error: Opus weekly limit reached
 quota|error: Weekly limit reached
 quota|error: 5-hour limit reached
 other|error: could not parse the limit of the diff
