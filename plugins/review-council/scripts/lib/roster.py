@@ -1249,7 +1249,8 @@ AUTH_FAILURE = re.compile(
 QUOTA_FAILURE = re.compile(
     r"usage limit|rate limit|too many requests|[^0-9]429[^0-9]|quota exceeded|"
     r"resource_exhausted|capacity exhausted|credit balance|insufficient credits|"
-    r"out of credits|hit your limit",
+    r"out of credits|hit your (?:[\w'-]+ ){0,3}limit|out of extra usage|"
+    r"(?:(?:opus|sonnet|weekly|session|5-hour|daily|monthly) )+limit (?:reached|exceeded)",
     re.IGNORECASE,
 )
 

@@ -465,11 +465,11 @@ tests, observability. In round 7 the same seats would swap sides.
 ### Collect
 
 Inspect terminal results as they arrive. Wait for seats inside ONE bounded foreground call,
-never by ending the turn (see the **Wait contract** in `SKILL.md`). `PENDING_SEATS` is the seat names in the
-pending-seat map, with this panel's `PANEL_LABEL`:
+never by ending the turn (see the **Wait contract** in `SKILL.md`). `PENDING_SEATS` is the seat names, space separated, in the
+pending-seat map (the command substitution keeps the loop word-splitting under zsh), with this panel's `PANEL_LABEL`:
 
 ```bash
-finished() { for seat in $PENDING_SEATS; do [ -e "$S/r$PANEL_LABEL-$seat.exit" ] && echo "$seat"; done; }
+finished() { for seat in $(printf '%s\n' "$PENDING_SEATS"); do [ -e "$S/r$PANEL_LABEL-$seat.exit" ] && echo "$seat"; done; }
 deadline=$((SECONDS + 540))
 until [ -n "$(finished)" ] || [ "$SECONDS" -ge "$deadline" ]; do sleep 30; done
 finished
