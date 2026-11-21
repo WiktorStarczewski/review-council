@@ -29,6 +29,7 @@ LIB_DIR = Path(__file__).resolve().parent / 'lib'
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
 from review_limits import (CLAUDE_MAX_TURNS, MANDATORY_REPOSITORY_READ_LIMIT,
+                           MANIFEST_MAX_BYTES,
                            CODEX_READ_LINES, CODEX_SOURCE_READ_LINES,
                            PROVIDER_TURN_RESERVE, READ_LINES,
                            REPOSITORY_EXPANSION_CALL_LIMIT,
@@ -320,6 +321,94 @@ def encoded(value):
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
+
+
+SOURCE_CONTEXT_WIRE_VERSION = 4
+
+
+def wire_source_context(context):
+    """The stored form of a source context: each seat lists its distinct component id sets once
+    and every range row names one by index, so the id lists are not repeated per row."""
+    def swap(row, sets):
+        row = dict(row)
+        row['component_set'] = sets.setdefault(tuple(row.pop('component_ids')), len(sets))
+        return row
+
+    seats = {}
+    for seat, packet in context['seats'].items():
+        sets = {}
+        stored = dict(packet)
+        stored['omitted_source_ranges'] = [swap(row, sets) for row in packet['omitted_source_ranges']]
+        stored['required_source_ranges'] = [swap(row, sets) for row in packet['required_source_ranges']]
+        stored['shards'] = [dict(shard, ranges=[swap(row, sets) for row in shard['ranges']])
+                            for shard in packet['shards']]
+        stored['component_sets'] = [list(ids) for ids in sets]
+        seats[seat] = stored
+    return dict(context, schema_version=SOURCE_CONTEXT_WIRE_VERSION, seats=seats)
+
+
+def expand_source_context(context):
+    """Inverse of wire_source_context. A schema 3 context already carries its component_ids."""
+    if not isinstance(context, dict) or context.get('schema_version') != SOURCE_CONTEXT_WIRE_VERSION:
+        return context
+    if not isinstance(context.get('seats'), dict):
+        raise ValueError('invalid source context seats')
+
+    def swap(row, sets, seat):
+        index = row.get('component_set') if isinstance(row, dict) else None
+        if type(index) is not int or not 0 <= index < len(sets) or 'component_ids' in row:
+            raise ValueError('invalid source context component set: ' + seat)
+        row = dict(row)
+        del row['component_set']
+        row['component_ids'] = list(sets[index])
+        return row
+
+    seats = {}
+    for seat, packet in context['seats'].items():
+        sets = packet.get('component_sets') if isinstance(packet, dict) else None
+        if (not isinstance(sets, list) or any(not isinstance(ids, list) for ids in sets)
+                or not isinstance(packet.get('omitted_source_ranges'), list)
+                or not isinstance(packet.get('required_source_ranges'), list)
+                or not isinstance(packet.get('shards'), list)
+                or any(not isinstance(shard, dict) or not isinstance(shard.get('ranges'), list)
+                       for shard in packet['shards'])):
+            raise ValueError('invalid source context component sets: ' + seat)
+        expanded = {key: value for key, value in packet.items() if key != 'component_sets'}
+        expanded['omitted_source_ranges'] = [
+            swap(row, sets, seat) for row in packet['omitted_source_ranges']]
+        expanded['required_source_ranges'] = [
+            swap(row, sets, seat) for row in packet['required_source_ranges']]
+        expanded['shards'] = [dict(shard, ranges=[swap(row, sets, seat) for row in shard['ranges']])
+                              for shard in packet['shards']]
+        seats[seat] = expanded
+    return dict(context, schema_version=3, seats=seats)
+
+
+def expand_manifest(manifest):
+    return dict(manifest, source_context=expand_source_context(manifest.get('source_context')))
+
+
+def manifest_contributors(stored, count=3):
+    sizes = {}
+    for key, value in stored.items():
+        if key == 'source_context':
+            for seat, packet in value['seats'].items():
+                for field, part in packet.items():
+                    sizes[f'source_context.seats.{seat}.{field}'] = len(encoded(part))
+        else:
+            sizes[key] = len(encoded(value))
+    return sorted(sizes.items(), key=lambda item: (-item[1], item[0]))[:count]
+
+
+def manifest_bytes(manifest):
+    """The manifest as stored, refused when over the bound every seat reader enforces."""
+    stored = dict(manifest, source_context=wire_source_context(manifest['source_context']))
+    raw = encoded(stored)
+    if len(raw) > MANIFEST_MAX_BYTES:
+        largest = ', '.join(f'{name} ({size} bytes)' for name, size in manifest_contributors(stored))
+        raise ValueError(f'evidence manifest is {len(raw)} bytes, over the {MANIFEST_MAX_BYTES} '
+                         f'byte bound; largest: {largest}; review a narrower scope')
+    return raw
 
 
 def _source_context_reconstruction_key(repo, session, manifest, manifest_sha256,
@@ -5962,7 +6051,7 @@ def validate_components(session, manifest, evidence):
 
 def validate_source_context(session, manifest, evidence):
     context = manifest.get('source_context')
-    if evidence.get('source_context') != context or not isinstance(context, dict):
+    if expand_source_context(evidence.get('source_context')) != context or not isinstance(context, dict):
         raise ValueError('evidence/manifest mismatch: source_context')
     if set(context) != {'schema_version', 'enabled', 'snapshot_tree', 'base_tree',
                         'max_shard_bytes', 'packet_batch_limit', 'seats'}:
@@ -6571,6 +6660,7 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
     seen.add(str(path))
     if not isinstance(manifest, dict):
         raise ValueError('manifest must be an object')
+    manifest = expand_manifest(manifest)
     for field in ('source', 'assignments', 'artifacts', 'inputs', 'word_counts', 'mechanical', 'source_context'):
         if not isinstance(manifest.get(field), dict):
             raise ValueError('invalid manifest object: ' + field)
@@ -8161,9 +8251,10 @@ def _prepare_locked(args, session):
     if parent_assignment is not None:
         manifest['parent_assignment'] = parent_assignment
         manifest['replacement_executor'] = replacement_executor
+    manifest_raw = manifest_bytes(manifest)
     manifest_path = session / (prefix + '-evidence.manifest.json')
     receipt_path = session / (prefix + '-coverage.receipt.json')
-    if receipt_path.exists() and (not manifest_path.exists() or manifest_path.read_bytes() != encoded(manifest)):
+    if receipt_path.exists() and (not manifest_path.exists() or manifest_path.read_bytes() != manifest_raw):
         raise ValueError('cannot replace an already receipted manifest')
     frozen = progress is not None
     if manifest_path.exists():
@@ -8172,7 +8263,7 @@ def _prepare_locked(args, session):
     for path in session.glob('r*-pr-progress.json'):
         prior = json.loads(attempt_module().private_bytes(path)).get('prior', '')
         frozen = frozen or prior.split(':', 1)[0] == args.label
-    if frozen and manifest_path.exists() and attempt_module().private_bytes(manifest_path) != encoded(manifest):
+    if frozen and manifest_path.exists() and attempt_module().private_bytes(manifest_path) != manifest_raw:
         raise ValueError('cannot overwrite an immutable PR progression generation')
     if progress is not None:
         observed = pr_progress_observation(session, progress['prior'], progress['live_head'])
@@ -8186,7 +8277,7 @@ def _prepare_locked(args, session):
         writer(session / name, raw)
     if numeric is not None and attempt_module().private_bytes(session / numeric['panel']) != numeric_raw:
         raise ValueError('numeric panel changed during preparation')
-    writer(manifest_path, encoded(manifest))
+    writer(manifest_path, manifest_raw)
     discard_prepare_diagnostic(session, args.label)
     print(manifest_path)
 

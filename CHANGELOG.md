@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bound the evidence manifest at one 16 MiB limit shared by `prepare` and every reader, and store each seat's component id sets once in the manifest (`source_context` schema 4, schema 3 still accepted) instead of repeating them in every range row. A very large PR published a 19 MB manifest that every Codex seat refused at launch while Claude seats read it; the same manifest is now about 6 MB, and `prepare` refuses an over-bound manifest up front, naming its largest fields.
+
 - Publish a GitHub Release automatically for every `review-council--v*` tag from its CHANGELOG section, and require the release check in the release procedure.
 
 ## 0.9.13

@@ -17,7 +17,7 @@ import tempfile
 LIB_DIR = Path(__file__).resolve().parent
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
-from review_limits import codex_review_turn_call_limit_for_model
+from review_limits import MANIFEST_MAX_BYTES, codex_review_turn_call_limit_for_model
 
 OUTPUT_BYTES = 32 * 1024
 PROOF_TURN_BYTES = 60 * 1024
@@ -412,7 +412,7 @@ def prepared_stages(prompt, seat, model, stage_dir):
     if not re.fullmatch(r'r[A-Za-z0-9_.-]+', label):
         raise StageError('prepared prompt name does not bind a review round')
     manifest_path = session / (label + '-evidence.manifest.json')
-    manifest_raw = safe_read(manifest_path, session, 16 * 1024 * 1024)
+    manifest_raw = safe_read(manifest_path, session, MANIFEST_MAX_BYTES)
     if sha256(manifest_raw) != digests[0]:
         raise StageError('prepared prompt evidence manifest hash changed')
     try:

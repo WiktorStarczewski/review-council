@@ -1516,7 +1516,7 @@ def verification_source_context_change(change):
         for seat, assignment in manifest['assignments'].items():
             if component['id'] not in assignment['components']:
                 continue
-            packet = manifest['source_context']['seats'][seat]
+            packet = module.expand_manifest(manifest)['source_context']['seats'][seat]
             rows = [row for shard in packet['shards'] for row in shard['ranges']]
             rows += packet['required_source_ranges'] + packet['omitted_source_ranges']
             expected_tree = reviewed['base_tree'] if change == 'deleted' else snapshot
@@ -1622,7 +1622,7 @@ def verification_nested_instruction_restoration(large=False):
         for seat, assignment in manifest['assignments'].items():
             if component['id'] not in assignment['components']:
                 continue
-            context = manifest['source_context']['seats'][seat]
+            context = module.expand_manifest(manifest)['source_context']['seats'][seat]
             rows = [row for shard in context['shards'] for row in shard['ranges']]
             rows += context['required_source_ranges'] + context['omitted_source_ranges']
             rows = [row for row in rows if row['path'] == 'src/main.py'
@@ -1862,7 +1862,8 @@ def source_context_packets():
         (session / 'scope.env').write_text('\n'.join('REV_BASE=' + base if row.startswith('REV_BASE=') else row for row in scope_text.splitlines()) + '\n')
         write('main.py', (root / 'main.py').read_text().replace('value + 1', 'value + 10')
               .replace('value + 2', 'value + 20').replace('value + 3', 'value + 30'))
-        m = prepare(); context = m['source_context']
+        m = prepare(); assert m['source_context']['schema_version'] == 4
+        m = module.expand_manifest(m); context = m['source_context']
         assert context['schema_version'] == 3 and context['enabled'] is True and context['snapshot_tree'] == m['snapshot_tree']
         assert 'object_repository' not in context
         assert context['max_shard_bytes'] == 16384
@@ -1929,7 +1930,8 @@ def source_context_packets():
         def restore():
             for path, raw in original.items(): path.write_bytes(raw)
         def reseal(transform):
-            manifest = json.loads(manifest_path.read_text()); evidence = json.loads(evidence_path.read_text())
+            manifest = module.expand_manifest(json.loads(manifest_path.read_text()))
+            evidence = json.loads(evidence_path.read_text())
             seat = owner; shard_meta = manifest['source_context']['seats'][seat]['shards'][0]
             artifact = session / shard_meta['artifact']; payload = json.loads(artifact.read_text())
             metadata_update = transform(manifest, payload) or {}
@@ -1947,7 +1949,7 @@ def source_context_packets():
                                                     'words': len(artifact.read_bytes().split())}
             manifest['artifacts'][evidence_path.name] = {'sha256': module.digest(evidence_path.read_bytes()),
                                                         'words': len(evidence_path.read_bytes().split())}
-            manifest_path.write_bytes(module.encoded(manifest))
+            manifest_path.write_bytes(module.manifest_bytes(manifest))
 
         def replace_content_with_valid_hash(manifest, payload):
             entry = payload['entries'][0]
@@ -2941,7 +2943,7 @@ def budget_omissions_are_segmented_or_retained():
                               for index in range(values))
                     + f'    return value_{values - 1}\n')
             write(f'unit_{unit}.py', body)
-        manifest = prepare('budget-omissions')
+        manifest = module.expand_manifest(prepare('budget-omissions'))
         omitted = [packet for packet in manifest['source_context']['seats'].values()
                    if packet['omitted']['declaration']]
         assert omitted
@@ -5106,7 +5108,7 @@ def manifest_interns_component_id_sets():
         'schema_version': 3, 'enabled': True, 'snapshot_tree': '2' * 40, 'base_tree': '4' * 40,
         'max_shard_bytes': 16384, 'packet_batch_limit': 1, 'seats': {'codex-luna': packet}}}
     before = json.dumps(manifest, sort_keys=True)
-    raw = getattr(module, 'manifest_bytes', module.encoded)(manifest)
+    raw = module.manifest_bytes(manifest)
     assert len(raw) < 2 * 1024 * 1024, len(raw)
     wire = json.loads(raw)
     assert wire['source_context']['schema_version'] == 4, wire['source_context']['schema_version']
