@@ -3341,14 +3341,24 @@ def stop_gate_reason(args, event):
     publish(args.state, {'blocks': blocks + 1, 'missing': missing})
     listed = missing[:STOP_GATE_LISTED]
     more = len(missing) - len(listed)
+    # An original-source item is read by line range, never whole; only session files are whole.
+    bounded = [item for item in listed if item.startswith('original source ')]
+    if not bounded:
+        how = ('Read each listed session file completely in one Read call with no offset or limit,'
+               ' keeping to the batch limits in your prompt')
+    elif len(bounded) == len(listed):
+        how = ('Read each listed original source range with a bounded Read (offset and limit), or'
+               ' drop the finding that cites it')
+    else:
+        how = ('Read each listed session file completely in one Read call with no offset or limit,'
+               ' keeping to the batch limits in your prompt, and each listed original source range'
+               ' with a bounded Read (offset and limit), or drop the finding that cites it')
     return (
         f'review stop blocked ({blocks + 1} of {STOP_GATE_BLOCKS}): the read audit will reject '
         'this review because required evidence is unread. Read these next, in this order: '
         + '; '.join(listed)
         + (f'; then the {more} further missing reads in prompt order' if more else '')
-        + '. Read each listed session file completely in one Read call with no offset or limit,'
-        ' keeping to the batch limits in your prompt, then return your complete result again'
-        ' with StructuredOutput.')
+        + f'. {how}, then return your complete result again with StructuredOutput.')
 
 
 class StopGateDeadline(BaseException):
@@ -4471,6 +4481,16 @@ def assess(args, blocked, progress=None):
                     finding_citations += 1
                 else:
                     failures.append(violation('unsubstantiated-finding-range', args.adapter))
+                    # A bounded Read of the cited lines credits them: the stop gate asks for it.
+                    cited = {'path': finding.get('file'), 'line_start': finding.get('line_start'),
+                             'line_end': finding.get('line_end')}
+                    if (isinstance(cited['path'], str) and cited['path']
+                            and type(cited['line_start']) is int
+                            and type(cited['line_end']) is int
+                            and 1 <= cited['line_start'] <= cited['line_end']):
+                        gap = (5, required_source_item(cited))
+                        if gap not in missing:
+                            missing.append(gap)
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         failures.append(violation('invalid-review-result', args.adapter))
     unique = []
