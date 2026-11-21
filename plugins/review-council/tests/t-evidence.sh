@@ -3222,6 +3222,25 @@ def empty_source_context():
                    for row in [*entries, *packet['required_source_ranges']])
         finish('empty-context')
 
+def eof_deletion_anchors_a_surviving_line():
+    with fixture() as (root, session, git, write, call, prepare, finish):
+        write('tail_test.py', 'a\nb\nc\n'); write('grow_test.py', 'a\n')
+        write('mixed_test.py', 'x1\nx2\nx3\nx4\nx5\nx6\n')
+        git('add', '.'); git('commit', '-qm', 'eof base')
+        base = git('rev-parse', 'HEAD'); scope_text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if row.startswith('REV_BASE=') else row
+            for row in scope_text.splitlines()) + '\n')
+        write('tail_test.py', 'a\n'); write('grow_test.py', 'a\nb\nc\n')
+        write('mixed_test.py', 'y1\nx2\nx3\nx4\n')
+        repo = module.Repository(session.resolve()); tree, _ = repo.snapshot()
+        _, hunks, _, _ = repo.changes(repo.tree(base), tree)
+        by_path = {hunk['path']: hunk for hunk in hunks}
+        assert by_path['tail_test.py']['changed_lines'] == [1], by_path['tail_test.py']
+        assert by_path['tail_test.py']['base_changed_lines'] == [2, 3], by_path['tail_test.py']
+        assert by_path['grow_test.py']['changed_lines'] == [2, 3], by_path['grow_test.py']
+        assert by_path['mixed_test.py']['changed_lines'] == [1, 4], by_path['mixed_test.py']
+
 def bounded_work_and_memory():
     import tracemalloc
     with fixture() as (root, session, git, write, call, prepare, finish):
@@ -5122,7 +5141,8 @@ cases = (
     source_context_prefers_named_production_and_maps_gates, complete_declaration_context,
     budget_omissions_are_segmented_or_retained, innermost_declarations_and_bounded_anchors,
     high_confidence_component_union, components_ownership_and_instructions,
-    instruction_override_precedence, empty_source_context, bounded_work_and_memory,
+    instruction_override_precedence, empty_source_context, eof_deletion_anchors_a_surviving_line,
+    bounded_work_and_memory,
     receipt_read_audits, seat_local_recovery, narrow_seat_requires_proven_reads,
     full_seat_requires_proven_reads, unenforced_agent_seat_binds_only_its_prompt,
     unenforced_audit_is_opt_in, unenforced_audit_cache_is_keyed_on_every_input,
@@ -5200,7 +5220,7 @@ groups = {
         complete_declaration_context, budget_omissions_are_segmented_or_retained,
         innermost_declarations_and_bounded_anchors, high_confidence_component_union,
         components_ownership_and_instructions, instruction_override_precedence,
-        empty_source_context,
+        empty_source_context, eof_deletion_anchors_a_surviving_line,
     ),
     'scale_receipts': (
         wallet_scale, bounded_work_and_memory, receipt_read_audits,

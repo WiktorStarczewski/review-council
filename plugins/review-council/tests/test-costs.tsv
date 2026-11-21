@@ -406,3 +406,6 @@ t-proof-budget.sh::test_code_proof_budget_promotes_exact_caller_segments	8	norma
 t-proof-budget.sh::test_edited_tests_exceeding_proof_budget_are_refused	8	normal
 t-proof-budget.sh::test_unsplittable_source_line_stays_launchable	8	normal
 t-evidence.sh::test_evidence_semantic_rejection	35	normal
+t-proof-budget.sh::test_eof_edit_and_tail_deletion_stays_launchable	8	normal
+t-proof-budget.sh::test_eof_pure_tail_deletion_stays_launchable	8	normal
+t-proof-budget.sh::test_eof_appended_lines_stay_launchable	8	normal
