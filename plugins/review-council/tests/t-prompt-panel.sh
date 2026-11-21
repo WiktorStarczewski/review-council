@@ -158,7 +158,8 @@ assert binding['manifest'] == 'r5-evidence.manifest.json' and binding['seat'] ==
 assert binding['manifest_sha256'] == hashlib.sha256(parent_path.read_bytes()).hexdigest()
 assert binding['bundle'] == parent['assignments']['terra']['bundle'] == 'simplicity'
 assert list(child['assignments']) == ['sol']
-assert child['assignments']['sol']['bundle'] == 'simplicity' and child['assignments']['sol']['scope'] == 'full'
+assert child['assignments']['sol']['bundle'] == 'simplicity'
+assert child['assignments']['sol']['scope'] == parent['assignments']['terra']['scope'] == 'semantic'
 assert child['snapshot_tree'] == parent['snapshot_tree'] and child['source'] == parent['source']
 assert child['patch_chunks_mode'] == parent['patch_chunks_mode'] == 'auto'
 assert child['source_context']['enabled'] is parent['source_context']['enabled'] is True

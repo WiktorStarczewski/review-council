@@ -3353,8 +3353,9 @@ def seat_local_recovery():
             'assignment_sha256': module.digest(module.encoded(parent['assignments']['terra'])),
             'bundle': bundles[1], 'adapter': 'codex',
             'model': 'gpt-5.6-luna', 'effort': 'high',
-            'patch_chunks_mode': 'auto', 'source_context_enabled': True}
-        assert child['assignments']['sol']['scope'] == 'full'
+            'patch_chunks_mode': 'auto', 'source_context_enabled': True,
+            'mirrors_parent': True}
+        assert child['assignments']['sol']['scope'] == parent['assignments']['terra']['scope'] == 'semantic'
         assert child['patch_chunks_mode'] == parent['patch_chunks_mode'] == 'auto'
         assert child['source_context']['enabled'] is parent['source_context']['enabled'] is True
         call('prepare', session, 'parentx', '--phase', 'repair', *child_args,
@@ -3503,7 +3504,7 @@ def replacement_runs_on_another_seat():
         child = prepare('4x', 'repair', *child_args)
         assert list(child['assignments']) == ['terra'], child['assignments']
         assert child['assignments']['terra']['bundle'] == parent['assignments']['sol']['bundle']
-        assert child['assignments']['terra']['scope'] == 'full'
+        assert child['assignments']['terra']['scope'] == parent['assignments']['sol']['scope'] == 'semantic'
         assert child['parent_assignment']['seat'] == 'sol'
         assert child['parent_assignment']['adapter'] == 'claude'
         assert prepare('4x', 'repair', *child_args) == child, 'the same replacement re-prepares'

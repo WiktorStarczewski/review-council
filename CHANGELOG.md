@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Make a replacement seat reproduce the scope, components, patch and source packet role of the full or semantic assignment it replaces instead of taking the full cumulative state, so a specialist replacement no longer fails prepare with `proof reads exceed repository capacity` on a large PR. A standalone repair and a replacement of a delta or closure assignment stay full-scope.
+
 - Publish a GitHub Release automatically for every `review-council--v*` tag from its CHANGELOG section, and require the release check in the release procedure.
 
 ## 0.9.13
