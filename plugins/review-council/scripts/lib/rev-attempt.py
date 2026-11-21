@@ -125,6 +125,25 @@ def semantic_rejection(session, panel, seat):
     return record
 
 
+def capacity_refusal(session, panel, seat, prompt):
+    """The adapter's record that this exact prompt cannot fit its model, else None.
+
+    A refusal is deterministic, so a relaunch of the same prompt only repeats it. A missing,
+    malformed or stale (different prompt) record never ends an assignment.
+    """
+    try:
+        record = json.loads(private_bytes(session / f'r{panel}-{seat}.capacity-refusal'))
+        current = hashlib.sha256(prompt.resolve().read_bytes()).hexdigest()
+    except (OSError, ValueError, RecursionError):
+        return None
+    if (not isinstance(record, dict) or record.get('schema_version') != 1
+            or record.get('prompt_sha256') != current
+            or any(type(record.get(key)) is not int or record[key] < 1
+                   for key in ('projected_tokens', 'budget_tokens'))):
+        return None
+    return record
+
+
 def publish_semantic_rejection(session, panel, seat, raw):
     path = semantic_rejection_path(session, panel, seat)
     descriptor, temporary = tempfile.mkstemp(prefix='.semantic-rejection-', dir=session)
@@ -500,7 +519,8 @@ def terminal_failure(session: Path, panel: str, seat: str, prompt: Path,
                      replacement_seat: str | None = None) -> bool:
     """The assignment failed for good under a recorded audit, provider, or retry outcome."""
     if (semantic_rejection(session, panel, seat) is not None
-            or latched(session, panel, seat) or ended_by_incomplete_proof(session, panel, seat, prompt)):
+            or latched(session, panel, seat) or ended_by_incomplete_proof(session, panel, seat, prompt)
+            or capacity_refusal(session, panel, seat, prompt) is not None):
         return True
     attempt = completed_attempt(session, panel, seat, prompt)
     if attempt is not None:
@@ -771,6 +791,11 @@ def _main_locked(session, command, token):
             return 2
         if command in ('check', 'reserve') and latched(session, panel, seat):
             print(f'{seat} under label {panel} failed a hard evidence audit; replace the assignment '
+                  'on another eligible seat, never relaunch it', file=sys.stderr)
+            return 2
+        if command in ('check', 'reserve') and capacity_refusal(
+                session, panel, seat, Path(sys.argv[5])) is not None:
+            print(f'{seat} under label {panel} has a capacity refusal; replace the assignment '
                   'on another eligible seat, never relaunch it', file=sys.stderr)
             return 2
         if command in ('check', 'reserve') and ended_by_incomplete_proof(session, panel, seat, Path(sys.argv[5])):

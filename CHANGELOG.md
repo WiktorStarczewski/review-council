@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Stop a replacement from walking the escalation chain into families that cannot hold the failed assignment: `rev-workhorse.py escalate` skips a family whose context budget or direct-read limit is below the failed assignment's recorded load and fails with `no eligible family can hold this assignment` when none remains (an explicit `escalation_overrides` entry still wins), and a Codex seat's deterministic context-capacity refusal is recorded in `r<N>-<seat>.capacity-refusal` so it is terminal after one launch instead of being relaunched.
+
 - Publish a GitHub Release automatically for every `review-council--v*` tag from its CHANGELOG section, and require the release check in the release procedure.
 
 ## 0.9.13
