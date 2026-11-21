@@ -5039,7 +5039,8 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
     hunks_by_path = {}
     for hunk in evidence['hunks']:
         hunks_by_path.setdefault(hunk['path'], []).append(hunk['sha256'])
-    integration = owner if owner in assigned else next(iter(assigned))
+    integration = (None if owner is None
+                   else owner if owner in assigned else next(iter(assigned)))
     component_by_id = {component['id']: component for component in components}
     calls_by_name = {}
     for call in evidence['call_sites']:
@@ -5801,6 +5802,7 @@ def validate_source_context_bytes(repo, session, manifest, entries_by_tree=None,
 def validate_source_context_snapshot(repo, session, manifest, canonical_changes=None,
                                      canonical_delta=None, manifest_sha256=None):
     context = manifest['source_context']
+    mirror = replacement_mirror(session, manifest)
     entries_by_tree = {}
     blob_lines = {}
     validate_source_context_bytes(repo, session, manifest, entries_by_tree, blob_lines)
@@ -5831,6 +5833,8 @@ def validate_source_context_snapshot(repo, session, manifest, canonical_changes=
                     delta_hunks, delta_categories = canonical_delta
                 context_hunks = source_context_hunks(hunks, delta_hunks, delta_categories)
             expected_hunks = context_hunks if context_hunks != hunks else None
+            if mirror is not None:
+                expected_hunks = mirrored_context_hunks(mirror, True)
         else:
             expected_hunks = cached['source_context_hunks']
         recorded = read_json(session / f"r{manifest['label']}-evidence.json")
@@ -5855,7 +5859,8 @@ def validate_source_context_snapshot(repo, session, manifest, canonical_changes=
                 manifest['components'], clusters, entries_by_tree, blob_lines)
             canonical = plan_source_context(
                 manifest['snapshot_tree'], manifest['base_tree'], canonical_facts,
-                manifest['components'], ordered_assignments, manifest['mechanical_owner'],
+                manifest['components'], ordered_assignments,
+                source_packet_owner(manifest, mirror),
                 'r' + manifest['label'], inputs, True, clusters,
                 assigned_patch_bodies(session, manifest))
         else:
@@ -5892,6 +5897,56 @@ def generation_stem(manifest, generations, seat):
     """The file stem of an assignment's chosen result: a replacement runs under its own seat."""
     row = (generations or {}).get(seat)
     return f"r{row['label']}-{row['seat']}" if row else f"r{manifest['label']}-{seat}"
+
+
+MIRRORED_SCOPES = ('full', 'semantic')
+
+
+def replacement_mirror(session, manifest):
+    """The failed parent assignment a replacement reproduces, or None.
+
+    A replacement of a full or semantic assignment takes that assignment's scope, components
+    and patch instead of the full cumulative state. A delta or closure parent, and a manifest
+    prepared before the binding carried `mirrors_parent`, keep the full-scope child.
+    """
+    binding = manifest.get('parent_assignment')
+    if not isinstance(binding, dict) or binding.get('mirrors_parent') is not True:
+        return None
+    parent = read_json(session / binding['manifest'])
+    assignment = parent['assignments'][binding['seat']]
+    if assignment['scope'] not in MIRRORED_SCOPES:
+        return None
+    return {'manifest': parent, 'seat': binding['seat'], 'assignment': assignment,
+            'evidence_path': session / f"r{parent['label']}-evidence.json"}
+
+
+def mirrored_components(mirror, executor, owner):
+    ids = set(mirror['assignment']['components'])
+    narrow = not mirror['assignment']['full_state']
+    return [dict(component, full_state_owner=owner, prior_owners=[],
+                 specialists=[executor] if narrow and component['id'] in ids else [])
+            for component in mirror['manifest']['components']]
+
+
+def mirrored_context_hunks(mirror, enabled):
+    if mirror is None or not enabled:
+        return None
+    return read_json(mirror['evidence_path']).get('source_context_hunks')
+
+
+def source_packet_owner(manifest, mirror):
+    """The seat holding the integration packet role, None when the parent was a specialist."""
+    if mirror is not None and (
+            mirror['manifest']['source_context']['seats'][mirror['seat']]['role'] != 'integration'):
+        return None
+    return manifest['mechanical_owner']
+
+
+def replacement_assignment_matches(binding, parent, child):
+    if binding.get('mirrors_parent') is True and parent['scope'] in MIRRORED_SCOPES:
+        return all(child.get(key) == parent.get(key) for key in (
+            'scope', 'full_state', 'components', 'patch_sha256', 'patch_bytes', 'patch_lines'))
+    return child['scope'] == 'full'
 
 
 def finding_ownership(session, manifest, generations=None):
@@ -5977,7 +6032,9 @@ def validate_components(session, manifest, evidence):
         verification_mode = (verification_specialist_mode(assigned, owner)
                              if adaptive and manifest['phase'] == 'verification' else None)
         basis = delta if verification_mode == 'delta' else semantic
-        expected = components_for(basis, edges, ordered, owner)
+        mirror = replacement_mirror(session, manifest)
+        expected = (mirrored_components(mirror, next(iter(assigned)), owner) if mirror is not None
+                    else components_for(basis, edges, ordered, owner))
     if len(components) != len(expected):
         raise ValueError('component count mismatch')
     for component, reference in zip(components, expected):
@@ -6001,7 +6058,8 @@ def validate_components(session, manifest, evidence):
         # Not a finding on each first file: that file can sit in a neighbour's boundary. The owners
         # themselves are checked against the predecessor's findings when not offline.
         claimed = {c['id']: c['prior_owners'] for c in components}
-        if components != components_for(basis, edges, ordered, owner, prior_owners=claimed):
+        if components != (expected if mirror is not None else components_for(
+                basis, edges, ordered, owner, prior_owners=claimed)):
             raise ValueError('component routing is not canonical')
     if adaptive and not components:
         raise ValueError('adaptive scope requires semantic components')
@@ -6072,7 +6130,11 @@ def validate_source_context(session, manifest, evidence):
     assigned = manifest['assignments']; components = manifest['components']
     component_by_id = {component['id']: component for component in components}
     owner = manifest['mechanical_owner'] if manifest['mechanical_owner'] in assigned else next(iter(assigned))
-    if 'source_context_hunks' in evidence and (
+    mirror = replacement_mirror(session, manifest)
+    if mirror is not None:
+        if evidence.get('source_context_hunks') != mirrored_context_hunks(mirror, context['enabled']):
+            raise ValueError('source context hunks do not reproduce the parent assignment')
+    elif 'source_context_hunks' in evidence and (
             not context['enabled'] or manifest['phase'] != 'verification'
             or manifest['fallback_reason']
             or verification_specialist_mode(assigned, owner) != 'delta'):
@@ -6112,7 +6174,9 @@ def validate_source_context(session, manifest, evidence):
         relevant = [component for component in components if component['id'] in expected_components]
         expected_hunks = sorted({value for component in relevant for path in component['files']
                                  for value in hunk_by_path.get(path, [])})
-        if (packet['role'] != ('integration' if seat == owner else 'specialist')
+        role = (mirror['manifest']['source_context']['seats'][mirror['seat']]['role']
+                if mirror is not None else 'integration' if seat == owner else 'specialist')
+        if (packet['role'] != role
                 or packet['components'] != expected_components or packet['hunk_sha256'] != expected_hunks):
             raise ValueError('source context assignment mismatch: ' + seat)
         omitted = packet['omitted']
@@ -6124,7 +6188,7 @@ def validate_source_context(session, manifest, evidence):
         if not context['enabled'] and (
                 shards or packet['omitted_source_ranges'] or any(omitted.values())):
             raise ValueError('disabled source context contains packet data: ' + seat)
-        limit = 3 if seat == owner or manifest['phase'] == 'plan' else 1
+        limit = 3 if packet['role'] == 'integration' or manifest['phase'] == 'plan' else 1
         if not isinstance(shards, list) or len(shards) > limit:
             raise ValueError('source context shard count exceeded: ' + seat)
         priorities = []
@@ -6831,7 +6895,9 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
         keys = {'manifest', 'manifest_sha256', 'seat', 'snapshot_tree', 'roster_sha256',
                 'assignment_sha256', 'bundle', 'adapter', 'model', 'effort',
                 'patch_chunks_mode', 'source_context_enabled'}
-        if (manifest['phase'] != 'repair' or not isinstance(binding, dict) or set(binding) != keys
+        if (manifest['phase'] != 'repair' or not isinstance(binding, dict)
+                or set(binding) - {'mirrors_parent'} != keys
+                or binding.get('mirrors_parent', True) is not True
                 or not isinstance(binding.get('manifest'), str)
                 or Path(binding['manifest']).name != binding['manifest']
                 or not SAFE_NAME.fullmatch(str(binding.get('seat', '')))):
@@ -6858,6 +6924,8 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
             'patch_chunks_mode': parent['patch_chunks_mode'],
             'source_context_enabled': parent['source_context']['enabled'],
         }
+        if 'mirrors_parent' in binding:
+            expected_binding['mirrors_parent'] = True
         executor, child_assignment = next(iter(assigned.items()))
         child_executor = replacement_executor_row(manifest)
         root = replacement_root_manifest(session, parent, fresh=fresh, seen=seen, offline=offline)
@@ -6870,7 +6938,7 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
                 roster_seat, child_executor, parent_is_repair=parent['phase'] == 'repair')
         if (binding != expected_binding or len(assigned) != 1 or executor == seat
                 or unenforced_adapter(child_assignment['adapter'])
-                or child_assignment['scope'] != 'full'
+                or not replacement_assignment_matches(binding, parent_assignment, child_assignment)
                 or child_assignment['bundle'] != parent_assignment['bundle']
                 or child_assignment.get('emphasis') != parent_assignment.get('emphasis')
                 or manifest['snapshot_tree'] != parent['snapshot_tree']
@@ -6906,7 +6974,8 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
                for seat, a in assigned.items()):
             raise ValueError('plan panel scope mismatch')
     elif fallback or phase in ('repair', 'numeric'):
-        if any(a['scope'] != 'full' for a in assigned.values()):
+        if (any(a['scope'] != 'full' for a in assigned.values())
+                and not (phase == 'repair' and replacement_mirror(session, manifest) is not None)):
             raise ValueError('fallback and repair require all-full scope')
     else:
         if owner not in assigned:
@@ -7780,6 +7849,7 @@ def _prepare_locked(args, session):
     parent_manifest = None
     parent_manifest_hash = None
     replacement_executor = None
+    mirror = None
     parent_value = getattr(args, 'parent_assignment', None)
     if parent_value is not None:
         parent_label, separator, parent_seat = parent_value.partition(':')
@@ -7924,7 +7994,11 @@ def _prepare_locked(args, session):
             'effort': roster_seat.get('effort'),
             'patch_chunks_mode': chunk_mode,
             'source_context_enabled': source_context_enabled,
+            'mirrors_parent': True,
         }
+        if parent['scope'] in MIRRORED_SCOPES:
+            mirror = {'manifest': parent_manifest, 'seat': parent_seat, 'assignment': parent,
+                      'evidence_path': session / f'r{parent_label}-evidence.json'}
     contract_input = provider_contract_input(session)
     inputs = input_hashes(session, contract_input[0] if contract_input else None)
     for name in ('files.txt', 'untracked.txt'):
@@ -8029,6 +8103,14 @@ def _prepare_locked(args, session):
         fallback = 'snapshot contains unsupported files'; use_delta = False
     if unknown_ref:
         fallback = 'unknown reviewed ref; full current worktree required'; use_delta = False
+    if mirror is not None and source_context_enabled and not unknown_ref:
+        # A replacement proves the same hunks its parent was given, so a delta owner stays small.
+        context_hunks = mirrored_context_hunks(mirror, True)
+        if context_hunks is not None:
+            data = dict(data, source_context_hunks=context_hunks)
+            data['instructions'], instruction_packet = instructions(
+                repo, snapshot, instruction_coverage_paths(data, categories),
+                source['mode'] == 'worktree')
     plan_delta_mode = None
     plan_delta_reason = None
     if args.phase == 'plan':
@@ -8074,6 +8156,8 @@ def _prepare_locked(args, session):
         components = components_for(
             basis, data['dependencies'], chosen, owner,
             previous.get('findings') if use_delta else None)
+        if mirror is not None:
+            components = mirrored_components(mirror, executor, owner)
     scopes = {}
     specialist_artifacts = {}
     patch_bodies = {}
@@ -8092,6 +8176,8 @@ def _prepare_locked(args, session):
                 mode = 'full'
         if fallback and args.phase != 'verification':
             mode = 'full'
+        if mirror is not None:
+            mode = mirror['assignment']['scope']
         name = f'{prefix}-full.patch' if mode == 'full' else f'{prefix}-{seat}.patch'
         component_ids = [c['id'] for c in components if mode == 'full' or seat in c['specialists']]
         roster_seat = next(row for row in roster['seats'] if row['seat'] == seat)
@@ -8112,6 +8198,10 @@ def _prepare_locked(args, session):
                         'patch_bytes': len(patch_body), 'patch_lines': len(split_lf_lines(patch_body))}
         if adapters[seat] == 'cursor-sdk' and 'cursor_sdk' in roster_seat:
             scopes[seat].update(cursor_sdk_identity(roster_seat))
+        if mirror is not None and any(
+                scopes[seat][key] != mirror['assignment'][key] for key in (
+                    'full_state', 'components', 'patch_sha256', 'patch_bytes', 'patch_lines')):
+            raise ValueError('repair child does not match its parent assignment')
         if numeric is not None:
             scopes[seat]['emphasis'] = next(row[2] for row in numeric_rows if row[0] == seat)
         elif parent_manifest is not None and 'emphasis' in parent:
@@ -8162,7 +8252,8 @@ def _prepare_locked(args, session):
                         'common_artifacts': [prefix + '-evidence.md']}
     prepare_stage('source-context')
     data['source_context'], source_artifacts = source_context(
-        repo, snapshot, base_tree, data, components, scopes, owner, prefix, source_context_enabled,
+        repo, snapshot, base_tree, data, components, scopes,
+        source_packet_owner({'mechanical_owner': owner}, mirror), prefix, source_context_enabled,
         plan_clusters, patch_bodies)
     patch_chunks_effective_mode = chunk_mode
     prepare_stage('capacity')

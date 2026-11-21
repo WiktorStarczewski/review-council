@@ -77,7 +77,7 @@ The verification owner always traces the cumulative change through consumers and
 
 The first core seat is the discovery full-state owner. The first seat in roster order
 that carries `tests-observability-maintenance-regression` is the full-state owner for
-risk and verification. A repair seat receives the full cumulative patch.
+risk and verification. A standalone repair seat receives the full cumulative patch, and a replacement seat reproduces the scope, components and patch of the assignment it replaces.
 A valid narrowed panel has exactly one full-state seat.
 
 `rev-evidence.py` owns semantic component assignment; the host passes no component flags.

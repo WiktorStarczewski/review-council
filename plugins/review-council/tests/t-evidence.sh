@@ -3376,8 +3376,9 @@ def seat_local_recovery():
             'assignment_sha256': module.digest(module.encoded(parent['assignments']['terra'])),
             'bundle': bundles[1], 'adapter': 'codex',
             'model': 'gpt-5.6-luna', 'effort': 'high',
-            'patch_chunks_mode': 'auto', 'source_context_enabled': True}
-        assert child['assignments']['sol']['scope'] == 'full'
+            'patch_chunks_mode': 'auto', 'source_context_enabled': True,
+            'mirrors_parent': True}
+        assert child['assignments']['sol']['scope'] == parent['assignments']['terra']['scope'] == 'semantic'
         assert child['patch_chunks_mode'] == parent['patch_chunks_mode'] == 'auto'
         assert child['source_context']['enabled'] is parent['source_context']['enabled'] is True
         call('prepare', session, 'parentx', '--phase', 'repair', *child_args,
@@ -3526,7 +3527,7 @@ def replacement_runs_on_another_seat():
         child = prepare('4x', 'repair', *child_args)
         assert list(child['assignments']) == ['terra'], child['assignments']
         assert child['assignments']['terra']['bundle'] == parent['assignments']['sol']['bundle']
-        assert child['assignments']['terra']['scope'] == 'full'
+        assert child['assignments']['terra']['scope'] == parent['assignments']['sol']['scope'] == 'semantic'
         assert child['parent_assignment']['seat'] == 'sol'
         assert child['parent_assignment']['adapter'] == 'claude'
         assert prepare('4x', 'repair', *child_args) == child, 'the same replacement re-prepares'
@@ -3609,6 +3610,113 @@ def replacement_runs_on_another_seat():
         assert child['assignments'][executor]['scope'] == 'full'
         assert child['assignments'][executor]['full_state'] is True
         assert child['assignments'][executor]['bundle'] == bundle
+
+def fail_parent_launch(session, call, label, seat):
+    path = session / f'r{label}-evidence.manifest.json'
+    prompt = session / f'r{label}-{seat}.prompt.md'
+    prompt.write_text(call('render', path, seat, env={'REV_SOURCE_CONTEXT': '0'}))
+    for code in ('1', '2'):
+        assert reserve_launch(session, label, seat, prompt).returncode == 0
+        assert record_launch(session, label, seat, prompt, code).returncode == 0
+    (session / f'r{label}-{seat}.exit').write_text('2\n')
+    (session / f'r{label}-{seat}.audit-invalid.json').write_text('{"summary":"kept","findings":[]}\n')
+
+def replacement_reproduces_a_specialist_assignment():
+    no_context = {'REV_SOURCE_CONTEXT': '0'}
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        rows = (('sol', 'codex', 'gpt-5.6-luna'), ('terra', 'codex', 'gpt-5.6-luna'),
+                ('opus', 'claude', 'opus'), ('sonnet', 'claude', 'sonnet'))
+        (session / 'roster.json').write_text(json.dumps({'seats': [
+            {'seat': seat, 'extra': False, 'adapter': adapter, 'model': model, 'effort': 'high'}
+            for seat, adapter, model in rows]}))
+        for i in range(25):
+            write(f'tests/test_{i:02d}.py', f'def test_{i:02d}():\n    assert True\n')
+        git('add', '.'); git('commit', '-qm', 'tests baseline'); base = git('rev-parse', 'HEAD')
+        text = (session / 'scope.env').read_text()
+        (session / 'scope.env').write_text('\n'.join(
+            'REV_BASE=' + base if line.startswith('REV_BASE=') else line
+            for line in text.splitlines()) + '\n')
+        for i in range(25):
+            write(f'tests/test_{i:02d}.py', f'def test_{i:02d}():\n    assert False\n')
+        parent = prepare('p', 'discovery', env=no_context)
+        before = parent['assignments']['terra']
+        assert before['scope'] == 'semantic' and before['components'], before
+        assert len(parent['components']) == 25
+        fail_parent_launch(session, call, 'p', 'terra')
+        # The claude executor cannot read all 25 edited tests; its parent read only its own share.
+        child = prepare('px', 'repair', '--assignment', 'sonnet=simplicity',
+                        '--parent-assignment', 'p:terra', env=no_context)
+        row = child['assignments']['sonnet']
+        assert child['parent_assignment']['mirrors_parent'] is True
+        assert row['scope'] == before['scope'] and row['full_state'] is False
+        assert row['components'] == before['components']
+        assert (row['patch_sha256'], row['patch_bytes'], row['patch_lines']) == (
+            before['patch_sha256'], before['patch_bytes'], before['patch_lines'])
+        assert Path(row['patch']).name == 'rpx-sonnet.patch'
+        assert [c['id'] for c in child['components']] == [c['id'] for c in parent['components']]
+        assert [c['id'] for c in child['components'] if c['specialists']] == before['components']
+        assert child['task_capacity']['seats']['sonnet']['mandatory_repository_reads'] == (
+            parent['task_capacity']['seats']['terra']['mandatory_repository_reads'])
+        child_path = session / 'rpx-evidence.manifest.json'
+        call('verify', child_path, env=no_context)
+        original_manifest = child_path.read_bytes()
+        original_evidence = (session / 'rpx-evidence.json').read_bytes()
+        def forge(change):
+            manifest = json.loads(original_manifest); evidence = json.loads(original_evidence)
+            change(manifest['assignments']['sonnet']); change(evidence['assignments']['sonnet'])
+            raw = module.encoded(evidence)
+            (session / 'rpx-evidence.json').write_bytes(raw)
+            manifest['artifacts']['rpx-evidence.json'] = {
+                'sha256': module.digest(raw), 'words': len(raw.split())}
+            child_path.write_bytes(module.encoded(manifest))
+        every = [component['id'] for component in child['components']]
+        forge(lambda assignment: assignment.update(components=every))
+        call('verify', child_path, good=False, env=no_context,
+             error='repair child does not match its parent assignment')
+        forge(lambda assignment: assignment.update(components=list(reversed(before['components']))))
+        call('verify', child_path, good=False, env=no_context,
+             error='repair child does not match its parent assignment')
+        child_path.write_bytes(original_manifest)
+        (session / 'rpx-evidence.json').write_bytes(original_evidence)
+        call('verify', child_path, env=no_context)
+        standalone = prepare('s', 'repair', '--assignment', 'sol=simplicity', env=no_context)
+        assert standalone['assignments']['sol']['scope'] == 'full'
+        assert 'parent_assignment' not in standalone
+
+def replacement_reproduces_a_full_owner_over_a_delta():
+    with fixture(adapter='claude') as (root, session, git, write, call, prepare, finish):
+        (session / 'roster.json').write_text(json.dumps({'seats': [
+            {'seat': seat, 'extra': False, 'adapter': 'claude',
+             'model': 'opus' if seat == 'opus' else 'sonnet', 'effort': 'high'} for seat in seats]}))
+        write('src/core.ts', 'export function alpha() { return 1; }\n')
+        write('src/other.ts', 'export function other() { return 1; }\n')
+        write('tests/multi.test.ts',
+              'import { alpha } from "../src/core";\nimport { other } from "../src/other";\n'
+              'test("both", () => alpha() + other());\n')
+        write('large.py', ''.join(f'value_{i} = {i}\n' for i in range(1200)))
+        first = prepare()
+        finish('1')
+        for name in ('src/core.ts', 'src/other.ts'):
+            write(name, (root / name).read_text().replace('1', '2', 1))
+        write('tests/multi.test.ts', (root / 'tests/multi.test.ts').read_text() + '// changed\n')
+        later = prepare('2', 'verification', *assign)
+        owner = later['mechanical_owner']
+        assert later['assignments'][owner]['scope'] == 'full', later['fallback_reason']
+        assert any(a['scope'] == 'delta' for a in later['assignments'].values())
+        assert len(later['components']) < len(first['components'])
+        fail_parent_launch(session, call, '2', owner)
+        child = prepare('2x', 'repair', '--assignment', 'opus=' + later['assignments'][owner]['bundle'],
+                        '--parent-assignment', '2:' + owner)
+        row = child['assignments']['opus']
+        assert row['scope'] == 'full' and row['full_state'] is True
+        assert row['components'] == later['assignments'][owner]['components']
+        assert [c['id'] for c in child['components']] == [c['id'] for c in later['components']]
+        parent_facts = json.loads((session / 'r2-evidence.json').read_text())
+        child_facts = json.loads((session / 'r2x-evidence.json').read_text())
+        assert child_facts.get('source_context_hunks') == parent_facts.get('source_context_hunks')
+        assert child['task_capacity']['seats']['opus']['mandatory_repository_reads'] == (
+            later['task_capacity']['seats'][owner]['mandatory_repository_reads'])
+        call('verify', session / 'r2x-evidence.manifest.json')
 
 def replacement_accepts_only_durable_provider_exit_3():
     for code in ('3', '4'):
@@ -5211,6 +5319,8 @@ cases = (
     full_seat_requires_proven_reads, unenforced_agent_seat_binds_only_its_prompt,
     unenforced_audit_is_opt_in, unenforced_audit_cache_is_keyed_on_every_input,
     nested_walks_reuse_cached_audits, replacement_runs_on_another_seat,
+    replacement_reproduces_a_specialist_assignment,
+    replacement_reproduces_a_full_owner_over_a_delta,
     replacement_accepts_only_durable_provider_exit_3,
     replacement_requires_quota_disabled_escalation_record,
     replacement_accepts_only_a_recorded_owned_provider_cancellation,
@@ -5299,6 +5409,8 @@ groups = {
     ),
     'replacement': (
         replacement_runs_on_another_seat, replacement_accepts_only_durable_provider_exit_3,
+        replacement_reproduces_a_specialist_assignment,
+        replacement_reproduces_a_full_owner_over_a_delta,
         replacement_requires_quota_disabled_escalation_record,
         replacement_accepts_only_a_recorded_owned_provider_cancellation,
         record_provider_cancellation_binds_the_finished_attempts,

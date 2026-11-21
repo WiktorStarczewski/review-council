@@ -139,9 +139,14 @@ may be repeated. Unmatched components follow the normal stable load-balancing ru
 Missing or invalid ownership data widens to normal component routing, never to less
 coverage.
 
-Repair panels with one seat always receive the full cumulative patch. This lets a
-replacement establish integration coverage. A verification receipt still requires
-the complete four-bundle result set before it advances coverage.
+A standalone repair seat receives the full cumulative patch. A replacement reproduces the
+assignment of the seat it replaces: scope, components, patch, emphasis and source packet role
+come from the failed parent assignment, so a specialist replacement stays inside its
+specialist budget and a full-state owner replacement is full because the owner was. Integration
+coverage comes from the owner generation, not from the replacement. A parent with delta or closure
+scope, and a manifest prepared before the binding carried `mirrors_parent`, keep the full-scope
+child. A verification receipt still requires the complete four-bundle result set before it
+advances coverage.
 
 ## Mechanical classification
 
