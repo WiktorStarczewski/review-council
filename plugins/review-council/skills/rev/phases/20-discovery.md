@@ -475,7 +475,7 @@ until [ -n "$(finished)" ] || [ "$SECONDS" -ge "$deadline" ]; do sleep 30; done
 finished
 ```
 
-The call returns when a pending seat has its `.exit` file or after 9 minutes. Handle
+The call returns when a pending seat has its `.exit` file or after 9 minutes; pass the Bash `timeout` parameter as 600000 or the default 2 minutes cuts it short. Handle
 each finished seat, remove it from the map once its terminal result is recorded, and
 repeat the call while seats remain; siblings keep running during a retry. Never launch a waiter
 with `run_in_background` and then end the turn.

@@ -70,8 +70,8 @@ While any seat, panel, CI watcher or status watcher is running, wait inside ONE
 bounded foreground call and never end the turn merely to wait or to report status.
 Use a bash `until` loop over the pending seats' `$S/r$PANEL_LABEL-<seat>.exit` files
 (or the CI run's status), sleeping 30 seconds between checks; each call returns when
-a pending seat finishes or after about 9 minutes, then you handle the result and
-repeat the call. End the turn only on a seat result or permanent seat failure that
+a pending seat finishes or after about 9 minutes (give the call a tool timeout of at
+least 10 minutes), then you handle the result and repeat the call. End the turn only on a seat result or permanent seat failure that
 needs a decision, a finding that needs a decision, a phase or the review completing,
 or a genuine block. Relay each new status line from the watcher log between calls and
 keep going in the same turn.

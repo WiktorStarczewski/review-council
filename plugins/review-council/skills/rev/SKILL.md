@@ -98,7 +98,7 @@ The text above is the core that stays loaded. Seat coverage, audits, and receipt
 
 When this skill is invoked from a conversation that already has other work, launch one fresh agent and stop. Its only inputs are the session directory and `$S/state.json`. That agent is the orchestrator. Do not launch another orchestrator from inside it. Run `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-brief.py "$S" --host claude` and Read only the `phase_file` it prints. A session with no `phase` starts at setup.
 
-That agent follows the **Wait contract**. While any seat, panel, CI watcher or status monitor is running, wait inside ONE bounded foreground call and never end the turn merely to wait or to report status: every stop reaches the parent session as its own "waiting on background work" notification. Launch seats with `run_in_background` as usual, then wait with a Bash `until` loop over the pending seats' `$S/r$PANEL_LABEL-<seat>.exit` files (or the CI run's status), sleeping 30 seconds between checks. Each call returns when a pending seat finishes or after about 9 minutes, under the host tool timeout; handle the result and repeat the call. End the turn only on a seat result or permanent seat failure that needs a decision, a finding that needs a decision, a phase or the review completing, or a genuine block. The 10-minute status line arrives from the status Monitor between calls: relay it and keep going in the same turn.
+That agent follows the **Wait contract**. While any seat, panel, CI watcher or status monitor is running, wait inside ONE bounded foreground call and never end the turn merely to wait or to report status: every stop reaches the parent session as its own "waiting on background work" notification. Launch seats with `run_in_background` as usual, then wait with a Bash `until` loop over the pending seats' `$S/r$PANEL_LABEL-<seat>.exit` files (or the CI run's status), sleeping 30 seconds between checks. Each call returns when a pending seat finishes or after about 9 minutes; pass the Bash `timeout` parameter as 600000, because the default 2 minutes would cut the loop short. Handle the result and repeat the call. End the turn only on a seat result or permanent seat failure that needs a decision, a finding that needs a decision, a phase or the review completing, or a genuine block. The 10-minute status line arrives from the status Monitor between calls: relay it and keep going in the same turn.
 
 ## Mechanical phases
 
@@ -110,6 +110,6 @@ ${CLAUDE_PLUGIN_ROOT}/scripts/rev-mechanical.sh ci "$S"
 ${CLAUDE_PLUGIN_ROOT}/scripts/rev-mechanical.sh closeout "$S"
 ```
 
-`ci` returns within about 9 minutes; exit 124 means the run is still going, so call it again.
+`ci` returns within about 9 minutes (run it with Bash `timeout` 600000); exit 124 means the run is still going, so call it again.
 
 When config sets `host_mechanical_model`, run that call under that model. Keep the strongest model for finding verification and fix planning. Seat models, efforts, coverage, audits, and receipts do not change.

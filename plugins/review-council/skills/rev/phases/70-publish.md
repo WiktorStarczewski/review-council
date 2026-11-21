@@ -31,7 +31,7 @@ report). The **Wait contract** in `SKILL.md` applies to every run and is mandato
 - Launch every `rev-seat.sh` row - `codex`, `gemini`, and `claude` alike - with
   `run_in_background` as usual, then **wait for them with a foreground poll** - a Bash
   call that loops `until` every `$S/r$PANEL_LABEL-<seat>.exit` for this panel exists
-  after the synchronous prelaunch removal (sleep 30 between checks, stop the call at ~9 minutes and issue
+  after the synchronous prelaunch removal (sleep 30 between checks, stop the call at ~9 minutes with Bash `timeout` 600000 and issue
   another) - never by ending your turn.
 - Run gates, commits, and everything else in the foreground.
 - Never end a turn while a seat, a gate, a fix, or a commit is pending.

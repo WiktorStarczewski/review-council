@@ -48,7 +48,7 @@ The text above is the core that stays loaded. Seat coverage, audits, and receipt
 
 When this skill is invoked from a conversation that already has other work, launch one fresh agent and stop the parent turn. Its only inputs are the session directory and `$S/state.json`; that agent owns the review through terminal state. Do not launch another orchestrator from inside it. A new run starts at `phases/10-setup.md`. Run `python3 "$PLUGIN/scripts/rev-brief.py" "$S" --host "${REVIEW_COUNCIL_HOST:-codex}"` and Read only the `phase_file` it prints. Every completed command or seat task is a continuation signal: refresh status, preserve its result, apply the matching retry or replacement path, and continue the phase. Do not return control while seats, required assignments, or a later authorized phase remain. A user pause or an explicit external blocker is the only reason to stop before terminal state.
 
-That agent follows the **Wait contract**. While any seat, panel, CI watcher or status watcher is running, wait inside ONE bounded foreground call and never end the turn merely to wait or to report status: every stop reaches the parent session as its own "waiting on background work" notification. Wait with a shell `until` loop over the pending seats' `$S/r$PANEL_LABEL-<seat>.exit` files (or the CI run's status), sleeping 30 seconds between checks. Each call returns when a pending seat finishes or after about 9 minutes, under the host tool timeout; handle the result and repeat the call. End the turn only on a seat result or permanent seat failure that needs a decision, a finding that needs a decision, a phase or the review completing, or a genuine block. Relay the 10-minute status line from the watcher between calls and keep going in the same turn.
+That agent follows the **Wait contract**. While any seat, panel, CI watcher or status watcher is running, wait inside ONE bounded foreground call and never end the turn merely to wait or to report status: every stop reaches the parent session as its own "waiting on background work" notification. Wait with a shell `until` loop over the pending seats' `$S/r$PANEL_LABEL-<seat>.exit` files (or the CI run's status), sleeping 30 seconds between checks. Each call returns when a pending seat finishes or after about 9 minutes; give the call a tool timeout of at least 10 minutes. Handle the result and repeat the call. End the turn only on a seat result or permanent seat failure that needs a decision, a finding that needs a decision, a phase or the review completing, or a genuine block. Relay the 10-minute status line from the watcher between calls and keep going in the same turn.
 
 ## Mechanical phases
 
@@ -60,6 +60,6 @@ Render, publish, a CI watch, and close-out are one call, not a series of host tu
 "$PLUGIN/scripts/rev-mechanical.sh" closeout "$S"
 ```
 
-`ci` returns within about 9 minutes; exit 124 means the run is still going, so call it again.
+`ci` returns within about 9 minutes (give it a tool timeout of at least 10 minutes); exit 124 means the run is still going, so call it again.
 
 When config sets `host_mechanical_model`, run that call under that model. Keep the strongest model for finding verification and fix planning. Seat models, efforts, coverage, audits, and receipts do not change.
