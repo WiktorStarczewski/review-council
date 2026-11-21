@@ -91,6 +91,12 @@ for raw in sys.stdin:
         if t == 'system' and e.get('subtype') == 'init':
             emit(f"init claude_code_version={e.get('claude_code_version') or '-'} "
                  f"model={e.get('model') or '-'}")
+        elif t == 'system' and e.get('subtype') == 'compact_boundary':
+            meta = e.get('compact_metadata')
+            meta = meta if isinstance(meta, dict) else {}
+            emit(f"compacted trigger={clip(meta.get('trigger') or '-', 32)} "
+                 f"pre_tokens={clip(meta.get('pre_tokens', '-'), 16)} "
+                 f"post_tokens={clip(meta.get('post_tokens', '-'), 16)}")
         elif t == 'assistant':
             for block in (e.get('message') or {}).get('content', []):
                 if block.get('type') == 'tool_use' and block.get('name') in ('Read', 'Glob', 'Grep', 'Bash'):
