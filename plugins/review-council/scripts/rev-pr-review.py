@@ -166,6 +166,25 @@ def render(data, date):
             f"{index + 1}. **{title}** {prose(decision.get('detail'), f'{field}.detail')}"
         )
 
+    taken = data.get("decisions_taken")
+    taken_rows = []
+    taken_details = []
+    if taken is not None:
+        require(isinstance(taken, list), "decisions_taken must be a list")
+        for index, decision in enumerate(taken):
+            field = f"decisions_taken[{index}]"
+            require(isinstance(decision, dict), f"{field} must be an object")
+            title = prose(decision.get("title"), f"{field}.title")
+            require("**" not in title, f"{field}.title contains a Markdown delimiter")
+            location = link(decision.get("location"), f"{field}.location", code=True,
+                            pattern=BLOB_URL, kind="SHA-pinned blob")
+            commit = link(decision.get("commit"), f"{field}.commit", code=True,
+                          pattern=COMMIT_URL, kind="SHA-pinned commit")
+            chosen = prose(decision.get("chosen"), f"{field}.chosen")
+            why = prose(decision.get("why"), f"{field}.why")
+            taken_rows.append(f"- **{title}** · {location} · {commit}")
+            taken_details.append(f"{index + 1}. **{title}** Chosen: {chosen} Why: {why}")
+
     fix_rows = []
     commit_identities = []
     for index, fix in enumerate(fixes):
@@ -185,7 +204,8 @@ def render(data, date):
 
     fixed = len(fixes)
     decisions_count = len(decisions)
-    total = fixed + decisions_count + rejected
+    taken_count = len(taken or [])
+    total = fixed + taken_count + decisions_count + rejected
     fixed_phrase = f"{fixed} fixed"
     if data.get("fixed_in") is not None:
         require(fixed > 0, "fixed_in requires at least one fix")
@@ -196,8 +216,25 @@ def render(data, date):
     if not decision_rows:
         decision_rows = ["- None."]
         decision_details = ["No decisions remain."]
+    if not taken_rows:
+        taken_rows = ["- None."]
+        taken_details = ["No decisions were taken."]
     if not fix_rows:
         fix_rows = ["| - | No fixes required | - |"]
+    taken_phrase = f"{taken_count} taken, " if taken is not None else ""
+    taken_section = [] if taken is None else [
+        "### Decisions taken",
+        "",
+        *taken_rows,
+        "",
+        "<details>",
+        "<summary>Decisions taken in detail</summary>",
+        "",
+        *taken_details,
+        "",
+        "</details>",
+        "",
+    ]
 
     lines = [
         "[![Reviewed by review-council](https://img.shields.io/badge/reviewed_by-review--council-5b21b6?style=flat-square)](https://github.com/WiktorStarczewski/review-council)",
@@ -207,7 +244,7 @@ def render(data, date):
         "> [!TIP]",
         f"> **{headline}** {detail}",
         "",
-        f"{panels} panels · {total} findings: {fixed_phrase}, {decisions_count} for you, {rejected} rejected · gates {gates}",
+        f"{panels} panels · {total} findings: {fixed_phrase}, {taken_phrase}{decisions_count} for you, {rejected} rejected · gates {gates}",
         "Panel: " + " · ".join(panel) + ", each at maximum effort",
         "Orchestrator: " + orchestrator,
         "",
@@ -222,6 +259,7 @@ def render(data, date):
         "",
         "</details>",
         "",
+        *taken_section,
         "<details>",
         f"<summary>Fixes ({commit_count} {commit_word})</summary>",
         "",
@@ -811,10 +849,23 @@ def validate_publication_links(data, repositories, head, root):
         require(head.startswith(match.group(2).lower()),
                 f"{field} does not point at the reviewed head")
 
+    for index, decision in enumerate(data.get("decisions_taken") or []):
+        field = f"decisions_taken[{index}].location.url"
+        url = inline(decision.get("location", {}).get("url"), field)
+        match = BLOB_ID_URL.fullmatch(url)
+        require(match is not None, f"{field} must be a SHA-pinned blob GitHub URL")
+        require(match.group(1).lower() in allowed,
+                f"{field} points outside the reviewed repository")
+        require(head.startswith(match.group(2).lower()),
+                f"{field} does not point at the reviewed head")
+
     if data.get("fixed_in") is None:
-        for index, fix in enumerate(data.get("fixes", [])):
-            field = f"fixes[{index}].commit.url"
-            url = inline(fix.get("commit", {}).get("url"), field)
+        commits = [(f"fixes[{index}].commit.url", fix.get("commit", {}))
+                   for index, fix in enumerate(data.get("fixes", []))]
+        commits += [(f"decisions_taken[{index}].commit.url", decision.get("commit", {}))
+                    for index, decision in enumerate(data.get("decisions_taken") or [])]
+        for field, entry in commits:
+            url = inline(entry.get("url"), field)
             match = COMMIT_ID_URL.fullmatch(url)
             require(match is not None, f"{field} must be a SHA-pinned commit GitHub URL")
             require(match.group(1).lower() in allowed,
@@ -1099,8 +1150,15 @@ def finalized_data(data, head, root):
         location = decision.get("location", {})
         location["url"] = replace_sha_url(
             location.get("url"), BLOB_URL, head, f"decisions[{index}].location.url")
+    for index, decision in enumerate(updated.get("decisions_taken") or []):
+        location = decision.get("location", {})
+        location["url"] = replace_sha_url(
+            location.get("url"), BLOB_URL, head, f"decisions_taken[{index}].location.url")
     if updated.get("fixed_in") is None:
-        for index, fix in enumerate(updated.get("fixes", [])):
+        rows = [(f"fixes[{index}]", fix) for index, fix in enumerate(updated.get("fixes", []))]
+        rows += [(f"decisions_taken[{index}]", decision)
+                 for index, decision in enumerate(updated.get("decisions_taken") or [])]
+        for name, fix in rows:
             commit = fix.get("commit", {})
             # An unsquashed fix commit is still in head's history and keeps its own link;
             # only a squash, which drops it from that history, maps it to the aggregate head.

@@ -80,7 +80,7 @@ open P0/P1, and gates at baseline or better. Plan panels do not count. Actual re
 calls consume the corresponding provider's usage.
 
 When a code review is associated with an open PR, completion publishes the canonical
-badge, verdict tip, decisions, fixes, verified-sound, coverage, and footer as a
+badge, verdict tip, decisions for you, decisions taken, fixes, verified-sound, coverage, and footer as a
 `COMMENTED` GitHub review. Read-only code reviews publish too. A local branch or
 document review without an associated open PR does not post. An identical body is not
 posted twice, and other publication failures keep the review incomplete with a retry

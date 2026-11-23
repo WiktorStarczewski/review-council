@@ -953,6 +953,31 @@ PY
   assert_eq "both skills state the replacement chain and review-origin breaker" "$?" 0
 }
 
+test_skill_takes_design_decisions_inside_the_change() {
+  local f
+  for f in "$SK/skills/rev/phases/50-fix.md" "$SK/codex-skills/rev/phases/30-triage.md" \
+           "$SK/pi-skills/review-council-rev/phases/30-triage.md"; do
+    assert_grep "$f takes in-change decisions on the recommended action" "$f" \
+      'Take the recommended action'
+    assert_grep "$f records a taken decision with its rationale" "$f" 'TAKEN \(decision: '
+    assert_grep "$f flags a decision that reaches outside the diff" "$f" \
+      'outside what the reviewed diff already touches'
+    assert_grep "$f keeps broader design with the author" "$f" \
+      'architecture beyond the PR.*cross-PR or cross-repo design'
+    assert_grep "$f keeps the hard authority exceptions" "$f" \
+      'funds or credentials.*release or deployment.*who owns or may merge.*legal or licensing'
+    assert_grep "$f leaves P3 handling alone" "$f" 'P3 findings stay ignored'
+  done
+  assert_grep "policy takes decisions and keeps the exceptions" "$SK/skills/rev/POLICY.md" \
+    '`TAKEN`.*stay flagged for the author'
+  assert_grep "ledger status list names TAKEN" "$SK/skills/rev/phases/70-publish.md" \
+    'OPEN \| FIXED \| TAKEN'
+  for f in "$SK/codex-skills/rev/phases/70-publish.md" "$SK/pi-skills/review-council-rev/phases/70-publish.md" \
+           "$SK/skills/rev/phases/70-publish.md"; do
+    assert_grep "$f publishes taken decisions" "$f" 'decisions_taken'
+  done
+}
+
 test_skill_keeps_one_commit_per_fix() {
   rev_bundle "$SK/skills/rev" "$T/skills/rev/SKILL.md"
   rev_bundle "$SK/codex-skills/rev" "$T/codex-skills/rev/SKILL.md"

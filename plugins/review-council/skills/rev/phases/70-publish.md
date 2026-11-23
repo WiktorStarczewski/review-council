@@ -122,14 +122,14 @@ Action:   Fixed in round 3 (a1b2c3d) - retry only on 5xx and network errors.
 ```
 
 Finding IDs are unique within the session and never reused, so a commit subject names its
-findings without the round. Status ∈ `OPEN | FIXED | REJECTED (reason) | DEFERRED (reason)`. Every finding ends
+findings without the round. Status ∈ `OPEN | FIXED | TAKEN (decision; why) | REJECTED (reason) | DEFERRED (reason)`. Every finding ends
 in one of them; never drop one silently. Round blocks append after the entries.
 
 ## PR review publication
 
 For every completed code review, read
 `${CLAUDE_PLUGIN_ROOT}/docs/pr-review.md` and follow it exactly. Write the structured
-`$S/pr-review.json`, including the exact orchestrator model, render the canonical `$S/pr-review.md`, inspect its facts, and
+`$S/pr-review.json`, including the exact orchestrator model and every `TAKEN` decision under `decisions_taken`, render the canonical `$S/pr-review.md`, inspect its facts, and
 publish it as a `COMMENTED` GitHub PR review. This applies to normal and read-only
 code reviews. A branch with no associated open PR skips cleanly. Document reviews do
 not post. In stack-leg mode, prepare and render the body but leave guarded
@@ -146,7 +146,7 @@ skip every external GitHub call.
    and the roster's `degradation` sentence, before anything else - how much
    decorrelation a verdict rests on is part of the verdict.
 2. **Findings table**: ID, severity, location, claim, resolution - sorted by severity.
-3. **Rejected** findings with reasons, so the user can overrule a judgment call.
+3. **Rejected** findings with reasons, so the user can overrule a judgment call, and **Decisions taken** with the option chosen, why and the commit, so the user can overrule those too.
 4. **Coverage**: rounds, seats and efforts, lenses, final gate status, any seat that
    dropped and why. Name the workhorse family, model, and effort, or `Workhorse: unavailable` and the reason. On a degraded panel, state the roster's `degradation` sentence
    verbatim and name every seat carrying `"padded": true`.

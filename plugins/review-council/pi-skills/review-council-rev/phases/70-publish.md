@@ -32,7 +32,7 @@ it. If blocked in a headless leg, record `phase=blocked` and exit without
 a completion receipt; do not guess approval or report success.
 
 Before completing any code review, read `$PLUGIN/docs/pr-review.md` and follow it
-exactly. Write `S/pr-review.json`, render and inspect `S/pr-review.md`, and publish it
+exactly. Write `S/pr-review.json` (every `TAKEN` decision goes under `decisions_taken`), render and inspect `S/pr-review.md`, and publish it
 as a `COMMENTED` GitHub PR review. This applies to normal and read-only code reviews.
 A branch with no associated open PR skips cleanly. Document reviews do not post. In
 `REV_STACK_LEG=1`, prepare and render the body but leave guarded finalization, final

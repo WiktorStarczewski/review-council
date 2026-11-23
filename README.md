@@ -391,7 +391,7 @@ is accepted.
 | P2 | maintainability, performance, missing test or unclear API | avoidable hot-path cost, untested failure branch |
 | P3 | trivial style, naming or comment issue | stale harmless comment, naming nit |
 
-Each finding ends `OPEN`, `FIXED`, `REJECTED (reason)` or `DEFERRED (reason)`. Duplicates merge
+Each finding ends `OPEN`, `FIXED`, `TAKEN (decision; why)`, `REJECTED (reason)` or `DEFERRED (reason)`. A design decision inside the reviewed change is taken on the recommended action, not left to the author; decisions beyond the change, and those needing authority a review cannot hold, stay flagged. Duplicates merge
 by root cause, and rejections carry a source-backed reason so later panels do not resurface
 them. P3s are fixed only inside a cluster, when trivial; correct but out-of-scope findings are
 deferred.
@@ -710,7 +710,7 @@ publication writes `incomplete.md` with the command that retries it.
 <br>
 
 A completed code review of a branch with an open PR, read-only or not, posts one
-deterministic review (badge, verdict, counts, decisions, fixes, verified-sound, coverage,
+deterministic review (badge, verdict, counts, decisions for you, decisions taken, fixes, verified-sound, coverage,
 footer) as a `COMMENT` pinned to the reviewed commit. Its inputs are frozen for exact
 retries, base-tip movement is accepted only while the merge base holds, and an identical
 review on that commit is never posted twice.

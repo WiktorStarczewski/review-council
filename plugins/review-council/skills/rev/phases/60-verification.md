@@ -104,7 +104,7 @@ rows than it gained - reviewers anchor on the author's framing instead of attack
 neither is dealt by default: `clean-room` is available as an *additional* seat when the roster
 has five or more, and `--pr` is available but off. At triage, a reuse finding is accepted only
 with the existing symbol named at a location and version you have opened; a scope cut is
-`DEFERRED (scope decision)` for the user. Correctness lenses start in round 2: reviewing lines
+`DEFERRED (scope decision)` for the user (a design decision inside the change is taken, see Fix). Correctness lenses start in round 2: reviewing lines
 that should be deleted is the purest form of churn.
 
 **Vacuity.** Whenever the diff touches tests, every prompt carries `--vacuity`. It is
