@@ -4,8 +4,10 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -627,6 +629,284 @@ class AgyHostTests(unittest.TestCase):
         )
         self.assertEqual(refused.returncode, 1)
         self.assertIn('REVIEW_COUNCIL_HOST=agy', refused.stderr)
+
+    def _init_git_repo(self, repo_dir):
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        for cmd in (
+            ['init', '-q'],
+            ['config', 'user.name', 'Test'],
+            ['config', 'user.email', 'test@example.invalid'],
+            ['config', 'commit.gpgsign', 'false'],
+            ['config', 'core.hooksPath', str(self.root / 'no-hooks')],
+        ):
+            subprocess.run(['git', '-C', str(repo_dir), *cmd], check=True)
+
+    def _prepare_evidence_fixture(self, name, seats, *, patch_bytes_target=20000,
+                                  patch_chunks_mode='auto', short_lines=False):
+        repo = self.root / (name + '-repo')
+        session = self.root / (name + '-session')
+        session.mkdir(parents=True, exist_ok=True)
+        self._init_git_repo(repo)
+        (repo / 'src').mkdir()
+
+        # Build a large changed file (~patch_bytes_target) with an unchanged >10 KiB declaration
+        # body on fn00 (so it cannot be patch-proven and produces required source segments) plus
+        # callers whose windows exceed 8 KiB so source-context shards pack up to the 8 KiB cap.
+        decls = []
+        if short_lines:
+            # 80 modified lines -> ~167 diff lines (1 window <= 240 lines) and ~12 KiB bytes
+            # (~13.6 KiB visible): >8 KiB triggers chunks for agy, <=30 KiB stays windows for codex.
+            decls.append('def fn00():\n' + ''.join(
+                f'    v{i:02d} = "val_{i:02d}_{"x" * 58}"\n' for i in range(80)
+            ) + '    return v00\n')
+        else:
+            fn0_lines = ['def fn00():'] + [
+                f'    _u{i:02d} = "{"u" * 190}"' for i in range(52)
+            ] + ['    return "old"']
+            decls.append('\n'.join(fn0_lines) + '\n')
+            for i in range(1, 7):
+                decls.append(f'def fn{i:02d}():\n    return "{"a" * (max(100, patch_bytes_target // 6))}"\n')
+        (repo / 'src/lib.py').write_text('\n'.join(decls), encoding='utf-8')
+        # Add callers whose 5-line call-site windows total > 8 KiB.
+        for i in range(6):
+            pad = 'c' * 1900
+            (repo / f'src/caller{i}.py').write_text(
+                f'from src.lib import fn00\n'
+                f'def caller{i}():\n    _pad = "{pad}"\n    return fn00()\n',
+                encoding='utf-8',
+            )
+
+        subprocess.run(['git', '-C', str(repo), 'add', '.'], check=True)
+        subprocess.run(['git', '-C', str(repo), 'commit', '-qm', 'base'], check=True)
+        base = subprocess.run(
+            ['git', '-C', str(repo), 'rev-parse', 'HEAD'],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+        # Modify lib.py so its diff exceeds patch_bytes_target while keeping fn00's body unchanged.
+        if short_lines:
+            updated = '\n'.join(decls).replace('"val_', '"new_')
+        else:
+            updated_decls = [decls[0].replace('    return "old"', '    return "new"')]
+            for i in range(1, 7):
+                updated_decls.append(
+                    f'def fn{i:02d}():\n    return "{"z" * (max(100, patch_bytes_target // 6))}"\n'
+                )
+            updated = '\n'.join(updated_decls)
+        (repo / 'src/lib.py').write_text(updated, encoding='utf-8')
+
+        (session / 'scope.env').write_text(
+            f'REV_BASE={shlex.quote(base)}\n'
+            f'REV_ROOT={shlex.quote(str(repo))}\n'
+            'REV_SCOPE=branch\n',
+            encoding='utf-8',
+        )
+        (session / 'files.txt').write_text('src/lib.py\n', encoding='utf-8')
+        (session / 'untracked.txt').write_text('', encoding='utf-8')
+        (session / 'roster.json').write_text(json.dumps({'seats': seats}), encoding='utf-8')
+
+        env = dict(
+            self.clean_env,
+            REV_PATCH_CHUNKS=patch_chunks_mode,
+            REV_SOURCE_CONTEXT='1',
+        )
+        prep = subprocess.run(
+            [sys.executable, str(SCRIPTS / 'rev-evidence.py'), 'prepare',
+             str(session), '1', '--phase', 'discovery', '--full-seat', seats[0]['seat']],
+            env=env, capture_output=True, text=True, check=False, timeout=60,
+        )
+        self.assertEqual(prep.returncode, 0, prep.stdout + prep.stderr)
+        ev = load('rev_evidence_agy_cap', SCRIPTS / 'rev-evidence.py')
+        manifest_path = session / 'r1-evidence.manifest.json'
+        manifest = ev.expand_manifest(json.loads(manifest_path.read_text(encoding='utf-8')))
+        return ev, repo, session, manifest_path, manifest, env
+
+    def test_agy_evidence_artifacts_capped_at_8kib_and_mixed_panel_isolated(self):
+        # 1) Pure agy panel with >16 KiB patch, >10 KiB source context, and >10 KiB required range.
+        agy_seats = [
+            {'seat': f'agy-{i}', 'lab': 'google', 'adapter': 'agy',
+             'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False}
+            for i in range(1, 4)
+        ]
+        ev, repo, session, manifest_path, manifest, _ = self._prepare_evidence_fixture(
+            'agy-only', agy_seats, patch_bytes_target=20000, patch_chunks_mode='auto',
+        )
+        ev.validated_manifest(manifest_path, fresh=True)
+        assignment = manifest['assignments']['agy-1']
+        self.assertEqual(assignment['patch_read_mode'], 'chunks')
+        patch_set = manifest['patch_sets'][assignment['patch_set']]
+        self.assertGreater(len(patch_set['chunks']), 2)
+        reconstructed = b''
+        for chunk in patch_set['chunks']:
+            self.assertLessEqual(chunk['bytes'], 8192)
+            self.assertLessEqual(chunk['predicted_visible_bytes'], 8192)
+            reconstructed += (session / chunk['artifact']).read_bytes()
+        self.assertEqual(reconstructed, Path(assignment['patch']).read_bytes())
+
+        ctx = manifest['source_context']['seats']['agy-1']
+        self.assertEqual(manifest['source_context']['max_shard_bytes'], 16384)
+        self.assertTrue(ctx['shards'])
+        for shard in ctx['shards']:
+            self.assertLessEqual(shard['bytes'], 8192)
+            self.assertLessEqual(shard['predicted_visible_bytes'], 8192)
+        segmented = [row for row in ctx['required_source_ranges'] if row['segments']]
+        self.assertTrue(segmented)
+        for row in segmented:
+            for seg in row['segments']:
+                self.assertLessEqual(seg['predicted_visible_bytes'], 8192)
+
+        # 2) Mixed panel (agy + codex) on the same patch keeps distinct patch_sets and validates.
+        mixed_seats = [
+            {'seat': 'agy-1', 'lab': 'google', 'adapter': 'agy',
+             'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False},
+            {'seat': 'codex-luna', 'lab': 'openai', 'adapter': 'codex',
+             'model': 'gpt-5.6-luna', 'effort': 'xhigh', 'extra': False},
+            {'seat': 'agy-2', 'lab': 'google', 'adapter': 'agy',
+             'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False},
+        ]
+        ev_mix, _repo_m, sess_m, mpath_m, man_mix, _ = self._prepare_evidence_fixture(
+            'mixed', mixed_seats, patch_bytes_target=20000, patch_chunks_mode='auto',
+        )
+        ev_mix.validated_manifest(mpath_m, fresh=True)
+        agy_set_id = man_mix['assignments']['agy-1']['patch_set']
+        codex_set_id = man_mix['assignments']['codex-luna']['patch_set']
+        self.assertNotEqual(agy_set_id, codex_set_id)
+        for chunk in man_mix['patch_sets'][agy_set_id]['chunks']:
+            self.assertLessEqual(chunk['predicted_visible_bytes'], 8192)
+        self.assertTrue(any(
+            chunk['bytes'] > 8192 for chunk in man_mix['patch_sets'][codex_set_id]['chunks']
+        ))
+
+        # Validation must reject a mixed-adapter patch set or oversized agy shard.
+        bad_mix = json.loads(mpath_m.read_text(encoding='utf-8'))
+        for agy_seat in ('agy-1', 'agy-2'):
+            bad_mix['assignments'][agy_seat]['patch_set'] = codex_set_id
+            bad_mix['assignments'][agy_seat]['patch_read_mode'] = (
+                man_mix['patch_sets'][codex_set_id]['read_mode']
+            )
+        with self.assertRaisesRegex(ValueError, 'incompatible adapter limits'):
+            ev_mix.validate_patch_sets(sess_m, bad_mix, set())
+
+        bad_shard = ev_mix.expand_manifest(json.loads(mpath_m.read_text(encoding='utf-8')))
+        bad_shard['source_context']['seats']['agy-1']['shards'][0]['predicted_visible_bytes'] = 9000
+        bad_evidence = json.loads((sess_m / 'r1-evidence.json').read_text(encoding='utf-8'))
+        bad_evidence['source_context'] = bad_shard['source_context']
+        with self.assertRaisesRegex(ValueError, 'shard bounds'):
+            ev_mix.validate_source_context(sess_m, bad_shard, bad_evidence)
+
+    def test_agy_auto_patch_mode_switches_to_chunks_past_8kib_window(self):
+        # ~12 KiB in <240 short lines: agy switches to chunks, codex stays in windows.
+        seats = [
+            {'seat': 'agy-1', 'lab': 'google', 'adapter': 'agy',
+             'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False},
+            {'seat': 'codex-luna', 'lab': 'openai', 'adapter': 'codex',
+             'model': 'gpt-5.6-luna', 'effort': 'xhigh', 'extra': False},
+            {'seat': 'agy-2', 'lab': 'google', 'adapter': 'agy',
+             'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False},
+        ]
+        ev, _repo, _session, mpath, manifest, _ = self._prepare_evidence_fixture(
+            'auto-mode', seats, patch_chunks_mode='auto', short_lines=True,
+        )
+        ev.validated_manifest(mpath, fresh=True)
+        self.assertEqual(manifest['assignments']['agy-1']['patch_read_mode'], 'chunks')
+        self.assertEqual(manifest['assignments']['codex-luna']['patch_read_mode'], 'windows')
+
+    def test_agy_read_audit_valid_under_10kib_run_command_truncation(self):
+        agy_seats = [
+            {'seat': f'agy-{i}', 'lab': 'google', 'adapter': 'agy',
+             'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False}
+            for i in range(1, 4)
+        ]
+        _ev, repo, session, manifest_path, manifest, env = self._prepare_evidence_fixture(
+            'e2e-trunc', agy_seats, patch_bytes_target=20000, patch_chunks_mode='auto',
+        )
+        prompt_out = subprocess.run(
+            [str(SCRIPTS / 'rev-prompt.sh'), str(session), '1', 'agy-1',
+             manifest['assignments']['agy-1']['bundle'], 'check truncation cap',
+             '--evidence', str(manifest_path)],
+            env=env, capture_output=True, text=True, check=False, timeout=60,
+        )
+        self.assertEqual(prompt_out.returncode, 0, prompt_out.stdout + prompt_out.stderr)
+        prompt_path = session / 'r1-agy-1.prompt.md'
+        self.assertIn('below ~8 KiB', prompt_path.read_text(encoding='utf-8'))
+
+        # Simulate agy run_command truncating any formatted output over 10,240 bytes.
+        ctx = manifest['source_context']['seats']['agy-1']
+        patch_chunks = manifest['patch_sets'][manifest['assignments']['agy-1']['patch_set']]['chunks']
+        evidence_md = session / 'r1-evidence.md'
+        read_cmds = (
+            [f'cat -- {shlex.quote(str(session / c["artifact"]))}' for c in patch_chunks]
+            + [f'cat -- {shlex.quote(str(session / s["artifact"]))}' for s in ctx['shards']]
+            + [f'cat -- {shlex.quote(str(session / seg["artifact"]))}'
+               for row in ctx['required_source_ranges'] for seg in row['segments']]
+            + [f'cat -- {shlex.quote(str(evidence_md))}']
+        )
+        if ctx['source_read_required']:
+            target = (manifest.get('task_capacity', {}).get('seats', {})
+                      .get('agy-1', {}).get('repository_source_target'))
+            if target is not None:
+                start = target['line_start']
+                while start <= target['line_end']:
+                    end = min(target['line_end'], start + 29)
+                    read_cmds.append(f"sed -n '{start},{end}p' {shlex.quote(target['path'])}")
+                    start = end + 1
+            else:
+                read_cmds.append("sed -n '1,20p' 'src/lib.py'")
+
+        events = [{'event': 'init', 'init': {'model': 'gemini-4-hydrogen-xhigh'}}]
+        for idx, cmd in enumerate(read_cmds, 1):
+            events.append({'event': 'step_update', 'step_update': {
+                'step_type': 'tool', 'step_index': idx, 'state': 'ACTIVE',
+                'tool_name': 'run_command',
+                'tool_info': {'name': 'run_command', 'parameters': {'CommandLine': cmd}},
+            }})
+            raw_out = subprocess.run(
+                cmd, shell=True, cwd=repo, capture_output=True, text=True, check=True,
+            ).stdout.replace('\n', '\r\n')
+            formatted = (
+                'Created At: 2026-11-23T00:00:00Z\n'
+                'Completed At: 2026-11-23T00:00:01Z\n'
+                'Command exited with code 0.\n\n'
+                f'Command output:\n{raw_out}'
+            )
+            if len(formatted.encode('utf-8')) > 10240:
+                formatted = "The tool's output was truncated due to being too long.\n" + formatted[:500]
+            events.append({'event': 'step_update', 'step_update': {
+                'step_type': 'tool', 'step_index': idx, 'state': 'DONE',
+                'tool_name': 'run_command',
+                'tool_info': {
+                    'name': 'run_command',
+                    'parameters': {'CommandLine': cmd},
+                    'output': formatted,
+                },
+            }})
+        events.append({'event': 'result', 'result': {
+            'status': 'SUCCESS',
+            'structured_output': {'summary': 'No actionable issues found.', 'findings': []},
+            'num_turns': len(read_cmds),
+            'usage': {'input_tokens': 1000, 'output_tokens': 50, 'total_tokens': 1050},
+        }})
+
+        bindir = self.root / 'e2e-agy-bin'
+        bindir.mkdir()
+        ev_file = self.root / 'e2e-events.jsonl'
+        ev_file.write_text('\n'.join(json.dumps(e) for e in events) + '\n', encoding='utf-8')
+        fake_agy = bindir / 'agy'
+        fake_agy.write_text(f'#!/bin/bash\ncat >/dev/null\ncat "{ev_file}"\n', encoding='utf-8')
+        fake_agy.chmod(0o755)
+
+        seat_env = dict(
+            self.clean_env,
+            PATH=str(bindir) + os.pathsep + os.environ.get('PATH', ''),
+            REVIEW_COUNCIL_HOST='agy',
+        )
+        run = subprocess.run(
+            [str(SCRIPTS / 'rev-seat.sh'), 'agy-1', str(session), '1', str(prompt_path)],
+            cwd=repo, env=seat_env, capture_output=True, text=True, check=False, timeout=60,
+        )
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        audit = json.loads((session / 'r1-agy-1.read-audit.json').read_text(encoding='utf-8'))
+        self.assertEqual(audit['status'], 'valid', audit)
 
 
 if __name__ == '__main__':

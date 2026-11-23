@@ -50,16 +50,21 @@ BUNDLES = ('correctness-boundaries', 'security-state-api',
            'concurrency-resources-performance', 'tests-observability-maintenance-regression')
 PLAN_BUNDLES = ('plan-completeness', 'plan-soundness', 'plan-simplicity', 'plan-tests')
 SOURCE_CONTEXT_LIMIT = 16 * 1024
+AGY_SOURCE_CONTEXT_LIMIT = 8 * 1024
 # An owner is measured for splitting only when its patch alone would fill this share of the window.
 SHARE_MEASURE_PERCENT = 25
 SOURCE_SEGMENT_VISIBLE_LIMIT = 16 * 1024
 SOURCE_SEGMENT_SINGLE_LINE_VISIBLE_LIMIT = 32 * 1024
+AGY_SOURCE_SEGMENT_VISIBLE_LIMIT = 8 * 1024
+AGY_SOURCE_SEGMENT_SINGLE_LINE_VISIBLE_LIMIT = 8 * 1024
 SOURCE_SEGMENT_LINE_LIMIT = READ_LINES
 SOURCE_SEGMENT_PREFIX_RESERVE = 8
 CLAUDE_SOURCE_SEGMENT_BATCH_LIMIT = 4
 SOURCE_SEGMENT_BATCH_VISIBLE_LIMIT = 60 * 1024
 PATCH_CHUNK_RAW_LIMIT = 24 * 1024
 PATCH_CHUNK_VISIBLE_LIMIT = 30 * 1024
+AGY_PATCH_CHUNK_RAW_LIMIT = 8 * 1024
+AGY_PATCH_CHUNK_VISIBLE_LIMIT = 8 * 1024
 PATCH_CHUNK_LINE_LIMIT = 1000
 PATCH_CHUNK_PREFIX_RESERVE = 8
 PLAN_MAX_BYTES = 256 * 1024
@@ -120,6 +125,25 @@ def patch_line_limit(adapter):
 def read_tool_name(adapter):
     return ('Read' if adapter in ('agent', 'claude', 'cursor-agent') else
             'council_read' if adapter == 'cursor-sdk' else 'read_file')
+
+
+def source_context_limit(adapter):
+    """Return the per-shard visible byte limit for `adapter` (`agy` caps run_command stdout at ~10 KiB)."""
+    return AGY_SOURCE_CONTEXT_LIMIT if adapter == 'agy' else SOURCE_CONTEXT_LIMIT
+
+
+def source_segment_limits(adapter):
+    """Return `(visible_limit, single_line_limit)` for required source segments on `adapter`."""
+    if adapter == 'agy':
+        return AGY_SOURCE_SEGMENT_VISIBLE_LIMIT, AGY_SOURCE_SEGMENT_SINGLE_LINE_VISIBLE_LIMIT
+    return SOURCE_SEGMENT_VISIBLE_LIMIT, SOURCE_SEGMENT_SINGLE_LINE_VISIBLE_LIMIT
+
+
+def patch_chunk_limits(adapter):
+    """Return `(raw_limit, visible_limit)` for assigned patch chunks on `adapter`."""
+    if adapter == 'agy':
+        return AGY_PATCH_CHUNK_RAW_LIMIT, AGY_PATCH_CHUNK_VISIBLE_LIMIT
+    return PATCH_CHUNK_RAW_LIMIT, PATCH_CHUNK_VISIBLE_LIMIT
 
 
 def plan_search_timeout(environment):
@@ -541,7 +565,8 @@ def split_lf_text(text):
     return parts[:-1] + ([parts[-1]] if parts[-1] else [])
 
 
-def partition_patch_chunks(raw):
+def partition_patch_chunks(raw, *, raw_limit=PATCH_CHUNK_RAW_LIMIT,
+                           visible_limit=PATCH_CHUNK_VISIBLE_LIMIT):
     """Split valid UTF-8 patch bytes into gapless, model-output-safe chunks."""
     if not raw:
         return []
@@ -552,7 +577,7 @@ def partition_patch_chunks(raw):
     start = 0
     size = len(raw)
     while start < size:
-        hard_end = min(size, start + PATCH_CHUNK_RAW_LIMIT)
+        hard_end = min(size, start + raw_limit)
         while hard_end > start and hard_end < size and raw[hard_end] & 0xC0 == 0x80:
             hard_end -= 1
         if hard_end == start:
@@ -576,7 +601,7 @@ def partition_patch_chunks(raw):
                 lines += 1
                 in_line = True
             visible = next_cursor - start + lines * PATCH_CHUNK_PREFIX_RESERVE
-            if lines > PATCH_CHUNK_LINE_LIMIT or visible > PATCH_CHUNK_VISIBLE_LIMIT:
+            if lines > PATCH_CHUNK_LINE_LIMIT or visible > visible_limit:
                 break
             maximum = next_cursor
             if lead == 0x0A:
@@ -603,7 +628,7 @@ def partition_patch_chunks(raw):
     return chunks
 
 
-def patch_chunk_mode(raw, chunks, setting):
+def patch_chunk_mode(raw, chunks, setting, *, visible_limit=PATCH_CHUNK_VISIBLE_LIMIT):
     if isinstance(setting, bool):
         setting = 'auto' if setting else '0'
     if setting not in ('auto', '0', '1'):
@@ -621,12 +646,14 @@ def patch_chunk_mode(raw, chunks, setting):
     for start in range(0, len(lines), 240):
         window = lines[start:start + 240]
         predicted_visible = sum(map(len, window)) + len(window) * PATCH_CHUNK_PREFIX_RESERVE
-        if predicted_visible > PATCH_CHUNK_VISIBLE_LIMIT:
+        if predicted_visible > visible_limit:
             return 'chunks' if chunks else 'windows'
     return 'chunks' if chunks and len(chunks) * 10 <= windows * 9 else 'windows'
 
 
-def partition_source_segments(lines, line_start, line_end):
+def partition_source_segments(lines, line_start, line_end, *,
+                              visible_limit=SOURCE_SEGMENT_VISIBLE_LIMIT,
+                              single_line_limit=SOURCE_SEGMENT_SINGLE_LINE_VISIBLE_LIMIT):
     """Partition one immutable source range into bounded, gapless line segments."""
     segments = []
     cursor = line_start
@@ -637,8 +664,8 @@ def partition_source_segments(lines, line_start, line_end):
             candidate = raw + lines[cursor - 1]
             line_count = cursor - segment_start + 1
             predicted = len(candidate) + line_count * SOURCE_SEGMENT_PREFIX_RESERVE
-            if predicted > SOURCE_SEGMENT_VISIBLE_LIMIT:
-                if not raw and predicted <= SOURCE_SEGMENT_SINGLE_LINE_VISIBLE_LIMIT:
+            if predicted > visible_limit:
+                if not raw and predicted <= single_line_limit:
                     raw = candidate
                     cursor += 1
                 break
@@ -779,12 +806,15 @@ def patch_sets_for(scopes, patch_bodies, prefix, setting):
     for seat, assignment in scopes.items():
         raw = patch_bodies[seat]
         identity = assignment['patch_sha256']
-        if identity not in identities:
+        raw_limit, visible_limit = patch_chunk_limits(assignment.get('adapter'))
+        key = (identity, raw_limit, visible_limit)
+        if key not in identities:
             try:
-                chunks = partition_patch_chunks(raw) if setting != '0' and setting is not False else []
+                chunks = (partition_patch_chunks(raw, raw_limit=raw_limit, visible_limit=visible_limit)
+                          if setting != '0' and setting is not False else [])
             except (UnicodeDecodeError, ValueError):
                 chunks = []
-            mode = patch_chunk_mode(raw, chunks, setting)
+            mode = patch_chunk_mode(raw, chunks, setting, visible_limit=visible_limit)
             set_id = f'p{len(identities) + 1:02d}'
             rows = []
             if mode == 'chunks':
@@ -800,8 +830,8 @@ def patch_sets_for(scopes, patch_bodies, prefix, setting):
                 'read_mode': mode,
                 'chunks': rows,
             }
-            identities[identity] = set_id
-        set_id = identities[identity]
+            identities[key] = set_id
+        set_id = identities[key]
         patch_set = sets[set_id]
         if (patch_set['patch_bytes'] != len(raw) or patch_set['patch_lines'] != len(split_lf_lines(raw))
                 or patch_set['patch_sha256'] != digest(raw)):
@@ -4507,12 +4537,12 @@ def chain_context_floor(session, roster, owner_budget):
     return min(budgets)
 
 
-def patch_chunk_sizes(size):
-    full, rest = divmod(size, PATCH_CHUNK_RAW_LIMIT)
-    return [PATCH_CHUNK_RAW_LIMIT] * full + ([rest] if rest else [])
+def patch_chunk_sizes(size, raw_limit=PATCH_CHUNK_RAW_LIMIT):
+    full, rest = divmod(size, raw_limit)
+    return [raw_limit] * full + ([rest] if rest else [])
 
 
-def component_context_costs(components, patches, packet):
+def component_context_costs(components, patches, packet, raw_limit=PATCH_CHUNK_RAW_LIMIT):
     """Tokens each component adds to a seat that holds it: its patch reads and the required source
     segments that prove it, shared among the components of a range. Source packets are not
     attributed: every share has its own, which the caller reserves."""
@@ -4520,7 +4550,8 @@ def component_context_costs(components, patches, packet):
     for component in components:
         size = sum(len(patches[path]) for path in component['files'])
         cost[component['id']] += sum(
-            context_budget.read_tokens(chunk, 'patch') for chunk in patch_chunk_sizes(size))
+            context_budget.read_tokens(chunk, 'patch')
+            for chunk in patch_chunk_sizes(size, raw_limit))
     for row in packet['required_source_ranges']:
         segments = sum(context_budget.read_tokens(segment['raw_bytes'], 'segment')
                        for segment in row['segments'])
@@ -4594,13 +4625,15 @@ def split_full_state_owner(session, roster, owner, scope, components, patches, c
     if projected <= budget:
         return None, None
     percent = 100 + context_budget.PROJECTION_HEADROOM_PERCENT
+    shard_limit = source_context_limit(scope.get('adapter'))
+    chunk_raw_limit, _ = patch_chunk_limits(scope.get('adapter'))
     # Each share is an integration seat with up to three full source packets of its own.
-    packets = 3 * context_budget.read_tokens(SOURCE_CONTEXT_LIMIT, 'packet')
+    packets = 3 * context_budget.read_tokens(shard_limit, 'packet')
     capacity = budget * 100 / percent - context_budget.fixed_context_tokens() - packets
-    costs = component_context_costs(components, patches, packet)
+    costs = component_context_costs(components, patches, packet, chunk_raw_limit)
     mechanical = sorted(
         (path, sum(context_budget.read_tokens(chunk, 'patch')
-                   for chunk in patch_chunk_sizes(len(patch))))
+                   for chunk in patch_chunk_sizes(len(patch), chunk_raw_limit)))
         for path, patch in patches.items() if categories[path] != 'semantic')
     packed = pack_capacity_shares(components, costs, mechanical, capacity)
     if isinstance(packed, dict):
@@ -5618,6 +5651,9 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
                                     'content_sha256': digest(content.encode()),
                                     'priority': row['priority']})
 
+        adapter = assignment.get('adapter')
+        shard_limit = source_context_limit(adapter)
+        segment_visible_limit, segment_single_line_limit = source_segment_limits(adapter)
         limit = 3 if seat in integration or plan_clusters is not None else 1
         shards = []; current = []; current_visible_bytes = 0
 
@@ -5637,7 +5673,7 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
                 trial_visible_bytes = current_visible_bytes + continuation_visible_bytes
             else:
                 trial_visible_bytes = single_payload_visible_bytes
-            if trial_visible_bytes <= SOURCE_CONTEXT_LIMIT:
+            if trial_visible_bytes <= shard_limit:
                 current.append(row)
                 current_visible_bytes = trial_visible_bytes
                 continue
@@ -5645,11 +5681,11 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
                 shards.append(current); current = []
                 index = len(shards) + 1
                 single_payload_bytes, single_payload_visible_bytes = payload_metrics(index, [row])
-                if single_payload_visible_bytes <= SOURCE_CONTEXT_LIMIT:
+                if single_payload_visible_bytes <= shard_limit:
                     current = [row]
                     current_visible_bytes = single_payload_visible_bytes
                     continue
-            individually_oversized = single_payload_visible_bytes > SOURCE_CONTEXT_LIMIT
+            individually_oversized = single_payload_visible_bytes > shard_limit
             for reason in row['reasons']:
                 omitted[reason.split(':', 1)[0]] += 1
             if individually_oversized:
@@ -5659,7 +5695,9 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
                 _, source_lines, _ = source_choice(row['path'], row['blob_tree'])[1]
                 try:
                     required['segments'] = partition_source_segments(
-                        source_lines, row['line_start'], row['line_end'])
+                        source_lines, row['line_start'], row['line_end'],
+                        visible_limit=segment_visible_limit,
+                        single_line_limit=segment_single_line_limit)
                 except ValueError as error:
                     # A minified or generated line cannot become a bounded segment.
                     # Dropping that range keeps the rest of the code panel launchable.
@@ -5692,7 +5730,9 @@ def plan_source_context(snapshot, base_tree, evidence, components, assigned, own
                 required_payload_bytes=payload_bytes,
                 required_payload_predicted_visible_bytes=visible_bytes,
                 segments=partition_source_segments(
-                    source_lines, row['line_start'], row['line_end']),
+                    source_lines, row['line_start'], row['line_end'],
+                    visible_limit=segment_visible_limit,
+                    single_line_limit=segment_single_line_limit),
             )
             promotion_cache[index] = required
             return required
@@ -6027,6 +6067,8 @@ def validate_source_context_bytes(repo, session, manifest, entries_by_tree=None,
 
     patch_indexes = {}
     for seat, packet in context['seats'].items():
+        seat_adapter = manifest.get('assignments', {}).get(seat, {}).get('adapter')
+        segment_visible_limit, segment_single_line_limit = source_segment_limits(seat_adapter)
         for shard in packet['shards']:
             payload = read_json(session / shard['artifact'])
             for row in payload['entries']:
@@ -6051,7 +6093,9 @@ def validate_source_context_bytes(repo, session, manifest, entries_by_tree=None,
                 raise ValueError('required source payload size does not match snapshot: ' + row['path'])
             key = (row['blob_mode'], row['blob_oid'])
             canonical = partition_source_segments(
-                blob_lines[key], row['line_start'], row['line_end'])
+                blob_lines[key], row['line_start'], row['line_end'],
+                visible_limit=segment_visible_limit,
+                single_line_limit=segment_single_line_limit)
             if 'patch_proof' in row:
                 if seat not in patch_indexes:
                     patch_indexes[seat] = patch_new_side_index(
@@ -6521,6 +6565,9 @@ def validate_source_context(session, manifest, evidence):
                 or type(packet['source_read_required']) is not bool):
             raise ValueError('invalid source context omissions: ' + seat)
         shards = packet['shards']
+        shard_limit = source_context_limit(assignment.get('adapter'))
+        segment_visible_limit, segment_single_line_limit = source_segment_limits(
+            assignment.get('adapter'))
         if not context['enabled'] and (
                 shards or packet['omitted_source_ranges'] or any(omitted.values())):
             raise ValueError('disabled source context contains packet data: ' + seat)
@@ -6534,9 +6581,9 @@ def validate_source_context(session, manifest, evidence):
                 raise ValueError('invalid source context shard metadata: ' + seat)
             name = f"r{manifest['label']}-{seat}-source-context-{index}.json"
             if (shard['artifact'] != name or not re.fullmatch(r'[0-9a-f]{64}', str(shard['sha256']))
-                    or type(shard['bytes']) is not int or shard['bytes'] > SOURCE_CONTEXT_LIMIT
+                    or type(shard['bytes']) is not int or shard['bytes'] > shard_limit
                     or type(shard['predicted_visible_bytes']) is not int
-                    or shard['predicted_visible_bytes'] > SOURCE_CONTEXT_LIMIT
+                    or shard['predicted_visible_bytes'] > shard_limit
                     or type(shard['entries']) is not int or shard['entries'] < 1
                     or not isinstance(shard['ranges'], list)):
                 raise ValueError('invalid source context shard bounds: ' + seat)
@@ -6726,9 +6773,9 @@ def validate_source_context(session, manifest, evidence):
                         or segment['predicted_visible_bytes'] != segment['raw_bytes'] \
                         + (segment['line_end'] - segment['line_start'] + 1) * SOURCE_SEGMENT_PREFIX_RESERVE
                         or segment['predicted_visible_bytes'] > (
-                            SOURCE_SEGMENT_SINGLE_LINE_VISIBLE_LIMIT
+                            segment_single_line_limit
                             if segment['line_start'] == segment['line_end']
-                            else SOURCE_SEGMENT_VISIBLE_LIMIT)
+                            else segment_visible_limit)
                         or not re.fullmatch(r'[0-9a-f]{64}', str(segment.get('content_sha256')))
                         or segment.get('artifact') != expected_name or not artifact_safe
                         or len(raw) != segment.get('raw_bytes')
@@ -6771,6 +6818,7 @@ def validate_patch_sets(session, manifest, expected_artifacts):
         raise ValueError('noncanonical patch set order')
     used = []
     identities = {}
+    set_limits = {}
     for seat, assignment in manifest['assignments'].items():
         set_id = assignment.get('patch_set')
         mode = assignment.get('patch_read_mode')
@@ -6782,9 +6830,14 @@ def validate_patch_sets(session, manifest, expected_artifacts):
         if (assignment['patch_sha256'], assignment['patch_bytes'], assignment['patch_lines']) != (
                 patch_set.get('patch_sha256'), patch_set.get('patch_bytes'), patch_set.get('patch_lines')):
             raise ValueError('assignment patch set identity mismatch: ' + seat)
-        if assignment['patch_sha256'] in identities and identities[assignment['patch_sha256']] != set_id:
+        limits = patch_chunk_limits(assignment.get('adapter'))
+        if set_id in set_limits and set_limits[set_id] != limits:
+            raise ValueError('patch set mixes incompatible adapter limits: ' + set_id)
+        set_limits[set_id] = limits
+        key = (assignment['patch_sha256'], *limits)
+        if key in identities and identities[key] != set_id:
             raise ValueError('identical assigned patches use different patch sets')
-        identities[assignment['patch_sha256']] = set_id
+        identities[key] = set_id
         used.append(set_id)
     if set(used) != set(sets):
         raise ValueError('unused patch set')
@@ -6794,6 +6847,7 @@ def validate_patch_sets(session, manifest, expected_artifacts):
             raise ValueError('invalid patch set: ' + set_id)
         matching = next(assignment for assignment in manifest['assignments'].values()
                         if assignment['patch_set'] == set_id)
+        raw_limit, visible_limit = set_limits[set_id]
         raw = Path(matching['patch']).read_bytes()
         if (patch_set['patch_sha256'] != digest(raw)
                 or type(patch_set['patch_bytes']) is not int or patch_set['patch_bytes'] != len(raw)
@@ -6803,10 +6857,11 @@ def validate_patch_sets(session, manifest, expected_artifacts):
                 or not isinstance(patch_set['chunks'], list)):
             raise ValueError('invalid patch set identity: ' + set_id)
         try:
-            partitioned = partition_patch_chunks(raw) if effective != '0' else []
+            partitioned = (partition_patch_chunks(raw, raw_limit=raw_limit, visible_limit=visible_limit)
+                           if effective != '0' else [])
         except (UnicodeDecodeError, ValueError):
             partitioned = []
-        expected_mode = patch_chunk_mode(raw, partitioned, effective)
+        expected_mode = patch_chunk_mode(raw, partitioned, effective, visible_limit=visible_limit)
         if patch_set['read_mode'] != expected_mode:
             raise ValueError('invalid patch set mode: ' + set_id)
         if expected_mode == 'windows':
@@ -6831,9 +6886,9 @@ def validate_patch_sets(session, manifest, expected_artifacts):
             if (row.get('artifact') != name or row != {'artifact': name, **expected}
                     or not stat.S_ISREG(metadata.st_mode) or artifact.is_symlink()
                     or metadata.st_nlink != 1 or artifact.read_bytes() != content
-                    or row['bytes'] > PATCH_CHUNK_RAW_LIMIT
+                    or row['bytes'] > raw_limit
                     or row['display_lines'] > PATCH_CHUNK_LINE_LIMIT
-                    or row['predicted_visible_bytes'] > PATCH_CHUNK_VISIBLE_LIMIT):
+                    or row['predicted_visible_bytes'] > visible_limit):
                 raise ValueError('invalid patch chunk artifact: ' + name)
             expected_artifacts.add(name)
             reconstructed.append(content)

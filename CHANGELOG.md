@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.9.17
+
+- Cap `agy` seat source-context packets, required source segments, and assigned patch chunks at 8 KiB (with an 8 KiB window threshold in `auto` chunk mode and an 8 KiB `sed -n` guidance note) so `agy` `run_command` stdout stays below its ~10 KiB truncation limit and passes read-audit verification.
+
 ## 0.9.16
 
 - Add native Antigravity (`agy`) host support, one-line installer (`install-agy.sh`), bundle builder (`scripts/build-agy-plugin.py`), and `agy-package` workflow publishing a standalone plugin at `~/.gemini/config/plugins/review-council` (or `$REVIEW_COUNCIL_AGY_DEST`).
