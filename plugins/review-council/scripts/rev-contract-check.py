@@ -92,6 +92,9 @@ def source_plugin(root):
     if (any((root / host / 'plugin.json').is_file() for host in manifests)
             and (root / 'scripts').is_dir()):
         return root, ''
+    if ((root / 'plugin.json').is_file() and (root / 'skills' / 'rev' / 'SKILL.md').is_file()
+            and (root / 'scripts').is_dir()):
+        return root, ''
     return None, None
 
 
@@ -206,7 +209,8 @@ def execution_policy():
 def contract_executor(subject_plugin, subject_alias):
     plugin = Path(__file__).resolve().parents[1]
     manifests = [plugin / host / 'plugin.json' for host in ('.codex-plugin', '.cursor-plugin')]
-    if not any(manifest.is_file() for manifest in manifests) or not (plugin / 'scripts').is_dir():
+    is_agy_bundle = (plugin / 'plugin.json').is_file() and (plugin / 'skills' / 'rev' / 'SKILL.md').is_file()
+    if (not any(manifest.is_file() for manifest in manifests) and not is_agy_bundle) or not (plugin / 'scripts').is_dir():
         raise ValueError('checker-owned plugin root is unavailable')
     override = os.environ.get('REVIEW_COUNCIL_CONTRACT_RUNNER')
     if override:
@@ -389,7 +393,7 @@ def one_version(name):
 
 
 def provider_versions(adapters):
-    names = sorted(set(adapters) & {'claude', 'codex', 'gemini'})
+    names = sorted(set(adapters) & {'claude', 'codex', 'gemini', 'agy'})
     override = os.environ.get('REVIEW_COUNCIL_CONTRACT_PROVIDER_VERSIONS')
     if override:
         value = json.loads(override)
@@ -427,7 +431,7 @@ def core_roster(path):
     for row in data['seats']:
         if not isinstance(row, dict):
             raise ValueError('invalid provider contract roster')
-        if row.get('adapter') not in ('codex', 'gemini', 'claude', 'agent', 'cursor-sdk'):
+        if row.get('adapter') not in ('codex', 'gemini', 'claude', 'agent', 'cursor-sdk', 'agy'):
             raise ValueError('provider contract roster contains an unsupported or retired adapter')
         if row.get('extra'):
             continue

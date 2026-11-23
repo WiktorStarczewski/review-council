@@ -33,6 +33,10 @@ def skill_dir(host):
         return PLUGIN / 'pi-skills' / 'review-council-rev'
     if host == 'codex':
         return PLUGIN / 'codex-skills' / 'rev'
+    if host == 'agy':
+        if (PLUGIN / 'codex-skills' / 'rev' / 'phases').is_dir():
+            return PLUGIN / 'codex-skills' / 'rev'
+        return PLUGIN / 'skills' / 'rev'
     if host == 'cursor':
         cursor = PLUGIN / 'cursor-skills' / 'rev'
         if (cursor / 'phases').is_dir():
@@ -92,7 +96,7 @@ def main(argv=None):
     parser.add_argument('--host', default='claude')
     parser.add_argument('--config')
     args = parser.parse_args(argv)
-    if args.host not in ('claude', 'codex', 'cursor', 'pi'):
+    if args.host not in ('claude', 'codex', 'cursor', 'pi', 'agy'):
         print('rev-brief: unknown host', file=sys.stderr)
         return 2
     print(json.dumps(brief(args.session, args.host, args.config), indent=2, sort_keys=True))

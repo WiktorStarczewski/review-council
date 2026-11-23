@@ -1286,7 +1286,7 @@ def source_context_memo_validation_guards():
         prepare('seed', 'risk', *assign)
         finish('seed')
         write('main.py', (root / 'main.py').read_text().replace('return 2', 'return 3', 1))
-        child = prepare('verify', 'verification', *assign)
+        child = module.expand_manifest(prepare('verify', 'verification', *assign))
         repo = module.Repository(session.resolve())
         _, hunks, categories, _ = repo.changes(child['base_tree'], child['snapshot_tree'])
         prior = module.prior_coverage(

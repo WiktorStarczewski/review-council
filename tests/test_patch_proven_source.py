@@ -21,6 +21,7 @@ class PatchFixture(SourceFixture):
     last line, so its declaration starts ten lines before the hunk."""
 
     def __init__(self, directory, adapter='codex', chunks='1'):
+        directory = Path(directory).resolve()
         self.patch_window_lines = 2
         self.root = directory / 'repo'
         self.session = directory / 'session'
@@ -53,7 +54,8 @@ class PatchFixture(SourceFixture):
         self.run('prepare', str(self.session), self.label, '--phase', self.phase,
                  '--full-seat', 'sol')
         self.manifest_path = self.session / 'r1-evidence.manifest.json'
-        self.manifest = json.loads(self.manifest_path.read_text())
+        self.manifest = load_evidence().expand_manifest(
+            json.loads(self.manifest_path.read_text()))
         self.seat = self.manifest['mechanical_owner']
         self.context = self.manifest['source_context']['seats'][self.seat]
         self.prompt = self.session / f'r1-{self.seat}.prompt.md'

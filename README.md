@@ -89,6 +89,20 @@ roster. Optional Grok reviewers require a separately installed pinned SDK runtim
 an explicit SDK browser sign-in and live qualification; an environment key override
 is optional. Package tests do not qualify reviewers.
 
+**Antigravity (`agy`)**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/WiktorStarczewski/review-council/main/install-agy.sh | bash
+```
+
+Start a new `agy` session. The command builds the native Antigravity bundle and
+installs it at `~/.gemini/config/plugins/review-council`. [Antigravity setup](docs/agy.md)
+covers checkout installs, stream-audited `agy` seats, and the Antigravity chain
+(`hydrogen -> luna -> sonnet -> sol -> neon -> opus`, defaulting normal panels to four
+`hydrogen` seats with fallback to Luna). Gemini `hydrogen` and `neon` seats through `agy`
+are strictly restricted to Antigravity sessions (`REVIEW_COUNCIL_HOST=agy`) and never run
+from other harnesses.
+
 > [!NOTE]
 > Seats come from the provider CLIs you have signed in: Codex for OpenAI, Claude for
 > Anthropic, and optionally Gemini. A roster of fewer than three seats is padded with extra
@@ -111,6 +125,9 @@ codex plugin marketplace upgrade review-council && codex plugin add review-counc
 
 # Cursor: install in one line, or update; then start a new chat
 curl -fsSL https://raw.githubusercontent.com/WiktorStarczewski/review-council/main/install-cursor.sh | bash
+
+# Antigravity: install in one line, or update; then start a new agy session
+curl -fsSL https://raw.githubusercontent.com/WiktorStarczewski/review-council/main/install-agy.sh | bash
 ```
 
 The Claude Code one-liner also turns on auto-update for the marketplace (skip that with
@@ -118,8 +135,9 @@ The Claude Code one-liner also turns on auto-update for the marketplace (skip th
 install when rerun. It touches only Claude Code's marketplace configuration: the settings
 file is rewritten at 2-space indent with
 every other setting preserved, atomically and keeping its mode; an unparseable file is
-refused. The Codex and Cursor one-liners take `--ref <branch-or-tag>` or `REVIEW_COUNCIL_REF`.
-Cursor can install from a local checkout with `REVIEW_COUNCIL_SOURCE` instead of cloning.
+refused. The Codex, Cursor and Antigravity one-liners take `--ref <branch-or-tag>` or
+`REVIEW_COUNCIL_REF`. Cursor and Antigravity can install from a local checkout with
+`REVIEW_COUNCIL_SOURCE` instead of cloning.
 
 **Requirements:** Bash, Git, Python 3 (standard library only), `gh` for PR scopes and
 publication, ripgrep for plan searches (Codex needs a real `rg`), and the provider CLIs your
@@ -149,6 +167,8 @@ The package binds its own Pi workflow, even if a shared Codex `rev` skill exists
 
 In Cursor, select the native `rev` or `stack` skill and use the same requests.
 Verify the loaded package identity as described in [Cursor setup](docs/cursor.md).
+
+In Antigravity (`agy`), select `rev` or `stack` and use the same requests; see [Antigravity setup](docs/agy.md).
 
 > [!TIP]
 > Run it from a working branch: preflight refuses to start on `main`, `master`, the default
@@ -936,6 +956,8 @@ four workers). Tests use local CLI shims and never contact providers.
 separate native Cursor bundle. Its manifest, paths and executable modes are
 validated before atomic replacement; its host contracts run in the existing Python
 test inventory. [Cursor setup](docs/cursor.md) records the separate live gates.
+`scripts/build-agy-plugin.py --output dist/agy/review-council` builds the native
+Antigravity bundle; [Antigravity setup](docs/agy.md) covers `agy plugin validate --strict`.
 Each release is reviewed by the previous signed release; see
 [the release procedure](docs/release.md).
 

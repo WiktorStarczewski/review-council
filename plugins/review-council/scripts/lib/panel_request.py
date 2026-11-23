@@ -12,23 +12,27 @@ from pathlib import Path
 import re
 
 
-HOSTS = ('claude', 'codex', 'cursor', 'pi')
-FAMILIES = ('luna', 'sol', 'terra', 'grok')
+HOSTS = ('claude', 'codex', 'cursor', 'pi', 'agy')
+FAMILIES = ('luna', 'sol', 'terra', 'grok', 'hydrogen', 'neon')
 NORMAL_CHAIN = ('luna', 'sonnet', 'sol', 'opus')
+AGY_CHAIN = ('hydrogen', 'luna', 'sonnet', 'sol', 'neon', 'opus')
 REQUEST = re.compile(
-    r'(?i)(?<![A-Za-z0-9])(\d+)\s*[*x×]\s*(?:latest-)?(luna|sol|terra|grok)\b')
+    r'(?i)(?<![A-Za-z0-9])(\d+)\s*[*x×]\s*(?:latest-)?(luna|sol|terra|grok|hydrogen|neon)\b')
 HIGH_MODE = re.compile(
     r'(?i)(?<![A-Za-z0-9])(?:high[\s_-]+effort|mode[\s:_-]+high|effort[\s:_-]+high)\b')
 NORMAL_MODE = re.compile(
     r'(?i)(?<![A-Za-z0-9])(?:normal[\s_-]+effort|mode[\s:_-]+normal|effort[\s:_-]+normal)\b')
 CODEX_CLEAR = ('codex', 'openai', 'luna', 'sol', 'terra', 'codex-luna', 'codex-sol', 'codex-terra')
 GROK_CLEAR = ('cursor-sdk', 'xai', 'grok', 'grok-1', 'grok-2', 'grok-3', 'grok-4')
+AGY_CLEAR = ('agy', 'google', 'hydrogen', 'neon', 'gemini-hydrogen', 'gemini-neon')
 HIGH_CLEAR = CODEX_CLEAR + (
     'claude', 'agent', 'anthropic', 'opus', 'sonnet', 'opus-2', 'opus-3', 'opus-4')
 
 
 def chain_for(host):
-    """Normal chain. Cursor prefixes Grok; every other host starts at Luna."""
+    """Normal chain. Cursor prefixes Grok; Antigravity uses the hydrogen-neon chain."""
+    if host == 'agy':
+        return AGY_CHAIN
     if host == 'cursor':
         return ('grok',) + NORMAL_CHAIN
     return NORMAL_CHAIN
@@ -54,10 +58,20 @@ def parse_panel_request(text):
     count = int(matches[0][0])
     family = matches[0][1].lower()
     if family not in FAMILIES or not 1 <= count <= 4:
-        raise ValueError('panel request must be 1 to 4 luna, sol, terra, or grok seats')
+        raise ValueError('panel request must be 1 to 4 luna, sol, terra, grok, hydrogen, or neon seats')
     if family == 'grok':
         return {'version': 1, 'count': count, 'family': 'grok',
                 'cursor_sdk_models': ['latest-grok'] * count}
+    if family in ('hydrogen', 'neon'):
+        return {
+            'version': 1,
+            'count': count,
+            'family': family,
+            'agy_models': ['latest-' + family] * count,
+            'claude_seats': 0,
+            'extras': False,
+            'min_labs': 1,
+        }
     selector = 'latest-' + family
     return {
         'version': 1,
@@ -83,13 +97,20 @@ def _without_sdk(config):
     return config
 
 
-def luna_config(base, fallback=False):
+def _without_agy(config):
+    for key in ('agy_models', 'agy_effort', 'panel_agy_fallback'):
+        config.pop(key, None)
+    return config
+
+
+def luna_config(base, fallback=False, fallback_from='grok'):
     """Four Luna seats, with Gemini and Cursor SDK kept out of the panel."""
     config = dict(base)
     config.pop('claude_models', None)
     config.pop('claude_seat', None)
     config.pop('panel_fallback', None)
     _without_sdk(config)
+    _without_agy(config)
     config['panel_mode'] = 'normal'
     config['panel_family'] = 'luna'
     config['codex_models'] = ['latest-luna'] * 4
@@ -98,7 +119,11 @@ def luna_config(base, fallback=False):
     config['min_labs'] = 1
     config['exclude'] = _exclude(config, CODEX_CLEAR, {'gemini', 'cursor-sdk'})
     if fallback:
-        config['panel_grok_fallback'] = True
+        if fallback_from == 'agy':
+            config.pop('panel_grok_fallback', None)
+            config['panel_agy_fallback'] = True
+        else:
+            config['panel_grok_fallback'] = True
     else:
         config.pop('panel_grok_fallback', None)
     return config
@@ -110,6 +135,7 @@ def grok_config(base, count, fallback=False):
     for key in ('claude_models', 'claude_seat', 'codex_models', 'codex_effort', 'panel_grok_fallback'):
         config.pop(key, None)
     config.pop('cursor_sdk_model_selections', None)
+    _without_agy(config)
     config['panel_mode'] = 'normal' if fallback else 'explicit'
     config['panel_family'] = 'grok'
     config['cursor_sdk_models'] = ['latest-grok'] * count
@@ -125,12 +151,33 @@ def grok_config(base, count, fallback=False):
     return config
 
 
+def agy_panel_config(base, family, count, fallback=False):
+    """Antigravity Gemini seats only (hydrogen or neon). Only valid on the agy host."""
+    config = dict(base)
+    for key in ('claude_models', 'claude_seats', 'claude_seat', 'codex_models', 'codex_effort',
+                'panel_fallback', 'panel_grok_fallback', 'panel_agy_fallback'):
+        config.pop(key, None)
+    _without_sdk(config)
+    config['panel_mode'] = 'normal' if fallback else 'explicit'
+    config['panel_family'] = family
+    config['agy_models'] = ['latest-' + family] * count
+    config['agy_effort'] = 'xhigh'
+    config['claude_seats'] = 0
+    config['extras'] = False
+    config['min_labs'] = 1
+    config['exclude'] = _exclude(config, AGY_CLEAR, {'codex', 'openai', 'gemini', 'cursor-sdk'})
+    if fallback:
+        config['panel_fallback'] = 'luna'
+    return config
+
+
 def high_config(base):
     """Two Sol and two Opus seats. Pair substitution happens during roster build."""
     config = dict(base)
     for key in ('claude_models', 'claude_seats', 'claude_seat', 'panel_fallback', 'panel_grok_fallback'):
         config.pop(key, None)
     _without_sdk(config)
+    _without_agy(config)
     config['panel_mode'] = 'high'
     config['panel_family'] = 'high'
     config['codex_models'] = ['latest-sol'] * 2
@@ -147,14 +194,23 @@ def session_config(base, request, host='claude', grok_ready=False):
     """Overlay an explicit N*family roster onto a copy of the current config."""
     if not isinstance(base, dict):
         raise ValueError('roster config must be an object')
+    if not isinstance(request, dict):
+        raise ValueError('panel request must be an object')
+    if host != 'agy' and ('agy_models' in base or 'agy_effort' in base):
+        raise ValueError('agy_models requires the agy host')
     if request.get('family') == 'grok':
         if host != 'cursor' or not grok_ready:
             raise ValueError('grok panel requires Cursor and the Cursor SDK runtime')
         return grok_config(base, request['count'], fallback=False)
+    if request.get('family') in ('hydrogen', 'neon'):
+        if host != 'agy':
+            raise ValueError(request['family'] + ' panel requires the agy host')
+        return agy_panel_config(base, request['family'], request['count'], fallback=False)
     config = dict(base)
     config.pop('claude_models', None)
     config.pop('claude_seat', None)
     _without_sdk(config)
+    _without_agy(config)
     config.pop('panel_fallback', None)
     config.pop('panel_grok_fallback', None)
     config['panel_mode'] = 'explicit'
@@ -170,6 +226,8 @@ def session_config(base, request, host='claude', grok_ready=False):
 def mode_config(base, mode, host, grok_ready):
     if mode == 'high':
         return high_config(base)
+    if host == 'agy':
+        return agy_panel_config(base, 'hydrogen', 4, fallback=True)
     if host == 'cursor' and grok_ready:
         return grok_config(base, 4, fallback=True)
     return luna_config(base, fallback=False)

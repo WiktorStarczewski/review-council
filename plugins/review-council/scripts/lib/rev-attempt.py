@@ -290,7 +290,7 @@ def roster_adapter(session: Path, seat: str):
     if len(matches) != 1:
         return None
     adapter = matches[0].get('adapter')
-    return adapter if adapter in ('codex', 'claude', 'gemini') else None
+    return adapter if adapter in ('codex', 'claude', 'gemini', 'agy') else None
 
 
 def panel_assignments(session: Path, panel: str):

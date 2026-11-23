@@ -151,6 +151,11 @@ def repository_expansion_call_limit_for_seat(source_read_required, repository_so
     if source_read_required and repository_source_target is None:
         return limit + REPOSITORY_REFUTATION_CALL_RESERVE * multiplier
     return limit
+
+def mandatory_repository_read_limit_for_seat(source_read_required, repository_source_target, model=None):
+    return (repository_expansion_call_limit_for_seat(
+        source_read_required, repository_source_target, model)
+        - repository_refutation_call_reserve_for_model(model))
 PY
     printf 'frozen patch\n' > "$S/rlimits-full.patch"
     local codex claude codex120
@@ -185,6 +190,11 @@ def repository_expansion_call_limit_for_seat(source_read_required, repository_so
     if source_read_required and repository_source_target is None:
         return limit + REPOSITORY_REFUTATION_CALL_RESERVE * multiplier
     return limit
+
+def mandatory_repository_read_limit_for_seat(source_read_required, repository_source_target, model=None):
+    return (repository_expansion_call_limit_for_seat(
+        source_read_required, repository_source_target, model)
+        - repository_refutation_call_reserve_for_model(model))
 PY
     codex120=$("$COPY/scripts/rev-prompt.sh" "$S" limits sol correctness focused) || return
     assert_grep 'copied prompt uses configured Codex patch window when limits change' "$codex120" \

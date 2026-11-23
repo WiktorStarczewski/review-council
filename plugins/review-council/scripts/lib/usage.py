@@ -14,6 +14,10 @@ SDK_USAGE_FIELDS = {
     "cacheWriteTokens": "cache_write_input_tokens", "reasoningTokens": "reasoning_output_tokens",
     "costUsd": "cost_usd",
 }
+AGY_USAGE_FIELDS = {
+    "cache_read_tokens": "cache_read_input_tokens",
+    "thinking_tokens": "reasoning_output_tokens",
+}
 USAGE_FIELDS = (
     "input_tokens", "uncached_input_tokens", "uncached_input_unknown_calls",
     "output_tokens", "reasoning_output_tokens",
@@ -56,13 +60,20 @@ def add_usage(target, usage):
 
 
 def record_usage(record, adapter=None):
-    inferred = ("gemini" if isinstance(record.get("stats"), dict) else {
+    agy_event = record.get("event") == "result" and isinstance(record.get("result"), dict)
+    inferred = ("agy" if agy_event else "gemini" if isinstance(record.get("stats"), dict) else {
         "assistant": "claude", "result": "claude", "turn.completed": "codex", "end": "grok",
     }.get(record.get("type")))
     provider = adapter or inferred or "unknown"
-    shape = adapter if adapter in {"claude", "codex", "grok", "gemini", "cursor-sdk"} else inferred
-    container = "stats" if shape == "gemini" else "usage"
-    usage = record.get(container, {})
+    shape = adapter if adapter in {"claude", "codex", "grok", "gemini", "cursor-sdk", "agy"} else inferred
+    if shape == "agy":
+        result_obj = record.get("result")
+        if not isinstance(result_obj, dict):
+            raise ValueError("invalid agy result object")
+        usage = result_obj.get("usage", {})
+    else:
+        container = "stats" if shape == "gemini" else "usage"
+        usage = record.get(container, {})
     if not isinstance(usage, dict):
         raise ValueError("invalid usage object")
     if shape == "cursor-sdk":
@@ -71,6 +82,13 @@ def record_usage(record, adapter=None):
             if source in usage:
                 if target in usage and usage[target] != usage[source]:
                     raise ValueError("conflicting SDK usage metrics")
+                usage[target] = usage[source]
+    elif shape == "agy":
+        usage = dict(usage)
+        for source, target in AGY_USAGE_FIELDS.items():
+            if source in usage:
+                if target in usage and usage[target] != usage[source]:
+                    raise ValueError("conflicting agy usage metrics")
                 usage[target] = usage[source]
     for key in (
         "input_tokens", "output_tokens", "processed_tokens", "cached_input_tokens",
@@ -111,9 +129,9 @@ def record_usage(record, adapter=None):
         uncached = raw_input
     else:
         inputs = (usage["total_tokens"] - output if "total_tokens" in usage
-                  and (shape not in {"codex", "gemini", "cursor-sdk"}
+                  and (shape not in {"codex", "gemini", "cursor-sdk", "agy"}
                        or shape == "cursor-sdk" and "input_tokens" not in usage) else raw_input)
-        if shape not in {"codex", "gemini", "cursor-sdk"} and "total_tokens" not in usage:
+        if shape not in {"codex", "gemini", "cursor-sdk", "agy"} and "total_tokens" not in usage:
             inputs += read + write
         uncached = inputs - max(cached, read) - write
         if uncached < 0:
@@ -234,7 +252,8 @@ def read_stream(path, adapter=None):
                     continue
                 if not isinstance(record, dict):
                     continue
-                if record.get("type") in TERMINAL_TYPES:
+                if (record.get("type") in TERMINAL_TYPES
+                        or (record.get("event") == "result" and isinstance(record.get("result"), dict))):
                     terminal = record
                     if record.get("type") == "turn.completed" and adapter in (None, "codex"):
                         codex_turns.append((line_no, record))

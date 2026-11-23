@@ -21,8 +21,9 @@ PACKET_BYTES_PER_TOKEN = 2.4
 PROMPT_BYTES_PER_TOKEN = 3.0
 CONTEXT_SHARE_PERCENT = 55
 RAISED_WINDOW_SWITCH = 'REVIEW_COUNCIL_CODEX_MAX_CONTEXT_WINDOW'
-# A Claude seat has no catalog row; its window is a named constant held to the same share.
+# A Claude or Antigravity seat has no catalog row; its window is a named constant held to the same share.
 CLAUDE_CONTEXT_WINDOW = 1_000_000
+AGY_CONTEXT_WINDOW = 1_000_000
 # The compacted assignment prompt, fitted on completed PR 2144 prompts: a fixed part plus one
 # rendered line per prepared read (projected over actual: 0.98 to 1.07).
 PROMPT_BASE_TOKENS = 11_100
@@ -103,6 +104,8 @@ def seat_budget_tokens(adapter, model):
         return None if limits is None else (limits['raised'] or limits['limit'])
     if adapter == 'claude':
         return CLAUDE_CONTEXT_WINDOW * CONTEXT_SHARE_PERCENT // 100
+    if adapter == 'agy':
+        return AGY_CONTEXT_WINDOW * CONTEXT_SHARE_PERCENT // 100
     return None
 
 

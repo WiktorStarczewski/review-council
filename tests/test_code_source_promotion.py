@@ -15,6 +15,7 @@ from test_deleted_source_proof import SCRIPTS, SourceFixture, load_evidence
 
 class PromotionFixture(SourceFixture):
     def __init__(self, directory):
+        directory = Path(directory).resolve()
         self.root = directory / 'repo'
         self.session = directory / 'session'
         self.root.mkdir()
@@ -57,7 +58,8 @@ class PromotionFixture(SourceFixture):
 
     def load(self):
         self.manifest_path = self.session / 'r1-evidence.manifest.json'
-        self.manifest = json.loads(self.manifest_path.read_text())
+        self.manifest = load_evidence().expand_manifest(
+            json.loads(self.manifest_path.read_text()))
         self.context = self.manifest['source_context']['seats'][self.seat]
         self.prompt = self.session / 'r1-sol.prompt.md'
         assignment = self.manifest['assignments'][self.seat]
