@@ -1670,6 +1670,51 @@ test_pr_review_validate_stack() {
     "$T/pr-validate.calls" '^api --method (POST|DELETE) '
 }
 
+test_pr_review_stack_finalization_taken() {
+  local session="$T/pr-finalize-taken" root="$T/pr-finalize-taken-repo" bin="$T/pr-finalize-taken-bin"
+  local before after
+  pr_review_session "$session" "$root"
+  pr_review_gh_shim "$bin"
+  echo one > "$root/one.txt"; git -C "$root" add one.txt
+  git -C "$root" commit -qm 'fix(rev): one'
+  echo two > "$root/two.txt"; git -C "$root" add two.txt
+  git -C "$root" commit -qm 'fix(rev): two'
+  before=$(git -C "$root" rev-parse HEAD)
+  python3 - "$session/pr-review.json" "$before" <<'PY'
+import json
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+head = sys.argv[2]
+data = json.loads(path.read_text())
+data.pop('fixed_in')
+data['decisions'] = []
+data['fixes'][0]['commit'] = {'label': head[:7], 'url': f'https://github.com/acme/repo/commit/{head}'}
+data['decisions_taken'] = [{
+    'title': 'Keep compatibility mode?',
+    'location': {'label': 'src/api.rs#L10-L14',
+                 'url': f'https://github.com/acme/repo/blob/{head}/src/api.rs#L10-L14'},
+    'chosen': 'Dropped it.', 'why': 'Sibling code has no such switch.',
+    'commit': {'label': head[:7], 'url': f'https://github.com/acme/repo/commit/{head}'}}]
+path.write_text(json.dumps(data))
+PY
+  : > "$T/pr-finalize-taken.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize-taken.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 >/dev/null
+  assert_eq "a review with decisions taken renders before the squash" "$?" 0
+  git -C "$root" reset -q --soft HEAD~2
+  git -C "$root" commit -qm 'apply review findings'
+  after=$(git -C "$root" rev-parse HEAD)
+  PATH="$bin:$PATH" GH_HEAD_OID="$after" GH_CALLS="$T/pr-finalize-taken.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" finalize-stack "$session" --head "$after" \
+    > "$T/pr-finalize-taken.out" 2> "$T/pr-finalize-taken.err"
+  assert_eq "a squash finalizes a review whose decisions list is empty" "$?" 0
+  assert_grep "finalization maps the taken location to the aggregate SHA" \
+    "$session/pr-review.md" "/blob/$after/src/api.rs"
+  assert_grep "finalization maps the taken commit to the aggregate SHA" \
+    "$session/pr-review.md" "Keep compatibility mode.*/commit/$after"
+}
+
 test_pr_review_stack_finalization() {
   local session="$T/pr-finalize" root="$T/pr-finalize-repo" bin="$T/pr-finalize-bin"
   local interrupted="$T/pr-finalize-interrupted"

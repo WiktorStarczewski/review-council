@@ -106,6 +106,7 @@ t-pr-review.sh::test_pr_review_binds_links_to_reviewed_state	1	normal
 t-pr-review.sh::test_pr_review_duplicate_and_no_pr	1	normal
 t-pr-review.sh::test_pr_review_decisions_taken	1	normal
 t-pr-review.sh::test_pr_review_decisions_taken_bound_links	1	normal
+t-pr-review.sh::test_pr_review_stack_finalization_taken	1	normal
 t-pr-review.sh::test_pr_review_empty_sections	1	normal
 t-pr-review.sh::test_pr_review_escapes_html_contexts	1	normal
 t-pr-review.sh::test_pr_review_clean_identity	1	normal

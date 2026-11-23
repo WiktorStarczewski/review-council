@@ -860,7 +860,7 @@ def validate_publication_links(data, repositories, head, root):
                 f"{field} does not point at the reviewed head")
 
     if data.get("fixed_in") is None:
-        commits = [(f"fixes[{index}].commit.url", fix.get("commit", {}))
+        commits = [(f"{name}.commit.url", fix.get("commit", {}))
                    for index, fix in enumerate(data.get("fixes", []))]
         commits += [(f"decisions_taken[{index}].commit.url", decision.get("commit", {}))
                     for index, decision in enumerate(data.get("decisions_taken") or [])]
@@ -1164,10 +1164,10 @@ def finalized_data(data, head, root):
             # only a squash, which drops it from that history, maps it to the aggregate head.
             if in_history(commit.get("url"), head, root):
                 continue
-            label = inline(commit.get("label"), f"fixes[{index}].commit.label")
+            label = inline(commit.get("label"), f"{name}.commit.label")
             commit["label"] = head[:min(len(label), len(head))]
             commit["url"] = replace_sha_url(
-                commit.get("url"), COMMIT_URL, head, f"fixes[{index}].commit.url")
+                commit.get("url"), COMMIT_URL, head, f"{name}.commit.url")
     return updated
 
 
