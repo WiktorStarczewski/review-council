@@ -671,7 +671,7 @@ For shell searches, prefer simple fixed-string patterns such as `rg -n -F 'aria-
 EOC
       elif [ "$ADAPTER" = agy ]; then
         cat <<'EOC'
-For Antigravity seats, use `run_command` (shell commands) for all artifact reads, source windows, and searches so every read's bytes appear in the transcript: e.g. `cat -- '<artifact>'`, `sed -n '40,75p' 'src/file.ts'`, and `rg -n -F 'symbolName' 'src/path' | head -80`. Do not combine source files or ranges with `&&` or `;`.
+For Antigravity seats, use `run_command` (shell commands) for all artifact reads, source windows, and searches so every read's bytes appear in the transcript: e.g. `cat -- '<artifact>'`, `sed -n '40,75p' 'src/file.ts'`, and `rg -n -F 'symbolName' 'src/path' | head -80`. Do not combine source files or ranges with `&&` or `;`. Keep every `sed -n` source or patch window below ~8 KiB so `run_command` output stays under its ~10 KiB stdout limit, splitting further when lines are long.
 EOC
       fi
     fi
