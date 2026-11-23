@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.9.16
+
+- Add native Antigravity (`agy`) host support, one-line installer (`install-agy.sh`), bundle builder (`scripts/build-agy-plugin.py`), and `agy-package` workflow publishing a standalone plugin at `~/.gemini/config/plugins/review-council` (or `$REVIEW_COUNCIL_AGY_DEST`).
+- Support running `rev` and `stack` from Antigravity with the current Gemini model as orchestrator and headless `agy` Gemini `hydrogen` and `neon` seats via `scripts/seats.d/agy.sh`, bounded shell-command read audits (`review-read-audit.py`), stream summarization, and token usage accounting.
+- Add the `hydrogen -> luna -> sonnet -> sol -> neon -> opus` escalation and workhorse chain when hosted on Antigravity (`REVIEW_COUNCIL_HOST=agy`), defaulting Antigravity normal panels to four `hydrogen` seats with fallback to four Luna seats, while refusing `hydrogen`, `neon`, and `agy` probes or launches on all other hosts for Google Terms of Service compliance.
+- Restore the missing `test-costs.tsv` metadata row for `test_roster_classifies_claude_limit_phrases_as_quota` and expand schema-4 wired `source_context` manifests in the evidence test fixtures so the shell and Python suites pass cleanly.
+
 ## 0.9.15
 
 - Cap chain escalation by a Claude family's context window as well as a Codex family's, since a Claude seat that overflows compacts and the read audit now rejects the compacted stream; add the missing cost rows for two 0.9.14 tests, without which the test runner refuses the suite for missing metadata.

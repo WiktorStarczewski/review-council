@@ -41,7 +41,8 @@ from review_limits import (CLAUDE_MAX_TURNS, MANDATORY_REPOSITORY_READ_LIMIT,
 from session_inputs import session_input_lock, validate_standard_inputs
 from roster import (codex_catalog, codex_catalog_path, cursor_sdk_identity,
                     validate_cursor_sdk_qualification)
-from workhorse import (CHAIN as WORKHORSE_CHAIN, ORDER as WORKHORSE_ORDER, SEAT, escalation_row,
+from workhorse import (AGY_CHAIN as WORKHORSE_AGY_CHAIN, CHAIN as WORKHORSE_CHAIN,
+                       ORDER as WORKHORSE_ORDER, SEAT, escalation_row,
                        overlay_roster, plan_seat, roster_family, select_codex_family, share_row)
 import context_budget
 
@@ -231,15 +232,18 @@ def replacement_executor_row(manifest):
     family = row.get('family')
     model = row.get('model')
     effort = row.get('effort')
+    agy_host = os.environ.get('REVIEW_COUNCIL_HOST') == 'agy'
+    allowed_chain = WORKHORSE_AGY_CHAIN if agy_host else WORKHORSE_CHAIN
+    allowed_adapters = ('codex', 'claude', 'agy') if agy_host else ('codex', 'claude')
     if (row.get('seat') != seat
-            or family is not None and family not in WORKHORSE_CHAIN
+            or family is not None and family not in allowed_chain
             or not isinstance(row.get('adapter'), str)
             or (model is not None and (not isinstance(model, str) or not model))
             or (effort is not None and (not isinstance(effort, str) or not effort))
             or (family is not None and (model is None or effort is None))
             or row.get('extra') is not False or not isinstance(assignment, dict)
             or assignment.get('adapter') != row.get('adapter')
-            or row.get('adapter') not in ('codex', 'claude')
+            or row.get('adapter') not in allowed_adapters
             or roster_family(row) != family):
         raise ValueError('replacement executor does not match its assignment')
     return dict(row)
@@ -249,7 +253,10 @@ def replacement_executor_metadata(row):
     if not isinstance(row, dict):
         raise ValueError('replacement executor must be an enforced chain seat')
     family = roster_family(row)
-    if (row.get('adapter') not in ('codex', 'claude')
+    allowed_adapters = (('codex', 'claude', 'agy')
+                        if os.environ.get('REVIEW_COUNCIL_HOST') == 'agy'
+                        else ('codex', 'claude'))
+    if (row.get('adapter') not in allowed_adapters
             or row.get('extra') is not False):
         raise ValueError('replacement executor must be an enforced chain seat')
     value = {key: row.get(key) for key in ('seat', 'adapter', 'model', 'effort', 'extra')}
@@ -358,10 +365,32 @@ def replacement_root_manifest(session, manifest, fresh=False, seen=None, offline
     return current
 
 
-def validate_replacement_edge(parent_row, child_row, parent_is_repair=False):
+def session_chain(session):
+    """Normal replacement chain for this session, including hydrogen/neon only on agy."""
+    if os.environ.get('REVIEW_COUNCIL_HOST') != 'agy':
+        return WORKHORSE_CHAIN
+    try:
+        record = json.loads((Path(session) / 'workhorse.json').read_text(encoding='utf-8'))
+        if isinstance(record, dict) and record.get('host') == 'agy':
+            return WORKHORSE_AGY_CHAIN
+    except (OSError, UnicodeError, ValueError, TypeError):
+        pass
+    try:
+        panel = json.loads((Path(session) / 'panel-request.json').read_text(encoding='utf-8'))
+        chain = panel.get('chain') if isinstance(panel, dict) else None
+        if isinstance(chain, list) and tuple(chain) == WORKHORSE_AGY_CHAIN:
+            return WORKHORSE_AGY_CHAIN
+    except (OSError, UnicodeError, ValueError, TypeError):
+        pass
+    return WORKHORSE_CHAIN
+
+
+def validate_replacement_edge(parent_row, child_row, parent_is_repair=False, chain=None):
+    active_chain = WORKHORSE_CHAIN if chain is None else tuple(chain)
+    order = ('cursor-grok',) + active_chain if 'cursor-grok' not in active_chain else active_chain
     parent_family = roster_family(parent_row) if parent_row else None
     child_family = roster_family(child_row) if child_row else None
-    if child_family not in WORKHORSE_CHAIN:
+    if child_family not in active_chain:
         if parent_is_repair:
             raise ValueError('nested replacement executor must remain on the default model chain')
         raise ValueError('replacement executor must be on the default model chain')
@@ -369,8 +398,8 @@ def validate_replacement_edge(parent_row, child_row, parent_is_repair=False):
         if parent_is_repair:
             raise ValueError('nested replacement parent is not on the default model chain')
         return
-    if (parent_family not in WORKHORSE_ORDER or child_family not in WORKHORSE_CHAIN
-            or WORKHORSE_ORDER.index(child_family) <= WORKHORSE_ORDER.index(parent_family)):
+    if (parent_family not in order or child_family not in active_chain
+            or order.index(child_family) <= order.index(parent_family)):
         raise ValueError('replacement executor must advance the default model chain')
 
 
@@ -379,7 +408,7 @@ def validate_live_roster_adapters(roster):
             or any(not isinstance(row, dict) for row in roster['seats'])):
         raise ValueError('invalid roster shape')
     unsupported = sorted({str(row.get('adapter')) for row in roster['seats']
-                          if row.get('adapter') not in ('codex', 'gemini', 'claude', 'agent', 'cursor-sdk')})
+                          if row.get('adapter') not in ('codex', 'gemini', 'claude', 'agent', 'cursor-sdk', 'agy')})
     if unsupported:
         raise ValueError('unsupported or retired roster adapter: ' + ', '.join(unsupported))
 
@@ -4451,6 +4480,8 @@ def family_context_budget(family, roster):
     """The context one chain family may fill, from its roster row or else the Codex catalog."""
     if family in ('sonnet', 'opus'):
         return context_budget.seat_budget_tokens('claude', family)
+    if family in ('hydrogen', 'neon'):
+        return context_budget.seat_budget_tokens('agy', family)
     row = next((row for row in roster['seats'] if roster_family(row) == family), None)
     if row is not None:
         return context_budget.seat_budget_tokens(row.get('adapter'), row.get('model'))
@@ -7247,7 +7278,8 @@ def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
             raise ValueError('nested replacement requires immutable executor metadata')
         if child_executor is not None:
             validate_replacement_edge(
-                roster_seat, child_executor, parent_is_repair=parent['phase'] == 'repair')
+                roster_seat, child_executor, parent_is_repair=parent['phase'] == 'repair',
+                chain=session_chain(session))
         if (binding != expected_binding or len(assigned) != 1 or executor == seat
                 or unenforced_adapter(child_assignment['adapter'])
                 or not replacement_assignment_matches(binding, parent_assignment, child_assignment)
@@ -8295,7 +8327,9 @@ def _prepare_locked(args, session):
             raise ValueError('parent assignment has no recorded terminal failure')
         replacement_executor = replacement_executor_metadata(executor_row)
         validate_replacement_edge(
-            parent_executor, replacement_executor, parent_is_repair=parent_manifest['phase'] == 'repair')
+            parent_executor, replacement_executor,
+            parent_is_repair=parent_manifest['phase'] == 'repair',
+            chain=session_chain(session))
         existing = session / f'r{args.label}-evidence.manifest.json'
         if existing.exists():
             prior = read_json(existing)
@@ -8850,7 +8884,7 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
                               else manifest['plan']['common_artifacts'][0])
             primary = str(Path(manifest['session']) / first_evidence)
         read_limit = patch_line_limit(assignment['adapter'])
-        if assignment['adapter'] == 'codex':
+        if assignment['adapter'] in ('codex', 'agy'):
             if assignment['patch_bytes'] and patch_mode != 'chunks':
                 primary_action = ("run sed -n '1," + str(min(read_limit, assignment['patch_lines']))
                                   + "p' " + shlex.quote(primary))
@@ -8917,6 +8951,9 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
             first_action = ('run ' + shlex.join(['cat', '--', first])
                             + '. Continue in exact order, with up to two separate cat commands '
                             + 'in one completed explicit model turn. Each command reads one chunk.')
+        elif assignment['adapter'] == 'agy':
+            first_action = ('run ' + shlex.join(['cat', '--', first])
+                            + '. Continue in exact order, reading one chunk per call.')
         else:
             tool = read_tool_name(assignment['adapter'])
             first_action = ('use ' + tool + ' to read ' + str(batch_limit)
@@ -8930,7 +8967,7 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
               + assignment['patch'])
         if assignment['patch_lines'] == 0:
             print('Assigned patch is empty; no assigned-patch read is required.')
-        elif assignment['adapter'] == 'codex':
+        elif assignment['adapter'] in ('codex', 'agy'):
             end = min(patch_read_lines, assignment['patch_lines'])
             first_action = ("run sed -n '1," + str(end) + "p' "
                             + shlex.quote(assignment['patch'])
@@ -8958,7 +8995,7 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
             print('Source context packet batch limit: '
                   + str(manifest['source_context']['packet_batch_limit']))
             first_packet = str(Path(manifest['session']) / context['shards'][0]['artifact'])
-            if assignment['adapter'] == 'codex':
+            if assignment['adapter'] in ('codex', 'agy'):
                 packet_action = 'run ' + shlex.join(['cat', '--', first_packet])
             else:
                 tool = read_tool_name(assignment['adapter'])
@@ -8983,7 +9020,7 @@ def render_seat(manifest, mh, seat, plan_source, snapshot_entries=None):
             total = len(row['segments'])
             for segment in row['segments']:
                 path = str(Path(manifest['session']) / segment['artifact'])
-                if assignment['adapter'] == 'codex':
+                if assignment['adapter'] in ('codex', 'agy'):
                     action = 'run ' + shlex.join(['cat', '--', path])
                 else:
                     tool = read_tool_name(assignment['adapter'])

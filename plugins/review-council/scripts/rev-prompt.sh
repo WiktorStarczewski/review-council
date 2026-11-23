@@ -616,7 +616,7 @@ EOC
         printf 'Every source Read call must set an explicit one-based `offset` and a `limit` of at most %s lines. Every Grep or search call must set a result limit of at most 80. ' "$PROMPT_SOURCE_READ_LINES";;
       cursor-sdk)
         printf 'Every source council_read call must set an explicit one-based `offset` and a `limit` of at most %s lines. ' "$PROMPT_SOURCE_READ_LINES";;
-      codex) printf 'Every repository source window must be at most %s lines. ' "$PROMPT_SOURCE_READ_LINES";;
+      codex|agy) printf 'Every repository source window must be at most %s lines. ' "$PROMPT_SOURCE_READ_LINES";;
       *) printf 'Every source read_file call must select an explicit one-based start and at most %s lines. Every search call must set a result limit of at most 80. ' "$PROMPT_SOURCE_READ_LINES";;
     esac
     echo 'Only exact full-read artifacts and document inputs named in this prompt are exceptions.'
@@ -668,6 +668,10 @@ EOC
         cat <<'EOC'
 For Codex source reads, use one path and one contiguous range per call; use a separate call for every other path or range. Safe examples: `sed -n '40,75p' 'src/file.ts'` and `rg -n -F 'symbolName' 'src/path' | head -80`. Do not combine source files or ranges with `&&` or `;`.
 For shell searches, prefer simple fixed-string patterns such as `rg -n -F 'aria-checked' src | head -80`; avoid mixing single- and double-quoted fragments. If a pattern needs both quote types, search a stable literal such as the attribute name with `-F`. An unmatched quote invalidates the read audit, even if a later query succeeds.
+EOC
+      elif [ "$ADAPTER" = agy ]; then
+        cat <<'EOC'
+For Antigravity seats, use `run_command` (shell commands) for all artifact reads, source windows, and searches so every read's bytes appear in the transcript: e.g. `cat -- '<artifact>'`, `sed -n '40,75p' 'src/file.ts'`, and `rg -n -F 'symbolName' 'src/path' | head -80`. Do not combine source files or ranges with `&&` or `;`.
 EOC
       fi
     fi
@@ -733,7 +737,7 @@ EOC
         echo "Exact frozen assigned patch: $PATCH_ARTIFACT"
         echo "Assigned patch line count: $PATCH_LINE_COUNT"
         case "$ADAPTER" in
-          codex)
+          codex|agy)
             echo "$FIRST_EVIDENCE: run portable bounded sed windows over $PATCH_ARTIFACT from line 1 through line $PATCH_LINE_COUNT, then stop."
             ;;
           agent|claude|cursor-agent)

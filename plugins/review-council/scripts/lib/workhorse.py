@@ -25,22 +25,25 @@ if str(LIB) not in sys.path:
 
 import context_budget
 from review_limits import mandatory_repository_read_limit_for_seat
-from roster import (AUTH_FAILURE, CLAUDE_SESSION_ENV, QUOTA_FAILURE, claude_cli_reason,
-                    codex_catalog, codex_catalog_path, codex_suffix, reasoning_efforts)
+from roster import (AGY_MODEL_RE, AUTH_FAILURE, CLAUDE_SESSION_ENV, QUOTA_FAILURE, agy_catalog,
+                    claude_cli_reason, codex_catalog, codex_catalog_path, codex_suffix,
+                    reasoning_efforts)
 
-HOSTS = ('claude', 'codex', 'cursor', 'pi')
+HOSTS = ('claude', 'codex', 'cursor', 'pi', 'agy')
 CHAIN = ('luna', 'sonnet', 'sol', 'opus')
+AGY_CHAIN = ('hydrogen', 'luna', 'sonnet', 'sol', 'neon', 'opus')
 ORDER = ('cursor-grok',) + CHAIN
-FAMILIES = ORDER
+FAMILIES = ('cursor-grok',) + AGY_CHAIN
 SEAT = 'workhorse'
-LABS = {'cursor-grok': 'cursor', 'luna': 'openai', 'sol': 'openai',
-        'sonnet': 'anthropic', 'opus': 'anthropic'}
-ADAPTERS = {'cursor-grok': ('cursor-agent',), 'luna': ('codex',), 'sol': ('codex',),
+LABS = {'cursor-grok': 'cursor', 'hydrogen': 'google', 'luna': 'openai', 'sol': 'openai',
+        'neon': 'google', 'sonnet': 'anthropic', 'opus': 'anthropic'}
+ADAPTERS = {'cursor-grok': ('cursor-agent',), 'hydrogen': ('agy',), 'luna': ('codex',),
+            'sol': ('codex',), 'neon': ('agy',),
             'sonnet': ('claude', 'agent'), 'opus': ('claude', 'agent')}
 LUNA_EFFORTS = ('high', 'xhigh', 'max')
 SONNET_MODEL = 'sonnet'
 SONNET_EFFORT = 'high'
-ENFORCED_ADAPTERS = ('codex', 'claude')
+ENFORCED_ADAPTERS = ('codex', 'claude', 'agy')
 WRITER_GROK_MODEL = 'grok-4.7-xhigh'
 WRITER_GROK_EFFORT = 'xhigh'
 CURSOR_BLOCK = re.compile(
@@ -65,13 +68,19 @@ def host_name(value=None):
     return host
 
 
-def order_for(host):
-    """Every host tries Cursor Grok, then Luna, Sonnet, Sol, and Opus.
+def chain_for(host):
+    """Escalation and writer chain for this host (hydrogen-neon is Antigravity-only)."""
+    return AGY_CHAIN if host_name(host) == 'agy' else CHAIN
 
-    Review replacement still walks this order and skips Cursor Grok, because a
-    repair executor has to be an enforced seat.
+
+def order_for(host):
+    """Antigravity walks hydrogen-neon directly; other hosts try Cursor Grok then the normal chain.
+
+    Review replacement still skips Cursor Grok, because a repair executor has to be
+    an enforced seat.
     """
-    host_name(host)
+    if host_name(host) == 'agy':
+        return AGY_CHAIN
     return ORDER
 
 
@@ -83,6 +92,28 @@ def families_after(host, family):
     if key not in order:
         raise ValueError('unknown chain family: ' + str(family))
     return order[order.index(key) + 1:]
+
+
+def agy_catalog_list():
+    if os.environ.get('REVIEW_COUNCIL_HOST') != 'agy':
+        return []
+    listed, _error = agy_catalog()
+    return listed
+
+
+def select_agy_family(listed, family):
+    """Newest visible Antigravity Gemini model for hydrogen or neon at high, else xhigh, else max."""
+    if family not in ('hydrogen', 'neon'):
+        return None
+    matches = [(gen, effort, slug) for gen, fam, effort, slug in listed if fam == family]
+    if not matches:
+        return None
+    newest = max(gen for gen, _, _ in matches)
+    by_effort = {effort: slug for gen, effort, slug in matches if gen == newest}
+    effort = next((name for name in LUNA_EFFORTS if name in by_effort), None)
+    if effort is None:
+        return None
+    return by_effort[effort], effort
 
 
 def select_codex_family(listed, family):
@@ -153,21 +184,30 @@ def _record(host, family, available, **fields):
     return document
 
 
-def resolve_available(host, luna=None, sonnet=None, cursor_grok=None, sol=None, opus=None):
-    """Pick the first family on the writer chain that was supplied.
+def resolve_available(host, luna=None, sonnet=None, cursor_grok=None, sol=None, opus=None,
+                      hydrogen=None, neon=None):
+    """Pick the first family on this host's writer chain that was supplied.
 
-    Every host starts at Cursor Grok, then Luna, Sonnet, Sol, and Opus.
-    `luna`, `sol`, and `cursor_grok` are `(model, effort)` or None.
+    Antigravity walks hydrogen, Luna, Sonnet, Sol, neon, and Opus. Every other host
+    starts at Cursor Grok, then Luna, Sonnet, Sol, and Opus; hydrogen and neon are
+    forbidden off Antigravity (Google ToC compliance).
+    `hydrogen`, `luna`, `sol`, `neon`, and `cursor_grok` are `(model, effort)` or None.
     `sonnet` and `opus` are candidate dicts or None. A missing Cursor Grok
     candidate is the not-installed and not-signed-in case; credit exhaustion
     is a launch failure and advances past the current family.
     """
     host = host_name(host)
+    if host != 'agy' and (hydrogen is not None or neon is not None):
+        raise ValueError('hydrogen and neon workhorses require host agy')
     present = {}
+    if hydrogen is not None:
+        present['hydrogen'] = {'adapter': 'agy', 'model': hydrogen[0], 'effort': hydrogen[1]}
     if luna is not None:
         present['luna'] = {'adapter': 'codex', 'model': luna[0], 'effort': luna[1]}
     if sol is not None:
         present['sol'] = {'adapter': 'codex', 'model': sol[0], 'effort': sol[1]}
+    if neon is not None:
+        present['neon'] = {'adapter': 'agy', 'model': neon[0], 'effort': neon[1]}
     if sonnet is not None:
         present['sonnet'] = dict(sonnet)
     if opus is not None:
@@ -191,15 +231,16 @@ def validate_record(document):
     host = document.get('host')
     if host not in HOSTS or not isinstance(document.get('reason'), str) or not document['reason']:
         raise ValueError('invalid workhorse host')
+    order = order_for(host)
     available = document.get('available')
     if (not isinstance(available, list) or len(available) != len(set(available))
-            or any(name not in ORDER for name in available)):
+            or any(name not in order for name in available)):
         raise ValueError('invalid workhorse availability')
     if family is None:
         if available:
             raise ValueError('an unavailable workhorse listed a family')
         return document
-    if family not in ORDER or family not in available:
+    if family not in order or family not in available:
         raise ValueError('selected workhorse is not available')
     if (document.get('lab') != LABS[family] or document.get('seat') != SEAT
             or document.get('adapter') not in ADAPTERS[family]):
@@ -210,6 +251,10 @@ def validate_record(document):
         raise ValueError('invalid workhorse model')
     if family in ('luna', 'sol'):
         if codex_suffix(model) != family or effort not in LUNA_EFFORTS:
+            raise ValueError('invalid %s workhorse' % family)
+    elif family in ('hydrogen', 'neon'):
+        match = AGY_MODEL_RE.fullmatch(model)
+        if host != 'agy' or not match or match.group(2) != family or effort != match.group(3):
             raise ValueError('invalid %s workhorse' % family)
     elif family in ('sonnet', 'opus'):
         if model != family or effort != SONNET_EFFORT:
@@ -259,6 +304,10 @@ def roster_family(row):
         return codex_suffix(model)
     if adapter in ('claude', 'agent') and model in ('sonnet', 'opus'):
         return model
+    if adapter == 'agy' and isinstance(model, str):
+        match = AGY_MODEL_RE.fullmatch(model)
+        if match:
+            return match.group(2)
     return None
 
 
@@ -384,16 +433,22 @@ def read_escalation(path):
     if not isinstance(document, dict):
         raise ValueError('unreadable escalation record')
     family = document.get('family')
-    if (document.get('version') != 1 or family not in CHAIN
+    if (document.get('version') != 1 or family not in AGY_CHAIN
             or document.get('seat') != 'escalate-' + family
             or document.get('lab') != LABS[family]
             or document.get('adapter') not in ENFORCED_ADAPTERS
             or document.get('adapter') not in ADAPTERS[family]
+            or ((family in ('hydrogen', 'neon') or document.get('adapter') == 'agy')
+                and host_name() != 'agy')
             or document.get('extra') is not False):
         raise ValueError('invalid escalation record')
     model, effort = document.get('model'), document.get('effort')
     if family in ('luna', 'sol'):
         if not isinstance(model, str) or codex_suffix(model) != family or effort not in LUNA_EFFORTS:
+            raise ValueError('invalid escalation record')
+    elif family in ('hydrogen', 'neon'):
+        match = AGY_MODEL_RE.fullmatch(model) if isinstance(model, str) else None
+        if not match or match.group(2) != family or effort != match.group(3):
             raise ValueError('invalid escalation record')
     elif model != family or effort != SONNET_EFFORT:
         raise ValueError('invalid escalation record')
@@ -424,7 +479,7 @@ def _clear_escalation(session):
         path.unlink()
 
 
-def escalation_override(session, family):
+def escalation_override(session, family, host=None):
     """Return the per-review target family for a failed family, if configured."""
     path = Path(session) / 'state.json'
     if not path.is_file():
@@ -436,8 +491,9 @@ def escalation_override(session, family):
     overrides = state.get('escalation_overrides', {}) if isinstance(state, dict) else None
     if not isinstance(overrides, dict):
         raise ValueError('invalid escalation_overrides in review state')
-    if any(not isinstance(source, str) or source not in CHAIN
-           or not isinstance(target, str) or target not in CHAIN
+    allowed = chain_for(host_name() if host is None else host)
+    if any(not isinstance(source, str) or source not in allowed
+           or not isinstance(target, str) or target not in allowed
            for source, target in overrides.items()):
         raise ValueError('invalid escalation_overrides in review state')
     target = overrides.get(family)
@@ -476,9 +532,14 @@ def escalate(session, seat, panel=None):
     host = host_name()
     record_path = session / 'workhorse.json'
     if record_path.is_file():
-        host = read_record(record_path)['host']
+        record_host = read_record(record_path)['host']
+        if record_host != host:
+            if 'agy' in (record_host, host):
+                raise ValueError('workhorse host %s does not match active host %s'
+                                 % (record_host, host))
+            host = record_host
     _chosen, candidates = _candidates(host, include_cursor=False)
-    target_family = escalation_override(session, family)
+    target_family = escalation_override(session, family, host=host)
     load = failed_assignment_load(session, seat)
     skipped = []
 
@@ -520,6 +581,9 @@ def advance(session):
     if current is None or current.get('family') is None:
         raise ValueError('no workhorse to advance')
     host = current['host']
+    active_host = host_name()
+    if host != active_host and 'agy' in (host, active_host):
+        raise ValueError('workhorse host %s does not match active host %s' % (host, active_host))
     _chosen, candidates = _candidates(host)
     later = set(families_after(host, current['family']))
     picked = {}
@@ -529,7 +593,7 @@ def advance(session):
         spec = candidates.get(family)
         if not isinstance(spec, dict):
             continue
-        if family in ('luna', 'sol', 'cursor-grok'):
+        if family in ('luna', 'sol', 'cursor-grok', 'hydrogen', 'neon'):
             picked[family] = (spec['model'], spec['effort'])
         else:
             picked[family] = {'adapter': spec['adapter'], 'model': spec['model'],
@@ -537,7 +601,8 @@ def advance(session):
     record = resolve_available(
         host, luna=picked.get('luna'), sol=picked.get('sol'),
         cursor_grok=picked.get('cursor-grok'), sonnet=picked.get('sonnet'),
-        opus=picked.get('opus'))
+        opus=picked.get('opus'), hydrogen=picked.get('hydrogen'),
+        neon=picked.get('neon'))
     if record.get('family') is None:
         raise ValueError('normal chain is exhausted')
     return write_record(session / 'workhorse.json', record, refresh=True)
@@ -719,7 +784,9 @@ def launch_spec(record, task, root, session, prompt_path, cluster=None, out=None
         raise ValueError('unknown workhorse task')
     if task == 'implement' and CLUSTER_ID.match(cluster or '') is None:
         raise ValueError('implement requires a plan cluster id')
-    if task == 'review' and adapter in ('codex', 'claude'):
+    if adapter == 'agy' and record.get('host') != 'agy':
+        raise ValueError('agy workhorse requires host agy')
+    if task == 'review' and adapter in ('codex', 'claude', 'agy'):
         raise ValueError('review on %s launches through rev-seat.sh' % adapter)
     if adapter == 'agent':
         return {'kind': 'agent', 'agent': AGENTS[task], 'model': record['model'],
@@ -740,6 +807,15 @@ def launch_spec(record, task, root, session, prompt_path, cluster=None, out=None
                 '--setting-sources', '', '--strict-mcp-config', '--no-session-persistence',
                 '--exclude-dynamic-system-prompt-sections', '--disable-slash-commands',
                 '--output-format', 'text']
+    elif adapter == 'agy':
+        argv = ['agy', '--model', record['model'], '--output-format', 'text',
+                '--add-dir', session, '--disable-slash-commands']
+        if task == 'implement':
+            argv.append('--dangerously-skip-permissions')
+        else:
+            argv.append('--sandbox')
+        argv.append('--print=Read %s and follow it exactly.' % prompt_path)
+        stdin = None
     else:
         argv = ['agent', '--print', '--trust', '--workspace', root, '--add-dir', session,
                 '--model', record['model'], '--output-format', 'text']
@@ -821,23 +897,36 @@ def _candidates(host, include_cursor=True):
     """Writer resolution probes Cursor Grok. Review replacement does not.
 
     `include_cursor` stays false for `escalate` so a failed review seat never
-    gains a Cursor writer and never calls the Cursor agent CLI.
+    gains a Cursor writer and never calls the Cursor agent CLI. Antigravity
+    hosts also probe hydrogen/neon; non-Antigravity hosts never probe `agy`.
     """
     host = host_name(host)
     listed, _error = codex_catalog(codex_catalog_path())
     cli_reason = claude_cli_reason()
-    grok = select_cursor_grok(cursor_models_text()) if include_cursor else None
+    grok = (select_cursor_grok(cursor_models_text())
+            if include_cursor and host != 'agy' else None)
+    agy_listed = agy_catalog_list() if host == 'agy' else []
+    hydrogen = select_agy_family(agy_listed, 'hydrogen')
+    neon = select_agy_family(agy_listed, 'neon')
     return resolve_available(host, luna=select_luna(listed), sol=select_sol(listed),
                              sonnet=sonnet_candidate(host, cli_reason),
                              opus=opus_candidate(host, cli_reason),
-                             cursor_grok=grok), {
+                             cursor_grok=grok, hydrogen=hydrogen, neon=neon), {
         'cursor-grok': None if grok is None else {'adapter': 'cursor-agent', 'model': grok[0],
                                                    'effort': grok[1], 'lab': 'cursor'},
+        'hydrogen': _agy_spec(hydrogen),
         'luna': _codex_spec(select_luna(listed)),
         'sol': _codex_spec(select_sol(listed)),
+        'neon': _agy_spec(neon),
         'sonnet': _claude_spec(sonnet_candidate(host, cli_reason)),
         'opus': _claude_spec(opus_candidate(host, cli_reason)),
     }
+
+
+def _agy_spec(found):
+    if found is None:
+        return None
+    return {'adapter': 'agy', 'model': found[0], 'effort': found[1], 'lab': 'google'}
 
 
 def _codex_spec(found):
@@ -920,6 +1009,13 @@ def _run_exec(spec):
     argv = list(spec['argv'])
     out_path = Path(spec['out'])
     env = os.environ.copy()
+    if spec['adapter'] == 'agy':
+        if env.get('REVIEW_COUNCIL_HOST') != 'agy':
+            print('workhorse: agy workhorse requires REVIEW_COUNCIL_HOST=agy', file=sys.stderr)
+            return 1
+        if shutil.which('agy') is None:
+            print('workhorse: agy CLI is not installed', file=sys.stderr)
+            return 4
     if spec['adapter'] == 'cursor-agent':
         binary = _cursor_binary()
         if binary is None:

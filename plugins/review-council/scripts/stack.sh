@@ -19,7 +19,7 @@ set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 STACK_HOST=${REVIEW_COUNCIL_HOST:-claude}
 case "$STACK_HOST" in
-  claude|codex|cursor) ;;
+  claude|codex|cursor|agy) ;;
   *) echo "stack: unsupported host '$STACK_HOST'" >&2; exit 1;;
 esac
 readonly STACK_HOST
@@ -58,7 +58,7 @@ FAST_FAIL_SECS=${FAST_FAIL_SECS:-90}
 INFRA_SLEEP_SECS=${INFRA_SLEEP_SECS:-300}
 AUTH_WAIT_TRIES=${AUTH_WAIT_TRIES:-60}
 AUTH_WAIT_SECS=${AUTH_WAIT_SECS:-60}
-if [ "$STACK_HOST" = codex ] || [ "$STACK_HOST" = cursor ]; then
+if [ "$STACK_HOST" = codex ] || [ "$STACK_HOST" = cursor ] || [ "$STACK_HOST" = agy ]; then
   NO_PUSH=${NO_PUSH:-1}
 else
   NO_PUSH=${NO_PUSH:-0}
@@ -67,11 +67,12 @@ fi
 NO_SQUASH=${NO_SQUASH:-1}
 export NO_PUSH NO_SQUASH
 REV_SCRIPTS=${REV_SCRIPTS:-$HERE}   # roster.sh, rev-status.sh and rev-squash.sh live beside this script
-if [ "$STACK_HOST" = cursor ] && [ "$(cd "$REV_SCRIPTS" 2>/dev/null && pwd -P)" != "$(cd "$HERE" && pwd -P)" ]; then
-  echo "stack: Cursor host requires its packaged runtime at $HERE" >&2
+if { [ "$STACK_HOST" = cursor ] || [ "$STACK_HOST" = agy ]; } \
+    && [ "$(cd "$REV_SCRIPTS" 2>/dev/null && pwd -P)" != "$(cd "$HERE" && pwd -P)" ]; then
+  echo "stack: $STACK_HOST host requires its packaged runtime at $HERE" >&2
   exit 1
 fi
-[ "$STACK_HOST" != cursor ] || readonly REV_SCRIPTS
+[ "$STACK_HOST" != cursor ] && [ "$STACK_HOST" != agy ] || readonly REV_SCRIPTS
 SEAM_REPO=${SEAM_REPO:-}
 SEAM_PREMISE=${SEAM_PREMISE:-"Review the SEAMS between the PRs in this stack, not the code again: what each PR promises the others, what each assumes of the others, and every claim that a sibling PR invalidates."}
 CRITIC_REPO=${CRITIC_REPO:-}
@@ -304,6 +305,21 @@ The host model orchestrates. The resolved workhorse writes the fix plan. The hos
 ${extra}
 
 ${VACUITY}${resume}"
+    elif [ "$STACK_HOST" = agy ]; then
+      local skill="$(dirname "$HERE")/skills/rev/SKILL.md"
+      if [ ! -f "$skill" ] || ! grep -Fq 'REVIEW_COUNCIL_HOST=agy' "$skill"; then
+        say "!!! missing Antigravity rev skill: $skill"; note_failure "$label" "$repo"; return 1
+      fi
+      command -v agy >/dev/null 2>&1 || {
+        say "!!! Antigravity host executable unavailable"; note_failure "$label" "$repo"; return 1;
+      }
+      prompt="Read and follow the Antigravity review-council skill at $skill using REVIEW_COUNCIL_HOST=agy and the runtime at $HERE.
+Review branch $rounds rounds; use $S as the session dir. This is a stack leg: do not squash or push.
+The host model orchestrates. The resolved workhorse writes the fix plan. The host implements a local cluster (one file, at most 3 sites). The workhorse implements every other cluster.
+
+${extra}
+
+${VACUITY}${resume}"
     fi
     # A ready receipt certifies only the launch that created it. Archive any prior
     # pass or failed attempt before both host paths start, then require a new one.
@@ -337,6 +353,8 @@ ${VACUITY}${resume}"
           -c sandbox_workspace_write.network_access=true --add-dir "$ROOT" --json -
       elif [ "$STACK_HOST" = cursor ]; then
         "$cursor_cli" -p "$prompt" --force --output-format stream-json </dev/null
+      elif [ "$STACK_HOST" = agy ]; then
+        agy --output-format stream-json --dangerously-skip-permissions --add-dir "$ROOT" --print="$prompt" </dev/null
       else
         # The leg is its own headless session, not a turn of the Claude Code session that started the stack.
         SESSION_ENV=$(cd "$HERE/lib" && python3 -c \

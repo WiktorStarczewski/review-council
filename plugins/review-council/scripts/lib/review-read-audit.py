@@ -64,7 +64,11 @@ LEGACY_HOOK_DENIAL = re.compile(
 CLAUDE_EMPTY_READ = '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>'
 READ_TOOLS = {'read', 'read_file'}
 SEARCH_TOOLS = {'grep', 'search_file_content', 'search_files', 'code_search'}
-SHELL_TOOLS = {'bash', 'shell', 'run_shell_command', 'run_terminal_command', 'command_execution'}
+SHELL_TOOLS = {'bash', 'shell', 'run_shell_command', 'run_terminal_command', 'command_execution', 'run_command'}
+AGY_COMMAND_OUTPUT = re.compile(
+    r'^(?:Created At: [^\n]*\n)?(?:Completed At: [^\n]*\n)?'
+    r'Command exited with code (-?[0-9]+)\.\n\n'
+    r'(?:Command output:\n([\s\S]*)|No output from the command\.?)\Z')
 DISCOVERY_TOOLS = {'glob', 'list_directory'}
 RECOGNIZED_TOOLS = READ_TOOLS | SEARCH_TOOLS | SHELL_TOOLS | DISCOVERY_TOOLS
 TERMINAL_TOOLS = {'structuredoutput'}
@@ -1171,6 +1175,15 @@ def compaction_violation(adapter, event):
     return found
 
 
+def agy_step_call_id(step_update):
+    index = step_update.get('step_index')
+    if type(index) is int:
+        return 'agy-step-' + str(index)
+    if isinstance(index, str) and index:
+        return index
+    return None
+
+
 def extract_calls(adapter, event):
     calls = []
     adapter = 'claude' if adapter == 'agent' else adapter
@@ -1195,6 +1208,18 @@ def extract_calls(adapter, event):
             and event.get('status') == 'running':
         if cursor_reader_call(event):
             calls.append((event.get('call_id'), 'read_file', event['args']['args']))
+    elif adapter == 'agy' and event.get('event') == 'step_update':
+        su = event.get('step_update')
+        if isinstance(su, dict) and su.get('step_type') == 'tool':
+            ti = su.get('tool_info')
+            if isinstance(ti, dict):
+                name = ti.get('name') or su.get('tool_name') or ''
+                params = ti.get('parameters')
+                data = dict(params) if isinstance(params, dict) else {}
+                if name == 'run_command' and 'command' not in data \
+                        and isinstance(data.get('CommandLine'), str):
+                    data['command'] = data['CommandLine']
+                calls.append((agy_step_call_id(su), name, data))
     return calls
 
 
@@ -1594,6 +1619,22 @@ def extract_outputs(adapter, event):
             found.append((block.get('tool_use_id'), block.get('is_error') is not True,
                           block.get('content'), non_execution))
         return found
+    elif adapter == 'agy' and event.get('event') == 'step_update':
+        su = event.get('step_update')
+        if isinstance(su, dict) and su.get('step_type') == 'tool' and su.get('state') == 'DONE':
+            ti = su.get('tool_info')
+            if isinstance(ti, dict) and 'output' in ti:
+                name = ti.get('name') or su.get('tool_name') or ''
+                raw = ti['output']
+                if name == 'run_command' and isinstance(raw, str):
+                    text = raw.replace('\r\n', '\n')
+                    match = AGY_COMMAND_OUTPUT.fullmatch(text)
+                    if match is not None:
+                        code = int(match.group(1))
+                        body = match.group(2) if match.group(2) is not None else ''
+                        return [(agy_step_call_id(su), code == 0, body, None)]
+                    return [(agy_step_call_id(su), False, text, None)]
+                return [(agy_step_call_id(su), isinstance(raw, str), raw, None)]
     return []
 
 
@@ -2533,7 +2574,8 @@ def delivered_matches_bytes(adapter, name, output, expected, start):
         candidates.extend(normalized)
         if adapter == 'grok' or not expected.endswith(b'\n\n'):
             candidates.extend(candidate + '\n' for candidate in list(candidates))
-    return any(candidate.encode() == expected for candidate in candidates)
+    expected_variants = (expected, expected.replace(b'\r\n', b'\n')) if adapter == 'agy' else (expected,)
+    return any(candidate.encode() in expected_variants for candidate in candidates)
 
 
 def delivered_matches_source_ranges(adapter, name, output, ranges, root, cache=None):
@@ -2909,7 +2951,7 @@ def plan_specialist_first_call_contract(manifest, seat, session):
         return None
     assignment = manifest['assignments'][seat]
     primary, mode, window_end = plan_specialist_primary(manifest, seat, Path(session))
-    if assignment['adapter'] == 'codex':
+    if assignment['adapter'] in ('codex', 'agy'):
         if mode == 'window':
             action = "run sed -n '1," + str(window_end) + "p' " + shlex.quote(str(primary))
         else:
@@ -2948,7 +2990,7 @@ def exact_single_shell_read(data, primary, mode, window_end, root):
 
 def exact_native_first_read(adapter, name, data, primary, mode, window_end, root):
     normalized = name.lower()
-    if adapter == 'codex':
+    if adapter in ('codex', 'agy'):
         return normalized in SHELL_TOOLS \
             and exact_single_shell_read(data, primary, mode, window_end, root)
     expected_tool = 'read' if adapter in ('claude', 'agent', 'cursor-agent') else 'read_file'
@@ -3643,7 +3685,7 @@ def assess(args, blocked, progress=None):
                         turn = 'codex-implicit-' + str(implicit_turn)
                     elif explicit_turn:
                         turn = str(explicit_turn)
-                    elif args.adapter in ('codex', 'grok', 'gemini', 'cursor-sdk'):
+                    elif args.adapter in ('codex', 'grok', 'gemini', 'cursor-sdk', 'agy'):
                         if implicit_output_seen:
                             implicit_turn += 1
                             implicit_output_seen = False
@@ -4693,7 +4735,7 @@ def main():
     prompts.add_argument('--prompt', required=True, action='append')
     audits = commands.add_parser('audit')
     audits.add_argument('--adapter', required=True,
-                        choices=('codex', 'grok', 'gemini', 'claude', 'agent', 'cursor-sdk'))
+                        choices=('codex', 'grok', 'gemini', 'claude', 'agent', 'cursor-sdk', 'agy'))
     audits.add_argument('--result')
     audits.add_argument('--raw', required=True)
     audits.add_argument('--prompt', required=True)

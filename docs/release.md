@@ -25,7 +25,7 @@ python3 scripts/verify-review-council.py --root .
 ```
 
 The pull request workflows run the gate and package validation. Require both operating
-system results and the Cursor and Pi package jobs to pass on the current PR head. Any failure
+system results and the Cursor, Pi and Antigravity package jobs to pass on the current PR head. Any failure
 stops the release until the candidate is fixed and the required gates pass.
 
 ## Merge and publish
@@ -65,8 +65,8 @@ gh release view review-council--v0.9.0
 gh release list --limit 3
 ```
 
-Reinstall `review-council@review-council` for Claude and Codex, and run
-`install-cursor.sh` for Cursor. In fresh sessions on each host, require `rev` and
+Reinstall `review-council@review-council` for Claude and Codex, run
+`install-cursor.sh` for Cursor, and run `install-agy.sh` for Antigravity. In fresh sessions on each host, require `rev` and
 `stack` at version `0.9.0`, and compare installed file and mode identity with the
 released tag. For Pi, install the pinned Git package and require `/rev` plus the
 `review-council-rev` skill at the same version (no stack). Run `/rev --setup` and

@@ -1411,7 +1411,7 @@ sibling|invalid;violations=missing-required-source-range@codex,missing-required-
 paced|valid;violations=-;advisories=-
 paced-altered|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,required-source-output-mismatch@command_execution;advisories=-
 paced-oversized|invalid;violations=missing-required-source-range@codex,missing-required-source-segment@codex,tool-output-too-large@command_execution,tool-turn-output-too-large@codex;advisories=-
-paced-repeat|invalid;violations=evidence-read-order@audit,missing-required-source-range@codex,missing-required-source-segment@codex,tool-turn-output-too-large@codex;advisories=-
+paced-repeat|invalid;violations=duplicate-required-source-segment@command_execution,evidence-read-order@audit,missing-required-source-range@codex,missing-required-source-segment@codex,tool-turn-output-too-large@codex;advisories=-
 CASES
 
     write_required_transcript live-window

@@ -54,9 +54,13 @@ MODE=$(printf '%s\n' "$SEATDEF" | sed -n 4p)
 case "$ADAPTER" in
   agent) echo "rev-seat: seat '$SEAT' is the Agent tool seat - the skill launches it, rev-seat.sh cannot" >&2; exit 1;;
   cursor-agent) echo "rev-seat: seat '$SEAT' is the Cursor workhorse - the skill launches it, rev-seat.sh cannot" >&2; exit 1;;
-  codex|gemini|claude|cursor-sdk) ;;
+  codex|gemini|claude|cursor-sdk|agy) ;;
   *) echo "rev-seat: unsupported or retired adapter '$ADAPTER' (seat '$SEAT')" >&2; exit 1;;
 esac
+if [ "$ADAPTER" = agy ] && [ "${REVIEW_COUNCIL_HOST:-}" != agy ]; then
+  echo "rev-seat: agy adapter requires REVIEW_COUNCIL_HOST=agy (seat '$SEAT')" >&2
+  exit 1
+fi
 ADAPTER_SH="$HERE/seats.d/$ADAPTER.sh"
 [ -x "$ADAPTER_SH" ] || { echo "rev-seat: no adapter script for '$ADAPTER' (seat '$SEAT')" >&2; exit 1; }
 
@@ -67,7 +71,7 @@ case "$ADAPTER" in
   *)     ENV_EFFORT="";;
 esac
 REQUESTED_EFFORT=${EFFORT:-$ENV_EFFORT}
-if [ "$ADAPTER" = codex ] || [ "$ADAPTER" = claude ] || [ "$ADAPTER" = cursor-sdk ]; then
+if [ "$ADAPTER" = codex ] || [ "$ADAPTER" = claude ] || [ "$ADAPTER" = cursor-sdk ] || [ "$ADAPTER" = agy ]; then
   [ -n "$ROSTER_EFFORT" ] || { echo "rev-seat: seat '$SEAT' has no receipted effort" >&2; exit 1; }
 fi
 if [ -n "$REQUESTED_EFFORT" ] && [ "$REQUESTED_EFFORT" != "$ROSTER_EFFORT" ]; then
@@ -270,7 +274,7 @@ while :; do
   [ "$attempt" -ne 1 ] || : > "$LOG"
   "$ADAPTER_SH"; rc=$?
   case "$ADAPTER" in
-    codex|gemini|claude)
+    codex|gemini|claude|agy)
       if [ "$rc" -eq 0 ] && ! has_tool_call; then
         echo "$ADAPTER answered without a single tool call (attempt $attempt) - not a review" >> "$LOG"
         rm -f "$OUT"

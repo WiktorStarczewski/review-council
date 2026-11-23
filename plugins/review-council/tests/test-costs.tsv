@@ -204,6 +204,7 @@ t-roster-adapter.sh::test_roster_adapter_agent_matches_legacy_golden	3	normal
 t-roster-adapter.sh::test_roster_adapter_padding_follows_probe	1	normal
 t-roster-adapter.sh::test_roster_adapter_resolution	2	normal
 t-roster-adapter.sh::test_roster_plan_seats_setting	1	normal
+t-roster.sh::test_roster_classifies_claude_limit_phrases_as_quota	1	normal
 t-roster.sh::test_roster_config	1	normal
 t-roster.sh::test_roster_effort_steps_down	1	normal
 t-roster.sh::test_roster_exact_active_pins_and_static_probe_gate	1	normal

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Summarise a codex `--json`, grok `--output-format streaming-json` or gemini `-o stream-json` event stream.
+"""Summarise a codex `--json`, grok `--output-format streaming-json`, gemini `-o stream-json`, or agy `--output-format stream-json` event stream.
 
-Usage: stream-summary.py <codex|claude|cursor-sdk|grok|gemini> <out.json>
+Usage: stream-summary.py <codex|claude|cursor-sdk|grok|gemini|agy> <out.json>
   stdin:  NDJSON events, one per line, as the CLI emits them
   stdout: one short line per event that matters (unbuffered, so a status tick can read it live)
   grok:   the final {"type":"end"} record's structuredOutput is written to <out.json>
   gemini: the outermost {…} in the last assistant message (fences stripped) is written to <out.json>
+  agy:    the final {"event":"result"} structured_output (or outermost {…} response) is written to <out.json>
 Unknown or malformed lines are echoed clipped, never dropped silently.
 """
 import json
@@ -19,6 +20,7 @@ text_buf = []
 last_message = ''
 sdk_terminal = None
 sdk_invalid = False
+agy_seen_tools = set()
 if kind == 'cursor-sdk':
     Path(out).unlink(missing_ok=True)
 
@@ -132,6 +134,61 @@ for raw in sys.stdin:
         elif t == 'error':
             sdk_invalid = True
             emit('error: sdk_run_failed')
+    elif kind == 'agy':
+        ev = e.get('event', '')
+        if ev == 'init':
+            init = e.get('init')
+            init = init if isinstance(init, dict) else {}
+            emit(f"init model={init.get('model') or '-'}")
+        elif ev == 'step_update':
+            su = e.get('step_update')
+            su = su if isinstance(su, dict) else {}
+            st_type = su.get('step_type')
+            state = su.get('state')
+            if st_type == 'tool' and state in ('ACTIVE', 'DONE'):
+                idx = su.get('step_index')
+                if idx is None or idx not in agy_seen_tools:
+                    if idx is not None:
+                        agy_seen_tools.add(idx)
+                    info = su.get('tool_info')
+                    info = info if isinstance(info, dict) else {}
+                    name = info.get('name') or su.get('tool_name') or ''
+                    p = info.get('parameters') or {}
+                    detail = ''
+                    if isinstance(p, dict):
+                        for k in ('CommandLine', 'command', 'Path', 'path', 'file_path', 'Query', 'pattern'):
+                            if p.get(k):
+                                detail = p[k]
+                                break
+                        else:
+                            detail = json.dumps(p)
+                    emit(f"tool_call {name}: {clip(detail)}")
+            elif st_type == 'agent_response':
+                delta = su.get('text_delta')
+                if delta:
+                    text_buf.append(str(delta))
+                if state == 'DONE':
+                    if text_buf:
+                        last_message = ''.join(text_buf)
+                    flush_text()
+        elif ev == 'result':
+            flush_text()
+            res = e.get('result')
+            res = res if isinstance(res, dict) else {}
+            status = res.get('status')
+            if status != 'SUCCESS':
+                emit(f"error: {clip(res.get('error') or status)}")
+            else:
+                obj = res.get('structured_output')
+                if not isinstance(obj, dict) and isinstance(res.get('response'), str):
+                    obj = outermost_object(res['response'])
+                if isinstance(obj, dict):
+                    with open(out, 'w') as f:
+                        json.dump(obj, f)
+            emit(f"end status={status} turns={res.get('num_turns')}")
+        elif ev == 'error' or t == 'error':
+            flush_text()
+            emit(f"error: {clip(e.get('message', e))}")
     elif kind == 'gemini':
         # Shape per the gemini CLI's documented `-o stream-json` NDJSON - assumed, not observed: there is
         # no gemini on the box this was written on. tests/fixtures/gemini-stream.ndjson is the reference:

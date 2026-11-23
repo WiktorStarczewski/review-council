@@ -64,13 +64,19 @@ _RESOLVED = {}   # one build()'s Anthropic adapter, and the claude CLI check `au
 CODEX_HOST = os.environ.get('REVIEW_COUNCIL_HOST') == 'codex'
 CURSOR_HOST = os.environ.get('REVIEW_COUNCIL_HOST') == 'cursor'
 PI_HOST = os.environ.get('REVIEW_COUNCIL_HOST') == 'pi'
-LABS = {'codex': 'openai', 'gemini': 'google', 'agent': 'anthropic', 'claude': 'anthropic',
-        'cursor-sdk': 'xai'}
+AGY_HOST = os.environ.get('REVIEW_COUNCIL_HOST') == 'agy'
+LABS = {'codex': 'openai', 'gemini': 'google', 'agy': 'google',
+        'agent': 'anthropic', 'claude': 'anthropic', 'cursor-sdk': 'xai'}
 # the name an adapter answers to in the --brief line, in `excluded[].cli` and in config `exclude`
-NAMES = {'codex': 'codex', 'gemini': 'gemini', 'agent': 'claude', 'claude': 'claude',
-         'cursor-sdk': 'cursor-sdk'}
+NAMES = {'codex': 'codex', 'gemini': 'gemini', 'agy': 'agy',
+         'agent': 'claude', 'claude': 'claude', 'cursor-sdk': 'cursor-sdk'}
 # detection order; build() seats the Anthropic slot on anthropic_adapter()
 ORDER = ('codex', 'gemini', 'claude')
+AGY_EFFORT = 'xhigh'
+AGY_EFFORTS = ('max', 'xhigh', 'high', 'medium', 'low')
+AGY_MODELS_MAX = 4
+AGY_MODEL_RE = re.compile(r'^gemini-(\d+(?:\.\d+)?)-(hydrogen|neon)-(low|medium|high|xhigh|max)$')
+AGY_CATALOG_TIMEOUT = int(os.environ.get('REVIEW_COUNCIL_AGY_CATALOG_TIMEOUT', str(LOGIN_TIMEOUT)))
 # (adapter, seat, mode, round) - an extra pass is seated whenever its lab has a seat
 EXTRAS = (('codex', 'codex-review', 'review', 3),)
 # Parent Claude Code session identity. A nested `claude -p` that inherits it acts as part of that
@@ -96,6 +102,10 @@ PROBE_CMD = {
                          'Reply with exactly OK'],
     'gemini': lambda m, _e: ['gemini', '-p', 'Reply with exactly OK', '-m', m, '--approval-mode', 'plan',
                          '-o', 'json'],
+    'agy': lambda m, _e: ['agy', '--model', m, '--output-format', 'stream-json',
+                          '--disable-slash-commands', '--sandbox',
+                          '--print-timeout', str(PROBE_TIMEOUT) + 's',
+                          '--print=Reply with exactly OK'],
 }
 
 
@@ -945,6 +955,152 @@ def detect_codex(cfg):
             for name, (slug, effort) in zip(codex_seat_names(models), models)], None
 
 
+def parse_agy_models(text):
+    """Parse `agy models` lines into [(gen_tuple, family, effort, slug), ...]."""
+    listed = []
+    for line in (text or '').splitlines():
+        parts = line.strip().split()
+        if not parts:
+            continue
+        slug = parts[0]
+        match = AGY_MODEL_RE.fullmatch(slug)
+        if not match:
+            continue
+        gen = tuple(int(part) for part in match.group(1).split('.'))
+        listed.append((gen, match.group(2), match.group(3), slug))
+    return listed
+
+
+def agy_catalog():
+    if shutil.which('agy') is None:
+        return [], 'not installed'
+    rc, out, err = run(['agy', 'models'], AGY_CATALOG_TIMEOUT)
+    if rc is None:
+        return [], 'agy models timed out'
+    if rc != 0:
+        detail = first_line(err) or first_line(out) or 'exit %s' % rc
+        return [], 'agy models failed: %s' % detail
+    listed = parse_agy_models(out)
+    if not listed:
+        return [], 'no usable hydrogen/neon model in agy models'
+    return listed, None
+
+
+def agy_effort_setting(cfg):
+    if 'agy_effort' not in cfg:
+        return None, None
+    if not AGY_HOST:
+        return None, 'agy_effort requires REVIEW_COUNCIL_HOST=agy'
+    effort = cfg.get('agy_effort')
+    if effort not in AGY_EFFORTS:
+        return None, 'invalid agy_effort: expected low, medium, high, xhigh or max'
+    return effort, None
+
+
+def agy_models_setting(cfg):
+    if 'agy_models' not in cfg:
+        return None, None
+    raw = cfg.get('agy_models')
+    valid = (isinstance(raw, list) and 1 <= len(raw) <= AGY_MODELS_MAX
+             and all(isinstance(slug, str) and slug.strip() == slug and slug for slug in raw))
+    if not valid:
+        return None, 'invalid agy_models: expected 1 to %d non-empty model selector strings' % AGY_MODELS_MAX
+    return raw, None
+
+
+def select_agy_model(listed, family, requested_effort=None):
+    matches = [(gen, effort, slug) for gen, fam, effort, slug in listed if fam == family]
+    if not matches:
+        return None
+    newest = max(gen for gen, _, _ in matches)
+    by_effort = {effort: slug for gen, effort, slug in matches if gen == newest}
+    if requested_effort is not None:
+        slug = by_effort.get(requested_effort)
+        return (slug, requested_effort) if slug else None
+    effort = next((item for item in EFFORTS if item in by_effort), None)
+    return (by_effort[effort], effort) if effort else None
+
+
+def resolve_agy_config(cfg, catalog=None):
+    effective = dict(cfg)
+    if not AGY_HOST:
+        return effective, 'agy_models requires REVIEW_COUNCIL_HOST=agy', 'config'
+    allowed, error = agy_models_setting(cfg)
+    if error:
+        return effective, error, 'config'
+    effort, effort_error = agy_effort_setting(cfg)
+    if effort_error:
+        return effective, effort_error, 'config'
+    listed, catalog_error = catalog if catalog is not None else agy_catalog()
+    if catalog_error:
+        return effective, catalog_error, 'availability'
+    target_effort = effort or AGY_EFFORT
+    by_slug = {slug: (family, eff) for _, family, eff, slug in listed}
+    resolved = []
+    by_selector = {}
+    for selector in allowed:
+        if selector in by_selector:
+            resolved.append(by_selector[selector])
+            continue
+        if selector in ('latest-hydrogen', 'latest-neon'):
+            family = selector.removeprefix('latest-')
+            picked = select_agy_model(listed, family, target_effort)
+            if picked is None:
+                return effective, 'no visible Antigravity model for %s at %s' % (selector, target_effort), 'availability'
+            slug = picked[0]
+        elif AGY_MODEL_RE.fullmatch(selector):
+            if selector not in by_slug:
+                return effective, 'unknown Antigravity model slug: %s' % selector, 'config'
+            if effort is not None and by_slug[selector][1] != effort:
+                return effective, 'configured Antigravity model %s does not match agy_effort %s' % (selector, effort), 'config'
+            slug = selector
+        else:
+            return effective, 'invalid agy_models entry: %s' % selector, 'config'
+        by_selector[selector] = slug
+        resolved.append(slug)
+    effective['agy_models'] = resolved
+    return effective, None, None
+
+
+def agy_seat_names(models):
+    counts = {}
+    names = []
+    for slug in models:
+        match = AGY_MODEL_RE.fullmatch(slug)
+        family = match.group(2) if match else 'hydrogen'
+        base = 'gemini-' + family
+        counts[base] = counts.get(base, 0) + 1
+        names.append(base if counts[base] == 1 else '%s-%d' % (base, counts[base]))
+    return names
+
+
+def detect_agy(cfg):
+    if not AGY_HOST:
+        return [], 'agy seats require REVIEW_COUNCIL_HOST=agy'
+    effort, effort_error = agy_effort_setting(cfg)
+    if effort_error:
+        return [], effort_error
+    allowed, config_error = agy_models_setting(cfg)
+    if config_error:
+        return [], config_error
+    if allowed is not None:
+        seats = []
+        for seat_name, slug in zip(agy_seat_names(allowed), allowed):
+            match = AGY_MODEL_RE.fullmatch(slug)
+            seat_effort = match.group(3) if match else (effort or AGY_EFFORT)
+            seats.append(make_seat(seat_name, 'agy', slug, seat_effort))
+        return seats, None
+    listed, catalog_error = _RESOLVED.get('agy_catalog') or agy_catalog()
+    if catalog_error:
+        return [], catalog_error
+    picked = select_agy_model(listed, 'hydrogen', effort)
+    if picked is None:
+        if effort is not None:
+            return [], 'no usable hydrogen model at %s in agy models' % effort
+        return [], 'no usable hydrogen model in agy models'
+    return [make_seat('gemini-hydrogen', 'agy', picked[0], picked[1])], None
+
+
 def detect_gemini(cfg):
     if shutil.which('gemini') is None:
         return [], 'not installed'
@@ -1100,7 +1256,7 @@ def anthropic_adapter(cfg):
     """The adapter this build seats Anthropic reviewers on: `claude` (the CLI) or `agent` (the host's
     Agent tool). A Codex host has no Agent tool. `auto` prefers a signed-in CLI, whose evidence the
     host can audit, and checks it once per build."""
-    if CODEX_HOST or CURSOR_HOST or PI_HOST:
+    if CODEX_HOST or CURSOR_HOST or PI_HOST or AGY_HOST:
         return 'claude'
     if 'adapter' not in _RESOLVED:
         setting, _ = claude_adapter_setting(cfg)
@@ -1111,7 +1267,11 @@ def anthropic_adapter(cfg):
 
 
 def provider_order(cfg):
-    order = ORDER + (('cursor-sdk',) if cfg.get('cursor_sdk_models') else ())
+    order = ORDER
+    if AGY_HOST and (cfg.get('agy_models') or 'panel_mode' not in cfg):
+        order = ('agy',) + order
+    if cfg.get('cursor_sdk_models'):
+        order = order + ('cursor-sdk',)
     return tuple(anthropic_adapter(cfg) if LABS[adapter] == 'anthropic' else adapter
                  for adapter in order)
 
@@ -1123,7 +1283,7 @@ def plan_seats_setting(cfg):
     return value, None
 
 
-DETECT = {'codex': detect_codex, 'gemini': detect_gemini,
+DETECT = {'codex': detect_codex, 'gemini': detect_gemini, 'agy': detect_agy,
           'agent': detect_agent, 'claude': detect_claude, 'cursor-sdk': detect_cursor_sdk}
 
 
@@ -1171,6 +1331,34 @@ def apply_pins(cfg, seats):
             s['model'] = pin['model']
         if isinstance(pin.get('effort'), str) and pin['effort']:
             s['effort'] = pin['effort']
+
+
+def enforce_agy_models(cfg, seats, excluded):
+    allowed, config_error = agy_models_setting(cfg)
+    if allowed is None or config_error:
+        return seats
+    kept, left = [], {slug: allowed.count(slug) for slug in allowed}
+    for seat in seats:
+        if seat['adapter'] != 'agy':
+            kept.append(seat)
+            continue
+        if seat['model'] not in allowed:
+            excluded.append({'cli': seat['seat'],
+                             'reason': 'pinned model %s is outside agy_models' % seat['model']})
+            continue
+        if 'agy_effort' in cfg and seat.get('effort') != cfg['agy_effort']:
+            excluded.append({'cli': seat['seat'],
+                             'reason': 'pinned effort %s does not match required agy_effort %s'
+                                       % (seat.get('effort'), cfg['agy_effort'])})
+            continue
+        if not seat['extra'] and left[seat['model']] == 0:
+            excluded.append({'cli': seat['seat'],
+                             'reason': 'pinned model %s duplicates another Antigravity seat' % seat['model']})
+            continue
+        if not seat['extra']:
+            left[seat['model']] -= 1
+        kept.append(seat)
+    return kept
 
 
 def enforce_codex_models(cfg, seats, excluded):
@@ -1257,7 +1445,7 @@ QUOTA_FAILURE = re.compile(
 
 def provider_stream_errors(adapter, output):
     errors = []
-    if adapter not in ('codex', 'gemini', 'claude'):
+    if adapter not in ('codex', 'gemini', 'claude', 'agy'):
         return errors
     for line in (output or '').splitlines():
         try:
@@ -1265,6 +1453,12 @@ def provider_stream_errors(adapter, output):
         except ValueError:
             continue
         if not isinstance(event, dict):
+            continue
+        if adapter == 'agy':
+            result_obj = event.get('result') if event.get('event') == 'result' else None
+            if (event.get('event') == 'error' or event.get('type') == 'error'
+                    or (isinstance(result_obj, dict) and result_obj.get('status') not in (None, 'SUCCESS'))):
+                errors.append(json.dumps(event, ensure_ascii=False))
             continue
         if event.get('type') == 'error' or event.get('is_error') is True \
                 or event.get('subtype') == 'error':
@@ -1420,6 +1614,21 @@ def configured_lab_capacity(cfg):
     return len(labs)
 
 
+def agy_pin_conflict(cfg, allowed):
+    pins = cfg.get('pin') if isinstance(cfg.get('pin'), dict) else {}
+    left = {slug: allowed.count(slug) for slug in allowed}
+    for seat, slug in zip(agy_seat_names(allowed), allowed):
+        pin = pins.get(seat)
+        model = pin.get('model') if isinstance(pin, dict) else None
+        model = model if isinstance(model, str) and model else slug
+        if model not in allowed:
+            return seat, 'pinned model %s is outside agy_models' % model
+        if left[model] == 0:
+            return seat, 'pinned model %s duplicates another Antigravity seat' % model
+        left[model] -= 1
+    return None
+
+
 def codex_pin_conflict(cfg, allowed):
     """Return a static exact-model pin conflict, even when Codex itself is unavailable."""
     pins = cfg.get('pin') if isinstance(cfg.get('pin'), dict) else {}
@@ -1540,6 +1749,64 @@ def enforce_exact_seats(cfg, seats, excluded):
             cause = 'config' if dropped & ({'cursor-sdk', 'xai'} | configured_names) else 'availability'
             strict_class, strict_reason = strict_winner(
                 strict_class, strict_reason, cause, 'cursor-sdk exact configured seats unavailable')
+    if 'agy_models' in cfg and not AGY_HOST:
+        reason = 'agy_models requires REVIEW_COUNCIL_HOST=agy'
+        append_exclusion(excluded, 'agy_models', 'strict: %s' % reason)
+        strict_class, strict_reason = strict_winner(
+            strict_class, strict_reason, 'config', reason)
+    _, agy_effort_error = agy_effort_setting(cfg)
+    if agy_effort_error:
+        append_exclusion(excluded, 'agy_effort', 'strict: %s' % agy_effort_error)
+        strict_class, strict_reason = strict_winner(
+            strict_class, strict_reason, 'config', agy_effort_error)
+    allowed_agy, agy_error = agy_models_setting(cfg)
+    if agy_error:
+        append_exclusion(excluded, 'agy_models', 'strict: %s' % agy_error)
+        strict_class, strict_reason = strict_winner(
+            strict_class, strict_reason, 'config', agy_error)
+    elif allowed_agy is not None and AGY_HOST:
+        pin_conflict = agy_pin_conflict(cfg, allowed_agy)
+        if pin_conflict:
+            append_exclusion(excluded, pin_conflict[0], pin_conflict[1])
+        required_names = set(agy_seat_names(allowed_agy))
+        matched = {s.get('substitutes_for') for s in seats
+                   if not s['extra'] and s.get('substitutes_for') in required_names}
+        matched.update(s['seat'] for s in seats
+                       if s['adapter'] == 'agy' and not s['extra']
+                       and not s.get('padded') and s['seat'] in required_names
+                       and s['model'] in allowed_agy)
+        expected = {'agy', 'google'} | required_names
+        config_reason = None
+        if pin_conflict:
+            config_reason = '%s: %s' % pin_conflict
+        elif expected & excluded_names(cfg):
+            config_reason = '%s: excluded by config' % sorted(expected & excluded_names(cfg))[0]
+        else:
+            for entry in excluded:
+                cli, reason = entry.get('cli'), str(entry.get('reason', ''))
+                if reason.startswith('pinned model ') or ('agy_effort' in cfg and
+                                                         reason.startswith('pinned effort ')):
+                    config_reason = '%s: %s' % (cli, reason)
+                    break
+                if reason.startswith(('unknown Antigravity model ', 'configured Antigravity model')):
+                    config_reason = reason
+                    break
+                if reason == 'excluded by config' and cli in expected:
+                    config_reason = '%s: %s' % (cli, reason)
+                    break
+        if len(matched) != len(allowed_agy):
+            summary = 'agy_models requires %d matching seat(s), %d survived' \
+                      % (len(allowed_agy), len(matched))
+            append_exclusion(excluded, 'agy_models', 'strict: ' + summary)
+            cause = 'config' if config_reason else 'availability'
+            strict_class, strict_reason = strict_winner(
+                strict_class, strict_reason, cause, config_reason or summary)
+        elif config_reason:
+            append_exclusion(excluded, 'agy_models',
+                             'strict: agy_models conflicts with pin configuration')
+            strict_class, strict_reason = strict_winner(
+                strict_class, strict_reason, 'config', config_reason)
+
     allowed, config_error = codex_models_setting(cfg)
     if config_error:
         append_exclusion(excluded, 'codex_models', 'strict: %s' % config_error)
@@ -1757,6 +2024,10 @@ def _seat_family(seat):
         return None
     adapter = seat.get('adapter')
     model = seat.get('model')
+    if adapter == 'agy' and isinstance(model, str):
+        match = AGY_MODEL_RE.fullmatch(model)
+        if match:
+            return match.group(2)
     if adapter == 'codex' and isinstance(model, str):
         suffix = codex_suffix(model)
         if suffix in ('sol', 'luna'):
@@ -1850,7 +2121,7 @@ def pad(seats, excluded, cfg, probe_results):
     missing = PANEL - len([s for s in seats if not s['extra']])
     if missing <= 0:
         return 0
-    if CODEX_HOST or CURSOR_HOST or PI_HOST:
+    if CODEX_HOST or CURSOR_HOST or PI_HOST or AGY_HOST:
         # These hosts have no implicit Anthropic agent. Reuse a surviving transport,
         # after exclusions and probes; independent runs are not independent labs.
         bases = [s for s in seats if not s['extra']]
@@ -1916,7 +2187,7 @@ def degradation(seats, padded):
         return labs, True, 'quota fallback: %s; reduced provider diversity' % detail
     if padded <= 0 and len(labs) > 1:
         return labs, False, None
-    if CODEX_HOST or PI_HOST:
+    if CODEX_HOST or PI_HOST or AGY_HOST:
         if not labs:
             return labs, True, 'no usable reviewer CLI - sign in to a supported provider'
         detail = ('%d repeat CLI seats; ' % padded) if padded else ''
@@ -1935,6 +2206,10 @@ def degradation(seats, padded):
 def build(do_probe, quota_failed_seats=(), *, review_mode='code'):
     _RESOLVED.clear()
     cfg, cfg_error = load_config()
+    return _build_from_config(cfg, cfg_error, do_probe, quota_failed_seats, review_mode=review_mode)
+
+
+def _build_from_config(cfg, cfg_error, do_probe, quota_failed_seats=(), *, review_mode='code'):
     resolution_class = 'config'
     if not cfg_error and review_mode == 'documents' and cfg.get('cursor_sdk_models'):
         _, error, cause = resolve_cursor_sdk_config(cfg, [])
@@ -1945,6 +2220,19 @@ def build(do_probe, quota_failed_seats=(), *, review_mode='code'):
                 and cfg.get('panel_fallback') == 'luna' and cfg.get('panel_family') == 'grok'):
             import panel_request
             cfg = panel_request.luna_config(cfg, fallback=True)
+            cfg_error = None
+            resolution_class = 'config'
+    if not cfg_error and 'agy_effort' in cfg and 'agy_models' not in cfg:
+        _, cfg_error = agy_effort_setting(cfg)
+        if cfg_error:
+            resolution_class = 'config'
+    if not cfg_error and 'agy_models' in cfg:
+        _RESOLVED['agy_catalog'] = agy_catalog() if AGY_HOST else ([], None)
+        cfg, cfg_error, resolution_class = resolve_agy_config(cfg, _RESOLVED['agy_catalog'])
+        if (cfg_error and resolution_class == 'availability'
+                and cfg.get('panel_fallback') == 'luna' and cfg.get('panel_family') == 'hydrogen'):
+            import panel_request
+            cfg = panel_request.luna_config(cfg, fallback=True, fallback_from='agy')
             cfg_error = None
             resolution_class = 'config'
     if not cfg_error and codex_config_needs_resolution(cfg):
@@ -1967,6 +2255,8 @@ def build(do_probe, quota_failed_seats=(), *, review_mode='code'):
     excluded = []
     if cfg.get('panel_grok_fallback'):
         excluded.append({'cli': 'grok', 'reason': 'cursor-sdk unavailable; normal panel fell back to luna'})
+    if cfg.get('panel_agy_fallback'):
+        excluded.append({'cli': 'agy', 'reason': 'agy unavailable; normal panel fell back to luna'})
     dropped = excluded_names(cfg)
     seats, adapter_of = [], {}
 
@@ -2003,6 +2293,7 @@ def build(do_probe, quota_failed_seats=(), *, review_mode='code'):
 
     apply_pins(cfg, kept)
     kept = enforce_codex_models(cfg, kept, excluded)
+    kept = enforce_agy_models(cfg, kept, excluded)
     kept = enforce_claude_models(cfg, kept, excluded)
     preferred_labs = {s['seat']: s['lab'] for s in kept if not s['extra']}
 
@@ -2064,6 +2355,12 @@ def build(do_probe, quota_failed_seats=(), *, review_mode='code'):
                 policy_failures.append('%s failed outside the quota fallback policy' % s['seat'])
             excluded.append({'cli': s['seat'], 'reason': reason})
         kept = survivors
+        if (cfg.get('panel_fallback') == 'luna' and cfg.get('panel_family') == 'hydrogen'
+                and not any(s['adapter'] == 'agy' for s in kept)):
+            import panel_request
+            fallback_cfg = panel_request.luna_config(cfg, fallback=True, fallback_from='agy')
+            return _build_from_config(fallback_cfg, None, do_probe, quota_failed_seats,
+                                      review_mode=review_mode)
     else:
         policy_failures = []
     # an extra rides on its lab: no surviving base seat → no extra
@@ -2089,7 +2386,7 @@ def build(do_probe, quota_failed_seats=(), *, review_mode='code'):
     # those steps actually removed rather than a count taken before they ran.
     pad(kept, excluded, cfg, probe_results)
     # A silent fallback would hide partial, unenforced evidence and plan coverage.
-    if (not (CODEX_HOST or CURSOR_HOST or PI_HOST) and _RESOLVED.get('cli') and claude_adapter_setting(cfg)[0] == 'auto'
+    if (not (CODEX_HOST or CURSOR_HOST or PI_HOST or AGY_HOST) and _RESOLVED.get('cli') and claude_adapter_setting(cfg)[0] == 'auto'
             and any(s['adapter'] == 'agent' for s in kept)):
         excluded.append({'cli': 'claude_adapter',
                          'reason': 'auto -> agent (claude CLI %s): evidence and plan panels have partial, unenforced coverage'
@@ -2110,7 +2407,7 @@ def build(do_probe, quota_failed_seats=(), *, review_mode='code'):
     quota_labs.discard(None)
     quota_floor_met = (not floor_error and fallback_enabled and quota_labs
                        and len(set(real) | quota_labs) >= floor)
-    labs_strict = (not floor_error and (floor > 1 or CODEX_HOST or CURSOR_HOST or PI_HOST)
+    labs_strict = (not floor_error and (floor > 1 or CODEX_HOST or CURSOR_HOST or PI_HOST or AGY_HOST)
                    and len(real) < floor and not quota_floor_met)
     if labs_strict:
         append_exclusion(excluded, 'min_labs',
@@ -2144,9 +2441,13 @@ def brief_line(roster, adapter_of):
     for e in roster['excluded']:
         by_cli.setdefault(e['cli'], e['reason'])
     parts = []
-    order = ORDER + (('cursor-sdk',) if any(
-        row.get('adapter') == 'cursor-sdk' for row in roster['seats'])
-        or any('cursor-sdk' in row.get('reason', '') for row in roster['excluded']) else ())
+    order = ORDER
+    if any(row.get('adapter') == 'agy' for row in roster['seats']) \
+            or any(row.get('cli') == 'agy' for row in roster['excluded']):
+        order = ('agy',) + order
+    if any(row.get('adapter') == 'cursor-sdk' for row in roster['seats']) \
+            or any('cursor-sdk' in row.get('reason', '') for row in roster['excluded']):
+        order = order + ('cursor-sdk',)
     for adapter in order:
         name = NAMES[adapter]
         # padded seats are not something this lab was detected offering - they belong to the DEGRADED clause

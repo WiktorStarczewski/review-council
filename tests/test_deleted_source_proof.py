@@ -40,6 +40,7 @@ class SourceFixture:
     def __init__(self, directory, mode, oversized_lines=180, oversized_line_bytes=None,
                  compact_segment_lines=None, compact_segment_line_bytes=16,
                  adapter='codex', source_context='1'):
+        directory = Path(directory).resolve()
         self.root = directory / 'repo'
         self.session = directory / 'session'
         self.root.mkdir(parents=True)
@@ -114,7 +115,8 @@ class SourceFixture:
         self.run('prepare', str(self.session), self.label, '--phase', self.phase,
                  '--full-seat', 'sol', *extra)
         self.manifest_path = self.session / f'r{self.label}-evidence.manifest.json'
-        self.manifest = json.loads(self.manifest_path.read_text())
+        self.manifest = load_evidence().expand_manifest(
+            json.loads(self.manifest_path.read_text()))
         self.seat = self.manifest['mechanical_owner']
         self.context = self.manifest['source_context']['seats'][self.seat]
         self.prompt = self.session / f'r{self.label}-{self.seat}.prompt.md'
