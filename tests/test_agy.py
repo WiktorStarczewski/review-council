@@ -721,11 +721,12 @@ class AgyHostTests(unittest.TestCase):
         return ev, repo, session, manifest_path, manifest, env
 
     def test_agy_evidence_artifacts_capped_at_8kib_and_mixed_panel_isolated(self):
-        # 1) Pure agy seat with >16 KiB patch, >10 KiB source context, and >10 KiB required range.
-        agy_seats = [{
-            'seat': 'agy-1', 'lab': 'google', 'adapter': 'agy',
-            'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False,
-        }]
+        # 1) Pure agy panel with >16 KiB patch, >10 KiB source context, and >10 KiB required range.
+        agy_seats = [
+            {'seat': f'agy-{i}', 'lab': 'google', 'adapter': 'agy',
+             'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False}
+            for i in range(1, 4)
+        ]
         ev, repo, session, manifest_path, manifest, _ = self._prepare_evidence_fixture(
             'agy-only', agy_seats, patch_bytes_target=20000, patch_chunks_mode='auto',
         )
@@ -759,6 +760,8 @@ class AgyHostTests(unittest.TestCase):
              'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False},
             {'seat': 'codex-luna', 'lab': 'openai', 'adapter': 'codex',
              'model': 'gpt-5.6-luna', 'effort': 'xhigh', 'extra': False},
+            {'seat': 'agy-2', 'lab': 'google', 'adapter': 'agy',
+             'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False},
         ]
         ev_mix, _repo_m, sess_m, mpath_m, man_mix, _ = self._prepare_evidence_fixture(
             'mixed', mixed_seats, patch_bytes_target=20000, patch_chunks_mode='auto',
@@ -794,6 +797,8 @@ class AgyHostTests(unittest.TestCase):
              'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False},
             {'seat': 'codex-luna', 'lab': 'openai', 'adapter': 'codex',
              'model': 'gpt-5.6-luna', 'effort': 'xhigh', 'extra': False},
+            {'seat': 'agy-2', 'lab': 'google', 'adapter': 'agy',
+             'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False},
         ]
         ev, _repo, _session, mpath, manifest, _ = self._prepare_evidence_fixture(
             'auto-mode', seats, patch_chunks_mode='auto', short_lines=True,
@@ -803,10 +808,11 @@ class AgyHostTests(unittest.TestCase):
         self.assertEqual(manifest['assignments']['codex-luna']['patch_read_mode'], 'windows')
 
     def test_agy_read_audit_valid_under_10kib_run_command_truncation(self):
-        agy_seats = [{
-            'seat': 'agy-1', 'lab': 'google', 'adapter': 'agy',
-            'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False,
-        }]
+        agy_seats = [
+            {'seat': f'agy-{i}', 'lab': 'google', 'adapter': 'agy',
+             'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False}
+            for i in range(1, 4)
+        ]
         _ev, repo, session, manifest_path, manifest, env = self._prepare_evidence_fixture(
             'e2e-trunc', agy_seats, patch_bytes_target=20000, patch_chunks_mode='auto',
         )
@@ -835,10 +841,11 @@ class AgyHostTests(unittest.TestCase):
             target = (manifest.get('task_capacity', {}).get('seats', {})
                       .get('agy-1', {}).get('repository_source_target'))
             if target is not None:
-                read_cmds.append(
-                    f"sed -n '{target['line_start']},{target['line_end']}p' "
-                    f"{shlex.quote(target['path'])}"
-                )
+                start = target['line_start']
+                while start <= target['line_end']:
+                    end = min(target['line_end'], start + 29)
+                    read_cmds.append(f"sed -n '{start},{end}p' {shlex.quote(target['path'])}")
+                    start = end + 1
             else:
                 read_cmds.append("sed -n '1,20p' 'src/lib.py'")
 
