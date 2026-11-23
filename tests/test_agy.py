@@ -654,10 +654,11 @@ class AgyHostTests(unittest.TestCase):
         # callers whose windows exceed 8 KiB so source-context shards pack up to the 8 KiB cap.
         decls = []
         if short_lines:
-            # ~12 KiB in <240 lines (<80 bytes per line) so 240-line window exceeds 8 KiB
-            # while remaining below the default 30 KiB non-agy window ceiling.
-            for i in range(160):
-                decls.append(f'def fn{i:03d}():\n    return "val_{i:03d}_{"x" * 40}"\n')
+            # 80 modified lines -> ~167 diff lines (1 window <= 240 lines) and ~12 KiB bytes
+            # (~13.6 KiB visible): >8 KiB triggers chunks for agy, <=30 KiB stays windows for codex.
+            decls.append('def fn00():\n' + ''.join(
+                f'    v{i:02d} = "val_{i:02d}_{"x" * 58}"\n' for i in range(80)
+            ) + '    return v00\n')
         else:
             fn0_lines = ['def fn00():'] + [
                 f'    _u{i:02d} = "{"u" * 190}"' for i in range(52)
@@ -778,8 +779,11 @@ class AgyHostTests(unittest.TestCase):
 
         # Validation must reject a mixed-adapter patch set or oversized agy shard.
         bad_mix = json.loads(mpath_m.read_text(encoding='utf-8'))
-        bad_mix['assignments']['agy-1']['patch_set'] = codex_set_id
-        bad_mix['assignments']['agy-1']['patch_read_mode'] = man_mix['patch_sets'][codex_set_id]['read_mode']
+        for agy_seat in ('agy-1', 'agy-2'):
+            bad_mix['assignments'][agy_seat]['patch_set'] = codex_set_id
+            bad_mix['assignments'][agy_seat]['patch_read_mode'] = (
+                man_mix['patch_sets'][codex_set_id]['read_mode']
+            )
         with self.assertRaisesRegex(ValueError, 'incompatible adapter limits'):
             ev_mix.validate_patch_sets(sess_m, bad_mix, set())
 
