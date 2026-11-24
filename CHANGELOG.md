@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.10.1
+
+- **Antigravity (`agy`) evidence navigation index cap & bounded multi-window audit (#136):** Cap `r*-evidence.md` at 8 KiB when an `agy` seat is assigned so `cat --` stays under `run_command`'s ~10 KiB stdout cap, normalize macOS PTY `\r+\n` line endings in `AGY_COMMAND_OUTPUT` and `delivered_matches_bytes`, and accept complete `r*-evidence.md` coverage assembled from bounded `sed -n` slices before crediting post-index source reads.
+- **Antigravity (`agy`) prompt source-window sizing (#140):** Prompt `agy` seats to keep source windows to at most 100 lines (`AGY_SOURCE_READ_LINES = 100`) so dense source files stay under `run_command`'s ~10 KiB stdout truncation limit while keeping the 240-line audit ceiling unchanged.
+- **Codex cmux wrapper opt-out (#138):** Export `CMUX_CODEX_HOOKS_DISABLED=1` and `CMUX_COMPUTER_USE_MCP_DISABLED=1` for headless Codex review seats and availability probes so `cmux` does not register ephemeral review seats or attach the computer-use MCP helper.
+
 ## 0.10.0
 
 - Take the recommended action on design decisions inside the reviewed change instead of leaving them to the PR author, for every reviewed PR. When the loop would hand such a decision to the author (a constant or limit the diff introduces, the scope or boundary of its own behavior, a contract it documents, or a trade-off between two ways to make that code correct), the orchestrator uses the recommendation the findings or panel carry, or forms one from the stated goal, existing behavior and sibling code, and runs it through the normal path: plan, red-before test when behavior changes, one unsquashed commit per cluster, verification panel. The ledger records it as `TAKEN (decision; why)`.

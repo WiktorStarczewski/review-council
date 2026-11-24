@@ -1,14 +1,17 @@
 """Antigravity (agy) host, bundle, installer, escalation chain, and stream-audit tests."""
 
+import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
@@ -831,28 +834,134 @@ class AgyHostTests(unittest.TestCase):
         self.assertIn('below ~8 KiB', prompt_path.read_text(encoding='utf-8'))
 
         # Simulate agy run_command truncating any formatted output over 10,240 bytes.
-        ctx = manifest['source_context']['seats']['agy-1']
-        patch_chunks = manifest['patch_sets'][manifest['assignments']['agy-1']['patch_set']]['chunks']
-        evidence_md = session / 'r1-evidence.md'
-        read_cmds = (
-            [f'cat -- {shlex.quote(str(session / c["artifact"]))}' for c in patch_chunks]
-            + [f'cat -- {shlex.quote(str(session / s["artifact"]))}' for s in ctx['shards']]
-            + [f'cat -- {shlex.quote(str(session / seg["artifact"]))}'
-               for row in ctx['required_source_ranges'] for seg in row['segments']]
-            + [f'cat -- {shlex.quote(str(evidence_md))}']
+        pre_cmds, idx_cmds, post_cmds = self._build_seat_read_commands(session, manifest, 'agy-1')
+        run = self._run_fake_agy_seat(
+            'e2e', repo, session, prompt_path, 'agy-1',
+            pre_cmds + idx_cmds + post_cmds, simulate_truncation=True,
         )
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        audit = json.loads((session / 'r1-agy-1.read-audit.json').read_text(encoding='utf-8'))
+        self.assertEqual(audit['status'], 'valid', audit)
+
+    def _prepare_nav_overflow_fixture(self, name, seats, *, caller_count=14, include_crlf=False):
+        repo = self.root / (name + '-repo')
+        session = self.root / (name + '-session')
+        session.mkdir(parents=True, exist_ok=True)
+        self._init_git_repo(repo)
+        (repo / 'src').mkdir()
+        (repo / 'tests').mkdir()
+
+        fn0_lines = ['def fn00():'] + [
+            f'    _u{i:02d} = "{"u" * 190}"' for i in range(52)
+        ] + ['    return "old"']
+        decls = ['\n'.join(fn0_lines) + '\n']
+        for i in range(1, 12):
+            decls.append(
+                f'def fn{i:02d}_{"n" * 40}():\n    return "{"a" * 300}"\n'
+            )
+        (repo / 'src/lib.py').write_text('\n'.join(decls), encoding='utf-8')
+        for i in range(caller_count):
+            (repo / f'src/caller_{i:02d}_{"c" * 32}.py').write_text(
+                f'from src.lib import fn00\n'
+                f'def caller_{i:02d}():\n    _pad = "{"c" * 1900}"\n    return fn00()\n',
+                encoding='utf-8',
+            )
+        for i in range(12):
+            (repo / f'tests/test_nav_{i:02d}_{"t" * 32}.py').write_text(
+                f'from src.lib import fn00\n'
+                f'def test_nav_{i:02d}():\n    assert fn00() is not None\n',
+                encoding='utf-8',
+            )
+        scripts = {f'test:gate:{i:02d}': f'echo {"g" * 420}' for i in range(12)}
+        (repo / 'package.json').write_text(json.dumps({'scripts': scripts}, indent=2) + '\n',
+                                           encoding='utf-8')
+        if include_crlf:
+            (repo / 'src/crlf_ref.py').write_bytes(
+                b'def crlf_helper():\r\n    return "crlf-ok"\r\n'
+            )
+
+        subprocess.run(['git', '-C', str(repo), 'add', '.'], check=True)
+        subprocess.run(['git', '-C', str(repo), 'commit', '-qm', 'base'], check=True)
+        base = subprocess.run(
+            ['git', '-C', str(repo), 'rev-parse', 'HEAD'],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+        updated_decls = [decls[0].replace('    return "old"', '    return "new"')]
+        for i in range(1, 12):
+            updated_decls.append(
+                f'def fn{i:02d}_{"n" * 40}():\n    return "{"z" * 300}"\n'
+            )
+        (repo / 'src/lib.py').write_text('\n'.join(updated_decls), encoding='utf-8')
+        if include_crlf:
+            (repo / 'src/crlf_ref.py').write_bytes(
+                b'def crlf_helper():\r\n    return "crlf-updated"\r\n'
+            )
+
+        (session / 'scope.env').write_text(
+            f'REV_BASE={shlex.quote(base)}\n'
+            f'REV_ROOT={shlex.quote(str(repo))}\n'
+            'REV_SCOPE=branch\n',
+            encoding='utf-8',
+        )
+        changed_files = 'src/lib.py\nsrc/crlf_ref.py\n' if include_crlf else 'src/lib.py\n'
+        (session / 'files.txt').write_text(changed_files, encoding='utf-8')
+        (session / 'untracked.txt').write_text('', encoding='utf-8')
+        (session / 'roster.json').write_text(json.dumps({'seats': seats}), encoding='utf-8')
+
+        env = dict(self.clean_env, REV_PATCH_CHUNKS='auto', REV_SOURCE_CONTEXT='1')
+        prep = subprocess.run(
+            [sys.executable, str(SCRIPTS / 'rev-evidence.py'), 'prepare',
+             str(session), '1', '--phase', 'discovery', '--full-seat', seats[0]['seat']],
+            env=env, capture_output=True, text=True, check=False, timeout=60,
+        )
+        self.assertEqual(prep.returncode, 0, prep.stdout + prep.stderr)
+        ev = load('rev_evidence_nav_cap', SCRIPTS / 'rev-evidence.py')
+        manifest_path = session / 'r1-evidence.manifest.json'
+        manifest = ev.expand_manifest(json.loads(manifest_path.read_text(encoding='utf-8')))
+        return ev, repo, session, manifest_path, manifest, env
+
+    def _build_seat_read_commands(self, session, manifest, seat, *, index_cmds=None):
+        ctx = manifest['source_context']['seats'][seat]
+        patch_set = manifest['patch_sets'][manifest['assignments'][seat]['patch_set']]
+        if patch_set['read_mode'] == 'chunks':
+            patch_cmds = [
+                f'cat -- {shlex.quote(str(session / c["artifact"]))}'
+                for c in patch_set['chunks']
+            ]
+        else:
+            lines = manifest['assignments'][seat]['patch_lines']
+            patch_path = manifest['assignments'][seat]['patch']
+            patch_cmds = []
+            start = 1
+            while start <= lines:
+                end = min(lines, start + 239)
+                patch_cmds.append(f"sed -n '{start},{end}p' {shlex.quote(patch_path)}")
+                start = end + 1
+        packet_cmds = [f'cat -- {shlex.quote(str(session / s["artifact"]))}' for s in ctx['shards']]
+        seg_cmds = [
+            f'cat -- {shlex.quote(str(session / seg["artifact"]))}'
+            for row in ctx['required_source_ranges'] for seg in row['segments']
+        ]
+        evidence_md = session / 'r1-evidence.md'
+        if index_cmds is None:
+            index_cmds = [f'cat -- {shlex.quote(str(evidence_md))}']
+        target_cmds = []
         if ctx['source_read_required']:
             target = (manifest.get('task_capacity', {}).get('seats', {})
-                      .get('agy-1', {}).get('repository_source_target'))
+                      .get(seat, {}).get('repository_source_target'))
             if target is not None:
                 start = target['line_start']
                 while start <= target['line_end']:
                     end = min(target['line_end'], start + 29)
-                    read_cmds.append(f"sed -n '{start},{end}p' {shlex.quote(target['path'])}")
+                    target_cmds.append(f"sed -n '{start},{end}p' {shlex.quote(target['path'])}")
                     start = end + 1
             else:
-                read_cmds.append("sed -n '1,20p' 'src/lib.py'")
+                target_cmds.append("sed -n '1,20p' 'src/lib.py'")
+        return patch_cmds + packet_cmds + seg_cmds, index_cmds, target_cmds
 
+    def _build_fake_agy_events(self, repo, read_cmds, *, simulate_truncation=False,
+                               output_transform=None):
         events = [{'event': 'init', 'init': {'model': 'gemini-4-hydrogen-xhigh'}}]
         for idx, cmd in enumerate(read_cmds, 1):
             events.append({'event': 'step_update', 'step_update': {
@@ -861,16 +970,23 @@ class AgyHostTests(unittest.TestCase):
                 'tool_info': {'name': 'run_command', 'parameters': {'CommandLine': cmd}},
             }})
             raw_out = subprocess.run(
-                cmd, shell=True, cwd=repo, capture_output=True, text=True, check=True,
-            ).stdout.replace('\n', '\r\n')
-            formatted = (
+                cmd, shell=True, cwd=repo, capture_output=True, check=True,
+            ).stdout.decode('utf-8', errors='replace')
+            formatted = re.sub(
+                r'(?<!\r)\n',
+                '\r\n',
                 'Created At: 2026-11-23T00:00:00Z\n'
                 'Completed At: 2026-11-23T00:00:01Z\n'
                 'Command exited with code 0.\n\n'
-                f'Command output:\n{raw_out}'
+                f'Command output:\n{raw_out}',
             )
-            if len(formatted.encode('utf-8')) > 10240:
-                formatted = "The tool's output was truncated due to being too long.\n" + formatted[:500]
+            if output_transform is not None:
+                formatted = output_transform(idx, cmd, formatted)
+            if simulate_truncation and len(formatted.encode('utf-8')) > 10240:
+                formatted = (
+                    "The tool's output was truncated due to being too long.\n"
+                    + formatted[:500]
+                )
             events.append({'event': 'step_update', 'step_update': {
                 'step_type': 'tool', 'step_index': idx, 'state': 'DONE',
                 'tool_name': 'run_command',
@@ -886,27 +1002,445 @@ class AgyHostTests(unittest.TestCase):
             'num_turns': len(read_cmds),
             'usage': {'input_tokens': 1000, 'output_tokens': 50, 'total_tokens': 1050},
         }})
+        return events
 
-        bindir = self.root / 'e2e-agy-bin'
-        bindir.mkdir()
-        ev_file = self.root / 'e2e-events.jsonl'
+    def _run_fake_agy_seat(self, name, repo, session, prompt_path, seat, read_cmds,
+                           *, simulate_truncation=False, output_transform=None):
+        events = self._build_fake_agy_events(
+            repo, read_cmds, simulate_truncation=simulate_truncation,
+            output_transform=output_transform,
+        )
+        bindir = self.root / f'{name}-bin'
+        bindir.mkdir(exist_ok=True)
+        ev_file = self.root / f'{name}-events.jsonl'
         ev_file.write_text('\n'.join(json.dumps(e) for e in events) + '\n', encoding='utf-8')
         fake_agy = bindir / 'agy'
         fake_agy.write_text(f'#!/bin/bash\ncat >/dev/null\ncat "{ev_file}"\n', encoding='utf-8')
         fake_agy.chmod(0o755)
-
         seat_env = dict(
             self.clean_env,
             PATH=str(bindir) + os.pathsep + os.environ.get('PATH', ''),
             REVIEW_COUNCIL_HOST='agy',
         )
-        run = subprocess.run(
-            [str(SCRIPTS / 'rev-seat.sh'), 'agy-1', str(session), '1', str(prompt_path)],
+        return subprocess.run(
+            [str(SCRIPTS / 'rev-seat.sh'), seat, str(session), '1', str(prompt_path)],
             cwd=repo, env=seat_env, capture_output=True, text=True, check=False, timeout=60,
+        )
+
+    def _audit_fake_agy_stream(self, rra, tag, repo, session, prompt_path, seat, result_file,
+                               read_cmds, *, simulate_truncation=False, output_transform=None):
+        events = self._build_fake_agy_events(
+            repo, read_cmds, simulate_truncation=simulate_truncation,
+            output_transform=output_transform,
+        )
+        stream = self.root / f'{tag}.ndjson'
+        stream.write_text('\n'.join(json.dumps(e) for e in events) + '\n', encoding='utf-8')
+        doc, _ = rra.assessed(types.SimpleNamespace(
+            adapter='agy', raw=str(stream), prompt=str(prompt_path),
+            root=str(repo), session=str(session), deps=None, seat=seat,
+            result=str(result_file), out=str(self.root / f'{tag}-audit.json'),
+        ))
+        return doc, {r['code'] for r in doc['violations'] + doc['advisories']}
+
+    def test_agy_navigation_index_capped_at_8kib_and_non_agy_keeps_16kib(self):
+        codex_seats = [
+            {'seat': f'codex-{i}', 'lab': 'openai', 'adapter': 'codex',
+             'model': 'gpt-5.6-luna', 'effort': 'xhigh', 'extra': False}
+            for i in range(1, 4)
+        ]
+        ev_c, _repo_c, sess_c, mpath_c, _man_c, _env_c = self._prepare_nav_overflow_fixture(
+            'nav-codex', codex_seats,
+        )
+        ev_c.validated_manifest(mpath_c, fresh=True)
+        codex_index = (sess_c / 'r1-evidence.md').read_bytes()
+        self.assertGreater(len(codex_index), 10240)
+        self.assertLessEqual(len(codex_index), 16384)
+
+        agy_seats = [
+            {'seat': f'agy-{i}', 'lab': 'google', 'adapter': 'agy',
+             'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False}
+            for i in range(1, 4)
+        ]
+        ev_a, repo_a, sess_a, mpath_a, man_a, env_a = self._prepare_nav_overflow_fixture(
+            'nav-agy', agy_seats,
+        )
+        ev_a.validated_manifest(mpath_a, fresh=True)
+        agy_index = (sess_a / 'r1-evidence.md').read_bytes()
+        self.assertLessEqual(len(agy_index), 8192)
+        agy_text = agy_index.decode('utf-8')
+        for heading in (
+            'Symbols:', 'Call Sites:', 'Related Tests:',
+            'Unresolved or aliased import proof obligations:', 'Gates:', 'Instructions:',
+        ):
+            self.assertIn(heading, agy_text)
+        self.assertEqual(agy_text.count('Omitted:'), 6)
+        self.assertEqual(agy_text.count('complete list SHA-256:'), 6)
+        self.assertIn('Lexical navigation only; open source to prove findings.', agy_text)
+
+        mixed_seats = [
+            {'seat': 'agy-1', 'lab': 'google', 'adapter': 'agy',
+             'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False},
+            {'seat': 'codex-luna', 'lab': 'openai', 'adapter': 'codex',
+             'model': 'gpt-5.6-luna', 'effort': 'xhigh', 'extra': False},
+            {'seat': 'agy-2', 'lab': 'google', 'adapter': 'agy',
+             'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False},
+        ]
+        ev_m, _repo_m, sess_m, mpath_m, _man_m, _env_m = self._prepare_nav_overflow_fixture(
+            'nav-mixed', mixed_seats,
+        )
+        ev_m.validated_manifest(mpath_m, fresh=True)
+        self.assertLessEqual(len((sess_m / 'r1-evidence.md').read_bytes()), 8192)
+
+        # Simulated 10,240-byte run_command truncation passes end-to-end on the capped agy index.
+        prompt_res = subprocess.run(
+            [str(SCRIPTS / 'rev-prompt.sh'), str(sess_a), '1', 'agy-1',
+             man_a['assignments']['agy-1']['bundle'], 'check nav cap',
+             '--evidence', str(mpath_a)],
+            env=env_a, capture_output=True, text=True, check=False, timeout=60,
+        )
+        self.assertEqual(prompt_res.returncode, 0, prompt_res.stdout + prompt_res.stderr)
+        prompt_path = sess_a / 'r1-agy-1.prompt.md'
+        pre_cmds, idx_cmds, post_cmds = self._build_seat_read_commands(sess_a, man_a, 'agy-1')
+        run = self._run_fake_agy_seat(
+            'nav-agy', repo_a, sess_a, prompt_path, 'agy-1',
+            pre_cmds + idx_cmds + post_cmds, simulate_truncation=True,
+        )
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        audit = json.loads((sess_a / 'r1-agy-1.read-audit.json').read_text(encoding='utf-8'))
+        self.assertEqual(audit['status'], 'valid', audit)
+
+        # Fixed metadata alone exceeding the 8 KiB agy cap must fail closed.
+        oversized = {
+            section: [] for section in (
+                'symbols', 'call_sites', 'related_tests',
+                'unresolved_imports', 'gates', 'instructions',
+            )
+        }
+        oversized['limitations'] = ['x' * 8500]
+        with self.assertRaisesRegex(ValueError, 'navigation packet exceeds byte limit'):
+            ev_a.markdown(oversized, Path('facts.json'), total_limit=ev_a.AGY_NAVIGATION_TOTAL_LIMIT)
+
+    def test_agy_pty_crcrlf_line_endings_pass_byte_exact_audit(self):
+        agy_seats = [
+            {'seat': f'agy-{i}', 'lab': 'google', 'adapter': 'agy',
+             'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False}
+            for i in range(1, 4)
+        ]
+        _ev, repo, session, manifest_path, manifest, env = self._prepare_nav_overflow_fixture(
+            'crcrlf', agy_seats, include_crlf=True,
+        )
+        prompt_res = subprocess.run(
+            [str(SCRIPTS / 'rev-prompt.sh'), str(session), '1', 'agy-1',
+             manifest['assignments']['agy-1']['bundle'], 'check pty crcrlf',
+             '--evidence', str(manifest_path)],
+            env=env, capture_output=True, text=True, check=False, timeout=60,
+        )
+        self.assertEqual(prompt_res.returncode, 0, prompt_res.stdout + prompt_res.stderr)
+        prompt_path = session / 'r1-agy-1.prompt.md'
+        pre_cmds, idx_cmds, post_cmds = self._build_seat_read_commands(session, manifest, 'agy-1')
+        crlf_read = ["sed -n '1,5p' 'src/crlf_ref.py'"]
+        all_cmds = pre_cmds + idx_cmds + post_cmds + crlf_read
+
+        def inject_pty_crcrlf(_idx, cmd, formatted):
+            # Replace wrapper and body CRLFs with \r\r\n and \r\r\r\n like macOS PTY capture.
+            out = formatted.replace('code 0.\r\n\r\nCommand output:\r\n',
+                                    'code 0.\r\r\n\r\r\nCommand output:\r\r\n', 1)
+            lines = out.split('\r\n')
+            if len(lines) > 6:
+                lines[5] = lines[5] + '\r'
+                lines[6] = lines[6] + '\r\r'
+            if 'crlf_ref.py' in cmd and len(lines) > 7:
+                # Mix \r\n and \r\r\n inside a CRLF source file.
+                return '\r\n'.join(lines[:-1]) + '\r\r\n'
+            return '\r\n'.join(lines)
+
+        run = self._run_fake_agy_seat(
+            'crcrlf', repo, session, prompt_path, 'agy-1',
+            all_cmds, output_transform=inject_pty_crcrlf,
         )
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         audit = json.loads((session / 'r1-agy-1.read-audit.json').read_text(encoding='utf-8'))
         self.assertEqual(audit['status'], 'valid', audit)
+        self.assertEqual(audit['violations'], [])
+        self.assertEqual(audit['advisories'], [])
+
+        # Negative checks: a lone mid-line \r or altered source byte must fail mismatch checks.
+        rra = load('rra_crcrlf', LIB / 'review-read-audit.py')
+        ev_file = self.root / 'crcrlf-events.jsonl'
+        base_events = [json.loads(line) for line in ev_file.read_text(encoding='utf-8').splitlines()]
+
+        bad_patch_events = json.loads(json.dumps(base_events))
+        for ev in bad_patch_events:
+            su = ev.get('step_update')
+            if isinstance(su, dict) and su.get('state') == 'DONE' and su.get('step_index') == 1:
+                head_sep = 'Command output:\r\r\n'
+                header, body = su['tool_info']['output'].split(head_sep, 1)
+                su['tool_info']['output'] = header + head_sep + body.replace('\n', '\rmidline\n', 1)
+        bad_patch_stream = self.root / 'bad-patch.ndjson'
+        bad_patch_stream.write_text(
+            '\n'.join(json.dumps(e) for e in bad_patch_events) + '\n', encoding='utf-8',
+        )
+        res_patch, _ = rra.assessed(types.SimpleNamespace(
+            adapter='agy', raw=str(bad_patch_stream), prompt=str(prompt_path),
+            root=str(repo), session=str(session), deps=None, seat='agy-1',
+            result=str(session / 'r1-agy-1.json'), out=str(self.root / 'bad-patch-audit.json'),
+        ))
+        self.assertIn('assigned-patch-output-mismatch',
+                      {r['code'] for r in res_patch['violations']})
+
+        bad_src_events = json.loads(json.dumps(base_events))
+        for ev in bad_src_events:
+            su = ev.get('step_update')
+            if (isinstance(su, dict) and su.get('state') == 'DONE'
+                    and 'crlf_ref.py' in (su.get('tool_info') or {}).get('parameters', {}).get('CommandLine', '')):
+                su['tool_info']['output'] = su['tool_info']['output'].replace(
+                    'crlf-updated', 'crlf-tamperd',
+                )
+        bad_src_stream = self.root / 'bad-src.ndjson'
+        bad_src_stream.write_text(
+            '\n'.join(json.dumps(e) for e in bad_src_events) + '\n', encoding='utf-8',
+        )
+        res_src, _ = rra.assessed(types.SimpleNamespace(
+            adapter='agy', raw=str(bad_src_stream), prompt=str(prompt_path),
+            root=str(repo), session=str(session), deps=None, seat='agy-1',
+            result=str(session / 'r1-agy-1.json'), out=str(self.root / 'bad-src-audit.json'),
+        ))
+        self.assertIn('source-output-mismatch',
+                      {r['code'] for r in res_src['violations'] + res_src['advisories']})
+
+    def test_agy_multi_window_evidence_index_reads_credit_post_index_source_after_completion(self):
+        agy_seats = [
+            {'seat': f'agy-{i}', 'lab': 'google', 'adapter': 'agy',
+             'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False}
+            for i in range(1, 4)
+        ]
+        _ev, repo, session, manifest_path, manifest, env = self._prepare_nav_overflow_fixture(
+            'multi-idx', agy_seats,
+        )
+        ctx = manifest['source_context']['seats']['agy-1']
+        self.assertTrue(ctx['source_read_required'])
+        self.assertIsNotNone(
+            manifest['task_capacity']['seats']['agy-1']['repository_source_target'],
+        )
+        prompt_res = subprocess.run(
+            [str(SCRIPTS / 'rev-prompt.sh'), str(session), '1', 'agy-1',
+             manifest['assignments']['agy-1']['bundle'], 'check multi-window index',
+             '--evidence', str(manifest_path)],
+            env=env, capture_output=True, text=True, check=False, timeout=60,
+        )
+        self.assertEqual(prompt_res.returncode, 0, prompt_res.stdout + prompt_res.stderr)
+        prompt_path = session / 'r1-agy-1.prompt.md'
+        result_file = session / 'r1-agy-1.json'
+        result_file.write_text(
+            json.dumps({'summary': 'No actionable issues found.', 'findings': []}),
+            encoding='utf-8',
+        )
+
+        ev_path = session / 'r1-evidence.md'
+        total_lines = len(ev_path.read_bytes().splitlines())
+        self.assertGreaterEqual(total_lines, 30)
+        q_ev = shlex.quote(str(ev_path))
+        mid = total_lines // 3
+        mid2 = (2 * total_lines) // 3
+        pre_cmds, _cat_idx, post_cmds = self._build_seat_read_commands(session, manifest, 'agy-1')
+
+        rra = load('rra_multi_idx', LIB / 'review-read-audit.py')
+
+        def audit_cmds(tag, cmds, *, force_cat_truncated=False, inject_crcrlf_on=None,
+                       corrupt_cmd=None):
+            def transform(_idx, cmd, formatted):
+                if force_cat_truncated and cmd.startswith('cat -- ') and 'evidence.md' in cmd:
+                    return (
+                        "The tool's output was truncated due to being too long.\n"
+                        + formatted[:500]
+                    )
+                if inject_crcrlf_on and inject_crcrlf_on in cmd:
+                    formatted = formatted.replace('\r\n', '\r\r\n')
+                if corrupt_cmd and corrupt_cmd in cmd:
+                    formatted = formatted[:-3] + 'X\r\n'
+                return formatted
+
+            return self._audit_fake_agy_stream(
+                rra, tag, repo, session, prompt_path, 'agy-1', result_file,
+                cmds, output_transform=transform,
+            )
+
+        # 1. Truncated cat followed by ordered sed -n windows + trailing past-EOF window + post-index source.
+        slice1 = f"sed -n '1,{mid}p' {q_ev}"
+        slice2 = f"sed -n '{mid + 1},{mid2}p' {q_ev}"
+        slice3 = f"sed -n '{mid2 + 1},{total_lines + 40}p' {q_ev}"
+        past_eof = f"sed -n '{total_lines + 41},{total_lines + 100}p' {q_ev}"
+        doc1, codes1 = audit_cmds(
+            'multi-ok',
+            pre_cmds + [f'cat -- {q_ev}', slice1, slice2, slice3, past_eof] + post_cmds,
+            force_cat_truncated=True,
+            inject_crcrlf_on=f'{mid + 1},{mid2}p',
+        )
+        self.assertEqual(doc1['status'], 'valid', doc1)
+        self.assertNotIn('missing-evidence-index', codes1)
+        self.assertNotIn('missing-required-source-read', codes1)
+        self.assertTrue(doc1['post_index_source_ranges'])
+
+        # 2. Gap in slices fails both index and required post-index source.
+        doc2, codes2 = audit_cmds('multi-gap', pre_cmds + [slice1, slice3] + post_cmds)
+        self.assertEqual(doc2['status'], 'invalid')
+        self.assertIn('missing-evidence-index', codes2)
+        self.assertIn('missing-required-source-read', codes2)
+        self.assertEqual(doc2['post_index_source_ranges'], [])
+
+        # 3. Source read before completing all index windows earns no post-index credit.
+        doc3, codes3 = audit_cmds(
+            'multi-early',
+            pre_cmds + [slice1] + post_cmds + [slice2, slice3],
+        )
+        self.assertEqual(doc3['status'], 'invalid')
+        self.assertIn('missing-required-source-read', codes3)
+        self.assertIn('evidence-read-order', codes3)
+        self.assertEqual(doc3['post_index_source_ranges'], [])
+
+        # 4. Compound, piped, and byte-altered index slices fail missing-evidence-index.
+        for tag, bad_slices in (
+            ('compound', [f"{slice1}; :", slice2, slice3]),
+            ('piped', [f"{slice1} | head -20", slice2, slice3]),
+        ):
+            _doc, codes = audit_cmds('multi-' + tag, pre_cmds + bad_slices + post_cmds)
+            self.assertIn('missing-evidence-index', codes)
+        _doc_corr, codes_corr = audit_cmds(
+            'multi-corrupt',
+            pre_cmds + [slice1, slice2, slice3] + post_cmds,
+            corrupt_cmd=f'{mid + 1},{mid2}p',
+        )
+        self.assertIn('missing-evidence-index', codes_corr)
+
+        # 5. manifest is None prompt path with >10 KiB r1-evidence.md.
+        no_man_sess = self.root / 'no-manifest-session'
+        no_man_sess.mkdir()
+        big_index = no_man_sess / 'r1-evidence.md'
+        big_lines = [f'# line {i:03d} ' + ('k' * 90) for i in range(1, 131)]
+        big_index.write_text('\n'.join(big_lines) + '\n', encoding='utf-8')
+        self.assertGreater(len(big_index.read_bytes()), 10240)
+
+        target_file = repo / 'src/lib.py'
+        target_raw = target_file.read_bytes().splitlines(keepends=True)[:10]
+        target_sha = hashlib.sha256(b''.join(target_raw)).hexdigest()
+        head_tree = subprocess.run(
+            ['git', '-C', str(repo), 'rev-parse', 'HEAD^{tree}'],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        blob_oid = subprocess.run(
+            ['git', '-C', str(repo), 'hash-object', str(target_file)],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        no_man_prompt = no_man_sess / 'r1-agy-1.prompt.md'
+        no_man_prompt.write_text(
+            '## Scope\n'
+            f'Evidence navigation index: {big_index}\n'
+            f'Required post-index original-source target: src/lib.py:1-10 tree {head_tree} '
+            f'blob {blob_oid} content SHA-256 {target_sha} reasons ["declaration:fn00"]\n',
+            encoding='utf-8',
+        )
+        no_man_res = no_man_sess / 'r1-agy-1.json'
+        no_man_res.write_text(
+            json.dumps({'summary': 'No actionable issues found.', 'findings': []}),
+            encoding='utf-8',
+        )
+        q_big = shlex.quote(str(big_index))
+
+        def audit_no_man(tag, cmds, *, force_cat_truncated=False):
+            def transform(_idx, cmd, formatted):
+                if force_cat_truncated and cmd.startswith('cat -- '):
+                    return (
+                        "The tool's output was truncated due to being too long.\n"
+                        + formatted[:500]
+                    )
+                return formatted
+
+            doc, _ = self._audit_fake_agy_stream(
+                rra, tag, repo, no_man_sess, no_man_prompt, 'agy-1', no_man_res,
+                cmds, output_transform=transform,
+            )
+            return doc
+
+        nm_ok = audit_no_man(
+            'noman-ok',
+            [
+                f'cat -- {q_big}',
+                f"sed -n '1,50p' {q_big}",
+                f"sed -n '51,100p' {q_big}",
+                f"sed -n '101,150p' {q_big}",
+                "sed -n '1,10p' 'src/lib.py'",
+            ],
+            force_cat_truncated=True,
+        )
+        self.assertEqual(nm_ok['status'], 'valid', nm_ok)
+        self.assertTrue(nm_ok['post_index_source_ranges'])
+
+        nm_gap = audit_no_man(
+            'noman-gap',
+            [
+                f"sed -n '1,50p' {q_big}",
+                f"sed -n '101,150p' {q_big}",
+                "sed -n '1,10p' 'src/lib.py'",
+            ],
+        )
+        self.assertEqual(nm_gap['status'], 'invalid')
+        self.assertIn('missing-evidence-index', {r['code'] for r in nm_gap['violations']})
+        self.assertIn('missing-required-source-read', {r['code'] for r in nm_gap['violations']})
+
+    def test_agy_prompts_cap_source_windows_at_100_lines(self):
+        seats = [
+            {'seat': 'agy-1', 'lab': 'google', 'adapter': 'agy',
+             'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False},
+            {'seat': 'claude-1', 'lab': 'anthropic', 'adapter': 'claude',
+             'model': 'sonnet', 'effort': 'max', 'extra': False},
+            {'seat': 'codex-luna', 'lab': 'openai', 'adapter': 'codex',
+             'model': 'gpt-5.6-luna', 'effort': 'xhigh', 'extra': False},
+        ]
+        _ev, _repo, sess, mpath, man, env = self._prepare_nav_overflow_fixture('prompt-lines', seats)
+        for seat in ('agy-1', 'claude-1'):
+            res = subprocess.run(
+                [str(SCRIPTS / 'rev-prompt.sh'), str(sess), '1', seat,
+                 man['assignments'][seat]['bundle'], 'check prompt line limit',
+                 '--evidence', str(mpath)],
+                env=env, capture_output=True, text=True, check=False, timeout=60,
+            )
+            self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        agy_prompt = (sess / 'r1-agy-1.prompt.md').read_text(encoding='utf-8')
+        claude_prompt = (sess / 'r1-claude-1.prompt.md').read_text(encoding='utf-8')
+        self.assertIn('at most 100 lines', agy_prompt)
+        self.assertIn('END - START + 1 <= 100', agy_prompt)
+        self.assertIn('and at most 240 lines for assigned-patch windows', agy_prompt)
+        self.assertNotIn('at most 240 lines.', agy_prompt)
+        self.assertIn('END - START + 1 <= 240', claude_prompt)
+
+    def test_evidence_index_past_eof_read_and_blocked_turn_pacing(self):
+        rra = load('review_read_audit_index_edges', LIB / 'review-read-audit.py')
+        repo = self.root / 'edge-repo'
+        session = self.root / 'edge-session'
+        repo.mkdir()
+        session.mkdir()
+        index_path = session / 'r1-evidence.md'
+        index_text = ''.join(f'line {i}\n' for i in range(1, 11))
+        index_path.write_text(index_text, encoding='utf-8')
+
+        calls = {
+            'past-eof': ('Read', {'file_path': str(index_path), 'offset': 500, 'limit': 50}, 't1'),
+            'full': ('Read', {'file_path': str(index_path)}, 't2'),
+        }
+        outputs = {
+            'past-eof': {'success': True, 'value': ''},
+            'full': {'success': True, 'value': index_text},
+        }
+        paced, verified, complete = rra.collect_evidence_index_reads(
+            'claude', calls, outputs, set(), index_path, repo,
+        )
+        self.assertEqual((paced, verified, complete), ({'full'}, {'full'}, 'full'))
+
+        blocked_paced, blocked_verified, blocked_complete = rra.collect_evidence_index_reads(
+            'claude', calls, outputs, {'full'}, index_path, repo,
+        )
+        self.assertEqual((blocked_paced, blocked_verified, blocked_complete),
+                         ({'full'}, set(), None))
 
 
 if __name__ == '__main__':

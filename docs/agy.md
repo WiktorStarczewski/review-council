@@ -63,6 +63,8 @@ Antigravity reviewer seats launch as isolated headless `agy` processes in read-o
 so every finding carries an independent schema-validated stream transcript and bounded
 read audit. Reviewers use shell `cat --`, `sed -n`, and bounded `rg ... | head -80` via
 `run_command` so exact file bytes appear verbatim in the `stream-json` audit log.
-Evidence packets, patch chunks, and required source segments for `agy` seats are capped
-at 8 KiB so `cat --` output stays below `agy` `run_command`'s ~10 KiB stdout truncation
-limit.
+Evidence navigation indexes, evidence packets, patch chunks, and required source
+segments for `agy` seats are capped at 8 KiB so `cat --` output stays below `agy`
+`run_command`'s ~10 KiB stdout truncation limit; when an index still exceeds the limit,
+the read audit accepts complete coverage across bounded `sed -n` windows, and prompts
+guide `agy` seats to keep source reads to at most 100 lines.

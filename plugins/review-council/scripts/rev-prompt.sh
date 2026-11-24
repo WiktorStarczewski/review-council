@@ -341,7 +341,8 @@ import sys
 limits = runpy.run_path(sys.argv[1])
 print('limits', limits['READ_LINES'], limits['CODEX_READ_LINES'],
       limits['CODEX_SOURCE_READ_LINES'], limits['REPOSITORY_EXPANSION_CALL_LIMIT'],
-      limits['MANDATORY_REPOSITORY_READ_LIMIT'])
+      limits['MANDATORY_REPOSITORY_READ_LIMIT'],
+      limits.get('AGY_SOURCE_READ_LINES', limits['READ_LINES']))
 manifest = None
 if sys.argv[2]:
     with open(sys.argv[2], encoding='utf-8') as stream:
@@ -376,10 +377,10 @@ for seat in sys.argv[4:]:
 PY
 ) || die "cannot compile prompt limits and evidence modes"
 PATCH_MODES=(); PACKET_MODES=(); SEGMENT_MODES=(); CALL_LIMITS=(); MANDATORY_LIMITS=()
-while read -r kind first second third fourth fifth; do
+while read -r kind first second third fourth fifth sixth; do
   if [ "$kind" = limits ]; then
     READ_LINES=$first; CODEX_READ_LINES=$second; CODEX_SOURCE_READ_LINES=$third
-    CALL_LIMIT=$fourth; REFUTATION_START=$fifth
+    CALL_LIMIT=$fourth; REFUTATION_START=$fifth; AGY_SOURCE_READ_LINES=$sixth
   else
     PATCH_MODES+=("$first"); PACKET_MODES+=("$second"); SEGMENT_MODES+=("$third")
     CALL_LIMITS+=("$fourth"); MANDATORY_LIMITS+=("$fifth")
@@ -623,7 +624,11 @@ EOC
     if [ "$ADAPTER" = cursor-sdk ]; then
       echo '4. Use council_read for exact authorized paths. Omit offset and limit only for complete named artifacts and document inputs; read those in full. Use prepared sibling-search results and bounded source reads to locate related sites.'
     else
-    printf '4. Shell commands that print source, diffs, or logs must select at most %s inclusive lines, so `END - START + 1 <= %s`. ' "$PROMPT_SOURCE_READ_LINES" "$PROMPT_SOURCE_READ_LINES"
+    if [ "$PROMPT_SOURCE_READ_LINES" != "$PROMPT_PATCH_READ_LINES" ]; then
+      printf '4. Shell commands that print source, diffs, or logs must select at most %s inclusive lines for repository source (`END - START + 1 <= %s`) and at most %s lines for assigned-patch windows. ' "$PROMPT_SOURCE_READ_LINES" "$PROMPT_SOURCE_READ_LINES" "$PROMPT_PATCH_READ_LINES"
+    else
+      printf '4. Shell commands that print source, diffs, or logs must select at most %s inclusive lines, so `END - START + 1 <= %s`. ' "$PROMPT_SOURCE_READ_LINES" "$PROMPT_SOURCE_READ_LINES"
+    fi
     printf 'Shell searches across one or more files need a global `| head -80` limiter; at most 80 result lines are accepted. If it fills, narrow the path or pattern and continue with another bounded search. '
     printf 'Never compose a `head -81` search yourself. If a `Required cluster sibling search` below contains it, run that exact command unchanged; it is the sole plan-audit exception, and an 81st result invalidates that proof. Use `head -80` for every other search, then narrow and continue if more results are needed. '
     if [ -n "$EVIDENCE" ]; then
@@ -849,6 +854,8 @@ for i in "${!SEATS[@]}"; do
   if [ "$ADAPTER" = codex ]; then
     PROMPT_PATCH_READ_LINES=$CODEX_READ_LINES
     PROMPT_SOURCE_READ_LINES=$CODEX_SOURCE_READ_LINES
+  elif [ "$ADAPTER" = agy ]; then
+    PROMPT_SOURCE_READ_LINES=$AGY_SOURCE_READ_LINES
   fi
   PATCH_MODE=${PATCH_MODES[$i]}; HAS_PACKETS=${PACKET_MODES[$i]}; HAS_SEGMENTS=${SEGMENT_MODES[$i]}
   CALL_LIMIT=${CALL_LIMITS[$i]}; REFUTATION_START=${MANDATORY_LIMITS[$i]}
