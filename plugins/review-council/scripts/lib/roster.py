@@ -1506,7 +1506,12 @@ def probe_seat(s):
         identity = 'probe:%s:%s:%s' % (os.getpid(), s['model'], time.monotonic_ns())
         try:
             with _HOME_HELPER.leased_home('codex', identity, auth if auth.is_file() else None) as home:
-                rc, out, err = run(command, PROBE_TIMEOUT, {**os.environ, 'CODEX_HOME': str(home)})
+                rc, out, err = run(command, PROBE_TIMEOUT, {
+                    **os.environ,
+                    'CODEX_HOME': str(home),
+                    'CMUX_CODEX_HOOKS_DISABLED': '1',
+                    'CMUX_COMPUTER_USE_MCP_DISABLED': '1',
+                })
         except (OSError, ValueError) as error:
             return 'probe isolation failed: ' + str(error), 'other', 'probe isolation failed'
     else:
