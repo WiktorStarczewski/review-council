@@ -498,6 +498,112 @@ PY
     "$T/pr-html-unmatched.err" 'decisions\[0\]\.title.*backtick'
 }
 
+pr_review_taken_input() {
+  pr_review_input | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+data["decisions_taken"] = [{
+    "title": "Keep compatibility mode?",
+    "location": {"label": "src/api.rs#L10-L14",
+                 "url": "https://github.com/acme/repo/blob/0123456/src/api.rs#L10-L14"},
+    "chosen": "Dropped compatibility mode.",
+    "why": "The goal names one consumer and sibling code has no compatibility switch.",
+    "commit": {"label": "def5678", "url": "https://github.com/acme/repo/commit/def5678"}}]
+print(json.dumps(data))'
+}
+
+test_pr_review_decisions_taken() {
+  local session="$T/pr-taken"
+  mkdir -p "$session"
+  pr_review_taken_input > "$session/pr-review.json"
+  python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 \
+    > "$T/pr-taken.out" 2> "$T/pr-taken.err"
+  assert_eq "a receipt with decisions taken renders" "$?" 0
+  assert_grep "summary counts taken decisions" "$session/pr-review.md" \
+    '4 findings: 1 fixed in .*, 1 taken, 1 for you, 1 rejected'
+  assert_grep "taken decisions get their own section" "$session/pr-review.md" \
+    '^### Decisions taken$'
+  assert_grep "taken row links the commit" "$session/pr-review.md" \
+    'Keep compatibility mode\?\*\* · .*src/api.rs#L10-L14.* · \[`def5678`\]'
+  assert_grep "taken detail states the option and the reason" "$session/pr-review.md" \
+    'Chosen: Dropped compatibility mode\. Why: The goal names one consumer'
+  assert_grep "decisions left for the human keep their heading" "$session/pr-review.md" \
+    '^### Decisions for you$'
+
+  python3 - "$session/pr-review.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data['decisions'] = []
+path.write_text(json.dumps(data))
+PY
+  python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 >/dev/null 2>&1
+  assert_grep "no remaining decisions with taken ones reads none" "$session/pr-review.md" \
+    '3 findings: 1 fixed in .*, 1 taken, 0 for you, 1 rejected'
+  assert_grep "empty for-you section still says none remain" "$session/pr-review.md" \
+    '^No decisions remain\.$'
+
+  python3 - "$session/pr-review.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data['decisions_taken'] = []
+path.write_text(json.dumps(data))
+PY
+  python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 >/dev/null 2>&1
+  assert_grep "an empty taken list keeps its section" "$session/pr-review.md" \
+    '^No decisions were taken\.$'
+
+  pr_review_input > "$session/pr-review.json"
+  python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 >/dev/null 2>&1
+  assert_nogrep "an older receipt input renders without the new section" \
+    "$session/pr-review.md" 'Decisions taken|taken,'
+
+  pr_review_taken_input | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+del data["decisions_taken"][0]["why"]
+print(json.dumps(data))' > "$session/pr-review.json"
+  python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 \
+    > /dev/null 2> "$T/pr-taken-bad.err"
+  assert_eq "a taken decision without a rationale is refused" "$?" 1
+  assert_grep "the missing rationale is named" "$T/pr-taken-bad.err" 'decisions_taken\[0\]\.why'
+}
+
+test_pr_review_decisions_taken_bound_links() {
+  local session="$T/pr-taken-bound" root="$T/pr-taken-bound-repo" bin="$T/pr-taken-bound-bin"
+  pr_review_session "$session" "$root"
+  pr_review_gh_shim "$bin"
+  python3 - "$session/pr-review.json" "$(git -C "$root" rev-parse HEAD)" <<'PY'
+import json
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+data = json.loads(path.read_text())
+data.pop('fixed_in')
+data['fixes'][0]['commit'] = {'label': sys.argv[2][:7],
+    'url': f'https://github.com/acme/repo/commit/{sys.argv[2]}'}
+data['decisions_taken'] = [{
+    'title': 'Keep compatibility mode?',
+    'location': dict(data['decisions'][0]['location']),
+    'chosen': 'Dropped it.', 'why': 'Sibling code has no such switch.',
+    'commit': {'label': sys.argv[2][:7],
+               'url': f'https://github.com/evil/repo/commit/{sys.argv[2]}'}}]
+path.write_text(json.dumps(data))
+PY
+  : > "$T/pr-taken-bound.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-taken-bound.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 \
+    > "$T/pr-taken-bound.out" 2> "$T/pr-taken-bound.err"
+  assert_eq "taken commits outside the reviewed repository fail closed" "$?" 1
+  assert_grep "taken commit mismatch names the field" "$T/pr-taken-bound.err" \
+    'decisions_taken\[0\]\.commit\.url.*outside the reviewed repository'
+}
+
 test_pr_review_empty_sections() {
   local session="$T/pr-empty"
   mkdir -p "$session"
@@ -1564,6 +1670,51 @@ test_pr_review_validate_stack() {
     "$T/pr-validate-body.err" 'frozen body hash'
   assert_nogrep "stack validation never mutates GitHub" \
     "$T/pr-validate.calls" '^api --method (POST|DELETE) '
+}
+
+test_pr_review_stack_finalization_taken() {
+  local session="$T/pr-finalize-taken" root="$T/pr-finalize-taken-repo" bin="$T/pr-finalize-taken-bin"
+  local before after
+  pr_review_session "$session" "$root"
+  pr_review_gh_shim "$bin"
+  echo one > "$root/one.txt"; git -C "$root" add one.txt
+  git -C "$root" commit -qm 'fix(rev): one'
+  echo two > "$root/two.txt"; git -C "$root" add two.txt
+  git -C "$root" commit -qm 'fix(rev): two'
+  before=$(git -C "$root" rev-parse HEAD)
+  python3 - "$session/pr-review.json" "$before" <<'PY'
+import json
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+head = sys.argv[2]
+data = json.loads(path.read_text())
+data.pop('fixed_in')
+data['decisions'] = []
+data['fixes'][0]['commit'] = {'label': head[:7], 'url': f'https://github.com/acme/repo/commit/{head}'}
+data['decisions_taken'] = [{
+    'title': 'Keep compatibility mode?',
+    'location': {'label': 'src/api.rs#L10-L14',
+                 'url': f'https://github.com/acme/repo/blob/{head}/src/api.rs#L10-L14'},
+    'chosen': 'Dropped it.', 'why': 'Sibling code has no such switch.',
+    'commit': {'label': head[:7], 'url': f'https://github.com/acme/repo/commit/{head}'}}]
+path.write_text(json.dumps(data))
+PY
+  : > "$T/pr-finalize-taken.calls"
+  PATH="$bin:$PATH" GH_CALLS="$T/pr-finalize-taken.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" render "$session" --date 2026-09-15 >/dev/null
+  assert_eq "a review with decisions taken renders before the squash" "$?" 0
+  git -C "$root" reset -q --soft HEAD~2
+  git -C "$root" commit -qm 'apply review findings'
+  after=$(git -C "$root" rev-parse HEAD)
+  PATH="$bin:$PATH" GH_HEAD_OID="$after" GH_CALLS="$T/pr-finalize-taken.calls" \
+    python3 "$SCRIPTS/rev-pr-review.py" finalize-stack "$session" --head "$after" \
+    > "$T/pr-finalize-taken.out" 2> "$T/pr-finalize-taken.err"
+  assert_eq "a squash finalizes a review whose decisions list is empty" "$?" 0
+  assert_grep "finalization maps the taken location to the aggregate SHA" \
+    "$session/pr-review.md" "/blob/$after/src/api.rs"
+  assert_grep "finalization maps the taken commit to the aggregate SHA" \
+    "$session/pr-review.md" "Keep compatibility mode.*/commit/$after"
 }
 
 test_pr_review_stack_finalization() {

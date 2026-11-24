@@ -43,6 +43,21 @@ Write `$S/pr-review.json` with this exact shape:
       "detail": "Evidence, tradeoff, and the concrete choice for the author."
     }
   ],
+  "decisions_taken": [
+    {
+      "title": "Short question the review decided",
+      "location": {
+        "label": "src/file.rs#L10-L18",
+        "url": "https://github.com/owner/repo/blob/<head-sha>/src/file.rs#L10-L18"
+      },
+      "chosen": "The option taken.",
+      "why": "The recommendation and the goal, behavior or sibling code behind it.",
+      "commit": {
+        "label": "def5678",
+        "url": "https://github.com/owner/repo/commit/<full-sha>"
+      }
+    }
+  ],
   "fixes": [
     {
       "severity": "P1",
@@ -65,13 +80,23 @@ Write `$S/pr-review.json` with this exact shape:
 
 Rules:
 
-- `decisions` contains every `DEFERRED` item or other material design choice left to
-  the author. Use an empty list when none remain. Keep the section.
+- `decisions` contains only the design choices left to the author: product direction,
+  architecture beyond the PR, contracts owned by other components or repos, cross-PR or
+  cross-repo design, anything outside what the reviewed diff already touches, and
+  decisions that need an authority the review cannot hold (funds or credentials,
+  destructive production actions, release or deployment, ownership or merge rights,
+  legal or licensing). Use an empty list when none remain. Keep the section.
+- `decisions_taken` lists each design decision inside the reviewed change that the
+  review resolved by taking the recommended action: the option chosen, why, and the
+  commit that carries it (a taken decision is not also a `fixes` row). The key is
+  optional so older inputs still render unchanged; new reviews always write it, with
+  an empty list when nothing was taken. When present, the summary reads
+  `N taken, M for you` and a `Decisions taken` section follows `Decisions for you`.
 - `fixes` contains one row per fixed finding. Reuse a commit link when one commit
   closes several findings. Use an empty list when no fixes were required. Keep the
   section and table.
 - `rejected` counts rejected findings. The total finding count is calculated from
-  fixes, decisions, and rejections.
+  fixes, decisions taken, decisions, and rejections.
 - `panels` counts completed panels, not reviewer seats or provider calls.
 - `panel` names the actual core models from `roster.json` in roster order. Include
   only models that produced valid results. The fixed suffix says every listed model
@@ -169,7 +194,7 @@ After pushes, it finalizes and publishes each successful repository even when a 
 repository failed, while the overall stack still exits nonzero. When a squash changes
 commit identity, guarded final rendering first proves that the pushed aggregate commit
 has the inspected tree and reviewed merge base, verifies the frozen structured input
-and body, and maps decision
+and body, and maps decision and taken-decision
 blob links plus reviewed-PR fix links to that aggregate SHA. Fix links covered by
 `fixed_in` remain pinned to their separate PR. The structured input remains
 immutable. The body is written before the target envelope, which is the commit marker;

@@ -72,7 +72,7 @@ destination, and reconciles its remote-tracking ref. After a pinned push succeed
 records the immutable pushed head in that tracking ref before checking for branch
 movement, so a retry cannot rewrite commits that already reached the remote.
 Unsquashed fix commits keep their own links. A changed-head
-squash (`NO_SQUASH=0`) must preserve the inspected tree, maps decision links and reviewed-PR fix links
+squash (`NO_SQUASH=0`) must preserve the inspected tree, maps decision links, taken-decision links and reviewed-PR fix links
 to the pushed aggregate commit, preserves separate-PR fix links, and renders the final
 body before publication. A pushed retry derives finalization from the frozen target
 and current head. No associated open

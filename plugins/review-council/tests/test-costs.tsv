@@ -104,6 +104,9 @@ t-plan-evidence.sh::test_plan_topology_keeps_one_completeness_seat	8	normal
 t-plan.sh::test_plan_prompt	1	normal
 t-pr-review.sh::test_pr_review_binds_links_to_reviewed_state	1	normal
 t-pr-review.sh::test_pr_review_duplicate_and_no_pr	1	normal
+t-pr-review.sh::test_pr_review_decisions_taken	1	normal
+t-pr-review.sh::test_pr_review_decisions_taken_bound_links	1	normal
+t-pr-review.sh::test_pr_review_stack_finalization_taken	1	normal
 t-pr-review.sh::test_pr_review_empty_sections	1	normal
 t-pr-review.sh::test_pr_review_escapes_html_contexts	1	normal
 t-pr-review.sh::test_pr_review_clean_identity	1	normal
@@ -371,6 +374,7 @@ t-evidence.sh::test_evidence_hardening_replacement	3	normal
 t-state.sh::test_state_fix_gate_accepts_a_px_plan_replacement	1	normal
 t-state.sh::test_state_plan_quota_disabled_replacement_requires_the_bound_seat	1	normal
 t-skill.sh::test_skill_replacement_and_breaker_contract	1	normal
+t-skill.sh::test_skill_takes_design_decisions_inside_the_change	1	normal
 t-skill.sh::test_skill_keeps_one_commit_per_fix	1	normal
 t-cost-session.sh::test_cost_session_brief_keeps_incomplete_results_visible	1	normal
 t-cost-session.sh::test_cost_session_brief_refuses_unsafe_state	1	normal

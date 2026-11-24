@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.10.0
+
+- Take the recommended action on design decisions inside the reviewed change instead of leaving them to the PR author, for every reviewed PR. When the loop would hand such a decision to the author (a constant or limit the diff introduces, the scope or boundary of its own behavior, a contract it documents, or a trade-off between two ways to make that code correct), the orchestrator uses the recommendation the findings or panel carry, or forms one from the stated goal, existing behavior and sibling code, and runs it through the normal path: plan, red-before test when behavior changes, one unsquashed commit per cluster, verification panel. The ledger records it as `TAKEN (decision; why)`.
+- Boundary: the rule covers only choices inside what the reviewed diff already touches. When the recommended action would change files or behavior outside that, or concerns product direction or roadmap, architecture beyond the PR, public API or protocol contracts owned by other components or repos, or cross-PR or cross-repo design, the decision stays flagged for the author as `DEFERRED`. Decisions that need an authority the review cannot hold also stay flagged: spending funds or credentials, destructive or irreversible production actions, release or deployment, who owns or may merge the code, and legal or licensing. P3 findings stay ignored and P0-P2 handling is unchanged.
+- PR receipts gain an optional `decisions_taken` input (title, SHA-pinned location, option chosen, why, commit). When present the summary reads `N taken, M for you`, a `Decisions taken` section follows `Decisions for you`, and taken commits and locations are bound to the reviewed repository, ancestry and head like fixes and decisions, including stack finalization. Inputs without the key render byte-for-byte as before, so receipts from older versions still validate and render. Taken decisions are not counted again under fixes.
+- The Claude, Codex, Pi, Cursor and Antigravity workflow contracts, the standing policy, the README and the publication docs carry the same rule and exceptions.
+
 ## 0.9.17
 
 - Cap `agy` seat source-context packets, required source segments, and assigned patch chunks at 8 KiB (with an 8 KiB window threshold in `auto` chunk mode and an 8 KiB `sed -n` guidance note) so `agy` `run_command` stdout stays below its ~10 KiB truncation limit and passes read-audit verification.
