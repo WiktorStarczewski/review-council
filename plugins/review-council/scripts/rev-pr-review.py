@@ -860,7 +860,7 @@ def validate_publication_links(data, repositories, head, root):
                 f"{field} does not point at the reviewed head")
 
     if data.get("fixed_in") is None:
-        commits = [(f"{name}.commit.url", fix.get("commit", {}))
+        commits = [(f"fixes[{index}].commit.url", fix.get("commit", {}))
                    for index, fix in enumerate(data.get("fixes", []))]
         commits += [(f"decisions_taken[{index}].commit.url", decision.get("commit", {}))
                     for index, decision in enumerate(data.get("decisions_taken") or [])]
