@@ -194,7 +194,7 @@ After pushes, it finalizes and publishes each successful repository even when a 
 repository failed, while the overall stack still exits nonzero. When a squash changes
 commit identity, guarded final rendering first proves that the pushed aggregate commit
 has the inspected tree and reviewed merge base, verifies the frozen structured input
-and body, and maps decision
+and body, and maps decision and taken-decision
 blob links plus reviewed-PR fix links to that aggregate SHA. Fix links covered by
 `fixed_in` remain pinned to their separate PR. The structured input remains
 immutable. The body is written before the target envelope, which is the commit marker;

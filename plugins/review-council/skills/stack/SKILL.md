@@ -151,7 +151,7 @@ pushed commit in that ref before checking whether the local branch moved. A retr
 therefore recognize remote success without rewriting an already-pushed review commit.
 
 After every completed repository is pushed successfully, `stack.sh` follows
-`docs/pr-review.md`: unsquashed fix commits keep their own links, and a changed-head squash (`NO_SQUASH=0`) must preserve the inspected tree, decision
+`docs/pr-review.md`: unsquashed fix commits keep their own links, and a changed-head squash (`NO_SQUASH=0`) must preserve the inspected tree, decision and taken-decision
 links and reviewed-PR fix links are mapped to the pushed aggregate commit, the
 canonical body is rendered again, and only then is the latest completed review for
 each canonical repository published. Separate-PR fix links stay pinned. A pushed
