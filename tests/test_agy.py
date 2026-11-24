@@ -1393,6 +1393,8 @@ class AgyHostTests(unittest.TestCase):
              'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False},
             {'seat': 'claude-1', 'lab': 'anthropic', 'adapter': 'claude',
              'model': 'sonnet', 'effort': 'max', 'extra': False},
+            {'seat': 'codex-luna', 'lab': 'openai', 'adapter': 'codex',
+             'model': 'gpt-5.6-luna', 'effort': 'xhigh', 'extra': False},
         ]
         _ev, _repo, sess, mpath, man, env = self._prepare_nav_overflow_fixture('prompt-lines', seats)
         for seat in ('agy-1', 'claude-1'):
