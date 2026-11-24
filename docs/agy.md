@@ -67,4 +67,5 @@ Evidence navigation indexes, evidence packets, patch chunks, and required source
 segments for `agy` seats are capped at 8 KiB so `cat --` output stays below `agy`
 `run_command`'s ~10 KiB stdout truncation limit; when an index still exceeds the limit,
 the read audit accepts complete coverage across bounded `sed -n` windows, and prompts
-guide `agy` seats to keep source reads to at most 100 lines.
+guide `agy` seats to keep source reads to at most 100 lines and `run_command` command
+lines under 400 characters (below `agy`'s 512-character recorded `CommandLine` truncation).

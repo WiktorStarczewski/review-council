@@ -1410,8 +1410,12 @@ class AgyHostTests(unittest.TestCase):
         self.assertIn('at most 100 lines', agy_prompt)
         self.assertIn('END - START + 1 <= 100', agy_prompt)
         self.assertIn('and at most 240 lines for assigned-patch windows', agy_prompt)
+        self.assertIn('under 400 characters', agy_prompt)
+        self.assertIn('512 characters', agy_prompt)
         self.assertNotIn('at most 240 lines.', agy_prompt)
         self.assertIn('END - START + 1 <= 240', claude_prompt)
+        self.assertNotIn('under 400 characters', claude_prompt)
+        self.assertNotIn('512 characters', claude_prompt)
 
     def test_evidence_index_past_eof_read_and_blocked_turn_pacing(self):
         rra = load('review_read_audit_index_edges', LIB / 'review-read-audit.py')
