@@ -112,6 +112,8 @@ class CodexTests(unittest.TestCase):
         self.assertIn('--ignore-user-config', commands[0])
         self.assertIn('project_doc_max_bytes=0', commands[0])
         self.assertFalse(Path(environments[0]['CODEX_HOME']).exists())
+        self.assertEqual(environments[0].get('CMUX_CODEX_HOOKS_DISABLED'), '1')
+        self.assertEqual(environments[0].get('CMUX_COMPUTER_USE_MCP_DISABLED'), '1')
         self.assertIsNone(environments[1])
         self.assertEqual(commands[1][commands[1].index('--effort') + 1], 'max')
 
@@ -1402,6 +1404,97 @@ print('completed')
         self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
         self.assertIn('invalid completion receipt (stack-report.md is missing)', proc.stdout)
         self.assertIn('COMPLETE WITH FAILURES', proc.stdout)
+
+    def test_codex_seat_disables_cmux_wrapper_hooks_and_mcp(self):
+        caller_home = self.root / 'caller-codex-home'
+        caller_home.mkdir()
+        bin_dir = self.root / 'fake-bin'
+        bin_dir.mkdir()
+        capture = self.root / 'cmux-capture.jsonl'
+        session = self.root / 'cmux-session'
+        session.mkdir()
+        repo = self.root / 'cmux-repo'
+        repo.mkdir()
+        tmp_dir = self.root / 'cmux-tmp'
+        tmp_dir.mkdir()
+        prompt = session / 'r1-codex.prompt.md'
+        prompt.write_text('Review the diff.\n', encoding='utf-8')
+        fake_codex = bin_dir / 'codex'
+        fake_codex.write_text('''#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+sys.stdin.read()
+args = sys.argv[1:]
+with open(os.environ['CAPTURE'], 'a', encoding='utf-8') as handle:
+    handle.write(json.dumps({
+        'argv': args,
+        'hooks_disabled': os.environ.get('CMUX_CODEX_HOOKS_DISABLED'),
+        'mcp_disabled': os.environ.get('CMUX_COMPUTER_USE_MCP_DISABLED'),
+        'codex_home': os.environ.get('CODEX_HOME'),
+    }) + '\\n')
+out = None
+schema = None
+for index, arg in enumerate(args):
+    if arg == '-o' and index + 1 < len(args):
+        out = Path(args[index + 1])
+    elif arg == '--output-schema' and index + 1 < len(args):
+        schema = Path(args[index + 1]).name
+if args[:2] == ['exec', 'review']:
+    if out is not None:
+        out.write_text('{"summary":"ok","findings":[]}\\n', encoding='utf-8')
+    print(json.dumps({'type': 'turn.completed'}))
+else:
+    print(json.dumps({'type': 'thread.started', 'thread_id': 't-cmux'}))
+    print(json.dumps({'type': 'turn.started'}))
+    if out is not None:
+        if schema == 'review-turn.schema.json':
+            out.write_text('{"status":"ready","next_step":""}\\n', encoding='utf-8')
+        else:
+            out.write_text('{"summary":"ok","findings":[]}\\n', encoding='utf-8')
+    print(json.dumps({'type': 'turn.completed', 'usage': {'input_tokens': 10, 'output_tokens': 5}}))
+''', encoding='utf-8')
+        fake_codex.chmod(0o755)
+        schema = SHARED / 'schema/findings.schema.json'
+        for mode in ('review', 'prompt'):
+            env = dict(
+                os.environ,
+                PATH=f"{bin_dir}:{os.environ['PATH']}",
+                CAPTURE=str(capture),
+                CODEX_HOME=str(caller_home),
+                CMUX_SURFACE_ID='surface-test',
+                CMUX_CODEX_HOOKS_DISABLED='0',
+                CMUX_COMPUTER_USE_MCP_DISABLED='0',
+                TMPDIR=str(tmp_dir),
+                SEAT='codex-sol',
+                MODEL='gpt-5.6-sol',
+                EFFORT='xhigh',
+                MODE=mode,
+                ROOT=str(repo),
+                PROMPT=str(prompt),
+                SCHEMA=str(schema),
+                OUT=str(session / f'r1-{mode}.json'),
+                LOG=str(session / f'r1-{mode}.log'),
+                RAW=str(session / f'r1-{mode}.stream.ndjson'),
+                BASE='HEAD',
+            )
+            env.pop('REV_DEPS_DIR', None)
+            proc = subprocess.run(['bash', str(SCRIPTS / 'seats.d/codex.sh')],
+                                  env=env, capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        records = [json.loads(line) for line in capture.read_text(encoding='utf-8').splitlines() if line]
+        self.assertEqual(len(records), 3)
+        self.assertEqual(records[0]['argv'][:2], ['exec', 'review'])
+        self.assertEqual(records[1]['argv'][:1], ['exec'])
+        self.assertEqual(records[2]['argv'][:2], ['exec', 'resume'])
+        for record in records:
+            self.assertEqual(record['hooks_disabled'], '1')
+            self.assertEqual(record['mcp_disabled'], '1')
+            self.assertIn('--ignore-user-config', record['argv'])
+            self.assertTrue(record['codex_home'])
+            self.assertNotEqual(record['codex_home'], str(caller_home))
 
 
 if __name__ == '__main__':
