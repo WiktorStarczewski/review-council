@@ -2951,27 +2951,29 @@ def evidence_index_call_range(adapter, name, data, output, path, root, total_lin
     if len(ranges) != 1:
         return []
     start, end = ranges[0]
-    if not delivered_matches(adapter, name, output, path, start, end, cache):
+    if end < start or not delivered_matches(adapter, name, output, path, start, end, cache):
         return []
     return [(start, end)]
 
 
 def collect_evidence_index_reads(adapter, calls, outputs, blocked, evidence_index, root,
                                  cache=None):
-    """Collect byte-verified `evidence_index` reads and the earliest call completing coverage."""
+    """Collect byte-verified `evidence_index` reads: `(paced_calls, verified_calls, complete_call)`."""
     total_lines = file_line_count(evidence_index, cache)
+    paced_calls = set()
     verified_calls = set()
     covered = []
     complete_call = None
     for call_id, (name, data, _) in calls.items():
-        if call_id in blocked:
-            continue
         output = outputs.get(call_id)
         if output is None or not output['success']:
             continue
         matched = evidence_index_call_range(
             adapter, name, data, output['value'], evidence_index, root, total_lines, cache)
         if not matched:
+            continue
+        paced_calls.add(call_id)
+        if call_id in blocked:
             continue
         verified_calls.add(call_id)
         if total_lines == 0:
@@ -2981,7 +2983,26 @@ def collect_evidence_index_reads(adapter, calls, outputs, blocked, evidence_inde
         covered.extend(matched)
         if complete_call is None and ranges_cover_file(covered, total_lines):
             complete_call = call_id
-    return verified_calls, complete_call
+    return paced_calls, verified_calls, complete_call
+
+
+def post_index_ranges(calls, verified_call_ranges, index_complete_call):
+    """Return sorted unique source ranges read after `index_complete_call` in a later turn."""
+    if index_complete_call is None:
+        return []
+    call_positions = {call_id: position for position, call_id in enumerate(calls)}
+    index_position = call_positions[index_complete_call]
+    index_turn = calls[index_complete_call][2]
+    ranges = [
+        {key: row[key] for key in ('path', 'line_start', 'line_end', 'origin')}
+        for call_id, rows in verified_call_ranges.items()
+        if call_positions[call_id] > index_position and calls[call_id][2] != index_turn
+        for row in rows
+    ]
+    return sorted(
+        {tuple(row.items()): row for row in ranges}.values(),
+        key=lambda row: (row['path'], row['line_start'], row['line_end'], row['origin']),
+    )
 
 
 def plan_specialist_primary(manifest, seat, session):
@@ -4092,17 +4113,18 @@ def assess(args, blocked, progress=None):
             assigned = context['shards']
             assigned_paths = {session / shard['artifact']: shard for shard in assigned}
             evidence_index = session / f"r{manifest['label']}-evidence.md"
-            verified_index_calls, index_complete_call = collect_evidence_index_reads(
-                args.adapter, calls, outputs, blocked, evidence_index, root, source_cache)
+            paced_index_matches, verified_index_calls, index_complete_call = (
+                collect_evidence_index_reads(
+                    args.adapter, calls, outputs, blocked, evidence_index, root, source_cache))
             for call_id in calls:
-                if call_id not in verified_index_calls:
-                    continue
-                turn = calls[call_id][2]
-                if turn not in paced_index_turns:
-                    paced_index_turns.add(turn)
-                    paced_index_calls.add(call_id)
-                credited.add(call_id)
-                exact_evidence_index_calls.add(call_id)
+                if call_id in paced_index_matches:
+                    turn = calls[call_id][2]
+                    if turn not in paced_index_turns:
+                        paced_index_turns.add(turn)
+                        paced_index_calls.add(call_id)
+                if call_id in verified_index_calls:
+                    credited.add(call_id)
+                    exact_evidence_index_calls.add(call_id)
             if index_complete_call is None:
                 failures.append(violation('missing-evidence-index', args.adapter))
                 missing.append((3, str(evidence_index)))
@@ -4455,19 +4477,8 @@ def assess(args, blocked, progress=None):
                 path for component in manifest['components']
                 if component['id'] in component_ids for path in component['boundary']
             }
-            call_positions = {call_id: position for position, call_id in enumerate(calls)}
-            index_position = (call_positions[index_complete_call]
-                              if index_complete_call is not None else None)
-            index_turn = (calls[index_complete_call][2] if index_position is not None else None)
-            post_index_source_ranges = [
-                {key: row[key] for key in ('path', 'line_start', 'line_end', 'origin')}
-                for call_id, ranges in verified_call_ranges.items()
-                if index_position is not None and call_positions[call_id] > index_position
-                and calls[call_id][2] != index_turn
-                for row in ranges]
-            post_index_source_ranges = sorted(
-                {tuple(row.items()): row for row in post_index_source_ranges}.values(),
-                key=lambda row: (row['path'], row['line_start'], row['line_end'], row['origin']))
+            post_index_source_ranges = post_index_ranges(
+                calls, verified_call_ranges, index_complete_call)
             source_failures = source_read_requirement_violations(
                 context, boundary_paths, tool_ranges, args.adapter, snapshot_tree,
                 post_index_source_ranges)
@@ -4491,27 +4502,13 @@ def assess(args, blocked, progress=None):
                 parse_required_post_index_source_target(prompt_lines), root)
             if target is not None:
                 evidence_index = required_evidence_index_path(prompt_lines, session)
-                _index_calls, index_complete_call = collect_evidence_index_reads(
+                _paced_index, _verified_index, index_complete_call = collect_evidence_index_reads(
                     args.adapter, calls, outputs, blocked, evidence_index, root, source_cache)
                 if index_complete_call is None:
                     failures.append(violation('missing-evidence-index', args.adapter))
                     missing.append((3, str(evidence_index)))
-                call_positions = {call_id: position for position, call_id in enumerate(calls)}
-                index_position = (call_positions[index_complete_call]
-                                  if index_complete_call is not None else None)
-                index_turn = (calls[index_complete_call][2]
-                              if index_position is not None else None)
-                post_index_source_ranges = [
-                    {key: row[key] for key in ('path', 'line_start', 'line_end', 'origin')}
-                    for call_id, ranges in verified_call_ranges.items()
-                    if index_position is not None
-                    and call_positions[call_id] > index_position
-                    and calls[call_id][2] != index_turn
-                    for row in ranges]
-                post_index_source_ranges = sorted(
-                    {tuple(row.items()): row for row in post_index_source_ranges}.values(),
-                    key=lambda row: (row['path'], row['line_start'], row['line_end'],
-                                     row['origin']))
+                post_index_source_ranges = post_index_ranges(
+                    calls, verified_call_ranges, index_complete_call)
                 if not _load_evidence_module().source_target_covered(
                         target, post_index_source_ranges):
                     failures.append(violation('missing-required-source-read', args.adapter))

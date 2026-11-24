@@ -834,78 +834,10 @@ class AgyHostTests(unittest.TestCase):
         self.assertIn('below ~8 KiB', prompt_path.read_text(encoding='utf-8'))
 
         # Simulate agy run_command truncating any formatted output over 10,240 bytes.
-        ctx = manifest['source_context']['seats']['agy-1']
-        patch_chunks = manifest['patch_sets'][manifest['assignments']['agy-1']['patch_set']]['chunks']
-        evidence_md = session / 'r1-evidence.md'
-        read_cmds = (
-            [f'cat -- {shlex.quote(str(session / c["artifact"]))}' for c in patch_chunks]
-            + [f'cat -- {shlex.quote(str(session / s["artifact"]))}' for s in ctx['shards']]
-            + [f'cat -- {shlex.quote(str(session / seg["artifact"]))}'
-               for row in ctx['required_source_ranges'] for seg in row['segments']]
-            + [f'cat -- {shlex.quote(str(evidence_md))}']
-        )
-        if ctx['source_read_required']:
-            target = (manifest.get('task_capacity', {}).get('seats', {})
-                      .get('agy-1', {}).get('repository_source_target'))
-            if target is not None:
-                start = target['line_start']
-                while start <= target['line_end']:
-                    end = min(target['line_end'], start + 29)
-                    read_cmds.append(f"sed -n '{start},{end}p' {shlex.quote(target['path'])}")
-                    start = end + 1
-            else:
-                read_cmds.append("sed -n '1,20p' 'src/lib.py'")
-
-        events = [{'event': 'init', 'init': {'model': 'gemini-4-hydrogen-xhigh'}}]
-        for idx, cmd in enumerate(read_cmds, 1):
-            events.append({'event': 'step_update', 'step_update': {
-                'step_type': 'tool', 'step_index': idx, 'state': 'ACTIVE',
-                'tool_name': 'run_command',
-                'tool_info': {'name': 'run_command', 'parameters': {'CommandLine': cmd}},
-            }})
-            raw_out = subprocess.run(
-                cmd, shell=True, cwd=repo, capture_output=True, text=True, check=True,
-            ).stdout.replace('\n', '\r\n')
-            formatted = (
-                'Created At: 2026-11-23T00:00:00Z\n'
-                'Completed At: 2026-11-23T00:00:01Z\n'
-                'Command exited with code 0.\n\n'
-                f'Command output:\n{raw_out}'
-            )
-            if len(formatted.encode('utf-8')) > 10240:
-                formatted = "The tool's output was truncated due to being too long.\n" + formatted[:500]
-            events.append({'event': 'step_update', 'step_update': {
-                'step_type': 'tool', 'step_index': idx, 'state': 'DONE',
-                'tool_name': 'run_command',
-                'tool_info': {
-                    'name': 'run_command',
-                    'parameters': {'CommandLine': cmd},
-                    'output': formatted,
-                },
-            }})
-        events.append({'event': 'result', 'result': {
-            'status': 'SUCCESS',
-            'structured_output': {'summary': 'No actionable issues found.', 'findings': []},
-            'num_turns': len(read_cmds),
-            'usage': {'input_tokens': 1000, 'output_tokens': 50, 'total_tokens': 1050},
-        }})
-
-        bindir = self.root / 'e2e-agy-bin'
-        bindir.mkdir()
-        ev_file = self.root / 'e2e-events.jsonl'
-        ev_file.write_text('\n'.join(json.dumps(e) for e in events) + '\n', encoding='utf-8')
-        fake_agy = bindir / 'agy'
-        fake_agy.write_text(f'#!/bin/bash\ncat >/dev/null\ncat "{ev_file}"\n', encoding='utf-8')
-        fake_agy.chmod(0o755)
-
-        seat_env = dict(
-            self.clean_env,
-            PATH=str(bindir) + os.pathsep + os.environ.get('PATH', ''),
-            REVIEW_COUNCIL_HOST='agy',
-        )
-        run = subprocess.run(
-            [str(SCRIPTS / 'rev-seat.sh'), 'agy-1', str(session), '1', str(prompt_path)],
-            cwd=repo, env=seat_env, capture_output=True, text=True, check=False, timeout=60,
+        pre_cmds, idx_cmds, post_cmds = self._build_seat_read_commands(session, manifest, 'agy-1')
+        run = self._run_fake_agy_seat(
+            'e2e', repo, session, prompt_path, 'agy-1',
+            pre_cmds + idx_cmds + post_cmds, simulate_truncation=True,
         )
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         audit = json.loads((session / 'r1-agy-1.read-audit.json').read_text(encoding='utf-8'))
@@ -1475,8 +1407,38 @@ class AgyHostTests(unittest.TestCase):
         claude_prompt = (sess / 'r1-claude-1.prompt.md').read_text(encoding='utf-8')
         self.assertIn('at most 100 lines', agy_prompt)
         self.assertIn('END - START + 1 <= 100', agy_prompt)
-        self.assertNotIn('at most 240 lines', agy_prompt)
-        self.assertIn('at most 240 lines', claude_prompt)
+        self.assertIn('and at most 240 lines for assigned-patch windows', agy_prompt)
+        self.assertNotIn('at most 240 lines.', agy_prompt)
+        self.assertIn('END - START + 1 <= 240', claude_prompt)
+
+    def test_evidence_index_past_eof_read_and_blocked_turn_pacing(self):
+        rra = load('review_read_audit_index_edges', LIB / 'review-read-audit.py')
+        repo = self.root / 'edge-repo'
+        session = self.root / 'edge-session'
+        repo.mkdir()
+        session.mkdir()
+        index_path = session / 'r1-evidence.md'
+        index_text = ''.join(f'line {i}\n' for i in range(1, 11))
+        index_path.write_text(index_text, encoding='utf-8')
+
+        calls = {
+            'past-eof': ('Read', {'file_path': str(index_path), 'offset': 500, 'limit': 50}, 't1'),
+            'full': ('Read', {'file_path': str(index_path)}, 't2'),
+        }
+        outputs = {
+            'past-eof': {'success': True, 'value': ''},
+            'full': {'success': True, 'value': index_text},
+        }
+        paced, verified, complete = rra.collect_evidence_index_reads(
+            'claude', calls, outputs, set(), index_path, repo,
+        )
+        self.assertEqual((paced, verified, complete), ({'full'}, {'full'}, 'full'))
+
+        blocked_paced, blocked_verified, blocked_complete = rra.collect_evidence_index_reads(
+            'claude', calls, outputs, {'full'}, index_path, repo,
+        )
+        self.assertEqual((blocked_paced, blocked_verified, blocked_complete),
+                         ({'full'}, set(), None))
 
 
 if __name__ == '__main__':
