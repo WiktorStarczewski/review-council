@@ -585,6 +585,8 @@ import sys
 path = Path(sys.argv[1])
 data = json.loads(path.read_text())
 data.pop('fixed_in')
+data['fixes'][0]['commit'] = {'label': sys.argv[2][:7],
+    'url': f'https://github.com/acme/repo/commit/{sys.argv[2]}'}
 data['decisions_taken'] = [{
     'title': 'Keep compatibility mode?',
     'location': dict(data['decisions'][0]['location']),
