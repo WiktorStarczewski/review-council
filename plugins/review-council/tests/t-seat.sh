@@ -1224,6 +1224,7 @@ test_seat_codex() {
   printf 'stale marker\n' > "$S/r1-codex-sol.started"
   mkdir -p "$S/calls"; : > "$S/calls.log"
   SHIM_MODE=ok SHIM_CALLS_FILE="$S/calls.log" SHIM_STAGE_DIR="$S/calls" \
+    CMUX_CODEX_HOOKS_DISABLED=0 CMUX_COMPUTER_USE_MCP_DISABLED=0 \
     "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" > "$T/out.txt"; local rc=$?
   assert_eq "codex ok exit" "$rc" 0
   assert_exit "codex launch records a start marker" 0 test -f "$S/r1-codex-sol.started"
