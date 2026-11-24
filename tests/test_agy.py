@@ -940,7 +940,7 @@ class AgyHostTests(unittest.TestCase):
                 f'def test_nav_{i:02d}():\n    assert fn00() is not None\n',
                 encoding='utf-8',
             )
-        scripts = {f'test_gate_{i:02d}': f'echo {"g" * 420}' for i in range(12)}
+        scripts = {f'test:gate:{i:02d}': f'echo {"g" * 420}' for i in range(12)}
         (repo / 'package.json').write_text(json.dumps({'scripts': scripts}, indent=2) + '\n',
                                            encoding='utf-8')
         if include_crlf:
