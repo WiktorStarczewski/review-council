@@ -1224,6 +1224,7 @@ test_seat_codex() {
   printf 'stale marker\n' > "$S/r1-codex-sol.started"
   mkdir -p "$S/calls"; : > "$S/calls.log"
   SHIM_MODE=ok SHIM_CALLS_FILE="$S/calls.log" SHIM_STAGE_DIR="$S/calls" \
+    CMUX_CODEX_HOOKS_DISABLED=0 CMUX_COMPUTER_USE_MCP_DISABLED=0 \
     "$SCRIPTS/rev-seat.sh" codex-sol "$S" 1 "$S/p.md" > "$T/out.txt"; local rc=$?
   assert_eq "codex ok exit" "$rc" 0
   assert_exit "codex launch records a start marker" 0 test -f "$S/r1-codex-sol.started"
@@ -1246,6 +1247,8 @@ test_seat_codex() {
   # the seat's environment is not visible in argv: REV_ACTIVE is the recursion guard, -C is the repo root
   assert_grep "seat carries REV_ACTIVE=1" "$T/args.env" '^REV_ACTIVE=1$'
   assert_nogrep "no seat runs unguarded" "$T/args.env" '^REV_ACTIVE=unset$'
+  assert_grep "seat disables cmux hooks" "$T/args.env" '^CMUX_CODEX_HOOKS_DISABLED=1$'
+  assert_grep "seat disables cmux computer-use MCP" "$T/args.env" '^CMUX_COMPUTER_USE_MCP_DISABLED=1$'
   assert_grep "seat records its cwd" "$T/args.env" '^cwd=/'
   assert_grep "codex gets the repo root with -C" "$S/calls/call-1.args" "^$T$"
   assert_grep "read-only sandbox" "$T/args" '^(read-only|sandbox_mode="read-only")$'

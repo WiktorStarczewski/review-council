@@ -180,12 +180,15 @@ RSEOF
     : > "$T/args.env"
     ( unset NO_PUSH NO_SQUASH
       export REVIEW_COUNCIL_HOST=codex ROOT="$T/stack-codex-env-root"
+      export CMUX_CODEX_HOOKS_DISABLED=0 CMUX_COMPUTER_USE_MCP_DISABLED=0
       export LOG="$T/stack-codex-env.log" PASSES=1 MAX_ATTEMPTS=1
       SHIM_MODE=ok "$STACK/stack.sh" "$T/stack.cfg" > "$T/stack-codex-env.out" 2>&1
     )
     assert_eq "Codex stack double stops after its expected missing report" "$?" 1
     assert_grep "Codex default NO_PUSH reaches the leg" "$T/args.env" '^NO_PUSH=1$'
     assert_grep "Codex default NO_SQUASH reaches the leg" "$T/args.env" '^NO_SQUASH=1$'
+    assert_grep "Codex stack leg disables cmux hooks" "$T/args.env" '^CMUX_CODEX_HOOKS_DISABLED=1$'
+    assert_grep "Codex stack leg disables cmux computer-use MCP" "$T/args.env" '^CMUX_COMPUTER_USE_MCP_DISABLED=1$'
 
     local PLAIN="$T/stk-plain"
     mkdir -p "$PLAIN"

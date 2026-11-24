@@ -71,6 +71,10 @@ if [ ! -s "$LEASE_READY" ]; then
   exit "$lease_status"
 fi
 
+# Headless review seats must not register with a cmux wrapper or attach its computer-use MCP.
+export CMUX_CODEX_HOOKS_DISABLED=1
+export CMUX_COMPUTER_USE_MCP_DISABLED=1
+
 set -o pipefail
 if [ "${MODE:-}" = review ]; then
   ( cd "$ROOT" && CODEX_HOME="$PRIVATE_HOME" codex exec review --base "$BASE" --ephemeral \

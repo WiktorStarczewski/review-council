@@ -13,9 +13,10 @@ if [ -n "${SHIM_CALLS_FILE:-}" ]; then
     printf '%s\n' "$@" > "$SHIM_STAGE_DIR/call-$CALL_NUMBER.args"
   fi
 fi
-[ -n "${SHIM_ARGS_FILE:-}" ] && printf 'REV_ACTIVE=%s\nNO_PUSH=%s\nNO_SQUASH=%s\ncwd=%s\nHOME=%s\nCODEX_HOME=%s\nCODEX_AUTH_LINK=%s\n' \
+[ -n "${SHIM_ARGS_FILE:-}" ] && printf 'REV_ACTIVE=%s\nNO_PUSH=%s\nNO_SQUASH=%s\ncwd=%s\nHOME=%s\nCODEX_HOME=%s\nCODEX_AUTH_LINK=%s\nCMUX_CODEX_HOOKS_DISABLED=%s\nCMUX_COMPUTER_USE_MCP_DISABLED=%s\n' \
   "${REV_ACTIVE:-unset}" "${NO_PUSH:-unset}" "${NO_SQUASH:-unset}" "$PWD" "$HOME" "${CODEX_HOME:-unset}" \
-  "$([ -L "${CODEX_HOME:-/missing}/auth.json" ] && echo yes || echo no)" >> "$SHIM_ARGS_FILE.env"
+  "$([ -L "${CODEX_HOME:-/missing}/auth.json" ] && echo yes || echo no)" \
+  "${CMUX_CODEX_HOOKS_DISABLED:-unset}" "${CMUX_COMPUTER_USE_MCP_DISABLED:-unset}" >> "$SHIM_ARGS_FILE.env"
 if [ "${1:-}" = login ] && [ "${2:-}" = status ]; then
   [ "${SHIM_MODE:-ok}" = notauth ] && { echo "Not logged in"; exit 1; }
   echo "Logged in using ChatGPT"; exit 0
