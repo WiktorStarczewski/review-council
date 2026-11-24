@@ -341,7 +341,7 @@ import sys
 limits = runpy.run_path(sys.argv[1])
 print('limits', limits['READ_LINES'], limits['CODEX_READ_LINES'],
       limits['CODEX_SOURCE_READ_LINES'], limits['REPOSITORY_EXPANSION_CALL_LIMIT'],
-      limits['MANDATORY_REPOSITORY_READ_LIMIT'])
+      limits['MANDATORY_REPOSITORY_READ_LIMIT'], limits['AGY_SOURCE_READ_LINES'])
 manifest = None
 if sys.argv[2]:
     with open(sys.argv[2], encoding='utf-8') as stream:
@@ -376,10 +376,10 @@ for seat in sys.argv[4:]:
 PY
 ) || die "cannot compile prompt limits and evidence modes"
 PATCH_MODES=(); PACKET_MODES=(); SEGMENT_MODES=(); CALL_LIMITS=(); MANDATORY_LIMITS=()
-while read -r kind first second third fourth fifth; do
+while read -r kind first second third fourth fifth sixth; do
   if [ "$kind" = limits ]; then
     READ_LINES=$first; CODEX_READ_LINES=$second; CODEX_SOURCE_READ_LINES=$third
-    CALL_LIMIT=$fourth; REFUTATION_START=$fifth
+    CALL_LIMIT=$fourth; REFUTATION_START=$fifth; AGY_SOURCE_READ_LINES=$sixth
   else
     PATCH_MODES+=("$first"); PACKET_MODES+=("$second"); SEGMENT_MODES+=("$third")
     CALL_LIMITS+=("$fourth"); MANDATORY_LIMITS+=("$fifth")
@@ -849,6 +849,8 @@ for i in "${!SEATS[@]}"; do
   if [ "$ADAPTER" = codex ]; then
     PROMPT_PATCH_READ_LINES=$CODEX_READ_LINES
     PROMPT_SOURCE_READ_LINES=$CODEX_SOURCE_READ_LINES
+  elif [ "$ADAPTER" = agy ]; then
+    PROMPT_SOURCE_READ_LINES=$AGY_SOURCE_READ_LINES
   fi
   PATCH_MODE=${PATCH_MODES[$i]}; HAS_PACKETS=${PACKET_MODES[$i]}; HAS_SEGMENTS=${SEGMENT_MODES[$i]}
   CALL_LIMIT=${CALL_LIMITS[$i]}; REFUTATION_START=${MANDATORY_LIMITS[$i]}

@@ -81,6 +81,7 @@ SOURCE_CONTEXT_REASONS = ('declaration', 'production-caller', 'related-test',
                           'gate', 'extra-caller', 'extra-test')
 NAVIGATION_ROW_LIMIT = 1024
 NAVIGATION_TOTAL_LIMIT = 16384
+AGY_NAVIGATION_TOTAL_LIMIT = 8 * 1024
 SAFE_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*\Z')
 DIFF = ['diff', '--no-ext-diff', '--no-textconv', '--no-renames',
         '--no-indent-heuristic', '--diff-algorithm=myers', '--no-color',
@@ -144,6 +145,11 @@ def patch_chunk_limits(adapter):
     if adapter == 'agy':
         return AGY_PATCH_CHUNK_RAW_LIMIT, AGY_PATCH_CHUNK_VISIBLE_LIMIT
     return PATCH_CHUNK_RAW_LIMIT, PATCH_CHUNK_VISIBLE_LIMIT
+
+
+def navigation_total_limit(adapters):
+    """Return the `r*-evidence.md` byte limit for the assigned seat `adapters`."""
+    return AGY_NAVIGATION_TOTAL_LIMIT if 'agy' in set(adapters) else NAVIGATION_TOTAL_LIMIT
 
 
 def plan_search_timeout(environment):
@@ -4205,7 +4211,7 @@ def plan_closure_paths(clusters, dependencies, changed):
     return sorted(closure)
 
 
-def markdown(data, json_path):
+def markdown(data, json_path, total_limit=NAVIGATION_TOTAL_LIMIT):
     sections = []
     for section in ('symbols', 'call_sites', 'related_tests', 'unresolved_imports', 'gates', 'instructions'):
         rows = data[section]
@@ -4224,7 +4230,7 @@ def markdown(data, json_path):
         return ('\n'.join(lines) + '\n').encode()
 
     result = packet()
-    if len(result) > NAVIGATION_TOTAL_LIMIT:
+    if len(result) > total_limit:
         raise ValueError('navigation packet exceeds byte limit')
     for _, rows, _, selected in sections:
         for row in rows[:12]:
@@ -4233,7 +4239,7 @@ def markdown(data, json_path):
                 continue
             selected.append('- ' + rendered)
             candidate = packet()
-            if len(candidate) > NAVIGATION_TOTAL_LIMIT:
+            if len(candidate) > total_limit:
                 selected.pop()
                 continue
             result = candidate
@@ -8349,6 +8355,8 @@ def _prepare_locked(args, session):
             raise ValueError('--plan belongs only to the plan phase')
         plan_source = None; plan_raw = None
     chosen, owner = assignments(args, roster)
+    nav_limit = navigation_total_limit(
+        row.get('adapter', '') for row in roster['seats'] if row['seat'] in chosen)
     # An agent seat cannot produce an enforced read transcript, so a panel that includes one cannot
     # be CERTIFIED. That is not a reason to refuse the panel: the value of evidence mode is its
     # structure - bounded assignments, hash-bound patch and source packets, per-cluster closure
@@ -8470,7 +8478,7 @@ def _prepare_locked(args, session):
             repo, snapshot, plan_clusters, prefix, base_tree)
     full = b''.join(patch for _, patch in patches)
     semantic = b''.join(patch for path, patch in patches if categories[path] == 'semantic')
-    packet = markdown(data, session / (prefix + '-evidence.json'))
+    packet = markdown(data, session / (prefix + '-evidence.json'), total_limit=nav_limit)
     prepare_stage('prior-coverage')
     prior = (prior_coverage(session, repo, base_tree) if args.phase in ('verification', 'plan')
              else {'status': 'absent', 'coverage': None, 'reason': None})
@@ -8505,7 +8513,8 @@ def _prepare_locked(args, session):
                     delta_data['instructions'], delta_instructions = instructions(
                         repo, snapshot, instruction_coverage_paths(delta_data, categories),
                         source['mode'] == 'worktree')
-                    delta_packet = markdown(delta_data, session / (prefix + '-evidence.json'))
+                    delta_packet = markdown(
+                        delta_data, session / (prefix + '-evidence.json'), total_limit=nav_limit)
             if len(delta.split()) + len(delta_packet.split()) + len(delta_instructions.split()) >= len(semantic.split()):
                 if delta_data is not data:
                     raise ValueError('source context instruction expansion exceeds delta budget')
@@ -8735,7 +8744,7 @@ def _prepare_locked(args, session):
                             for source_range in source_packet['required_source_ranges']
                             for segment in source_range['segments'])
             assignment['required_artifacts'] = sorted(required)
-    packet = markdown(data, session / (prefix + '-evidence.json'))
+    packet = markdown(data, session / (prefix + '-evidence.json'), total_limit=nav_limit)
     artifacts = {prefix + '-full.patch': full, prefix + '-semantic.patch': semantic,
                  prefix + '-delta.patch': delta, prefix + '-evidence.json': encoded(data),
                  prefix + '-evidence.md': packet, prefix + '-instructions.md': instruction_packet,

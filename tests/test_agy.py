@@ -1455,6 +1455,29 @@ class AgyHostTests(unittest.TestCase):
         self.assertIn('missing-evidence-index', {r['code'] for r in nm_gap['violations']})
         self.assertIn('missing-required-source-read', {r['code'] for r in nm_gap['violations']})
 
+    def test_agy_prompts_cap_source_windows_at_100_lines(self):
+        seats = [
+            {'seat': 'agy-1', 'lab': 'google', 'adapter': 'agy',
+             'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False},
+            {'seat': 'claude-1', 'lab': 'anthropic', 'adapter': 'claude',
+             'model': 'sonnet', 'effort': 'max', 'extra': False},
+        ]
+        _ev, _repo, sess, mpath, man, env = self._prepare_nav_overflow_fixture('prompt-lines', seats)
+        for seat in ('agy-1', 'claude-1'):
+            res = subprocess.run(
+                [str(SCRIPTS / 'rev-prompt.sh'), str(sess), '1', seat,
+                 man['assignments'][seat]['bundle'], 'check prompt line limit',
+                 '--evidence', str(mpath)],
+                env=env, capture_output=True, text=True, check=False, timeout=60,
+            )
+            self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        agy_prompt = (sess / 'r1-agy-1.prompt.md').read_text(encoding='utf-8')
+        claude_prompt = (sess / 'r1-claude-1.prompt.md').read_text(encoding='utf-8')
+        self.assertIn('at most 100 lines', agy_prompt)
+        self.assertIn('END - START + 1 <= 100', agy_prompt)
+        self.assertNotIn('at most 240 lines', agy_prompt)
+        self.assertIn('at most 240 lines', claude_prompt)
+
 
 if __name__ == '__main__':
     unittest.main()
