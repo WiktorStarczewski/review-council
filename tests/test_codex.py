@@ -1418,7 +1418,7 @@ print('completed')
         tmp_dir = self.root / 'cmux-tmp'
         tmp_dir.mkdir()
         prompt = session / 'r1-codex.prompt.md'
-        prompt.write_text('Review the diff.\n', encoding='utf-8')
+        prompt.write_text('Review the diff.\nYou may use at most 4 repository tool calls.\n', encoding='utf-8')
         fake_codex = bin_dir / 'codex'
         fake_codex.write_text('''#!/usr/bin/env python3
 import json
