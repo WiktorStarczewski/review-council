@@ -676,7 +676,7 @@ For shell searches, prefer simple fixed-string patterns such as `rg -n -F 'aria-
 EOC
       elif [ "$ADAPTER" = agy ]; then
         cat <<'EOC'
-For Antigravity seats, use `run_command` (shell commands) for all artifact reads, source windows, and searches so every read's bytes appear in the transcript: e.g. `cat -- '<artifact>'`, `sed -n '40,75p' 'src/file.ts'`, and `rg -n -F 'symbolName' 'src/path' | head -80`. Do not combine source files or ranges with `&&` or `;`. Keep every `sed -n` source or patch window below ~8 KiB so `run_command` output stays under its ~10 KiB stdout limit, splitting further when lines are long. Keep every `run_command` command line under 400 characters using repo-relative paths and short patterns (split long regex alternations or multi-file path lists across separate calls), because `agy` truncates recorded commands at 512 characters and breaks the audit.
+For Antigravity seats, use `run_command` (shell commands) for all artifact reads, source windows, and searches so every read's bytes appear in the transcript: e.g. `cat -- '<artifact>'`, `sed -n '40,75p' 'src/file.ts'`, and `rg -n -F 'symbolName' 'src/path' | head -80`. Do not combine source files or ranges with `&&` or `;`. Keep every `sed -n` source or patch window below ~8 KiB so `run_command` output stays under its ~10 KiB stdout limit, splitting further when lines are long. Keep every command you compose under 400 characters using repo-relative paths for repository files and short patterns (keep rendered artifact paths and any `Required cluster sibling search` unchanged; split long self-authored alternations or multi-file path lists across separate calls), because `agy` truncates recorded commands at 512 characters and breaks the audit.
 EOC
       fi
     fi
