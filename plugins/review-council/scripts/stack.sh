@@ -349,7 +349,8 @@ ${VACUITY}${resume}"
       cd "$dir" || exit 1
       export REV_STACK_LEG=1 REVIEW_COUNCIL_HOST="$STACK_HOST"
       if [ "$STACK_HOST" = codex ]; then
-        printf '%s\n' "$prompt" | codex exec --ephemeral -s workspace-write \
+        printf '%s\n' "$prompt" | CMUX_CODEX_HOOKS_DISABLED=1 CMUX_COMPUTER_USE_MCP_DISABLED=1 \
+          codex exec --ephemeral -s workspace-write \
           -c sandbox_workspace_write.network_access=true --add-dir "$ROOT" --json -
       elif [ "$STACK_HOST" = cursor ]; then
         "$cursor_cli" -p "$prompt" --force --output-format stream-json </dev/null

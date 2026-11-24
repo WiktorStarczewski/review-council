@@ -1040,6 +1040,8 @@ def _run_exec(spec):
         identity = 'workhorse:%s:%s' % (os.getpid(), spec['model'])
         with _leased_home()('codex', identity, auth if auth.is_file() else None) as home:
             env['CODEX_HOME'] = str(home)
+            env['CMUX_CODEX_HOOKS_DISABLED'] = '1'
+            env['CMUX_COMPUTER_USE_MCP_DISABLED'] = '1'
             result = run()
     else:
         result = run()

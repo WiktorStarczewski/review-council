@@ -157,6 +157,10 @@ def run(cmd, timeout, environment=None):
     if cmd[0] == 'claude':
         env = {k: v for k, v in (environment or os.environ).items()
                if k not in CLAUDE_SESSION_ENV}
+    elif cmd[0] == 'codex':
+        env = {**(environment or os.environ),
+               'CMUX_CODEX_HOOKS_DISABLED': '1',
+               'CMUX_COMPUTER_USE_MCP_DISABLED': '1'}
     begin_process_launch()
     try:
         try:

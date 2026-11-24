@@ -1,9 +1,11 @@
 """Workhorse selection never calls a model."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 LIB = Path(__file__).resolve().parents[1] / 'plugins/review-council/scripts/lib/workhorse.py'
@@ -380,3 +382,50 @@ class WorkhorseTests(unittest.TestCase):
         self.assertIn('Implement only cluster C-03', text)
         self.assertIn('Do not commit', text)
         self.assertIn('gpt-5.6-luna', text)
+
+    def test_run_exec_codex_disables_cmux_wrapper_hooks_and_mcp(self):
+        base = Path(self.temp.name)
+        caller_home = base / 'caller-home'
+        bin_dir = base / 'fake-bin'
+        repo = base / 'repo'
+        session = base / 'session'
+        for directory in (caller_home, bin_dir, repo, session):
+            directory.mkdir()
+        prompt = session / 'plan.prompt.md'
+        prompt.write_text('Plan the fix.\n', encoding='utf-8')
+        capture = base / 'capture.json'
+        fake_codex = bin_dir / 'codex'
+        fake_codex.write_text('''#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+sys.stdin.read()
+Path(os.environ['CAPTURE']).write_text(json.dumps({
+    'argv': sys.argv[1:],
+    'hooks_disabled': os.environ.get('CMUX_CODEX_HOOKS_DISABLED'),
+    'mcp_disabled': os.environ.get('CMUX_COMPUTER_USE_MCP_DISABLED'),
+    'codex_home': os.environ.get('CODEX_HOME'),
+}), encoding='utf-8')
+print('## C-01')
+''', encoding='utf-8')
+        fake_codex.chmod(0o755)
+        record = self.workhorse.resolve_available('codex', luna=('gpt-5.6-luna', 'high'))
+        spec = self.workhorse.launch_spec(record, 'plan', str(repo), str(session), str(prompt))
+        with patch.dict(os.environ, {
+            'PATH': f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            'CODEX_HOME': str(caller_home),
+            'CAPTURE': str(capture),
+            'CMUX_SURFACE_ID': 'surface-test',
+            'CMUX_CODEX_HOOKS_DISABLED': '0',
+            'CMUX_COMPUTER_USE_MCP_DISABLED': '0',
+        }):
+            rc = self.workhorse._run_exec(spec)
+        self.assertEqual(rc, 0)
+        captured = json.loads(capture.read_text(encoding='utf-8'))
+        self.assertEqual(captured['hooks_disabled'], '1')
+        self.assertEqual(captured['mcp_disabled'], '1')
+        self.assertIn('--ignore-user-config', captured['argv'])
+        self.assertTrue(captured['codex_home'])
+        self.assertNotEqual(captured['codex_home'], str(caller_home))

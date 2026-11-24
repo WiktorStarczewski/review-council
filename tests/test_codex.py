@@ -96,7 +96,9 @@ class CodexTests(unittest.TestCase):
                 self.assertFalse((private / 'config.toml').exists())
             return 0, 'OK', ''
 
-        with patch.dict(os.environ, dict(self.env, CODEX_HOME=str(state_home))), \
+        with patch.dict(os.environ, dict(self.env, CODEX_HOME=str(state_home),
+                                       CMUX_CODEX_HOOKS_DISABLED='0',
+                                       CMUX_COMPUTER_USE_MCP_DISABLED='0')), \
              patch.object(self.roster, 'run', side_effect=capture):
             self.assertEqual(
                 self.roster.probe_seat(
@@ -1495,6 +1497,26 @@ else:
             self.assertIn('--ignore-user-config', record['argv'])
             self.assertTrue(record['codex_home'])
             self.assertNotEqual(record['codex_home'], str(caller_home))
+
+    def test_roster_run_disables_cmux_for_codex_discovery(self):
+        bin_dir = self.root / 'discovery-bin'
+        bin_dir.mkdir()
+        fake_codex = bin_dir / 'codex'
+        fake_codex.write_text(
+            '#!/bin/bash\nprintf "%s:%s\\n" '
+            '"${CMUX_CODEX_HOOKS_DISABLED:-unset}" "${CMUX_COMPUTER_USE_MCP_DISABLED:-unset}"\n',
+            encoding='utf-8',
+        )
+        fake_codex.chmod(0o755)
+        with patch.dict(os.environ, {
+            **self.env,
+            'PATH': f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            'CMUX_CODEX_HOOKS_DISABLED': '0',
+            'CMUX_COMPUTER_USE_MCP_DISABLED': '0',
+        }):
+            rc, out, _err = self.roster.run(['codex', '--version'], 5)
+        self.assertEqual((rc, out.strip()), (0, '1:1'))
+
 
 
 if __name__ == '__main__':

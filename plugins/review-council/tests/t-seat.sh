@@ -1246,6 +1246,8 @@ test_seat_codex() {
   # the seat's environment is not visible in argv: REV_ACTIVE is the recursion guard, -C is the repo root
   assert_grep "seat carries REV_ACTIVE=1" "$T/args.env" '^REV_ACTIVE=1$'
   assert_nogrep "no seat runs unguarded" "$T/args.env" '^REV_ACTIVE=unset$'
+  assert_grep "seat disables cmux hooks" "$T/args.env" '^CMUX_CODEX_HOOKS_DISABLED=1$'
+  assert_grep "seat disables cmux computer-use MCP" "$T/args.env" '^CMUX_COMPUTER_USE_MCP_DISABLED=1$'
   assert_grep "seat records its cwd" "$T/args.env" '^cwd=/'
   assert_grep "codex gets the repo root with -C" "$S/calls/call-1.args" "^$T$"
   assert_grep "read-only sandbox" "$T/args" '^(read-only|sandbox_mode="read-only")$'
