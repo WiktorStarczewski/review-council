@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.10.5
+
+- **Antigravity (`agy`) standalone command & test-runner policy guidance:** Expand the `agy` prompt block in `rev-prompt.sh` (and `docs/agy.md`) to require standalone `cat --`, `sed -n`, and `rg` calls without redirections (such as `> /dev/null`) or `&&`/`||`/`;` chaining, and document the read-only test-runner allowlist (explicitly disallowing `node --test`, `python3`, `make`, bare `tsc`, `yarn --cwd`, `yarn jest`, `yarn ts`, and write flags while listing permitted `yarn`/`npm`/`pnpm` scripts, `npx` subcommands, `cargo`, `go test`, and `pytest`).
+
 ## 0.10.4
 
 - **Antigravity (`agy`) backwards-compatible manifest validation:** Keep `validated_manifest()` compatible with genuine pre-`0.10.3` `agy` manifests constructed under the `240`-line limit (retrying with `READ_LINES` on canonical mismatch when the manifest contains an `agy` seat while strictly enforcing `AGY_SOURCE_READ_LINES = 100` for all new preparations and restoring it afterward) so in-progress sessions upgrade cleanly mid-run.
