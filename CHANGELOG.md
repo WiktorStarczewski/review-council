@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.10.3
+
+- **Antigravity (`agy`) evidence preparation window sizing (`rev-evidence.py`):** Update `read_line_limit('agy')` to return `AGY_SOURCE_READ_LINES` (`100`) instead of `READ_LINES` (`240`) so mandatory cluster source windows, capacity accounting, and automatic plan-source promotions stay consistent with `agy`'s 100-line prompt window cap (`missing-plan-cluster-source`).
+
 ## 0.10.2
 
 - **Antigravity (`agy`) command-line length guidance:** Guide `agy` seats in `rev-prompt.sh` and `docs/agy.md` to keep every `run_command` command line under 400 characters using repo-relative paths and shorter search patterns/path lists so `agy`'s `stream-json` exporter does not truncate `CommandLine` at 512 characters (`U+2026`) and break shell parsing (`unsupported-shell-command`).

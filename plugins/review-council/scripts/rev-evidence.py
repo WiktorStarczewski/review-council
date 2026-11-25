@@ -29,8 +29,8 @@ import weakref
 LIB_DIR = Path(__file__).resolve().parent / 'lib'
 if str(LIB_DIR) not in sys.path:
     sys.path.insert(0, str(LIB_DIR))
-from review_limits import (CLAUDE_MAX_TURNS, MANDATORY_REPOSITORY_READ_LIMIT,
-                           MANIFEST_MAX_BYTES,
+from review_limits import (AGY_SOURCE_READ_LINES, CLAUDE_MAX_TURNS,
+                           MANDATORY_REPOSITORY_READ_LIMIT, MANIFEST_MAX_BYTES,
                            CODEX_READ_LINES, CODEX_SOURCE_READ_LINES,
                            PROVIDER_TURN_RESERVE, READ_LINES,
                            REPOSITORY_EXPANSION_CALL_LIMIT,
@@ -116,7 +116,11 @@ def source_segment_batch_limit(adapter):
 
 
 def read_line_limit(adapter):
-    return CODEX_SOURCE_READ_LINES if adapter == 'codex' else READ_LINES
+    if adapter == 'codex':
+        return CODEX_SOURCE_READ_LINES
+    if adapter == 'agy':
+        return AGY_SOURCE_READ_LINES
+    return READ_LINES
 
 
 def patch_line_limit(adapter):
