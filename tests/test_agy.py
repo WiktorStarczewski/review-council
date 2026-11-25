@@ -1413,10 +1413,18 @@ class AgyHostTests(unittest.TestCase):
         self.assertIn('and at most 240 lines for assigned-patch windows', agy_prompt)
         self.assertIn('under 400 characters', agy_prompt)
         self.assertIn('512 characters', agy_prompt)
+        self.assertIn('> /dev/null', agy_prompt)
+        self.assertIn('node --test', agy_prompt)
+        self.assertIn('yarn --cwd', agy_prompt)
+        self.assertIn('yarn jest', agy_prompt)
         self.assertNotIn('at most 240 lines.', agy_prompt)
         self.assertIn('END - START + 1 <= 240', claude_prompt)
         self.assertNotIn('under 400 characters', claude_prompt)
         self.assertNotIn('512 characters', claude_prompt)
+        self.assertNotIn('> /dev/null', claude_prompt)
+        self.assertNotIn('node --test', claude_prompt)
+        self.assertNotIn('yarn --cwd', claude_prompt)
+        self.assertNotIn('yarn jest', claude_prompt)
 
     def test_agy_evidence_read_line_limit_caps_mandatory_windows_and_triggers_plan_promotion(self):
         ev = load('rev_evidence_agy_lines', SCRIPTS / 'rev-evidence.py')

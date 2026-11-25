@@ -67,8 +67,10 @@ Evidence navigation indexes, evidence packets, patch chunks, and required source
 segments for `agy` seats are capped at 8 KiB so `cat --` output stays below `agy`
 `run_command`'s ~10 KiB stdout truncation limit; when an index still exceeds the limit,
 the read audit accepts complete coverage across bounded `sed -n` windows, and prompts
-guide `agy` seats to keep source reads to at most 100 lines and `run_command` command
-lines under 400 characters (below `agy`'s 512-character recorded `CommandLine` truncation).
-Evidence preparation (`rev-evidence.py`) uses that same 100-line `agy` source-window
-limit when sizing mandatory cluster windows, capacity budgets, and automatic plan-source
-promotions.
+guide `agy` seats to keep source reads to at most 100 lines, keep `run_command` command
+lines under 400 characters (below `agy`'s 512-character recorded `CommandLine` truncation),
+keep each `cat --`, `sed -n`, and `rg` call standalone with no redirections (such as
+`> /dev/null`) or `&&`/`||`/`;` chaining, and follow the read-only test-runner allowlist
+(refusing `node --test`, `yarn jest`, and `yarn --cwd`). Evidence preparation
+(`rev-evidence.py`) uses that same 100-line `agy` source-window limit when sizing mandatory
+cluster windows, capacity budgets, and automatic plan-source promotions.
