@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.10.4
+
+- **Antigravity (`agy`) backwards-compatible manifest validation:** Keep `validated_manifest()` compatible with genuine pre-`0.10.3` `agy` manifests constructed under the `240`-line limit (retrying with `READ_LINES` on canonical mismatch when the manifest contains an `agy` seat while strictly enforcing `AGY_SOURCE_READ_LINES = 100` for all new preparations and restoring it afterward) so in-progress sessions upgrade cleanly mid-run.
+
 ## 0.10.3
 
 - **Antigravity (`agy`) evidence preparation window sizing (`rev-evidence.py`):** Update `read_line_limit('agy')` to return `AGY_SOURCE_READ_LINES` (`100`) instead of `READ_LINES` (`240`) so mandatory cluster source windows, capacity accounting, and automatic plan-source promotions stay consistent with `agy`'s 100-line prompt window cap (`missing-plan-cluster-source`).

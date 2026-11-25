@@ -1,5 +1,6 @@
 """Antigravity (agy) host, bundle, installer, escalation chain, and stream-audit tests."""
 
+import argparse
 import hashlib
 import importlib.util
 import json
@@ -1505,6 +1506,97 @@ class AgyHostTests(unittest.TestCase):
         )
         self.assertEqual((blocked_paced, blocked_verified, blocked_complete),
                          ({'full'}, set(), None))
+
+    def test_agy_validated_manifest_accepts_legacy_240_line_manifest_and_restores_100_limit(self):
+        ev = load('rev_evidence_agy_legacy', SCRIPTS / 'rev-evidence.py')
+        repo = self.root / 'legacy-agy-repo'
+        session = self.root / 'legacy-agy-session'
+        (repo / 'src').mkdir(parents=True)
+        session.mkdir()
+        subprocess.run(['git', '-C', str(repo), 'init', '-q', '-b', 'main'], check=True)
+        subprocess.run(['git', '-C', str(repo), 'config', 'user.email', 'test@example.com'], check=True)
+        subprocess.run(['git', '-C', str(repo), 'config', 'user.name', 'Test User'], check=True)
+
+        base_lines = ['def helper():\n'] + [
+            f'    x_{i} = "{"a" * 70}_{i}"\n' for i in range(1, 160)
+        ]
+        (repo / 'src/mod.py').write_text(''.join(base_lines) + '    return x_159\n', encoding='utf-8')
+        big_lines = [f'line_{i:03d} = "{"b" * 160}"\n' for i in range(1, 230)]
+        (repo / 'src/big.py').write_text(''.join(big_lines), encoding='utf-8')
+        subprocess.run(['git', '-C', str(repo), 'add', '.'], check=True)
+        subprocess.run(['git', '-C', str(repo), 'commit', '-qm', 'base'], check=True)
+        base = subprocess.run(
+            ['git', '-C', str(repo), 'rev-parse', 'HEAD'],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+        updated_lines = list(base_lines)
+        updated_lines[158] = '    x_158 = "changed"\n'
+        (repo / 'src/mod.py').write_text(''.join(updated_lines) + '    return x_158\n', encoding='utf-8')
+        (session / 'scope.env').write_text(
+            f'REV_BASE={shlex.quote(base)}\n'
+            f'REV_ROOT={shlex.quote(str(repo))}\n'
+            'REV_SCOPE=branch\n',
+            encoding='utf-8',
+        )
+        (session / 'files.txt').write_text('src/mod.py\n', encoding='utf-8')
+        (session / 'untracked.txt').write_text('', encoding='utf-8')
+        seats = [{
+            'seat': 'gemini-hydrogen', 'lab': 'google', 'adapter': 'agy',
+            'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False,
+        }]
+        (session / 'roster.json').write_text(json.dumps({'seats': seats}), encoding='utf-8')
+        plan_path = session / 'r1p-source-plan.md'
+        plan_bytes = (
+            '## C-1: Validate helper\n\n'
+            'Findings: F1\n'
+            'Rule: Validate helper lines safely across the full module.\n'
+            'Sites: src/big.py:1-220 (found by: `rg --hidden --no-ignore --glob \'!.git/**\' --null -n -- \'helper|line_001\' .`)\n'
+            'Prediction: Helper returns updated values cleanly.\n'
+            'Regression: src/mod.py - Update assertion for helper.\n'
+        ).encode('utf-8')
+        plan_path.write_bytes(plan_bytes)
+        plan_sha = hashlib.sha256(plan_bytes).hexdigest()
+
+        old_env = os.environ.copy()
+        os.environ['REV_PATCH_CHUNKS'] = 'auto'
+        os.environ['REV_SOURCE_CONTEXT'] = '0'
+        try:
+            args = argparse.Namespace(
+                session=str(session), label='1p', phase='plan', full_seat='gemini-hydrogen',
+                assignment=['gemini-hydrogen=plan-completeness'], seat=None, parent_assignment=None,
+                head=None, plan=str(plan_path), plan_sha256=plan_sha,
+                numeric_round=None, numeric_minimum=None, numeric_panel=None,
+                pr_progress_from=None, pr_progress_head=None, pr_progress_live_head=None,
+                pr_progress_tree=None, pr_progress_path=None, pr_progress_reason=None,
+            )
+            with ev._with_agy_read_line_limit(ev.READ_LINES):
+                ev.prepare(args)
+        finally:
+            os.environ.clear()
+            os.environ.update(old_env)
+
+        mpath = session / 'r1p-evidence.manifest.json'
+        self.assertEqual(ev.read_line_limit('agy'), 100)
+        with self.assertRaises(ValueError) as primary_err:
+            ev._validated_manifest(mpath, fresh=False, seen=None, offline=False, replay_plan_searches=True)
+        self.assertIn('invalid mandatory source window', str(primary_err.exception))
+
+        manifest, _mh = ev.validated_manifest(
+            mpath, fresh=False, offline=False, replay_plan_searches=True,
+        )
+        self.assertEqual(manifest['source_context']['seats']['gemini-hydrogen']['mandatory_source_windows'], [
+            {'path': 'src/big.py', 'line_start': 1, 'line_end': 220},
+            {'path': 'src/mod.py', 'line_start': 1, 'line_end': 1},
+        ])
+        self.assertEqual(ev.read_line_limit('agy'), 100)
+
+        tampered = json.loads(mpath.read_text(encoding='utf-8'))
+        tampered['source_context']['seats']['gemini-hydrogen']['mandatory_source_windows'][0]['line_end'] = 149
+        mpath.write_text(json.dumps(tampered), encoding='utf-8')
+        with self.assertRaises(ValueError):
+            ev.validated_manifest(mpath, fresh=False, offline=False, replay_plan_searches=True)
+        self.assertEqual(ev.read_line_limit('agy'), 100)
 
 
 if __name__ == '__main__':

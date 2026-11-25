@@ -115,11 +115,25 @@ def source_segment_batch_limit(adapter):
             else read_batch_limit(adapter))
 
 
+_AGY_READ_LINE_LIMIT = AGY_SOURCE_READ_LINES
+
+
+@contextmanager
+def _with_agy_read_line_limit(limit):
+    global _AGY_READ_LINE_LIMIT
+    previous = _AGY_READ_LINE_LIMIT
+    _AGY_READ_LINE_LIMIT = limit
+    try:
+        yield
+    finally:
+        _AGY_READ_LINE_LIMIT = previous
+
+
 def read_line_limit(adapter):
     if adapter == 'codex':
         return CODEX_SOURCE_READ_LINES
     if adapter == 'agy':
-        return AGY_SOURCE_READ_LINES
+        return _AGY_READ_LINE_LIMIT
     return READ_LINES
 
 
@@ -554,7 +568,7 @@ def _source_context_reconstruction_key(repo, session, manifest, manifest_sha256,
     return (str(session), str(manifest_path), manifest_sha256, str(Path(repo.root).resolve()),
             manifest['base_tree'], manifest['snapshot_tree'], manifest['phase'],
             'enabled' if manifest['source_context']['enabled'] else 'disabled',
-            changes_sha256, delta_sha256, predecessor_sha256)
+            str(read_line_limit('agy')), changes_sha256, delta_sha256, predecessor_sha256)
 
 
 def patch_display_lines(raw):
@@ -7112,12 +7126,71 @@ def validate_plan(session, manifest, evidence, check_source, replay_searches=Tru
             raise ValueError('mandatory source windows do not close the plan: ' + seat)
 
 
+_VALIDATED_MANIFEST_CACHE = None
+
+
+def _manifest_has_agy_seat(path):
+    try:
+        manifest = read_json(Path(path).resolve())
+    except (OSError, ValueError, TypeError):
+        return False
+    assignments = manifest.get('assignments') if isinstance(manifest, dict) else None
+    return isinstance(assignments, dict) and any(
+        isinstance(row, dict) and row.get('adapter') == 'agy'
+        for row in assignments.values())
+
+
 def validated_manifest(path, fresh=True, seen=None, offline=False, replay_plan_searches=True):
     """Validate local evidence; offline mode never accesses Git or predecessor results."""
+    global _VALIDATED_MANIFEST_CACHE
+    owns_cache = _VALIDATED_MANIFEST_CACHE is None
+    if owns_cache:
+        _VALIDATED_MANIFEST_CACHE = {}
+
+    def run_pass():
+        try:
+            return _validated_manifest(path, fresh, seen, offline, replay_plan_searches)
+        except (OSError, KeyError, TypeError, AttributeError, IndexError, RecursionError) as error:
+            raise ValueError('invalid manifest: ' + str(error)) from error
+
     try:
-        return _validated_manifest(path, fresh, seen, offline, replay_plan_searches)
-    except (OSError, KeyError, TypeError, AttributeError, IndexError, RecursionError) as error:
-        raise ValueError('invalid manifest: ' + str(error)) from error
+        cache_key = None
+        stronger_key = None
+        if not fresh:
+            try:
+                resolved_path = str(Path(path).resolve())
+                if resolved_path not in (seen or ()):
+                    raw_sha = digest(Path(resolved_path).read_bytes())
+                    cache_key = (
+                        resolved_path, raw_sha, fresh, offline, replay_plan_searches,
+                    )
+                    if not replay_plan_searches:
+                        stronger_key = (resolved_path, raw_sha, fresh, offline, True)
+            except OSError:
+                cache_key = None
+        if cache_key is not None:
+            if cache_key in _VALIDATED_MANIFEST_CACHE:
+                return _VALIDATED_MANIFEST_CACHE[cache_key]
+            if stronger_key is not None and stronger_key in _VALIDATED_MANIFEST_CACHE:
+                return _VALIDATED_MANIFEST_CACHE[stronger_key]
+
+        with _with_agy_read_line_limit(AGY_SOURCE_READ_LINES):
+            try:
+                result = run_pass()
+            except ValueError as primary_error:
+                if not _manifest_has_agy_seat(path):
+                    raise
+                with _with_agy_read_line_limit(READ_LINES):
+                    try:
+                        result = run_pass()
+                    except ValueError:
+                        raise primary_error from None
+        if cache_key is not None:
+            _VALIDATED_MANIFEST_CACHE[cache_key] = result
+        return result
+    finally:
+        if owns_cache:
+            _VALIDATED_MANIFEST_CACHE = None
 
 
 def _validated_manifest(path, fresh, seen, offline, replay_plan_searches):
