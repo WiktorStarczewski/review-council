@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.10.2
+
+- **Antigravity (`agy`) command-line length guidance:** Guide `agy` seats in `rev-prompt.sh` and `docs/agy.md` to keep every `run_command` command line under 400 characters using repo-relative paths and shorter search patterns/path lists so `agy`'s `stream-json` exporter does not truncate `CommandLine` at 512 characters (`U+2026`) and break shell parsing (`unsupported-shell-command`).
+
 ## 0.10.1
 
 - **Antigravity (`agy`) evidence navigation index cap & bounded multi-window audit (#136):** Cap `r*-evidence.md` at 8 KiB when an `agy` seat is assigned so `cat --` stays under `run_command`'s ~10 KiB stdout cap, normalize macOS PTY `\r+\n` line endings in `AGY_COMMAND_OUTPUT` and `delivered_matches_bytes`, and accept complete `r*-evidence.md` coverage assembled from bounded `sed -n` slices before crediting post-index source reads.
