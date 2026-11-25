@@ -1417,6 +1417,66 @@ class AgyHostTests(unittest.TestCase):
         self.assertNotIn('under 400 characters', claude_prompt)
         self.assertNotIn('512 characters', claude_prompt)
 
+    def test_agy_evidence_read_line_limit_caps_mandatory_windows_and_triggers_plan_promotion(self):
+        ev = load('rev_evidence_agy_lines', SCRIPTS / 'rev-evidence.py')
+        self.assertEqual(ev.read_line_limit('agy'), 100)
+        self.assertEqual(ev.read_line_limit('codex'), 200)
+        self.assertEqual(ev.read_line_limit('claude'), 240)
+
+        wide_clusters = [{
+            'id': 'C-1',
+            'paths': [{'path': 'scripts/topology.test.mjs', 'line_start': 102, 'line_end': 334}],
+        }]
+        self.assertEqual(
+            ev.mandatory_repository_windows(
+                {'adapter': 'agy', 'plan_clusters': ['C-1']}, wide_clusters, []),
+            [
+                ('scripts/topology.test.mjs', 102, 201),
+                ('scripts/topology.test.mjs', 202, 301),
+                ('scripts/topology.test.mjs', 302, 334),
+            ],
+        )
+        self.assertEqual(
+            ev.mandatory_repository_windows(
+                {'adapter': 'codex', 'plan_clusters': ['C-1']}, wide_clusters, []),
+            [
+                ('scripts/topology.test.mjs', 102, 301),
+                ('scripts/topology.test.mjs', 302, 334),
+            ],
+        )
+        self.assertEqual(
+            ev.mandatory_repository_windows(
+                {'adapter': 'claude', 'plan_clusters': ['C-1']}, wide_clusters, []),
+            [('scripts/topology.test.mjs', 102, 334)],
+        )
+
+        clusters = [{
+            'id': f'C-{i}',
+            'paths': [{'path': f'src/mod_{i}.mjs', 'line_start': 1, 'line_end': 200}],
+        } for i in range(7)]
+        omitted = [{
+            'path': f'src/mod_{i}.mjs', 'line_start': 1, 'line_end': 200,
+            'priority': i, 'blob_tree': 'snap',
+            'reasons': [f'declaration:plan-site:C-{i}'],
+        } for i in range(7)]
+        cluster_ids = [f'C-{i}' for i in range(7)]
+
+        self.assertEqual(
+            ev.grouped_plan_source_promotions(
+                {'adapter': 'claude', 'plan_clusters': cluster_ids},
+                clusters, [], omitted, lambda _index, _row: 1),
+            [],
+        )
+        selected = ev.grouped_plan_source_promotions(
+            {'adapter': 'agy', 'plan_clusters': cluster_ids},
+            clusters, [], omitted, lambda _index, _row: 1)
+        self.assertGreaterEqual(len(selected), 1)
+        delivered = [omitted[index] for index in selected]
+        remaining_windows = ev.mandatory_repository_windows(
+            {'adapter': 'agy', 'plan_clusters': cluster_ids}, clusters, delivered)
+        self.assertLessEqual(len(remaining_windows), 12)
+        self.assertTrue(all(end - start + 1 <= 100 for _, start, end in remaining_windows))
+
     def test_evidence_index_past_eof_read_and_blocked_turn_pacing(self):
         rra = load('review_read_audit_index_edges', LIB / 'review-read-audit.py')
         repo = self.root / 'edge-repo'
