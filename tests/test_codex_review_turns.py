@@ -226,6 +226,41 @@ class ReviewTurnRefusalTests(unittest.TestCase):
         self.turn(seat, [('node --test src/lib.py', '', 1)], READY)
         self.assertEqual(self.refusal(seat.turn, legacy), '')
 
+    def test_a_failed_typo_of_a_missing_session_artifact_is_skipped_while_siblings_stay_refused(self):
+        import re
+        match = re.search(
+            r'Required source segment [^\n]*?(/\S+-source-segment-\d+-\d+\.txt)',
+            self.prompt.read_text(encoding='utf-8'),
+        )
+        self.assertIsNotNone(match)
+        real_seg = Path(match.group(1))
+        typo = real_seg.with_name(
+            re.sub(r'-(\d+)-(\d+)\.txt$', r'-0\1-\2.txt', real_seg.name)
+        )
+        self.assertFalse(typo.exists())
+
+        seat = self.seat()
+        self.turn(seat, [
+            self.target,
+            (f'cat -- {shlex.quote(str(typo))}', f'cat: {typo}: No such file or directory\n',
+             1, 'failed'),
+        ], READY)
+        self.assertEqual(self.refusal(seat.turn), '')
+        self.assertEqual(self.audit(seat), (0, []))
+
+        sibling = self.session / 'r1-codex-luna-2.json'
+        self.assertFalse(sibling.exists())
+        seat = self.seat()
+        self.turn(seat, [
+            self.target,
+            (f'cat -- {shlex.quote(str(sibling))}',
+             f'cat: {sibling}: No such file or directory\n', 1, 'failed'),
+        ], READY)
+        self.assertEqual(self.refusal(seat.turn), 'unnamed-session-artifact')
+        returncode, codes = self.audit(seat)
+        self.assertEqual(returncode, 2)
+        self.assertIn('unnamed-session-artifact', codes)
+
 
 class PlanReviewTurnTests(unittest.TestCase):
     """A plan seat run through the Codex adapter, with the test shim as the Codex CLI."""
