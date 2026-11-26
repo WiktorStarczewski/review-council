@@ -1799,17 +1799,28 @@ class AgyHostTests(unittest.TestCase):
                 self.assertIn(expected_code, [row['code'] for row in doc['violations']],
                               (label, doc))
 
-        # A dangling symlink at the typo path exists on disk (lexists=True) and must stay fatal.
-        os.symlink('/nonexistent/target', typo_seg)
-        try:
-            doc, _ = self._audit_agy_steps(
-                rra, 'unsafe-dangling-symlink', repo, session, prompt_path, 'agy-1', result_file,
-                pre_cmds + [f'cat -- {shlex.quote(str(typo_seg))}'] + idx_cmds + post_cmds,
-            )
-            self.assertEqual(doc['status'], 'invalid', doc)
-            self.assertIn('unnamed-session-artifact', [row['code'] for row in doc['violations']])
-        finally:
-            typo_seg.unlink()
+        # Symlink topologies at or targeting typo paths exist on disk and must stay fatal.
+        typo_seg_other = session / re.sub(r'-(\d+)-(\d+)\.txt$', r'-00\1-\2.txt', seg_name)
+        for tag, link_path, link_target, expected_code in (
+            ('dangling-outside', typo_seg, '/nonexistent/target', 'path-outside-scope'),
+            ('symlink-sibling', typo_seg, str(session / 'r1-agy-2.json'),
+             'unnamed-session-artifact'),
+            ('dangling-to-typo', typo_seg_other, str(typo_seg), 'unnamed-session-artifact'),
+        ):
+            os.symlink(link_target, link_path)
+            try:
+                with self.subTest(case=tag):
+                    doc, _ = self._audit_agy_steps(
+                        rra, f'unsafe-{tag}', repo, session, prompt_path, 'agy-1',
+                        result_file,
+                        pre_cmds + [f'cat -- {shlex.quote(str(link_path))}'] + idx_cmds
+                        + post_cmds,
+                    )
+                    self.assertEqual(doc['status'], 'invalid', (tag, doc))
+                    self.assertIn(expected_code, [row['code'] for row in doc['violations']],
+                                  (tag, doc))
+            finally:
+                link_path.unlink()
 
 
 if __name__ == '__main__':

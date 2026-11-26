@@ -71,6 +71,9 @@ guide `agy` seats to keep source reads to at most 100 lines, keep `run_command` 
 lines under 400 characters (below `agy`'s 512-character recorded `CommandLine` truncation),
 keep each `cat --`, `sed -n`, and `rg` call standalone with no redirections (such as
 `> /dev/null`) or `&&`/`||`/`;` chaining, and follow the read-only test-runner allowlist
-(refusing `node --test`, `yarn jest`, and `yarn --cwd`). Evidence preparation
-(`rev-evidence.py`) uses that same 100-line `agy` source-window limit when sizing mandatory
-cluster windows, capacity budgets, and automatic plan-source promotions.
+(refusing `node --test`, `yarn jest`, and `yarn --cwd`). A failed single-file read of a
+non-existent typoed artifact in the seat's own numbered evidence family is skipped cleanly by
+the read audit instead of failing with `unnamed-session-artifact` or counting toward the
+repository expansion budget. Evidence preparation (`rev-evidence.py`) uses that same 100-line
+`agy` source-window limit when sizing mandatory cluster windows, capacity budgets, and
+automatic plan-source promotions.
