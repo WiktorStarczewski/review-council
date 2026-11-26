@@ -1673,12 +1673,153 @@ def claude_nonexecuted_exploration(adapter, name, data, output):
 
 CODEX_NOT_FOUND = re.compile(r'(?:/bin/)?[a-z]*sh:[0-9]+: command not found: (\S+)\n?')
 CODEX_PIPE_STAGE = r'((?<!\|)\|\s*)%s(?=\s|$|[|;&])'
+MISSING_FILE_READ_COMMANDS = {'cat', 'head', 'tail', 'sed'}
+MISSING_FILE_SHELL_ERROR = re.compile(
+    r'^(?:[^:\s]*/)?(cat|head|tail|sed): .+?: No such file or directory$')
+MISSING_FILE_READ_ERROR = re.compile(
+    r'^(?:<tool_use_error>)?(?:'
+    r'File does not exist\.?'
+    r'|ENOENT: no such file or directory[^\r\n]*'
+    r'|[^\r\n]*: No such file or directory'
+    r')(?:</tool_use_error>)?$')
+AUTHORIZED_SEGMENT_PREFIX = re.compile(
+    r'^(r[0-9A-Za-z._-]+-[0-9A-Za-z._-]+-source-segment-)[0-9]{3,}-[0-9]{3,}\.txt$')
+AUTHORIZED_CHUNK_PREFIX = re.compile(
+    r'^(r[0-9A-Za-z._-]+-patch-p[0-9]{2}-)[0-9]{3,}\.txt$')
+AUTHORIZED_PACKET_PREFIX = re.compile(
+    r'^(r[0-9A-Za-z._-]+-source-context-)[1-9][0-9]*\.json$')
 
 
 def codex_exit_code(adapter, event):
     item = event.get('item') if adapter == 'codex' else None
     code = item.get('exit_code') if isinstance(item, dict) else None
     return code if type(code) is int else None
+
+
+def agy_exit_code(adapter, event):
+    if adapter != 'agy' or event.get('event') != 'step_update':
+        return None
+    su = event.get('step_update')
+    if not (isinstance(su, dict) and su.get('step_type') == 'tool' and su.get('state') == 'DONE'):
+        return None
+    ti = su.get('tool_info')
+    if not isinstance(ti, dict):
+        return None
+    name = ti.get('name') or su.get('tool_name') or ''
+    raw = ti.get('output')
+    if name != 'run_command' or not isinstance(raw, str):
+        return None
+    match = AGY_COMMAND_OUTPUT.fullmatch(re.sub(r'\r+\n', '\n', raw))
+    return int(match.group(1)) if match is not None else None
+
+
+def unresolved_path_lexists(raw_path, root):
+    expanded = os.path.expandvars(os.path.expanduser(str(raw_path)))
+    raw_target = Path(expanded) if Path(expanded).is_absolute() else Path(root) / expanded
+    return os.path.lexists(os.path.normpath(str(raw_target)))
+
+
+def authorized_session_artifact_typo(target, session, authorized):
+    if session is None or not authorized or target.parent != session or target in authorized:
+        return False
+    if os.path.lexists(target):
+        return False
+    segment_prefixes = set()
+    chunk_prefixes = set()
+    packet_prefixes = set()
+    for path in authorized:
+        if path.parent != session:
+            continue
+        if match := AUTHORIZED_SEGMENT_PREFIX.fullmatch(path.name):
+            segment_prefixes.add(match.group(1))
+        elif match := AUTHORIZED_CHUNK_PREFIX.fullmatch(path.name):
+            chunk_prefixes.add(match.group(1))
+        elif match := AUTHORIZED_PACKET_PREFIX.fullmatch(path.name):
+            packet_prefixes.add(match.group(1))
+    name = target.name
+    return (any(re.fullmatch(re.escape(prefix) + r'[0-9]+(?:-[0-9]+)?\.txt', name)
+                for prefix in segment_prefixes)
+            or any(re.fullmatch(re.escape(prefix) + r'[0-9]+\.txt', name)
+                   for prefix in chunk_prefixes)
+            or any(re.fullmatch(re.escape(prefix) + r'[0-9]+\.json', name)
+                   for prefix in packet_prefixes))
+
+
+def missing_session_artifact_read(adapter, name, data, output, root, session, authorized):
+    """Whether this failed call only attempted a non-existent typoed name from this seat's own
+    authorized chunk, packet, or source-segment series, returning one missing-file error line."""
+    if (output.get('success') is not False or output.get('non_execution') is True
+            or session is None or not authorized):
+        return False
+    normalized = name.lower()
+    if normalized in SHELL_TOOLS:
+        if output.get('exit_code') not in (None, 1, 2):
+            return False
+        command = data.get('command')
+        if not isinstance(command, str) or not command.strip():
+            return False
+        unwrapped = unwrap_shell(command)
+        try:
+            READONLY_POLICY.validate(unwrapped, inspect_compound=True)
+            READONLY_POLICY.validate(unwrapped)
+        except Exception:
+            return False
+        if (contains_unquoted(unwrapped, '<') or contains_unquoted(unwrapped, '>')
+                or contains_shell_expansion(unwrapped)
+                or any(token in unwrapped for token in ('`', '$('))):
+            return False
+        try:
+            parts = split_shell(unwrapped)
+            if len(parts) != 1 or parts[0][1] != '':
+                return False
+            words = command_words(parts[0][0])
+        except ValueError:
+            return False
+        if not words:
+            return False
+        cmd = Path(words[0]).name
+        if cmd not in MISSING_FILE_READ_COMMANDS or '-' in words[1:]:
+            return False
+        candidates = path_candidates(words, root)
+        if len(candidates) != 1:
+            return False
+        raw_path = candidates[0]
+        try:
+            target = resolved(raw_path, root)
+        except (OSError, ValueError):
+            return False
+        if unresolved_path_lexists(raw_path, root) or not authorized_session_artifact_typo(
+                target, session, authorized):
+            return False
+        visible = output_text(output.get('value'))
+        if not isinstance(visible, str):
+            return False
+        lines = [line for line in re.sub(r'\r+\n', '\n', visible).splitlines() if line]
+        if adapter in ('claude', 'agent') and len(lines) == 2 \
+                and re.fullmatch(r'Exit code [12]', lines[0]):
+            lines = lines[1:]
+        if len(lines) != 1:
+            return False
+        match = MISSING_FILE_SHELL_ERROR.fullmatch(lines[0])
+        return bool(match is not None and match.group(1) == cmd
+                    and (raw_path in lines[0] or str(target) in lines[0]))
+    if normalized in READ_TOOLS:
+        raw_path = tool_path(data)
+        if not isinstance(raw_path, str) or not raw_path:
+            return False
+        try:
+            target = resolved(raw_path, root)
+        except (OSError, ValueError):
+            return False
+        if unresolved_path_lexists(raw_path, root) or not authorized_session_artifact_typo(
+                target, session, authorized):
+            return False
+        visible = output_text(output.get('value'))
+        if not isinstance(visible, str):
+            return False
+        lines = [line for line in re.sub(r'\r+\n', '\n', visible).splitlines() if line]
+        return len(lines) == 1 and MISSING_FILE_READ_ERROR.fullmatch(lines[0]) is not None
+    return False
 
 
 def codex_command_not_found(adapter, name, data, output):
@@ -3811,7 +3952,9 @@ def assess(args, blocked, progress=None):
                     outputs[call_key] = {'success': success, 'value': value,
                                          'bytes': output_bytes(value),
                                          'non_execution': non_execution,
-                                         'exit_code': codex_exit_code(args.adapter, event)}
+                                         'exit_code': (codex_exit_code(args.adapter, event)
+                                                       if args.adapter == 'codex'
+                                                       else agy_exit_code(args.adapter, event))}
                     if calls[call_key][2].startswith('implicit-'):
                         implicit_output_seen = True
     except UnicodeError:
@@ -3843,7 +3986,9 @@ def assess(args, blocked, progress=None):
         call_id for call_id, (name, data, _) in calls.items()
         if call_id in outputs
         and (claude_nonexecuted_exploration(args.adapter, name, data, outputs[call_id])
-             or codex_command_not_found(args.adapter, name, data, outputs[call_id]))
+             or codex_command_not_found(args.adapter, name, data, outputs[call_id])
+             or missing_session_artifact_read(
+                 args.adapter, name, data, outputs[call_id], root, session, authorized))
     }
     for call_id in skipped:
         calls.pop(call_id, None)

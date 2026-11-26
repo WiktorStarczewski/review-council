@@ -371,6 +371,12 @@ def review_turn_refusal(turn, prompt, root, session, deps=None):
                                          {'success': row['success'], 'value': row['output'],
                                           'exit_code': row['exit_code']}):
             continue
+        if audit.missing_session_artifact_read(
+                'codex', 'command_execution', {'command': row['command']},
+                {'success': row['success'], 'value': row['output'],
+                 'exit_code': row['exit_code']},
+                root, session, authorized):
+            continue
         for item in audit.validate_call(
                 'command_execution', {'command': row['command']}, roots, root, session,
                 authorized, complete, {}, dependency, read_limit=audit.CODEX_SOURCE_READ_LINES):

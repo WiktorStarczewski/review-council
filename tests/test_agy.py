@@ -1606,6 +1606,222 @@ class AgyHostTests(unittest.TestCase):
             ev.validated_manifest(mpath, fresh=False, offline=False, replay_plan_searches=True)
         self.assertEqual(ev.read_line_limit('agy'), 100)
 
+    def _build_agy_events_with_failures(self, repo, steps):
+        events = [{'event': 'init', 'init': {'model': 'gemini-4-hydrogen-xhigh'}}]
+        for idx, item in enumerate(steps, 1):
+            if isinstance(item, tuple):
+                cmd, code, raw_out = item
+            else:
+                cmd = item
+                proc = subprocess.run(
+                    cmd, shell=True, cwd=repo,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    check=False,
+                )
+                code = proc.returncode
+                raw_out = proc.stdout.decode('utf-8', errors='replace')
+            events.append({'event': 'step_update', 'step_update': {
+                'step_type': 'tool', 'step_index': idx, 'state': 'ACTIVE',
+                'tool_name': 'run_command',
+                'tool_info': {'name': 'run_command', 'parameters': {'CommandLine': cmd}},
+            }})
+            formatted = re.sub(
+                r'(?<!\r)\n',
+                '\r\n',
+                'Created At: 2026-11-23T00:00:00Z\n'
+                'Completed At: 2026-11-23T00:00:01Z\n'
+                f'Command exited with code {code}.\n\n'
+                f'Command output:\n{raw_out}',
+            )
+            events.append({'event': 'step_update', 'step_update': {
+                'step_type': 'tool', 'step_index': idx, 'state': 'DONE',
+                'tool_name': 'run_command',
+                'tool_info': {
+                    'name': 'run_command',
+                    'parameters': {'CommandLine': cmd},
+                    'output': formatted,
+                },
+            }})
+        events.append({'event': 'result', 'result': {
+            'status': 'SUCCESS',
+            'structured_output': {'summary': 'No actionable issues found.', 'findings': []},
+            'num_turns': len(steps),
+            'usage': {'input_tokens': 1000, 'output_tokens': 50, 'total_tokens': 1050},
+        }})
+        return events
+
+    def _audit_agy_steps(self, rra, tag, repo, session, prompt_path, seat, result_file, steps):
+        events = self._build_agy_events_with_failures(repo, steps)
+        stream = self.root / f'{tag}.ndjson'
+        stream.write_text('\n'.join(json.dumps(e) for e in events) + '\n', encoding='utf-8')
+        doc, _ = rra.assessed(types.SimpleNamespace(
+            adapter='agy', raw=str(stream), prompt=str(prompt_path),
+            root=str(repo), session=str(session), deps=None, seat=seat,
+            result=str(result_file), out=str(self.root / f'{tag}-audit.json'),
+        ))
+        return doc, {r['code'] for r in doc['violations'] + doc['advisories']}
+
+    def _prepare_agy_typo_fixture(self, name):
+        agy_seats = [
+            {'seat': f'agy-{i}', 'lab': 'google', 'adapter': 'agy',
+             'model': 'gemini-4-hydrogen-xhigh', 'effort': 'xhigh', 'extra': False}
+            for i in range(1, 4)
+        ]
+        _ev, repo, session, manifest_path, manifest, env = self._prepare_evidence_fixture(
+            name, agy_seats, patch_bytes_target=20000, patch_chunks_mode='auto',
+        )
+        prompt_out = subprocess.run(
+            [str(SCRIPTS / 'rev-prompt.sh'), str(session), '1', 'agy-1',
+             manifest['assignments']['agy-1']['bundle'], 'check typoed session artifacts',
+             '--evidence', str(manifest_path)],
+            env=env, capture_output=True, text=True, check=False, timeout=60,
+        )
+        self.assertEqual(prompt_out.returncode, 0, prompt_out.stdout + prompt_out.stderr)
+        prompt_path = session / 'r1-agy-1.prompt.md'
+        result_file = self.root / f'{name}-result.json'
+        result_file.write_text('{"summary":"No actionable issues found.","findings":[]}\n',
+                               encoding='utf-8')
+        rra = load('review_read_audit_typo', LIB / 'review-read-audit.py')
+        return repo, session, manifest, prompt_path, result_file, rra
+
+    def test_agy_skips_failed_typo_of_missing_authorized_session_artifact(self):
+        repo, session, manifest, prompt_path, result_file, rra = (
+            self._prepare_agy_typo_fixture('typo-session')
+        )
+        ctx = manifest['source_context']['seats']['agy-1']
+        patch_set = manifest['patch_sets'][manifest['assignments']['agy-1']['patch_set']]
+        self.assertEqual(patch_set['read_mode'], 'chunks')
+        self.assertTrue(ctx['shards'])
+        segments = [seg['artifact'] for row in ctx['required_source_ranges']
+                    for seg in row['segments']]
+        self.assertTrue(segments)
+
+        chunk_name = patch_set['chunks'][0]['artifact']
+        typo_chunk = session / re.sub(r'-(\d+)\.txt$', r'-0\1.txt', chunk_name)
+        packet_name = ctx['shards'][0]['artifact']
+        typo_packet = session / re.sub(r'-(\d+)\.json$', r'-0\1.json', packet_name)
+        seg_name = segments[0]
+        typo_seg = session / re.sub(r'-(\d+)-(\d+)\.txt$', r'-0\1-\2.txt', seg_name)
+        for path in (typo_chunk, typo_packet, typo_seg):
+            self.assertFalse(path.exists(), path)
+
+        pre_cmds, idx_cmds, post_cmds = self._build_seat_read_commands(session, manifest, 'agy-1')
+        expansion_limit = manifest['task_capacity']['seats']['agy-1'][
+            'repository_expansion_call_limit'
+        ]
+        self.assertLessEqual(len(post_cmds), expansion_limit)
+        padded_post = list(post_cmds) + [
+            "sed -n '1,10p' 'src/lib.py'" for _ in range(expansion_limit - len(post_cmds))
+        ]
+        typo_cmds = [
+            f'cat -- {shlex.quote(str(typo_chunk))}',
+            f'cat -- {shlex.quote(str(typo_packet))}',
+            f'cat -- {shlex.quote(str(typo_seg))}',
+            f"sed -n '1,100p' {shlex.quote(str(typo_seg))}",
+            f'head -n 20 {shlex.quote(str(typo_seg))}',
+        ]
+        doc, codes = self._audit_agy_steps(
+            rra, 'typo-valid', repo, session, prompt_path, 'agy-1', result_file,
+            pre_cmds + typo_cmds + idx_cmds + padded_post,
+        )
+        self.assertEqual(doc['status'], 'valid', doc)
+        self.assertEqual(codes, set(), doc)
+        self.assertEqual(doc['opened_patch_chunks'], len(patch_set['chunks']))
+
+        # A real expansion call past the limit must still emit repository-expansion-call-limit.
+        over_doc, over_codes = self._audit_agy_steps(
+            rra, 'typo-over-limit', repo, session, prompt_path, 'agy-1', result_file,
+            pre_cmds + typo_cmds + idx_cmds + padded_post + ["sed -n '1,10p' 'src/lib.py'"],
+        )
+        self.assertEqual(over_doc['status'], 'valid', over_doc)
+        self.assertEqual(over_doc['violations'], [])
+        self.assertEqual(over_codes, {'repository-expansion-call-limit'})
+
+        # Reading only the typoed segment without the real segment grants no credit.
+        without_real = [cmd for cmd in pre_cmds if str(session / seg_name) not in cmd]
+        miss_doc, miss_codes = self._audit_agy_steps(
+            rra, 'typo-missing-real', repo, session, prompt_path, 'agy-1', result_file,
+            without_real + [f'cat -- {shlex.quote(str(typo_seg))}'] + idx_cmds + post_cmds,
+        )
+        self.assertEqual(miss_doc['status'], 'invalid', miss_doc)
+        self.assertIn('missing-required-source-segment', miss_codes)
+
+    def test_agy_rejects_nonexistent_sibling_or_unsafe_session_reads(self):
+        repo, session, manifest, prompt_path, result_file, rra = (
+            self._prepare_agy_typo_fixture('typo-unsafe')
+        )
+        ctx = manifest['source_context']['seats']['agy-1']
+        seg_name = next(
+            seg['artifact'] for row in ctx['required_source_ranges'] for seg in row['segments']
+        )
+        typo_seg = session / re.sub(r'-(\d+)-(\d+)\.txt$', r'-0\1-\2.txt', seg_name)
+        real_seg = session / seg_name
+        other_patch = 'p98' if manifest['assignments']['agy-1']['patch_set'] == 'p99' else 'p99'
+        pre_cmds, idx_cmds, post_cmds = self._build_seat_read_commands(session, manifest, 'agy-1')
+
+        unsafe_cases = [
+            ('sibling-result', f'cat -- {shlex.quote(str(session / "r1-agy-2.json"))}',
+             'unnamed-session-artifact'),
+            ('sibling-segment',
+             f'cat -- {shlex.quote(str(session / "r1-agy-2-source-segment-001-001.txt"))}',
+             'unnamed-session-artifact'),
+            ('other-patch-set',
+             f'cat -- {shlex.quote(str(session / f"r1-patch-{other_patch}-001.txt"))}',
+             'unnamed-session-artifact'),
+            ('findings-ledger', f'cat -- {shlex.quote(str(session / "findings.md"))}',
+             'unnamed-session-artifact'),
+            ('own-result', f'cat -- {shlex.quote(str(session / "r1-agy-1.json"))}',
+             'unnamed-session-artifact'),
+            ('multi-operand',
+             f'cat -- {shlex.quote(str(typo_seg))} {shlex.quote(str(real_seg))}',
+             'unnamed-session-artifact'),
+            ('stdin-dash', f'cat -- {shlex.quote(str(typo_seg))} -',
+             'unnamed-session-artifact'),
+            ('compound-sibling',
+             f'cat -- {shlex.quote(str(typo_seg))}; cat -- {shlex.quote(str(session / "findings.md"))}',
+             'unnamed-session-artifact'),
+            ('extra-stdout-line',
+             (f'cat -- {shlex.quote(str(typo_seg))}', 1,
+              f'leaked-line\ncat: {typo_seg}: No such file or directory\n'),
+             'unnamed-session-artifact'),
+            ('refused-command',
+             ("python3 -c 'print(1)' " + shlex.quote(str(typo_seg)), 1,
+              f'cat: {typo_seg}: No such file or directory\n'),
+             'unsupported-shell-command'),
+        ]
+        for label, bad_step, expected_code in unsafe_cases:
+            with self.subTest(case=label):
+                doc, _ = self._audit_agy_steps(
+                    rra, f'unsafe-{label}', repo, session, prompt_path, 'agy-1', result_file,
+                    pre_cmds + [bad_step] + idx_cmds + post_cmds,
+                )
+                self.assertEqual(doc['status'], 'invalid', (label, doc))
+                self.assertIn(expected_code, [row['code'] for row in doc['violations']],
+                              (label, doc))
+
+        # Symlink topologies at or targeting typo paths exist on disk and must stay fatal.
+        typo_seg_other = session / re.sub(r'-(\d+)-(\d+)\.txt$', r'-00\1-\2.txt', seg_name)
+        for tag, link_path, link_target, expected_code in (
+            ('dangling-outside', typo_seg, '/nonexistent/target', 'path-outside-scope'),
+            ('symlink-sibling', typo_seg, str(session / 'r1-agy-2.json'),
+             'unnamed-session-artifact'),
+            ('dangling-to-typo', typo_seg_other, str(typo_seg), 'unnamed-session-artifact'),
+        ):
+            os.symlink(link_target, link_path)
+            try:
+                with self.subTest(case=tag):
+                    doc, _ = self._audit_agy_steps(
+                        rra, f'unsafe-{tag}', repo, session, prompt_path, 'agy-1',
+                        result_file,
+                        pre_cmds + [f'cat -- {shlex.quote(str(link_path))}'] + idx_cmds
+                        + post_cmds,
+                    )
+                    self.assertEqual(doc['status'], 'invalid', (tag, doc))
+                    self.assertIn(expected_code, [row['code'] for row in doc['violations']],
+                                  (tag, doc))
+            finally:
+                link_path.unlink()
+
 
 if __name__ == '__main__':
     unittest.main()

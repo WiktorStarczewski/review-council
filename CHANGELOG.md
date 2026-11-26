@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.10.6
+
+- **Skip failed typo reads of missing session artifacts (#145):** Update `review-read-audit.py` (and `codex-proof-stages.py`) to skip a verified failed single-file read of a non-existent typoed filename matching this seat's own authorized patch-chunk, source-packet, or source-segment series (returning one `No such file or directory` / missing-file error line and zero bytes) so an immediate typo recovery no longer fails with `unnamed-session-artifact` or counts toward `repository-expansion-call-limit`, while keeping PreToolUse hooks and non-existent sibling/ledger/symlink checks strictly fatal.
+
 ## 0.10.5
 
 - **Antigravity (`agy`) standalone command & test-runner policy guidance:** Expand the `agy` prompt block in `rev-prompt.sh` (and `docs/agy.md`) to require standalone `cat --`, `sed -n`, and `rg` calls without redirections (such as `> /dev/null`) or `&&`/`||`/`;` chaining, and document the read-only test-runner allowlist (explicitly disallowing `node --test`, `python3`, `make`, bare `tsc`, `yarn --cwd`, `yarn jest`, `yarn ts`, and write flags while listing permitted `yarn`/`npm`/`pnpm` scripts, `npx` subcommands, `cargo`, `go test`, and `pytest`).
